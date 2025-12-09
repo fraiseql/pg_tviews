@@ -2,9 +2,12 @@ use pgrx::prelude::*;
 use pgrx::pg_sys::Oid;
 use pgrx::JsonB;
 
-use crate::catalog::TviewMeta;
+use crate::catalog::{TviewMeta, DependencyDetail, DependencyType};
 use crate::propagate::propagate_from_row;
 use crate::utils::{lookup_view_for_source, relname_from_oid};
+
+/// Default match key for array patching (assumes 'id' field)
+const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 
 /// Represents a materialized view row pulled from v_entity.
 pub struct ViewRow {
@@ -119,17 +122,166 @@ fn extract_uuid_fk_columns(
     Ok(uuid_fk_values)
 }
 
-/// Apply JSON patch to tv_entity for pk using jsonb_ivm_patch.
-/// For now, this stub replaces the JSON instead of calling jsonb_ivm_patch.
+/// Apply JSON patch to tv_entity using smart JSONB patching based on dependency metadata.
+///
+/// Dispatches to the appropriate `jsonb_smart_patch_*` function based on dependency type:
+/// - `nested_object` → `jsonb_smart_patch_nested(data, patch, path)`
+/// - `array` → `jsonb_smart_patch_array(data, patch, path, match_key)`
+/// - `scalar` → `jsonb_smart_patch_scalar(data, patch)` or full replace if no FKs
+///
+/// Falls back to full replacement if jsonb_ivm is not available or metadata is missing.
 fn apply_patch(row: &ViewRow) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
 
-    // TODO: call jsonb_ivm_patch(data, $1) instead of direct replacement
+    // Load metadata to determine patch strategy
+    let meta = TviewMeta::load_for_tview(row.tview_oid)?;
+    let meta = match meta {
+        Some(m) => m,
+        None => {
+            warning!(
+                "No metadata found for TVIEW OID {:?}, entity '{}'. Using full replacement.",
+                row.tview_oid, row.entity_name
+            );
+            return apply_full_replacement(row);
+        }
+    };
+
+    // Check if jsonb_ivm is available
+    if !check_jsonb_ivm_available()? {
+        warning!(
+            "jsonb_ivm extension not installed. Smart patching disabled. \
+             Install with: CREATE EXTENSION jsonb_ivm; \
+             Performance: Full replacement is ~2× slower for cascades."
+        );
+        return apply_full_replacement(row);
+    }
+
+    // Parse dependencies
+    let deps = meta.parse_dependencies();
+
+    // If no dependencies, use full replacement
+    if deps.is_empty() {
+        return apply_full_replacement(row);
+    }
+
+    // Build SQL UPDATE with smart patch calls for each dependency
+    let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps)?;
+
+    // Execute update
+    Spi::connect(|mut client| {
+        client.update(
+            &sql,
+            None,
+            Some(vec![
+                (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), JsonB(row.data.0.clone()).into_datum()),
+                (PgOid::BuiltIn(PgBuiltInOids::INT8OID), row.pk.into_datum()),
+            ]),
+        )?;
+        Ok(())
+    })
+}
+
+/// Build SQL UPDATE statement with nested smart patch calls.
+///
+/// Constructs a SQL statement like:
+/// ```sql
+/// UPDATE tv_post
+/// SET data = jsonb_smart_patch_nested(
+///                jsonb_smart_patch_array(data, $1, '{comments}', 'id'),
+///                $1, '{author}'
+///            ),
+///     updated_at = now()
+/// WHERE pk_post = $2
+/// ```
+fn build_smart_patch_sql(
+    tv_name: &str,
+    pk_col: &str,
+    deps: &[DependencyDetail],
+) -> spi::Result<String> {
+    if deps.is_empty() {
+        // No dependencies = full replacement
+        return Ok(format!(
+            "UPDATE {} SET data = $1::jsonb, updated_at = now() WHERE {} = $2",
+            tv_name, pk_col
+        ));
+    }
+
+    // Start with current data column
+    let mut patch_expr = "data".to_string();
+
+    // Apply patches for each dependency in order
+    for dep in deps {
+        patch_expr = match dep.dep_type {
+            DependencyType::NestedObject => {
+                if let Some(path) = &dep.path {
+                    let path_str = path.join(",");
+                    format!(
+                        "jsonb_smart_patch_nested({}, $1::jsonb, ARRAY['{}'])",
+                        patch_expr, path_str
+                    )
+                } else {
+                    warning!("NestedObject dependency missing path, skipping");
+                    patch_expr
+                }
+            }
+            DependencyType::Array => {
+                if let Some(path) = &dep.path {
+                    let path_str = path.join(",");
+                    let match_key = dep.match_key.as_deref().unwrap_or(DEFAULT_ARRAY_MATCH_KEY);
+                    format!(
+                        "jsonb_smart_patch_array({}, $1::jsonb, ARRAY['{}'], '{}')",
+                        patch_expr, path_str, match_key
+                    )
+                } else {
+                    warning!("Array dependency missing path, skipping");
+                    patch_expr
+                }
+            }
+            DependencyType::Scalar => {
+                // Scalar = shallow merge (no nested paths affected)
+                format!("jsonb_smart_patch_scalar({}, $1::jsonb)", patch_expr)
+            }
+        };
+    }
+
+    Ok(format!(
+        "UPDATE {} SET data = {}, updated_at = now() WHERE {} = $2",
+        tv_name, patch_expr, pk_col
+    ))
+}
+
+/// Check if jsonb_ivm extension is installed in current database.
+fn check_jsonb_ivm_available() -> spi::Result<bool> {
+    Spi::connect(|client| {
+        let result = client.select(
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            None,
+            None,
+        )?;
+
+        for row in result {
+            if let Ok(Some(exists)) = row["exists"].value::<bool>() {
+                return Ok(exists);
+            }
+        }
+
+        Ok(false)
+    })
+}
+
+/// Fallback: Full JSONB replacement (legacy behavior).
+///
+/// Used when:
+/// - `jsonb_ivm` is not installed
+/// - No metadata found (legacy TVIEW)
+/// - No dependencies in metadata
+fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
+    let tv_name = relname_from_oid(row.tview_oid)?;
+    let pk_col = format!("pk_{}", row.entity_name);
+
     let sql = format!(
-        "UPDATE {} \
-         SET data = $1, updated_at = now() \
-         WHERE {} = $2",
+        "UPDATE {} SET data = $1, updated_at = now() WHERE {} = $2",
         tv_name, pk_col
     );
 

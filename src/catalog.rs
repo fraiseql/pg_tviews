@@ -178,12 +178,104 @@ impl TviewMeta {
         })
     }
 
+    /// Load metadata for a specific TVIEW OID
+    pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
+        Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT table_oid AS tview_oid, view_oid, entity, \
+                        fk_columns, uuid_fk_columns, \
+                        dependency_types, dependency_paths, array_match_keys \
+                 FROM pg_tview_meta \
+                 WHERE table_oid = $1",
+                None,
+                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), tview_oid.into_datum())]),
+            )?;
+
+            let mut result = None;
+            for row in rows {
+                result = Some(Self::from_spi_row(&row)?);
+                break; // Only get first row
+            }
+            Ok(result)
+        })
+    }
+
+    /// Parse SPI row into TviewMeta struct
+    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<TviewMeta> {
+        // Extract existing arrays
+        let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
+        let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
+
+        // Extract dependency_types (TEXT[])
+        let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
+        let dep_types = Self::parse_dependency_types(dep_types_raw);
+
+        // dependency_paths (TEXT[]) - stored as flat array, parse as single-element paths
+        let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value().unwrap_or(None);
+        let dep_paths: Vec<Option<Vec<String>>> = dep_paths_raw
+            .unwrap_or_default()
+            .into_iter()
+            .map(|opt_path| opt_path.map(|p| vec![p]))
+            .collect();
+
+        // array_match_keys (TEXT[]) with NULL values
+        let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value().unwrap_or(None);
+
+        Ok(TviewMeta {
+            tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+            view_oid: row["view_oid"].value().unwrap().unwrap(),
+            entity_name: row["entity"].value().unwrap().unwrap(),
+            sync_mode: 's', // Default to synchronous
+            fk_columns: fk_cols_val.unwrap_or_default(),
+            uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
+            dependency_types: dep_types,
+            dependency_paths: dep_paths,
+            array_match_keys: array_keys.unwrap_or_default(),
+        })
+    }
+
+    /// Parse dependency metadata into structured form for smart patching
+    pub fn parse_dependencies(&self) -> Vec<DependencyDetail> {
+        let mut details = Vec::new();
+
+        for (i, fk_col) in self.fk_columns.iter().enumerate() {
+            let dep_type = self.dependency_types.get(i).cloned().unwrap_or(DependencyType::Scalar);
+            let path = self.dependency_paths.get(i).cloned().flatten();
+            let match_key = self.array_match_keys.get(i).cloned().flatten();
+
+            details.push(DependencyDetail {
+                fk_column: fk_col.clone(),
+                dep_type,
+                path,
+                match_key,
+            });
+        }
+
+        details
+    }
+
+    /// Get dependency info for a specific FK column
+    pub fn get_dependency(&self, fk_column: &str) -> Option<DependencyDetail> {
+        self.parse_dependencies()
+            .into_iter()
+            .find(|d| d.fk_column == fk_column)
+    }
+
     /// TODO: function to register a new TVIEW (used by CREATE TVIEW)
     pub fn register_new(_view_oid: Oid, _tview_oid: Oid, _entity_name: &str) -> spi::Result<()> {
         // Implementation: insert into pg_tview_meta
         // This will be invoked from a CREATE TVIEW support function.
         Ok(())
     }
+}
+
+/// Represents a single dependency with its type, path, and match key
+#[derive(Debug, Clone)]
+pub struct DependencyDetail {
+    pub fk_column: String,
+    pub dep_type: DependencyType,
+    pub path: Option<Vec<String>>,    // e.g., Some(vec!["author"]) or Some(vec!["comments"])
+    pub match_key: Option<String>,     // e.g., Some("id") for arrays
 }
 
 impl Default for TviewMeta {
