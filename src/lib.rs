@@ -1,5 +1,6 @@
 use pgrx::prelude::*;
 use pgrx::JsonB;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod catalog;
 mod trigger;
@@ -19,15 +20,28 @@ pub use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
+// Static cache for jsonb_ivm availability (performance optimization)
+static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
+
 /// Get the version of the pg_tviews extension
 #[pg_extern]
 fn pg_tviews_version() -> &'static str {
     "0.1.0-alpha"
 }
 
-/// Check if jsonb_ivm extension is available at runtime
+/// Check if jsonb_ivm extension is available at runtime (cached)
 /// Returns true if extension is installed, false otherwise
+///
+/// This function caches the result after the first check to avoid
+/// repeated queries to pg_extension on every cascade operation.
 pub fn check_jsonb_ivm_available() -> bool {
+    // Return cached result if already checked
+    if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
+        return JSONB_IVM_AVAILABLE.load(Ordering::Relaxed);
+    }
+
+    // First time: query database
     let result: Result<bool, spi::Error> = Spi::connect(|client| {
         let rows = client.select(
             "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
@@ -43,7 +57,13 @@ pub fn check_jsonb_ivm_available() -> bool {
         Ok(false)
     });
 
-    result.unwrap_or(false)
+    let is_available = result.unwrap_or(false);
+
+    // Cache result
+    JSONB_IVM_AVAILABLE.store(is_available, Ordering::Relaxed);
+    JSONB_IVM_CHECKED.store(true, Ordering::Relaxed);
+
+    is_available
 }
 
 /// Export as SQL function for testing
