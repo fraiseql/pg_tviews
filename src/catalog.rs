@@ -85,3 +85,45 @@ impl TviewMeta {
     }
 }
 
+// Phase 5 Task 2 RED: Tests for metadata enhancement
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dependency_type_from_str() {
+        // Test will fail: DependencyType doesn't exist yet
+        assert_eq!(DependencyType::from_str("scalar"), DependencyType::Scalar);
+        assert_eq!(DependencyType::from_str("nested_object"), DependencyType::NestedObject);
+        assert_eq!(DependencyType::from_str("array"), DependencyType::Array);
+        assert_eq!(DependencyType::from_str("unknown"), DependencyType::Scalar); // default
+    }
+
+    #[test]
+    fn test_dependency_type_to_str() {
+        // Test will fail: DependencyType doesn't exist yet
+        assert_eq!(DependencyType::Scalar.as_str(), "scalar");
+        assert_eq!(DependencyType::NestedObject.as_str(), "nested_object");
+        assert_eq!(DependencyType::Array.as_str(), "array");
+    }
+
+    #[test]
+    fn test_tview_meta_has_new_fields() {
+        // Test will fail: TviewMeta doesn't have these fields yet
+        let meta = TviewMeta {
+            tview_oid: Oid::from(1234),
+            view_oid: Oid::from(5678),
+            entity_name: "test".to_string(),
+            sync_mode: 's',
+            fk_columns: vec![],
+            uuid_fk_columns: vec![],
+            dependency_types: vec![DependencyType::Scalar],
+            dependency_paths: vec![None],
+            array_match_keys: vec![None],
+        };
+
+        assert_eq!(meta.dependency_types.len(), 1);
+        assert_eq!(meta.dependency_paths.len(), 1);
+        assert_eq!(meta.array_match_keys.len(), 1);
+    }
+}
