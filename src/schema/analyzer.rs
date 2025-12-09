@@ -1,5 +1,41 @@
+//! Dependency type detection for jsonb_ivm optimization
+//!
+//! This module analyzes TVIEW SELECT statements to determine how foreign key
+//! relationships manifest in the JSONB structure. This information is used
+//! to choose the appropriate jsonb_ivm patch function for efficient updates.
+//!
+//! # Detection Patterns
+//!
+//! ## Nested Object
+//! ```sql
+//! jsonb_build_object('author', v_user.data)
+//! ```
+//! → `dependency_type = 'nested_object'`, `path = ['author']`
+//!
+//! ## Array Aggregation
+//! ```sql
+//! jsonb_build_object('comments', jsonb_agg(v_comment.data))
+//! ```
+//! → `dependency_type = 'array'`, `path = ['comments']`, `match_key = 'id'`
+//!
+//! ## Scalar (Default)
+//! FK column exists but not used in JSONB composition
+//! → `dependency_type = 'scalar'`, `path = NULL`
+
 use crate::catalog::DependencyType;
 use regex::Regex;
+
+/// Regex pattern template for nested object detection
+/// Matches: 'key_name', v_something.data
+const NESTED_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*{}.data";
+
+/// Regex pattern template for array aggregation detection
+/// Matches: 'array_name', jsonb_agg(v_something.data ...)
+/// Also handles COALESCE wrapper: COALESCE(jsonb_agg(...), '[]'::jsonb)
+const ARRAY_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*{}.data";
+
+/// Default match key for array dependencies
+const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 
 /// Information about a detected dependency
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +99,28 @@ pub fn analyze_dependencies(
     deps
 }
 
+/// Infer TVIEW name from FK column name
+///
+/// # Conventions
+/// - `fk_user` → `v_user`
+/// - `fk_blog_post` → `v_blog_post`
+///
+/// # Returns
+/// - `Some(view_name)` if FK follows convention
+/// - `None` if FK doesn't start with "fk_" or is malformed
+fn infer_view_name(fk_col: &str) -> Option<String> {
+    if !fk_col.starts_with("fk_") {
+        return None;
+    }
+
+    let entity = &fk_col[3..];
+    if entity.is_empty() {
+        return None;
+    }
+
+    Some(format!("v_{}", entity))
+}
+
 /// Detect how a single FK is used in the SELECT statement
 fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Normalize SQL: remove extra whitespace, make lowercase for pattern matching
@@ -71,18 +129,19 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
         .replace('\t', " ")
         .to_lowercase();
 
-    // Infer view name from FK column
-    // Convention: fk_user → v_user
-    let view_name = if fk_col.starts_with("fk_") {
-        format!("v_{}", &fk_col[3..])
-    } else {
-        return DependencyInfo::scalar(); // Can't infer view name
+    // Try to infer view name from FK column
+    let view_name = match infer_view_name(fk_col) {
+        Some(name) => name,
+        None => {
+            // Can't infer view name → assume scalar
+            return DependencyInfo::scalar();
+        }
     };
 
     // Pattern 1: Nested Object
     // Look for: 'key_name', v_something.data
     // Example: 'author', v_user.data
-    let nested_pattern = format!(r"'(\w+)',\s*{}.data", regex::escape(&view_name));
+    let nested_pattern = NESTED_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
     if let Ok(re) = Regex::new(&nested_pattern) {
         if let Some(captures) = re.captures(&sql_normalized) {
             if let Some(key_match) = captures.get(1) {
@@ -96,16 +155,13 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Look for: 'array_name', jsonb_agg(v_something.data ...)
     // Example: 'comments', jsonb_agg(v_comment.data ORDER BY ...)
     // Also handles COALESCE wrapper
-    let array_pattern = format!(
-        r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*{}.data",
-        regex::escape(&view_name)
-    );
+    let array_pattern = ARRAY_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
     if let Ok(re) = Regex::new(&array_pattern) {
         if let Some(captures) = re.captures(&sql_normalized) {
             if let Some(key_match) = captures.get(1) {
                 let array_name = key_match.as_str().to_string();
                 // Convention: arrays use "id" as match key
-                return DependencyInfo::array(array_name, "id".to_string());
+                return DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());
             }
         }
     }
