@@ -12,6 +12,8 @@ pub mod schema;
 pub mod parser;
 pub mod hooks;
 pub mod ddl;
+pub mod config;
+pub mod dependency;
 
 pub use error::{TViewError, TViewResult};
 

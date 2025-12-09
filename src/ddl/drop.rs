@@ -58,13 +58,27 @@ fn drop_tview_impl(
         return Ok(());
     }
 
-    // Step 2: Drop the materialized table
+    // Step 2: Find and remove triggers from base tables
+    match crate::dependency::find_base_tables(&view_name) {
+        Ok(dep_graph) => {
+            if !dep_graph.base_tables.is_empty() {
+                crate::dependency::remove_triggers(&dep_graph.base_tables, entity_name)?;
+                info!("Removed triggers from {} base tables", dep_graph.base_tables.len());
+            }
+        }
+        Err(e) => {
+            warning!("Could not find dependencies for cleanup: {}", e);
+            // Continue with drop - triggers will be orphaned but not harmful
+        }
+    }
+
+    // Step 3: Drop the materialized table
     drop_materialized_table(tview_name)?;
 
-    // Step 3: Drop the backing view
+    // Step 4: Drop the backing view
     drop_backing_view(&view_name)?;
 
-    // Step 4: Drop metadata record
+    // Step 5: Drop metadata record
     drop_metadata(entity_name)?;
 
     info!("TVIEW {} dropped successfully", tview_name);

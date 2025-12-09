@@ -83,6 +83,19 @@ fn create_tview_impl(
         &schema,
     )?;
 
+    // Step 7: Find base table dependencies
+    let dep_graph = crate::dependency::find_base_tables(&view_name)?;
+
+    info!("Found {} base table dependencies for {}", dep_graph.base_tables.len(), tview_name);
+
+    // Step 8: Install triggers on base tables
+    if !dep_graph.base_tables.is_empty() {
+        crate::dependency::install_triggers(&dep_graph.base_tables, entity_name)?;
+        info!("Installed triggers on {} base tables", dep_graph.base_tables.len());
+    } else {
+        warning!("No base table dependencies found for {}", tview_name);
+    }
+
     info!("TVIEW {} created successfully", tview_name);
 
     Ok(())
