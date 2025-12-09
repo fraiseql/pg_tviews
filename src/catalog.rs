@@ -10,6 +10,8 @@ pub struct TviewMeta {
     pub view_oid: Oid,
     pub entity_name: String,
     pub sync_mode: char, // 's' = sync (default), 'a' = async (future)
+    pub fk_columns: Vec<String>,
+    pub uuid_fk_columns: Vec<String>,
 }
 
 impl TviewMeta {
@@ -17,20 +19,26 @@ impl TviewMeta {
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
             let rows = client.select(
-                "SELECT tview_oid, view_oid, entity_name, sync_mode \
+                "SELECT table_oid AS tview_oid, view_oid, entity, sync_mode, fk_columns, uuid_fk_columns \
                  FROM pg_tview_meta \
-                 WHERE view_oid = $1 OR tview_oid = $1",
+                 WHERE view_oid = $1 OR table_oid = $1",
                 None,
                 Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), source_oid.into_datum())]),
             )?;
 
             let mut result = None;
             for row in rows {
+                // Extract FK columns from array
+                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
+                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
+
                 result = Some(Self {
                     tview_oid: row["tview_oid"].value().unwrap().unwrap(),
                     view_oid: row["view_oid"].value().unwrap().unwrap(),
-                    entity_name: row["entity_name"].value().unwrap().unwrap(),
-                    sync_mode: row["sync_mode"].value().unwrap().unwrap(),
+                    entity_name: row["entity"].value().unwrap().unwrap(),
+                    sync_mode: row["sync_mode"].value().unwrap().unwrap_or('s'),
+                    fk_columns: fk_cols_val.unwrap_or_default(),
+                    uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
                 });
                 break; // Only get first row
             }

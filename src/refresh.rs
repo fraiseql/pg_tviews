@@ -56,30 +56,67 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
             Some(vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum())]),
         )?;
 
-        let mut row = None;
+        let mut row_data = None;
         for r in rows {
-            row = Some(r);
+            row_data = Some(r);
             break;
         }
-        let row = match row {
+        let row_data = match row_data {
             Some(r) => r,
             None => error!("No row in v_* for given pk: {}", pk),
         };
-        // You can either fetch the whole row as JSONB, or separate fields.
-        // Here we assume 'data' is the JSONB column name.
-        let data: JsonB = row["data"].value().unwrap().unwrap();
 
-        // TODO: also load fk_* columns and uuid fk columns into fk_values / uuid_fk_values.
+        // Extract data column
+        let data: JsonB = row_data["data"].value().unwrap().unwrap();
+
+        // Extract FK columns
+        let fk_values = extract_fk_columns(meta, &row_data)?;
+        let uuid_fk_values = extract_uuid_fk_columns(meta, &row_data)?;
+
         Ok(ViewRow {
             entity_name: meta.entity_name.clone(),
             pk,
             tview_oid: meta.tview_oid,
             view_oid: meta.view_oid,
             data,
-            fk_values: Vec::new(),
-            uuid_fk_values: Vec::new(),
+            fk_values,
+            uuid_fk_values,
         })
     })
+}
+
+/// Extract FK column values (integer FKs) from a view row
+fn extract_fk_columns(
+    meta: &TviewMeta,
+    row_data: &spi::SpiHeapTupleData,
+) -> spi::Result<Vec<(String, i64)>> {
+    let mut fk_values = Vec::new();
+
+    for fk_col in &meta.fk_columns {
+        // Try to extract the FK value
+        if let Ok(Some(val)) = row_data[fk_col.as_str()].value::<i64>() {
+            fk_values.push((fk_col.clone(), val));
+        }
+    }
+
+    Ok(fk_values)
+}
+
+/// Extract UUID FK column values from a view row
+fn extract_uuid_fk_columns(
+    meta: &TviewMeta,
+    row_data: &spi::SpiHeapTupleData,
+) -> spi::Result<Vec<(String, String)>> {
+    let mut uuid_fk_values = Vec::new();
+
+    for uuid_col in &meta.uuid_fk_columns {
+        // Try to extract the UUID FK value as String
+        if let Ok(Some(val)) = row_data[uuid_col.as_str()].value::<String>() {
+            uuid_fk_values.push((uuid_col.clone(), val));
+        }
+    }
+
+    Ok(uuid_fk_values)
 }
 
 /// Apply JSON patch to tv_entity for pk using jsonb_ivm_patch.
