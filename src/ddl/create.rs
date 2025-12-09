@@ -1,5 +1,5 @@
 use pgrx::prelude::*;
-use crate::schema::{TViewSchema, inference::infer_schema};
+use crate::schema::{TViewSchema, inference::infer_schema, analyzer::analyze_dependencies};
 use crate::error::{TViewError, TViewResult};
 
 /// Create a TVIEW with atomic rollback on error
@@ -287,9 +287,36 @@ fn register_metadata(
     schema: &TViewSchema,
     dependencies: &[pg_sys::Oid],
 ) -> TViewResult<()> {
+    // Analyze dependencies to populate type/path/match_key info
+    let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
+
     // Serialize schema information
     let fk_columns = schema.fk_columns.join(",");
     let uuid_fk_columns = schema.uuid_fk_columns.join(",");
+
+    // Serialize dependency types
+    let dep_types = dep_infos.iter()
+        .map(|d| d.dep_type.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Serialize dependency paths (TEXT[] format, NULL for None)
+    let dep_paths = dep_infos.iter()
+        .map(|d| match &d.jsonb_path {
+            Some(path) => path.join("."),
+            None => "".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Serialize array match keys (NULL for None)
+    let array_keys = dep_infos.iter()
+        .map(|d| match &d.array_match_key {
+            Some(key) => key.clone(),
+            None => "".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
 
     // Serialize dependencies as OID array
     let deps_str = dependencies.iter()
@@ -333,8 +360,11 @@ fn register_metadata(
             definition,
             dependencies,
             fk_columns,
-            uuid_fk_columns
-        ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}')
+            uuid_fk_columns,
+            dependency_types,
+            dependency_paths,
+            array_match_keys
+        ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
         entity_name.replace("'", "''"),
         view_oid.as_u32(),
@@ -342,7 +372,10 @@ fn register_metadata(
         definition_sql.replace("'", "''"),
         deps_str,
         fk_columns,
-        uuid_fk_columns
+        uuid_fk_columns,
+        dep_types,
+        dep_paths,
+        array_keys
     );
 
     Spi::run(&insert_meta_sql).map_err(|e| TViewError::SpiError {
