@@ -1,4 +1,6 @@
 use pgrx::prelude::*;
+use pgrx::pg_sys::Oid;
+use pgrx::IntoDatum;
 use serde::{Deserialize, Serialize};
 
 /// Represents a row in pg_tview_meta (your own catalog table).
@@ -19,20 +21,20 @@ impl TviewMeta {
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR tview_oid = $1",
                 None,
-                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), source_oid.into())]),
+                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), source_oid.into_datum())]),
             )?;
 
-            if rows.len() == 0 {
-                Ok(None)
-            } else {
-                let row = rows.get(0)?;
-                Ok(Some(Self {
-                    tview_oid: row["tview_oid"].value().unwrap(),
-                    view_oid: row["view_oid"].value().unwrap(),
-                    entity_name: row["entity_name"].value().unwrap(),
-                    sync_mode: row["sync_mode"].value().unwrap(),
-                }))
+            let mut result = None;
+            for row in rows {
+                result = Some(Self {
+                    tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+                    view_oid: row["view_oid"].value().unwrap().unwrap(),
+                    entity_name: row["entity_name"].value().unwrap().unwrap(),
+                    sync_mode: row["sync_mode"].value().unwrap().unwrap(),
+                });
+                break; // Only get first row
             }
+            Ok(result)
         })
     }
 

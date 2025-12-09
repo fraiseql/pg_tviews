@@ -1,8 +1,10 @@
 use pgrx::prelude::*;
+use pgrx::pg_sys::Oid;
+use pgrx::JsonB;
 
 use crate::catalog::TviewMeta;
 use crate::propagate::propagate_from_row;
-use crate::util::{lookup_view_for_source, relname_from_oid};
+use crate::utils::{lookup_view_for_source, relname_from_oid};
 
 /// Represents a materialized view row pulled from v_entity.
 pub struct ViewRow {
@@ -17,8 +19,13 @@ pub struct ViewRow {
 
 pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 1. Find TVIEW metadata (tview_oid, view_oid, entity_name, etc.)
-    let meta = TviewMeta::load_for_source(source_oid)?
-        .ok_or_else(|| spi::Error::User("No TVIEW metadata for source_oid".into()))?;
+    let meta = TviewMeta::load_for_source(source_oid)?;
+    let meta = match meta {
+        Some(m) => m,
+        None => {
+            error!("No TVIEW metadata for source_oid: {:?}", source_oid);
+        }
+    };
 
     // 2. Recompute row from v_entity
     let view_row = recompute_view_row(&meta, pk)?;
@@ -46,19 +53,21 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
         let rows = client.select(
             &sql,
             None,
-            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into())]),
+            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum())]),
         )?;
 
-        if rows.len() == 0 {
-            // Row may have been deleted; handle deletion logic later.
-            // For now, we do nothing.
-            return Err(spi::Error::User("No row in v_* for given pk".into()));
+        let mut row = None;
+        for r in rows {
+            row = Some(r);
+            break;
         }
-
-        let row = rows.get(0)?;
+        let row = match row {
+            Some(r) => r,
+            None => error!("No row in v_* for given pk: {}", pk),
+        };
         // You can either fetch the whole row as JSONB, or separate fields.
         // Here we assume 'data' is the JSONB column name.
-        let data: JsonB = row["data"].value().unwrap();
+        let data: JsonB = row["data"].value().unwrap().unwrap();
 
         // TODO: also load fk_* columns and uuid fk columns into fk_values / uuid_fk_values.
         Ok(ViewRow {
@@ -87,13 +96,13 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
         tv_name, pk_col
     );
 
-    Spi::connect(|client| {
+    Spi::connect(|mut client| {
         client.update(
             &sql,
             None,
             Some(vec![
-                (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), row.data.clone().into()),
-                (PgOid::BuiltIn(PgBuiltInOids::INT8OID), row.pk.into()),
+                (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), JsonB(row.data.0.clone()).into_datum()),
+                (PgOid::BuiltIn(PgBuiltInOids::INT8OID), row.pk.into_datum()),
             ]),
         )?;
         Ok(())

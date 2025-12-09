@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::pg_sys::Oid;
 
 /// Extracts a `pk_*` integer from NEW or OLD tuple by convention.
 /// For MVP we assume the column name is literally "pk_*".
@@ -31,15 +32,21 @@ pub fn lookup_view_for_source(_source_oid: Oid) -> spi::Result<String> {
 /// Look up the TVIEW table name given its OID (from pg_tview_meta).
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     Spi::connect(|client| {
-        let row = client
-            .select(
-                "SELECT relname FROM pg_class WHERE oid = $1",
-                None,
-                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), oid.into())]),
-            )?
-            .get(0)?;
+        let rows = client.select(
+            "SELECT relname FROM pg_class WHERE oid = $1",
+            None,
+            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), oid.into_datum())]),
+        )?;
 
-        Ok(row["relname"].value().unwrap())
+        let mut row_opt = None;
+        for row in rows {
+            row_opt = Some(row);
+            break;
+        }
+        match row_opt {
+            Some(row) => Ok(row["relname"].value().unwrap().unwrap()),
+            None => error!("No pg_class entry for oid: {:?}", oid),
+        }
     })
 }
 
