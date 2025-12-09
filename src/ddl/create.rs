@@ -4,46 +4,19 @@ use crate::error::{TViewError, TViewResult};
 
 /// Create a TVIEW with atomic rollback on error
 ///
-/// This is the main entry point for CREATE TVIEW. It uses a savepoint to ensure
-/// that all changes are rolled back if any step fails.
+/// This is the main entry point for CREATE TVIEW. PostgreSQL's transaction
+/// system automatically provides atomicity - if any step fails, all changes
+/// are rolled back.
 ///
 /// Steps:
-/// 1. Save current transaction state
-/// 2. Check if TVIEW already exists
-/// 3. Infer schema from SELECT statement
-/// 4. Create backing view v_<entity>
-/// 5. Create materialized table tv_<entity>
-/// 6. Populate initial data
-/// 7. Register metadata
-/// 8. Release savepoint or rollback on error
+/// 1. Check if TVIEW already exists
+/// 2. Infer schema from SELECT statement
+/// 3. Create backing view v_<entity>
+/// 4. Create materialized table tv_<entity>
+/// 5. Populate initial data
+/// 6. Register metadata
+/// 7. Find base table dependencies and install triggers
 pub fn create_tview(
-    tview_name: &str,
-    select_sql: &str,
-) -> TViewResult<()> {
-    // Use subtransaction for atomic rollback on error
-    Spi::run("SAVEPOINT tview_create").map_err(|e| TViewError::SpiError {
-        query: "SAVEPOINT tview_create".to_string(),
-        error: e.to_string(),
-    })?;
-
-    match create_tview_impl(tview_name, select_sql) {
-        Ok(()) => {
-            Spi::run("RELEASE SAVEPOINT tview_create").map_err(|e| TViewError::SpiError {
-                query: "RELEASE SAVEPOINT tview_create".to_string(),
-                error: e.to_string(),
-            })?;
-            Ok(())
-        }
-        Err(e) => {
-            // Rollback all changes on error
-            let _ = Spi::run("ROLLBACK TO SAVEPOINT tview_create");
-            Err(e)
-        }
-    }
-}
-
-/// Internal implementation of TVIEW creation
-fn create_tview_impl(
     tview_name: &str,
     select_sql: &str,
 ) -> TViewResult<()> {
@@ -271,7 +244,7 @@ fn register_metadata(
     let uuid_fk_columns = schema.uuid_fk_columns.join(",");
 
     // Get OIDs for the created objects
-    let view_oid_result = Spi::get_one::<i64>(&format!(
+    let view_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
         "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'v'",
         view_name
     )).map_err(|e| TViewError::CatalogError {
@@ -279,7 +252,7 @@ fn register_metadata(
         pg_error: e.to_string(),
     })?;
 
-    let table_oid_result = Spi::get_one::<i64>(&format!(
+    let table_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
         "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'r'",
         tview_name
     )).map_err(|e| TViewError::CatalogError {
@@ -309,8 +282,8 @@ fn register_metadata(
         ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
         entity_name.replace("'", "''"),
-        view_oid,
-        table_oid,
+        view_oid.as_u32(),
+        table_oid.as_u32(),
         definition_sql.replace("'", "''"),
         fk_columns,
         uuid_fk_columns

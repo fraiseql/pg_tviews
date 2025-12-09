@@ -1,11 +1,14 @@
 use pgrx::prelude::*;
+use pgrx::pg_sys::Oid;
+use pgrx::heap_tuple::PgHeapTuple;
+use pgrx::pgbox::AllocatedByPostgres;
 
 use crate::refresh::refresh_pk;
 use crate::utils::extract_pk;
 
 #[pg_trigger]
 pub fn tview_trigger<'a>(trigger: &'a PgTrigger<'a>) -> Result<
-    Option<pgrx::heap_tuple::PgHeapTuple<'a, pgrx::pgbox::AllocatedByPostgres>>,
+    Option<PgHeapTuple<'a, AllocatedByPostgres>>,
     spi::Error,
 > {
     let rel = trigger.relation().map_err(|_| spi::Error::NoTupleTable)?;

@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 use std::fmt;
 
 /// Main error type for pg_tviews extension
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TViewError {
     // ============ Metadata Errors (P0xxx) ============
     /// TVIEW metadata not found

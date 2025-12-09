@@ -10,7 +10,6 @@ pub mod error;
 pub mod metadata;
 pub mod schema;
 pub mod parser;
-pub mod hooks;
 pub mod ddl;
 pub mod config;
 pub mod dependency;
@@ -25,16 +24,13 @@ fn pg_tviews_version() -> &'static str {
     "0.1.0-alpha"
 }
 
-/// Initialize the extension - create metadata tables and install hooks
+/// Initialize the extension
+/// Note: Metadata tables are created by the extension SQL script.
+/// This extension uses SQL functions (pg_tviews_create, pg_tviews_drop)
+/// instead of custom DDL syntax for TVIEW creation.
 #[pg_guard]
 extern "C" fn _PG_init() {
-    // Create metadata tables on extension load
-    if let Err(e) = metadata::create_metadata_tables() {
-        pgrx::error!("Failed to initialize pg_tviews metadata: {}", e);
-    }
-
-    // Install ProcessUtility hook for CREATE/DROP TVIEW
-    hooks::install_hooks();
+    // Nothing to initialize - extension uses SQL functions
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB

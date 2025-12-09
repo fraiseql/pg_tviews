@@ -69,28 +69,44 @@ pub fn remove_triggers(
 }
 
 fn create_trigger_handler() -> TViewResult<()> {
-    // Check if extension jsonb_ivm is installed
-    let has_jsonb_ivm = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_ivm'"
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Check jsonb_ivm extension".to_string(),
-        pg_error: format!("{:?}", e),
-    })?
-    .unwrap_or(false);
-
-    if !has_jsonb_ivm {
-        return Err(TViewError::JsonbIvmNotInstalled);
-    }
+    // Note: jsonb_ivm dependency was removed - we don't use it anymore
+    // Triggers are installed directly without needing external extensions
 
     let handler_sql = r#"
         CREATE OR REPLACE FUNCTION tview_trigger_handler()
         RETURNS TRIGGER AS $$
+        DECLARE
+            pk_col_name TEXT;
+            pk_val_old BIGINT;
+            pk_val_new BIGINT;
+            entity_name TEXT;
         BEGIN
-            -- For now, just log that trigger fired
-            -- Actual refresh logic will be in Phase 4
-            RAISE NOTICE 'TVIEW trigger fired on table % for operation %',
-                TG_TABLE_NAME, TG_OP;
+            -- Get PK column name for the changed table dynamically
+            SELECT a.attname INTO pk_col_name
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            WHERE i.indrelid = TG_RELID AND i.indisprimary
+            LIMIT 1;
+
+            IF pk_col_name IS NULL THEN
+                RAISE EXCEPTION 'Table % has no primary key', TG_TABLE_NAME;
+            END IF;
+
+            -- Extract PK values dynamically based on operation
+            IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+                EXECUTE format('SELECT ($1).%I', pk_col_name) USING OLD INTO pk_val_old;
+            END IF;
+
+            IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+                EXECUTE format('SELECT ($1).%I', pk_col_name) USING NEW INTO pk_val_new;
+            END IF;
+
+            -- Log the trigger action
+            RAISE NOTICE 'TVIEW trigger fired: table=%, op=%, pk_col=%, old_pk=%, new_pk=%',
+                TG_TABLE_NAME, TG_OP, pk_col_name, pk_val_old, pk_val_new;
+
+            -- TODO: Call Rust cascade function (Task 6)
+            -- PERFORM pg_tviews_cascade(TG_RELID, pk_val_new, pk_val_old, 0);
 
             -- Return appropriate value based on operation
             IF TG_OP = 'DELETE' THEN
@@ -113,7 +129,7 @@ fn create_trigger_handler() -> TViewResult<()> {
 
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
-        "SELECT relname FROM pg_class WHERE oid = {:?}",
+        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
         oid
     ))
     .map_err(|e| TViewError::CatalogError {

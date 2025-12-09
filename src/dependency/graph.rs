@@ -59,19 +59,30 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 
         visiting.insert(current_oid);
 
-        // CORRECTED QUERY: Was WHERE refobjid = {}, now WHERE objid = {}
-        // This query finds objects that current_oid DEPENDS ON
+        // Debug: Log what we're querying
+        if let Ok(name) = get_object_name(current_oid) {
+            info!("Checking dependencies for: {} (OID {:?}) at depth {}", name, current_oid, depth);
+        }
+
+        // CORRECTED ALGORITHM: Views depend on tables via pg_rewrite rules!
+        // 1. Find the pg_rewrite rule for this view/relation
+        // 2. Query dependencies of the RULE (not the view directly)
+        // 3. The rule's dependencies point to the actual base tables/views
         let deps_query = format!(
-            "SELECT DISTINCT refobjid, refobjsubid, deptype
-             FROM pg_depend
-             WHERE objid = {:?}
-               AND deptype IN ('n', 'a')  -- normal and auto dependencies
-               AND classid = 'pg_class'::regclass::oid
-               AND refclassid = 'pg_class'::regclass::oid",
-            current_oid
+            "SELECT DISTINCT d.refobjid, d.refobjsubid, d.deptype, c.relkind
+             FROM pg_rewrite r
+             JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
+             LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
+             WHERE r.ev_class = {:?}
+               AND d.deptype IN ('n', 'a')
+               AND d.refclassid = 'pg_class'::regclass::oid
+               AND c.oid != {:?}",  // Exclude self-reference
+            current_oid, current_oid
         );
 
-        let deps: Vec<(pg_sys::Oid, i32, String)> =
+        info!("Executing query: {}", deps_query);
+
+        let deps: Vec<(pg_sys::Oid, i32, String, Option<String>)> =
             Spi::connect(|client| {
                 let tup_table = client.select(&deps_query, None, None)
                     .map_err(|e| TViewError::CatalogError {
@@ -96,51 +107,80 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                             operation: "Extract refobjsubid".to_string(),
                             pg_error: format!("{:?}", e),
                         })?.unwrap_or(0);
-                    let deptype = row["deptype"].value::<String>()
+                    // deptype is "char" (single byte), not text/String
+                    let deptype = row["deptype"].value::<i8>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract deptype".to_string(),
                             pg_error: format!("{:?}", e),
-                        })?.unwrap_or_default();
+                        })?
+                        .map(|c| (c as u8 as char).to_string())
+                        .unwrap_or_default();
+                    // relkind is also "char" (single byte)
+                    let relkind = row["relkind"].value::<i8>()
+                        .map_err(|e| TViewError::CatalogError {
+                            operation: "Extract relkind".to_string(),
+                            pg_error: format!("{:?}", e),
+                        })?
+                        .map(|c| (c as u8 as char).to_string());
 
-                    results.push((refobjid, refobjsubid, deptype));
+                    results.push((refobjid, refobjsubid, deptype, relkind));
                 }
 
                 Ok(Some(results))
             })?
             .unwrap_or_default();
 
+        info!("Found {} dependency rows", deps.len());
+
         // Process each dependency
-        for (dep_oid, _subid, _deptype) in deps {
+        for (dep_oid, _subid, _deptype, relkind_opt) in deps {
             all_dependencies.insert(dep_oid);
 
-            // Check if this is a table or view
-            let relkind = get_relkind(dep_oid)?;
+            // Skip if no relkind (not a pg_class object)
+            let Some(relkind) = relkind_opt else {
+                info!("Skipping dependency OID {:?} (not in pg_class)", dep_oid);
+                continue;
+            };
+
+            if let Ok(dep_name) = get_object_name(dep_oid) {
+                info!("  Found dependency: {} (OID {:?}, relkind '{}')", dep_name, dep_oid, relkind);
+            }
 
             match relkind.as_str() {
                 "r" => {
                     // Regular table - add to base_tables
                     base_tables.insert(dep_oid);
-                    info!("Found base table dependency: OID {:?}", dep_oid);
+                    if let Ok(name) = get_object_name(dep_oid) {
+                        info!("  -> Base table: {}", name);
+                    }
                 }
                 "v" => {
                     // View - recurse
                     queue.push_back((dep_oid, depth + 1));
-                    info!("Found view dependency: OID {:?} at depth {}", dep_oid, depth + 1);
+                    if let Ok(name) = get_object_name(dep_oid) {
+                        info!("  -> View (will recurse): {} at depth {}", name, depth + 1);
+                    }
                 }
                 "m" => {
                     // Materialized view - treat as base table
                     base_tables.insert(dep_oid);
-                    info!("Found materialized view dependency: OID {:?}", dep_oid);
+                    if let Ok(name) = get_object_name(dep_oid) {
+                        info!("  -> Materialized view: {}", name);
+                    }
                 }
                 "p" => {
                     // Partitioned table - treat as base table
                     base_tables.insert(dep_oid);
-                    info!("Found partitioned table dependency: OID {:?}", dep_oid);
+                    if let Ok(name) = get_object_name(dep_oid) {
+                        info!("  -> Partitioned table: {}", name);
+                    }
                 }
                 _ => {
                     // Ignore other types (indexes, sequences, etc.)
                     if crate::config::DEBUG_DEPENDENCIES {
-                        info!("Ignoring dependency with relkind '{}': OID {:?}", relkind, dep_oid);
+                        if let Ok(name) = get_object_name(dep_oid) {
+                            info!("  -> Ignoring '{}' with relkind '{}'", name, relkind);
+                        }
                     }
                 }
             }
@@ -242,7 +282,7 @@ fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
 
 fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
-        "SELECT relname FROM pg_class WHERE oid = {:?}",
+        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
         oid
     ))
     .map_err(|e| TViewError::CatalogError {

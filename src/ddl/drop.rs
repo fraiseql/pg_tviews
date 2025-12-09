@@ -9,34 +9,8 @@ use crate::error::{TViewError, TViewResult};
 /// - The metadata record in pg_tview_meta
 ///
 /// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
+/// PostgreSQL's transaction system provides automatic atomicity.
 pub fn drop_tview(
-    tview_name: &str,
-    if_exists: bool,
-) -> TViewResult<()> {
-    // Use subtransaction for atomic rollback on error
-    Spi::run("SAVEPOINT tview_drop").map_err(|e| TViewError::SpiError {
-        query: "SAVEPOINT tview_drop".to_string(),
-        error: e.to_string(),
-    })?;
-
-    match drop_tview_impl(tview_name, if_exists) {
-        Ok(()) => {
-            Spi::run("RELEASE SAVEPOINT tview_drop").map_err(|e| TViewError::SpiError {
-                query: "RELEASE SAVEPOINT tview_drop".to_string(),
-                error: e.to_string(),
-            })?;
-            Ok(())
-        }
-        Err(e) => {
-            // Rollback all changes on error
-            let _ = Spi::run("ROLLBACK TO SAVEPOINT tview_drop");
-            Err(e)
-        }
-    }
-}
-
-/// Internal implementation of TVIEW dropping
-fn drop_tview_impl(
     tview_name: &str,
     if_exists: bool,
 ) -> TViewResult<()> {
