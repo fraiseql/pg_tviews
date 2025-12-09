@@ -6,6 +6,7 @@ mod trigger;
 mod refresh;
 mod propagate;
 mod utils;
+mod hooks;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -25,12 +26,17 @@ fn pg_tviews_version() -> &'static str {
 }
 
 /// Initialize the extension
-/// Note: Metadata tables are created by the extension SQL script.
-/// This extension uses SQL functions (pg_tviews_create, pg_tviews_drop)
-/// instead of custom DDL syntax for TVIEW creation.
+/// Installs the ProcessUtility hook to intercept CREATE TABLE tv_* commands
 #[pg_guard]
 extern "C" fn _PG_init() {
-    // Nothing to initialize - extension uses SQL functions
+    pgrx::log!("pg_tviews: _PG_init() called, installing ProcessUtility hook");
+
+    // Install ProcessUtility hook
+    unsafe {
+        hooks::install_hook();
+    }
+
+    pgrx::log!("pg_tviews: ProcessUtility hook installed");
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB

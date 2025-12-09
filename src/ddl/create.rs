@@ -28,10 +28,29 @@ pub fn create_tview(
         });
     }
 
+    // Step 1.5: Extract entity name from tview_name
+    // Support both "tv_entity" and just "entity" formats
+    let entity_name = if tview_name.starts_with("tv_") {
+        &tview_name[3..]
+    } else {
+        tview_name
+    };
+
     // Step 2: Infer schema from SELECT
+    // If SELECT doesn't have TVIEW format (pk_<entity>, id, data), create a prepared view first
     let schema = infer_schema(select_sql)?;
 
-    let entity_name = schema.entity_name.as_ref()
+    // Check if we need to transform the SELECT to TVIEW format
+    let (final_select_sql, final_schema) = if schema.entity_name.is_none() {
+        // Raw SELECT - needs transformation to TVIEW format
+        info!("Transforming raw SELECT to TVIEW format for entity '{}'", entity_name);
+        transform_raw_select_to_tview(entity_name, select_sql)?
+    } else {
+        // Already in TVIEW format
+        (select_sql.to_string(), schema)
+    };
+
+    let entity_name = final_schema.entity_name.as_ref()
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: select_sql.to_string(),
             reason: "Could not infer entity name from SELECT (missing pk_<entity> column?)".to_string(),
@@ -39,13 +58,13 @@ pub fn create_tview(
 
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{}", entity_name);
-    create_backing_view(&view_name, select_sql)?;
+    create_backing_view(&view_name, &final_select_sql)?;
 
     // Step 4: Create materialized table tv_<entity>
-    create_materialized_table(tview_name, &schema)?;
+    create_materialized_table(tview_name, &final_schema)?;
 
     // Step 5: Populate initial data
-    populate_initial_data(tview_name, &view_name, &schema)?;
+    populate_initial_data(tview_name, &view_name, &final_schema)?;
 
     // Step 6: Find base table dependencies
     let dep_graph = crate::dependency::find_base_tables(&view_name)?;
@@ -57,8 +76,8 @@ pub fn create_tview(
         entity_name,
         &view_name,
         tview_name,
-        select_sql,
-        &schema,
+        &final_select_sql,
+        &final_schema,
         &dep_graph.base_tables,
     )?;
 
@@ -333,6 +352,108 @@ fn register_metadata(
 
     info!("Registered TVIEW metadata for {}", entity_name);
     Ok(())
+}
+
+/// Transform a raw SELECT statement into TVIEW format
+///
+/// Takes a simple SELECT like "SELECT id, name, price FROM tb_product"
+/// and transforms it into a proper TVIEW format with:
+/// - pk_<entity> column (generated from the source table's primary key or id column)
+/// - id column (UUID, generated from the source table's primary key)
+/// - data column (JSONB with all fields)
+///
+/// This creates a "prepared view" that wraps the raw SELECT with TVIEW conventions.
+fn transform_raw_select_to_tview(
+    entity_name: &str,
+    select_sql: &str,
+) -> TViewResult<(String, TViewSchema)> {
+    // Create a temporary view to analyze the raw SELECT
+    let temp_view_name = format!("_temp_raw_{}", entity_name);
+
+    // First, create temp view to analyze columns
+    let create_temp = format!(
+        "CREATE TEMP VIEW {} AS {}",
+        temp_view_name, select_sql
+    );
+
+    Spi::run(&create_temp).map_err(|e| TViewError::SpiError {
+        query: create_temp.clone(),
+        error: e.to_string(),
+    })?;
+
+    // Get columns from temp view
+    // Cast to text to avoid sql_identifier domain type issues
+    let get_columns_sql = format!(
+        "SELECT column_name::text, data_type::text
+         FROM information_schema.columns
+         WHERE table_name = '{}'
+         ORDER BY ordinal_position",
+        temp_view_name
+    );
+
+    let columns: Vec<(String, String)> = Spi::connect(|client| {
+        let rows = client.select(&get_columns_sql, None, None)?;
+        let mut result = Vec::new();
+        for row in rows {
+            let col_name: String = row[1].value()?.unwrap();
+            let data_type: String = row[2].value()?.unwrap();
+            result.push((col_name, data_type));
+        }
+        Ok(result)
+    }).map_err(|e: spi::Error| TViewError::CatalogError {
+        operation: "Get columns from temp view".to_string(),
+        pg_error: format!("{:?}", e),
+    })?;
+
+    // Drop temp view
+    Spi::run(&format!("DROP VIEW {}", temp_view_name)).ok();
+
+    // Find primary key column (look for 'id' or first integer/bigint column)
+    let pk_source_col = columns.iter()
+        .find(|(name, _)| name == "id")
+        .or_else(|| columns.iter().find(|(_, typ)| {
+            typ.contains("int") || typ.contains("serial")
+        }))
+        .map(|(name, _)| name.clone())
+        .ok_or_else(|| TViewError::InvalidSelectStatement {
+            sql: select_sql.to_string(),
+            reason: "No suitable primary key column found (need 'id' or an integer column)".to_string(),
+        })?;
+
+    // Build explicit column lists for clarity and control
+
+    // 1. Build the source column list (from the subquery)
+    let source_columns: Vec<String> = columns.iter()
+        .map(|(name, _)| format!("source.{}", name))
+        .collect();
+
+    // 2. Build JSONB data column pairs explicitly
+    let data_columns: Vec<String> = columns.iter()
+        .map(|(name, _)| {
+            format!("'{}', source.{}", name, name)
+        })
+        .collect();
+
+    // 3. Generate transformed SELECT with explicit column references
+    // This makes it clear exactly what's being selected and how it's transformed
+    let transformed_select = format!(
+        "SELECT
+            source.{} AS pk_{},
+            gen_random_uuid() AS id,
+            jsonb_build_object({}) AS data
+        FROM ({}) AS source",
+        pk_source_col,
+        entity_name,
+        data_columns.join(", "),
+        select_sql
+    );
+
+    info!("Transformed SELECT to TVIEW format with pk column from '{}'", pk_source_col);
+
+    // Infer schema from transformed SELECT
+    let schema = infer_schema(&transformed_select)?;
+
+    Ok((transformed_select, schema))
 }
 
 #[cfg(test)]

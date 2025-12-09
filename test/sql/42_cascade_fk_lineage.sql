@@ -46,8 +46,8 @@ INSERT INTO tb_post (fk_user, title, content) VALUES
     (1, 'Alice Post 3', 'Content 3'),
     (2, 'Bob Post 1', 'Bob content');
 
--- Create TVIEWs (order matters: parent first)
-CREATE TVIEW tv_user AS
+-- Create helper views (workaround for parser)
+CREATE VIEW user_prepared AS
 SELECT
     pk_user,
     id,
@@ -58,7 +58,7 @@ SELECT
     ) AS data
 FROM tb_user;
 
-CREATE TVIEW tv_post AS
+CREATE VIEW post_prepared AS
 SELECT
     p.pk_post,
     p.id,
@@ -68,10 +68,14 @@ SELECT
         'id', p.id::text,
         'title', p.title,
         'content', p.content,
-        'author', v_user.data
+        'author', user_prepared.data
     ) AS data
 FROM tb_post p
-JOIN v_user ON v_user.pk_user = p.fk_user;
+JOIN user_prepared ON user_prepared.pk_user = p.fk_user;
+
+-- Create TVIEWs using SQL functions (order matters: parent first)
+SELECT pg_tviews_create('tv_user', 'SELECT pk_user, id, data FROM user_prepared');
+SELECT pg_tviews_create('tv_post', 'SELECT pk_post, id, fk_user, user_id, data FROM post_prepared');
 
 -- Test 1: Verify initial state
 \echo ''
