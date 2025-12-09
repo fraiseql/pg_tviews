@@ -28,6 +28,16 @@ COMMENT ON TABLE public.pg_tview_meta IS 'Metadata for TVIEW materialized tables
 COMMENT ON TABLE public.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
 
 -- Register functions from shared library
+
+-- Runtime dependency check function
+-- Returns true if jsonb_ivm extension is installed
+CREATE OR REPLACE FUNCTION pg_tviews_check_jsonb_ivm()
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_ivm'
+LANGUAGE C STRICT;
+
+COMMENT ON FUNCTION pg_tviews_check_jsonb_ivm() IS
+'Check if jsonb_ivm extension is installed (enables performance optimizations)';
 CREATE FUNCTION pg_tviews_version()
 RETURNS text
 LANGUAGE c IMMUTABLE STRICT PARALLEL SAFE

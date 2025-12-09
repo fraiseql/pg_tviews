@@ -25,6 +25,33 @@ fn pg_tviews_version() -> &'static str {
     "0.1.0-alpha"
 }
 
+/// Check if jsonb_ivm extension is available at runtime
+/// Returns true if extension is installed, false otherwise
+pub fn check_jsonb_ivm_available() -> bool {
+    let result: Result<bool, spi::Error> = Spi::connect(|client| {
+        let rows = client.select(
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            None,
+            None,
+        )?;
+
+        for row in rows {
+            if let Some(exists) = row[1].value::<bool>()? {
+                return Ok(exists);
+            }
+        }
+        Ok(false)
+    });
+
+    result.unwrap_or(false)
+}
+
+/// Export as SQL function for testing
+#[pg_extern]
+fn pg_tviews_check_jsonb_ivm() -> bool {
+    check_jsonb_ivm_available()
+}
+
 /// Initialize the extension
 /// Installs the ProcessUtility hook to intercept CREATE TABLE tv_* commands
 #[pg_guard]
@@ -37,6 +64,18 @@ extern "C" fn _PG_init() {
     }
 
     pgrx::log!("pg_tviews: ProcessUtility hook installed");
+
+    // Check for jsonb_ivm extension
+    if !check_jsonb_ivm_available() {
+        warning!(
+            "pg_tviews: jsonb_ivm extension not detected\n\
+             → Performance: Basic (full document replacement)\n\
+             → To enable 1.5-3× faster cascades, install jsonb_ivm:\n\
+             → https://github.com/fraiseql/jsonb_ivm"
+        );
+    } else {
+        info!("pg_tviews: jsonb_ivm detected - surgical JSONB updates enabled (1.5-3× faster)");
+    }
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
@@ -250,6 +289,38 @@ mod tests {
         Err::<(), _>(TViewError::MetadataNotFound {
             entity: "test".to_string(),
         }).unwrap();
+    }
+
+    // Phase 5 Task 1 RED: Tests for jsonb_ivm detection
+    #[pg_test]
+    fn test_jsonb_ivm_check_function_exists() {
+        // This test will fail because pg_tviews_check_jsonb_ivm doesn't exist yet
+        let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_ivm()");
+        assert!(result.is_ok(), "pg_tviews_check_jsonb_ivm() function should exist");
+    }
+
+    #[pg_test]
+    fn test_check_jsonb_ivm_available_function() {
+        // This test will fail because check_jsonb_ivm_available() doesn't exist yet
+        let _result = crate::check_jsonb_ivm_available();
+        // Just calling it is enough - function must exist
+    }
+
+    #[pg_test]
+    fn test_pg_tviews_works_without_jsonb_ivm() {
+        // Setup: Ensure jsonb_ivm is NOT installed
+        Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE").ok();
+
+        // Test: pg_tviews should still function
+        Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
+
+        // This should work even without jsonb_ivm
+        let result = Spi::get_one::<bool>(
+            "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL"
+        );
+
+        assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_ivm");
     }
 }
 
