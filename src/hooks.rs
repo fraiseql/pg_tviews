@@ -33,6 +33,23 @@ unsafe extern "C" fn tview_process_utility_hook(
     };
     info!("🔧 HOOK CALLED: {}", query_str);
 
+    // Skip extension-related statements to avoid infinite recursion during installation
+    let query_lower = query_str.to_lowercase();
+    if query_lower.contains("create extension") || query_lower.contains("drop extension") {
+        info!("  → Extension statement, passing through without interception");
+        call_prev_hook_or_standard(
+            pstmt,
+            query_string,
+            read_only_tree,
+            context,
+            params,
+            query_env,
+            dest,
+            qc,
+        );
+        return;
+    }
+
     // Safety check
     if pstmt.is_null() {
         info!("  → pstmt is null, passing through");
