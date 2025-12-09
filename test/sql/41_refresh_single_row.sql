@@ -35,8 +35,8 @@ VALUES
     ('Second Article', 'Second body', 'draft', 5),
     ('Third Article', 'Third body', 'published', 50);
 
--- Create TVIEW
-CREATE TVIEW tv_article AS
+-- Create helper view (workaround for parser)
+CREATE VIEW article_prepared AS
 SELECT
     pk_article,
     id,
@@ -48,6 +48,9 @@ SELECT
         'viewCount', view_count
     ) AS data
 FROM tb_article;
+
+-- Create TVIEW using SQL function
+SELECT pg_tviews_create('tv_article', 'SELECT pk_article, id, data FROM article_prepared');
 
 -- Test 1: Verify initial state
 \echo ''

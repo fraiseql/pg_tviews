@@ -36,8 +36,10 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         return Err("Empty SELECT clause".to_string());
     }
 
-    // Split by commas (naive approach)
-    for part in select_clause.split(',') {
+    // Split by commas, respecting parentheses and quotes
+    let parts = split_by_top_level_comma(select_clause)?;
+
+    for part in parts {
         let trimmed = part.trim();
 
         if trimmed.is_empty() {
@@ -54,6 +56,63 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(columns)
+}
+
+/// Split string by commas, but only at top level (outside parentheses and quotes)
+fn split_by_top_level_comma(s: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth: i32 = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut prev_char = '\0';
+
+    for c in s.chars() {
+        match c {
+            '(' if !in_single_quote && !in_double_quote => {
+                paren_depth += 1;
+                current.push(c);
+            }
+            ')' if !in_single_quote && !in_double_quote => {
+                paren_depth = paren_depth.saturating_sub(1);
+                current.push(c);
+            }
+            '\'' if !in_double_quote => {
+                // Toggle single quote state (handle escaping)
+                if prev_char == '\\' {
+                    current.push(c);
+                } else {
+                    in_single_quote = !in_single_quote;
+                    current.push(c);
+                }
+            }
+            '"' if !in_single_quote => {
+                // Toggle double quote state (handle escaping)
+                if prev_char == '\\' {
+                    current.push(c);
+                } else {
+                    in_double_quote = !in_double_quote;
+                    current.push(c);
+                }
+            }
+            ',' if paren_depth == 0 && !in_single_quote && !in_double_quote => {
+                // Top-level comma - split here
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+        prev_char = c;
+    }
+
+    // Push the last part
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+
+    Ok(parts)
 }
 
 /// Extract column name from a SELECT clause part
