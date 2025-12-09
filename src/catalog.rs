@@ -178,7 +178,31 @@ impl TviewMeta {
         })
     }
 
-    /// Load metadata for a specific TVIEW OID
+    /// Load metadata for a specific TVIEW OID.
+    ///
+    /// Queries `pg_tview_meta` to retrieve dependency information needed for
+    /// smart JSONB patching. Used by `apply_patch()` to determine how to update
+    /// the JSONB `data` column.
+    ///
+    /// # Arguments
+    ///
+    /// * `tview_oid` - OID of the TVIEW table (e.g., `tv_post`)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(TviewMeta))` if metadata found
+    /// - `Ok(None)` if no metadata exists (legacy TVIEW)
+    /// - `Err` if query fails
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let meta = TviewMeta::load_for_tview(tview_oid)?;
+    /// if let Some(m) = meta {
+    ///     let deps = m.parse_dependencies();
+    ///     // Use deps for smart patching
+    /// }
+    /// ```
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
             let rows = client.select(
@@ -234,7 +258,34 @@ impl TviewMeta {
         })
     }
 
-    /// Parse dependency metadata into structured form for smart patching
+    /// Parse dependency metadata into structured form for smart patching.
+    ///
+    /// Converts raw metadata arrays (`dependency_types`, `dependency_paths`, etc.)
+    /// into a vector of `DependencyDetail` structs, one per FK column. Each detail
+    /// contains the dependency type, JSONB path, and array match key if applicable.
+    ///
+    /// # Returns
+    ///
+    /// Vector of `DependencyDetail` structs, one per FK column in `fk_columns`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let deps = meta.parse_dependencies();
+    /// for dep in deps {
+    ///     match dep.dep_type {
+    ///         DependencyType::NestedObject => {
+    ///             println!("Nested at path: {:?}", dep.path);
+    ///         }
+    ///         DependencyType::Array => {
+    ///             println!("Array at path: {:?}, key: {:?}", dep.path, dep.match_key);
+    ///         }
+    ///         DependencyType::Scalar => {
+    ///             println!("Scalar FK: {}", dep.fk_column);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub fn parse_dependencies(&self) -> Vec<DependencyDetail> {
         let mut details = Vec::new();
 
@@ -269,7 +320,37 @@ impl TviewMeta {
     }
 }
 
-/// Represents a single dependency with its type, path, and match key
+/// Represents a single dependency with its type, path, and match key.
+///
+/// This struct packages all information needed to apply smart JSONB patching
+/// for one FK relationship. Created by `TviewMeta::parse_dependencies()`.
+///
+/// # Fields
+///
+/// * `fk_column` - Foreign key column name (e.g., `"fk_user"`)
+/// * `dep_type` - Type of dependency (`Scalar`, `NestedObject`, or `Array`)
+/// * `path` - JSONB path where dependency data lives (e.g., `vec!["author"]`)
+/// * `match_key` - For arrays, the key to match elements (e.g., `"id"`)
+///
+/// # Example
+///
+/// ```rust
+/// // For nested author object:
+/// DependencyDetail {
+///     fk_column: "fk_user".to_string(),
+///     dep_type: DependencyType::NestedObject,
+///     path: Some(vec!["author".to_string()]),
+///     match_key: None,
+/// }
+///
+/// // For comments array:
+/// DependencyDetail {
+///     fk_column: "fk_comment".to_string(),
+///     dep_type: DependencyType::Array,
+///     path: Some(vec!["comments".to_string()]),
+///     match_key: Some("id".to_string()),
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct DependencyDetail {
     pub fk_column: String,
