@@ -1,6 +1,7 @@
 pub mod parser;
 pub mod inference;
 pub mod types;
+pub mod analyzer;
 
 use serde::{Serialize, Deserialize};
 use pgrx::prelude::*;
