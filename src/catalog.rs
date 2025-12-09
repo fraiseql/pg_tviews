@@ -45,13 +45,41 @@ pub struct TviewMeta {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
 
-    // NEW: jsonb_ivm optimization metadata
+    /// Type of each dependency: Scalar (direct column), NestedObject (embedded JSONB),
+    /// or Array (jsonb_agg aggregation).
+    ///
+    /// Length matches `fk_columns` and `dependencies` arrays.
+    /// Used by jsonb_ivm to choose patch function (scalar/nested/array).
     pub dependency_types: Vec<DependencyType>,
+
+    /// JSONB path for each dependency, if nested.
+    /// - Scalar: None
+    /// - NestedObject: Some(vec!["author"]) for { "author": {...} }
+    /// - Array: Some(vec!["comments"]) for { "comments": [...] }
+    ///
+    /// Length matches `dependency_types`.
     pub dependency_paths: Vec<Option<Vec<String>>>,
+
+    /// For Array dependencies, the key used to match elements (e.g., "id").
+    /// Used by `jsonb_smart_patch_array(target, 'comments', '{...}', 'id')`.
+    ///
+    /// - Scalar/NestedObject: None
+    /// - Array: Some("id") or Some("pk_comment")
+    ///
+    /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
 }
 
 impl TviewMeta {
+    /// Helper: Parse TEXT[] to Vec<DependencyType>
+    fn parse_dependency_types(row_value: Option<Vec<String>>) -> Vec<DependencyType> {
+        row_value
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| DependencyType::from_str(&s))
+            .collect()
+    }
+
     /// Look up metadata by source table OID or view OID.
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
@@ -73,11 +101,7 @@ impl TviewMeta {
 
                 // Extract NEW arrays - dependency_types (TEXT[])
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
-                let dep_types = dep_types_raw
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| DependencyType::from_str(&s))
-                    .collect();
+                let dep_types = Self::parse_dependency_types(dep_types_raw);
 
                 // dependency_paths (TEXT[][]) - array of arrays
                 // TODO: pgrx doesn't support TEXT[][] extraction yet
@@ -126,11 +150,7 @@ impl TviewMeta {
 
                 // Extract NEW arrays - dependency_types (TEXT[])
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
-                let dep_types = dep_types_raw
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| DependencyType::from_str(&s))
-                    .collect();
+                let dep_types = Self::parse_dependency_types(dep_types_raw);
 
                 // dependency_paths (TEXT[][]) - array of arrays
                 // TODO: pgrx doesn't support TEXT[][] extraction yet
@@ -163,6 +183,22 @@ impl TviewMeta {
         // Implementation: insert into pg_tview_meta
         // This will be invoked from a CREATE TVIEW support function.
         Ok(())
+    }
+}
+
+impl Default for TviewMeta {
+    fn default() -> Self {
+        Self {
+            tview_oid: pg_sys::Oid::INVALID,
+            view_oid: pg_sys::Oid::INVALID,
+            entity_name: String::new(),
+            sync_mode: 's',
+            fk_columns: vec![],
+            uuid_fk_columns: vec![],
+            dependency_types: vec![],
+            dependency_paths: vec![],
+            array_match_keys: vec![],
+        }
     }
 }
 

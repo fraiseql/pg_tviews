@@ -213,7 +213,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
 
             // Extract NEW arrays - dependency_types (TEXT[])
             let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
-            let dep_types = dep_types_raw
+            let dep_types: Vec<catalog::DependencyType> = dep_types_raw
                 .unwrap_or_default()
                 .into_iter()
                 .map(|s| catalog::DependencyType::from_str(&s))
