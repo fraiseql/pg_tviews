@@ -195,8 +195,10 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
     // The dependencies column contains all base table OIDs that this TVIEW depends on
 
     let query = format!(
-        "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, m.fk_columns, m.uuid_fk_columns
-         FROM pg_tview_meta m
+        "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, \
+                m.fk_columns, m.uuid_fk_columns, \
+                m.dependency_types, m.dependency_paths, m.array_match_keys \
+         FROM pg_tview_meta m \
          WHERE {:?} = ANY(m.dependencies)",
         base_table_oid.as_u32()
     );
@@ -209,13 +211,33 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
             let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
             let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
 
+            // Extract NEW arrays - dependency_types (TEXT[])
+            let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
+            let dep_types = dep_types_raw
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| catalog::DependencyType::from_str(&s))
+                .collect();
+
+            // dependency_paths (TEXT[][]) - array of arrays
+            // TODO: pgrx doesn't support TEXT[][] extraction yet
+            // For now, use empty default (Task 3 will populate these)
+            let dep_paths: Vec<Option<Vec<String>>> = vec![];
+
+            // array_match_keys (TEXT[]) with NULL values
+            let array_keys: Option<Vec<Option<String>>> =
+                row["array_match_keys"].value().unwrap_or(None);
+
             result.push(catalog::TviewMeta {
                 tview_oid: row["tview_oid"].value().unwrap().unwrap(),
                 view_oid: row["view_oid"].value().unwrap().unwrap(),
                 entity_name: row["entity"].value().unwrap().unwrap(),
-                sync_mode: 's', // Default to synchronous
+                sync_mode: 's',
                 fk_columns: fk_cols_val.unwrap_or_default(),
                 uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
+                dependency_types: dep_types,
+                dependency_paths: dep_paths,
+                array_match_keys: array_keys.unwrap_or_default(),
             });
         }
 
