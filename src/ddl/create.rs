@@ -47,19 +47,20 @@ pub fn create_tview(
     // Step 5: Populate initial data
     populate_initial_data(tview_name, &view_name, &schema)?;
 
-    // Step 6: Register metadata
+    // Step 6: Find base table dependencies
+    let dep_graph = crate::dependency::find_base_tables(&view_name)?;
+
+    info!("Found {} base table dependencies for {}", dep_graph.base_tables.len(), tview_name);
+
+    // Step 7: Register metadata (with dependencies)
     register_metadata(
         entity_name,
         &view_name,
         tview_name,
         select_sql,
         &schema,
+        &dep_graph.base_tables,
     )?;
-
-    // Step 7: Find base table dependencies
-    let dep_graph = crate::dependency::find_base_tables(&view_name)?;
-
-    info!("Found {} base table dependencies for {}", dep_graph.base_tables.len(), tview_name);
 
     // Step 8: Install triggers on base tables
     if !dep_graph.base_tables.is_empty() {
@@ -265,10 +266,17 @@ fn register_metadata(
     tview_name: &str,
     definition_sql: &str,
     schema: &TViewSchema,
+    dependencies: &[pg_sys::Oid],
 ) -> TViewResult<()> {
     // Serialize schema information
     let fk_columns = schema.fk_columns.join(",");
     let uuid_fk_columns = schema.uuid_fk_columns.join(",");
+
+    // Serialize dependencies as OID array
+    let deps_str = dependencies.iter()
+        .map(|oid| oid.as_u32().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
 
     // Get OIDs for the created objects
     let view_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
@@ -304,14 +312,16 @@ fn register_metadata(
             view_oid,
             table_oid,
             definition,
+            dependencies,
             fk_columns,
             uuid_fk_columns
-        ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}')
+        ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
         entity_name.replace("'", "''"),
         view_oid.as_u32(),
         table_oid.as_u32(),
         definition_sql.replace("'", "''"),
+        deps_str,
         fk_columns,
         uuid_fk_columns
     );

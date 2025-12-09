@@ -22,18 +22,18 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
     Ok(pk)
 }
 
-/// Look up the view name (v_entity) associated with a tb_* or tv_* OID.
-/// In a real implementation, use pg_depend or your own mapping.
-pub fn lookup_view_for_source(_source_oid: Oid) -> spi::Result<String> {
-    // TODO: real logic. For the stub, we just return "v_post".
-    Ok("v_post".to_string())
+/// Look up the view name from an OID
+/// Used to find the backing view (v_entity) for a TVIEW
+pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
+    // Simply get the relation name from pg_class
+    relname_from_oid(view_oid)
 }
 
 /// Look up the TVIEW table name given its OID (from pg_tview_meta).
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     Spi::connect(|client| {
         let rows = client.select(
-            "SELECT relname FROM pg_class WHERE oid = $1",
+            "SELECT relname::text AS relname FROM pg_class WHERE oid = $1",
             None,
             Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), oid.into_datum())]),
         )?;

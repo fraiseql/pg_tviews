@@ -19,7 +19,7 @@ impl TviewMeta {
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
             let rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, sync_mode, fk_columns, uuid_fk_columns \
+                "SELECT table_oid AS tview_oid, view_oid, entity, fk_columns, uuid_fk_columns \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -36,7 +36,7 @@ impl TviewMeta {
                     tview_oid: row["tview_oid"].value().unwrap().unwrap(),
                     view_oid: row["view_oid"].value().unwrap().unwrap(),
                     entity_name: row["entity"].value().unwrap().unwrap(),
-                    sync_mode: row["sync_mode"].value().unwrap().unwrap_or('s'),
+                    sync_mode: 's', // Default to synchronous
                     fk_columns: fk_cols_val.unwrap_or_default(),
                     uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
                 });
@@ -50,7 +50,7 @@ impl TviewMeta {
     pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
             let rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, sync_mode, fk_columns, uuid_fk_columns \
+                "SELECT table_oid AS tview_oid, view_oid, entity, fk_columns, uuid_fk_columns \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -67,7 +67,7 @@ impl TviewMeta {
                     tview_oid: row["tview_oid"].value().unwrap().unwrap(),
                     view_oid: row["view_oid"].value().unwrap().unwrap(),
                     entity_name: row["entity"].value().unwrap().unwrap(),
-                    sync_mode: row["sync_mode"].value().unwrap().unwrap_or('s'),
+                    sync_mode: 's', // Default to synchronous
                     fk_columns: fk_cols_val.unwrap_or_default(),
                     uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
                 });
