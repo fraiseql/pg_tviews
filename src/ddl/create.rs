@@ -45,7 +45,7 @@ pub fn create_tview(
     create_materialized_table(tview_name, &schema)?;
 
     // Step 5: Populate initial data
-    populate_initial_data(tview_name, &view_name)?;
+    populate_initial_data(tview_name, &view_name, &schema)?;
 
     // Step 6: Register metadata
     register_metadata(
@@ -216,10 +216,37 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
 }
 
 /// Populate the materialized table with initial data from the backing view
-fn populate_initial_data(tview_name: &str, view_name: &str) -> TViewResult<()> {
+fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema) -> TViewResult<()> {
+    // Build column list from schema (excluding created_at/updated_at which have defaults)
+    let mut columns = Vec::new();
+
+    if let Some(pk) = &schema.pk_column {
+        columns.push(pk.clone());
+    }
+    if let Some(id) = &schema.id_column {
+        columns.push(id.clone());
+    }
+    if let Some(identifier) = &schema.identifier_column {
+        columns.push(identifier.clone());
+    }
+    if let Some(data) = &schema.data_column {
+        columns.push(data.clone());
+    }
+    for fk in &schema.fk_columns {
+        columns.push(fk.clone());
+    }
+    for uuid_fk in &schema.uuid_fk_columns {
+        columns.push(uuid_fk.clone());
+    }
+    for col in &schema.additional_columns {
+        columns.push(col.clone());
+    }
+
+    let column_list = columns.join(", ");
+
     let insert_sql = format!(
-        "INSERT INTO public.{} SELECT * FROM public.{}",
-        tview_name, view_name
+        "INSERT INTO public.{} ({}) SELECT {} FROM public.{}",
+        tview_name, column_list, column_list, view_name
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
