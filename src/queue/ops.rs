@@ -51,9 +51,10 @@ pub fn register_commit_callback_once() -> TViewResult<()> {
             return Ok(());
         }
 
-        // Register xact callback
+        // Register transaction and subtransaction callbacks
         unsafe {
             super::xact::register_xact_callback()?;
+            super::xact::register_subxact_callback()?;
         }
 
         *scheduled = true;

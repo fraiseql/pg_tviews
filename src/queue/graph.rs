@@ -159,10 +159,12 @@ fn topological_sort(
         });
     }
 
-    Ok(result)
-}
+        Ok(result)
+    }
 
-#[cfg(test)]
+
+
+    #[cfg(test)]
 mod tests {
     use super::*;
 

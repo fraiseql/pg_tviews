@@ -55,6 +55,9 @@ pub fn drop_tview(
     // Step 5: Drop metadata record
     drop_metadata(entity_name)?;
 
+    // Invalidate caches since TVIEW was dropped
+    crate::queue::cache::invalidate_all_caches();
+
     info!("TVIEW {} dropped successfully", tview_name);
 
     Ok(())

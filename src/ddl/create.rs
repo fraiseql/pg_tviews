@@ -89,6 +89,9 @@ pub fn create_tview(
         warning!("No base table dependencies found for {}", tview_name);
     }
 
+    // Invalidate caches since new TVIEW was created
+    crate::queue::cache::invalidate_all_caches();
+
     info!("TVIEW {} created successfully", tview_name);
 
     Ok(())

@@ -19,6 +19,23 @@ thread_local! {
     pub static TX_REFRESH_SCHEDULED: RefCell<bool> = const { RefCell::new(false) };
 }
 
+/// Replace the current queue with a new one (used for savepoint rollback)
+pub fn replace_queue(new_queue: HashSet<RefreshKey>) {
+    TX_REFRESH_QUEUE.with(|q| {
+        *q.borrow_mut() = new_queue;
+    });
+}
+
+/// Get the current queue size (for metrics)
+pub fn get_queue_size() -> usize {
+    TX_REFRESH_QUEUE.with(|q| q.borrow().len())
+}
+
+/// Get a copy of current queue contents (for debugging)
+pub fn get_queue_contents() -> Vec<RefreshKey> {
+    TX_REFRESH_QUEUE.with(|q| q.borrow().iter().cloned().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

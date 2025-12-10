@@ -6,15 +6,17 @@
 //! - Enqueue/dequeue operations
 //! - Transaction callback registration
 
-mod key;
+pub mod key;
 mod state;
 mod ops;
 mod xact;
 mod graph;
+pub mod cache;
 mod integration_tests;
 
 pub use key::RefreshKey;
 pub use ops::{enqueue_refresh, register_commit_callback_once};
+pub use state::{get_queue_size, get_queue_contents};
 // pub use ops::{take_queue_snapshot, clear_queue}; // Internal use only
 // pub use graph::EntityDepGraph; // Internal use only
 // Internal use only (not exported):

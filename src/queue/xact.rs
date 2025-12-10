@@ -1,8 +1,19 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::os::raw::c_void;
+use std::collections::HashSet;
 use super::ops::{take_queue_snapshot, clear_queue, reset_scheduled_flag};
 use crate::TViewResult;
+
+// Thread-local storage for savepoint support
+thread_local! {
+    /// Current savepoint depth (0 = no savepoints)
+    static SAVEPOINT_DEPTH: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };
+
+    /// Queue snapshots for each savepoint level
+    static QUEUE_SNAPSHOTS: std::cell::RefCell<Vec<HashSet<super::key::RefreshKey>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Transaction event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +34,24 @@ pub unsafe fn register_xact_callback() -> TViewResult<()> {
     unsafe {
         pg_sys::RegisterXactCallback(
             Some(tview_xact_callback),
+            std::ptr::null_mut(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Register the subtransaction callback for savepoint support
+///
+/// This uses PostgreSQL's RegisterSubXactCallback FFI to handle savepoints.
+/// The callback will be invoked when savepoints are created/released/rolled back.
+pub unsafe fn register_subxact_callback() -> TViewResult<()> {
+    // Safety: We're calling into PostgreSQL FFI
+    // The callback function must be extern "C" and #[no_mangle]
+
+    unsafe {
+        pg_sys::RegisterSubXactCallback(
+            Some(tview_subxact_callback),
             std::ptr::null_mut(),
         );
     }
@@ -71,10 +100,79 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // ABORT: Clear queue without refreshing
             clear_queue();
             reset_scheduled_flag();
+            // Reset metrics for aborted transaction
+            crate::metrics::metrics_api::reset_metrics();
         }
         XactEvent::Commit => {
             // COMMIT: Cleanup (queue already flushed in PRE_COMMIT)
             reset_scheduled_flag();
+            // Reset metrics for completed transaction
+            crate::metrics::metrics_api::reset_metrics();
+        }
+    }
+}
+
+/// Subtransaction callback handler (invoked by PostgreSQL for savepoints)
+///
+/// This is called when savepoints are created, released, or rolled back to.
+/// We need to maintain queue snapshots to properly handle ROLLBACK TO SAVEPOINT.
+///
+/// # Safety
+/// This is an extern "C" callback invoked by PostgreSQL internals.
+/// Must not panic or unwind.
+#[no_mangle]
+unsafe extern "C" fn tview_subxact_callback(
+    event: u32,
+    _subxid: pg_sys::SubTransactionId,
+    _parent_subid: pg_sys::SubTransactionId,
+    _arg: *mut c_void,
+) {
+    match event {
+        pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
+            // SAVEPOINT created: increment depth and snapshot current queue
+            SAVEPOINT_DEPTH.with(|d| {
+                let mut depth = d.borrow_mut();
+                *depth += 1;
+            });
+
+            // Take snapshot of current queue state
+            let snapshot = take_queue_snapshot();
+            QUEUE_SNAPSHOTS.with(|s| {
+                s.borrow_mut().push(snapshot);
+            });
+
+            info!("TVIEW: Savepoint created (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+        }
+        pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
+            // ROLLBACK TO SAVEPOINT: restore queue to snapshot
+            SAVEPOINT_DEPTH.with(|d| {
+                let mut depth = d.borrow_mut();
+                *depth -= 1;
+            });
+
+            // Restore queue from snapshot
+            if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
+                // Replace current queue with the snapshot
+                super::state::replace_queue(snapshot);
+                info!("TVIEW: Savepoint rolled back (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+            }
+        }
+        pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
+            // RELEASE SAVEPOINT: just decrement depth and discard snapshot
+            SAVEPOINT_DEPTH.with(|d| {
+                let mut depth = d.borrow_mut();
+                *depth -= 1;
+            });
+
+            // Discard the snapshot (savepoint committed)
+            QUEUE_SNAPSHOTS.with(|s| {
+                s.borrow_mut().pop();
+            });
+
+            info!("TVIEW: Savepoint released (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+        }
+        _ => {
+            // Ignore other subtransaction events
         }
     }
 }
@@ -106,8 +204,11 @@ fn handle_pre_commit() -> TViewResult<()> {
 
     info!("TVIEW: Flushing {} initial refresh requests at commit", pending.len());
 
+    // Start timing the entire refresh operation
+    let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
+
     // Load dependency graph once (cached)
-    let graph = super::graph::EntityDepGraph::load()?;
+    let graph = super::cache::graph_cache::load_cached()?;
 
     // Track processed keys to avoid duplicates
     let mut processed: std::collections::HashSet<super::key::RefreshKey> = std::collections::HashSet::new();
@@ -142,15 +243,23 @@ fn handle_pre_commit() -> TViewResult<()> {
         iteration += 1;
 
         // Safety check: prevent infinite loops
-        if iteration > 100 {
+        let max_depth = crate::config::max_propagation_depth();
+        if iteration > max_depth {
             return Err(crate::TViewError::PropagationDepthExceeded {
-                max_depth: 100,
+                max_depth,
                 processed: processed.len(),
             });
         }
     }
 
     info!("TVIEW: Completed {} refresh operations in {} iterations", processed.len(), iteration - 1);
+
+    // Record metrics
+    crate::metrics::metrics_api::record_refresh_complete(
+        processed.len(),
+        iteration - 1,
+        refresh_timer,
+    );
 
     Ok(())
 }

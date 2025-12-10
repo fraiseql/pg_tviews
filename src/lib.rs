@@ -9,6 +9,7 @@ mod utils;
 mod hooks;
 mod trigger;
 mod queue;
+mod metrics;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -73,6 +74,48 @@ pub fn check_jsonb_ivm_available() -> bool {
 #[pg_extern]
 fn pg_tviews_check_jsonb_ivm() -> bool {
     check_jsonb_ivm_available()
+}
+
+/// Get current queue statistics
+/// Returns metrics about the current transaction's refresh operations
+#[pg_extern]
+fn pg_tviews_queue_stats() -> pgrx::JsonB {
+    let stats = metrics::metrics_api::get_queue_stats();
+
+    let json_value = serde_json::json!({
+        "queue_size": stats.queue_size,
+        "total_refreshes": stats.total_refreshes,
+        "total_iterations": stats.total_iterations,
+        "max_iterations": stats.max_iterations,
+        "total_timing_ms": stats.total_timing_ms(),
+        "graph_cache_hit_rate": stats.graph_cache_hit_rate(),
+        "table_cache_hit_rate": stats.table_cache_hit_rate(),
+        "graph_cache_hits": stats.graph_cache_hits,
+        "graph_cache_misses": stats.graph_cache_misses,
+        "table_cache_hits": stats.table_cache_hits,
+        "table_cache_misses": stats.table_cache_misses
+    });
+
+    pgrx::JsonB(json_value)
+}
+
+/// Debug function: View current queue contents
+/// Returns the entities and PKs currently in the refresh queue
+#[pg_extern]
+fn pg_tviews_debug_queue() -> pgrx::JsonB {
+    let contents = metrics::metrics_api::get_queue_contents();
+
+    let json_contents: Vec<serde_json::Value> = contents
+        .into_iter()
+        .map(|key| {
+            serde_json::json!({
+                "entity": key.entity,
+                "pk": key.pk
+            })
+        })
+        .collect();
+
+    pgrx::JsonB(serde_json::json!(json_contents))
 }
 
 /// Initialize the extension
