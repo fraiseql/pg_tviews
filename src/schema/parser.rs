@@ -1,10 +1,16 @@
 use pgrx::prelude::*;
 
-/// Parse SELECT statement to extract column names
+/// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
 /// Future versions will use PostgreSQL's native parser API
 pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
     extract_columns_regex(sql)
+}
+
+/// Parse SELECT statement to extract column names with their full expressions
+/// Returns Vec<(column_name, expression)> for type inference
+pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, String)>, String> {
+    extract_columns_with_expressions_regex(sql)
 }
 
 /// Simple regex-based column extraction from SELECT statement
@@ -49,6 +55,52 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         // Extract column name or alias
         let col_name = extract_column_name(trimmed)?;
         columns.push(col_name);
+    }
+
+    if columns.is_empty() {
+        return Err("No columns found in SELECT statement".to_string());
+    }
+
+    Ok(columns)
+}
+
+/// Extract columns with their full expressions from SELECT statement
+fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, String)>, String> {
+    let mut columns = Vec::new();
+
+    // Normalize whitespace and case
+    let sql_lower = sql.to_lowercase();
+
+    // Find SELECT and FROM positions
+    let select_start = sql_lower.find("select")
+        .ok_or("No SELECT keyword found")?;
+    let from_start = sql_lower.find("from")
+        .ok_or("No FROM keyword found")?;
+
+    if from_start <= select_start {
+        return Err("FROM appears before SELECT".to_string());
+    }
+
+    // Extract SELECT clause
+    let select_clause = &sql[select_start + 6..from_start].trim();
+
+    if select_clause.is_empty() {
+        return Err("Empty SELECT clause".to_string());
+    }
+
+    // Split by commas, respecting parentheses and quotes
+    let parts = split_by_top_level_comma(select_clause)?;
+
+    for part in parts {
+        let trimmed = part.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Extract column name and keep full expression
+        let col_name = extract_column_name(trimmed)?;
+        columns.push((col_name, trimmed.to_string()));
     }
 
     if columns.is_empty() {

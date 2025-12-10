@@ -18,6 +18,7 @@ pub struct TViewSchema {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
     pub additional_columns: Vec<String>,
+    pub additional_columns_with_types: Vec<(String, String)>,
     pub entity_name: Option<String>,
 }
 
@@ -31,6 +32,7 @@ impl TViewSchema {
             fk_columns: Vec::new(),
             uuid_fk_columns: Vec::new(),
             additional_columns: Vec::new(),
+            additional_columns_with_types: Vec::new(),
             entity_name: None,
         }
     }

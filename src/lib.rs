@@ -298,9 +298,10 @@ fn find_affected_tview_rows(
 /// This is where you could expose helper functions for debugging.
 /// e.g., listing registered TVIEWs, dependencies, etc.
 
-#[cfg(any(test, feature = "pg_test"))]
-mod tests {
-    use pgrx::prelude::*;
+    #[cfg(any(test, feature = "pg_test"))]
+    mod tests {
+        use pgrx::prelude::*;
+        use crate::TViewError;
 
     #[pg_test]
     fn sanity_check() {

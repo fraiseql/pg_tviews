@@ -84,15 +84,10 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 
         let deps: Vec<(pg_sys::Oid, i32, String, Option<String>)> =
             Spi::connect(|client| {
-                let tup_table = client.select(&deps_query, None, None)
-                    .map_err(|e| TViewError::CatalogError {
-                        operation: "pg_depend query".to_string(),
-                        pg_error: format!("{:?}", e),
-                    })?;
-
+                let rows = client.select(&deps_query, None, None)?;
                 let mut results = Vec::new();
 
-                for row in tup_table {
+                for row in rows {
                     let refobjid = row["refobjid"].value::<pg_sys::Oid>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract refobjid".to_string(),
@@ -114,7 +109,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                             pg_error: format!("{:?}", e),
                         })?
                         .map(|c| (c as u8 as char).to_string())
-                        .unwrap_or_default();
+            .unwrap_or_default();
                     // relkind is also "char" (single byte)
                     let relkind = row["relkind"].value::<i8>()
                         .map_err(|e| TViewError::CatalogError {
@@ -127,6 +122,10 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                 }
 
                 Ok(Some(results))
+            })
+            .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
+                query: deps_query.clone(),
+                error: e.to_string(),
             })?
             .unwrap_or_default();
 

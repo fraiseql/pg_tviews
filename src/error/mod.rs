@@ -1,6 +1,8 @@
 use pgrx::prelude::*;
 use std::fmt;
 
+pub mod testing;
+
 /// Main error type for pg_tviews extension
 #[derive(Debug, Clone, PartialEq)]
 pub enum TViewError {
@@ -235,6 +237,16 @@ impl std::error::Error for TViewError {}
 
 /// Result type for TVIEW operations
 pub type TViewResult<T> = Result<T, TViewError>;
+
+/// Convert SpiError to TViewError
+impl From<pgrx::spi::Error> for TViewError {
+    fn from(e: pgrx::spi::Error) -> Self {
+        TViewError::SpiError {
+            query: "Unknown".to_string(),
+            error: e.to_string(),
+        }
+    }
+}
 
 /// Convert TViewError to pgrx error (for raising to PostgreSQL)
 impl From<TViewError> for pgrx::spi::Error {

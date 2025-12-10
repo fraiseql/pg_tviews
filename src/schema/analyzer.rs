@@ -96,6 +96,11 @@ pub fn analyze_dependencies(
         deps.push(dep_info);
     }
 
+    // Also detect array dependencies that might not have direct FK columns
+    // This handles cases where arrays aggregate data from related tables
+    let array_deps = detect_array_dependencies(select_sql);
+    deps.extend(array_deps);
+
     deps
 }
 
@@ -168,6 +173,39 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
 
     // Default: Scalar (FK exists but not used in JSONB composition)
     DependencyInfo::scalar()
+}
+
+/// Detect array dependencies from jsonb_agg patterns in SELECT statement
+/// This finds arrays that aggregate data from other TVIEWs, even if no direct FK exists
+fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
+    let mut deps = Vec::new();
+
+    // Normalize SQL for pattern matching
+    let sql_normalized = select_sql
+        .replace('\n', " ")
+        .replace('\t', " ")
+        .to_lowercase();
+
+    // Pattern to match: 'array_name', jsonb_agg(v_something.data ...)
+    // Captures: (1) array_name, (2) view_name
+    let array_pattern = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data";
+    let re = match Regex::new(array_pattern) {
+        Ok(re) => re,
+        Err(_) => return deps, // Return empty if regex fails
+    };
+
+    for capture in re.captures_iter(&sql_normalized) {
+        if let (Some(array_name), Some(view_entity)) = (capture.get(1), capture.get(2)) {
+            let array_name = array_name.as_str().to_string();
+            let view_name = format!("v_{}", view_entity.as_str());
+
+            // Create array dependency info
+            let dep_info = DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());
+            deps.push(dep_info);
+        }
+    }
+
+    deps
 }
 
 #[cfg(test)]

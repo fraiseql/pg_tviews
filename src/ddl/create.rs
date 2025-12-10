@@ -163,9 +163,9 @@ fn create_materialized_table(
         columns.push(format!("{} UUID", uuid_fk));
     }
 
-    // Additional columns (infer as TEXT for now, could be enhanced)
-    for col in &schema.additional_columns {
-        columns.push(format!("{} TEXT", col));
+    // Additional columns with inferred types
+    for (col_name, col_type) in &schema.additional_columns_with_types {
+        columns.push(format!("{} {}", col_name, col_type));
     }
 
     // Add timestamps for tracking

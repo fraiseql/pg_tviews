@@ -105,11 +105,16 @@ fn create_trigger_handler() -> TViewResult<()> {
             RAISE NOTICE 'TVIEW trigger fired: table=%, op=%, pk_col=%, old_pk=%, new_pk=%',
                 TG_TABLE_NAME, TG_OP, pk_col_name, pk_val_old, pk_val_new;
 
-            -- Call Rust cascade function to refresh affected TVIEWs
-            -- For INSERT/UPDATE, cascade the new PK value
-            -- For DELETE, we would cascade the old PK (not implemented yet)
-            IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+            -- Handle different operations appropriately
+            IF TG_OP = 'INSERT' THEN
+                -- For INSERT: Check if this contributes to array elements
+                PERFORM pg_tviews_insert(TG_RELID, pk_val_new);
+            ELSIF TG_OP = 'UPDATE' THEN
+                -- For UPDATE: Use existing cascade logic for smart patching
                 PERFORM pg_tviews_cascade(TG_RELID, pk_val_new);
+            ELSIF TG_OP = 'DELETE' THEN
+                -- For DELETE: Remove from array elements
+                PERFORM pg_tviews_delete(TG_RELID, pk_val_old);
             END IF;
 
             -- Return appropriate value based on operation

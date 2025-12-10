@@ -1,6 +1,7 @@
 use pgrx::prelude::*;
 
-use crate::refresh::{ViewRow, refresh_pk};
+use crate::refresh::main::{ViewRow, refresh_pk};
+use crate::refresh::batch;
 use crate::catalog::TviewMeta;
 
 /// Discover parents (entities that depend on this entity) and refresh them.
@@ -38,9 +39,15 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
         }
         let parent_meta = parent_meta.unwrap();
 
-        // Refresh each affected row in the parent TVIEW
-        for pk in affected_pks {
-            refresh_pk(parent_meta.view_oid, pk)?;
+        // Use batch refresh for large cascades, individual refresh for small ones
+        if affected_pks.len() >= 10 {
+            info!("  Using batch refresh for {} rows", affected_pks.len());
+            batch::refresh_batch(&parent_entity, &affected_pks)?;
+        } else {
+            // Refresh each affected row individually
+            for pk in affected_pks {
+                refresh_pk(parent_meta.view_oid, pk)?;
+            }
         }
     }
 

@@ -1,13 +1,42 @@
 use super::{TViewSchema, parser};
 use crate::error::TViewResult;
 
+/// Infer PostgreSQL type for a column based on its SQL expression
+///
+/// This function analyzes the SQL expression to determine the appropriate
+/// PostgreSQL type. For array columns, it detects ARRAY(...) subqueries
+/// and infers element types.
+pub fn infer_column_type(sql_expression: &str) -> String {
+    let expr = sql_expression.trim();
+
+    // Detect ARRAY(...) subqueries
+    if expr.to_uppercase().starts_with("ARRAY(") {
+        // For now, assume UUID arrays are common - could be enhanced
+        // to analyze the subquery and infer element type
+        return "UUID[]".to_string();
+    }
+
+    // Detect jsonb_agg (often used for arrays in JSONB)
+    if expr.to_lowercase().contains("jsonb_agg(") {
+        return "JSONB".to_string();
+    }
+
+    // Default to TEXT for other expressions
+    "TEXT".to_string()
+}
+
 /// Infer TVIEW schema from SELECT statement
 pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
-    let columns = parser::parse_select_columns(sql)
+    let columns_with_expressions = parser::parse_select_columns_with_expressions(sql)
         .map_err(|e| crate::error::TViewError::InvalidSelectStatement {
             sql: sql.to_string(),
             reason: e,
         })?;
+
+    // Extract just column names for backward compatibility
+    let columns: Vec<String> = columns_with_expressions.iter()
+        .map(|(name, _)| name.clone())
+        .collect();
 
     if columns.is_empty() {
         return Err(crate::error::TViewError::InvalidSelectStatement {
@@ -57,7 +86,7 @@ pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
         }
     }
 
-    // 7. Additional columns (everything else)
+    // 7. Additional columns with type inference (everything else)
     let reserved_columns: std::collections::HashSet<&str> = [
         schema.pk_column.as_deref().unwrap_or(""),
         schema.id_column.as_deref().unwrap_or(""),
@@ -65,12 +94,15 @@ pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
         schema.data_column.as_deref().unwrap_or(""),
     ].into_iter().filter(|s| !s.is_empty()).collect();
 
-    for col in &columns {
-        if !reserved_columns.contains(col.as_str())
-            && !schema.fk_columns.contains(col)
-            && !schema.uuid_fk_columns.contains(col)
+    for (col_name, col_expression) in &columns_with_expressions {
+        if !reserved_columns.contains(col_name.as_str())
+            && !schema.fk_columns.contains(col_name)
+            && !schema.uuid_fk_columns.contains(col_name)
         {
-            schema.additional_columns.push(col.clone());
+            // Infer type for additional columns based on expression
+            let inferred_type = infer_column_type(col_expression);
+            schema.additional_columns.push(col_name.clone());
+            schema.additional_columns_with_types.push((col_name.clone(), inferred_type));
         }
     }
 
@@ -220,7 +252,7 @@ mod tests {
         let result = infer_schema(sql);
 
         assert!(result.is_err());
-        if let Err(crate::error::TViewError::RequiredColumnMissing { column_name, .. }) = result.unwrap_err() {
+        if let crate::error::TViewError::RequiredColumnMissing { column_name, .. } = result.unwrap_err() {
             assert_eq!(column_name, "id");
         } else {
             panic!("Expected RequiredColumnMissing error");

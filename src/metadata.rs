@@ -140,7 +140,7 @@ mod tests {
             "SELECT COUNT(*) FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = 'pg_tview_meta'"
         );
-        assert!(result.unwrap_or(0) > 0, "pg_tview_meta should have columns");
+        assert!(result.unwrap_or(Some(0)).unwrap_or(0) > 0, "pg_tview_meta should have columns");
     }
 
     #[pg_test]
@@ -159,9 +159,9 @@ mod tests {
             ";
 
             for row in client.select(query, None, None)? {
-                let name: String = row.get(1)?;
-                let data_type: String = row.get(2)?;
-                let nullable: String = row.get(3)?;
+                let name: String = row.get(1)?.unwrap_or_default();
+                let data_type: String = row.get(2)?.unwrap_or_default();
+                let nullable: String = row.get(3)?.unwrap_or_default();
                 columns.push((name, data_type, nullable));
             }
 
