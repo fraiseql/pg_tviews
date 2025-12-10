@@ -82,8 +82,16 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
         let mut update_data: Vec<JsonB> = Vec::new();
 
         for row in rows {
-            let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
-            let data: JsonB = row["data"].value().unwrap().unwrap();
+            let pk: i64 = row[&pk_col as &str].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "".to_string(),
+                    error: format!("{} column is NULL", pk_col),
+                }))?;
+            let data: JsonB = row["data"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "".to_string(),
+                    error: "data column is NULL".to_string(),
+                }))?;
             update_pks.push(pk);
             update_data.push(data);
         }
@@ -123,12 +131,13 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 /// Helper: Quote identifier safely
 pub fn quote_identifier(name: &str) -> String {
     // Use PostgreSQL's quote_ident() for safety
-    Spi::get_one_with_args::<String>(
+    match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",
         vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), name.into_datum())],
-    )
-    .unwrap()
-    .unwrap_or_else(|| format!("\"{}\"", name.replace("\"", "\"\"")))
+    ) {
+        Ok(Some(quoted)) => quoted,
+        _ => format!("\"{}\"", name.replace("\"", "\"\"")),
+    }
 }
 
 /// Helper: Look up TVIEW table name given its OID

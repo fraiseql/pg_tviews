@@ -189,7 +189,8 @@ fn extract_column_name(part: &str) -> Result<String, String> {
     }
 
     // Take the last word (should be the column name)
-    let last_word = words.last().unwrap();
+    let last_word = words.last()
+        .ok_or_else(|| "Unexpected empty words vector".to_string())?;
 
     // Remove trailing punctuation
     let clean_name = last_word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');

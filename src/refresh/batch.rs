@@ -112,8 +112,16 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
         let mut case_when = Vec::new();
 
         for row in rows {
-            let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
-            let data: JsonB = row["data"].value().unwrap().unwrap();
+            let pk: i64 = row[&pk_col as &str].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "".to_string(),
+                    error: format!("{} column is NULL", pk_col),
+                }))?;
+            let data: JsonB = row["data"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "".to_string(),
+                    error: "data column is NULL".to_string(),
+                }))?;
 
             case_when.push(format!("WHEN {pk_col} = {pk} THEN $"));
             case_data.push(data);

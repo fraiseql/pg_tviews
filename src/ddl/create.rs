@@ -431,8 +431,16 @@ fn transform_raw_select_to_tview(
         let rows = client.select(&get_columns_sql, None, None)?;
         let mut result = Vec::new();
         for row in rows {
-            let col_name: String = row[1].value()?.unwrap();
-            let data_type: String = row[2].value()?.unwrap();
+            let col_name: String = row[1].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: get_columns_sql.clone(),
+                    error: "column name is NULL".to_string(),
+                }))?;
+            let data_type: String = row[2].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: get_columns_sql.clone(),
+                    error: "data type is NULL".to_string(),
+                }))?;
             result.push((col_name, data_type));
         }
         Ok(result)

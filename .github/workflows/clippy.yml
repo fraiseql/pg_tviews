@@ -1,0 +1,23 @@
+name: Clippy Strict
+
+on: [push, pull_request]
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Run strict clippy
+        run: |
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -D clippy::all \
+            -D clippy::pedantic \
+            -W clippy::nursery \
+            -W clippy::cargo \
+            -A clippy::missing_errors_doc \
+            -A clippy::module_name_repetitions

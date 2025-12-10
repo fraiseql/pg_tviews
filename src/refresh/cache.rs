@@ -59,7 +59,11 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
         // Process result (similar to main.rs recompute_view_row)
         if let Some(row) = result.next() {
             // Extract data and apply patch (delegate to main refresh logic)
-            let _data: JsonB = row["data"].value().unwrap().unwrap();
+            let _data: JsonB = row["data"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "".to_string(),
+                    error: "data column is NULL".to_string(),
+                }))?;
             // TODO: Integrate with main refresh logic to apply patches
             info!("TVIEW: Refreshed {}[{}] with cached plan", entity, pk);
         } else {
@@ -87,10 +91,9 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
 
         if exists {
             return Ok(stmt_name.clone());
-        } else {
-            // Statement was deallocated, remove from cache
-            cache.remove(entity);
         }
+        // Statement was deallocated, remove from cache
+        cache.remove(entity);
     }
 
     // Prepare statement
@@ -136,12 +139,13 @@ pub fn get_cache_stats() -> (usize, Vec<String>) {
 #[allow(dead_code)]
 fn quote_identifier(name: &str) -> String {
     // Use PostgreSQL's quote_ident() for safety
-    Spi::get_one_with_args::<String>(
+    match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",
         vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), name.into_datum())],
-    )
-    .unwrap()
-    .unwrap_or_else(|| format!("\"{}\"", name.replace("\"", "\"\"")))
+    ) {
+        Ok(Some(quoted)) => quoted,
+        _ => format!("\"{}\"", name.replace("\"", "\"\"")),
+    }
 }
 
 // Cache invalidation callbacks removed - not available in this pgrx version

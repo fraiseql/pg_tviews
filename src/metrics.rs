@@ -1,3 +1,25 @@
+//! Metrics Collection: Performance Monitoring and Statistics
+//!
+//! This module tracks performance metrics for TVIEW operations:
+//! - **Refresh Statistics**: Count and timing of view updates
+//! - **Cache Performance**: Hit rates for prepared statements and graphs
+//! - **Propagation Metrics**: Dependency chain analysis
+//! - **Thread-local Storage**: Per-transaction metrics without contention
+//!
+//! ## Architecture
+//!
+//! Metrics use thread-local storage to avoid synchronization overhead:
+//! - Each transaction gets its own metrics instance
+//! - Metrics reset at transaction boundaries
+//! - Optional collection (disabled by default for performance)
+//!
+//! ## Key Metrics
+//!
+//! - Refresh count and timing per transaction
+//! - Cache hit/miss ratios
+//! - Propagation depth statistics
+//! - Error rates and failure patterns
+
 use crate::queue::key::RefreshKey;
 
 // Metrics tracking for TVIEW operations

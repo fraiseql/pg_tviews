@@ -1,4 +1,26 @@
 use pgrx::prelude::*;
+/// Trigger Handler: Change Detection and Queue Management
+///
+/// This module implements PostgreSQL triggers for TVIEW change tracking:
+/// - **Row-level Triggers**: Detects INSERT/UPDATE/DELETE on base tables
+/// - **Primary Key Extraction**: Identifies changed rows for selective refresh
+/// - **Queue Enqueueing**: Adds refresh requests to transaction queue
+/// - **Bulk Operations**: Handles multi-row changes efficiently
+///
+/// ## Trigger Lifecycle
+///
+/// 1. PostgreSQL calls trigger for each changed row
+/// 2. Extract primary key of changed row
+/// 3. Map table OID to entity name
+/// 4. Enqueue (entity, pk) pair for refresh
+/// 5. Transaction commit processes the queue
+///
+/// ## Performance Considerations
+///
+/// - Triggers run in critical path - must be fast
+/// - Bulk enqueueing for multi-row operations
+/// - Minimal database queries during trigger execution
+/// - Queue processing deferred to commit time
 use pgrx::spi;
 use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, register_commit_callback_once};
 use crate::catalog::entity_for_table;

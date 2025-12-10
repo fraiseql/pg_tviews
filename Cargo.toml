@@ -37,9 +37,19 @@ pg_test = []
 [profile.dev]
 panic = "unwind"
 
-[profile.release]
-panic = "unwind"
-opt-level = 3
-lto = "fat"
-codegen-units = 1
+ [profile.release]
+ panic = "unwind"
+ opt-level = 3
+ lto = "fat"
+ codegen-units = 1
+
+ [lints.clippy]
+ # Phase 10B: Enable pedantic lints gradually
+ # For now, just ensure basic clippy compliance
+ all = { level = "deny", priority = -1 }
+ # pedantic = "warn"  # TODO: Enable after fixing warnings
+ # nursery = "warn"   # TODO: Enable after fixing warnings
+ # Disable specific lints that conflict with PostgreSQL FFI
+ missing_errors_doc = "allow"  # FFI functions often can't document all Postgres errors
+ module_name_repetitions = "allow"  # pg_tviews_ prefix is intentional
 

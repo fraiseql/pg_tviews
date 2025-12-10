@@ -133,9 +133,11 @@ impl SerializedQueue {
 /// Get current session ID for metadata
 fn get_session_id() -> String {
     // Try to get session ID from PostgreSQL
-    Spi::get_one::<String>("SELECT session_user")
-        .unwrap_or_else(|_| Some("unknown".to_string()))
-        .unwrap_or_else(|| "unknown".to_string())
+    match Spi::get_one::<String>("SELECT session_user") {
+        Ok(Some(user)) => user,
+        Ok(None) => "unknown".to_string(),
+        Err(_) => "unknown".to_string(),
+    }
 }
 
 /// Get current savepoint depth

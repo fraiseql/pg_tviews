@@ -75,57 +75,64 @@ pub unsafe fn register_subxact_callback() -> TViewResult<()> {
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
-    // Determine event type (using PostgreSQL C API constants)
-    let xact_event = match event {
-        0 => XactEvent::Commit,      // XACT_EVENT_COMMIT
-        1 => XactEvent::PreCommit,   // XACT_EVENT_PRE_COMMIT
-        2 => XactEvent::Abort,       // XACT_EVENT_ABORT
-        4 => XactEvent::Prepare,     // XACT_EVENT_PREPARE
-        _ => return, // Ignore other events
-    };
+    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    let result = std::panic::catch_unwind(|| {
+        // Determine event type (using PostgreSQL C API constants)
+        let xact_event = match event {
+            0 => XactEvent::Commit,      // XACT_EVENT_COMMIT
+            1 => XactEvent::PreCommit,   // XACT_EVENT_PRE_COMMIT
+            2 => XactEvent::Abort,       // XACT_EVENT_ABORT
+            4 => XactEvent::Prepare,     // XACT_EVENT_PREPARE
+            _ => return, // Ignore other events
+        };
 
-    // Handle event
-    match xact_event {
-        XactEvent::PreCommit => {
-            // PRE_COMMIT: Flush queue before transaction commits
-            // This is the main refresh point
-            //
-            // CRITICAL: We must propagate errors to abort the transaction.
-            // Per PRD R2: "If refresh fails: the entire transaction fails and rolls back."
-            //
-            // PostgreSQL behavior:
-            // - If this callback returns normally → transaction commits
-            // - If this callback returns error!() or panics → transaction aborts
-            //
-            // We MUST NOT catch errors here - let them propagate to PostgreSQL
-            if let Err(e) = handle_pre_commit() {
-                // Use pgrx error!() macro to abort transaction
-                error!("TVIEW refresh failed during PRE_COMMIT, aborting transaction: {:?}", e);
-                // This will never return - PostgreSQL longjmps to abort handler
+        // Handle event
+        match xact_event {
+            XactEvent::PreCommit => {
+                // PRE_COMMIT: Flush queue before transaction commits
+                // This is the main refresh point
+                //
+                // CRITICAL: We must propagate errors to abort the transaction.
+                // Per PRD R2: "If refresh fails: the entire transaction fails and rolls back."
+                //
+                // PostgreSQL behavior:
+                // - If this callback returns normally → transaction commits
+                // - If this callback returns error!() or panics → transaction aborts
+                //
+                // We MUST NOT catch errors here - let them propagate to PostgreSQL
+                if let Err(e) = handle_pre_commit() {
+                    // Use pgrx error!() macro to abort transaction
+                    error!("TVIEW refresh failed during PRE_COMMIT, aborting transaction: {:?}", e);
+                    // This will never return - PostgreSQL longjmps to abort handler
+                }
+            }
+            XactEvent::Prepare => {
+                // PREPARE: Serialize queue to persistent storage
+                // This ensures 2PC transactions don't lose pending refreshes
+                if let Err(e) = handle_prepare() {
+                    error!("TVIEW failed to persist queue during PREPARE: {:?}", e);
+                    // For PREPARE, we should abort the prepare operation
+                    // PostgreSQL will handle this by failing the PREPARE TRANSACTION
+                }
+            }
+            XactEvent::Abort => {
+                // ABORT: Clear queue without refreshing
+                clear_queue();
+                reset_scheduled_flag();
+                // Reset metrics for aborted transaction
+                crate::metrics::metrics_api::reset_metrics();
+            }
+            XactEvent::Commit => {
+                // COMMIT: Cleanup (queue already flushed in PRE_COMMIT)
+                reset_scheduled_flag();
+                // Reset metrics for completed transaction
+                crate::metrics::metrics_api::reset_metrics();
             }
         }
-        XactEvent::Prepare => {
-            // PREPARE: Serialize queue to persistent storage
-            // This ensures 2PC transactions don't lose pending refreshes
-            if let Err(e) = handle_prepare() {
-                error!("TVIEW failed to persist queue during PREPARE: {:?}", e);
-                // For PREPARE, we should abort the prepare operation
-                // PostgreSQL will handle this by failing the PREPARE TRANSACTION
-            }
-        }
-        XactEvent::Abort => {
-            // ABORT: Clear queue without refreshing
-            clear_queue();
-            reset_scheduled_flag();
-            // Reset metrics for aborted transaction
-            crate::metrics::metrics_api::reset_metrics();
-        }
-        XactEvent::Commit => {
-            // COMMIT: Cleanup (queue already flushed in PRE_COMMIT)
-            reset_scheduled_flag();
-            // Reset metrics for completed transaction
-            crate::metrics::metrics_api::reset_metrics();
-        }
+    });
+
+    if result.is_err() {
+        error!("PANIC in transaction callback - this is a bug!");
     }
 }
 
@@ -139,12 +146,19 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
-    if event == 3 { // XACT_EVENT_START
-        // Defensive: Clear any leftover state from previous transaction
-        // This prevents queue leakage in connection poolers (PgBouncer, etc.)
-        clear_queue();
-        reset_scheduled_flag();
-        info!("TVIEW: Transaction started, cleared thread-local state for connection pooling safety");
+    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    let result = std::panic::catch_unwind(|| {
+        if event == 3 { // XACT_EVENT_START
+            // Defensive: Clear any leftover state from previous transaction
+            // This prevents queue leakage in connection poolers (PgBouncer, etc.)
+            clear_queue();
+            reset_scheduled_flag();
+            info!("TVIEW: Transaction started, cleared thread-local state for connection pooling safety");
+        }
+    });
+
+    if result.is_err() {
+        error!("PANIC in transaction start callback - this is a bug!");
     }
 }
 
@@ -163,53 +177,60 @@ unsafe extern "C" fn tview_subxact_callback(
     _parent_subid: pg_sys::SubTransactionId,
     _arg: *mut c_void,
 ) {
-    match event {
-        pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
-            // SAVEPOINT created: increment depth and snapshot current queue
-            SAVEPOINT_DEPTH.with(|d| {
-                let mut depth = d.borrow_mut();
-                *depth += 1;
-            });
+    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    let result = std::panic::catch_unwind(|| {
+        match event {
+            pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
+                // SAVEPOINT created: increment depth and snapshot current queue
+                SAVEPOINT_DEPTH.with(|d| {
+                    let mut depth = d.borrow_mut();
+                    *depth += 1;
+                });
 
-            // Take snapshot of current queue state
-            let snapshot = take_queue_snapshot();
-            QUEUE_SNAPSHOTS.with(|s| {
-                s.borrow_mut().push(snapshot);
-            });
+                // Take snapshot of current queue state
+                let snapshot = take_queue_snapshot();
+                QUEUE_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().push(snapshot);
+                });
 
-            info!("TVIEW: Savepoint created (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
-        }
-        pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
-            // ROLLBACK TO SAVEPOINT: restore queue to snapshot
-            SAVEPOINT_DEPTH.with(|d| {
-                let mut depth = d.borrow_mut();
-                *depth -= 1;
-            });
+                info!("TVIEW: Savepoint created (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+            }
+            pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
+                // ROLLBACK TO SAVEPOINT: restore queue to snapshot
+                SAVEPOINT_DEPTH.with(|d| {
+                    let mut depth = d.borrow_mut();
+                    *depth -= 1;
+                });
 
-            // Restore queue from snapshot
-            if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
-                // Replace current queue with the snapshot
-                super::state::replace_queue(snapshot);
-                info!("TVIEW: Savepoint rolled back (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+                // Restore queue from snapshot
+                if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
+                    // Replace current queue with the snapshot
+                    super::state::replace_queue(snapshot);
+                    info!("TVIEW: Savepoint rolled back (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+                }
+            }
+            pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
+                // RELEASE SAVEPOINT: just decrement depth and discard snapshot
+                SAVEPOINT_DEPTH.with(|d| {
+                    let mut depth = d.borrow_mut();
+                    *depth -= 1;
+                });
+
+                // Discard the snapshot (savepoint committed)
+                QUEUE_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().pop();
+                });
+
+                info!("TVIEW: Savepoint released (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
+            }
+            _ => {
+                // Ignore other subtransaction events
             }
         }
-        pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
-            // RELEASE SAVEPOINT: just decrement depth and discard snapshot
-            SAVEPOINT_DEPTH.with(|d| {
-                let mut depth = d.borrow_mut();
-                *depth -= 1;
-            });
+    });
 
-            // Discard the snapshot (savepoint committed)
-            QUEUE_SNAPSHOTS.with(|s| {
-                s.borrow_mut().pop();
-            });
-
-            info!("TVIEW: Savepoint released (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
-        }
-        _ => {
-            // Ignore other subtransaction events
-        }
+    if result.is_err() {
+        error!("PANIC in subtransaction callback - this is a bug!");
     }
 }
 

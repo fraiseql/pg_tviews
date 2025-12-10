@@ -95,11 +95,11 @@ impl TviewMeta {
 
             let result = if let Some(row) = rows.next() {
                 // Extract existing arrays
-                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
-                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
+                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
+                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
 
                 // Extract NEW arrays - dependency_types (TEXT[])
-                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
+                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
                 // dependency_paths (TEXT[][]) - array of arrays
@@ -109,12 +109,24 @@ impl TviewMeta {
 
                 // array_match_keys (TEXT[]) with NULL values
                 let array_keys: Option<Vec<Option<String>>> =
-                    row["array_match_keys"].value().unwrap_or(None);
+                    row["array_match_keys"].value()?;
 
                 Some(Self {
-                    tview_oid: row["tview_oid"].value().unwrap().unwrap(),
-                    view_oid: row["view_oid"].value().unwrap().unwrap(),
-                    entity_name: row["entity"].value().unwrap().unwrap(),
+                    tview_oid: row["tview_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "tview_oid column is NULL".to_string(),
+                        }))?,
+                    view_oid: row["view_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "view_oid column is NULL".to_string(),
+                        }))?,
+                    entity_name: row["entity"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "entity column is NULL".to_string(),
+                        }))?,
                     sync_mode: 's', // Default to synchronous
                     fk_columns: fk_cols_val.unwrap_or_default(),
                     uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
@@ -144,11 +156,11 @@ impl TviewMeta {
 
             let result = if let Some(row) = rows.next() {
                 // Extract existing arrays
-                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
-                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
+                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
+                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
 
                 // Extract NEW arrays - dependency_types (TEXT[])
-                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
+                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
                 // dependency_paths (TEXT[][]) - array of arrays
@@ -158,12 +170,24 @@ impl TviewMeta {
 
                 // array_match_keys (TEXT[]) with NULL values
                 let array_keys: Option<Vec<Option<String>>> =
-                    row["array_match_keys"].value().unwrap_or(None);
+                    row["array_match_keys"].value()?;
 
                 Some(Self {
-                    tview_oid: row["tview_oid"].value().unwrap().unwrap(),
-                    view_oid: row["view_oid"].value().unwrap().unwrap(),
-                    entity_name: row["entity"].value().unwrap().unwrap(),
+                    tview_oid: row["tview_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "tview_oid column is NULL".to_string(),
+                        }))?,
+                    view_oid: row["view_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "view_oid column is NULL".to_string(),
+                        }))?,
+                    entity_name: row["entity"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "entity column is NULL".to_string(),
+                        }))?,
                     sync_mode: 's',
                     fk_columns: fk_cols_val.unwrap_or_default(),
                     uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
@@ -227,15 +251,15 @@ impl TviewMeta {
     /// Parse SPI row into TviewMeta struct
     fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<TviewMeta> {
         // Extract existing arrays
-        let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
-        let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
+        let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
+        let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
 
         // Extract dependency_types (TEXT[])
-        let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
+        let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
         let dep_types = Self::parse_dependency_types(dep_types_raw);
 
         // dependency_paths (TEXT[]) - stored as flat array, parse as single-element paths
-        let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value().unwrap_or(None);
+        let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
         let dep_paths: Vec<Option<Vec<String>>> = dep_paths_raw
             .unwrap_or_default()
             .into_iter()
@@ -243,12 +267,24 @@ impl TviewMeta {
             .collect();
 
         // array_match_keys (TEXT[]) with NULL values
-        let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value().unwrap_or(None);
+        let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
         Ok(TviewMeta {
-            tview_oid: row["tview_oid"].value().unwrap().unwrap(),
-            view_oid: row["view_oid"].value().unwrap().unwrap(),
-            entity_name: row["entity"].value().unwrap().unwrap(),
+                    tview_oid: row["tview_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "tview_oid column is NULL".to_string(),
+                        }))?,
+                    view_oid: row["view_oid"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "view_oid column is NULL".to_string(),
+                        }))?,
+                    entity_name: row["entity"].value()?
+                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                            query: "".to_string(),
+                            error: "entity column is NULL".to_string(),
+                        }))?,
             sync_mode: 's', // Default to synchronous
             fk_columns: fk_cols_val.unwrap_or_default(),
             uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),

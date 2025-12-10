@@ -133,6 +133,31 @@ pub enum TViewError {
         message: String,
     },
 
+    /// Configuration error (invalid GUC values)
+    ConfigError {
+        setting: String,
+        value: String,
+        reason: String,
+    },
+
+    /// Cache error (poisoned mutex, corruption)
+    CacheError {
+        cache_name: String,
+        reason: String,
+    },
+
+    /// FFI callback error (panic in C context)
+    CallbackError {
+        callback_name: String,
+        error: String,
+    },
+
+    /// Metrics error (tracking failure)
+    MetricsError {
+        operation: String,
+        error: String,
+    },
+
     /// Internal error (bug in extension)
     InternalError {
         message: String,
@@ -174,6 +199,10 @@ impl TViewError {
             CatalogError { .. } => "XX000",
             SpiError { .. } => "XX000",
             SerializationError { .. } => "XX000",
+            ConfigError { .. } => "XX000",
+            CacheError { .. } => "XX000",
+            CallbackError { .. } => "XX000",
+            MetricsError { .. } => "XX000",
             InternalError { .. } => "XX000",
         }
     }
@@ -260,6 +289,18 @@ impl fmt::Display for TViewError {
             SerializationError { message } => {
                 write!(f, "Serialization error: {}", message)
             }
+            ConfigError { setting, value, reason } => {
+                write!(f, "Configuration error for '{}': {} (value: {})", setting, reason, value)
+            }
+            CacheError { cache_name, reason } => {
+                write!(f, "Cache '{}' error: {}", cache_name, reason)
+            }
+            CallbackError { callback_name, error } => {
+                write!(f, "FFI callback '{}' failed: {}", callback_name, error)
+            }
+            MetricsError { operation, error } => {
+                write!(f, "Metrics operation '{}' failed: {}", operation, error)
+            }
             InternalError { message, file, line } => {
                 write!(f, "Internal error at {}:{}: {}\nPlease report this bug.",
                        file, line, message)
@@ -279,6 +320,43 @@ impl From<pgrx::spi::Error> for TViewError {
         TViewError::SpiError {
             query: "Unknown".to_string(),
             error: e.to_string(),
+        }
+    }
+}
+
+/// Convert serde_json::Error to TViewError
+impl From<serde_json::Error> for TViewError {
+    fn from(e: serde_json::Error) -> Self {
+        TViewError::SerializationError {
+            message: format!("JSON serialization error: {}", e),
+        }
+    }
+}
+
+/// Convert bincode::Error to TViewError
+impl From<bincode::Error> for TViewError {
+    fn from(e: bincode::Error) -> Self {
+        TViewError::SerializationError {
+            message: format!("Binary serialization error: {}", e),
+        }
+    }
+}
+
+/// Convert regex::Error to TViewError
+impl From<regex::Error> for TViewError {
+    fn from(e: regex::Error) -> Self {
+        TViewError::InvalidSelectStatement {
+            sql: "Unknown".to_string(),
+            reason: format!("Regex compilation failed: {}", e),
+        }
+    }
+}
+
+/// Convert std::io::Error to TViewError
+impl From<std::io::Error> for TViewError {
+    fn from(e: std::io::Error) -> Self {
+        TViewError::SerializationError {
+            message: format!("I/O error: {}", e),
         }
     }
 }
@@ -385,6 +463,11 @@ mod tests {
             TViewError::BatchTooLarge { size: 1, max_size: 1 },
             TViewError::CatalogError { operation: "test".to_string(), pg_error: "test".to_string() },
             TViewError::SpiError { query: "test".to_string(), error: "test".to_string() },
+            TViewError::SerializationError { message: "test".to_string() },
+            TViewError::ConfigError { setting: "test".to_string(), value: "test".to_string(), reason: "test".to_string() },
+            TViewError::CacheError { cache_name: "test".to_string(), reason: "test".to_string() },
+            TViewError::CallbackError { callback_name: "test".to_string(), error: "test".to_string() },
+            TViewError::MetricsError { operation: "test".to_string(), error: "test".to_string() },
             TViewError::InternalError { message: "test".to_string(), file: "test", line: 1 },
         ];
 

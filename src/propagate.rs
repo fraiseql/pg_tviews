@@ -1,5 +1,27 @@
 use pgrx::prelude::*;
 
+/// Propagation Engine: Cascade Refresh for Dependent Views
+///
+/// This module handles cascading refreshes when TVIEW data changes:
+/// - **Parent Discovery**: Finds views that depend on changed entities
+/// - **Affected Row Identification**: Locates rows impacted by changes
+/// - **Cascade Refresh**: Updates dependent views automatically
+/// - **Cycle Prevention**: Avoids infinite loops in dependency chains
+///
+/// ## Propagation Flow
+///
+/// 1. **Change Detection**: Trigger identifies changed base table row
+/// 2. **Parent Analysis**: Find TVIEWs that reference this entity
+/// 3. **Impact Assessment**: Identify which parent rows are affected
+/// 4. **Cascade Refresh**: Update affected parent rows
+/// 5. **Recursive Propagation**: Handle multi-level dependencies
+///
+/// ## Performance Optimizations
+///
+/// - Batch operations for multiple affected rows
+/// - Early termination for unchanged data
+/// - Dependency graph caching
+/// - Configurable propagation depth limits
 use crate::refresh::main::{ViewRow, refresh_pk};
 use crate::refresh::batch;
 use crate::catalog::TviewMeta;
@@ -33,12 +55,13 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
         info!("  Cascading to {}: {} affected rows", parent_entity, affected_pks.len());
 
         // Load parent TVIEW metadata to get view_oid for refresh
-        let parent_meta = TviewMeta::load_by_entity(&parent_entity)?;
-        if parent_meta.is_none() {
-            warning!("No metadata found for parent entity {}", parent_entity);
-            continue;
-        }
-        let parent_meta = parent_meta.unwrap();
+        let parent_meta = match TviewMeta::load_by_entity(&parent_entity)? {
+            Some(meta) => meta,
+            None => {
+                warning!("No metadata found for parent entity {}", parent_entity);
+                continue;
+            }
+        };
 
         // Use batch refresh for large cascades, individual refresh for small ones
         if affected_pks.len() >= 10 {

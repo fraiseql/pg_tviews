@@ -1,3 +1,32 @@
+//! Metadata Management: TVIEW Catalog Tables and Schema
+//!
+//! This module manages the system catalog tables for TVIEW metadata:
+//! - **pg_tview_meta**: Core TVIEW definitions and relationships
+//! - **pg_tview_pending_refreshes**: 2PC transaction queue persistence
+//! - **pg_tview_monitoring**: Performance metrics and statistics
+//! - **Schema Management**: Automatic table creation and updates
+//!
+//! ## Catalog Tables
+//!
+//! ### pg_tview_meta
+//! Stores complete TVIEW definitions:
+//! - Entity name and OIDs
+//! - SQL definition and dependencies
+//! - Foreign key relationships
+//! - Dependency types and paths
+//!
+//! ### pg_tview_pending_refreshes
+//! Persists refresh queues for 2PC transactions:
+//! - Transaction GID linkage
+//! - Serialized refresh operations
+//! - Expiration handling
+//!
+//! ## Extension Lifecycle
+//!
+//! - **CREATE EXTENSION**: Creates catalog tables
+//! - **ALTER EXTENSION**: Handles schema migrations
+//! - **DROP EXTENSION**: Cleans up metadata
+
 use pgrx::prelude::*;
 use crate::error::{TViewError, TViewResult};
 

@@ -1,0 +1,202 @@
+src/hooks.rs:80:            *PREPARING_GID.lock().unwrap() = Some(gid);
+src/hooks.rs:397:    PREPARING_GID.lock().unwrap()
+src/ddl/create.rs:434:            let col_name: String = row[1].value()?.unwrap();
+src/ddl/create.rs:435:            let data_type: String = row[2].value()?.unwrap();
+src/dependency/graph.rs:320:        Spi::run("CREATE TABLE tb_test (pk INTEGER PRIMARY KEY, id UUID, data JSONB)").unwrap();
+src/dependency/graph.rs:323:        Spi::run("CREATE VIEW v_test AS SELECT * FROM tb_test").unwrap();
+src/dependency/graph.rs:326:        let graph = find_base_tables("v_test").unwrap();
+src/dependency/graph.rs:331:        let table_name = get_object_name(graph.base_tables[0]).unwrap();
+src/dependency/graph.rs:338:        Spi::run("CREATE TABLE tb_user (pk INTEGER PRIMARY KEY, name TEXT)").unwrap();
+src/dependency/graph.rs:339:        Spi::run("CREATE TABLE tb_post (pk INTEGER PRIMARY KEY, fk_user INTEGER, title TEXT)").unwrap();
+src/dependency/graph.rs:342:        Spi::run("CREATE VIEW v_user AS SELECT * FROM tb_user").unwrap();
+src/dependency/graph.rs:347:        ").unwrap();
+src/dependency/graph.rs:350:        let graph = find_base_tables("v_post").unwrap();
+src/dependency/graph.rs:357:            .map(|&oid| get_object_name(oid).unwrap())
+src/dependency/graph.rs:367:        Spi::run("CREATE TABLE tb_base (pk INTEGER PRIMARY KEY, value TEXT)").unwrap();
+src/dependency/graph.rs:368:        Spi::run("CREATE VIEW v_a AS SELECT * FROM tb_base WHERE value = 'a'").unwrap();
+src/dependency/graph.rs:373:        Spi::run("CREATE VIEW v_b AS SELECT * FROM v_a").unwrap();
+src/dependency/graph.rs:374:        Spi::run("CREATE VIEW v_c AS SELECT * FROM v_b").unwrap();
+src/dependency/graph.rs:378:        let graph = find_base_tables("v_c").unwrap();
+src/catalog.rs:115:                    tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+src/catalog.rs:116:                    view_oid: row["view_oid"].value().unwrap().unwrap(),
+src/catalog.rs:117:                    entity_name: row["entity"].value().unwrap().unwrap(),
+src/catalog.rs:164:                    tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+src/catalog.rs:165:                    view_oid: row["view_oid"].value().unwrap().unwrap(),
+src/catalog.rs:166:                    entity_name: row["entity"].value().unwrap().unwrap(),
+src/catalog.rs:249:            tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+src/catalog.rs:250:            view_oid: row["view_oid"].value().unwrap().unwrap(),
+src/catalog.rs:251:            entity_name: row["entity"].value().unwrap().unwrap(),
+src/propagate.rs:41:        let parent_meta = parent_meta.unwrap();
+src/refresh/cache.rs:62:            let _data: JsonB = row["data"].value().unwrap().unwrap();
+src/refresh/cache.rs:79:    let mut cache = PREPARED_STATEMENTS.lock().unwrap();
+src/refresh/cache.rs:118:    let mut cache = PREPARED_STATEMENTS.lock().unwrap();
+src/refresh/cache.rs:129:    let cache = PREPARED_STATEMENTS.lock().unwrap();
+src/refresh/cache.rs:143:    .unwrap()
+src/refresh/cache.rs:168:            let mut cache = PREPARED_STATEMENTS.lock().unwrap();
+src/refresh/main.rs:175:        let data: JsonB = row_data["data"].value().unwrap().unwrap();
+src/refresh/main.rs:485:        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+src/refresh/main.rs:490:        )").unwrap();
+src/refresh/main.rs:492:        Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice')").unwrap();
+src/refresh/main.rs:493:        Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Hello')").unwrap();
+src/refresh/main.rs:509:        ").unwrap();
+src/refresh/main.rs:515:        ").unwrap().unwrap();
+src/refresh/main.rs:521:        ").unwrap().unwrap();
+src/refresh/main.rs:528:        Spi::run("UPDATE tb_user SET name = 'Alice Updated' WHERE pk_user = 1").unwrap();
+src/refresh/main.rs:532:            .unwrap()
+src/refresh/main.rs:533:            .unwrap();
+src/refresh/main.rs:535:        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+src/refresh/main.rs:540:        ").unwrap().unwrap();
+src/refresh/main.rs:561:        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+src/refresh/main.rs:566:        )").unwrap();
+src/refresh/main.rs:572:        )").unwrap();
+src/refresh/main.rs:574:        Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice')").unwrap();
+src/refresh/main.rs:575:        Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Hello')").unwrap();
+src/refresh/main.rs:577:                  VALUES (1, 1, 1, 'Great post!')").unwrap();
+src/refresh/main.rs:579:                  VALUES (2, 1, 1, 'Thanks!')").unwrap();
+src/refresh/main.rs:598:        ").unwrap();
+src/refresh/main.rs:604:        ").unwrap().unwrap();
+src/refresh/main.rs:610:        ").unwrap().unwrap();
+src/refresh/main.rs:612:        let initial_comments = initial_data.0["comments"].as_array().unwrap();
+src/refresh/main.rs:616:        Spi::run("UPDATE tb_comment SET text = 'Updated!' WHERE pk_comment = 1").unwrap();
+src/refresh/main.rs:620:            .unwrap()
+src/refresh/main.rs:621:            .unwrap();
+src/refresh/main.rs:623:        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+src/refresh/main.rs:628:        ").unwrap().unwrap();
+src/refresh/main.rs:630:        let comments = updated_data.0["comments"].as_array().unwrap();
+src/refresh/main.rs:655:        Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+src/refresh/main.rs:660:        )").unwrap();
+src/refresh/main.rs:662:        Spi::run("INSERT INTO tb_category (pk_category, name) VALUES (1, 'Tech')").unwrap();
+src/refresh/main.rs:663:        Spi::run("INSERT INTO tb_post (pk_post, fk_category, title) VALUES (1, 1, 'Hello')").unwrap();
+src/refresh/main.rs:675:        ").unwrap();
+src/refresh/main.rs:681:        ").unwrap().unwrap();
+src/refresh/main.rs:687:        ").unwrap().unwrap();
+src/refresh/main.rs:693:        Spi::run("UPDATE tb_category SET name = 'Technology' WHERE pk_category = 1").unwrap();
+src/refresh/main.rs:697:            .unwrap()
+src/refresh/main.rs:698:            .unwrap();
+src/refresh/main.rs:700:        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+src/refresh/main.rs:705:        ").unwrap().unwrap();
+src/refresh/main.rs:728:        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT, email TEXT)").unwrap();
+src/refresh/main.rs:734:        )").unwrap();
+src/refresh/main.rs:740:        )").unwrap();
+src/refresh/main.rs:743:        Spi::run("INSERT INTO tb_user (pk_user, name, email) VALUES (1, 'Alice', 'alice@example.com')").unwrap();
+src/refresh/main.rs:744:        Spi::run("INSERT INTO tb_user (pk_user, name, email) VALUES (2, 'Bob', 'bob@example.com')").unwrap();
+src/refresh/main.rs:746:                  VALUES (1, 1, 'First Post', 'Hello World')").unwrap();
+src/refresh/main.rs:748:                  VALUES (1, 1, 1, 'Great post!')").unwrap();
+src/refresh/main.rs:750:                  VALUES (2, 1, 2, 'Thanks for sharing!')").unwrap();
+src/refresh/main.rs:773:        ").unwrap();
+src/refresh/main.rs:777:            .unwrap().unwrap();
+src/refresh/main.rs:781:        assert_eq!(initial.0["comments"].as_array().unwrap().len(), 2);
+src/refresh/main.rs:785:                  WHERE pk_user = 1").unwrap();
+src/refresh/main.rs:788:            .unwrap().unwrap();
+src/refresh/main.rs:789:        crate::refresh::refresh_pk(user_oid, 1).unwrap();
+src/refresh/main.rs:792:            .unwrap().unwrap();
+src/refresh/main.rs:801:        assert_eq!(after_author_update.0["comments"].as_array().unwrap().len(), 2);
+src/refresh/main.rs:804:        Spi::run("UPDATE tb_comment SET text = 'Updated comment!' WHERE pk_comment = 1").unwrap();
+src/refresh/main.rs:807:            .unwrap().unwrap();
+src/refresh/main.rs:808:        crate::refresh::refresh_pk(comment_oid, 1).unwrap();
+src/refresh/main.rs:811:            .unwrap().unwrap();
+src/refresh/main.rs:813:        let comments = after_comment_update.0["comments"].as_array().unwrap();
+src/refresh/main.rs:842:        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+src/refresh/main.rs:847:        )").unwrap();
+src/refresh/main.rs:849:        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
+src/refresh/main.rs:850:        Spi::run("INSERT INTO tb_post VALUES (1, 1, 'Hello')").unwrap();
+src/refresh/main.rs:858:        ").unwrap();
+src/refresh/main.rs:867:        ").unwrap();
+src/refresh/main.rs:877:        Spi::run("UPDATE tb_user SET name = 'Alice Fallback' WHERE pk_user = 1").unwrap();
+src/refresh/main.rs:880:            .unwrap().unwrap();
+src/refresh/main.rs:888:            .unwrap().unwrap();
+src/refresh/main.rs:905:        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+src/refresh/main.rs:907:        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
+src/refresh/main.rs:915:        ").unwrap();
+src/refresh/main.rs:924:        ").unwrap();
+src/refresh/main.rs:927:        Spi::run("UPDATE tb_user SET name = 'Alice Legacy' WHERE pk_user = 1").unwrap();
+src/refresh/main.rs:930:            .unwrap().unwrap();
+src/refresh/main.rs:938:            .unwrap().unwrap();
+src/refresh/batch.rs:115:            let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
+src/refresh/batch.rs:116:            let data: JsonB = row["data"].value().unwrap().unwrap();
+src/refresh/bulk.rs:85:            let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
+src/refresh/bulk.rs:86:            let data: JsonB = row["data"].value().unwrap().unwrap();
+src/refresh/bulk.rs:130:    .unwrap()
+src/refresh/array_ops.rs:192:        "#).unwrap();
+src/refresh/array_ops.rs:196:        "#).unwrap();
+src/refresh/array_ops.rs:207:        ).unwrap();
+src/refresh/array_ops.rs:210:        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1").unwrap().unwrap();
+src/refresh/array_ops.rs:211:        let items = result.0["items"].as_array().unwrap();
+src/refresh/array_ops.rs:225:        "#).unwrap();
+src/refresh/array_ops.rs:229:        "#).unwrap();
+src/refresh/array_ops.rs:240:        ).unwrap();
+src/refresh/array_ops.rs:243:        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1").unwrap().unwrap();
+src/refresh/array_ops.rs:244:        let items = result.0["items"].as_array().unwrap();
+src/refresh/array_ops.rs:252:        let available = check_array_functions_available().unwrap();
+src/queue/persistence.rs:160:        let jsonb = serialized.into_jsonb().unwrap();
+src/queue/persistence.rs:161:        let deserialized = SerializedQueue::from_jsonb(jsonb).unwrap();
+src/queue/persistence.rs:176:        let binary = serialized.to_binary().unwrap();
+src/queue/persistence.rs:177:        let deserialized = SerializedQueue::from_binary(&binary).unwrap();
+src/queue/persistence.rs:192:        let compressed = serialized.to_compressed_jsonb().unwrap();
+src/queue/persistence.rs:193:        let deserialized = SerializedQueue::from_compressed_jsonb(&compressed).unwrap();
+src/queue/cache.rs:27:        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+src/queue/cache.rs:45:        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+src/queue/cache.rs:63:            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/cache.rs:75:            let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/cache.rs:85:        let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/cache.rs:105:        let cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+src/queue/cache.rs:113:            let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/cache.rs:119:            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/cache.rs:128:            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+src/queue/graph.rs:45:                let entity: String = row["entity"].value().unwrap().unwrap();
+src/queue/graph.rs:187:        let topo = topological_sort(&entities, &children).unwrap();
+src/queue/graph.rs:192:        let company_idx = topo.iter().position(|e| e == "company").unwrap();
+src/queue/graph.rs:193:        let user_idx = topo.iter().position(|e| e == "user").unwrap();
+src/queue/graph.rs:194:        let post_idx = topo.iter().position(|e| e == "post").unwrap();
+src/queue/graph.rs:195:        let feed_idx = topo.iter().position(|e| e == "feed").unwrap();
+src/queue/integration_tests.rs:11:        enqueue_refresh("user", 1).unwrap();
+src/queue/integration_tests.rs:12:        enqueue_refresh("post", 10).unwrap();
+src/queue/integration_tests.rs:13:        enqueue_refresh("user", 1).unwrap(); // duplicate
+src/queue/integration_tests.rs:14:        enqueue_refresh("post", 20).unwrap();
+src/queue/integration_tests.rs:15:        enqueue_refresh("user", 2).unwrap();
+src/queue/ops.rs:109:        enqueue_refresh("user", 1).unwrap();
+src/queue/ops.rs:110:        enqueue_refresh("post", 2).unwrap();
+src/queue/ops.rs:111:        enqueue_refresh("user", 1).unwrap(); // duplicate
+src/queue/ops.rs:125:        enqueue_refresh("user", 1).unwrap();
+src/queue/ops.rs:126:        enqueue_refresh("post", 2).unwrap();
+src/lib.rs:384:            let gid: String = row["gid"].value().unwrap().unwrap();
+src/lib.rs:385:            let queue_size: i32 = row["queue_size"].value().unwrap().unwrap();
+src/lib.rs:553:                tview_oid: row["tview_oid"].value().unwrap().unwrap(),
+src/lib.rs:554:                view_oid: row["view_oid"].value().unwrap().unwrap(),
+src/lib.rs:555:                entity_name: row["entity"].value().unwrap().unwrap(),
+src/lib.rs:642:        let version = result.unwrap();
+src/lib.rs:644:        assert!(version.unwrap().starts_with("0.1.0"));
+src/lib.rs:653:        }).unwrap();
+src/lib.rs:677:        Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
+src/lib.rs:678:        Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
+src/lib.rs:685:        assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_ivm");
+src/utils.rs:43:            Ok(row["relname"].value().unwrap().unwrap())
+src/schema/mod.rs:63:        let jsonb = schema.to_jsonb().unwrap();
+src/schema/types.rs:73:        )").unwrap();
+src/schema/types.rs:85:        let types = infer_column_types("test_types", &columns).unwrap();
+src/schema/types.rs:106:        Spi::run("CREATE TABLE test_missing_col (id UUID)").unwrap();
+src/schema/types.rs:116:        Spi::run("CREATE TABLE test_exists (id UUID)").unwrap();
+src/schema/inference.rs:310:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:324:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:338:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:349:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:389:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:401:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:413:        let schema = infer_schema(sql).unwrap();
+src/schema/inference.rs:421:        let schema = infer_schema(sql).unwrap();
+src/schema/parser.rs:192:    let last_word = words.last().unwrap();
+src/schema/parser.rs:235:        let cols = parse_select_columns(sql).unwrap();
+src/schema/parser.rs:242:        let cols = parse_select_columns(sql).unwrap();
+src/schema/parser.rs:249:        let cols = parse_select_columns(sql).unwrap();
+src/schema/parser.rs:256:        let cols = parse_select_columns(sql).unwrap();
+src/schema/parser.rs:278:        assert_eq!(extract_column_name("id").unwrap(), "id");
+src/schema/parser.rs:279:        assert_eq!(extract_column_name("pk_post").unwrap(), "pk_post");
+src/schema/parser.rs:280:        assert_eq!(extract_column_name("u.name").unwrap(), "name");
+src/schema/parser.rs:285:        assert_eq!(extract_column_name("u.id AS user_id").unwrap(), "user_id");
+src/schema/parser.rs:286:        assert_eq!(extract_column_name("jsonb_build_object('key', 'value') AS data").unwrap(), "data");
+src/parser/mod.rs:124:    let tview_name = caps.get(3).unwrap().as_str().to_string();
+src/parser/mod.rs:140:        let parsed = parse_create_tview(sql).unwrap();
+src/parser/mod.rs:150:        let parsed = parse_create_tview(sql).unwrap();
+src/parser/mod.rs:166:        let parsed = parse_create_tview(sql).unwrap();
+src/parser/mod.rs:189:        let parsed = parse_drop_tview(sql).unwrap();
+src/parser/mod.rs:198:        let parsed = parse_drop_tview(sql).unwrap();

@@ -1,3 +1,30 @@
+//! Schema Analysis: TVIEW Structure Inference and Validation
+//!
+//! This module analyzes SELECT statements to understand TVIEW structure:
+//! - **Column Type Inference**: Determines PostgreSQL types for TVIEW columns
+//! - **Primary Key Detection**: Identifies PK columns for refresh operations
+//! - **Foreign Key Analysis**: Discovers relationships for cascade updates
+//! - **Dependency Resolution**: Maps base tables to TVIEW columns
+//!
+//! ## Key Components
+//!
+//! - `TViewSchema`: Complete schema information for a TVIEW
+//! - `infer_schema()`: Main entry point for schema analysis
+//! - `parse_select_columns()`: Column extraction from SQL
+//! - `infer_column_types()`: Type inference for columns
+//!
+//! ## Example
+//!
+//! ```rust
+//! use pg_tviews::schema::inference::infer_schema;
+//!
+//! let sql = "SELECT id, name, data FROM users WHERE active = true";
+//! let schema = infer_schema(sql)?;
+//!
+//! assert_eq!(schema.pk_column, Some("id".to_string()));
+//! assert_eq!(schema.additional_columns, vec!["name".to_string(), "data".to_string()]);
+//! ```
+
 pub mod parser;
 pub mod inference;
 pub mod types;

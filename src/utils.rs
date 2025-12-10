@@ -1,4 +1,24 @@
 use pgrx::prelude::*;
+/// Utilities: Common Helper Functions and PostgreSQL Integration
+///
+/// This module provides utility functions used throughout pg_tviews:
+/// - **Primary Key Extraction**: Gets PK values from trigger tuples
+/// - **OID Resolution**: Maps PostgreSQL OIDs to names and vice versa
+/// - **SPI Helpers**: Common database query patterns
+/// - **Type Conversions**: PostgreSQL type handling
+///
+/// ## Key Functions
+///
+/// - `extract_pk()`: Primary key extraction from trigger data
+/// - `relname_from_oid()`: Table/view name lookup by OID
+/// - `lookup_view_for_source()`: View OID resolution
+///
+/// ## Design Principles
+///
+/// - Pure functions where possible
+/// - SPI error handling with proper Result types
+/// - Minimal dependencies on global state
+/// - Reusable across different modules
 use pgrx::pg_sys::Oid;
 
 /// Extracts a `pk_*` integer from NEW or OLD tuple by convention.
@@ -40,9 +60,16 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         )?;
 
         if let Some(row) = rows.next() {
-            Ok(row["relname"].value().unwrap().unwrap())
+            row["relname"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
+                    error: "relname column is NULL".to_string(),
+                }))
         } else {
-            error!("No pg_class entry for oid: {:?}", oid)
+            Err(spi::Error::from(crate::TViewError::SpiError {
+                query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
+                error: format!("No pg_class entry for oid: {:?}", oid),
+            }))
         }
     })
 }

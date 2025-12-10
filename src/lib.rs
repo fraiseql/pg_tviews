@@ -1,4 +1,48 @@
 use pgrx::prelude::*;
+/**
+# pg_tviews - PostgreSQL Transactional Views
+
+A PostgreSQL extension that provides transactional materialized views with
+incremental refresh capabilities. TVIEWs automatically maintain consistency
+between base tables and derived views through trigger-based change tracking.
+
+## Architecture
+
+pg_tviews implements a sophisticated refresh system:
+
+1. **Change Tracking**: Triggers on base tables enqueue changes to a transaction-scoped queue
+2. **Dependency Analysis**: Resolves view dependencies using topological sorting
+3. **Incremental Refresh**: Updates only affected rows in dependent views
+4. **Transaction Safety**: All refreshes occur within the same transaction as the original changes
+
+## Key Features
+
+- **Transactional Consistency**: View refreshes are atomic with base table changes
+- **Dependency Resolution**: Handles complex multi-level view dependencies
+- **Performance Optimized**: Incremental updates avoid full view rebuilds
+- **PostgreSQL Native**: Written as a C extension using pgrx framework
+- **2PC Support**: Transaction queue persistence for prepared transactions
+
+## Usage
+
+```sql
+-- Create a transactional view
+SELECT pg_tviews_create('user_posts',
+    'SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id');
+
+-- Insert data (view automatically refreshes)
+INSERT INTO users (name) VALUES ('Alice');
+INSERT INTO posts (user_id, title) VALUES (1, 'Hello World');
+```
+
+## Safety
+
+This extension is designed with PostgreSQL's safety requirements in mind:
+- No panics in FFI callbacks (all wrapped in `catch_unwind`)
+- Proper error handling with meaningful error messages
+- Transaction rollback on refresh failures
+- Memory safety through Rust's ownership system
+*/
 use pgrx::JsonB;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -347,7 +391,7 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
     let results: Vec<(String, i32, String)> = Spi::connect(|client| {
         // Try to acquire advisory lock (non-blocking)
         // Use a fixed hash for the lock key
-        const RECOVERY_LOCK_KEY: i64 = 0x7476696577735F72; // "tviews_r" in hex
+        const RECOVERY_LOCK_KEY: i64 = 0x7476_6965_7773_5F72; // "tviews_r" in hex
 
         let mut lock_result = client.select(
             &format!("SELECT pg_try_advisory_lock({})", RECOVERY_LOCK_KEY),
@@ -381,8 +425,16 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
         let mut results = Vec::new();
 
         for row in rows {
-            let gid: String = row["gid"].value().unwrap().unwrap();
-            let queue_size: i32 = row["queue_size"].value().unwrap().unwrap();
+            let gid: String = row["gid"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "SELECT gid, queue_size FROM pg_tview_pending_refreshes ...".to_string(),
+                    error: "gid column is NULL".to_string(),
+                }))?;
+            let queue_size: i32 = row["queue_size"].value()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "SELECT gid, queue_size FROM pg_tview_pending_refreshes ...".to_string(),
+                    error: "queue_size column is NULL".to_string(),
+                }))?;
 
             let status = match pg_tviews_commit_prepared(&gid) {
                 Ok(_) => {
@@ -547,12 +599,24 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
 
             // array_match_keys (TEXT[]) with NULL values
             let array_keys: Option<Vec<Option<String>>> =
-                row["array_match_keys"].value().unwrap_or(None);
+                row["array_match_keys"].value()?;
 
             result.push(catalog::TviewMeta {
-                tview_oid: row["tview_oid"].value().unwrap().unwrap(),
-                view_oid: row["view_oid"].value().unwrap().unwrap(),
-                entity_name: row["entity"].value().unwrap().unwrap(),
+                tview_oid: row["tview_oid"].value()?
+                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
+                        error: "tview_oid column is NULL".to_string(),
+                    }))?,
+                view_oid: row["view_oid"].value()?
+                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
+                        error: "view_oid column is NULL".to_string(),
+                    }))?,
+                entity_name: row["entity"].value()?
+                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
+                        error: "entity column is NULL".to_string(),
+                    }))?,
                 sync_mode: 's',
                 fk_columns: fk_cols_val.unwrap_or_default(),
                 uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),

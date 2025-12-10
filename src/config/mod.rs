@@ -1,3 +1,23 @@
+//! Configuration: Compile-time and Runtime Settings
+//!
+//! This module centralizes all configuration for pg_tviews:
+//! - **Compile-time constants**: Fixed limits and defaults
+//! - **Runtime settings**: Planned GUC-based configuration
+//! - **Feature flags**: Enable/disable optional functionality
+//!
+//! ## Current Configuration
+//!
+//! All settings are currently compile-time constants. Future versions
+//! will support PostgreSQL GUC (Grand Unified Configuration) variables
+//! for runtime configuration without recompilation.
+//!
+//! ## Key Settings
+//!
+//! - `MAX_DEPENDENCY_DEPTH`: Prevents infinite recursion in view hierarchies
+//! - `max_propagation_depth()`: Limits cascade refresh iterations
+//! - Cache enable/disable flags for performance tuning
+//! - Debug and metrics collection controls
+
 /// Maximum depth for pg_depend traversal
 /// Prevents infinite recursion and overly complex view hierarchies
 pub const MAX_DEPENDENCY_DEPTH: usize = 10;

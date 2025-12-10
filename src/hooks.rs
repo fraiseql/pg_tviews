@@ -1,3 +1,25 @@
+//! ProcessUtility Hooks: DDL Interception and Transaction Management
+//!
+//! This module implements PostgreSQL hooks for DDL statement interception:
+//! - **ProcessUtility Hook**: Intercepts CREATE/DROP TVIEW statements
+//! - **Transaction Callbacks**: Handles PREPARE/COMMIT/ABORT events
+//! - **GID Capture**: Stores transaction IDs for 2PC support
+//! - **DISCARD ALL**: Clears caches on connection pooling reset
+//!
+//! ## Hook Architecture
+//!
+//! PostgreSQL calls hooks at strategic points:
+//! 1. **ProcessUtility**: Before executing utility statements (DDL)
+//! 2. **Transaction Events**: At commit, abort, and prepare phases
+//! 3. **Subtransaction Events**: For savepoint handling
+//!
+//! ## Safety Considerations
+//!
+//! - Hooks run in PostgreSQL's execution context
+//! - Must not panic (all wrapped in `catch_unwind`)
+//! - Proper error handling to avoid corrupting transactions
+//! - Thread-safe global state management
+
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::ffi::CStr;
@@ -32,126 +54,133 @@ unsafe extern "C" fn tview_process_utility_hook(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
-    // Log ALL hook invocations to debug why DROP isn't being caught
-    let query_str = if !query_string.is_null() {
-        CStr::from_ptr(query_string).to_string_lossy().to_string()
-    } else {
-        "[NULL]".to_string()
-    };
-    info!("🔧 HOOK CALLED: {}", query_str);
+    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    let result = std::panic::catch_unwind(|| {
+        // Log ALL hook invocations to debug why DROP isn't being caught
+        let query_str = if !query_string.is_null() {
+            CStr::from_ptr(query_string).to_string_lossy().to_string()
+        } else {
+            "[NULL]".to_string()
+        };
+        info!("🔧 HOOK CALLED: {}", query_str);
 
-    // Skip extension-related statements to avoid infinite recursion during installation
-    let query_lower = query_str.to_lowercase();
-    if query_lower.contains("create extension") || query_lower.contains("drop extension") {
-        info!("  → Extension statement, passing through without interception");
-        call_prev_hook_or_standard(
-            pstmt,
-            query_string,
-            read_only_tree,
-            context,
-            params,
-            query_env,
-            dest,
-            qc,
-        );
-        return;
-    }
-
-    // Phase 9D: Check for DISCARD ALL (connection pooling cleanup)
-    if query_lower.trim() == "discard all" {
-        info!("TVIEW: DISCARD ALL detected, clearing all caches and thread-local state");
-
-        // Clear thread-local state
-        crate::queue::clear_queue_and_reset();
-
-        // Clear global caches
-        crate::queue::cache::graph_cache::invalidate();
-        crate::refresh::clear_prepared_statement_cache();
-        crate::queue::cache::table_cache::invalidate();
-
-        // Reset metrics
-        crate::metrics::metrics_api::reset_metrics();
-    }
-
-    // Check if this is PREPARE TRANSACTION
-    if query_lower.trim().starts_with("prepare transaction") {
-        // Extract GID from query: PREPARE TRANSACTION 'gid'
-        if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
-            *PREPARING_GID.lock().unwrap() = Some(gid);
-            info!("  → Captured GID for PREPARE TRANSACTION");
-        }
-    }
-
-    // Safety check
-    if pstmt.is_null() {
-        info!("  → pstmt is null, passing through");
-        call_prev_hook_or_standard(
-            pstmt,
-            query_string,
-            read_only_tree,
-            context,
-            params,
-            query_env,
-            dest,
-            qc,
-        );
-        return;
-    }
-
-    let pstmt_ref = &*pstmt;
-
-    // Check if this is a utility statement
-    if pstmt_ref.utilityStmt.is_null() {
-        info!("  → utilityStmt is null, passing through");
-        call_prev_hook_or_standard(
-            pstmt,
-            query_string,
-            read_only_tree,
-            context,
-            params,
-            query_env,
-            dest,
-            qc,
-        );
-        return;
-    }
-
-    let utility_stmt = pstmt_ref.utilityStmt;
-    let node_tag = (*utility_stmt).type_;
-    info!("  → node_tag = {:?}", node_tag);
-
-    // Check for CREATE TABLE AS
-    if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
-        let ctas = utility_stmt as *mut pg_sys::CreateTableAsStmt;
-        if handle_create_table_as(ctas, query_string) {
-            // We handled it - don't call standard utility
+        // Skip extension-related statements to avoid infinite recursion during installation
+        let query_lower = query_str.to_lowercase();
+        if query_lower.contains("create extension") || query_lower.contains("drop extension") {
+            info!("  → Extension statement, passing through without interception");
+            call_prev_hook_or_standard(
+                pstmt,
+                query_string,
+                read_only_tree,
+                context,
+                params,
+                query_env,
+                dest,
+                qc,
+            );
             return;
         }
-    }
 
-    // Check for DROP TABLE
-    if node_tag == pg_sys::NodeTag::T_DropStmt {
-        info!("  ✓ Detected T_DropStmt!");
-        let drop_stmt = utility_stmt as *mut pg_sys::DropStmt;
-        if handle_drop_table(drop_stmt, query_string) {
-            // We handled it - don't call standard utility
-            info!("  ✓ DROP was handled by hook, NOT calling standard utility");
+        // Phase 9D: Check for DISCARD ALL (connection pooling cleanup)
+        if query_lower.trim() == "discard all" {
+            info!("TVIEW: DISCARD ALL detected, clearing all caches and thread-local state");
+
+            // Clear thread-local state
+            crate::queue::clear_queue_and_reset();
+
+            // Clear global caches
+            crate::queue::cache::graph_cache::invalidate();
+            crate::refresh::clear_prepared_statement_cache();
+            crate::queue::cache::table_cache::invalidate();
+
+            // Reset metrics
+            crate::metrics::metrics_api::reset_metrics();
+        }
+
+        // Check if this is PREPARE TRANSACTION
+        if query_lower.trim().starts_with("prepare transaction") {
+            // Extract GID from query: PREPARE TRANSACTION 'gid'
+            if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
+                *PREPARING_GID.lock().unwrap() = Some(gid);
+                info!("  → Captured GID for PREPARE TRANSACTION");
+            }
+        }
+
+        // Safety check
+        if pstmt.is_null() {
+            info!("  → pstmt is null, passing through");
+            call_prev_hook_or_standard(
+                pstmt,
+                query_string,
+                read_only_tree,
+                context,
+                params,
+                query_env,
+                dest,
+                qc,
+            );
             return;
         }
-        info!("  → DROP not handled, passing through to standard utility");
-    }
 
-    // Not a tv_* statement - pass through
-    call_prev_hook_or_standard(
-        pstmt,
-        query_string,
-        read_only_tree,
-        context,
-        params,
-        query_env,
-        dest,
-        qc,
-    );
+        let pstmt_ref = &*pstmt;
+
+        // Check if this is a utility statement
+        if pstmt_ref.utilityStmt.is_null() {
+            info!("  → utilityStmt is null, passing through");
+            call_prev_hook_or_standard(
+                pstmt,
+                query_string,
+                read_only_tree,
+                context,
+                params,
+                query_env,
+                dest,
+                qc,
+            );
+            return;
+        }
+
+        let utility_stmt = pstmt_ref.utilityStmt;
+        let node_tag = (*utility_stmt).type_;
+        info!("  → node_tag = {:?}", node_tag);
+
+        // Check for CREATE TABLE AS
+        if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
+            let ctas = utility_stmt as *mut pg_sys::CreateTableAsStmt;
+            if handle_create_table_as(ctas, query_string) {
+                // We handled it - don't call standard utility
+                return;
+            }
+        }
+
+        // Check for DROP TABLE
+        if node_tag == pg_sys::NodeTag::T_DropStmt {
+            info!("  ✓ Detected T_DropStmt!");
+            let drop_stmt = utility_stmt as *mut pg_sys::DropStmt;
+            if handle_drop_table(drop_stmt, query_string) {
+                // We handled it - don't call standard utility
+                info!("  ✓ DROP was handled by hook, NOT calling standard utility");
+                return;
+            }
+            info!("  → DROP not handled, passing through to standard utility");
+        }
+
+        // Not a tv_* statement - pass through
+        call_prev_hook_or_standard(
+            pstmt,
+            query_string,
+            read_only_tree,
+            context,
+            params,
+            query_env,
+            dest,
+            qc,
+        );
+    });
+
+    if result.is_err() {
+        error!("PANIC in ProcessUtility hook - this is a bug!");
+    }
 }
 
 /// Handle CREATE TABLE tv_* AS SELECT ...
@@ -394,7 +423,8 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
 ///
 /// This is called by the transaction callback during PREPARE TRANSACTION.
 pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
-    PREPARING_GID.lock().unwrap()
+    PREPARING_GID.lock()
+        .expect("PREPARING_GID mutex poisoned - fatal error")
         .take() // Take and clear the GID
         .ok_or_else(|| crate::internal_error!("Not in a prepared transaction (GID not captured)"))
 }

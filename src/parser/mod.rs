@@ -1,3 +1,30 @@
+//! SQL Parser: TVIEW DDL Statement Parsing
+//!
+//! This module parses TVIEW Data Definition Language statements:
+//! - **CREATE TVIEW**: Extracts name and SELECT statement
+//! - **DROP TVIEW**: Handles IF EXISTS and schema-qualified names
+//! - **Validation**: Ensures proper TVIEW naming conventions
+//!
+//! ## Supported Syntax
+//!
+//! ```sql
+//! -- Create TVIEW
+//! CREATE TVIEW tv_entity AS SELECT id, data FROM base_table;
+//!
+//! -- Drop TVIEW
+//! DROP TVIEW [IF EXISTS] tv_entity;
+//!
+//! -- Schema-qualified
+//! CREATE TVIEW schema.tv_entity AS SELECT * FROM schema.base_table;
+//! ```
+//!
+//! ## Limitations (v1)
+//!
+//! - Regex-based parsing (not full SQL parser)
+//! - No support for CTEs (WITH clauses)
+//! - Comments may cause parsing issues
+//! - String literals containing keywords may confuse parser
+
 use crate::error::{TViewError, TViewResult};
 use regex::Regex;
 

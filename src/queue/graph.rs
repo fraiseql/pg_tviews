@@ -42,8 +42,20 @@ impl EntityDepGraph {
             let rows = client.select(query, None, None)?;
 
             for row in rows {
-                let entity: String = row["entity"].value().unwrap().unwrap();
-                let fk_columns: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
+                let entity: String = row["entity"].value()
+                    .map_err(|e| crate::TViewError::SpiError {
+                        query: query.to_string(),
+                        error: format!("Failed to get entity: {}", e),
+                    })?
+                    .ok_or_else(|| crate::TViewError::SpiError {
+                        query: query.to_string(),
+                        error: "entity column is NULL".to_string(),
+                    })?;
+                let fk_columns: Option<Vec<String>> = row["fk_columns"].value()
+                    .map_err(|e| crate::TViewError::SpiError {
+                        query: query.to_string(),
+                        error: format!("Failed to get fk_columns: {}", e),
+                    })?;
 
                 all_entities.insert(entity.clone());
 

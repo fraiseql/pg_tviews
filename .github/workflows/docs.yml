@@ -1,0 +1,16 @@
+name: Documentation
+
+on: [push, pull_request]
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Build docs
+        run: cargo doc --no-deps --all-features
+      - name: Check for warnings
+        run: cargo doc --no-deps 2>&1 | grep -q "warning:" && exit 1 || exit 0

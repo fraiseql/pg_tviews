@@ -1,0 +1,9 @@
+# Clippy configuration for pg_tviews
+# Phase 10E: Strict linting configuration
+
+# Note: Specific lint allows are configured in Cargo.toml [lints.clippy] section
+# This file is reserved for clippy.toml-specific settings
+
+# TODO: Enable pedantic lints gradually
+# pedantic = "warn"
+# nursery = "warn"
