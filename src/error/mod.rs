@@ -103,6 +103,18 @@ pub enum TViewError {
         max_size: usize,
     },
 
+    // ============ Graph and Propagation Errors (Phase 6D) ============
+    /// Dependency cycle detected in entity graph
+    DependencyCycle {
+        entities: Vec<String>,
+    },
+
+    /// Propagation exceeded maximum depth (possible infinite loop)
+    PropagationDepthExceeded {
+        max_depth: usize,
+        processed: usize,
+    },
+
     // ============ I/O and System Errors (XX000) ============
     /// PostgreSQL catalog operation failed
     CatalogError {
@@ -150,6 +162,9 @@ impl TViewError {
             CascadeDepthExceeded { .. } => "54001", // Statement too complex
             RefreshFailed { .. } => "XX000", // Internal error
             BatchTooLarge { .. } => "54000", // Program limit exceeded
+
+            DependencyCycle { .. } => "55P03", // Lock not available (cycle)
+            PropagationDepthExceeded { .. } => "54001", // Statement too complex
 
             CatalogError { .. } => "XX000",
             SpiError { .. } => "XX000",
@@ -217,6 +232,17 @@ impl fmt::Display for TViewError {
             }
             BatchTooLarge { size, max_size } => {
                 write!(f, "Batch size {} exceeds maximum {}", size, max_size)
+            }
+            DependencyCycle { entities } => {
+                write!(f, "Dependency cycle detected in entity graph: {}", entities.join(" -> "))
+            }
+            PropagationDepthExceeded { max_depth, processed } => {
+                write!(
+                    f,
+                    "Propagation exceeded maximum depth of {} iterations ({} entities processed). \
+                     Possible infinite loop or extremely deep dependency chain.",
+                    max_depth, processed
+                )
             }
             CatalogError { operation, pg_error } => {
                 write!(f, "Catalog operation '{}' failed: {}", operation, pg_error)

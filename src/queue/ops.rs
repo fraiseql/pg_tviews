@@ -43,10 +43,6 @@ pub fn clear_queue() {
 }
 
 /// Register transaction commit callback (once per transaction)
-///
-/// This will be implemented in Phase 6C when we have the actual callback handler.
-/// For now, this is a placeholder that sets the scheduled flag.
-#[allow(dead_code)]
 pub fn register_commit_callback_once() -> TViewResult<()> {
     TX_REFRESH_SCHEDULED.with(|flag| {
         let mut scheduled = flag.borrow_mut();
@@ -55,8 +51,11 @@ pub fn register_commit_callback_once() -> TViewResult<()> {
             return Ok(());
         }
 
-        // TODO Phase 6C: Register actual xact callback here
-        // For now, just set the flag
+        // Register xact callback
+        unsafe {
+            super::xact::register_xact_callback()?;
+        }
+
         *scheduled = true;
         Ok(())
     })

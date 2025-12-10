@@ -9,12 +9,16 @@
 mod key;
 mod state;
 mod ops;
+mod xact;
+mod graph;
 mod integration_tests;
 
 pub use key::RefreshKey;
-#[allow(unused_imports)]
-pub use ops::{enqueue_refresh, take_queue_snapshot, clear_queue, register_commit_callback_once};
+pub use ops::{enqueue_refresh, register_commit_callback_once};
+// pub use ops::{take_queue_snapshot, clear_queue}; // Internal use only
+// pub use graph::EntityDepGraph; // Internal use only
 // Internal use only (not exported):
 // - TX_REFRESH_QUEUE
 // - TX_REFRESH_SCHEDULED
 // - reset_scheduled_flag
+// - xact module

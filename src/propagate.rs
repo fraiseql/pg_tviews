@@ -3,6 +3,7 @@ use pgrx::prelude::*;
 use crate::refresh::main::{ViewRow, refresh_pk};
 use crate::refresh::batch;
 use crate::catalog::TviewMeta;
+use crate::queue::RefreshKey;
 
 /// Discover parents (entities that depend on this entity) and refresh them.
 ///
@@ -52,6 +53,50 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
     }
 
     Ok(())
+}
+
+/// Find parent keys that depend on the given entity+pk (without refreshing them)
+///
+/// This is the Phase 6D version of propagation that returns keys instead of
+/// performing immediate recursive refreshes.
+///
+/// # Example
+///
+/// ```rust
+/// let key = RefreshKey { entity: "user".into(), pk: 1 };
+/// let parents = find_parents_for(&key)?;
+/// // Returns: [
+/// //   RefreshKey { entity: "post", pk: 10 },
+/// //   RefreshKey { entity: "post", pk: 20 },
+/// //   RefreshKey { entity: "comment", pk: 5 },
+/// // ]
+/// // These are all the tv_post and tv_comment rows where fk_user = 1
+/// ```
+pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>> {
+
+    // Find all parent entities that depend on this entity
+    let parent_entities = find_parent_entities(&key.entity)?;
+
+    if parent_entities.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut parent_keys = Vec::new();
+
+    // For each parent entity, find affected rows
+    for parent_entity in parent_entities {
+        let affected_pks = find_affected_pks(&parent_entity, &key.entity, key.pk)?;
+
+        // Convert to RefreshKeys
+        for pk in affected_pks {
+            parent_keys.push(RefreshKey {
+                entity: parent_entity.clone(),
+                pk,
+            });
+        }
+    }
+
+    Ok(parent_keys)
 }
 
 /// Find all parent entities that depend on the given entity.
