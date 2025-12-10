@@ -1,0 +1,93 @@
+# Dockerfile for pg_tviews benchmarks with pg_ivm extension
+# Uses PostgreSQL 17 for compatibility with both extensions
+
+FROM postgres:17
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    libssl-dev \
+    pkg-config \
+    postgresql-server-dev-17 \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain for building extensions
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install cargo-pgrx for PostgreSQL extension development
+RUN cargo install --locked cargo-pgrx --version 0.12.8
+
+# Initialize pgrx with PostgreSQL 17
+RUN cargo pgrx init --pg17 $(which pg_config)
+
+# Set working directory
+WORKDIR /build
+
+# Copy both projects (build context should be parent directory)
+# Expected structure: code/pg_tviews and code/jsonb_ivm
+COPY pg_tviews /build/pg_tviews
+COPY jsonb_ivm /build/jsonb_ivm
+
+# Build and install pg_tviews extension
+WORKDIR /build/pg_tviews
+RUN cargo pgrx install --release
+
+# Fix: Create minimal SQL installation script for pg_tviews
+# (pgrx doesn't generate one if there are no exported SQL functions)
+RUN echo "-- pg_tviews extension installation script" > /usr/share/postgresql/17/extension/pg_tviews--0.1.0.sql && \
+    echo "-- The extension provides hooks and internal functions only" >> /usr/share/postgresql/17/extension/pg_tviews--0.1.0.sql
+
+# Build and install jsonb_ivm extension
+WORKDIR /build/jsonb_ivm
+RUN cargo pgrx install --release
+
+# Note: We're NOT using pg_ivm (PostgreSQL native IVM)
+# Instead, we use jsonb_ivm (custom Rust extension for JSONB patching)
+# This is the key differentiator for pg_tviews architecture
+
+# Install Python dependencies for reporting
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN pip install --no-cache-dir psycopg[binary]
+
+# Copy benchmark files from pg_tviews
+WORKDIR /benchmarks
+COPY pg_tviews/test/sql/comprehensive_benchmarks/ /benchmarks/
+COPY pg_tviews/test/sql/jsonb_ivm_stubs.sql /benchmarks/
+
+# Fix relative path in 00_setup.sql (we won't need stubs since real extension is installed)
+# But keep them as fallback
+RUN sed -i 's|../jsonb_ivm_stubs.sql|jsonb_ivm_stubs.sql|g' /benchmarks/00_setup.sql
+
+# Create results directory
+RUN mkdir -p /benchmarks/results
+
+# Copy custom entrypoint from pg_tviews
+COPY pg_tviews/docker/benchmark-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/benchmark-entrypoint.sh
+
+# Configure PostgreSQL for benchmarks
+RUN echo "shared_buffers = 512MB" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "work_mem = 256MB" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "max_parallel_workers_per_gather = 4" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "shared_preload_libraries = 'pg_tviews'" >> /usr/share/postgresql/postgresql.conf.sample
+# Note: With the IsUnderPostmaster check in _PG_init(), this now works safely!
+
+# Set environment variables
+ENV POSTGRES_DB=pg_tviews_benchmark
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=postgres
+ENV PGDATA=/var/lib/postgresql/data
+
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Use custom entrypoint
+ENTRYPOINT ["/usr/local/bin/benchmark-entrypoint.sh"]
+CMD ["postgres"]

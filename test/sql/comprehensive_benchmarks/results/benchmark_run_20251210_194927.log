@@ -1,0 +1,8 @@
+[1;33mChecking PostgreSQL connection...[0m
+[0;32m✓ PostgreSQL connection OK[0m
+
+[1;33mSetting up benchmark database...[0m
+  [0;32m✓ Database created[0m
+
+[1;33mRunning benchmark setup...[0m
+[0;31mError: Setup failed[0m

@@ -164,9 +164,24 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 
 /// Initialize the extension
 /// Installs the ProcessUtility hook to intercept CREATE TABLE tv_* commands
+///
+/// Safety: Only installs hooks when running in a proper PostgreSQL backend,
+/// not during initdb or other bootstrap contexts.
 #[pg_guard]
 extern "C" fn _PG_init() {
-    pgrx::log!("pg_tviews: _PG_init() called, installing ProcessUtility hook");
+    pgrx::log!("pg_tviews: _PG_init() called");
+
+    // Safety check: Only install hooks if we're in a real backend process
+    // During initdb, IsUnderPostmaster is false, so we skip hook installation
+    // This prevents segfaults during database initialization
+    unsafe {
+        if !pg_sys::IsUnderPostmaster {
+            pgrx::log!("pg_tviews: Not running under postmaster (initdb/bootstrap), skipping hook installation");
+            return;
+        }
+    }
+
+    pgrx::log!("pg_tviews: Running under postmaster, installing ProcessUtility hook");
 
     // Install ProcessUtility hook
     unsafe {

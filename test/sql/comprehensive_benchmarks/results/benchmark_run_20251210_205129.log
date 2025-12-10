@@ -1,0 +1,2 @@
+[1;33mChecking PostgreSQL connection...[0m
+[0;31mError: Cannot connect to PostgreSQL. Is it running?[0m
