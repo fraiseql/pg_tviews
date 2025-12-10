@@ -22,6 +22,28 @@ pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
     Ok(())
 }
 
+/// Bulk enqueue refresh requests for multiple PKs of the same entity (Phase 9A)
+///
+/// This is the statement-level trigger entry point.
+/// Deduplication is automatic (HashSet).
+#[allow(dead_code)]
+pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
+    TX_REFRESH_QUEUE.with(|q| {
+        let mut queue = q.borrow_mut();
+
+        // Insert all keys at once (HashSet deduplicates automatically)
+        for pk in pks {
+            let key = RefreshKey {
+                entity: entity.to_string(),
+                pk,
+            };
+            queue.insert(key);
+        }
+    });
+
+    Ok(())
+}
+
 /// Take a snapshot of the current queue and clear it
 ///
 /// Called by commit handler to get all pending refreshes.
@@ -68,6 +90,12 @@ pub fn reset_scheduled_flag() {
     TX_REFRESH_SCHEDULED.with(|flag| {
         *flag.borrow_mut() = false;
     });
+}
+
+/// Clear queue and reset scheduled flag (public API for DISCARD ALL handling)
+pub fn clear_queue_and_reset() {
+    clear_queue();
+    reset_scheduled_flag();
 }
 
 #[cfg(test)]

@@ -131,6 +131,13 @@ extern "C" fn _PG_init() {
 
     pgrx::log!("pg_tviews: ProcessUtility hook installed");
 
+    // Register query plan cache invalidation callbacks (Phase 9C)
+    unsafe {
+        if let Err(e) = refresh::register_cache_invalidation_callbacks() {
+            warning!("pg_tviews: Failed to register cache invalidation callbacks: {:?}", e);
+        }
+    }
+
     // Check for jsonb_ivm extension
     if !check_jsonb_ivm_available() {
         warning!(

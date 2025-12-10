@@ -7,6 +7,12 @@
 pub mod main;
 pub mod array_ops;
 pub mod batch;
+pub mod bulk;
+pub mod cache;
 
 // Re-export main functions for backward compatibility
 pub use main::refresh_pk;
+// Re-export bulk functions
+pub use bulk::refresh_bulk;
+// Re-export cache functions
+pub use cache::{register_cache_invalidation_callbacks, clear_prepared_statement_cache};

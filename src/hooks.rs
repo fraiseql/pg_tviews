@@ -57,6 +57,22 @@ unsafe extern "C" fn tview_process_utility_hook(
         return;
     }
 
+    // Phase 9D: Check for DISCARD ALL (connection pooling cleanup)
+    if query_lower.trim() == "discard all" {
+        info!("TVIEW: DISCARD ALL detected, clearing all caches and thread-local state");
+
+        // Clear thread-local state
+        crate::queue::clear_queue_and_reset();
+
+        // Clear global caches
+        crate::queue::cache::graph_cache::invalidate();
+        crate::refresh::clear_prepared_statement_cache();
+        crate::queue::cache::table_cache::invalidate();
+
+        // Reset metrics
+        crate::metrics::metrics_api::reset_metrics();
+    }
+
     // Check if this is PREPARE TRANSACTION
     if query_lower.trim().starts_with("prepare transaction") {
         // Extract GID from query: PREPARE TRANSACTION 'gid'

@@ -37,6 +37,12 @@ pub unsafe fn register_xact_callback() -> TViewResult<()> {
             Some(tview_xact_callback),
             std::ptr::null_mut(),
         );
+
+        // Phase 9D: Register start-of-transaction callback for connection pooling safety
+        pg_sys::RegisterXactCallback(
+            Some(tview_xact_start_callback),
+            std::ptr::null_mut(),
+        );
     }
 
     Ok(())
@@ -89,7 +95,7 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             //
             // PostgreSQL behavior:
             // - If this callback returns normally → transaction commits
-            // - If this callback calls error!() or panics → transaction aborts
+            // - If this callback returns error!() or panics → transaction aborts
             //
             // We MUST NOT catch errors here - let them propagate to PostgreSQL
             if let Err(e) = handle_pre_commit() {
@@ -120,6 +126,25 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // Reset metrics for completed transaction
             crate::metrics::metrics_api::reset_metrics();
         }
+    }
+}
+
+/// Start-of-transaction callback for connection pooling safety (Phase 9D)
+///
+/// This ensures thread-local state is cleared at the start of each transaction,
+/// preventing queue leakage between transactions in connection poolers like PgBouncer.
+///
+/// # Safety
+/// This is an extern "C" callback invoked by PostgreSQL internals.
+/// Must not panic or unwind.
+#[no_mangle]
+unsafe extern "C" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
+    if event == 3 { // XACT_EVENT_START
+        // Defensive: Clear any leftover state from previous transaction
+        // This prevents queue leakage in connection poolers (PgBouncer, etc.)
+        clear_queue();
+        reset_scheduled_flag();
+        info!("TVIEW: Transaction started, cleared thread-local state for connection pooling safety");
     }
 }
 
@@ -232,21 +257,51 @@ fn handle_pre_commit() -> TViewResult<()> {
 
         info!("TVIEW: Processing iteration {}: {} refreshes", iteration, sorted_keys.len());
 
-        // Process each key in dependency order
+        // Group keys by entity for bulk refresh (Phase 9B optimization)
+        let mut keys_by_entity: std::collections::HashMap<String, Vec<super::key::RefreshKey>> =
+            std::collections::HashMap::new();
+
         for key in sorted_keys {
             // Skip if already processed (deduplication)
             if !processed.insert(key.clone()) {
                 continue;
             }
+            keys_by_entity.entry(key.entity.clone()).or_default().push(key);
+        }
 
-            // Refresh this entity and discover parents
-            // FAIL-FAST: Propagate error immediately to abort transaction
-            let parents = refresh_and_get_parents(&key)?;
+        // Process each entity group
+        for (entity, entity_keys) in keys_by_entity {
+            if entity_keys.len() == 1 {
+                // Single key: use existing individual refresh
+                let key = &entity_keys[0];
+                let parents = refresh_and_get_parents(key)?;
 
-            // Add discovered parents to pending queue
-            for parent_key in parents {
-                if !processed.contains(&parent_key) {
-                    pending.insert(parent_key);
+                // Add discovered parents to pending queue
+                for parent_key in parents {
+                    if !processed.contains(&parent_key) {
+                        pending.insert(parent_key);
+                    }
+                }
+            } else {
+                // Multiple keys for same entity: use bulk refresh (Phase 9B)
+                let pks: Vec<i64> = entity_keys.iter().map(|k| k.pk).collect();
+
+                info!("TVIEW: Bulk refreshing entity '{}' with {} keys", entity, pks.len());
+
+                // Bulk refresh this entity
+                // FAIL-FAST: Propagate error immediately to abort transaction
+                crate::refresh::refresh_bulk(&entity, pks)?;
+
+                // Discover parents for all keys in this entity group
+                for key in &entity_keys {
+                    let parents = crate::propagate::find_parents_for(key)?;
+
+                    // Add discovered parents to pending queue
+                    for parent_key in parents {
+                        if !processed.contains(&parent_key) {
+                            pending.insert(parent_key);
+                        }
+                    }
                 }
             }
         }

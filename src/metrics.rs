@@ -25,6 +25,14 @@ struct QueueMetrics {
     table_cache_hits: u64,
     /// Table cache misses
     table_cache_misses: u64,
+    /// Prepared statement cache hits (Phase 9C)
+    prepared_stmt_cache_hits: u64,
+    /// Prepared statement cache misses (Phase 9C)
+    prepared_stmt_cache_misses: u64,
+    /// Bulk refresh operations performed (Phase 9B)
+    bulk_refresh_count: u64,
+    /// Individual refresh operations performed
+    individual_refresh_count: u64,
 }
 
 impl QueueMetrics {
@@ -38,6 +46,10 @@ impl QueueMetrics {
             graph_cache_misses: 0,
             table_cache_hits: 0,
             table_cache_misses: 0,
+            prepared_stmt_cache_hits: 0,
+            prepared_stmt_cache_misses: 0,
+            bulk_refresh_count: 0,
+            individual_refresh_count: 0,
         }
     }
 }
@@ -94,6 +106,42 @@ pub mod metrics_api {
         });
     }
 
+    /// Record prepared statement cache hit (Phase 9C)
+    #[allow(dead_code)]
+    pub fn record_prepared_stmt_cache_hit() {
+        METRICS.with(|m| {
+            m.borrow_mut().prepared_stmt_cache_hits += 1;
+        });
+    }
+
+    /// Record prepared statement cache miss (Phase 9C)
+    #[allow(dead_code)]
+    pub fn record_prepared_stmt_cache_miss() {
+        METRICS.with(|m| {
+            m.borrow_mut().prepared_stmt_cache_misses += 1;
+        });
+    }
+
+    /// Record bulk refresh operation (Phase 9B)
+    #[allow(dead_code)]
+    pub fn record_bulk_refresh(count: usize) {
+        METRICS.with(|m| {
+            let mut metrics = m.borrow_mut();
+            metrics.bulk_refresh_count += 1;
+            metrics.total_refreshes += count as u64;
+        });
+    }
+
+    /// Record individual refresh operation
+    #[allow(dead_code)]
+    pub fn record_individual_refresh() {
+        METRICS.with(|m| {
+            let mut metrics = m.borrow_mut();
+            metrics.individual_refresh_count += 1;
+            metrics.total_refreshes += 1;
+        });
+    }
+
     /// Get current queue statistics
     pub fn get_queue_stats() -> QueueStats {
         // Get current queue size from state
@@ -111,6 +159,10 @@ pub mod metrics_api {
                 graph_cache_misses: metrics.graph_cache_misses,
                 table_cache_hits: metrics.table_cache_hits,
                 table_cache_misses: metrics.table_cache_misses,
+                prepared_stmt_cache_hits: metrics.prepared_stmt_cache_hits,
+                prepared_stmt_cache_misses: metrics.prepared_stmt_cache_misses,
+                bulk_refresh_count: metrics.bulk_refresh_count,
+                individual_refresh_count: metrics.individual_refresh_count,
             }
         })
     }
@@ -147,6 +199,7 @@ impl RefreshTimer {
 
 /// Statistics returned by metrics functions
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct QueueStats {
     pub queue_size: usize,
     pub total_refreshes: u64,
@@ -157,6 +210,10 @@ pub struct QueueStats {
     pub graph_cache_misses: u64,
     pub table_cache_hits: u64,
     pub table_cache_misses: u64,
+    pub prepared_stmt_cache_hits: u64,
+    pub prepared_stmt_cache_misses: u64,
+    pub bulk_refresh_count: u64,
+    pub individual_refresh_count: u64,
 }
 
 impl QueueStats {
