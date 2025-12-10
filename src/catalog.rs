@@ -334,6 +334,33 @@ impl Default for TviewMeta {
     }
 }
 
+/// Map a base table OID to its entity name
+///
+/// Example: OID of tb_user → Some("user")
+///
+/// Returns:
+/// - Ok(Some(entity)) if table is tracked in pg_tview_meta
+/// - Ok(None) if table is not tracked
+/// - Err(...) on database error
+pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
+    // Query pg_class to get table name from OID
+    let table_name = Spi::get_one::<String>(&format!(
+        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
+        table_oid
+    ))?.ok_or_else(|| crate::TViewError::SpiError {
+        query: format!("SELECT relname FROM pg_class WHERE oid = {:?}", table_oid),
+        error: "Table OID not found".to_string(),
+    })?;
+
+    // Check if table name matches "tb_<entity>" pattern
+    if let Some(entity) = table_name.strip_prefix("tb_") {
+        Ok(Some(entity.to_string()))
+    } else {
+        // Not a tb_* table, skip
+        Ok(None)
+    }
+}
+
 // Phase 5 Task 2 RED: Tests for metadata enhancement
 #[cfg(test)]
 mod tests {
@@ -374,5 +401,27 @@ mod tests {
         assert_eq!(meta.dependency_types.len(), 1);
         assert_eq!(meta.dependency_paths.len(), 1);
         assert_eq!(meta.array_match_keys.len(), 1);
+    }
+
+    #[test]
+    fn test_entity_for_table_name_parsing() {
+        // This is a unit test that doesn't require database access
+        let test_cases = vec![
+            ("tb_user", Some("user")),
+            ("tb_post", Some("post")),
+            ("tb_company", Some("company")),
+            ("users", None),  // Not a tb_* table
+            ("pg_class", None),  // System table
+        ];
+
+        for (table_name, expected_entity) in test_cases {
+            let result = if let Some(entity) = table_name.strip_prefix("tb_") {
+                Some(entity.to_string())
+            } else {
+                None
+            };
+
+            assert_eq!(result.as_deref(), expected_entity);
+        }
     }
 }

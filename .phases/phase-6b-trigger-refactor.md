@@ -315,6 +315,71 @@ This is expected and intentional. Phase 6C will implement the flush logic.
 
 ---
 
+## Performance Considerations
+
+### entity_for_table() Overhead
+
+The `entity_for_table()` function queries `pg_class` on **every trigger fire**:
+
+```rust
+// Phase 6B implementation:
+pub fn entity_for_table(table_oid: Oid) -> TViewResult<Option<String>> {
+    // Queries: SELECT relname::text FROM pg_class WHERE oid = $1
+    // Cost: ~0.1ms per trigger (cached by PostgreSQL's syscache, but still overhead)
+}
+```
+
+**Performance Impact:**
+- Single update: Negligible (~0.1ms)
+- 1000 updates in transaction: ~100ms total overhead
+- High-frequency writes: May become bottleneck
+
+**Optimization Strategy (Phase 6B+):**
+
+Add static cache in Rust (HashMap):
+
+```rust
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+static TABLE_ENTITY_CACHE: Lazy<Mutex<HashMap<pg_sys::Oid, String>>> = Lazy::new(|| {
+    Mutex::new(HashMap::new())
+});
+
+pub fn entity_for_table_cached(table_oid: Oid) -> TViewResult<Option<String>> {
+    // Fast path: check cache (no syscall)
+    {
+        let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+        if let Some(entity) = cache.get(&table_oid) {
+            return Ok(Some(entity.clone()));
+        }
+    }
+
+    // Slow path: query and cache
+    let entity = entity_for_table_uncached(table_oid)?;
+
+    if let Some(ref e) = entity {
+        let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+        cache.insert(table_oid, e.clone());
+    }
+
+    Ok(entity)
+}
+```
+
+**Trade-offs:**
+- ✅ 100× faster (0.001ms vs 0.1ms per trigger)
+- ✅ OIDs are stable within a PostgreSQL session
+- ❌ Requires invalidation on CREATE/DROP TVIEW
+- ❌ Adds ~50 lines of code
+
+**Decision for Phase 6B:**
+- **Ship without caching** (simple, correct, "good enough")
+- **Benchmark first** (measure 10K updates/transaction)
+- **Optimize if needed** (add cache if >5% of transaction time)
+
+---
+
 ## Acceptance Criteria
 
 - ✅ `entity_for_table()` correctly maps `tb_*` tables to entity names

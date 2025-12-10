@@ -284,7 +284,7 @@ mod tests {
 
 ### 2. `src/error.rs` (MODIFY)
 
-Add new error variant:
+Add new error variants:
 
 ```rust
 #[derive(Debug, Clone)]
@@ -295,6 +295,37 @@ pub enum TViewError {
     DependencyCycle {
         entities: Vec<String>,
     },
+
+    /// Propagation exceeded maximum depth (possible infinite loop)
+    PropagationDepthExceeded {
+        max_depth: usize,
+        processed: usize,
+    },
+}
+```
+
+**Display implementation:**
+
+```rust
+impl std::fmt::Display for TViewError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // ... existing variants ...
+
+            TViewError::DependencyCycle { entities } => {
+                write!(f, "Dependency cycle detected in entity graph: {}", entities.join(" -> "))
+            }
+
+            TViewError::PropagationDepthExceeded { max_depth, processed } => {
+                write!(
+                    f,
+                    "Propagation exceeded maximum depth of {} iterations ({} entities processed). \
+                     Possible infinite loop or extremely deep dependency chain.",
+                    max_depth, processed
+                )
+            }
+        }
+    }
 }
 ```
 
@@ -304,37 +335,114 @@ pub enum TViewError {
 
 ### 1. `src/queue/xact.rs`
 
-Integrate dependency graph into commit handler:
+**Replace entire `handle_pre_commit()` function** with proper propagation integration:
 
 ```rust
 use super::graph::EntityDepGraph;
+use std::collections::HashSet;
 
 /// Handle PRE_COMMIT event: flush the queue and refresh TVIEWs
+///
+/// This implementation correctly handles propagation by using a local queue
+/// for discovered parent refreshes. The workflow:
+///
+/// 1. Take snapshot of triggered refreshes (from triggers)
+/// 2. Process in dependency order (children before parents)
+/// 3. Discover parent refreshes during processing
+/// 4. Add parents to local pending queue
+/// 5. Repeat until no more refreshes discovered (fixpoint)
+///
+/// # Correctness
+///
+/// - Each (entity, pk) processed exactly once (tracked in `processed` set)
+/// - Dependency order respected (topological sort per iteration)
+/// - Propagation coalesced (parents discovered during refresh added to queue)
+/// - Transaction-safe (fail-fast aborts transaction on first error)
 fn handle_pre_commit() -> TViewResult<()> {
-    // Take snapshot of pending refreshes
-    let queue = take_queue_snapshot();
+    // Take initial snapshot from triggers
+    let mut pending = take_queue_snapshot();
 
-    if queue.is_empty() {
+    if pending.is_empty() {
         return Ok(());
     }
 
-    info!("TVIEW: Flushing {} refresh requests at commit", queue.len());
+    info!("TVIEW: Flushing {} initial refresh requests at commit", pending.len());
 
-    // Load dependency graph
-    let graph = EntityDepGraph::load()?;
+    // Load dependency graph once (cached)
+    let graph = EntityDepGraph::load_cached()?;
 
-    // Sort keys by dependency order
-    let sorted_keys = graph.sort_keys(queue.into_iter().collect());
+    // Track processed keys to avoid duplicates
+    let mut processed: HashSet<RefreshKey> = HashSet::new();
 
-    // Process each refresh in dependency order
-    for key in sorted_keys {
-        if let Err(e) = refresh_entity_pk(&key) {
-            error!("Failed to refresh {}[{}]: {:?}", key.entity, key.pk, e);
-            // Continue with other refreshes
+    // Process queue until empty (handles propagation)
+    let mut iteration = 1;
+    while !pending.is_empty() {
+        // Sort this batch by dependency order
+        let sorted_keys = graph.sort_keys(pending.drain().collect());
+
+        info!("TVIEW: Processing iteration {}: {} refreshes", iteration, sorted_keys.len());
+
+        // Process each key in dependency order
+        for key in sorted_keys {
+            // Skip if already processed (deduplication)
+            if !processed.insert(key.clone()) {
+                continue;
+            }
+
+            // Refresh this entity and discover parents
+            // FAIL-FAST: Propagate error immediately to abort transaction
+            let parents = refresh_and_get_parents(&key)?;
+
+            // Add discovered parents to pending queue
+            for parent_key in parents {
+                if !processed.contains(&parent_key) {
+                    pending.insert(parent_key);
+                }
+            }
+        }
+
+        iteration += 1;
+
+        // Safety check: prevent infinite loops
+        if iteration > 100 {
+            return Err(TViewError::PropagationDepthExceeded {
+                max_depth: 100,
+                processed: processed.len(),
+            });
         }
     }
 
+    info!("TVIEW: Completed {} refresh operations in {} iterations", processed.len(), iteration - 1);
+
     Ok(())
+}
+
+/// Refresh a single entity+pk and return discovered parent keys (without refreshing them)
+///
+/// This function:
+/// 1. Refreshes the given (entity, pk) using existing refresh logic
+/// 2. Discovers parent entities that depend on this one
+/// 3. Returns parent keys WITHOUT refreshing them (defer to queue)
+///
+/// # Difference from Phase 1-5
+///
+/// Phase 1-5: `propagate_from_row()` called `refresh_pk()` recursively ❌
+/// Phase 6D: Return parent keys for queue processing ✅
+fn refresh_and_get_parents(key: &RefreshKey) -> TViewResult<Vec<RefreshKey>> {
+    // Load metadata
+    use crate::catalog::TviewMeta;
+    let meta = TviewMeta::load_by_entity(&key.entity)?
+        .ok_or_else(|| TViewError::MetadataNotFound {
+            entity: key.entity.clone(),
+        })?;
+
+    // Refresh this entity (existing logic)
+    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+
+    // Find parent entities (NEW: returns keys instead of refreshing)
+    let parent_keys = crate::propagate::find_parents_for(key)?;
+
+    Ok(parent_keys)
 }
 ```
 
@@ -424,33 +532,84 @@ Call `invalidate_cache()` when:
 
 ### Step 4: Propagation Integration (REFACTOR)
 
-Currently, `propagate::parents_for()` refreshes parents immediately. Integrate with queue:
+Refactor `src/propagate.rs` to separate parent discovery from refresh execution:
+
+**Create new function: `find_parents_for()`**
 
 ```rust
 // In src/propagate.rs
-pub fn parents_for(key: &RefreshKey) -> TViewResult<Vec<RefreshKey>> {
-    // Existing logic to find parent entities and their PKs
-    // ...
 
-    // Instead of refreshing immediately, return parent keys
-    // The commit handler will enqueue these
+/// Find parent keys that depend on the given entity+pk (without refreshing them)
+///
+/// This is the Phase 6D version of propagation that returns keys instead of
+/// performing immediate recursive refreshes.
+///
+/// # Example
+///
+/// ```
+/// let key = RefreshKey { entity: "user".into(), pk: 1 };
+/// let parents = find_parents_for(&key)?;
+/// // Returns: [
+/// //   RefreshKey { entity: "post", pk: 10 },
+/// //   RefreshKey { entity: "post", pk: 20 },
+/// //   RefreshKey { entity: "comment", pk: 5 },
+/// // ]
+/// // These are all the tv_post and tv_comment rows where fk_user = 1
+/// ```
+pub fn find_parents_for(key: &RefreshKey) -> TViewResult<Vec<RefreshKey>> {
+    use crate::queue::RefreshKey;
+
+    // Find all parent entities that depend on this entity
+    let parent_entities = find_parent_entities(&key.entity)?;
+
+    if parent_entities.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut parent_keys = Vec::new();
+
+    // For each parent entity, find affected rows
+    for parent_entity in parent_entities {
+        let affected_pks = find_affected_pks(&parent_entity, &key.entity, key.pk)?;
+
+        // Convert to RefreshKeys
+        for pk in affected_pks {
+            parent_keys.push(RefreshKey {
+                entity: parent_entity.clone(),
+                pk,
+            });
+        }
+    }
+
     Ok(parent_keys)
 }
 
-// In src/queue/xact.rs
-fn refresh_entity_pk(key: &RefreshKey) -> TViewResult<()> {
-    // Refresh this entity
+/// Legacy propagation function (keep for Phase 1-5 compatibility)
+///
+/// **DEPRECATED in Phase 6**: This function performs immediate recursive refreshes,
+/// which bypasses the transaction queue. Use `find_parents_for()` instead.
+///
+/// This function is kept for:
+/// - Backward compatibility with Phase 1-5 tests
+/// - Potential fallback mode if Phase 6 is disabled
+pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
+    // Existing Phase 1-5 implementation (unchanged)
     // ...
+}
+```
 
-    // Find parents
-    let parents = crate::propagate::parents_for(key)?;
+**Refactor existing helpers to be reusable:**
 
-    // Enqueue parents for refresh (they'll be processed in dependency order)
-    for parent_key in parents {
-        enqueue_refresh(&parent_key.entity, parent_key.pk)?;
-    }
+```rust
+// These functions are already implemented (src/propagate.rs:57-117)
+// Keep them as-is, they're used by both find_parents_for() and propagate_from_row()
 
-    Ok(())
+fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
+    // Existing implementation (lines 57-85)
+}
+
+fn find_affected_pks(parent_entity: &str, child_entity: &str, child_pk: i64) -> spi::Result<Vec<i64>> {
+    // Existing implementation (lines 87-117)
 }
 ```
 

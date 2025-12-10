@@ -203,4 +203,17 @@ The Phase 1-5 implementation is fully functional and can serve as a fallback.
 3. Implement incrementally with tests at each phase
 4. Document behavior changes as you go
 
-**Read next**: `.phases/phase-6a-foundation.md`
+**Read next**:
+- `.phases/phase-6a-foundation.md` - Start implementation
+- `.phases/phase-6-known-limitations.md` - Edge cases and future enhancements
+
+---
+
+## Additional Documentation
+
+- **Known Limitations**: See `.phases/phase-6-known-limitations.md` for detailed analysis of:
+  - Savepoint rollback issues
+  - Prepared transaction (2PC) limitations
+  - Deep dependency chain limits
+  - Foreign key cascade edge cases
+  - Large queue memory considerations

@@ -8,6 +8,7 @@ mod propagate;
 mod utils;
 mod hooks;
 mod trigger;
+mod queue;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -17,6 +18,8 @@ pub mod config;
 pub mod dependency;
 
 pub use error::{TViewError, TViewResult};
+pub use queue::RefreshKey;
+pub use catalog::entity_for_table;
 
 pg_module_magic!();
 
@@ -327,9 +330,6 @@ fn find_affected_tview_rows(
     })
 }
 
-/// This is where you could expose helper functions for debugging.
-/// e.g., listing registered TVIEWs, dependencies, etc.
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
@@ -399,4 +399,5 @@ mod tests {
         assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_ivm");
     }
 }
+// */
 

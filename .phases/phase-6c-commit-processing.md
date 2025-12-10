@@ -143,10 +143,19 @@ unsafe extern "C" fn tview_xact_callback(event: pg_sys::XactEvent, _arg: *mut c_
         XactEvent::PreCommit => {
             // PRE_COMMIT: Flush queue before transaction commits
             // This is the main refresh point
+            //
+            // CRITICAL: We must propagate errors to abort the transaction.
+            // Per PRD R2: "If refresh fails: the entire transaction fails and rolls back."
+            //
+            // PostgreSQL behavior:
+            // - If this callback returns normally → transaction commits
+            // - If this callback calls error!() or panics → transaction aborts
+            //
+            // We MUST NOT catch errors here - let them propagate to PostgreSQL
             if let Err(e) = handle_pre_commit() {
-                warning!("TVIEW refresh failed during PRE_COMMIT: {:?}", e);
-                // PostgreSQL will abort the transaction if we return error here
-                // For now, log warning and let transaction proceed
+                // Use pgrx error!() macro to abort transaction
+                error!("TVIEW refresh failed during PRE_COMMIT, aborting transaction: {:?}", e);
+                // This will never return - PostgreSQL longjmps to abort handler
             }
         }
         XactEvent::Abort => {
@@ -162,6 +171,22 @@ unsafe extern "C" fn tview_xact_callback(event: pg_sys::XactEvent, _arg: *mut c_
 }
 
 /// Handle PRE_COMMIT event: flush the queue and refresh TVIEWs
+///
+/// # Error Handling Strategy (Phase 6C - Without Dependency Ordering)
+///
+/// **WARNING:** This Phase 6C implementation processes refreshes in ARBITRARY ORDER
+/// because Phase 6D (topological sort) is not yet implemented.
+///
+/// **Known Issue:** If queue contains `[("post", 1), ("user", 1)]` and tv_post depends
+/// on tv_user, processing them in this order will read STALE tv_user data.
+///
+/// **Mitigation:** Phase 6C should ONLY be used for testing. Production deployment
+/// MUST include Phase 6D (dependency-ordered processing).
+///
+/// # Transaction Safety
+///
+/// This function MUST propagate errors to abort the transaction (per PRD R2).
+/// Use fail-fast strategy: first error stops processing and aborts transaction.
 fn handle_pre_commit() -> TViewResult<()> {
     // Take snapshot of pending refreshes
     let queue = take_queue_snapshot();
@@ -172,13 +197,11 @@ fn handle_pre_commit() -> TViewResult<()> {
 
     info!("TVIEW: Flushing {} refresh requests at commit", queue.len());
 
-    // Process each refresh
-    // TODO Phase 6D: Sort by dependency order
+    // Process each refresh (ARBITRARY ORDER - Phase 6D will fix this)
+    // FAIL-FAST: First error aborts entire transaction
     for key in queue {
-        if let Err(e) = refresh_entity_pk(&key) {
-            error!("Failed to refresh {}[{}]: {:?}", key.entity, key.pk, e);
-            // Continue with other refreshes (don't fail entire transaction)
-        }
+        // Propagate error immediately - don't continue on failure
+        refresh_entity_pk(&key)?;
     }
 
     Ok(())
@@ -394,37 +417,144 @@ SELECT * FROM tv_user WHERE pk_user = 1;
 - ✅ ABORT event clears queue without refreshing
 - ✅ Multiple updates to same row → single refresh (coalescing works)
 - ✅ Refreshes use existing `refresh_pk()` logic (no duplication)
-- ✅ Error handling doesn't abort transactions unnecessarily
+- ✅ **Error handling ABORTS transaction on refresh failure** (per PRD R2)
+- ⚠️ **Dependency ordering NOT guaranteed** (requires Phase 6D)
+- ⚠️ **Propagation NOT integrated with queue** (requires Phase 6D refactor)
 - ✅ Clippy strict compliance (0 warnings)
-- ✅ Manual integration test passes
+- ✅ Manual integration test passes (single-entity transactions only)
+
+## Phase 6C Completeness
+
+**Phase 6C Status: INCOMPLETE - NOT PRODUCTION READY**
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Transaction callback | ✅ Complete | xact hooks working |
+| Queue flush at commit | ✅ Complete | PRE_COMMIT handler implemented |
+| Coalescing (dedup) | ✅ Complete | HashSet deduplication works |
+| Fail-fast error handling | ✅ Complete | Errors abort transaction |
+| Dependency ordering | ❌ **MISSING** | Phase 6D required |
+| Propagation integration | ❌ **MISSING** | Phase 6D required |
+
+**Testing Restrictions for Phase 6C**:
+- ✅ Single-entity updates (e.g., only update `tb_user`)
+- ✅ No cross-entity dependencies in same transaction
+- ❌ Multi-entity updates (WRONG RESULTS without Phase 6D)
+- ❌ Production deployment (UNSAFE without Phase 6D)
 
 ---
 
 ## Known Limitations
 
-### Limitation 1: No Dependency Ordering (Yet)
+### ⚠️ CRITICAL Limitation 1: No Dependency Ordering (Phase 6C is INCOMPLETE)
 
-Phase 6C processes refreshes in **queue insertion order**, not dependency order.
+**Phase 6C processes refreshes in ARBITRARY ORDER** - this is UNSAFE for production.
 
-**Example**:
+**Failure Example**:
 ```rust
-UPDATE tb_company SET name = 'Acme Corp' WHERE pk_company = 1;
-UPDATE tb_user SET name = 'Alice' WHERE pk_user = 1; -- fk_company = 1
-UPDATE tb_post SET title = 'Hello' WHERE pk_post = 1; -- fk_user = 1
+BEGIN;
+UPDATE tb_post SET title = 'New' WHERE pk_post = 1;  -- depends on tv_user
+UPDATE tb_user SET name = 'Alice' WHERE pk_user = 1; -- no dependencies
+COMMIT;
 
-// Queue at commit: [("company", 1), ("user", 1), ("post", 1)]
-// Refresh order: company, then user, then post ✅ (happens to be correct)
+// Queue (HashSet iteration order is UNDEFINED):
+// Could be: [("post", 1), ("user", 1)] ❌ WRONG ORDER
+// Could be: [("user", 1), ("post", 1)] ✅ CORRECT ORDER
+
+// If post processes first:
+// → refresh_pk() reads from v_post
+// → v_post JOINs tv_user ← STALE DATA (user not refreshed yet)
+// → tv_post gets INCORRECT author data
 ```
 
-**Problem**: If queue order is shuffled (e.g., HashMap iteration), dependency order might be violated.
+**Root Cause**: Rust's `HashSet` iteration order is non-deterministic (security feature).
 
-**Solution**: Phase 6D will implement topological sorting.
+**Impact**:
+- Simple cases (insertion order happens to be correct) ✅ work
+- Complex cases (dependencies reversed) ❌ produce WRONG DATA
+- Non-deterministic failures (depends on hash seed) ❌ DANGEROUS
 
-### Limitation 2: Propagation Not Coalesced
+**Mitigation Options for Phase 6C Testing**:
 
-If refreshing `tv_post[1]` discovers parent `tv_user[1]`, the parent is refreshed immediately (not enqueued).
+1. **Option A: Use Vec instead of HashSet** (preserves insertion order)
+   - Lose deduplication efficiency
+   - Still wrong for dependencies, but at least deterministic
 
-**Solution**: Phase 6D will integrate propagation with the queue.
+2. **Option B: Single-entity transactions only** (document limitation)
+   - Safe if no cross-entity updates in same transaction
+   - Too restrictive for real workloads
+
+3. **Option C: Skip Phase 6C, go straight to 6D** (RECOMMENDED)
+   - Phase 6C without 6D is a broken intermediate state
+   - No reason to ship it separately
+
+**Decision for Implementation**:
+- Phase 6C is for **testing infrastructure only**
+- **DO NOT deploy Phase 6C to production without Phase 6D**
+- Document clearly in commit message: "Phase 6C: INCOMPLETE - requires 6D for correctness"
+
+### ⚠️ Limitation 2: Propagation Creates New Queue Entries (Integration Issue)
+
+**Problem**: Current plan shows propagation enqueueing parents, but queue is already snapshotted:
+
+```rust
+fn handle_pre_commit() -> TViewResult<()> {
+    let queue = take_queue_snapshot();  // Clears TX_REFRESH_QUEUE
+
+    for key in queue {
+        refresh_entity_pk(&key)?;
+        // ↑ This calls propagate_from_row()
+        //   which calls enqueue_refresh() for parents
+        //   BUT TX_REFRESH_QUEUE is already cleared!
+        //   → Parents enqueued to EMPTY queue
+        //   → Parents NEVER processed ❌
+    }
+}
+```
+
+**Fix Required (Phase 6D)**:
+
+```rust
+fn handle_pre_commit() -> TViewResult<()> {
+    // Use local queue for propagation
+    let mut pending = take_queue_snapshot();
+    let mut processed = HashSet::new();
+
+    while !pending.is_empty() {
+        // Sort by dependency order (Phase 6D)
+        let sorted = graph.sort_keys(pending.drain().collect());
+
+        for key in sorted {
+            if processed.insert(key.clone()) {
+                // Refresh and collect parents
+                let parents = refresh_and_get_parents(&key)?;
+                pending.extend(parents);  // Add to local queue
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_and_get_parents(key: &RefreshKey) -> TViewResult<Vec<RefreshKey>> {
+    // Refresh this entity
+    let meta = TviewMeta::load_by_entity(&key.entity)?
+        .ok_or_else(|| TViewError::MetadataNotFound { entity: key.entity.clone() })?;
+
+    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+
+    // Find parents without recursively refreshing
+    let parents = crate::propagate::find_parents_for(key)?;
+
+    Ok(parents)
+}
+```
+
+**Current propagate.rs needs refactoring**:
+- `propagate_from_row()` currently calls `refresh_pk()` recursively ❌
+- Need `find_parents_for()` that returns keys without refreshing ✅
+
+**Solution**: Phase 6D will refactor propagation to return keys, not refresh immediately.
 
 ---
 
