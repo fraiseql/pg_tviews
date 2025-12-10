@@ -21,6 +21,7 @@ enum XactEvent {
     Commit,
     Abort,
     PreCommit,
+    Prepare,  // XACT_EVENT_PREPARE
 }
 
 /// Register the transaction callback (called from enqueue logic)
@@ -73,6 +74,7 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
         0 => XactEvent::Commit,      // XACT_EVENT_COMMIT
         1 => XactEvent::PreCommit,   // XACT_EVENT_PRE_COMMIT
         2 => XactEvent::Abort,       // XACT_EVENT_ABORT
+        4 => XactEvent::Prepare,     // XACT_EVENT_PREPARE
         _ => return, // Ignore other events
     };
 
@@ -94,6 +96,15 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
                 // Use pgrx error!() macro to abort transaction
                 error!("TVIEW refresh failed during PRE_COMMIT, aborting transaction: {:?}", e);
                 // This will never return - PostgreSQL longjmps to abort handler
+            }
+        }
+        XactEvent::Prepare => {
+            // PREPARE: Serialize queue to persistent storage
+            // This ensures 2PC transactions don't lose pending refreshes
+            if let Err(e) = handle_prepare() {
+                error!("TVIEW failed to persist queue during PREPARE: {:?}", e);
+                // For PREPARE, we should abort the prepare operation
+                // PostgreSQL will handle this by failing the PREPARE TRANSACTION
             }
         }
         XactEvent::Abort => {
@@ -290,4 +301,53 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
     let parent_keys = crate::propagate::find_parents_for(key)?;
 
     Ok(parent_keys)
+}
+
+/// Handle PREPARE TRANSACTION event: persist queue to database
+///
+/// This ensures that 2PC transactions don't lose pending refreshes.
+/// The queue is serialized and stored in pg_tview_pending_refreshes.
+fn handle_prepare() -> TViewResult<()> {
+    // Get global transaction ID (GID) captured by ProcessUtility hook
+    let gid = get_prepared_transaction_id()?;
+
+    // Take snapshot of current queue
+    let queue = take_queue_snapshot();
+
+    if queue.is_empty() {
+        // No refreshes pending, nothing to persist
+        return Ok(());
+    }
+
+    info!("TVIEW: Persisting {} refresh requests for prepared transaction '{}'",
+          queue.len(), gid);
+
+    // Serialize queue using JSONB format (configurable in future)
+    let serialized = super::persistence::SerializedQueue::from_queue(queue);
+    let queue_size = serialized.keys.len() as i32;
+    let queue_jsonb = serialized.into_jsonb()?;
+
+    // Store in persistent table
+    Spi::run_with_args(
+        "INSERT INTO pg_tview_pending_refreshes
+         (gid, refresh_queue, queue_size, expires_at)
+         VALUES ($1, $2, $3, now() + interval '24 hours')",
+        Some(vec![
+            (PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.clone().into_datum()),
+            (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), queue_jsonb.into_datum()),
+            (PgOid::BuiltIn(PgBuiltInOids::INT4OID), queue_size.into_datum()),
+        ]),
+    )?;
+
+    // Clear in-memory queue (transaction is prepared, not committed)
+    clear_queue();
+
+    Ok(())
+}
+
+/// Get the global transaction ID for the currently preparing transaction
+///
+/// This retrieves the GID captured by the ProcessUtility hook during PREPARE TRANSACTION.
+fn get_prepared_transaction_id() -> TViewResult<String> {
+    crate::hooks::get_prepared_transaction_id()
 }

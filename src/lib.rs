@@ -183,6 +183,242 @@ fn pg_tviews_infer_types(
     }
 }
 
+/// Handle COMMIT PREPARED for 2PC transactions
+/// Processes pending refreshes for a committed prepared transaction
+///
+/// Arguments:
+/// - gid: Global transaction ID of the prepared transaction
+#[pg_extern]
+fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
+    // STEP 1: Load queue metadata BEFORE committing (verify it exists)
+    let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
+        "SELECT refresh_queue FROM pg_tview_pending_refreshes WHERE gid = $1",
+        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())],
+    )?;
+
+    // STEP 2: COMMIT THE PREPARED TRANSACTION FIRST
+    // This ensures TVIEWs never show uncommitted data
+    let commit_sql = format!("COMMIT PREPARED '{}'", gid);
+    Spi::run(&commit_sql)?;
+
+    // STEP 3: Now process the queue (transaction is committed, safe to refresh)
+    let queue = match queue_jsonb {
+        Some(jsonb) => {
+            let serialized = crate::queue::persistence::SerializedQueue::from_jsonb(jsonb)?;
+            serialized.into_queue()
+        }
+        None => {
+            // No pending refreshes for this GID
+            info!("TVIEW: No pending refreshes for prepared transaction '{}'", gid);
+            return Ok(());
+        }
+    };
+
+    if !queue.is_empty() {
+        info!("TVIEW: Processing {} deferred refreshes for committed transaction '{}'",
+              queue.len(), gid);
+
+        // Process queue in a NEW transaction (prepared transaction already committed)
+        Spi::run("BEGIN")?;
+
+        match process_refresh_queue(queue) {
+            Ok(_) => {
+                Spi::run("COMMIT")?;
+            }
+            Err(e) => {
+                Spi::run("ROLLBACK")?;
+                return Err(e);
+            }
+        }
+    }
+
+    // STEP 4: Clean up persistent entry
+    Spi::run_with_args(
+        "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1",
+        Some(vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())]),
+    )?;
+
+    Ok(())
+}
+
+/// Handle ROLLBACK PREPARED for 2PC transactions
+/// Cleans up pending refreshes for a rolled back prepared transaction
+///
+/// Arguments:
+/// - gid: Global transaction ID of the prepared transaction
+#[pg_extern]
+fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
+    // STEP 1: Rollback the prepared transaction first
+    let rollback_sql = format!("ROLLBACK PREPARED '{}'", gid);
+    Spi::run(&rollback_sql)?;
+
+    // STEP 2: Clean up pending queue (no refresh needed - transaction aborted)
+    let deleted_count = Spi::get_one_with_args::<i32>(
+        "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1 RETURNING 1",
+        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())],
+    )?;
+
+    if deleted_count.is_some() {
+        info!("TVIEW: Cleaned up pending queue for rolled back transaction '{}'", gid);
+    }
+
+    Ok(())
+}
+
+/// Process refresh queue (extracted from handle_pre_commit for reuse)
+fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshKey>) -> TViewResult<()> {
+    let mut pending = queue;
+    let mut processed = std::collections::HashSet::new();
+    let graph = crate::queue::cache::graph_cache::load_cached()?;
+
+    let mut iteration = 1;
+    while !pending.is_empty() {
+        let sorted_keys = graph.sort_keys(pending.drain().collect());
+
+        for key in sorted_keys {
+            if !processed.insert(key.clone()) {
+                continue;
+            }
+
+            let parents = refresh_and_get_parents(&key)?;
+
+            for parent_key in parents {
+                if !processed.contains(&parent_key) {
+                    pending.insert(parent_key);
+                }
+            }
+        }
+
+        iteration += 1;
+        if iteration > get_max_propagation_depth() {
+            return Err(crate::TViewError::PropagationDepthExceeded {
+                max_depth: get_max_propagation_depth(),
+                processed: processed.len(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Refresh a single entity+pk and return discovered parent keys
+fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<crate::queue::RefreshKey>> {
+    // Load metadata
+    use crate::catalog::TviewMeta;
+    let meta = TviewMeta::load_by_entity(&key.entity)?
+        .ok_or_else(|| crate::TViewError::MetadataNotFound {
+            entity: key.entity.clone(),
+        })?;
+
+    // Refresh this entity (existing logic)
+    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+
+    // Find parent entities (returns keys instead of refreshing)
+    let parent_keys = crate::propagate::find_parents_for(key)?;
+
+    Ok(parent_keys)
+}
+
+/// Get maximum propagation depth from config
+fn get_max_propagation_depth() -> usize {
+    crate::config::max_propagation_depth()
+}
+
+/// Recover orphaned prepared transactions
+/// Processes pending refreshes for prepared transactions that may have been interrupted
+///
+/// Returns a table with recovery results: (gid, queue_size, status)
+#[pg_extern]
+fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
+    'static,
+    (
+        pgrx::name!(gid, String),
+        pgrx::name!(queue_size, i32),
+        pgrx::name!(status, String),
+    ),
+> {
+    let results: Vec<(String, i32, String)> = Spi::connect(|client| {
+        // Try to acquire advisory lock (non-blocking)
+        // Use a fixed hash for the lock key
+        const RECOVERY_LOCK_KEY: i64 = 0x7476696577735F72; // "tviews_r" in hex
+
+        let mut lock_result = client.select(
+            &format!("SELECT pg_try_advisory_lock({})", RECOVERY_LOCK_KEY),
+            None,
+            None,
+        )?;
+
+        let lock_acquired = if let Some(row) = lock_result.next() {
+            row[1].value::<bool>()?.unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !lock_acquired {
+            info!("TVIEW: Another recovery process is running, skipping");
+            return Ok(Vec::new());
+        }
+
+        // Ensure lock is released on exit (even if error occurs)
+        let _guard = AdvisoryLockGuard::new(RECOVERY_LOCK_KEY);
+
+        // Perform recovery
+        let rows = client.select(
+            "SELECT gid, queue_size FROM pg_tview_pending_refreshes
+             WHERE prepared_at < now() - interval '1 hour'
+             ORDER BY prepared_at",
+            None,
+            None,
+        )?;
+
+        let mut results = Vec::new();
+
+        for row in rows {
+            let gid: String = row["gid"].value().unwrap().unwrap();
+            let queue_size: i32 = row["queue_size"].value().unwrap().unwrap();
+
+            let status = match pg_tviews_commit_prepared(&gid) {
+                Ok(_) => {
+                    info!("TVIEW: Recovered prepared transaction '{}' ({} refreshes)", gid, queue_size);
+                    "processed".to_string()
+                }
+                Err(e) => {
+                    warning!("TVIEW: Failed to recover prepared transaction '{}': {:?}", gid, e);
+                    "error".to_string()
+                }
+            };
+
+            results.push((gid, queue_size, status));
+        }
+
+        Ok::<_, spi::Error>(results)
+    })
+    .unwrap_or_else(|_e| {
+        // Note: error! macro may panic, so just return empty vec on failure
+        Vec::new()
+    });
+
+    pgrx::iter::TableIterator::new(results)
+}
+
+/// RAII guard for advisory lock (ensures unlock on drop)
+struct AdvisoryLockGuard {
+    lock_key: i64,
+}
+
+impl AdvisoryLockGuard {
+    fn new(lock_key: i64) -> Self {
+        Self { lock_key }
+    }
+}
+
+impl Drop for AdvisoryLockGuard {
+    fn drop(&mut self) {
+        // Release advisory lock
+        let _ = Spi::run(&format!("SELECT pg_advisory_unlock({})", self.lock_key));
+    }
+}
+
 /// Cascade refresh when a base table row changes
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
 ///

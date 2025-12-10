@@ -155,8 +155,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
     let sql = format!(
-        "SELECT * FROM {} WHERE {} = $1",
-        view_name, pk_col,
+        "SELECT * FROM {view_name} WHERE {pk_col} = $1"
     );
 
     Spi::connect(|client| {
@@ -337,8 +336,7 @@ fn build_smart_patch_sql(
     if deps.is_empty() {
         // No dependencies = full replacement
         return Ok(format!(
-            "UPDATE {} SET data = $1::jsonb, updated_at = now() WHERE {} = $2",
-            tv_name, pk_col
+            "UPDATE {tv_name} SET data = $1::jsonb, updated_at = now() WHERE {pk_col} = $2"
         ));
     }
 
@@ -352,8 +350,7 @@ fn build_smart_patch_sql(
                 if let Some(path) = &dep.path {
                     let path_str = path.join(",");
                     format!(
-                        "jsonb_smart_patch_nested({}, $1::jsonb, ARRAY['{}'])",
-                        patch_expr, path_str
+                        "jsonb_smart_patch_nested({patch_expr}, $1::jsonb, ARRAY['{path_str}'])"
                     )
                 } else {
                     warning!("NestedObject dependency missing path, skipping");
@@ -365,8 +362,7 @@ fn build_smart_patch_sql(
                     let path_str = path.join(",");
                     let match_key = dep.match_key.as_deref().unwrap_or(DEFAULT_ARRAY_MATCH_KEY);
                     format!(
-                        "jsonb_smart_patch_array({}, $1::jsonb, ARRAY['{}'], '{}')",
-                        patch_expr, path_str, match_key
+                        "jsonb_smart_patch_array({patch_expr}, $1::jsonb, ARRAY['{path_str}'], '{match_key}')"
                     )
                 } else {
                     warning!("Array dependency missing path, skipping");
@@ -375,14 +371,13 @@ fn build_smart_patch_sql(
             }
             DependencyType::Scalar => {
                 // Scalar = shallow merge (no nested paths affected)
-                format!("jsonb_smart_patch_scalar({}, $1::jsonb)", patch_expr)
+                format!("jsonb_smart_patch_scalar({patch_expr}, $1::jsonb)")
             }
         };
     }
 
     Ok(format!(
-        "UPDATE {} SET data = {}, updated_at = now() WHERE {} = $2",
-        tv_name, patch_expr, pk_col
+        "UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() WHERE {pk_col} = $2"
     ))
 }
 
@@ -456,8 +451,7 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
     let pk_col = format!("pk_{}", row.entity_name);
 
     let sql = format!(
-        "UPDATE {} SET data = $1, updated_at = now() WHERE {} = $2",
-        tv_name, pk_col
+        "UPDATE {tv_name} SET data = $1, updated_at = now() WHERE {pk_col} = $2"
     );
 
     Spi::connect(|mut client| {

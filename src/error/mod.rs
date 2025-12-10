@@ -128,6 +128,11 @@ pub enum TViewError {
         error: String,
     },
 
+    /// Serialization/deserialization failed
+    SerializationError {
+        message: String,
+    },
+
     /// Internal error (bug in extension)
     InternalError {
         message: String,
@@ -168,6 +173,7 @@ impl TViewError {
 
             CatalogError { .. } => "XX000",
             SpiError { .. } => "XX000",
+            SerializationError { .. } => "XX000",
             InternalError { .. } => "XX000",
         }
     }
@@ -250,6 +256,9 @@ impl fmt::Display for TViewError {
             SpiError { query, error } => {
                 write!(f, "SPI query failed: {}\nQuery: {}", error,
                        if query.len() > 100 { &query[..100] } else { query })
+            }
+            SerializationError { message } => {
+                write!(f, "Serialization error: {}", message)
             }
             InternalError { message, file, line } => {
                 write!(f, "Internal error at {}:{}: {}\nPlease report this bug.",

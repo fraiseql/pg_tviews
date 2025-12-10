@@ -3,7 +3,7 @@ use crate::error::{TViewError, TViewResult};
 
 // Generate SQL to create metadata tables during extension installation
 extension_sql!(
-    r#"
+    r"
     CREATE TABLE IF NOT EXISTS public.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
         view_oid OID NOT NULL,
@@ -28,14 +28,14 @@ extension_sql!(
 
     COMMENT ON TABLE public.pg_tview_meta IS 'Metadata for TVIEW materialized tables';
     COMMENT ON TABLE public.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
-    "#,
+    ",
     name = "create_metadata_tables",
 );
 
 /// Create the metadata tables required for pg_tviews extension
 pub fn create_metadata_tables() -> TViewResult<()> {
     Spi::run(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS public.pg_tview_meta (
             entity TEXT NOT NULL PRIMARY KEY,
             view_oid OID NOT NULL,
@@ -62,7 +62,7 @@ pub fn create_metadata_tables() -> TViewResult<()> {
             'Metadata for TVIEW materialized tables';
         COMMENT ON TABLE public.pg_tview_helpers IS
             'Tracks helper views used by TVIEWs';
-        "#,
+        ",
     ).map_err(|e| TViewError::CatalogError {
         operation: "create_metadata_tables".to_string(),
         pg_error: e.to_string(),
@@ -74,10 +74,10 @@ pub fn create_metadata_tables() -> TViewResult<()> {
 /// Drop all metadata tables (for testing/cleanup)
 pub fn drop_metadata_tables() -> TViewResult<()> {
     Spi::run(
-        r#"
+        r"
         DROP TABLE IF EXISTS public.pg_tview_helpers;
         DROP TABLE IF EXISTS public.pg_tview_meta;
-        "#,
+        ",
     ).map_err(|e| TViewError::CatalogError {
         operation: "drop_metadata_tables".to_string(),
         pg_error: e.to_string(),

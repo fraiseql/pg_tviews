@@ -58,29 +58,27 @@ pub fn insert_array_element(
     sort_key: Option<String>,
 ) -> TViewResult<()> {
     let path_str = array_path.join(",");
-    let path_array = format!("ARRAY['{}']", path_str);
+    let path_array = format!("ARRAY['{path_str}']");
 
     let sql = if let Some(key) = sort_key {
         // Insert with sorting
         format!(
-            r#"
-            UPDATE {} SET
-                data = jsonb_array_insert_where(data, {}, $1, '{}', 'ASC'),
+            r"
+            UPDATE {table_name} SET
+                data = jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC'),
                 updated_at = now()
-            WHERE {} = $2
-            "#,
-            table_name, path_array, key, pk_column
+            WHERE {pk_column} = $2
+            "
         )
     } else {
         // Insert at end (no sorting)
         format!(
-            r#"
-            UPDATE {} SET
-                data = jsonb_array_insert_where(data, {}, $1, NULL, NULL),
+            r"
+            UPDATE {table_name} SET
+                data = jsonb_array_insert_where(data, {path_array}, $1, NULL, NULL),
                 updated_at = now()
-            WHERE {} = $2
-            "#,
-            table_name, path_array, pk_column
+            WHERE {pk_column} = $2
+            "
         )
     };
 
@@ -129,16 +127,15 @@ pub fn delete_array_element(
     match_value: JsonB,
 ) -> TViewResult<()> {
     let path_str = array_path.join(",");
-    let path_array = format!("ARRAY['{}']", path_str);
+    let path_array = format!("ARRAY['{path_str}']");
 
     let sql = format!(
-        r#"
-        UPDATE {} SET
-            data = jsonb_array_delete_where(data, {}, '{}', $1),
+        r"
+        UPDATE {table_name} SET
+            data = jsonb_array_delete_where(data, {path_array}, '{match_key}', $1),
             updated_at = now()
-        WHERE {} = $2
-        "#,
-        table_name, path_array, match_key, pk_column
+        WHERE {pk_column} = $2
+        "
     );
 
     Spi::run_with_args(
@@ -161,13 +158,13 @@ pub fn delete_array_element(
 /// The array operations require jsonb_ivm for proper functionality.
 #[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
-    let sql = r#"
+    let sql = r"
         SELECT EXISTS(
             SELECT 1 FROM pg_proc
             WHERE proname = 'jsonb_array_insert_where'
                OR proname = 'jsonb_array_delete_where'
         )
-    "#;
+    ";
 
     Spi::get_one::<bool>(sql)
         .map_err(|e| TViewError::SpiError {

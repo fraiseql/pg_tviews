@@ -358,10 +358,9 @@ pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
 pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     // Query pg_class to get table name from OID
     let table_name = Spi::get_one::<String>(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
-        table_oid
+        "SELECT relname::text FROM pg_class WHERE oid = {table_oid:?}"
     ))?.ok_or_else(|| crate::TViewError::SpiError {
-        query: format!("SELECT relname FROM pg_class WHERE oid = {:?}", table_oid),
+        query: format!("SELECT relname FROM pg_class WHERE oid = {table_oid:?}"),
         error: "Table OID not found".to_string(),
     })?;
 

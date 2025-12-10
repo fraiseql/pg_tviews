@@ -72,7 +72,7 @@ fn create_trigger_handler() -> TViewResult<()> {
     // Note: jsonb_ivm dependency was removed - we don't use it anymore
     // Triggers are installed directly without needing external extensions
 
-    let handler_sql = r#"
+    let handler_sql = r"
         CREATE OR REPLACE FUNCTION tview_trigger_handler()
         RETURNS TRIGGER AS $$
         DECLARE
@@ -125,7 +125,7 @@ fn create_trigger_handler() -> TViewResult<()> {
             END IF;
         END;
         $$ LANGUAGE plpgsql;
-    "#;
+    ";
 
     Spi::run(handler_sql)
         .map_err(|e| TViewError::CatalogError {

@@ -91,8 +91,8 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
     };
 
     // Get fresh data for all PKs in one query
-    let view_name = format!("v_{}", entity);
-    let pk_col = format!("pk_{}", entity);
+    let view_name = format!("v_{entity}");
+    let pk_col = format!("pk_{entity}");
 
     // Build IN clause for PK values
     let pk_list = pk_values.iter()
@@ -101,8 +101,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
         .join(", ");
 
     let select_sql = format!(
-        "SELECT {}, data FROM {} WHERE {} IN ({})",
-        pk_col, view_name, pk_col, pk_list
+        "SELECT {pk_col}, data FROM {view_name} WHERE {pk_col} IN ({pk_list})"
     );
 
     // Execute query to get fresh data and extract it in the same context
@@ -116,7 +115,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
             let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
             let data: JsonB = row["data"].value().unwrap().unwrap();
 
-            case_when.push(format!("WHEN {} = {} THEN $", pk_col, pk));
+            case_when.push(format!("WHEN {pk_col} = {pk} THEN $"));
             case_data.push(data);
         }
 
@@ -127,7 +126,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
     })?;
 
     // Build batch update using CASE statements
-    let tv_name = format!("tv_{}", entity);
+    let tv_name = format!("tv_{entity}");
 
     if case_when.is_empty() {
         return Ok(0);
@@ -144,8 +143,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
     );
 
     let update_sql = format!(
-        "UPDATE {} SET data = {}, updated_at = now() WHERE {} IN ({})",
-        tv_name, case_statement, pk_col, pk_list
+        "UPDATE {tv_name} SET data = {case_statement}, updated_at = now() WHERE {pk_col} IN ({pk_list})"
     );
 
     // Prepare arguments for the CASE statement
@@ -175,12 +173,11 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     };
 
     // Get fresh data from view
-    let view_name = format!("v_{}", entity);
-    let pk_col = format!("pk_{}", entity);
+    let view_name = format!("v_{entity}");
+    let pk_col = format!("pk_{entity}");
 
-    let sql = format!(
-        "SELECT data FROM {} WHERE {} = $1",
-        view_name, pk_col
+      let sql = format!(
+        "SELECT data FROM {view_name} WHERE {pk_col} = $1"
     );
 
     let fresh_data: JsonB = Spi::get_one_with_args(
@@ -198,10 +195,9 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     })?;
 
     // Update TVIEW table
-    let tv_name = format!("tv_{}", entity);
-    let update_sql = format!(
-        "UPDATE {} SET data = $1, updated_at = now() WHERE {} = $2",
-        tv_name, pk_col
+    let tv_name = format!("tv_{entity}");
+      let update_sql = format!(
+        "UPDATE {tv_name} SET data = $1, updated_at = now() WHERE {pk_col} = $2"
     );
 
     Spi::run_with_args(

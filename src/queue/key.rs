@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 ///
 /// Example: RefreshKey { entity: "user".to_string(), pk: 42 }
 /// represents the row in tv_user with pk_user = 42
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RefreshKey {
     /// Entity name (e.g., "user", "post", "company")
     pub entity: String,

@@ -1,11 +1,17 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::ffi::CStr;
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 use crate::ddl::{create_tview, drop_tview};
+use crate::TViewError;
 
 /// Previous ProcessUtility hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
+
+/// Global storage for GID during PREPARE TRANSACTION
+static PREPARING_GID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
 /// Install the ProcessUtility hook to intercept CREATE/DROP TABLE tv_*
 pub unsafe fn install_hook() {
@@ -49,6 +55,15 @@ unsafe extern "C" fn tview_process_utility_hook(
             qc,
         );
         return;
+    }
+
+    // Check if this is PREPARE TRANSACTION
+    if query_lower.trim().starts_with("prepare transaction") {
+        // Extract GID from query: PREPARE TRANSACTION 'gid'
+        if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
+            *PREPARING_GID.lock().unwrap() = Some(gid);
+            info!("  → Captured GID for PREPARE TRANSACTION");
+        }
     }
 
     // Safety check
@@ -333,4 +348,37 @@ unsafe fn call_prev_hook_or_standard(
             );
         }
     }
+}
+
+/// Extract GID from PREPARE TRANSACTION query
+///
+/// Parses queries like: PREPARE TRANSACTION 'gid' or PREPARE TRANSACTION "gid"
+fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
+    // Parse: PREPARE TRANSACTION 'gid' or PREPARE TRANSACTION "gid"
+    // Use two separate patterns for single and double quotes
+    let patterns = [
+        "PREPARE\\s+TRANSACTION\\s+'([^']+)'",
+        "PREPARE\\s+TRANSACTION\\s+\"([^\"]+)\"",
+    ];
+
+    for pattern in &patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(caps) = re.captures(query) {
+                if let Some(m) = caps.get(1) {
+                    return Some(m.as_str().to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Get the prepared transaction GID captured by the ProcessUtility hook
+///
+/// This is called by the transaction callback during PREPARE TRANSACTION.
+pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
+    PREPARING_GID.lock().unwrap()
+        .take() // Take and clear the GID
+        .ok_or_else(|| crate::internal_error!("Not in a prepared transaction (GID not captured)"))
 }
