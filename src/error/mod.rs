@@ -1,4 +1,4 @@
-use pgrx::prelude::*;
+
 use std::fmt;
 
 pub mod testing;
@@ -251,11 +251,11 @@ impl From<pgrx::spi::Error> for TViewError {
 /// Convert TViewError to pgrx error (for raising to PostgreSQL)
 impl From<TViewError> for pgrx::spi::Error {
     fn from(e: TViewError) -> Self {
-        let sqlstate = e.sqlstate();
-        let message = e.to_string();
+        let _sqlstate = e.sqlstate();
+        let _message = e.to_string();
 
         // Map to pgrx error levels
-        let level = match e {
+        let _level = match e {
             TViewError::InternalError { .. } => pgrx::PgLogLevel::ERROR,
             TViewError::CircularDependency { .. } => pgrx::PgLogLevel::ERROR,
             TViewError::JsonbIvmNotInstalled => pgrx::PgLogLevel::ERROR,

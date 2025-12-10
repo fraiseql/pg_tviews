@@ -48,6 +48,7 @@ use crate::error::{TViewError, TViewResult};
 ///     'created_at'
 /// );
 /// ```
+#[allow(dead_code)]
 pub fn insert_array_element(
     table_name: &str,
     pk_column: &str,
@@ -118,6 +119,7 @@ pub fn insert_array_element(
 ///     ARRAY['comments'], 'id', '"123"'::jsonb
 /// );
 /// ```
+#[allow(dead_code)]
 pub fn delete_array_element(
     table_name: &str,
     pk_column: &str,
@@ -157,6 +159,7 @@ pub fn delete_array_element(
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
 /// The array operations require jsonb_ivm for proper functionality.
+#[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r#"
         SELECT EXISTS(

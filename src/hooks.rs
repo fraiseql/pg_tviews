@@ -1,5 +1,5 @@
 use pgrx::prelude::*;
-use pgrx::{pg_sys, PgList};
+use pgrx::pg_sys;
 use std::ffi::CStr;
 
 use crate::ddl::{create_tview, drop_tview};
@@ -15,6 +15,7 @@ pub unsafe fn install_hook() {
 
 /// ProcessUtility hook that intercepts CREATE TABLE tv_* and DROP TABLE tv_*
 #[pg_guard]
+#[allow(clippy::too_many_arguments)]
 unsafe extern "C" fn tview_process_utility_hook(
     pstmt: *mut pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,
@@ -84,7 +85,7 @@ unsafe extern "C" fn tview_process_utility_hook(
         return;
     }
 
-    let utility_stmt = pstmt_ref.utilityStmt as *mut pg_sys::Node;
+    let utility_stmt = pstmt_ref.utilityStmt;
     let node_tag = (*utility_stmt).type_;
     info!("  → node_tag = {:?}", node_tag);
 
@@ -258,7 +259,7 @@ unsafe fn handle_drop_table(
 
     for word in words.iter() {
         // Remove trailing punctuation (comma, semicolon)
-        let clean_word = word.trim_end_matches(|c| c == ',' || c == ';');
+        let clean_word = word.trim_end_matches([',', ';']);
 
         if clean_word.starts_with("tv_") {
             table_name = clean_word.to_string();
@@ -295,6 +296,7 @@ unsafe fn handle_drop_table(
 }
 
 /// Call the previous hook if it exists, otherwise call standard_ProcessUtility
+#[allow(clippy::too_many_arguments)]
 unsafe fn call_prev_hook_or_standard(
     pstmt: *mut pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,

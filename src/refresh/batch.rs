@@ -89,8 +89,8 @@ fn refresh_batch_optimized(_entity: &str, _pk_values: &[i64]) -> TViewResult<usi
 /// Refresh a single TVIEW row (used by individual and batch operations)
 fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     // Get TVIEW metadata
-    let meta = TviewMeta::load_by_entity(entity)?;
-    let meta = match meta {
+    let meta_opt = TviewMeta::load_by_entity(entity)?;
+    let _meta = match meta_opt {
         Some(m) => m,
         None => return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),

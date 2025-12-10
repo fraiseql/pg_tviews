@@ -264,6 +264,7 @@ fn get_oid(object_name: &str) -> TViewResult<pg_sys::Oid> {
     })
 }
 
+#[allow(dead_code)]
 fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
         "SELECT relkind::text FROM pg_class WHERE oid = {:?}",

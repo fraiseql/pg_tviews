@@ -8,8 +8,7 @@ use pgrx::prelude::*;
 use pgrx::JsonB;
 
 /// Schema information inferred from a TVIEW SELECT statement
-#[derive(Debug, Clone, Serialize, Deserialize, PostgresType)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Serialize, Deserialize, PostgresType, Default)]
 pub struct TViewSchema {
     pub pk_column: Option<String>,
     pub id_column: Option<String>,
@@ -24,17 +23,7 @@ pub struct TViewSchema {
 
 impl TViewSchema {
     pub fn new() -> Self {
-        Self {
-            pk_column: None,
-            id_column: None,
-            identifier_column: None,
-            data_column: None,
-            fk_columns: Vec::new(),
-            uuid_fk_columns: Vec::new(),
-            additional_columns: Vec::new(),
-            additional_columns_with_types: Vec::new(),
-            entity_name: None,
-        }
+        Self::default()
     }
 
     pub fn to_jsonb(&self) -> Result<JsonB, serde_json::Error> {
@@ -42,6 +31,8 @@ impl TViewSchema {
         Ok(JsonB(json_value))
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

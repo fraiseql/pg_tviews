@@ -47,7 +47,7 @@ pub fn table_exists(table_name: &str) -> TViewResult<bool> {
 
     Spi::get_one::<bool>(&query)
         .map_err(|e| crate::error::TViewError::SpiError {
-            query: query,
+            query,
             error: e.to_string(),
         })
         .map(|opt| opt.unwrap_or(false))

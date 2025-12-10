@@ -1,4 +1,4 @@
-use pgrx::prelude::*;
+
 
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
@@ -203,13 +203,12 @@ fn extract_column_name(part: &str) -> Result<String, String> {
 
 /// Find the last "AS" keyword position, handling nested contexts
 fn find_last_as(sql_lower: &str) -> Option<usize> {
-    let mut paren_depth = 0;
     let mut last_as_pos = None;
 
     for (i, _) in sql_lower.match_indices("as") {
         // Count parentheses to handle nested expressions
         let before = &sql_lower[..i];
-        paren_depth = before.chars().fold(0i32, |depth, c| {
+        let paren_depth = before.chars().fold(0i32, |depth, c| {
             match c {
                 '(' => depth + 1,
                 ')' => depth.saturating_sub(1),

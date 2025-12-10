@@ -3,11 +3,11 @@ use pgrx::JsonB;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod catalog;
-mod trigger;
 mod refresh;
 mod propagate;
 mod utils;
 mod hooks;
+mod trigger;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -255,7 +255,7 @@ fn find_affected_tview_rows(
     let base_table_name = Spi::get_one::<String>(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {:?}",
         base_table_oid
-    ))?.ok_or_else(|| spi::Error::InvalidPosition)?;
+    ))?.ok_or(spi::Error::InvalidPosition)?;
 
     // Extract entity name from table name (e.g., "tb_user" -> "user")
     let base_entity = base_table_name.trim_start_matches("tb_");

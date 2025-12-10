@@ -9,4 +9,4 @@ pub mod array_ops;
 pub mod batch;
 
 // Re-export main functions for backward compatibility
-pub use main::{refresh_pk, ViewRow};
+pub use main::refresh_pk;

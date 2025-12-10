@@ -49,9 +49,9 @@ pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
 
     // 1. Detect pk_ column (highest priority - defines entity)
     for col in &columns {
-        if col.starts_with("pk_") {
+        if let Some(entity) = col.strip_prefix("pk_") {
             schema.pk_column = Some(col.clone());
-            schema.entity_name = Some(col[3..].to_string());
+            schema.entity_name = Some(entity.to_string());
             break;
         }
     }

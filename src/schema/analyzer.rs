@@ -130,8 +130,7 @@ fn infer_view_name(fk_col: &str) -> Option<String> {
 fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Normalize SQL: remove extra whitespace, make lowercase for pattern matching
     let sql_normalized = select_sql
-        .replace('\n', " ")
-        .replace('\t', " ")
+        .replace(['\n', '\t'], " ")
         .to_lowercase();
 
     // Try to infer view name from FK column
@@ -182,8 +181,7 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
 
     // Normalize SQL for pattern matching
     let sql_normalized = select_sql
-        .replace('\n', " ")
-        .replace('\t', " ")
+        .replace(['\n', '\t'], " ")
         .to_lowercase();
 
     // Pattern to match: 'array_name', jsonb_agg(v_something.data ...)
@@ -197,7 +195,7 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
     for capture in re.captures_iter(&sql_normalized) {
         if let (Some(array_name), Some(view_entity)) = (capture.get(1), capture.get(2)) {
             let array_name = array_name.as_str().to_string();
-            let view_name = format!("v_{}", view_entity.as_str());
+            let _view_name = format!("v_{}", view_entity.as_str());
 
             // Create array dependency info
             let dep_info = DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());

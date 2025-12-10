@@ -5,9 +5,7 @@
 BEGIN;
     SET client_min_messages TO WARNING;
 
-    -- Cleanup
-    DROP EXTENSION IF EXISTS pg_tviews CASCADE;
-    CREATE EXTENSION pg_tviews;
+    -- Cleanup (extension is already loaded by pgrx)
 
     -- Test Case 1: Array column materialization with UUID arrays
     CREATE TABLE tb_machine (

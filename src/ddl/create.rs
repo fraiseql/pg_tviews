@@ -30,8 +30,8 @@ pub fn create_tview(
 
     // Step 1.5: Extract entity name from tview_name
     // Support both "tv_entity" and just "entity" formats
-    let entity_name = if tview_name.starts_with("tv_") {
-        &tview_name[3..]
+    let entity_name = if let Some(stripped) = tview_name.strip_prefix("tv_") {
+        stripped
     } else {
         tview_name
     };
@@ -456,7 +456,7 @@ fn transform_raw_select_to_tview(
     // Build explicit column lists for clarity and control
 
     // 1. Build the source column list (from the subquery)
-    let source_columns: Vec<String> = columns.iter()
+    let _source_columns: Vec<String> = columns.iter()
         .map(|(name, _)| format!("source.{}", name))
         .collect();
 
