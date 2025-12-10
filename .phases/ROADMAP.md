@@ -235,6 +235,78 @@ pool_mode = transaction
 
 ---
 
+### 📋 Phase 10: Clippy-Strict Compliance
+
+**Status:** PLANNED (Post-Phase 7)
+**Priority:** Medium (Code quality & maintainability)
+**Estimated Time:** 1-2 weeks
+**Documentation:** `.phases/phase-10-overview.md`
+
+**Objectives:**
+1. **Unwrap Elimination**: Remove ~183 unwrap() calls with proper error handling
+2. **Pedantic Lint Compliance**: Pass clippy pedantic checks (50-100 warnings)
+3. **Error Handling Audit**: Consistent error patterns, no FFI panics
+4. **Documentation Enhancement**: 90%+ doc coverage with examples
+5. **CI/CD Lint Integration**: Strict clippy in GitHub Actions
+
+**Sub-Phases:**
+| Phase | Focus | Time | Dependencies |
+|-------|-------|------|--------------|
+| 10A | Unwrap Elimination | 3-4 days | Phase 7 ✅ |
+| 10B | Pedantic Lint Compliance | 2-3 days | Phase 10A |
+| 10C | Error Handling Audit | 2 days | Phase 10A |
+| 10D | Documentation Enhancement | 1-2 days | Phase 7 ✅ |
+| 10E | CI/CD Lint Integration | 1 day | Phase 10A-10D |
+
+**Code Quality Targets:**
+- Clippy warnings (pedantic + nursery): **Current ~100-150 → 0**
+- Documentation coverage: **Current ~40% → 90%+**
+- Unwrap count: **Current 183 → <10** (justified with expect)
+- Panic count: **Current 5 → 0** (except tests)
+- CI pass rate: **100%** (all PRs pass strict clippy)
+
+**Key Improvements:**
+```rust
+// Unwrap elimination example
+// BEFORE (can panic):
+let cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+
+// AFTER (safe):
+let cache = ENTITY_GRAPH_CACHE.lock()
+    .expect("ENTITY_GRAPH_CACHE mutex poisoned - fatal error");
+
+// FFI safety example
+#[pg_guard]
+unsafe extern "C" fn callback(event: u32) {
+    let result = std::panic::catch_unwind(|| {
+        // ... handle event
+    });
+    if result.is_err() {
+        error!("PANIC in FFI callback - this is a bug!");
+    }
+}
+```
+
+**Documentation Standards:**
+- Module-level docs for all `pub mod`
+- Function docs with examples for all `pub fn`
+- Error docs for all TViewError variants
+- Performance characteristics documented
+- Safety invariants for `unsafe` code
+
+**CI/CD Integration:**
+```yaml
+# Strict clippy in CI
+cargo clippy --all-targets -- \
+  -D warnings \
+  -D clippy::pedantic \
+  -W clippy::nursery
+```
+
+**Read:** `.phases/phase-10-overview.md`
+
+---
+
 ## Implementation Strategy
 
 ### Dependencies
@@ -244,12 +316,19 @@ Phase 1-5 (Foundation)
     ↓
 Phase 6 (Transaction-Queue Architecture) ✅
     ↓
-    ├──→ Phase 7 (Performance & Edge Cases)
-    │       ├──→ 7A: Graph Caching
-    │       ├──→ 7B: Table Caching
-    │       ├──→ 7C: Savepoint Support
-    │       ├──→ 7D: GUC Configuration
-    │       └──→ 7E: Monitoring
+    ├──→ Phase 7 (Performance & Edge Cases) ✅
+    │       ├──→ 7A: Graph Caching ✅
+    │       ├──→ 7B: Table Caching ✅
+    │       ├──→ 7C: Savepoint Support ✅
+    │       ├──→ 7D: GUC Configuration ✅
+    │       └──→ 7E: Monitoring ✅
+    │
+    ├──→ Phase 10 (Clippy-Strict Compliance) [Post-Phase 7]
+    │       ├──→ 10A: Unwrap Elimination
+    │       ├──→ 10B: Pedantic Compliance
+    │       ├──→ 10C: Error Handling Audit
+    │       ├──→ 10D: Documentation
+    │       └──→ 10E: CI/CD Integration
     │
     ├──→ Phase 8 (2PC Support) [Optional]
     │       ├──→ 8A: Persistent Queue
@@ -270,13 +349,21 @@ Phase 6 (Transaction-Queue Architecture) ✅
 
 **Production Deployment Path:**
 1. ✅ **Phase 6** (Complete) - Core functionality
-2. **Phase 7A + 7B** - Performance optimizations (caching)
-3. **Phase 9A + 9B** - Statement-level triggers + bulk operations
-4. **Phase 7C** - Savepoint support (if needed)
+2. ✅ **Phase 7** (Complete) - Performance optimizations + monitoring
+3. **Phase 10** - Code quality hardening (recommended before production)
+4. **Phase 9A + 9B** - Statement-level triggers + bulk operations
 5. **Phase 9C + 9D** - Query caching + connection pooling safety
-6. **Phase 7D + 7E** - Configuration + monitoring
-7. **Phase 9E** - Enhanced monitoring
-8. **Phase 8** (Optional) - 2PC support (enterprise feature)
+6. **Phase 9E** - Enhanced monitoring
+7. **Phase 8** (Optional) - 2PC support (enterprise feature)
+
+**Code Quality First Path:** (Recommended)
+1. ✅ **Phase 6** (Complete) - Core functionality
+2. ✅ **Phase 7** (Complete) - Performance optimizations
+3. **Phase 10A + 10C** - Unwrap elimination + error audit
+4. **Phase 10B + 10D** - Pedantic compliance + documentation
+5. **Phase 10E** - CI/CD integration
+6. **Phase 9** - Production features (on clean codebase)
+7. **Phase 8** (Optional) - 2PC support
 
 **Enterprise/Distributed Path:**
 1. ✅ **Phase 6** (Complete) - Core functionality
@@ -365,23 +452,35 @@ All phases must meet these standards:
 - Query plan caching working
 - Production monitoring integrated
 
+### Phase 10 (Planned)
+- 0 clippy warnings (pedantic + nursery enabled)
+- 90%+ documentation coverage
+- <10 unwrap() calls (all justified)
+- 0 panics in production code
+- 100% CI pass rate with strict lints
+
 ---
 
 ## Next Steps
 
-1. **Review Phase 7-9 Plans**: User review of planning documents
-2. **Begin Phase 7A**: Implement graph caching (highest ROI, lowest complexity)
-3. **Verify Phase 7A**: Run tests, measure performance improvement
-4. **Commit Phase 7A**: Commit with descriptive message
-5. **Continue Phase 7B-7E**: Sequential implementation with verification
+**Current Status: Phase 7 Complete ✅**
+
+1. ✅ **Phase 7 Complete**: All optimizations implemented and committed
+2. **Choose Path**: Production-first OR Code Quality-first
+   - **Production Path**: Phase 9A → Phase 9B → Phase 10
+   - **Quality Path**: Phase 10 → Phase 9 (Recommended)
+3. **Phase 10 Recommended**: Clean up codebase before adding more features
+4. **Begin Phase 10A**: Unwrap elimination in hot paths
+5. **Continue sequentially**: 10B → 10C → 10D → 10E
 
 **Estimated Timeline:**
-- Phase 7: 1-2 weeks
-- Phase 9: 2-3 weeks (can run in parallel with Phase 8 sub-phases)
-- Phase 8: 2-3 weeks (optional, for enterprise features)
+- ✅ Phase 7: Complete (1 week)
+- Phase 10: 1-2 weeks (code quality)
+- Phase 9: 2-3 weeks (production features)
+- Phase 8: 2-3 weeks (optional, enterprise 2PC)
 
-**Total to Production-Optimized:** 3-5 weeks (Phase 7 + 9)
-**Total with 2PC Support:** 5-8 weeks (Phase 7 + 8 + 9)
+**Total to Production-Ready:** 3-4 weeks (Phase 10 + 9)
+**Total with 2PC Support:** 5-7 weeks (Phase 10 + 9 + 8)
 
 ---
 
@@ -403,13 +502,9 @@ All phases must meet these standards:
 - `.phases/PHASE6_IMPROVEMENTS_SUMMARY.md` - Architectural review
 - `.phases/PHASE6_QUICKREF.md` - Quick reference
 
-### Phase 7 (Planned)
-- `.phases/phase-7-overview.md` - Performance optimizations overview
-- `.phases/phase-7a-graph-caching.md` - To be created
-- `.phases/phase-7b-table-caching.md` - To be created
-- `.phases/phase-7c-savepoint-support.md` - To be created
-- `.phases/phase-7d-guc-configuration.md` - To be created
-- `.phases/phase-7e-monitoring.md` - To be created
+### Phase 7 (Complete)
+- `.phases/phase-7-overview.md` - Performance optimizations overview ✅
+- Implementation: Integrated across src/queue/cache.rs, src/metrics.rs, src/config/mod.rs
 
 ### Phase 8 (Planned)
 - `.phases/phase-8-overview.md` - 2PC support overview
@@ -427,6 +522,10 @@ All phases must meet these standards:
 - `.phases/phase-9d-connection-pooling.md` - To be created
 - `.phases/phase-9e-monitoring.md` - To be created
 
+### Phase 10 (Planned)
+- `.phases/phase-10-overview.md` - Clippy-strict compliance overview ✅
+- Implementation: Code quality improvements across entire codebase
+
 ---
 
 ## Version History
@@ -437,9 +536,10 @@ All phases must meet these standards:
 | 0.6.0 | 2025-12-10 | Phase 6 | `b8c6c92` | Documentation |
 | 0.6.1 | 2025-12-10 | Phase 6A+6B | `37a0fbf` | Foundation + Triggers |
 | 0.6.2 | 2025-12-10 | Phase 6C+6D | `0b78438` | Commit Processing + Entity Graph |
-| 0.7.0 | TBD | Phase 7 | TBD | Performance & Edge Cases |
-| 0.8.0 | TBD | Phase 8 | TBD | 2PC Support (Optional) |
+| 0.7.0 | 2025-12-10 | Phase 7 | `7666ce1` | Performance & Edge Cases ✅ |
+| 0.8.0 | TBD | Phase 10 | TBD | Code Quality (Recommended next) |
 | 0.9.0 | TBD | Phase 9 | TBD | Production Hardening |
+| 0.10.0 | TBD | Phase 8 | TBD | 2PC Support (Optional) |
 | 1.0.0 | TBD | All | TBD | Production Release |
 
 ---
@@ -454,4 +554,5 @@ All phases must meet these standards:
 
 **Last Updated:** 2025-12-10
 **Maintained By:** Project Team
-**Status:** Phase 6 Complete ✅, Phase 7-9 Planned 📋
+**Status:** Phase 6-7 Complete ✅, Phase 8-10 Planned 📋
+**Recommended Next:** Phase 10 (Code Quality First)
