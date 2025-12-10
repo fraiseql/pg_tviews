@@ -313,7 +313,6 @@ fn view_exists(view_name: &str) -> TViewResult<bool> {
 mod tests {
     use pgrx::prelude::*;
     use super::*;
-    use crate::error::testing::*;
 
     #[pg_test]
     fn test_find_base_tables_single() {

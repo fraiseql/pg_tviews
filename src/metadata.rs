@@ -165,7 +165,7 @@ mod tests {
                 columns.push((name, data_type, nullable));
             }
 
-            Ok(columns)
+            Ok::<_, pgrx::spi::SpiError>(columns)
         }).expect("Failed to query column info");
 
         // Verify expected columns exist

@@ -178,6 +178,7 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 }
 
 #[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;

@@ -491,7 +491,6 @@ fn transform_raw_select_to_tview(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_tview_exists_non_existent() {

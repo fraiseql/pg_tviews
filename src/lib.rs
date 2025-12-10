@@ -189,6 +189,38 @@ fn pg_tviews_cascade(
     }
 }
 
+/// Handle INSERT operations on base tables
+/// Called by trigger handler when rows are inserted
+///
+/// Arguments:
+/// - base_table_oid: OID of the base table that changed
+/// - pk_value: Primary key value of the inserted row
+#[pg_extern]
+fn pg_tviews_insert(
+    base_table_oid: pg_sys::Oid,
+    pk_value: i64,
+) {
+    // For INSERT operations, we need to check if this affects array relationships
+    // For now, delegate to the cascade function (which handles recomputation)
+    pg_tviews_cascade(base_table_oid, pk_value);
+}
+
+/// Handle DELETE operations on base tables
+/// Called by trigger handler when rows are deleted
+///
+/// Arguments:
+/// - base_table_oid: OID of the base table that changed
+/// - pk_value: Primary key value of the deleted row
+#[pg_extern]
+fn pg_tviews_delete(
+    base_table_oid: pg_sys::Oid,
+    pk_value: i64,
+) {
+    // For DELETE operations, we need to check if this affects array relationships
+    // For now, delegate to the cascade function (which handles recomputation)
+    pg_tviews_cascade(base_table_oid, pk_value);
+}
+
 /// Find all TVIEWs that have the given base table as a dependency
 fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
     // Query pg_tview_meta using the pre-computed dependencies array
@@ -298,14 +330,15 @@ fn find_affected_tview_rows(
 /// This is where you could expose helper functions for debugging.
 /// e.g., listing registered TVIEWs, dependencies, etc.
 
-    #[cfg(any(test, feature = "pg_test"))]
-    mod tests {
-        use pgrx::prelude::*;
-        use crate::TViewError;
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use pgrx::prelude::*;
+    use crate::TViewError;
 
     #[pg_test]
     fn sanity_check() {
-        assert_eq!(1 + 1, 2);
+        assert_eq!(2, 1 + 1);
     }
 
     #[pg_test]

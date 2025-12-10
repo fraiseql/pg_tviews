@@ -474,7 +474,7 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
 }
 
 #[cfg(any(test, feature = "pg_test"))]
-#[pgrx::pg_schema]
+#[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use pgrx::JsonB;

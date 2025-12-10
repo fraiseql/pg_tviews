@@ -123,7 +123,6 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_tview_exists_in_metadata_non_existent() {

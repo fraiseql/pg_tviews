@@ -1,7 +1,4 @@
 #[cfg(any(test, feature = "pg_test"))]
-use pgrx::prelude::*;
-
-#[cfg(any(test, feature = "pg_test"))]
 pub fn assert_error_sqlstate<T>(
     result: crate::TViewResult<T>,
     expected_sqlstate: &str,

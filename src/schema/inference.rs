@@ -11,9 +11,7 @@ pub fn infer_column_type(sql_expression: &str) -> String {
 
     // Detect ARRAY(...) subqueries
     if expr.to_uppercase().starts_with("ARRAY(") {
-        // For now, assume UUID arrays are common - could be enhanced
-        // to analyze the subquery and infer element type
-        return "UUID[]".to_string();
+        return infer_array_element_type(expr);
     }
 
     // Detect jsonb_agg (often used for arrays in JSONB)
@@ -23,6 +21,115 @@ pub fn infer_column_type(sql_expression: &str) -> String {
 
     // Default to TEXT for other expressions
     "TEXT".to_string()
+}
+
+/// Infer the element type for an ARRAY(...) subquery
+fn infer_array_element_type(array_expr: &str) -> String {
+    // Extract the subquery from ARRAY(subquery)
+    if let Some(start) = array_expr.to_uppercase().find("ARRAY(") {
+        let subquery_start = start + 6; // length of "ARRAY("
+        if let Some(end) = find_matching_paren(&array_expr[subquery_start..]) {
+            let subquery = &array_expr[subquery_start..subquery_start + end];
+
+            // Parse the subquery to find the selected column
+            if let Some(element_type) = infer_element_type_from_subquery(subquery) {
+                return format!("{}[]", element_type);
+            }
+        }
+    }
+
+    // Fallback: assume UUID arrays are common
+    "UUID[]".to_string()
+}
+
+/// Find the matching closing parenthesis
+fn find_matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in s.chars().enumerate() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Infer element type from a subquery like "SELECT column FROM table"
+fn infer_element_type_from_subquery(subquery: &str) -> Option<String> {
+    let query = subquery.trim();
+
+    // Look for SELECT statement
+    if !query.to_uppercase().starts_with("SELECT ") {
+        return None;
+    }
+
+    // Extract the SELECT clause
+    let select_part = if let Some(from_pos) = query.to_uppercase().find(" FROM ") {
+        &query[7..from_pos] // Skip "SELECT "
+    } else {
+        &query[7..] // Skip "SELECT "
+    };
+
+    // Parse the selected expression
+    let selected_expr = select_part.trim();
+
+    // Handle simple column references like "mi.id", "id", etc.
+    if selected_expr.contains('.') {
+        // Table.column reference - try to infer from column name patterns
+        let parts: Vec<&str> = selected_expr.split('.').collect();
+        if let Some(col_name) = parts.last() {
+            return infer_type_from_column_name(col_name);
+        }
+    } else {
+        // Simple column name
+        return infer_type_from_column_name(selected_expr);
+    }
+
+    // Fallback
+    Some("UUID".to_string())
+}
+
+/// Infer PostgreSQL type from column name patterns
+fn infer_type_from_column_name(col_name: &str) -> Option<String> {
+    let name = col_name.to_lowercase();
+
+    // Common UUID column names
+    if name == "id" || name.ends_with("_id") || name.contains("uuid") {
+        return Some("UUID".to_string());
+    }
+
+    // Common TEXT column names
+    if name.contains("name") || name.contains("title") || name.contains("text")
+        || name.contains("description") || name.contains("email") {
+        return Some("TEXT".to_string());
+    }
+
+    // Common INTEGER column names
+    if name.starts_with("pk_") || name.starts_with("fk_") || name.contains("count")
+        || name.contains("number") || name.contains("size") {
+        return Some("INTEGER".to_string());
+    }
+
+    // Common TIMESTAMP column names
+    if name.contains("date") || name.contains("time") || name.contains("created")
+        || name.contains("updated") || name.contains("timestamp") {
+        return Some("TIMESTAMP".to_string());
+    }
+
+    // Common BOOLEAN column names
+    if name.starts_with("is_") || name.starts_with("has_") || name.contains("active")
+        || name.contains("enabled") || name.contains("deleted") {
+        return Some("BOOLEAN".to_string());
+    }
+
+    // Default to UUID for unknown patterns (most common in our use case)
+    Some("UUID".to_string())
 }
 
 /// Infer TVIEW schema from SELECT statement
@@ -286,5 +393,58 @@ mod tests {
         assert_eq!(schema.identifier_column, Some("identifier".to_string()));
         assert_eq!(schema.data_column, Some("data".to_string()));
         assert_eq!(schema.additional_columns, vec!["name"]);
+    }
+
+    #[test]
+    fn test_infer_array_column_uuid() {
+        let sql = "SELECT pk_machine, id, ARRAY(SELECT mi.id FROM tb_machine_item mi WHERE mi.fk_machine = m.pk_machine) AS machine_item_ids, data FROM tb_machine m";
+        let schema = infer_schema(sql).unwrap();
+
+        assert_eq!(schema.pk_column, Some("pk_machine".to_string()));
+        assert_eq!(schema.id_column, Some("id".to_string()));
+        assert_eq!(schema.data_column, Some("data".to_string()));
+        assert_eq!(schema.additional_columns, vec!["machine_item_ids"]);
+        assert_eq!(schema.additional_columns_with_types, vec![("machine_item_ids".to_string(), "UUID[]".to_string())]);
+    }
+
+    #[test]
+    fn test_infer_array_column_text() {
+        let sql = "SELECT pk_post, id, ARRAY(SELECT c.name FROM tb_comment c WHERE c.fk_post = p.pk_post) AS comment_names, data FROM tb_post p";
+        let schema = infer_schema(sql).unwrap();
+
+        assert_eq!(schema.additional_columns_with_types, vec![("comment_names".to_string(), "TEXT[]".to_string())]);
+    }
+
+    #[test]
+    fn test_infer_array_column_integer() {
+        let sql = "SELECT pk_order, id, ARRAY(SELECT oi.pk_order_item FROM tb_order_item oi WHERE oi.fk_order = o.pk_order) AS item_ids, data FROM tb_order o";
+        let schema = infer_schema(sql).unwrap();
+
+        assert_eq!(schema.additional_columns_with_types, vec![("item_ids".to_string(), "INTEGER[]".to_string())]);
+    }
+
+    #[test]
+    fn test_infer_column_type_array_uuid() {
+        assert_eq!(infer_column_type("ARRAY(SELECT mi.id FROM tb_machine_item mi)"), "UUID[]");
+    }
+
+    #[test]
+    fn test_infer_column_type_array_text() {
+        assert_eq!(infer_column_type("ARRAY(SELECT c.name FROM tb_comment c)"), "TEXT[]");
+    }
+
+    #[test]
+    fn test_infer_column_type_array_integer() {
+        assert_eq!(infer_column_type("ARRAY(SELECT oi.pk_order_item FROM tb_order_item oi)"), "INTEGER[]");
+    }
+
+    #[test]
+    fn test_infer_column_type_jsonb_agg() {
+        assert_eq!(infer_column_type("jsonb_agg(jsonb_build_object('id', c.id))"), "JSONB");
+    }
+
+    #[test]
+    fn test_infer_column_type_default() {
+        assert_eq!(infer_column_type("some_expression"), "TEXT");
     }
 }

@@ -80,10 +80,87 @@ fn refresh_individual(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
 }
 
 /// Refresh using optimized batch update (for large batches)
-fn refresh_batch_optimized(_entity: &str, _pk_values: &[i64]) -> TViewResult<usize> {
-    // TODO: Implement optimized batch update
-    // For now, fall back to individual updates
-    Ok(0)
+fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
+    // Get TVIEW metadata
+    let meta_opt = TviewMeta::load_by_entity(entity)?;
+    let _meta = match meta_opt {
+        Some(m) => m,
+        None => return Err(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }),
+    };
+
+    // Get fresh data for all PKs in one query
+    let view_name = format!("v_{}", entity);
+    let pk_col = format!("pk_{}", entity);
+
+    // Build IN clause for PK values
+    let pk_list = pk_values.iter()
+        .map(|pk| pk.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let select_sql = format!(
+        "SELECT {}, data FROM {} WHERE {} IN ({})",
+        pk_col, view_name, pk_col, pk_list
+    );
+
+    // Execute query to get fresh data and extract it in the same context
+    let (case_when, case_data) = Spi::connect(|client| {
+        let rows = client.select(&select_sql, None, None)?;
+
+        let mut case_data = Vec::new();
+        let mut case_when = Vec::new();
+
+        for row in rows {
+            let pk: i64 = row[&pk_col as &str].value().unwrap().unwrap();
+            let data: JsonB = row["data"].value().unwrap().unwrap();
+
+            case_when.push(format!("WHEN {} = {} THEN $", pk_col, pk));
+            case_data.push(data);
+        }
+
+        Ok::<_, spi::SpiError>((case_when, case_data))
+    }).map_err(|e| TViewError::SpiError {
+        query: select_sql.clone(),
+        error: e.to_string(),
+    })?;
+
+    // Build batch update using CASE statements
+    let tv_name = format!("tv_{}", entity);
+
+    if case_when.is_empty() {
+        return Ok(0);
+    }
+
+    // Create the CASE statement
+    let case_statement = format!(
+        "CASE\n{}\nELSE data\nEND",
+        case_when.into_iter()
+            .enumerate()
+            .map(|(i, when)| format!("{} {}", when, i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let update_sql = format!(
+        "UPDATE {} SET data = {}, updated_at = now() WHERE {} IN ({})",
+        tv_name, case_statement, pk_col, pk_list
+    );
+
+    // Prepare arguments for the CASE statement
+    let mut args = Vec::new();
+    for data in case_data {
+        args.push((PgOid::BuiltIn(PgBuiltInOids::JSONBOID), data.into_datum()));
+    }
+
+    Spi::run_with_args(&update_sql, Some(args))
+        .map_err(|e| TViewError::SpiError {
+            query: update_sql,
+            error: e.to_string(),
+        })?;
+
+    Ok(pk_values.len())
 }
 
 /// Refresh a single TVIEW row (used by individual and batch operations)
@@ -142,6 +219,7 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
 }
 
 #[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
