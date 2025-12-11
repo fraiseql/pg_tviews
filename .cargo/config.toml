@@ -19,7 +19,7 @@ rustflags = [
   "-C", "codegen-units=1",
 
   # Reproducibility
-  "-C", "embed-bitcode=no",
+  # Note: embed-bitcode=no is incompatible with LTO, removed
 
   # Strip debug symbols in release
   "-C", "strip=symbols",
