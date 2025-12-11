@@ -1,0 +1,39 @@
+# pg_tviews Rust Build Configuration
+# Security hardening and optimization settings
+
+[build]
+# Security hardening flags
+rustflags = [
+  # Position Independent Code (PIC) for ASLR
+  "-C", "relocation-model=pic",
+
+  # RELRO and BIND_NOW for GOT protection
+  "-C", "link-arg=-Wl,-z,relro,-z,now",
+
+  # No executable stack
+  "-C", "link-arg=-Wl,-z,noexecstack",
+
+  # Optimization settings
+  "-C", "opt-level=3",
+  "-C", "lto=fat",
+  "-C", "codegen-units=1",
+
+  # Reproducibility
+  # Note: embed-bitcode=no is incompatible with LTO
+
+  # Strip debug symbols in release
+  "-C", "strip=symbols",
+]
+
+[profile.release]
+# Release profile optimizations
+strip = true
+panic = "abort"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+# Development profile (less aggressive optimizations)
+strip = false
+panic = "unwind"
+lto = false
