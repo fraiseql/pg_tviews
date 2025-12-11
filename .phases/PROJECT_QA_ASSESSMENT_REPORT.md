@@ -66,9 +66,9 @@ FROM tb_test;
 
 **Files Affected** (34 instances found):
 - `docs/operations/troubleshooting.md` (6 instances)
-- `docs/DEBUGGING.md` (2 instances)
+- `docs/operations/debugging.md` (2 instances)
 - `docs/reference/ddl.md` (7 instances)
-- `docs/ERROR_REFERENCE.md` (9 instances)
+- `docs/error-reference.md` (9 instances)
 - `.phases/event-triggers-implementation-plan.md` (4 instances)
 - `.phases/fix-process-utility-hook-*.md` (6 instances)
 

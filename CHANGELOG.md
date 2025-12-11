@@ -206,7 +206,7 @@ Scalability:              Linear performance scaling
 
 **Updated Documentation**
 - README.md: Added array handling features and latest performance results
-- docs/ARRAYS.md: Comprehensive array handling guide
+- docs/arrays.md: Comprehensive array handling guide
 - Performance benchmarks documented with variance analysis
 - Migration guides for array operations
 

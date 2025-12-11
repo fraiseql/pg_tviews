@@ -186,7 +186,7 @@ GROUP BY entity;
 - [ ] `pg_tviews_queue_realtime` view created
 - [ ] `pg_tviews_cache_stats` view created
 - [ ] `pg_tviews_performance_summary` view created
-- [ ] Documentation updated in docs/MONITORING.md
+- [ ] Documentation updated in docs/operations/monitoring.md
 
 ---
 
@@ -389,7 +389,7 @@ END $$;
 - [ ] Each runbook has diagnosis and resolution steps
 - [ ] SQL queries provided for each step
 - [ ] Escalation procedures documented
-- [ ] Linked from docs/OPERATIONS.md
+- [ ] Linked from docs/operations.md
 
 ---
 

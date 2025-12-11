@@ -35,7 +35,7 @@ Fix the test infrastructure issues introduced in commit a354b47, verify that the
 - ✅ "Comprehensive test suite (50-53_array_*.sql files)"
 
 **What Was Actually Delivered:**
-- ✅ Excellent documentation (README.md, ARRAYS.md, CHANGELOG.md)
+- ✅ Excellent documentation (README.md, arrays.md, CHANGELOG.md)
 - ✅ Release build compiles (`cargo build --release`)
 - ✅ Code cleanup (removed unused code, simplified patterns)
 - ❌ **Test infrastructure broken** (29 compilation errors)
@@ -89,7 +89,7 @@ error[E0282]: type annotations needed
 
 #### Issue #4: Missing Test File
 **Referenced in:**
-- `docs/ARRAYS.md:193` - "53_batch_optimization.sql: Batch update optimization"
+- `docs/arrays.md:193` - "53_batch_optimization.sql: Batch update optimization"
 - `CHANGELOG.md:70` - "53_batch_optimization.sql: Batch update optimization tests"
 
 **Status:** File `test/sql/53_batch_optimization.sql` does not exist
@@ -687,7 +687,7 @@ cargo pgrx test pg17 --no-default-features --features pg17 52_array_insert_delet
 **Objective:** Resolve the missing `53_batch_optimization.sql` file referenced in documentation.
 
 **Issue:** Documentation claims this file exists but it doesn't:
-- `docs/ARRAYS.md:193` references it
+- `docs/arrays.md:193` references it
 - `CHANGELOG.md:70` references it
 
 **Options:**
@@ -814,7 +814,7 @@ cargo pgrx test pg17 --no-default-features --features pg17 53_batch_optimization
 
 **If array handling is NOT implemented**, remove the misleading references:
 
-1. **Edit `docs/ARRAYS.md`:**
+1. **Edit `docs/arrays.md`:**
 ```bash
 # Remove line 193 reference to 53_batch_optimization.sql
 # Or change to:
@@ -828,7 +828,7 @@ cargo pgrx test pg17 --no-default-features --features pg17 53_batch_optimization
 
 **Make the edits:**
 ```markdown
-# In docs/ARRAYS.md, change from:
+# In docs/arrays.md, change from:
 - `53_batch_optimization.sql`: Batch update optimization
 
 # To:
@@ -837,7 +837,7 @@ cargo pgrx test pg17 --no-default-features --features pg17 53_batch_optimization
 
 **Verification:**
 ```bash
-grep -n "53_batch_optimization" docs/ARRAYS.md CHANGELOG.md
+grep -n "53_batch_optimization" docs/arrays.md CHANGELOG.md
 # Should show updated references or no references
 ```
 

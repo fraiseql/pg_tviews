@@ -32,7 +32,7 @@ This roadmap tracks the documentation work required to move from beta to product
 **File**: `.phases/documentation/phase-doc-1-api-reference.md`
 
 **Deliverables**:
-- `docs/API_REFERENCE.md` - All 12 public functions
+- `docs/reference/api.md` - All 12 public functions
 - Updated `README.md` with API section
 
 **Functions to Document**:
@@ -60,8 +60,8 @@ This roadmap tracks the documentation work required to move from beta to product
 **File**: `.phases/documentation/phase-doc-2-sql-monitoring.md`
 
 **Deliverables**:
-- `docs/MONITORING.md` - Complete monitoring guide
-- `docs/DDL_REFERENCE.md` - CREATE/DROP TVIEW syntax
+- `docs/operations/monitoring.md` - Complete monitoring guide
+- `docs/reference/ddl.md` - CREATE/DROP TVIEW syntax
 - Updated `README.md` with monitoring section
 
 **SQL Objects to Document**:
@@ -90,7 +90,7 @@ This roadmap tracks the documentation work required to move from beta to product
 **File**: `.phases/documentation/phase-doc-3-operations.md`
 
 **Deliverables**:
-- `docs/OPERATIONS.md` - Complete operations guide
+- `docs/operations.md` - Complete operations guide
 - Updated `README.md` with operations section
 
 **Topics**:
@@ -127,8 +127,8 @@ This roadmap tracks the documentation work required to move from beta to product
 **File**: `.phases/documentation/phase-doc-4-errors-debugging.md`
 
 **Deliverables**:
-- `docs/ERROR_REFERENCE.md` - All error types
-- `docs/DEBUGGING.md` - Troubleshooting guide
+- `docs/error-reference.md` - All error types
+- `docs/operations/debugging.md` - Troubleshooting guide
 - Updated `README.md` with troubleshooting link
 
 **Error Types to Document** (from src/error/mod.rs):

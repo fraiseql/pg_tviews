@@ -28,7 +28,7 @@ Each phase follows this structure:
 Create complete API reference for all 12 public PostgreSQL functions exposed by the extension.
 
 **Deliverables**:
-- `docs/API_REFERENCE.md` - Complete API documentation
+- `docs/reference/api.md` - Complete API documentation
 - Update README.md with API reference link
 
 ### Phase Doc-2: SQL Functions & Monitoring (CRITICAL)
@@ -39,8 +39,8 @@ Create complete API reference for all 12 public PostgreSQL functions exposed by 
 Document all SQL monitoring functions, views, and statement-level trigger management.
 
 **Deliverables**:
-- `docs/MONITORING.md` - Monitoring and metrics guide
-- `docs/DDL_REFERENCE.md` - CREATE/DROP TVIEW syntax
+- `docs/operations/monitoring.md` - Monitoring and metrics guide
+- `docs/reference/ddl.md` - CREATE/DROP TVIEW syntax
 - Update README.md with monitoring section
 
 ### Phase Doc-3: Operations Guide (CRITICAL)
@@ -51,7 +51,7 @@ Document all SQL monitoring functions, views, and statement-level trigger manage
 Create operational procedures for backup, restore, connection pooling, and production deployment.
 
 **Deliverables**:
-- `docs/OPERATIONS.md` - Operations guide
+- `docs/operations.md` - Operations guide
 - Connection pooling configuration examples
 - Backup/restore procedures
 
@@ -63,8 +63,8 @@ Create operational procedures for backup, restore, connection pooling, and produ
 Document all error types, troubleshooting procedures, and debugging tools.
 
 **Deliverables**:
-- `docs/ERROR_REFERENCE.md` - Complete error documentation
-- `docs/DEBUGGING.md` - Debugging and troubleshooting guide
+- `docs/error-reference.md` - Complete error documentation
+- `docs/operations/debugging.md` - Debugging and troubleshooting guide
 - Update README.md with troubleshooting link
 
 ## Total Time Estimate

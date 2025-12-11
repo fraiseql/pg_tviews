@@ -327,7 +327,7 @@ backward compatibility but will be removed in 2.0.0.
 
 **Deliverables**:
 
-1. **Style Guide** (`docs/STYLE_GUIDE.md`):
+1. **Style Guide** (`docs/style-guide.md`):
 ```markdown
 # pg_tviews Documentation Style Guide
 

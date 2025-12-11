@@ -22,15 +22,15 @@ Phase 9 implemented comprehensive monitoring infrastructure (`sql/pg_tviews_moni
 
 ## Deliverables
 
-1. **`docs/MONITORING.md`** - Complete monitoring guide
-2. **`docs/DDL_REFERENCE.md`** - CREATE/DROP TVIEW syntax reference
+1. **`docs/operations/monitoring.md`** - Complete monitoring guide
+2. **`docs/reference/ddl.md`** - CREATE/DROP TVIEW syntax reference
 3. **Updated `README.md`** - Add monitoring section
 
 ## Implementation Steps
 
 ### Step 1: Create Monitoring Guide Structure (30 min)
 
-Create `docs/MONITORING.md`:
+Create `docs/operations/monitoring.md`:
 
 ```markdown
 # pg_tviews Monitoring Guide
@@ -88,8 +88,8 @@ SELECT * FROM pg_tviews_cache_stats;
 ## See Also
 
 - [API Reference](API_REFERENCE.md)
-- [Debugging Guide](DEBUGGING.md)
-- [Operations Guide](OPERATIONS.md)
+- [Debugging Guide](operations/debugging.md)
+- [Operations Guide](operations.md)
 ```
 
 ### Step 2: Document Monitoring Views (90 min)
@@ -464,7 +464,7 @@ exit 0
 
 ### Step 6: Create DDL Reference Document (60 min)
 
-Create `docs/DDL_REFERENCE.md`:
+Create `docs/reference/ddl.md`:
 
 ```markdown
 # pg_tviews DDL Reference
@@ -699,8 +699,8 @@ ERROR:  Cannot drop tv_posts: other TVIEWs depend on it
 ## See Also
 
 - [API Reference](API_REFERENCE.md)
-- [Operations Guide](OPERATIONS.md)
-- [Debugging Guide](DEBUGGING.md)
+- [Operations Guide](operations.md)
+- [Debugging Guide](operations/debugging.md)
 ```
 
 ### Step 7: Update README.md (30 min)
@@ -730,18 +730,18 @@ SELECT * FROM pg_tviews_performance_summary;
 
 ### Monitoring Documentation
 
-For complete monitoring guide, see [Monitoring Guide](docs/MONITORING.md).
+For complete monitoring guide, see [Monitoring Guide](docs/operations/monitoring.md).
 
 **Key Topics**:
-- [Monitoring Views](docs/MONITORING.md#monitoring-views) - Real-time metrics
-- [Health Checks](docs/MONITORING.md#monitoring-functions) - System health
-- [Metrics Collection](docs/MONITORING.md#metrics-collection) - Historical data
-- [Alerting](docs/MONITORING.md#recommended-alerts) - Thresholds and alerts
-- [Performance Analysis](docs/MONITORING.md#performance-analysis) - Tuning guide
+- [Monitoring Views](docs/operations/monitoring.md#monitoring-views) - Real-time metrics
+- [Health Checks](docs/operations/monitoring.md#monitoring-functions) - System health
+- [Metrics Collection](docs/operations/monitoring.md#metrics-collection) - Historical data
+- [Alerting](docs/operations/monitoring.md#recommended-alerts) - Thresholds and alerts
+- [Performance Analysis](docs/operations/monitoring.md#performance-analysis) - Tuning guide
 
 ## DDL Reference
 
-For complete CREATE/DROP TVIEW syntax, see [DDL Reference](docs/DDL_REFERENCE.md).
+For complete CREATE/DROP TVIEW syntax, see [DDL Reference](docs/reference/ddl.md).
 
 **Quick Reference**:
 ```sql
@@ -826,13 +826,13 @@ SELECT pg_tviews_uninstall_stmt_triggers();
 
 Phase Doc-2 is complete when:
 
-- ✅ `docs/MONITORING.md` exists and documents:
+- ✅ `docs/operations/monitoring.md` exists and documents:
   - [ ] All 4 monitoring views with examples
   - [ ] All monitoring functions
   - [ ] Metrics collection process
   - [ ] Recommended alerting thresholds
   - [ ] Performance analysis examples
-- ✅ `docs/DDL_REFERENCE.md` exists and documents:
+- ✅ `docs/reference/ddl.md` exists and documents:
   - [ ] CREATE TVIEW full syntax
   - [ ] DROP TVIEW syntax
   - [ ] Naming conventions

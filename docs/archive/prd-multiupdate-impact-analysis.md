@@ -179,7 +179,7 @@ Trigger → Immediate Refresh → Propagate → Immediate Refresh (recursive)
 - "2.03× performance improvement with smart JSONB patching"
 
 **What Phase 5 Actually Delivered (per remediation):**
-- ✅ Documentation (ARRAYS.md, README, CHANGELOG)
+- ✅ Documentation (arrays.md, README, CHANGELOG)
 - ✅ Test suite (RED phase - tests written)
 - ✅ Performance benchmarking infrastructure (docs/PERFORMANCE_RESULTS.md)
 - ❌ Array handling implementation (tests fail - missing `pg_tview_trigger_handler_wrapper`)

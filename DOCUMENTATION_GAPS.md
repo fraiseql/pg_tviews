@@ -48,7 +48,7 @@ SELECT pg_tviews_delete(entity TEXT, pk BIGINT); -- Manual delete handler
 ```
 
 **Recommendation:**
-- Create `docs/API_REFERENCE.md` with complete function documentation
+- Create `docs/reference/api.md` with complete function documentation
 - Add "API Reference" section to README with link
 - Document parameters, return types, and usage examples
 
@@ -74,7 +74,7 @@ pg_tviews_performance_summary          -- Performance metrics summary
 ```
 
 **Recommendation:**
-- Create `docs/MONITORING.md` with complete monitoring guide
+- Create `docs/operations/monitoring.md` with complete monitoring guide
 - Document all views and functions with examples
 - Add monitoring section to README
 
@@ -118,7 +118,7 @@ CREATE TABLE tv_post AS SELECT ...
 - View definition limitations
 
 **Recommendation:**
-- Add "DDL Reference" section to README or separate `docs/DDL_REFERENCE.md`
+- Add "DDL Reference" section to README or separate `docs/reference/ddl.md`
 - Document CREATE TVIEW fully
 - Document DROP TVIEW
 - Document limitations (what SQL features are not supported)
@@ -154,7 +154,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - Extension version compatibility
 
 **Recommendation:**
-- Create `docs/OPERATIONS.md`
+- Create `docs/operations.md`
 - Document backup procedures
 - Document migration procedures
 - Document upgrade procedures
@@ -178,7 +178,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - Troubleshooting pooler issues
 
 **Recommendation:**
-- Add "Connection Pooling" section to docs/OPERATIONS.md
+- Add "Connection Pooling" section to docs/operations.md
 - Provide configuration examples for major poolers
 - Document known issues and workarounds
 
@@ -215,7 +215,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - Performance tuning based on metrics
 
 **Recommendation:**
-- Create `docs/MONITORING.md`
+- Create `docs/operations/monitoring.md`
 - Document key metrics and thresholds
 - Provide Grafana/Prometheus examples
 - Add troubleshooting scenarios
@@ -232,7 +232,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - Common issues and solutions
 
 **Recommendation:**
-- Create `docs/DEBUGGING.md` or add to MONITORING.md
+- Create `docs/operations/debugging.md` or add to MONITORING.md
 - Document debug functions with examples
 - Add common error scenarios
 - Add troubleshooting flowcharts
@@ -292,7 +292,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 
 **Recommendation:**
 - Expand README array section
-- Create `docs/ARRAYS_ADVANCED.md` (docs/ARRAYS.md exists but may need update)
+- Create `docs/ARRAYS_ADVANCED.md` (docs/arrays.md exists but may need update)
 - Add more real-world examples
 
 ### 6.2 Complex Query Patterns (LOW) 🟢
@@ -380,7 +380,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - When to report bugs vs user error
 
 **Recommendation:**
-- Create `docs/ERROR_REFERENCE.md`
+- Create `docs/error-reference.md`
 - Document all error types
 - Add troubleshooting procedures
 - Link from README
@@ -401,7 +401,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 - Audit logging
 
 **Recommendation:**
-- Add "Security" section to README or docs/OPERATIONS.md
+- Add "Security" section to README or docs/operations.md
 - Document required permissions
 - Document security best practices
 
@@ -416,7 +416,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 ├── CHANGELOG.md (complete, well-structured)
 ├── RELEASE_NOTES.md (complete for beta)
 └── docs/
-    ├── ARRAYS.md (exists, may need update)
+    ├── arrays.md (exists, may need update)
     ├── CONCURRENCY.md (exists)
     ├── PERFORMANCE_RESULTS.md (exists)
     ├── HOOK_STATUS.md (technical, not user-facing)
@@ -433,14 +433,14 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
     ├── API_REFERENCE.md (🔴 NEW - all public functions)
     ├── DDL_REFERENCE.md (🔴 NEW - CREATE/DROP TVIEW syntax)
     ├── MONITORING.md (🔴 NEW - monitoring and health checks)
-    ├── OPERATIONS.md (🔴 NEW - backup, restore, pooling)
+    ├── operations.md (🔴 NEW - backup, restore, pooling)
     ├── 2PC_GUIDE.md (🟡 NEW - two-phase commit guide)
-    ├── DEBUGGING.md (🟡 NEW - troubleshooting guide)
-    ├── ERROR_REFERENCE.md (🟡 NEW - error codes and solutions)
+    ├── operations/debugging.md (🟡 NEW - troubleshooting guide)
+    ├── error-reference.md (🟡 NEW - error codes and solutions)
     ├── PERFORMANCE_TUNING.md (🟢 NEW - optimization guide)
     ├── ADVANCED_QUERIES.md (🟢 NEW - complex patterns)
     ├── MIGRATION.md (🔴 before 1.0.0 - version migration)
-    ├── ARRAYS.md (exists, review and expand)
+    ├── arrays.md (exists, review and expand)
     ├── CONCURRENCY.md (exists, review)
     └── PERFORMANCE_RESULTS.md (exists, update with latest)
 ```
@@ -452,7 +452,7 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
 ### Before Public Beta Testing (Priority Order):
 
 1. **🔴 CRITICAL - API Reference** (4-6 hours)
-   - Document all 12 public functions in `docs/API_REFERENCE.md`
+   - Document all 12 public functions in `docs/reference/api.md`
    - Add link from README
 
 2. **🔴 CRITICAL - SQL Functions** (2-3 hours)
@@ -464,16 +464,16 @@ DROP TABLE tv_post;  -- Syntax not documented anywhere
    - Document cleanup behavior
 
 4. **🔴 CRITICAL - Backup/Restore** (2-3 hours)
-   - Create `docs/OPERATIONS.md`
+   - Create `docs/operations.md`
    - Document backup and restore procedures
 
 5. **🟡 MEDIUM - Monitoring Guide** (3-4 hours)
-   - Create `docs/MONITORING.md`
+   - Create `docs/operations/monitoring.md`
    - Document all monitoring views
    - Add examples and thresholds
 
 6. **🟡 MEDIUM - Error Reference** (2-3 hours)
-   - Create `docs/ERROR_REFERENCE.md`
+   - Create `docs/error-reference.md`
    - Document all error types
    - Add troubleshooting steps
 

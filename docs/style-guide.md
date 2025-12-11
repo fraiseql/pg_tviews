@@ -334,7 +334,7 @@ docs/
 ├── user-guides/        # How-to guides for personas
 ├── reference/          # API, DDL, error references
 ├── operations/         # Monitoring, troubleshooting
-├── STYLE_GUIDE.md      # This file
+├── style-guide.md      # This file
 └── README.md           # Documentation index
 ```
 

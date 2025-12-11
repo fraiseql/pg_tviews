@@ -80,9 +80,9 @@ FROM tb_post;
 
 **Files to Update**:
 - `docs/operations/troubleshooting.md` (6 instances)
-- `docs/DEBUGGING.md` (2 instances)
+- `docs/operations/debugging.md` (2 instances)
 - `docs/reference/ddl.md` (7 instances)
-- `docs/ERROR_REFERENCE.md` (9 instances)
+- `docs/error-reference.md` (9 instances)
 - `.phases/event-triggers-implementation-plan.md` (4 instances)
 - `.phases/fix-process-utility-hook-*.md` (6 instances)
 
@@ -95,7 +95,7 @@ grep -r "jsonb_build_object.*'id', id[^_a-z]" docs/ README.md
 **Acceptance Criteria**:
 - [ ] All SELECT examples use qualified column names
 - [ ] All jsonb_build_object calls use table.column syntax
-- [ ] Add note in docs/STYLE_GUIDE.md about column qualification
+- [ ] Add note in docs/style-guide.md about column qualification
 - [ ] No grep matches for unqualified patterns
 
 ---
@@ -454,7 +454,7 @@ SELECT function_name(...);
 - [Related Function](#related-function)
 ```
 
-**Functions to Document** (check `docs/API_REFERENCE.md` and add missing):
+**Functions to Document** (check `docs/reference/api.md` and add missing):
 - [x] `pg_tviews_version()`
 - [x] `pg_tviews_check_jsonb_ivm()`
 - [x] `pg_tviews_create()`
@@ -1269,7 +1269,7 @@ GROUP BY entity;
 - [ ] `pg_tviews_queue_realtime` view created
 - [ ] `pg_tviews_cache_stats` view created
 - [ ] `pg_tviews_performance_summary` view created
-- [ ] Documentation updated in docs/MONITORING.md
+- [ ] Documentation updated in docs/operations/monitoring.md
 
 ---
 
@@ -1472,7 +1472,7 @@ END $$;
 - [ ] Each runbook has diagnosis and resolution steps
 - [ ] SQL queries provided for each step
 - [ ] Escalation procedures documented
-- [ ] Linked from docs/OPERATIONS.md
+- [ ] Linked from docs/operations.md
 
 ---
 

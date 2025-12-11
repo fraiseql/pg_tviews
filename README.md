@@ -359,7 +359,15 @@ SELECT * FROM pg_tviews_queue_realtime;
 ### Operations
 - **[Monitoring](docs/operations/monitoring.md)** - Metrics and health checks
 - **[Troubleshooting](docs/operations/troubleshooting.md)** - Debugging procedures
-- **[Performance Tuning](docs/operations/performance-tuning.md)** - Optimization strategies
+- **[Performance](docs/operations/performance.md)** - 📊 Complete performance guide (index)
+  - [Performance Best Practices](docs/operations/performance-best-practices.md) - Essential patterns
+  - [Performance Analysis](docs/operations/performance-analysis.md) - Diagnostic tools
+  - [Index Optimization](docs/operations/index-optimization.md) - Index strategies
+  - [Performance Tuning](docs/operations/performance-tuning.md) - Advanced tuning
+- **[Security](docs/operations/security.md)** - Security best practices
+- **[Disaster Recovery](docs/operations/disaster-recovery.md)** - Backup and recovery
+- **[Runbooks](docs/operations/runbooks.md)** - Operational procedures
+- **[Upgrades](docs/operations/upgrades.md)** - Version migration guides
 
 ### Benchmarks
 - **[Overview](docs/benchmarks/overview.md)** - Performance testing methodology

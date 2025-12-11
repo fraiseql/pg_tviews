@@ -276,7 +276,7 @@ EXPLAIN ANALYZE UPDATE tb_perf SET data = jsonb_set(data, '{field_1}', '"new_val
 - `docs/reference/errors.md` - Error reference
 - `docs/reference/configuration.md` - Configuration reference
 - `docs/operations/security.md` - Security guide
-- `docs/STYLE_GUIDE.md` - Documentation standards
+- `docs/style-guide.md` - Documentation standards
 
 ### Files to Update
 - `docs/reference/api.md` - Add missing SQL functions

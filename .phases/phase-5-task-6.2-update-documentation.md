@@ -252,7 +252,7 @@ grep "Baseline\|Smart Patch\|Improvement" docs/PERFORMANCE_BENCHMARK_RESULTS.md
 - **Array Handling:** Complete implementation with type inference
 - **Performance:** 2.03× improvement validated with comprehensive benchmarks
 - **Batch Optimization:** 3-5× faster for large cascades
-- **Documentation:** README, ARRAYS.md, and CHANGELOG.md updated
+- **Documentation:** README, arrays.md, and CHANGELOG.md updated
 - **Code Quality:** All functionality implemented and tested
 ```
 
@@ -262,7 +262,7 @@ grep "Baseline\|Smart Patch\|Improvement" docs/PERFORMANCE_BENCHMARK_RESULTS.md
 - **Array Handling:** Complete implementation with type inference (tests 50-52 passing)
 - **Performance:** [ACTUAL]× improvement validated (see docs/PERFORMANCE_BENCHMARK_RESULTS.md)
 - **Batch Optimization:** [ACTUAL]× faster for large cascades (verified)
-- **Documentation:** Complete and accurate (README, ARRAYS.md, CHANGELOG.md)
+- **Documentation:** Complete and accurate (README, arrays.md, CHANGELOG.md)
 - **Code Quality:** Clippy strict compliant, all tests passing
 - **Remediation:** Test infrastructure fixed (Phase 5 Task 6 complete)
 ```
@@ -578,7 +578,7 @@ See test/PHASE5_ARRAY_TEST_RESULTS.md and LIMITATIONS.md for details."
 **Current Status:** Documentation and test suite complete, implementation pending.
 
 **What's Ready:**
-- ✅ Comprehensive documentation (ARRAYS.md)
+- ✅ Comprehensive documentation (arrays.md)
 - ✅ Test suite written (50-52_array_*.sql)
 - ✅ Performance benchmarking infrastructure
 - ✅ Architecture designed
@@ -608,7 +608,7 @@ All tests are written (RED phase complete), ready for implementation (GREEN phas
 **Finding:** Tests reveal implementation was not completed as claimed.
 
 #### What Was Completed
-- ✅ Documentation (ARRAYS.md, README updates)
+- ✅ Documentation (arrays.md, README updates)
 - ✅ Test suite (50-52_array_*.sql) - RED phase complete
 - ✅ Performance benchmarking infrastructure designed
 - ✅ Architecture and design documented
@@ -644,7 +644,7 @@ This does not diminish the value of planning work completed, but accuracy matter
 **Actual Status:** Documentation Complete, Implementation Pending
 
 **What Was Actually Completed:**
-- ✅ **Documentation:** ARRAYS.md, README, CHANGELOG updates
+- ✅ **Documentation:** arrays.md, README, CHANGELOG updates
 - ✅ **Test Suite:** RED phase (tests written, awaiting implementation)
 - ✅ **Design:** Architecture planned and documented
 - ❌ **Implementation:** Array handling NOT implemented
@@ -754,7 +754,7 @@ Verification Results (2025-12-10):
 - Array handling: NOT IMPLEMENTED
 
 What Was Actually Completed:
-- ✅ Documentation (ARRAYS.md, README, CHANGELOG)
+- ✅ Documentation (arrays.md, README, CHANGELOG)
 - ✅ Test suite written (RED phase)
 - ✅ Architecture designed
 - ✅ Test infrastructure fixed (Phase 5 Task 6)

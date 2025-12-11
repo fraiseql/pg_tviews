@@ -21,14 +21,14 @@ Currently, only basic extension installation is documented in README.md. Users c
 
 ## Deliverables
 
-1. **`docs/API_REFERENCE.md`** - Complete API documentation
+1. **`docs/reference/api.md`** - Complete API documentation
 2. **Updated `README.md`** - Add "API Reference" section with link
 
 ## Implementation Steps
 
 ### Step 1: Create API Reference Document Structure (30 min)
 
-Create `docs/API_REFERENCE.md` with this structure:
+Create `docs/reference/api.md` with this structure:
 
 ```markdown
 # pg_tviews API Reference
@@ -73,8 +73,8 @@ This document provides complete reference documentation for all public PostgreSQ
 ## See Also
 
 - [Monitoring Guide](MONITORING.md)
-- [Operations Guide](OPERATIONS.md)
-- [Debugging Guide](DEBUGGING.md)
+- [Operations Guide](operations.md)
+- [Debugging Guide](operations/debugging.md)
 ```
 
 ### Step 2: Document Extension Management Functions (45 min)
@@ -140,7 +140,7 @@ function_name(param1 TYPE, param2 TYPE) RETURNS return_type
 
 **See Also**:
 - [Related function](#related-function)
-- [Related documentation](../OPERATIONS.md)
+- [Related documentation](../operations.md)
 ```
 
 ### Step 3: Document Queue Management Functions (60 min)
@@ -354,14 +354,14 @@ Add to README.md after "Basic Usage" section:
 ```markdown
 ## API Reference
 
-For complete documentation of all public functions, see [API Reference](docs/API_REFERENCE.md).
+For complete documentation of all public functions, see [API Reference](docs/reference/api.md).
 
 **Quick Links**:
-- [Extension Management](docs/API_REFERENCE.md#extension-management) - Version info, feature detection
-- [Queue Management](docs/API_REFERENCE.md#queue-management) - Monitor refresh queues
-- [Debugging](docs/API_REFERENCE.md#debugging--introspection) - Analyze queries, debug issues
-- [Two-Phase Commit](docs/API_REFERENCE.md#two-phase-commit-2pc) - Distributed transaction support
-- [Manual Operations](docs/API_REFERENCE.md#manual-operations) - Force refresh operations
+- [Extension Management](docs/reference/api.md#extension-management) - Version info, feature detection
+- [Queue Management](docs/reference/api.md#queue-management) - Monitor refresh queues
+- [Debugging](docs/reference/api.md#debugging--introspection) - Analyze queries, debug issues
+- [Two-Phase Commit](docs/reference/api.md#two-phase-commit-2pc) - Distributed transaction support
+- [Manual Operations](docs/reference/api.md#manual-operations) - Force refresh operations
 
 **Key Functions**:
 ```sql
@@ -433,7 +433,7 @@ EOF
 
 Phase Doc-1 is complete when:
 
-- ✅ `docs/API_REFERENCE.md` exists with complete documentation
+- ✅ `docs/reference/api.md` exists with complete documentation
 - ✅ All 12 public functions documented:
   1. pg_tviews_version()
   2. pg_tviews_check_jsonb_ivm()

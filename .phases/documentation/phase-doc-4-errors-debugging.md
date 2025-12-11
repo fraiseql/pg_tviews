@@ -21,8 +21,8 @@ The extension has 14 distinct error types implemented in `src/error/mod.rs`, but
 
 ## Deliverables
 
-1. **`docs/ERROR_REFERENCE.md`** - Complete error documentation
-2. **`docs/DEBUGGING.md`** - Debugging and troubleshooting guide
+1. **`docs/error-reference.md`** - Complete error documentation
+2. **`docs/operations/debugging.md`** - Debugging and troubleshooting guide
 3. **Updated `README.md`** - Add troubleshooting section
 
 ## Implementation Steps

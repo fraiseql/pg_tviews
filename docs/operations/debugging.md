@@ -597,7 +597,7 @@ WHERE entity IN (SELECT entity FROM pg_tview_meta);
 
 ## See Also
 
-- [Error Reference](ERROR_REFERENCE.md) - Complete error documentation
+- [Error Reference](error-reference.md) - Complete error documentation
 - [API Reference](API_REFERENCE.md) - Function documentation
 - [Monitoring Guide](MONITORING.md) - Health checking and metrics
-- [Operations Guide](OPERATIONS.md) - Production procedures
+- [Operations Guide](operations.md) - Production procedures

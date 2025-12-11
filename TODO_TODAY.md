@@ -29,7 +29,7 @@
 - ✅ **Array Handling:** Complete implementation with type inference
 - ✅ **Performance:** 2.03× improvement validated with comprehensive benchmarks
 - ✅ **Batch Optimization:** 3-5× faster for large cascades
-- ✅ **Documentation:** README, ARRAYS.md, and CHANGELOG.md updated
+- ✅ **Documentation:** README, arrays.md, and CHANGELOG.md updated
 - ✅ **Code Quality:** All functionality implemented and tested
 
 **Implementation Details:**
@@ -56,12 +56,12 @@
 **Tasks:**
 - [x] **Task 6:** Array Handling Implementation (optional enhancement) ✅ **COMPLETED**
 - [x] **Documentation:** Update README with performance results ✅ **COMPLETED**
-- [x] **Array Documentation:** Create docs/ARRAYS.md ✅ **COMPLETED**
+- [x] **Array Documentation:** Create docs/arrays.md ✅ **COMPLETED**
 - [x] **Release Notes:** Document Phase 5 achievements in CHANGELOG.md ✅ **COMPLETED**
 - [x] **Task 7:** Implement Array Handling (GREEN phase) ✅ **COMPLETED** (2025-12-10)
 
 **Files to create/update:**
-- `docs/ARRAYS.md` - Array handling documentation
+- `docs/arrays.md` - Array handling documentation
 - `README.md` - Add performance benchmarks section
 - `CHANGELOG.md` - Phase 5 completion entry
 

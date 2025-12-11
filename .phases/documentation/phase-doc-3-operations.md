@@ -21,7 +21,7 @@ Beta testers need operational guidance to evaluate production readiness. Current
 
 ## Deliverables
 
-1. **`docs/OPERATIONS.md`** - Complete operations guide
+1. **`docs/operations.md`** - Complete operations guide
 2. **Updated `README.md`** - Add operations section
 
 ## Implementation Steps
@@ -87,7 +87,7 @@ Add operations section with link to full guide.
 
 ## Acceptance Criteria
 
-- ✅ `docs/OPERATIONS.md` complete with all sections
+- ✅ `docs/operations.md` complete with all sections
 - ✅ Backup/restore procedures documented
 - ✅ Connection pooling fully documented
 - ✅ Production checklist included

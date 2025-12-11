@@ -16,7 +16,7 @@ Use this checklist for all documentation changes before committing.
 - [ ] **Spelling/grammar**: Spell check and grammar review completed
 
 ### Style Guide Compliance
-- [ ] **Formatting**: Follows [style guide](STYLE_GUIDE.md) standards
+- [ ] **Formatting**: Follows [style guide](style-guide.md) standards
 - [ ] **Terminology**: Uses consistent terms from style guide
 - [ ] **Structure**: Proper heading hierarchy and document organization
 - [ ] **Code blocks**: Proper language identifiers and formatting
