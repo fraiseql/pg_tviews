@@ -483,8 +483,6 @@ mod tests {
     /// only that specific path in the JSONB is updated, not the entire document.
     ///
     /// Expected to FAIL initially because apply_patch() does full replacement.
-    #[cfg(any(test, feature = "pg_test"))]
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_apply_patch_nested_object() {
         // Setup: Create tables with FK relationship
@@ -561,7 +559,6 @@ mod tests {
     /// only that specific element is updated, not the entire array.
     ///
     /// Expected to FAIL initially because apply_patch() does full replacement.
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_apply_patch_array() {
         // Setup: Create tables with FK relationships
@@ -656,7 +653,6 @@ mod tests {
     /// This test verifies that scalar FKs (not used in data column) are handled gracefully.
     ///
     /// Expected to PASS (scalar deps don't affect data column).
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_apply_patch_scalar() {
         // Setup: Create tables with FK but FK not used in SELECT
@@ -724,7 +720,6 @@ mod tests {
     /// - Multi-level cascade
     ///
     /// This verifies that all components work together correctly.
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_smart_patch_full_integration() {
         // Note: This test documents expected behavior but may not run due to
@@ -839,7 +834,6 @@ mod tests {
     ///
     /// Verifies that the system gracefully falls back to full replacement
     /// when the jsonb_ivm extension is not installed.
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_fallback_without_jsonb_ivm() {
         // Note: This test documents fallback behavior but may not run due to
@@ -906,7 +900,6 @@ mod tests {
     /// Test metadata handling for legacy TVIEWs without dependency info.
     ///
     /// Verifies graceful fallback when TVIEW metadata is missing or incomplete.
-    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_legacy_tview_fallback() {
         // Note: This test documents legacy behavior but may not run due to

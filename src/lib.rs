@@ -865,3 +865,110 @@ mod tests {
 }
 // */
 
+/// Show cascade dependency path for a given entity
+///
+/// Returns the dependency chain showing which TVIEWs depend on this entity
+#[pg_extern]
+fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
+    name!(depth, i32),
+    name!(entity_name, String),
+    name!(depends_on, String),
+)> {
+    let query = format!(
+        "WITH RECURSIVE dep_tree AS (
+            -- Start with the requested entity
+            SELECT
+                pg_tview_meta.entity,
+                0 as depth,
+                ARRAY[pg_tview_meta.entity] as path,
+                pg_tview_meta.entity as depends_on
+            FROM pg_tview_meta
+            WHERE pg_tview_meta.entity = '{}'
+
+            UNION ALL
+
+            -- Find TVIEWs that depend on entities in our tree
+            SELECT
+                m.entity,
+                dt.depth + 1,
+                dt.path || m.entity,
+                dt.entity as depends_on
+            FROM dep_tree dt
+            JOIN pg_tview_meta m ON ('tv_' || dt.entity)::regclass::oid = ANY(m.dependencies)
+            WHERE NOT (m.entity = ANY(dt.path))  -- Prevent cycles
+              AND dt.depth < 10  -- Depth limit
+        )
+        SELECT depth, entity_name, depends_on
+        FROM dep_tree
+        ORDER BY depth, entity_name",
+        entity.replace("'", "''")
+    );
+
+    let results = Spi::connect(|client| {
+        match client.select(&query, None, None) {
+            Ok(rows) => {
+                let mut paths = Vec::new();
+                for row in rows {
+                    let depth = row["depth"].value::<i32>()?.unwrap_or(0);
+                    let entity_name = row["entity_name"].value::<String>()?.unwrap_or_default();
+                    let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
+                    paths.push((depth, entity_name, depends_on));
+                }
+                Ok::<_, spi::Error>(paths)
+            },
+            Err(e) => {
+                warning!("Failed to query cascade path: {}", e);
+                Ok(Vec::new())
+            }
+        }
+    }).unwrap_or_default();
+
+    TableIterator::new(results)
+}
+
+/// Get performance statistics for all TVIEWs
+///
+/// Returns size, row count, and index information for each TVIEW
+#[pg_extern]
+fn pg_tviews_performance_stats() -> TableIterator<'static, (
+    name!(entity, String),
+    name!(table_size, String),
+    name!(total_size, String),
+    name!(row_count, i64),
+    name!(index_count, i32),
+)> {
+    let query = "
+        SELECT
+            pg_tview_meta.entity,
+            pg_size_pretty(pg_relation_size('tv_' || pg_tview_meta.entity)) as table_size,
+            pg_size_pretty(pg_total_relation_size('tv_' || pg_tview_meta.entity)) as total_size,
+            (SELECT COUNT(*) FROM ('tv_' || pg_tview_meta.entity)::regclass) as row_count,
+            (SELECT COUNT(*)::int FROM pg_indexes WHERE tablename = 'tv_' || pg_tview_meta.entity) as index_count
+        FROM pg_tview_meta
+        ORDER BY pg_relation_size('tv_' || pg_tview_meta.entity) DESC
+    ";
+
+    let results = Spi::connect(|client| {
+        match client.select(query, None, None) {
+            Ok(rows) => {
+                let mut stats = Vec::new();
+                for row in rows {
+                    let entity = row["entity"].value::<String>()?.unwrap_or_default();
+                    let table_size = row["table_size"].value::<String>()?.unwrap_or_default();
+                    let total_size = row["total_size"].value::<String>()?.unwrap_or_default();
+                    let row_count = row["row_count"].value::<i64>()?.unwrap_or(0);
+                    let index_count = row["index_count"].value::<i32>()?.unwrap_or(0);
+                    stats.push((entity, table_size, total_size, row_count, index_count));
+                }
+                Ok::<_, spi::Error>(stats)
+            },
+            Err(e) => {
+                warning!("Failed to query performance stats: {}", e);
+                Ok(Vec::new())
+            }
+        }
+    }).unwrap_or_default();
+
+    TableIterator::new(results)
+}
+

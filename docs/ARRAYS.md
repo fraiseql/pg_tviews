@@ -101,7 +101,7 @@ SELECT
     jsonb_build_object(
         'id', o.id,
         'items', jsonb_agg(
-            jsonb_build_object('product_id', i.product_id, 'quantity', i.quantity)
+            jsonb_build_object('productId', i.product_id, 'quantity', i.quantity)
         )
     ) as data
 FROM orders o
