@@ -1,19 +1,20 @@
 # DDL Reference
 
-Complete reference for CREATE TVIEW and DROP TVIEW syntax with FraiseQL patterns.
+Complete reference for TVIEW creation and management with FraiseQL patterns.
 
 **Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
 
 ## Overview
 
-pg_tviews extends PostgreSQL DDL with the `CREATE TVIEW` and `DROP TVIEW` commands for managing transactional materialized views. TVIEWs follow FraiseQL's trinity identifier pattern and CQRS architecture.
+pg_tviews provides transactional materialized views through SQL functions. TVIEWs follow FraiseQL's trinity identifier pattern and CQRS architecture.
 
-## CREATE TVIEW
+## Creating TVIEWs
 
-### Syntax
+### Primary Method: pg_tviews_create() Function
 
+**Syntax**:
 ```sql
-CREATE TVIEW tv_<entity> AS
+SELECT pg_tviews_create('tv_<entity>', '
 SELECT
     <pk_column> as pk_<entity>,  -- Required: lineage root
     <uuid_column> as id,         -- Optional: GraphQL ID
@@ -22,8 +23,11 @@ SELECT
 FROM tb_<entity> t
 [LEFT JOIN tb_<related> r ON ...]
 [WHERE ...]
-[GROUP BY ...];
+[GROUP BY ...]
+');
 ```
+
+**Note**: Custom DDL syntax (`CREATE TVIEW`) is not supported. Use the function approach instead.
 
 ### FraiseQL Naming Conventions
 
@@ -190,7 +194,7 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
          p.created_at, p.fk_user, u.id, u.identifier, u.name;
 ```
 
-### What Happens During CREATE TVIEW
+### What Happens During TVIEW Creation
 
 1. **SQL Analysis**: Parses SELECT statement to identify dependencies
 2. **Schema Inference**: Determines column types and relationships
@@ -308,18 +312,18 @@ SELECT pg_tviews_uninstall_stmt_triggers();
 
 ## Troubleshooting
 
-### CREATE TVIEW Errors
+### TVIEW Creation Errors
 
 **"TVIEW name must follow tv_* convention"**
 ```sql
 -- Fix: Use correct naming
-CREATE TVIEW tv_post AS ...  -- ✅ Correct
-CREATE TVIEW post_view AS ... -- ❌ Wrong
+SELECT pg_tviews_create('tv_post', '...');  -- ✅ Correct
+SELECT pg_tviews_create('post_view', '...'); -- ❌ Wrong
 ```
 
 **"Missing required column: pk_post"**
 ```sql
--- Fix: Include primary key column
+-- Fix: Include primary key column in SELECT
 SELECT p.pk_post as pk_post, ...  -- ✅ Correct
 SELECT p.id as pk_post, ...       -- ❌ Wrong column
 ```

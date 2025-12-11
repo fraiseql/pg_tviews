@@ -7,7 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15%2B-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-green.svg)](https://github.com/your-org/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/your-org/pg_tviews/releases)
+[![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/your-org/pg_tviews/releases)
 
 *Core infrastructure for FraiseQL's GraphQL Cascade — automatic incremental refresh of JSONB read models with 5,000-12,000× performance gains.*
 
@@ -20,6 +21,24 @@ By Lionel Hamayon • Part of the FraiseQL framework
 [Architecture](#-architecture)
 
 </div>
+
+---
+
+## 📋 Version Status
+
+**Current Version**: `0.1.0-beta.1` (December 2025)
+- **Status**: Public Beta - Feature-complete, API may change
+- **Production Use**: Suitable for evaluation, not mission-critical systems
+- **Support**: Community support via GitHub issues
+
+**Roadmap to 1.0.0** (Q1 2026):
+- ✅ Core TVIEW functionality complete
+- ✅ Comprehensive documentation (in progress)
+- 🔄 Production hardening and testing
+- 🔄 Security audit
+- 🔄 Performance validation at scale
+
+**Breaking Changes**: Minor API changes possible until 1.0.0. Pin to exact version in production.
 
 ---
 
@@ -40,9 +59,10 @@ REFRESH MATERIALIZED VIEW my_view;  -- Scans ALL rows, recomputes EVERYTHING
 
 ```sql
 -- pg_tviews: Automatic incremental refresh
-CREATE TVIEW tv_post AS
-SELECT p.pk_post as pk_post, jsonb_build_object(...) as data
-FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user;
+SELECT pg_tviews_create('tv_post',
+    'SELECT p.pk_post as pk_post, jsonb_build_object(...) as data
+     FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user'
+);
 
 -- Just use your database normally:
 INSERT INTO tb_post(title, fk_user) VALUES ('New Post', 123);
@@ -50,6 +70,17 @@ COMMIT;  -- tv_post automatically updated with ONLY the affected row!
 ```
 
 **Result**: Millisecond updates, no full scans, always up-to-date, zero manual intervention.
+
+### 🚀 Performance Optimization
+
+For **1.5-3× faster JSONB updates**, install the optional `jsonb_ivm` extension:
+
+```sql
+CREATE EXTENSION jsonb_ivm;  -- Optional: 1.5-3× faster JSONB updates
+CREATE EXTENSION pg_tviews;
+```
+
+Without `jsonb_ivm`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
 
 ---
 
@@ -65,7 +96,7 @@ pg_tviews follows FraiseQL's trinity identifier conventions for optimal GraphQL 
 
 Example TVIEW with full trinity support:
 ```sql
-CREATE TVIEW tv_post AS
+SELECT pg_tviews_create('tv_post', '
 SELECT
     p.pk_post,           -- lineage root
     p.id,                -- GraphQL ID
@@ -73,16 +104,17 @@ SELECT
     p.fk_user,           -- cascade FK
     u.id as user_id,     -- FraiseQL filtering FK
     jsonb_build_object(
-        'id', p.id,
-        'identifier', p.identifier,
-        'title', p.title,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'name', u.name
+        ''id'', p.id,
+        ''identifier'', p.identifier,
+        ''title'', p.title,
+        ''author'', jsonb_build_object(
+            ''id'', u.id,
+            ''name'', u.name
         )
     ) as data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+JOIN tb_user u ON p.fk_user = u.pk_user
+');
 ```
 
 ---
@@ -112,7 +144,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ### Developer-Friendly
 
-- **📝 Simple DDL**: `CREATE TVIEW` syntax feels natural
+- **📝 Simple API**: `pg_tviews_create()` function for easy TVIEW creation
 - **🔧 JSONB Optimized**: Built for modern JSONB-heavy applications
 - **📊 Array Support**: Full INSERT/DELETE handling for array columns
 - **🐛 Excellent Debugging**: Rich error messages, debug functions, health checks
@@ -184,7 +216,7 @@ CREATE TABLE tb_post (
 );
 
 -- Create a TVIEW (note: tv_ prefix is required)
-CREATE TVIEW tv_posts AS
+SELECT pg_tviews_create('tv_post', '
 SELECT
     p.pk_post as pk_post,  -- Primary key column (required)
     p.id,                  -- GraphQL ID
@@ -192,19 +224,20 @@ SELECT
     p.fk_user,             -- Cascade FK
     u.id as user_id,       -- FraiseQL filtering FK
     jsonb_build_object(
-        'id', p.id,
-        'identifier', p.identifier,
-        'title', p.title,
-        'content', p.content,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'identifier', u.identifier,
-            'name', u.name,
-            'email', u.email
+        ''id'', p.id,
+        ''identifier'', p.identifier,
+        ''title'', p.title,
+        ''content'', p.content,
+        ''author'', jsonb_build_object(
+            ''id'', u.id,
+            ''identifier'', u.identifier,
+            ''name'', u.name,
+            ''email'', u.email
         )
     ) as data  -- JSONB data column (required)
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+JOIN tb_user u ON p.fk_user = u.pk_user
+');
 
 -- Use it like a table
 SELECT data FROM tv_posts WHERE data->>'title' ILIKE '%rust%';
