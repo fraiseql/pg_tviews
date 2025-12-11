@@ -21,9 +21,31 @@ BEGIN
             IF obj.object_identity LIKE 'public.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
                 RAISE INFO 'pg_tviews: Detected TVIEW creation: %', obj.object_identity;
 
-                -- Call Rust function to convert table to TVIEW
-                -- This will be implemented in Phase 2
-                -- For now, just log
+                -- Extract table name (remove schema prefix if present)
+                DECLARE
+                    table_name_only TEXT;
+                BEGIN
+                    table_name_only := CASE
+                        WHEN obj.object_identity LIKE '%.%'
+                        THEN split_part(obj.object_identity, '.', 2)
+                        ELSE obj.object_identity
+                    END;
+
+                    RAISE INFO 'pg_tviews: Converting table ''%'' to TVIEW', table_name_only;
+
+                    -- Call Rust conversion function
+                    -- This runs in safe SPI context (after DDL completed)
+                    PERFORM pg_tviews_convert_table(table_name_only);
+
+                    RAISE INFO 'pg_tviews: Successfully converted ''%'' to TVIEW', table_name_only;
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        -- Log error but don't fail the transaction
+                        -- The table was already created by PostgreSQL
+                        RAISE WARNING 'pg_tviews: Failed to convert ''%'' to TVIEW: %',
+                            table_name_only, SQLERRM;
+                        RAISE WARNING 'pg_tviews: Table exists as regular table, not a TVIEW';
+                END;
             END IF;
         END IF;
     END LOOP;

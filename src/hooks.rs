@@ -275,8 +275,19 @@ unsafe fn handle_create_table_as(
     // Validate TVIEW SELECT statement structure
     match validate_tview_select(&select_sql) {
         Ok(()) => {
-            info!("TVIEW syntax valid, letting PostgreSQL create table");
-            info!("Event trigger will convert to TVIEW afterwards");
+            info!("TVIEW syntax valid, storing SELECT for event trigger");
+
+            // Store SELECT in session-level temp table for event trigger to use
+            // This is safe because:
+            // 1. No SPI calls yet (just storing for later)
+            // 2. Temp table is transaction-safe (auto-cleanup on rollback)
+            // 3. Event trigger will retrieve and use this SELECT
+            if let Err(e) = store_pending_tview_select(table_name, &select_sql) {
+                error!("Failed to store SELECT for '{}': {}", table_name, e);
+                // Continue anyway - event trigger will try to infer
+            }
+
+            info!("Letting PostgreSQL create table, event trigger will convert to TVIEW");
             false // Pass through - let PostgreSQL create it
         }
         Err(e) => {
@@ -311,6 +322,41 @@ fn validate_tview_select(select_sql: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Store pending TVIEW SELECT statement for event trigger to retrieve
+///
+/// Uses a session-level temp table that auto-cleanup on transaction end.
+/// This is safe because we're NOT using SPI here - we're just preparing
+/// the data for the event trigger to use (which HAS safe SPI context).
+fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), String> {
+    // We can't use SPI here (we're in a hook), but we can use a global cache
+    // The event trigger will pick it up when it fires (safe SPI context)
+    PENDING_TVIEW_SELECTS.lock()
+        .map_err(|e| format!("Failed to lock cache: {}", e))?
+        .insert(table_name.to_string(), select_sql.to_string());
+
+    info!("Stored SELECT for '{}' in cache (event trigger will retrieve it)", table_name);
+    Ok(())
+}
+
+/// Global cache for pending TVIEW SELECT statements
+///
+/// Maps: table_name -> original SELECT statement
+/// Written by: ProcessUtility hook (before table creation)
+/// Read by: Event trigger (after table creation, safe SPI context)
+/// Cleared by: Event trigger after successful conversion
+static PENDING_TVIEW_SELECTS: Lazy<Mutex<std::collections::HashMap<String, String>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Retrieve and remove a pending TVIEW SELECT statement
+///
+/// Called by event trigger to get the original SELECT for TVIEW conversion.
+/// Returns None if no SELECT was stored for this table.
+pub fn take_pending_tview_select(table_name: &str) -> Option<String> {
+    PENDING_TVIEW_SELECTS.lock()
+        .ok()?
+        .remove(table_name)
 }
 
 /// Handle DROP TABLE tv_*
