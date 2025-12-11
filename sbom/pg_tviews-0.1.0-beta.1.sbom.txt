@@ -1,0 +1,35 @@
+Software Bill of Materials (SBOM)
+Package: pg_tviews
+Version: 0.1.0-beta.1
+Generated: 2025-12-11T15:22:25Z
+
+Rust Dependencies:
+├── bincode v1.3.3
+├── chrono v0.4.42
+├── flate2 v1.1.5
+├── once_cell v1.21.3
+├── pgrx v0.12.8
+├── pgrx-macros v0.12.8 (proc-macro)
+├── regex v1.12.2
+├── serde v1.0.228
+└── serde_json v1.0.145
+[dev-dependencies]
+└── pgrx-tests v0.12.8
+
+Total Dependencies: 11
+
+SPDX SBOM: pg_tviews-0.1.0-beta.1.spdx.json
+CycloneDX SBOM: pg_tviews-0.1.0-beta.1.cyclonedx.json
+
+System Dependencies:
+====================
+- PostgreSQL 18.1
+- cargo-pgrx 0.12.8
+
+Linked System Libraries:
+- libc.so.6 /usr/lib/libc.so.6
+
+Build Environment:
+- OS: Linux 6.17.9-arch1-1
+- Arch: x86_64
+- Rust: rustc 1.91.1 (ed61e7d7e 2025-11-07)

@@ -142,6 +142,17 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **📈 Comprehensive Monitoring**: Real-time metrics, health checks, performance views
 - **🛡️ Enterprise-Grade Code**: 100% clippy-strict compliance, panic-safe FFI, zero unwraps
 
+### Compliance & Security
+
+- **📋 SBOM Generation**: Automated Software Bill of Materials in SPDX 2.3 and CycloneDX 1.5 formats
+- **🔐 Cryptographic Signing**: Sigstore keyless + GPG maintainer signatures for all releases
+- **🛡️ Dependency Security**: Automated vulnerability scanning with cargo-audit + cargo-vet audits
+- **🔄 Automated Updates**: Dependabot integration for security patches and updates
+- **🏗️ Reproducible Builds**: Docker-based build environment with locked dependencies
+- **🌍 International Compliance**: EU Cyber Resilience Act, US EO 14028, PCI-DSS 4.0, ISO 27001
+- **🔒 Supply Chain Security**: SLSA Level 3 provenance with dependency transparency
+- **📊 Vulnerability Management**: Complete dependency inventory for CVE tracking
+
 ### Developer-Friendly
 
 - **📝 Simple API**: `pg_tviews_create()` function for easy TVIEW creation
@@ -364,7 +375,8 @@ SELECT * FROM pg_tviews_queue_realtime;
   - [Performance Analysis](docs/operations/performance-analysis.md) - Diagnostic tools
   - [Index Optimization](docs/operations/index-optimization.md) - Index strategies
   - [Performance Tuning](docs/operations/performance-tuning.md) - Advanced tuning
-- **[Security](docs/operations/security.md)** - Security best practices
+  - **[Security](docs/operations/security.md)** - Security best practices
+  - **[SBOM](docs/security/sbom.md)** - Software Bill of Materials and supply chain security
 - **[Disaster Recovery](docs/operations/disaster-recovery.md)** - Backup and recovery
 - **[Runbooks](docs/operations/runbooks.md)** - Operational procedures
 - **[Upgrades](docs/operations/upgrades.md)** - Version migration guides

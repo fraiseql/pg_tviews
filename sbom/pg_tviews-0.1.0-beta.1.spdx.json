@@ -1,0 +1,2146 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "2025-12-11T15:22:25Z",
+    "creators": [
+      "Tool: cargo-sbom-v0.10.0"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://spdx.org/spdxdocs/pg_tviews-c5816846-1721-4c84-8197-e8b5cc51c657",
+  "files": [
+    {
+      "SPDXID": "SPDXRef-File-pgrx_embed_pg_tviews",
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "90bace6c012d0aaf5cf75a363e81698b9c4f6c0f"
+        }
+      ],
+      "fileName": "./Cargo.lock",
+      "fileTypes": [
+        "SOURCE",
+        "TEXT"
+      ]
+    }
+  ],
+  "name": "pg_tviews",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-indexmap-2.12.1",
+      "description": "A hash table with consistent order and fast iteration.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/indexmap@2.12.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR MIT",
+      "name": "indexmap",
+      "versionInfo": "2.12.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-implement-0.60.2",
+      "description": "The implement macro for the Windows crates",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-implement@0.60.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-implement",
+      "versionInfo": "0.60.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-num-traits-0.2.19",
+      "description": "Numeric traits for generic mathematics",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/num-traits@0.2.19",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/rust-num/num-traits",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "num-traits",
+      "versionInfo": "0.2.19"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde--json-1.0.145",
+      "description": "A JSON serialization file format",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde_json@1.0.145",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "serde_json",
+      "versionInfo": "1.0.145"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-link-0.2.1",
+      "description": "Linking for Windows",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-link@0.2.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-link",
+      "versionInfo": "0.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pg--tviews-0.1.0-beta.1",
+      "description": "Transactional materialized views with incremental refresh for PostgreSQL",
+      "downloadLocation": "NONE",
+      "homepage": "https://github.com/your-org/pg_tviews",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "pg_tviews",
+      "versionInfo": "0.1.0-beta.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-crc32fast-1.5.0",
+      "description": "Fast, SIMD-accelerated CRC32 (IEEE) checksum computation",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/crc32fast@1.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "crc32fast",
+      "versionInfo": "1.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-enum-map-2.7.3",
+      "description": "A map with C-like enum keys represented internally as an array",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/enum-map@2.7.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "enum-map",
+      "versionInfo": "2.7.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wasip2-1.0.1-plus-wasi-0.2.4",
+      "description": "WASIp2 API bindings for Rust",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wasip2@1.0.1%2Bwasi-0.2.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "Apache-2.0 OR Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR Apache-2.0 OR MIT",
+      "name": "wasip2",
+      "versionInfo": "1.0.1+wasi-0.2.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-convert--case-0.6.0",
+      "description": "Convert strings into any case",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/convert_case@0.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "convert_case",
+      "versionInfo": "0.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-bitvec-1.0.1",
+      "description": "Addresses memory by bits, for packed collections and bitfields",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/bitvec@1.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://bitvecto-rs.github.io/bitvec",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "bitvec",
+      "versionInfo": "1.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-petgraph-0.6.5",
+      "description": "Graph data structure library. Provides graph types and graph algorithms.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/petgraph@0.6.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "petgraph",
+      "versionInfo": "0.6.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-indenter-0.3.4",
+      "description": "A formatter wrapper that indents the text, designed for error display impls\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/indenter@0.3.4",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/yaahc/indenter",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "indenter",
+      "versionInfo": "0.3.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde--derive-1.0.228",
+      "description": "Macros 1.1 implementation of #[derive(Serialize, Deserialize)]",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde_derive@1.0.228",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://serde.rs",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "serde_derive",
+      "versionInfo": "1.0.228"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-log-0.4.29",
+      "description": "A lightweight logging facade for Rust\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/log@0.4.29",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "log",
+      "versionInfo": "0.4.29"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-itoa-1.0.15",
+      "description": "Fast integer primitive to string conversion",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/itoa@1.0.15",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "itoa",
+      "versionInfo": "1.0.15"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ryu-1.0.20",
+      "description": "Fast floating point to string conversion",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/ryu@1.0.20",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "Apache-2.0 OR BSL-1.0",
+      "licenseDeclared": "Apache-2.0 OR BSL-1.0",
+      "name": "ryu",
+      "versionInfo": "1.0.20"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-bumpalo-3.19.0",
+      "description": "A fast bump allocation arena for Rust.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/bumpalo@3.19.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "bumpalo",
+      "versionInfo": "3.19.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8",
+      "description": "Sql Entity Graph for `pgrx`",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/pgrx-sql-entity-graph@0.12.8",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/pgcentralfoundation/pgrx/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "pgrx-sql-entity-graph",
+      "versionInfo": "0.12.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pgrx-0.12.8",
+      "description": "pgrx:  A Rust framework for creating Postgres extensions",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/pgrx@0.12.8",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/pgcentralfoundation/pgrx/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "pgrx",
+      "versionInfo": "0.12.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-fixedbitset-0.4.2",
+      "description": "FixedBitSet is a simple bitset collection",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/fixedbitset@0.4.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "fixedbitset",
+      "versionInfo": "0.4.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde-1.0.228",
+      "description": "A generic serialization/deserialization framework",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde@1.0.228",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://serde.rs",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "serde",
+      "versionInfo": "1.0.228"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-heapless-0.8.0",
+      "description": "`static` friendly data structures that don't require dynamic memory allocation",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/heapless@0.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "heapless",
+      "versionInfo": "0.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-chrono-0.4.42",
+      "description": "Date and time library for Rust",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/chrono@0.4.42",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/chronotope/chrono",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "chrono",
+      "versionInfo": "0.4.42"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-once--cell-1.21.3",
+      "description": "Single assignment cells and lazy values.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/once_cell@1.21.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "once_cell",
+      "versionInfo": "1.21.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-radium-0.7.0",
+      "description": "Portable interfaces for maybe-atomic types",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/radium@0.7.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/bitvecto-rs/radium",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "radium",
+      "versionInfo": "0.7.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-regex-syntax-0.8.8",
+      "description": "A regular expression parser.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/regex-syntax@0.8.8",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/rust-lang/regex/tree/master/regex-syntax",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "regex-syntax",
+      "versionInfo": "0.8.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-memchr-2.7.6",
+      "description": "Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for\n1, 2 or 3 byte search and single substring search.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/memchr@2.7.6",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/BurntSushi/memchr",
+      "licenseConcluded": "Unlicense OR MIT",
+      "licenseDeclared": "Unlicense OR MIT",
+      "name": "memchr",
+      "versionInfo": "2.7.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-iana-time-zone-haiku-0.1.2",
+      "description": "iana-time-zone support crate for Haiku OS",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/iana-time-zone-haiku@0.1.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "iana-time-zone-haiku",
+      "versionInfo": "0.1.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-hash32-0.3.1",
+      "description": "32-bit hashing algorithms",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/hash32@0.3.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "hash32",
+      "versionInfo": "0.3.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-unicode-segmentation-1.12.0",
+      "description": "This crate provides Grapheme Cluster, Word and Sentence boundaries\naccording to Unicode Standard Annex #29 rules.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/unicode-segmentation@1.12.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/unicode-rs/unicode-segmentation",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "unicode-segmentation",
+      "versionInfo": "1.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-quote-1.0.42",
+      "description": "Quasi-quoting macro quote!(...)",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/quote@1.0.42",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "quote",
+      "versionInfo": "1.0.42"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-atomic-traits-0.3.0",
+      "description": "The traits for generic atomic operations",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/atomic-traits@0.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/flier/rust-atomic-traits",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "atomic-traits",
+      "versionInfo": "0.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-thiserror-1.0.69",
+      "description": "derive(Error)",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/thiserror@1.0.69",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "thiserror",
+      "versionInfo": "1.0.69"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde--core-1.0.228",
+      "description": "Serde traits only, with no support for derive -- use the `serde` crate instead",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde_core@1.0.228",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://serde.rs",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "serde_core",
+      "versionInfo": "1.0.228"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-android--system--properties-0.1.5",
+      "description": "Minimal Android system properties wrapper",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/android_system_properties@0.1.5",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/nical/android_system_properties",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "android_system_properties",
+      "versionInfo": "0.1.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wyz-0.5.1",
+      "description": "myrrlyn’s utility collection",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wyz@0.5.1",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://myrrlyn.net/crates/wyz",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "wyz",
+      "versionInfo": "0.5.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-stable--deref--trait-1.2.1",
+      "description": "An unsafe marker trait for types like Box and Rc that dereference to a stable address even when moved, and hence can be used with libraries such as owning_ref and rental.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/stable_deref_trait@1.2.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "stable_deref_trait",
+      "versionInfo": "1.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-regex-1.12.2",
+      "description": "An implementation of regular expressions for Rust. This implementation uses\nfinite automata and guarantees linear time matching on all inputs.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/regex@1.12.2",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/rust-lang/regex",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "regex",
+      "versionInfo": "1.12.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-cfg-if-1.0.4",
+      "description": "A macro to ergonomically define an item depending on a large number of #[cfg]\nparameters. Structured like an if-else chain, the first matching branch is the\nitem that gets emitted.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/cfg-if@1.0.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "cfg-if",
+      "versionInfo": "1.0.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-interface-0.59.3",
+      "description": "The interface macro for the Windows crates",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-interface@0.59.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-interface",
+      "versionInfo": "0.59.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-enum-map-derive-0.17.0",
+      "description": "Macros 1.1 implementation of #[derive(Enum)]",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/enum-map-derive@0.17.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "enum-map-derive",
+      "versionInfo": "0.17.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-proc-macro2-1.0.103",
+      "description": "A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/proc-macro2@1.0.103",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "proc-macro2",
+      "versionInfo": "1.0.103"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-syn-2.0.111",
+      "description": "Parser for Rust source code",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/syn@2.0.111",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "syn",
+      "versionInfo": "2.0.111"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-flate2-1.1.5",
+      "description": "DEFLATE compression and decompression exposed as Read/BufRead/Write streams.\nSupports miniz_oxide and multiple zlib implementations. Supports zlib, gzip,\nand raw deflate streams.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/flate2@1.1.5",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/rust-lang/flate2-rs",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "flate2",
+      "versionInfo": "1.1.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-bincode-1.3.3",
+      "description": "A binary serialization / deserialization strategy that uses Serde for transforming structs into bytes and vice versa!",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/bincode@1.3.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "bincode",
+      "versionInfo": "1.3.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wasm-bindgen-shared-0.2.106",
+      "description": "Shared support between wasm-bindgen and wasm-bindgen cli, an internal\ndependency.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wasm-bindgen-shared@0.2.106",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://wasm-bindgen.github.io/wasm-bindgen/",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-shared",
+      "versionInfo": "0.2.106"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-adler2-2.0.1",
+      "description": "A simple clean-room implementation of the Adler-32 checksum",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/adler2@2.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "0BSD OR MIT OR Apache-2.0",
+      "licenseDeclared": "0BSD OR MIT OR Apache-2.0",
+      "name": "adler2",
+      "versionInfo": "2.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-thiserror-impl-1.0.69",
+      "description": "Implementation detail of the `thiserror` crate",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/thiserror-impl@1.0.69",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "thiserror-impl",
+      "versionInfo": "1.0.69"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-cee-scape-0.2.0",
+      "description": "The cee-scape crate provides Rust access to `setjmp` and `sigsetjmp` functionality",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/cee-scape@0.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/pnkfelix/cee-scape",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "cee-scape",
+      "versionInfo": "0.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde--cbor-0.11.2",
+      "description": "CBOR support for serde.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/serde_cbor@0.11.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "serde_cbor",
+      "versionInfo": "0.11.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-js-sys-0.3.83",
+      "description": "Bindings for all JS global objects and functions in all JS environments like\nNode.js and browsers, built on `#[wasm_bindgen]` using the `wasm-bindgen` crate.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/js-sys@0.3.83",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://wasm-bindgen.github.io/wasm-bindgen/",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "js-sys",
+      "versionInfo": "0.3.83"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wasm-bindgen-macro-0.2.106",
+      "description": "Definition of the `#[wasm_bindgen]` attribute, an internal dependency\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wasm-bindgen-macro@0.2.106",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://wasm-bindgen.github.io/wasm-bindgen/",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-macro",
+      "versionInfo": "0.2.106"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106",
+      "description": "Implementation APIs for the `#[wasm_bindgen]` attribute",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wasm-bindgen-macro-support@0.2.106",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://wasm-bindgen.github.io/wasm-bindgen/",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-macro-support",
+      "versionInfo": "0.2.106"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-funty-2.0.0",
+      "description": "Trait generalization over the primitive types",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/funty@2.0.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "funty",
+      "versionInfo": "2.0.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wit-bindgen-0.46.0",
+      "description": "Rust bindings generator and runtime support for WIT and the component model.\nUsed when compiling Rust programs to the component model.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wit-bindgen@0.46.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/bytecodealliance/wit-bindgen",
+      "licenseConcluded": "Apache-2.0 OR Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR Apache-2.0 OR MIT",
+      "name": "wit-bindgen",
+      "versionInfo": "0.46.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-regex-automata-0.4.13",
+      "description": "Automata construction and matching using regular expressions.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/regex-automata@0.4.13",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/rust-lang/regex/tree/master/regex-automata",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "regex-automata",
+      "versionInfo": "0.4.13"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-uuid-1.19.0",
+      "description": "A library to generate and parse UUIDs.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/uuid@1.19.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/uuid-rs/uuid",
+      "licenseConcluded": "Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR MIT",
+      "name": "uuid",
+      "versionInfo": "1.19.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-core-0.62.2",
+      "description": "Core type support for COM and Windows",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-core@0.62.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-core",
+      "versionInfo": "0.62.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-bitflags-2.10.0",
+      "description": "A macro to generate structures which behave like bitflags.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/bitflags@2.10.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/bitflags/bitflags",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "bitflags",
+      "versionInfo": "2.10.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-tap-1.0.1",
+      "description": "Generic extensions for tapping values in Rust",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/tap@1.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/myrrlyn/tap",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "tap",
+      "versionInfo": "1.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-hashbrown-0.16.1",
+      "description": "A Rust port of Google's SwissTable hash map",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/hashbrown@0.16.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "hashbrown",
+      "versionInfo": "0.16.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-seahash-4.1.0",
+      "description": "A blazingly fast, portable hash function with proven statistical guarantees.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/seahash@4.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "seahash",
+      "versionInfo": "4.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-core-foundation-sys-0.8.7",
+      "description": "Bindings to Core Foundation for macOS",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/core-foundation-sys@0.8.7",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/servo/core-foundation-rs",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "core-foundation-sys",
+      "versionInfo": "0.8.7"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-unicode-ident-1.0.22",
+      "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/unicode-ident@1.0.22",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "licenseDeclared": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "name": "unicode-ident",
+      "versionInfo": "1.0.22"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-result-0.4.1",
+      "description": "Windows error handling",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-result@0.4.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-result",
+      "versionInfo": "0.4.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-unescape-0.1.0",
+      "description": "Unescapes strings with escape sequences written out as literal characters.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/unescape@0.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "unescape",
+      "versionInfo": "0.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-eyre-0.6.12",
+      "description": "Flexible concrete Error Reporting type built on std::error::Error with customizable Reports",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/eyre@0.6.12",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "eyre",
+      "versionInfo": "0.6.12"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-windows-strings-0.5.1",
+      "description": "Windows string types",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/windows-strings@0.5.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "windows-strings",
+      "versionInfo": "0.5.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-libc-0.2.178",
+      "description": "Raw FFI bindings to platform libraries like libc.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/libc@0.2.178",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "libc",
+      "versionInfo": "0.2.178"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-simd-adler32-0.3.8",
+      "description": "A SIMD-accelerated Adler-32 hash algorithm implementation.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/simd-adler32@0.3.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "simd-adler32",
+      "versionInfo": "0.3.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-byteorder-1.5.0",
+      "description": "Library for reading/writing numbers in big-endian and little-endian.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/byteorder@1.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/BurntSushi/byteorder",
+      "licenseConcluded": "Unlicense OR MIT",
+      "licenseDeclared": "Unlicense OR MIT",
+      "name": "byteorder",
+      "versionInfo": "1.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-half-1.8.3",
+      "description": "Half-precision floating point f16 and bf16 types for Rust implementing the IEEE 754-2008 standard binary16 and bfloat16 types.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/half@1.8.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "half",
+      "versionInfo": "1.8.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-iana-time-zone-0.1.64",
+      "description": "get the IANA time zone for the current system",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/iana-time-zone@0.1.64",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "iana-time-zone",
+      "versionInfo": "0.1.64"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-miniz--oxide-0.8.9",
+      "description": "DEFLATE compression and decompression library rewritten in Rust based on miniz",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/miniz_oxide@0.8.9",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide",
+      "licenseConcluded": "MIT OR Zlib OR Apache-2.0",
+      "licenseDeclared": "MIT OR Zlib OR Apache-2.0",
+      "name": "miniz_oxide",
+      "versionInfo": "0.8.9"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-equivalent-1.0.2",
+      "description": "Traits for key comparison in maps.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/equivalent@1.0.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR MIT",
+      "name": "equivalent",
+      "versionInfo": "1.0.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-r-efi-5.3.0",
+      "description": "UEFI Reference Specification Protocol Constants and Definitions",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/r-efi@5.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/r-efi/r-efi/wiki",
+      "licenseConcluded": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "licenseDeclared": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "name": "r-efi",
+      "versionInfo": "5.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wasm-bindgen-0.2.106",
+      "description": "Easy support for interacting between JS and Rust.\n",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/wasm-bindgen@0.2.106",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://wasm-bindgen.github.io/wasm-bindgen",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen",
+      "versionInfo": "0.2.106"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pgrx-macros-0.12.8",
+      "description": "Proc Macros for 'pgrx'",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/pgrx-macros@0.12.8",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/pgcentralfoundation/pgrx/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "pgrx-macros",
+      "versionInfo": "0.12.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-aho-corasick-1.1.4",
+      "description": "Fast multiple substring searching.",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/aho-corasick@1.1.4",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/BurntSushi/aho-corasick",
+      "licenseConcluded": "Unlicense OR MIT",
+      "licenseDeclared": "Unlicense OR MIT",
+      "name": "aho-corasick",
+      "versionInfo": "1.1.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pgrx-pg-sys-0.12.8",
+      "description": "Generated Rust bindings for Postgres internals, for use with 'pgrx'",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/pgrx-pg-sys@0.12.8",
+          "referenceType": "purl"
+        }
+      ],
+      "homepage": "https://github.com/pgcentralfoundation/pgrx/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "pgrx-pg-sys",
+      "versionInfo": "0.12.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-sptr-0.3.2",
+      "description": "sptr: The Strict Provenance Polyfill",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/sptr@0.3.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "sptr",
+      "versionInfo": "0.3.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-getrandom-0.3.4",
+      "description": "A small cross-platform library for retrieving random data from system source",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/getrandom@0.3.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "getrandom",
+      "versionInfo": "0.3.4"
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Package-aho-corasick-1.1.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-automata-0.4.13"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-File-pgrx_embed_pg_tviews",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-result-0.4.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-core-0.62.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-atomic-traits-0.3.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--json-1.0.145",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-once--cell-1.21.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-macro-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--core-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--json-1.0.145"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-enum-map-derive-0.17.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-ident-1.0.22",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-proc-macro2-1.0.103"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-indenter-0.3.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-eyre-0.6.12"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-syn-2.0.111"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-interface-0.59.3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-memchr-2.7.6",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--json-1.0.145"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-adler2-2.0.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-miniz--oxide-0.8.9"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-crc32fast-1.5.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-flate2-1.1.5"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-interface-0.59.3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-bincode-1.3.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-heapless-0.8.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-bumpalo-3.19.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-stable--deref--trait-1.2.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-heapless-0.8.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-thiserror-impl-1.0.69",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-1.0.69"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-shared-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-simd-adler32-0.3.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-miniz--oxide-0.8.9"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-macros-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-core-0.62.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasip2-1.0.1-plus-wasi-0.2.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-getrandom-0.3.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--cbor-0.11.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-convert--case-0.6.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-strings-0.5.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-core-0.62.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-byteorder-1.5.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-hash32-0.3.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-flate2-1.1.5",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-uuid-1.19.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-js-sys-0.3.83",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-hash32-0.3.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-heapless-0.8.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-sptr-0.3.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cee-scape-0.2.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-bincode-1.3.3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-radium-0.7.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-bitvec-1.0.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-petgraph-0.6.5",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-regex-1.12.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-once--cell-1.21.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-js-sys-0.3.83"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-link-0.2.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-core-0.62.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unescape-0.1.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-1.0.69"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-once--cell-1.21.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-macros-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-1.0.69"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-indexmap-2.12.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-petgraph-0.6.5"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-js-sys-0.3.83"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-num-traits-0.2.19",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--derive-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-core-foundation-sys-0.8.7",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-0.2.178",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-android--system--properties-0.1.5"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-miniz--oxide-0.8.9",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-flate2-1.1.5"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-bitflags-2.10.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-once--cell-1.21.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-ident-1.0.22",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-syn-2.0.111"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-macros-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-funty-2.0.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-bitvec-1.0.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-chrono-0.4.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-enum-map-derive-0.17.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-enum-map-2.7.3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-interface-0.59.3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-implement-0.60.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-macros-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pg--tviews-0.1.0-beta.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-fixedbitset-0.4.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-petgraph-0.6.5"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-aho-corasick-1.1.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-1.12.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-if-1.0.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-crc32fast-1.5.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-regex-automata-0.4.13",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-1.12.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-regex-syntax-0.8.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-automata-0.4.13"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-implement-0.60.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-macros-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-0.2.178",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-cee-scape-0.2.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-interface-0.59.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-core-0.62.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-syn-2.0.111"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--core-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-log-0.4.29",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-if-1.0.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-atomic-traits-0.3.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-equivalent-1.0.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-indexmap-2.12.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--json-1.0.145"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-memchr-2.7.6",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-1.12.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-getrandom-0.3.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-uuid-1.19.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-if-1.0.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-getrandom-0.3.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-if-1.0.4",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-iana-time-zone-haiku-0.1.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-ident-1.0.22",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-shared-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--cbor-0.11.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-enum-map-derive-0.17.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-1.0.69"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-ryu-1.0.20",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--json-1.0.145"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-link-0.2.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-strings-0.5.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pg--tviews-0.1.0-beta.1",
+      "relationshipType": "GENERATED_FROM",
+      "spdxElementId": "SPDXRef-File-pgrx_embed_pg_tviews"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--derive-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-link-0.2.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-half-1.8.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--cbor-0.11.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-enum-map-derive-0.17.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-thiserror-1.0.69",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-pg-sys-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-seahash-4.1.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-macros-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-segmentation-1.12.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-convert--case-0.6.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-quote-1.0.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wit-bindgen-0.46.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasip2-1.0.1-plus-wasi-0.2.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-js-sys-0.3.83",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-implement-0.60.2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-core-0.62.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-uuid-1.19.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-2.0.111",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--derive-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wasm-bindgen-shared-0.2.106",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wasm-bindgen-macro-support-0.2.106"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-0.2.178",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-bitvec-1.0.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-tap-1.0.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-wyz-0.5.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-memchr-2.7.6",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-aho-corasick-1.1.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-memchr-2.7.6",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-automata-0.4.13"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-hashbrown-0.16.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-indexmap-2.12.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-iana-time-zone-0.1.64",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-chrono-0.4.42"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-eyre-0.6.12",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-windows-link-0.2.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-result-0.4.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-once--cell-1.21.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-eyre-0.6.12"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-macros-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-regex-syntax-0.8.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-regex-1.12.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-wyz-0.5.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-bitvec-1.0.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-windows-implement-0.60.2"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-0.2.178",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-getrandom-0.3.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-r-efi-5.3.0",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-getrandom-0.3.4"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--derive-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--core-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde--json-1.0.145",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-tap-1.0.1",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-bitvec-1.0.1"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-1.0.42",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-android--system--properties-0.1.5",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-iana-time-zone-0.1.64"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-thiserror-1.0.69",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-sql-entity-graph-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-0.2.178",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-itoa-1.0.15",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--json-1.0.145"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-enum-map-2.7.3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-0.12.8"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-js-sys-0.3.83",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-uuid-1.19.0"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-1.0.103",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde--derive-1.0.228"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-1.0.228",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-pgrx-pg-sys-0.12.8"
+    }
+  ],
+  "spdxVersion": "SPDX-2.3"
+}
