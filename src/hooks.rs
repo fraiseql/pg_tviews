@@ -26,7 +26,7 @@ use std::ffi::CStr;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 
-use crate::ddl::{create_tview, drop_tview};
+use crate::ddl::drop_tview;
 use crate::TViewError;
 
 /// Previous ProcessUtility hook (if any other extension installed one)
@@ -36,9 +36,21 @@ static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 static PREPARING_GID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
 /// Install the ProcessUtility hook to intercept CREATE/DROP TABLE tv_*
+/// Install the ProcessUtility hook to intercept CREATE TABLE tv_* commands
 pub unsafe fn install_hook() {
     PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
     pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
+}
+
+/// Check if hook is installed, install it if not
+/// This is called lazily to avoid issues during postmaster startup
+pub unsafe fn ensure_hook_installed() {
+    static mut HOOK_INSTALLED: bool = false;
+
+    if !HOOK_INSTALLED {
+        install_hook();
+        HOOK_INSTALLED = true;
+    }
 }
 
 /// ProcessUtility hook that intercepts CREATE TABLE tv_* and DROP TABLE tv_*
@@ -62,10 +74,15 @@ unsafe extern "C" fn tview_process_utility_hook(
         } else {
             "[NULL]".to_string()
         };
-        info!("🔧 HOOK CALLED: {}", query_str);
+
 
         // Skip extension-related statements to avoid infinite recursion during installation
         let query_lower = query_str.to_lowercase();
+
+        // TEMP: Log ALL DDL statements to see if hook is called
+        if query_lower.contains("create table") {
+            // Hook is being called for CREATE TABLE statements
+        }
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
             info!("  → Extension statement, passing through without interception");
             call_prev_hook_or_standard(
@@ -79,22 +96,6 @@ unsafe extern "C" fn tview_process_utility_hook(
                 qc,
             );
             return;
-        }
-
-        // Phase 9D: Check for DISCARD ALL (connection pooling cleanup)
-        if query_lower.trim() == "discard all" {
-            info!("TVIEW: DISCARD ALL detected, clearing all caches and thread-local state");
-
-            // Clear thread-local state
-            crate::queue::clear_queue_and_reset();
-
-            // Clear global caches
-            crate::queue::cache::graph_cache::invalidate();
-            crate::refresh::clear_prepared_statement_cache();
-            crate::queue::cache::table_cache::invalidate();
-
-            // Reset metrics
-            crate::metrics::metrics_api::reset_metrics();
         }
 
         // Check if this is PREPARE TRANSACTION
@@ -142,15 +143,18 @@ unsafe extern "C" fn tview_process_utility_hook(
 
         let utility_stmt = pstmt_ref.utilityStmt;
         let node_tag = (*utility_stmt).type_;
-        info!("  → node_tag = {:?}", node_tag);
+
 
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
+
             let ctas = utility_stmt as *mut pg_sys::CreateTableAsStmt;
             if handle_create_table_as(ctas, query_string) {
                 // We handled it - don't call standard utility
+
                 return;
             }
+
         }
 
         // Check for DROP TABLE
@@ -178,8 +182,17 @@ unsafe extern "C" fn tview_process_utility_hook(
         );
     });
 
-    if result.is_err() {
-        error!("PANIC in ProcessUtility hook - this is a bug!");
+    if let Err(panic_info) = result {
+        // PANIC in ProcessUtility hook - log it!
+        let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_info)
+        };
+        error!("PANIC in ProcessUtility hook: {}", panic_msg);
+        error!("This is a bug in pg_tviews - please report it!");
     }
 }
 
@@ -231,13 +244,25 @@ unsafe fn handle_create_table_as(
     let select_sql = if !query_string.is_null() {
         match CStr::from_ptr(query_string).to_str() {
             Ok(sql) => {
+                info!("Full query string: {}", sql);
                 // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
-                if let Some(pos) = sql.to_lowercase().find(" as ") {
-                    let select_part = sql[pos + 4..].trim();
+                // We need to find the AS that comes after the table name, not column aliases
+                // Strategy: Find "CREATE TABLE <name> AS" pattern
+                let sql_lower = sql.to_lowercase();
+                // Find the table name position (we already know it's tv_<entity>)
+                let table_pattern = format!("{} as", table_name.to_lowercase());
+                info!("Looking for pattern: '{}'", table_pattern);
+
+                if let Some(table_pos) = sql_lower.find(&table_pattern) {
+                    // Found "tv_<entity> AS" - skip past it
+                    let select_start = table_pos + table_pattern.len();
+                    info!("Found table+AS pattern at position {}, SELECT starts at {}", table_pos, select_start);
+                    let select_part = sql[select_start..].trim();
+                    info!("Extracted SELECT part: {}", select_part);
                     // Remove trailing semicolon if present
                     select_part.trim_end_matches(';').trim().to_string()
                 } else {
-                    error!("Invalid CREATE TABLE AS syntax");
+                    error!("Could not find '{}' in query", table_pattern);
                 }
             }
             Err(_) => error!("Failed to parse query string"),
@@ -246,18 +271,48 @@ unsafe fn handle_create_table_as(
         error!("No query string provided");
     };
 
-    info!("Intercepted CREATE TABLE {} - converting to TVIEW", table_name);
+    info!("Validating TVIEW DDL syntax for '{}'", table_name);
 
-    // Call our TVIEW creation logic
-    match create_tview(table_name, &select_sql) {
+    // Validate TVIEW SELECT statement structure
+    match validate_tview_select(&select_sql) {
         Ok(()) => {
-            info!("TVIEW '{}' created successfully", table_name);
-            true
+            info!("TVIEW syntax valid, letting PostgreSQL create table");
+            info!("Event trigger will convert to TVIEW afterwards");
+            return false; // Pass through - let PostgreSQL create it
         }
         Err(e) => {
-            error!("Failed to create TVIEW '{}': {}", table_name, e);
+            // Validation failed - log error but let table creation proceed
+            // Event trigger will detect invalid structure and log warnings
+            error!("Invalid TVIEW syntax for '{}': {}", table_name, e);
+            error!("TVIEW must have: pk_<entity>, id (UUID), data (JSONB) columns");
+            return false; // Still let PostgreSQL create it, event trigger will handle
         }
     }
+}
+
+/// Validate TVIEW SELECT statement structure
+fn validate_tview_select(select_sql: &str) -> Result<(), String> {
+    // Check for required patterns in SELECT
+    // This is basic validation - event trigger will do thorough validation
+
+    let sql_lower = select_sql.to_lowercase();
+
+    // Check for pk_<entity> column (required)
+    if !sql_lower.contains(" as pk_") && !sql_lower.contains(" pk_") {
+        return Err("Missing pk_<entity> column".to_string());
+    }
+
+    // Check for jsonb_build_object for data column (required)
+    if !sql_lower.contains("jsonb_build_object") {
+        return Err("Missing jsonb_build_object for data column".to_string());
+    }
+
+    // Check for id column (recommended but not strictly required)
+    if !sql_lower.contains(" as id") && !sql_lower.contains(" id") {
+        info!("TVIEW SELECT missing explicit 'id' column - this may cause issues");
+    }
+
+    Ok(())
 }
 
 /// Handle DROP TABLE tv_*
