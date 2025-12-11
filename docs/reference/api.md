@@ -73,7 +73,7 @@ SELECT pg_tviews_check_jsonb_ivm();
 
 ## DDL Operations
 
-### pg_tviews_create() - Primary TVIEW Creation Method
+### pg_tviews_create() - Programmatic TVIEW Creation
 
 **Signature**:
 ```sql
@@ -100,11 +100,10 @@ SELECT pg_tviews_create('tv_user_posts',
 ```
 
 **Notes**:
-- **This is the recommended way to create TVIEWs**
 - TVIEW name must start with `tv_` (enforced)
 - SELECT statement must be valid and reference existing tables
 - Triggers are automatically created on base tables
-- Alternative DDL syntax (`CREATE TVIEW`) is not supported
+- Alternative DDL syntax (`CREATE TABLE tv_* AS SELECT`) also available
 
 ### pg_tviews_drop()
 

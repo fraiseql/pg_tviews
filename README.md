@@ -59,10 +59,9 @@ REFRESH MATERIALIZED VIEW my_view;  -- Scans ALL rows, recomputes EVERYTHING
 
 ```sql
 -- pg_tviews: Automatic incremental refresh
-SELECT pg_tviews_create('tv_post',
-    'SELECT p.pk_post as pk_post, jsonb_build_object(...) as data
-     FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user'
-);
+CREATE TABLE tv_post AS
+SELECT p.pk_post as pk_post, jsonb_build_object(...) as data
+FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user;
 
 -- Just use your database normally:
 INSERT INTO tb_post(title, fk_user) VALUES ('New Post', 123);
@@ -96,7 +95,7 @@ pg_tviews follows FraiseQL's trinity identifier conventions for optimal GraphQL 
 
 Example TVIEW with full trinity support:
 ```sql
-SELECT pg_tviews_create('tv_post', '
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,           -- lineage root
     p.id,                -- GraphQL ID
@@ -104,17 +103,18 @@ SELECT
     p.fk_user,           -- cascade FK
     u.id as user_id,     -- FraiseQL filtering FK
     jsonb_build_object(
-        ''id'', p.id,
-        ''identifier'', p.identifier,
-        ''title'', p.title,
-        ''author'', jsonb_build_object(
-            ''id'', u.id,
-            ''name'', u.name
+        'id', p.id,
+        'identifier', p.identifier,
+        'title', p.title,
+        'author', jsonb_build_object(
+            'id', u.id,
+            'identifier', u.identifier,
+            'name', u.name,
+            'email', u.email
         )
     ) as data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user
-');
+JOIN tb_user u ON p.fk_user = u.pk_user;
 ```
 
 ---
@@ -216,7 +216,7 @@ CREATE TABLE tb_post (
 );
 
 -- Create a TVIEW (note: tv_ prefix is required)
-SELECT pg_tviews_create('tv_post', '
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- Primary key column (required)
     p.id,                  -- GraphQL ID
@@ -224,20 +224,19 @@ SELECT
     p.fk_user,             -- Cascade FK
     u.id as user_id,       -- FraiseQL filtering FK
     jsonb_build_object(
-        ''id'', p.id,
-        ''identifier'', p.identifier,
-        ''title'', p.title,
-        ''content'', p.content,
-        ''author'', jsonb_build_object(
-            ''id'', u.id,
-            ''identifier'', u.identifier,
-            ''name'', u.name,
-            ''email'', u.email
+        'id', p.id,
+        'identifier', p.identifier,
+        'title', p.title,
+        'content', p.content,
+        'author', jsonb_build_object(
+            'id', u.id,
+            'identifier', u.identifier,
+            'name', u.name,
+            'email', u.email
         )
     ) as data  -- JSONB data column (required)
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user
-');
+JOIN tb_user u ON p.fk_user = u.pk_user;
 
 -- Use it like a table
 SELECT data FROM tv_posts WHERE data->>'title' ILIKE '%rust%';

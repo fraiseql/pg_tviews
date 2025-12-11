@@ -6,11 +6,29 @@ Complete reference for TVIEW creation and management with FraiseQL patterns.
 
 ## Overview
 
-pg_tviews provides transactional materialized views through SQL functions. TVIEWs follow FraiseQL's trinity identifier pattern and CQRS architecture.
+pg_tviews provides transactional materialized views through DDL and SQL functions. TVIEWs follow FraiseQL's trinity identifier pattern and CQRS architecture.
 
 ## Creating TVIEWs
 
-### Primary Method: pg_tviews_create() Function
+### DDL Method: CREATE TABLE tv_* AS SELECT
+
+**Syntax**:
+```sql
+CREATE TABLE tv_<entity> AS
+SELECT
+    <pk_column> as pk_<entity>,  -- Required: lineage root
+    <uuid_column> as id,         -- Optional: GraphQL ID
+    <other_columns>,             -- Optional: cascade FKs, filtering FKs
+    <jsonb_data> as data         -- Required: JSONB read model
+FROM tb_<entity> t
+[LEFT JOIN tb_<related> r ON ...]
+[WHERE ...]
+[GROUP BY ...];
+```
+
+**Note**: The ProcessUtility hook automatically intercepts `CREATE TABLE tv_* AS SELECT` statements and converts them to TVIEW creation. This provides DDL-like syntax for TVIEW creation.
+
+### Function Method: pg_tviews_create()
 
 **Syntax**:
 ```sql
@@ -27,7 +45,7 @@ FROM tb_<entity> t
 ');
 ```
 
-**Note**: Custom DDL syntax (`CREATE TVIEW`) is not supported. Use the function approach instead.
+**Note**: This is the programmatic approach that can be used in scripts and applications.
 
 ### FraiseQL Naming Conventions
 
