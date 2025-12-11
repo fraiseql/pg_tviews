@@ -80,19 +80,16 @@ SELECT pg_tviews_create('tv_post', 'SELECT pk_post, id, fk_user, user_id, data F
 -- Test 1: Verify initial state
 \echo ''
 \echo 'Test 1: Verify initial population'
-SELECT COUNT(*) FROM tv_user;
--- Expected: 2
+SELECT COUNT(*) = 2 as correct_user_count FROM tv_user;
 
-SELECT COUNT(*) FROM tv_post;
--- Expected: 4
+SELECT COUNT(*) = 4 as correct_post_count FROM tv_post;
 
 -- Verify nested author data
 SELECT
-    pk_post,
-    data->>'title' AS title,
-    data->'author'->>'name' AS author_name,
-    data->'author'->>'email' AS author_email
-FROM tv_post
+    COUNT(*) = 4 as all_posts_have_authors,
+    COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Alice') = 3 as alice_has_3_posts,
+    COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Bob') = 1 as bob_has_1_post
+FROM tv_post;
 WHERE fk_user = 1
 ORDER BY pk_post;
 -- Expected: 3 posts with author 'Alice', 'alice@example.com'
@@ -107,26 +104,21 @@ ORDER BY pk_post;
 UPDATE tb_user SET name = 'Alice Updated' WHERE pk_user = 1;
 
 -- Verify user updated
-SELECT data->>'name' AS name FROM tv_user WHERE pk_user = 1;
--- Expected: 'Alice Updated'
+SELECT (data->>'name') = 'Alice Updated' as user_updated FROM tv_user WHERE pk_user = 1;
 
 -- Verify ALL posts by Alice have updated author name
 SELECT
-    pk_post,
-    data->>'title' AS title,
-    data->'author'->>'name' AS author_name
+    COUNT(*) = 3 as all_alice_posts_updated,
+    COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Alice Updated') = 3 as all_have_correct_name
 FROM tv_post
-WHERE fk_user = 1
-ORDER BY pk_post;
--- Expected: all 3 posts have author_name = 'Alice Updated'
+WHERE fk_user = 1;
 
 -- Verify Bob's posts NOT affected
 SELECT
-    pk_post,
-    data->'author'->>'name' AS author_name
+    COUNT(*) = 1 as bob_posts_unchanged,
+    (data->'author'->>'name') = 'Bob' as bob_name_correct
 FROM tv_post
 WHERE fk_user = 2;
--- Expected: 'Bob' (unchanged)
 
 \echo '✓ Test 2 passed: Parent update cascaded to children'
 
@@ -140,11 +132,10 @@ WHERE pk_user = 1;
 
 -- Verify cascade updated both fields
 SELECT
-    data->'author'->>'name' AS author_name,
-    data->'author'->>'email' AS author_email
+    (data->'author'->>'name') = 'Alice V2' as name_updated,
+    (data->'author'->>'email') = 'alice.v2@example.com' as email_updated
 FROM tv_post
 WHERE pk_post = 1;
--- Expected: 'Alice V2', 'alice.v2@example.com'
 
 \echo '✓ Test 3 passed: Multiple fields cascaded'
 

@@ -229,6 +229,7 @@ mod tests {
     use super::*;
 
     /// Test batch threshold detection
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_batch_threshold() {
         // Small batch should use individual updates

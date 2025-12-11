@@ -1,0 +1,53 @@
+name: Code Coverage
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install PostgreSQL
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+    - name: Install pgrx
+      run: cargo install --locked cargo-pgrx
+
+    - name: Initialize pgrx
+      run: cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+
+    - name: Install coverage tools
+      run: cargo install cargo-llvm-cov
+
+    - name: Run tests with coverage
+      run: cargo llvm-cov --lcov --output-path coverage.lcov
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.lcov
+        flags: rust
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+    - name: Generate HTML coverage report
+      run: cargo llvm-cov --html --output-dir target/coverage-html
+
+    - name: Upload coverage HTML
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-html
+        path: target/coverage-html/
+        retention-days: 30

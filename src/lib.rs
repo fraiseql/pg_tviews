@@ -681,17 +681,20 @@ mod tests {
     use pgrx::prelude::*;
     use crate::TViewError;
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn sanity_check() {
         assert_eq!(2, 1 + 1);
     }
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_version_function() {
         let version = crate::pg_tviews_version();
         assert!(version.starts_with("0.1.0"));
     }
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_version_callable_from_sql() {
         let result = Spi::get_one::<String>(
@@ -703,6 +706,7 @@ mod tests {
         assert!(version.unwrap().starts_with("0.1.0"));
     }
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     #[should_panic(expected = "TVIEW metadata not found")]
     fn test_error_propagates_to_postgres() {
@@ -713,6 +717,7 @@ mod tests {
     }
 
     // Phase 5 Task 1 RED: Tests for jsonb_ivm detection
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_jsonb_ivm_check_function_exists() {
         // This test will fail because pg_tviews_check_jsonb_ivm doesn't exist yet
@@ -720,6 +725,7 @@ mod tests {
         assert!(result.is_ok(), "pg_tviews_check_jsonb_ivm() function should exist");
     }
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_check_jsonb_ivm_available_function() {
         // This test will fail because check_jsonb_ivm_available() doesn't exist yet
@@ -727,6 +733,7 @@ mod tests {
         // Just calling it is enough - function must exist
     }
 
+    #[cfg(any(test, feature = "pg_test"))]
     #[pg_test]
     fn test_pg_tviews_works_without_jsonb_ivm() {
         // Setup: Ensure jsonb_ivm is NOT installed

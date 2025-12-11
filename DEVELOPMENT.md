@@ -145,6 +145,28 @@ mod tests {
 
 Create files in `test/sql/` with SQL commands and expected output.
 
+#### Test Feature Configuration
+
+**Important**: All `#[pg_test]` functions must be conditional on the `pg_test` feature:
+
+```rust
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_test]
+fn test_my_function() {
+    // Test code here
+}
+```
+
+This allows the code to compile with `--no-default-features` for CI/CD pipelines that don't need PostgreSQL integration tests.
+
+```bash
+# Compile without PostgreSQL integration tests
+cargo check --no-default-features --features pg17
+
+# Run with full test suite
+cargo pgrx test pg17
+```
+
 ### Test Database Setup
 
 ```bash

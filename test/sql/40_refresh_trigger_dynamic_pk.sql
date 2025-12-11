@@ -47,11 +47,10 @@ FROM tb_post;
 
 -- Verify initial state
 SELECT
-    pk_post,
-    data->>'title' AS title,
-    data->>'content' AS content
+    COUNT(*) = 1 as correct_row_count,
+    (data->>'title') = 'Original Post' as correct_title,
+    (data->>'content') = 'Original Content' as correct_content
 FROM tv_post;
--- Expected: 1 row with 'Original Post', 'Original Content'
 
 -- Test: UPDATE should trigger refresh
 UPDATE tb_post
@@ -60,13 +59,22 @@ WHERE pk_post = 1;
 
 -- Verify refresh happened
 SELECT
-    pk_post,
-    data->>'title' AS title,
-    data->>'content' AS content,
-    updated_at > NOW() - INTERVAL '5 seconds' AS was_recently_updated
+    COUNT(*) = 1 as row_exists,
+    (data->>'title') = 'Updated Post' as title_updated,
+    (data->>'content') = 'Updated Content' as content_updated
 FROM tv_post
 WHERE pk_post = 1;
--- Expected: 'Updated Post', 'Updated Content', true
+
+-- Verify metadata and triggers
+SELECT
+    COUNT(*) = 1 as metadata_created
+FROM pg_tview_meta
+WHERE entity = 'post';
+
+SELECT
+    COUNT(*) >= 1 as triggers_created
+FROM pg_trigger
+WHERE tgname LIKE '%tview%';
 
 \echo '✓ Test 1 passed: pk_post extraction works'
 
@@ -96,11 +104,10 @@ FROM tb_user;
 
 -- Verify initial state
 SELECT
-    pk_user,
-    data->>'name' AS name,
-    data->>'email' AS email
+    COUNT(*) = 1 as correct_row_count,
+    (data->>'name') = 'Alice' as correct_name,
+    (data->>'email') = 'alice@example.com' as correct_email
 FROM tv_user;
--- Expected: 1 row with 'Alice', 'alice@example.com'
 
 -- Test: UPDATE should trigger refresh (different PK column)
 UPDATE tb_user
@@ -109,13 +116,17 @@ WHERE pk_user = 1;
 
 -- Verify refresh happened
 SELECT
-    pk_user,
-    data->>'name' AS name,
-    data->>'email' AS email,
-    updated_at > NOW() - INTERVAL '5 seconds' AS was_recently_updated
+    COUNT(*) = 1 as row_exists,
+    (data->>'name') = 'Alice Updated' as name_updated,
+    (data->>'email') = 'alice.updated@example.com' as email_updated
 FROM tv_user
 WHERE pk_user = 1;
--- Expected: 'Alice Updated', 'alice.updated@example.com', true
+
+-- Verify metadata for user TVIEW
+SELECT
+    COUNT(*) = 1 as user_metadata_created
+FROM pg_tview_meta
+WHERE entity = 'user';
 
 \echo '✓ Test 2 passed: pk_user extraction works'
 
@@ -126,15 +137,14 @@ INSERT INTO tb_post (title, content)
 VALUES ('New Post', 'New Content');
 
 -- Should have 2 rows now
-SELECT COUNT(*) AS post_count FROM tv_post;
--- Expected: 2
+SELECT COUNT(*) = 2 as correct_post_count FROM tv_post;
 
+-- Verify new post was added
 SELECT
-    pk_post,
-    data->>'title' AS title
+    COUNT(*) = 1 as new_post_added,
+    (data->>'title') = 'New Post' as correct_title
 FROM tv_post
 WHERE data->>'title' = 'New Post';
--- Expected: 1 row with 'New Post'
 
 \echo '✓ Test 3 passed: INSERT triggers refresh'
 

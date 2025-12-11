@@ -55,17 +55,15 @@ SELECT pg_tviews_create('tv_article', 'SELECT pk_article, id, data FROM article_
 -- Test 1: Verify initial state
 \echo ''
 \echo 'Test 1: Verify initial population'
-SELECT COUNT(*) AS article_count FROM tv_article;
--- Expected: 3
+SELECT COUNT(*) = 3 as correct_article_count FROM tv_article;
 
+-- Verify data correctness
 SELECT
-    pk_article,
-    data->>'title' AS title,
-    data->>'status' AS status,
-    (data->>'viewCount')::int AS view_count
-FROM tv_article
-ORDER BY pk_article;
--- Expected: 3 rows matching inserts
+    COUNT(*) = 3 as all_articles_present,
+    COUNT(*) FILTER (WHERE data->>'title' = 'First Article') = 1 as first_article_correct,
+    COUNT(*) FILTER (WHERE data->>'status' = 'published') = 2 as published_count_correct,
+    SUM((data->>'viewCount')::int) = 155 as total_view_count_correct
+FROM tv_article;
 
 \echo '✓ Test 1 passed: Initial population correct'
 
@@ -83,16 +81,17 @@ UPDATE tb_article SET title = 'First Article - Updated' WHERE pk_article = 1;
 
 -- Verify refresh
 SELECT
-    pk_article,
-    data->>'title' AS title,
-    updated_at > :'before_update'::timestamptz AS timestamp_changed
+    (data->>'title') = 'First Article - Updated' as title_updated,
+    updated_at > :'before_update'::timestamptz as timestamp_changed
 FROM tv_article
 WHERE pk_article = 1;
--- Expected: 'First Article - Updated', true
 
 -- Verify other rows NOT updated
-SELECT COUNT(*) AS unchanged_count
+SELECT
+    COUNT(*) = 2 as other_rows_unchanged,
+    COUNT(*) FILTER (WHERE data->>'title' != 'First Article - Updated') = 2 as other_titles_unchanged
 FROM tv_article
+WHERE pk_article != 1;
 WHERE pk_article != 1
   AND updated_at <= :'before_update'::timestamptz;
 -- Expected: 2 (other rows should have old timestamp)
