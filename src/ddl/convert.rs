@@ -32,6 +32,24 @@ pub fn convert_existing_table_to_tview(
 
     info!("Converting existing table '{}' to TVIEW", table_name);
 
+    // Create savepoint in case conversion fails
+    Spi::run("SAVEPOINT tview_conversion")?;
+    info!("Created savepoint for TVIEW conversion");
+
+    match do_conversion(table_name, entity_name) {
+        Ok(()) => {
+            Spi::run("RELEASE SAVEPOINT tview_conversion")?;
+            info!("Successfully converted '{}' to TVIEW", table_name);
+            Ok(())
+        }
+        Err(e) => {
+            Spi::run("ROLLBACK TO SAVEPOINT tview_conversion")?;
+            Err(e)
+        }
+    }
+}
+
+fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
     // Step 1: Validate structure
     validate_tview_structure(table_name, entity_name)?;
 
@@ -42,8 +60,6 @@ pub fn convert_existing_table_to_tview(
     let data_backup = backup_table_data(table_name, &schema)?;
 
     // Step 4: Get base tables (infer from data or require user hint)
-    // For Phase 2, we'll require the base table to be specified
-    // In Phase 3, we can add smarter inference
     let base_tables = infer_base_tables(table_name)?;
 
     // Step 5: Drop the existing table
@@ -59,7 +75,6 @@ pub fn convert_existing_table_to_tview(
         &data_backup,
     )?;
 
-    info!("Successfully converted '{}' to TVIEW", table_name);
     Ok(())
 }
 
@@ -165,33 +180,160 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
 }
 
 fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec<BackupRow>> {
-    // For Phase 2, we'll implement a simple backup
-    // In practice, we'd need to handle the actual data structure
-    let mut backup = Vec::new();
-
-    Spi::connect(|client| {
+    let backup = Spi::connect(|client| {
         let query = format!("SELECT * FROM {}", table_name);
         let results = client.select(&query, None, None)?;
 
+        let mut backup = Vec::new();
+
+        // Handle empty tables gracefully
+        if results.is_empty() {
+            info!("Table '{}' is empty, no data to backup", table_name);
+            return Ok::<_, spi::Error>(backup);
+        }
+
         for row in results {
-            // For now, just store a placeholder
-            // In practice, we'd extract the actual row data
+            // Extract actual row data - handle potential NULL values
+            let id = row["id"].value()?; // UUID can be NULL in some cases
+            let data = row["data"].value()?; // JSONB should not be NULL but handle gracefully
+
             backup.push(BackupRow {
-                id: row["id"].value()?,
-                data: row["data"].value()?,
+                id,
+                data,
             });
+        }
+
+        Ok::<_, spi::Error>(backup)
+    })?;
+
+    info!("Backed up {} rows from table '{}'", backup.len(), table_name);
+    Ok(backup)
+}
+
+fn infer_base_tables(table_name: &str) -> TViewResult<Vec<String>> {
+    // First, check for user-provided hints in table comment
+    if let Some(hinted_tables) = get_base_table_hints(table_name)? {
+        info!("Using user-provided base table hints for '{}': {:?}", table_name, hinted_tables);
+        return Ok(hinted_tables);
+    }
+
+    // Try to infer base tables from data patterns
+    // This is a basic implementation for Phase 4
+    let inferred = infer_base_tables_from_data(table_name)?;
+    if !inferred.is_empty() {
+        info!("Inferred base tables for '{}': {:?}", table_name, inferred);
+        return Ok(inferred);
+    }
+
+    // No hints or inference possible, skip trigger installation
+    info!("No base table hints or inference possible for '{}', skipping trigger installation", table_name);
+    Ok(Vec::new())
+}
+
+/// Try to infer base tables from the data in the TVIEW
+/// This is a heuristic approach for simple cases
+fn infer_base_tables_from_data(table_name: &str) -> TViewResult<Vec<String>> {
+    let mut base_tables = Vec::new();
+
+    Spi::connect(|client| {
+        // Sample a few rows to analyze data patterns
+        let query = format!("SELECT data FROM {} LIMIT 5", table_name);
+        let results = client.select(&query, None, None)?;
+
+        for row in results {
+            if let Some(data) = row["data"].value::<String>()? {
+                // Try to extract table references from JSONB data
+                // Look for patterns like "fk_table": value or "table_id": value
+                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&data) {
+                    extract_table_references(&json_value, &mut base_tables);
+                }
+            }
         }
 
         Ok::<_, spi::Error>(())
     })?;
 
-    Ok(backup)
+    // Remove duplicates and filter
+    base_tables.sort();
+    base_tables.dedup();
+
+    // Only return tables that actually exist in the database
+    let existing_tables: Vec<String> = base_tables
+        .into_iter()
+        .filter(|table| table_exists(table))
+        .collect();
+
+    Ok(existing_tables)
 }
 
-fn infer_base_tables(_table_name: &str) -> TViewResult<Vec<String>> {
-    // For Phase 2, return empty (no triggers installed)
-    // In Phase 3, we can add logic to infer base tables from data
-    Ok(Vec::new())
+/// Extract potential table references from JSONB data
+fn extract_table_references(json: &serde_json::Value, tables: &mut Vec<String>) {
+    match json {
+        serde_json::Value::Object(obj) => {
+            for (key, value) in obj {
+                // Look for FK patterns: fk_<table>, <table>_id
+                if key.starts_with("fk_") && key.len() > 3 {
+                    let table_name = format!("tb_{}", &key[3..]);
+                    tables.push(table_name);
+                } else if key.ends_with("_id") && key.len() > 3 {
+                    let table_name = format!("tb_{}", &key[..key.len() - 3]);
+                    tables.push(table_name);
+                }
+
+                // Recursively check nested objects
+                extract_table_references(value, tables);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                extract_table_references(item, tables);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check if a table exists in the current database
+fn table_exists(table_name: &str) -> bool {
+    Spi::get_one::<bool>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = '{}')",
+        table_name.replace("'", "''")
+    )).unwrap_or(Some(false)).unwrap_or(false)
+}
+
+/// Check for user-provided base table hints in table comment
+/// Format: COMMENT ON TABLE tv_entity IS 'TVIEW_BASES: tb_table1, tb_table2';
+fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
+    let query = format!(
+        "SELECT obj_description(oid, 'pg_class') as comment
+         FROM pg_class
+         WHERE relname = '{}'",
+        table_name.replace("'", "''")
+    );
+
+    let comment: Option<String> = Spi::get_one(&query)?;
+
+    if let Some(comment) = comment {
+        // Look for TVIEW_BASES: pattern
+        if let Some(bases_part) = comment
+            .split("TVIEW_BASES:")
+            .nth(1)
+            .map(|s| s.trim())
+        {
+            // Parse comma-separated list
+            let tables: Vec<String> = bases_part
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if !tables.is_empty() {
+                return Ok(Some(tables));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn reconstruct_as_tview(
@@ -204,26 +346,32 @@ fn reconstruct_as_tview(
     // Step 1: Create the backing view
     let view_name = format!("v_{}", entity_name);
 
-    // For Phase 2, create a simple view that unions the backed up data
-    // In practice, this would reconstruct the original SELECT
-    let mut values = Vec::new();
-    for row in data_backup {
-        if let (Some(id), Some(data)) = (&row.id, &row.data) {
-            values.push(format!("('{}'::uuid, '{}')", id, data));
-        }
-    }
-
-    let values_clause = if values.is_empty() {
-        "SELECT NULL::uuid as id, NULL::jsonb as data WHERE false".to_string()
+    // Create view that preserves the backed up data
+    if data_backup.is_empty() {
+        // Empty table: create view with proper structure but no rows
+        Spi::run(&format!(
+            "CREATE VIEW {} AS SELECT
+                NULL::uuid as id,
+                NULL::jsonb as data
+             WHERE false",
+            view_name
+        ))?;
+        info!("Created empty view {} for empty table", view_name);
     } else {
-        format!("VALUES {}", values.join(", "))
-    };
+        // Non-empty table: reconstruct with actual data
+        let mut values = Vec::new();
+        for row in data_backup {
+            if let (Some(id), Some(data)) = (&row.id, &row.data) {
+                values.push(format!("('{}'::uuid, '{}')", id, data));
+            }
+        }
 
-    Spi::run(&format!(
-        "CREATE VIEW {} AS SELECT * FROM ({}) AS t(id, data)",
-        view_name, values_clause
-    ))?;
-    info!("Created view {}", view_name);
+        Spi::run(&format!(
+            "CREATE VIEW {} AS SELECT * FROM (VALUES {}) AS t(id, data)",
+            view_name, values.join(", ")
+        ))?;
+        info!("Created view {} with {} rows", view_name, data_backup.len());
+    }
 
     // Step 2: Create the TVIEW wrapper
     Spi::run(&format!(
