@@ -58,6 +58,11 @@ pub fn drop_tview(
     // Invalidate caches since TVIEW was dropped
     crate::queue::cache::invalidate_all_caches();
 
+    // Log the drop for audit trail
+    if let Err(e) = crate::audit::log_drop(entity_name) {
+        warning!("Failed to log TVIEW drop: {}", e);
+    }
+
     info!("TVIEW {} dropped successfully", tview_name);
 
     Ok(())

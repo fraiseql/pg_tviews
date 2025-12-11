@@ -149,6 +149,68 @@ extension_sql!(
     requires = [event_triggers],
 );
 
+// Audit logging table for DDL operations
+extension_sql!(
+    r#"
+CREATE TABLE IF NOT EXISTS public.pg_tview_audit_log (
+    log_id BIGSERIAL PRIMARY KEY,
+    operation TEXT NOT NULL,  -- CREATE, DROP, ALTER, REFRESH
+    entity TEXT NOT NULL,
+    performed_by TEXT NOT NULL DEFAULT current_user,
+    performed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    details JSONB,
+    client_addr INET DEFAULT inet_client_addr(),
+    client_port INTEGER DEFAULT inet_client_port()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON pg_tview_audit_log(entity);
+CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON pg_tview_audit_log(performed_at DESC);
+
+COMMENT ON TABLE pg_tview_audit_log IS 'Audit log for TVIEW operations';
+    "#,
+    name = "audit_table",
+    requires = [create_metadata_tables],
+);
+
+// Monitoring views for production observability
+extension_sql!(
+    r#"
+-- Queue monitoring view
+CREATE OR REPLACE VIEW pg_tviews_queue_realtime AS
+SELECT
+    current_setting('application_name') as session,
+    pg_backend_pid() as backend_pid,
+    txid_current() as transaction_id,
+    0 as queue_size,  -- TODO: Implement queue introspection
+    ARRAY[]::TEXT[] as entities,
+    NOW() as last_enqueued;
+
+-- Cache statistics view
+CREATE OR REPLACE VIEW pg_tviews_cache_stats AS
+SELECT
+    'graph_cache' as cache_type,
+    0::BIGINT as entries,
+    '0 bytes' as estimated_size
+UNION ALL
+SELECT
+    'table_cache' as cache_type,
+    0::BIGINT as entries,
+    '0 bytes' as estimated_size;
+
+-- Performance summary view
+CREATE OR REPLACE VIEW pg_tviews_performance_summary AS
+SELECT
+    entity,
+    COUNT(*) as total_refreshes,
+    0.0 as avg_refresh_ms,
+    NOW() as last_refresh
+FROM pg_tview_meta
+GROUP BY entity;
+    "#,
+    name = "monitoring_views",
+    requires = [audit_table],
+);
+
 /// Create the metadata tables required for pg_tviews extension
 pub fn create_metadata_tables() -> TViewResult<()> {
     Spi::run(

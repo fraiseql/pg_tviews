@@ -23,6 +23,54 @@ SELECT * FROM pg_tviews_cache_stats;
 SELECT * FROM pg_tviews_performance_summary;
 ```
 
+## Health Check Function
+
+### pg_tviews_health_check()
+
+**Purpose**: Comprehensive health check for pg_tviews installation and all TVIEWs.
+
+**Returns**: Table with health status information
+
+**Columns**:
+- `status` (TEXT): 'OK', 'WARNING', or 'ERROR'
+- `component` (TEXT): Component being checked (extension, jsonb_ivm, metadata, triggers, tviews)
+- `message` (TEXT): Detailed status message
+- `severity` (TEXT): 'info', 'warning', or 'error'
+
+**Example**:
+```sql
+-- Run full health check
+SELECT * FROM pg_tviews_health_check();
+
+-- Check only critical issues
+SELECT * FROM pg_tviews_health_check()
+WHERE status IN ('WARNING', 'ERROR');
+```
+
+**Sample Output**:
+```sql
+     status  | component  |                    message                     | severity
+-------------+------------+------------------------------------------------+----------
+ OK          | extension  | pg_tviews version 0.1.0-beta.1                | info
+ OK          | jsonb_ivm  | jsonb_ivm extension available (optimized mode)| info
+ OK          | metadata   | All metadata entries valid                     | info
+ OK          | triggers   | All triggers properly linked                   | info
+ OK          | tviews     | 3 TVIEWs registered                            | info
+```
+
+**Checks Performed**:
+1. **Extension**: Version and installation status
+2. **jsonb_ivm**: Performance optimization extension availability
+3. **Metadata**: Consistency between pg_tview_meta and actual tables
+4. **Triggers**: Orphaned triggers and proper linkage
+5. **TVIEWs**: Count of registered TVIEWs
+
+**Use Cases**:
+- Daily health monitoring
+- Pre-deployment checks
+- Troubleshooting system issues
+- Automated alerting
+
 ## Monitoring Views
 
 ### pg_tviews_queue_realtime

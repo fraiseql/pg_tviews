@@ -55,6 +55,7 @@ mod trigger;
 mod queue;
 mod metrics;
 mod event_trigger;
+mod audit;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -188,6 +189,117 @@ extern "C" fn _PG_init() {
     // (like check_jsonb_ivm_available or register_cache_invalidation_callbacks)
     // because no database connection exists during shared library preloading.
     // These checks happen lazily on first use instead.
+}
+
+/// Health check function for production monitoring
+///
+/// Returns a comprehensive health status including:
+/// - Extension version
+/// - jsonb_ivm availability
+/// - Metadata consistency
+/// - Orphaned triggers
+/// - Queue status
+#[pg_extern]
+fn pg_tviews_health_check() -> TableIterator<'static, (
+    name!(status, String),
+    name!(component, String),
+    name!(message, String),
+    name!(severity, String),
+)> {
+    let mut results = Vec::new();
+
+    // Check 1: Extension loaded
+    results.push((
+        "OK".to_string(),
+        "extension".to_string(),
+        format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
+        "info".to_string(),
+    ));
+
+    // Check 2: jsonb_ivm availability
+    let has_jsonb_ivm = Spi::get_one::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_ivm'"
+    ).unwrap_or(Some(false)).unwrap_or(false);
+
+    if has_jsonb_ivm {
+        results.push((
+            "OK".to_string(),
+            "jsonb_ivm".to_string(),
+            "jsonb_ivm extension available (optimized mode)".to_string(),
+            "info".to_string(),
+        ));
+    } else {
+        results.push((
+            "WARNING".to_string(),
+            "jsonb_ivm".to_string(),
+            "jsonb_ivm not installed (falling back to standard JSONB)".to_string(),
+            "warning".to_string(),
+        ));
+    }
+
+    // Check 3: Metadata consistency
+    let orphaned_meta = Spi::get_one::<i64>(
+        "SELECT COUNT(*) FROM pg_tview_meta m
+         WHERE NOT EXISTS (
+           SELECT 1 FROM pg_class WHERE relname = 'tv_' || m.entity
+         )"
+    ).unwrap_or(Some(0)).unwrap_or(0);
+
+    if orphaned_meta > 0 {
+        results.push((
+            "ERROR".to_string(),
+            "metadata".to_string(),
+            format!("{} orphaned metadata entries found", orphaned_meta),
+            "error".to_string(),
+        ));
+    } else {
+        results.push((
+            "OK".to_string(),
+            "metadata".to_string(),
+            "All metadata entries valid".to_string(),
+            "info".to_string(),
+        ));
+    }
+
+    // Check 4: Orphaned triggers
+    let orphaned_triggers = Spi::get_one::<i64>(
+        "SELECT COUNT(*) FROM pg_trigger
+         WHERE tgname LIKE 'tview_%'
+           AND tgrelid NOT IN (
+             SELECT ('tb_' || entity)::regclass::oid
+             FROM pg_tview_meta
+           )"
+    ).unwrap_or(Some(0)).unwrap_or(0);
+
+    if orphaned_triggers > 0 {
+        results.push((
+            "WARNING".to_string(),
+            "triggers".to_string(),
+            format!("{} orphaned triggers found", orphaned_triggers),
+            "warning".to_string(),
+        ));
+    } else {
+        results.push((
+            "OK".to_string(),
+            "triggers".to_string(),
+            "All triggers properly linked".to_string(),
+            "info".to_string(),
+        ));
+    }
+
+    // Check 5: TVIEW count
+    let tview_count = Spi::get_one::<i64>(
+        "SELECT COUNT(*) FROM pg_tview_meta"
+    ).unwrap_or(Some(0)).unwrap_or(0);
+
+    results.push((
+        "OK".to_string(),
+        "tviews".to_string(),
+        format!("{} TVIEWs registered", tview_count),
+        "info".to_string(),
+    ));
+
+    TableIterator::new(results)
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB

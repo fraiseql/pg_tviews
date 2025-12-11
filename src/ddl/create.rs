@@ -105,6 +105,11 @@ pub fn create_tview(
     info!("Step 9: Invalidating caches");
     crate::queue::cache::invalidate_all_caches();
 
+    // Log the creation for audit trail
+    if let Err(e) = crate::audit::log_create(entity_name, select_sql) {
+        warning!("Failed to log TVIEW creation: {}", e);
+    }
+
     info!("TVIEW {} created successfully", tview_name);
 
     Ok(())
