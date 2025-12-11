@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 /// Utilities: Common Helper Functions and PostgreSQL Integration
 ///
 /// This module provides utility functions used throughout pg_tviews:
@@ -53,10 +54,11 @@ pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
 /// Look up the TVIEW table name given its OID (from pg_tview_meta).
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     Spi::connect(|client| {
+        let args = vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         let mut rows = client.select(
             "SELECT relname::text AS relname FROM pg_class WHERE oid = $1",
             None,
-            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), oid.into_datum())]),
+            &args,
         )?;
 
         if let Some(row) = rows.next() {

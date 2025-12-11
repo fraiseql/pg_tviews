@@ -27,6 +27,7 @@
 
 use pgrx::prelude::*;
 use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
 use crate::catalog::TviewMeta;
 
@@ -106,7 +107,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
 
     // Execute query to get fresh data and extract it in the same context
     let (case_when, case_data) = Spi::connect(|client| {
-        let rows = client.select(&select_sql, None, None)?;
+        let rows = client.select(&select_sql, None, &[])?;
 
         let mut case_data = Vec::new();
         let mut case_when = Vec::new();
@@ -157,10 +158,10 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
     // Prepare arguments for the CASE statement
     let mut args = Vec::new();
     for data in case_data {
-        args.push((PgOid::BuiltIn(PgBuiltInOids::JSONBOID), data.into_datum()));
+        args.push(unsafe { DatumWithOid::new(data, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) });
     }
 
-    Spi::run_with_args(&update_sql, Some(args))
+    Spi::run_with_args(&update_sql, &args)
         .map_err(|e| TViewError::SpiError {
             query: update_sql,
             error: e.to_string(),
@@ -188,9 +189,10 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
         "SELECT data FROM {view_name} WHERE {pk_col} = $1"
     );
 
+    let select_args = vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
     let fresh_data: JsonB = Spi::get_one_with_args(
         &sql,
-        vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum())],
+        &select_args,
     )
     .map_err(|e| TViewError::SpiError {
         query: sql.clone(),
@@ -208,12 +210,13 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
         "UPDATE {tv_name} SET data = $1, updated_at = now() WHERE {pk_col} = $2"
     );
 
+    let update_args = vec![
+        unsafe { DatumWithOid::new(fresh_data, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+        unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+    ];
     Spi::run_with_args(
         &update_sql,
-        Some(vec![
-            (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), fresh_data.into_datum()),
-            (PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum()),
-        ]),
+        &update_args,
     ).map_err(|e| TViewError::SpiError {
         query: update_sql,
         error: e.to_string(),

@@ -106,9 +106,15 @@ BEGIN
 
     v_end := clock_timestamp();
 
-    -- 5. Populate TVIEW (Approach 1: pg_tviews)
+    -- 5. TVIEW table needs to be populated (Approach 1: pg_tviews)
+    -- Note: CREATE TABLE ... AS SELECT creates the table with initial data,
+    -- but we still need to convert it to a TVIEW for automatic incremental refresh
     RAISE NOTICE 'Populating TVIEW (pg_tviews)...';
-    PERFORM refresh_tv_product();
+    -- The tv_product table was already created with data by the schema
+    -- But we need to verify it has rows (it should from CREATE TABLE AS SELECT)
+    IF (SELECT COUNT(*) FROM tv_product) = 0 THEN
+        INSERT INTO tv_product SELECT pk_product, fk_category, data FROM v_product;
+    END IF;
 
     -- 6. Populate manual table (Approach 2: manual updates)
     RAISE NOTICE 'Populating manual table...';

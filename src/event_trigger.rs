@@ -66,7 +66,7 @@ fn get_ddl_commands() -> spi::Result<Vec<DdlCommand>> {
         let query = "SELECT command_tag, object_identity
                      FROM pg_event_trigger_ddl_commands()";
 
-        let results = client.select(query, None, None)?;
+        let results = client.select(query, None, &[])?;
         let mut commands = Vec::new();
 
         for row in results {

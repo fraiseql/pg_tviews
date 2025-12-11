@@ -139,7 +139,7 @@ fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
     );
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, None)?;
+        let rows = client.select(&query, None, &[])?;
         let mut parents = Vec::new();
 
         for row in rows {
@@ -171,7 +171,7 @@ fn find_affected_pks(
     );
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, None)?;
+        let rows = client.select(&query, None, &[])?;
         let mut pks = Vec::new();
 
         for row in rows {

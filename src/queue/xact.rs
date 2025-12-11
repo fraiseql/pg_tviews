@@ -1,5 +1,6 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
+use pgrx::datum::DatumWithOid;
 use std::os::raw::c_void;
 use std::collections::HashSet;
 use super::ops::{take_queue_snapshot, clear_queue, reset_scheduled_flag};
@@ -71,10 +72,10 @@ pub unsafe fn register_subxact_callback() -> TViewResult<()> {
 /// This is called at transaction events (COMMIT, ABORT, etc.)
 ///
 /// # Safety
-/// This is an extern "C" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
 /// Must not panic or unwind.
 #[no_mangle]
-unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
+unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         // Determine event type (using PostgreSQL C API constants)
@@ -142,10 +143,10 @@ unsafe extern "C" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// preventing queue leakage between transactions in connection poolers like PgBouncer.
 ///
 /// # Safety
-/// This is an extern "C" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
 /// Must not panic or unwind.
 #[no_mangle]
-unsafe extern "C" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
+unsafe extern "C-unwind" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
     // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         if event == 3 { // XACT_EVENT_START
@@ -168,10 +169,10 @@ unsafe extern "C" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
 /// We need to maintain queue snapshots to properly handle ROLLBACK TO SAVEPOINT.
 ///
 /// # Safety
-/// This is an extern "C" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
 /// Must not panic or unwind.
 #[no_mangle]
-unsafe extern "C" fn tview_subxact_callback(
+unsafe extern "C-unwind" fn tview_subxact_callback(
     event: u32,
     _subxid: pg_sys::SubTransactionId,
     _parent_subid: pg_sys::SubTransactionId,
@@ -404,15 +405,16 @@ fn handle_prepare() -> TViewResult<()> {
     let queue_jsonb = serialized.into_jsonb()?;
 
     // Store in persistent table
+    let insert_args = vec![
+        unsafe { DatumWithOid::new(gid.clone(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(queue_jsonb, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+        unsafe { DatumWithOid::new(queue_size, PgOid::BuiltIn(PgBuiltInOids::INT4OID).value()) },
+    ];
     Spi::run_with_args(
         "INSERT INTO pg_tview_pending_refreshes
          (gid, refresh_queue, queue_size, expires_at)
          VALUES ($1, $2, $3, now() + interval '24 hours')",
-        Some(vec![
-            (PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.clone().into_datum()),
-            (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), queue_jsonb.into_datum()),
-            (PgOid::BuiltIn(PgBuiltInOids::INT4OID), queue_size.into_datum()),
-        ]),
+        &insert_args,
     )?;
 
     // Clear in-memory queue (transaction is prepared, not committed)

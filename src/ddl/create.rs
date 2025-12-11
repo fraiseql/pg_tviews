@@ -366,7 +366,7 @@ fn register_metadata(
 
     // Serialize dependencies as OID array
     let deps_str = dependencies.iter()
-        .map(|oid| oid.as_u32().to_string())
+        .map(|oid| oid.to_u32().to_string())
         .collect::<Vec<_>>()
         .join(",");
 
@@ -413,8 +413,8 @@ fn register_metadata(
         ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
         entity_name.replace("'", "''"),
-        view_oid.as_u32(),
-        table_oid.as_u32(),
+        view_oid.to_u32(),
+        table_oid.to_u32(),
         definition_sql.replace("'", "''"),
         deps_str,
         fk_columns,
@@ -471,7 +471,7 @@ fn transform_raw_select_to_tview(
     );
 
     let columns: Vec<(String, String)> = Spi::connect(|client| {
-        let rows = client.select(&get_columns_sql, None, None)?;
+        let rows = client.select(&get_columns_sql, None, &[])?;
         let mut result = Vec::new();
         for row in rows {
             let col_name: String = row[1].value()?

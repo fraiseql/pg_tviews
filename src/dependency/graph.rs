@@ -84,7 +84,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 
         let deps: Vec<(pg_sys::Oid, i32, String, Option<String>)> =
             Spi::connect(|client| {
-                let rows = client.select(&deps_query, None, None)?;
+                let rows = client.select(&deps_query, None, &[])?;
                 let mut results = Vec::new();
 
                 for row in rows {

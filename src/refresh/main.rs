@@ -54,6 +54,7 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys::Oid;
 use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
 
 use crate::catalog::{TviewMeta, DependencyDetail, DependencyType};
 use crate::propagate::propagate_from_row;
@@ -159,10 +160,11 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
     );
 
     Spi::connect(|client| {
+        let args = vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
         let mut rows = client.select(
             &sql,
             None,
-            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum())]),
+            &args,
         )?;
 
         let row_data = rows.next()
@@ -282,17 +284,14 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
     let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps)?;
 
     // Execute update
-    Spi::connect(|mut client| {
-        client.update(
-            &sql,
-            None,
-            Some(vec![
-                (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), JsonB(row.data.0.clone()).into_datum()),
-                (PgOid::BuiltIn(PgBuiltInOids::INT8OID), row.pk.into_datum()),
-            ]),
-        )?;
-        Ok(())
-    })
+    Spi::run_with_args(
+        &sql,
+        &[
+            unsafe { DatumWithOid::new(JsonB(row.data.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+        ],
+    )?;
+    Ok(())
 }
 
 /// Build SQL UPDATE with nested smart patch function calls.
@@ -408,7 +407,7 @@ fn check_jsonb_ivm_available() -> spi::Result<bool> {
         let result = client.select(
             "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
             None,
-            None,
+            &[],
         )?;
 
         for row in result {
@@ -458,17 +457,14 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
         "UPDATE {tv_name} SET data = $1, updated_at = now() WHERE {pk_col} = $2"
     );
 
-    Spi::connect(|mut client| {
-        client.update(
-            &sql,
-            None,
-            Some(vec![
-                (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), JsonB(row.data.0.clone()).into_datum()),
-                (PgOid::BuiltIn(PgBuiltInOids::INT8OID), row.pk.into_datum()),
-            ]),
-        )?;
-        Ok(())
-    })
+    Spi::run_with_args(
+        &sql,
+        &[
+            unsafe { DatumWithOid::new(JsonB(row.data.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+        ],
+    )?;
+    Ok(())
 }
 
 #[cfg(any(test, feature = "pg_test"))]

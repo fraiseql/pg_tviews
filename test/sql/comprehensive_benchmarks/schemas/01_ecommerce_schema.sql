@@ -150,12 +150,16 @@ LEFT JOIN tb_inventory i ON p.pk_product = i.fk_product;
 
 -- TVIEW table for materialized product data (projection side)
 -- Approach 1: pg_tviews with automatic incremental refresh
-CREATE TABLE tv_product (
-    pk_product INTEGER PRIMARY KEY,
-    fk_category INTEGER NOT NULL,
-    data JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+-- Step 1: Create the table with initial data
+CREATE TABLE tv_product AS
+SELECT
+    pk_product,
+    fk_category,
+    data
+FROM v_product;
+
+-- Step 2: Convert to TVIEW (registers metadata and creates triggers)
+SELECT pg_tviews_convert_table('tv_product', 'product');
 
 -- GIN index for JSONB queries
 CREATE INDEX idx_tv_product_data ON tv_product USING GIN (data);
@@ -192,9 +196,7 @@ CREATE INDEX idx_manual_func_product_category ON manual_func_product(fk_category
 CREATE INDEX idx_manual_func_product_id ON manual_func_product((data->>'id'));
 CREATE INDEX idx_manual_func_product_version ON manual_func_product(version);
 
--- Note: pg_tview_meta insertion commented out for benchmark simulation
--- In production, pg_tviews would automatically populate this metadata
--- INSERT INTO pg_tview_meta (...) VALUES (...)
+-- Note: CREATE TVIEW automatically handles pg_tview_meta registration and trigger setup
 
 -- Traditional materialized view for comparison
 -- Approach 4: Full refresh (traditional approach)
@@ -205,13 +207,8 @@ CREATE UNIQUE INDEX idx_mv_product_pk ON mv_product(pk_product);
 CREATE INDEX idx_mv_product_data ON mv_product USING GIN (data);
 
 -- Helper functions
-CREATE OR REPLACE FUNCTION refresh_tv_product() RETURNS void AS $$
-BEGIN
-    TRUNCATE tv_product;
-    INSERT INTO tv_product (pk_product, fk_category, data)
-    SELECT pk_product, fk_category, data FROM v_product;
-END;
-$$ LANGUAGE plpgsql;
+-- Note: refresh_tv_product() is no longer needed since CREATE TVIEW auto-populates
+-- and automatic triggers keep tv_product synchronized
 
 CREATE OR REPLACE FUNCTION refresh_manual_product() RETURNS void AS $$
 BEGIN

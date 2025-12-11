@@ -164,7 +164,7 @@ fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64
     );
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, None)?;
+        let rows = client.select(&query, None, &[])?;
         let mut pks = Vec::new();
 
         for row in rows {

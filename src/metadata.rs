@@ -339,7 +339,7 @@ mod tests {
                 ORDER BY ordinal_position
             ";
 
-            for row in client.select(query, None, None)? {
+            for row in client.select(query, None, &[])? {
                 let name: String = row.get(1)?.unwrap_or_default();
                 let data_type: String = row.get(2)?.unwrap_or_default();
                 let nullable: String = row.get(3)?.unwrap_or_default();

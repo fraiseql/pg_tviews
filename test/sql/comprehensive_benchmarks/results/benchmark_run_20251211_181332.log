@@ -1,0 +1,13 @@
+[1;33mChecking PostgreSQL connection...[0m
+[0;32m✓ PostgreSQL connection OK[0m
+
+[1;33mSetting up benchmark database...[0m
+  Database pg_tviews_benchmark already exists
+  [0;32m✓ Database recreated[0m
+
+[1;33mRunning benchmark setup...[0m
+[0;32m✓ Setup complete[0m
+
+[0;34m=== Running E-Commerce (large scale) ===[0m
+  Loading schema...
+  Generating large scale data...

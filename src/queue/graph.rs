@@ -39,7 +39,7 @@ impl EntityDepGraph {
         let mut all_entities: HashSet<String> = HashSet::new();
 
         Spi::connect(|client| {
-            let rows = client.select(query, None, None)?;
+            let rows = client.select(query, None, &[])?;
 
             for row in rows {
                 let entity: String = row["entity"].value()

@@ -5,6 +5,7 @@
 
 use pgrx::prelude::*;
 use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use crate::TViewResult;
@@ -51,10 +52,11 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
 
     // Execute with cached plan (no re-parsing)
     Spi::connect(|client| {
+        let args = vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
         let mut result = client.select(
             &format!("EXECUTE {}", stmt_name),
             None,
-            Some(vec![(PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk.into_datum())])
+            &args,
         )?;
 
         // Process result (similar to main.rs recompute_view_row)
@@ -85,9 +87,10 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
 
     if let Some(stmt_name) = cache.get(entity) {
         // Verify statement still exists (might have been deallocated)
+        let exists_args = vec![unsafe { DatumWithOid::new(stmt_name.clone(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
         let exists = Spi::get_one_with_args::<bool>(
             "SELECT EXISTS(SELECT 1 FROM pg_prepared_statements WHERE name = $1)",
-            vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), stmt_name.clone().into_datum())],
+            &exists_args,
         )?.unwrap_or(false);
 
         if exists {
@@ -141,9 +144,10 @@ pub fn get_cache_stats() -> (usize, Vec<String>) {
 #[allow(dead_code)]
 fn quote_identifier(name: &str) -> String {
     // Use PostgreSQL's quote_ident() for safety
+    let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",
-        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), name.into_datum())],
+        &quote_args,
     ) {
         Ok(Some(quoted)) => quoted,
         _ => format!("\"{}\"", name.replace("\"", "\"\"")),

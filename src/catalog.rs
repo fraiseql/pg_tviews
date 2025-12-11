@@ -1,6 +1,6 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys::Oid;
-use pgrx::IntoDatum;
+use pgrx::datum::DatumWithOid;
 use serde::{Deserialize, Serialize};
 
 /// Type of dependency relationship for jsonb_ivm optimization
@@ -83,6 +83,7 @@ impl TviewMeta {
     /// Look up metadata by source table OID or view OID.
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
+            let args = vec![unsafe { DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -90,7 +91,7 @@ impl TviewMeta {
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
-                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), source_oid.into_datum())]),
+                &args,
             )?;
 
             let result = if let Some(row) = rows.next() {
@@ -144,6 +145,7 @@ impl TviewMeta {
     /// Look up metadata by entity name
     pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
+            let args = vec![unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -151,7 +153,7 @@ impl TviewMeta {
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
-                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), entity_name.into_datum())]),
+                &args,
             )?;
 
             let result = if let Some(row) = rows.next() {
@@ -229,6 +231,7 @@ impl TviewMeta {
     /// ```
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
+            let args = vec![unsafe { DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -236,7 +239,7 @@ impl TviewMeta {
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
-                Some(vec![(PgOid::BuiltIn(PgBuiltInOids::OIDOID), tview_oid.into_datum())]),
+                &args,
             )?;
 
             let result = if let Some(row) = rows.next() {

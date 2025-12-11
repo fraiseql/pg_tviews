@@ -6,6 +6,7 @@
 use pgrx::prelude::*;
 use pgrx::spi;
 use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
 use crate::catalog::TviewMeta;
 use crate::utils::lookup_view_for_source;
 use crate::TViewResult;
@@ -63,15 +64,15 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
         quote_identifier(&pk_col)
     );
 
-    Spi::connect(|mut client| {
+    Spi::connect(|client| {
         // Create PostgreSQL BIGINT[] array from Vec<i64>
+        let args = vec![unsafe {
+            DatumWithOid::new(pks.clone(), PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value())
+        }];
         let rows = client.select(
             &query,
             None,
-            Some(vec![(
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID),
-                pks.clone().into_datum()
-            )]),
+            &args,
         )?;
 
         // Batch update using UPDATE ... FROM unnest()
@@ -115,13 +116,12 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
         );
 
         // Execute batch update with parameters
-        client.update(
+        Spi::run_with_args(
             &update_query,
-            None,
-            Some(vec![
-                (PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID), update_pks.into_datum()),
-                (PgOid::BuiltIn(PgBuiltInOids::JSONBARRAYOID), update_data.into_datum()),
-            ]),
+            &[
+                unsafe { DatumWithOid::new(update_pks, PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value()) },
+                unsafe { DatumWithOid::new(update_data, PgOid::BuiltIn(PgBuiltInOids::JSONBARRAYOID).value()) },
+            ],
         )?;
 
         Ok(())
@@ -131,9 +131,10 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 /// Helper: Quote identifier safely
 pub fn quote_identifier(name: &str) -> String {
     // Use PostgreSQL's quote_ident() for safety
+    let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",
-        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), name.into_datum())],
+        &quote_args,
     ) {
         Ok(Some(quoted)) => quoted,
         _ => format!("\"{}\"", name.replace("\"", "\"\"")),

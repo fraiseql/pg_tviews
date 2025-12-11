@@ -24,6 +24,7 @@
 
 use pgrx::prelude::*;
 use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
 
 /// Insert an element into a JSONB array at the specified path
@@ -82,12 +83,13 @@ pub fn insert_array_element(
         )
     };
 
+    let args = vec![
+        unsafe { DatumWithOid::new(new_element, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+        unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+    ];
     Spi::run_with_args(
         &sql,
-        Some(vec![
-            (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), new_element.into_datum()),
-            (PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk_value.into_datum()),
-        ]),
+        &args,
     ).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),
@@ -138,12 +140,13 @@ pub fn delete_array_element(
         "
     );
 
+    let args = vec![
+        unsafe { DatumWithOid::new(match_value, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+        unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+    ];
     Spi::run_with_args(
         &sql,
-        Some(vec![
-            (PgOid::BuiltIn(PgBuiltInOids::JSONBOID), match_value.into_datum()),
-            (PgOid::BuiltIn(PgBuiltInOids::INT8OID), pk_value.into_datum()),
-        ]),
+        &args,
     ).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),

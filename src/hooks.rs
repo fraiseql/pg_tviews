@@ -56,7 +56,7 @@ pub unsafe fn ensure_hook_installed() {
 /// ProcessUtility hook that intercepts CREATE TABLE tv_* and DROP TABLE tv_*
 #[pg_guard]
 #[allow(clippy::too_many_arguments)]
-unsafe extern "C" fn tview_process_utility_hook(
+unsafe extern "C-unwind" fn tview_process_utility_hook(
     pstmt: *mut pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,
     read_only_tree: bool,

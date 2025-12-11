@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 /**
 # pg_tviews - PostgreSQL Transactional Views
 
@@ -104,7 +105,7 @@ pub fn check_jsonb_ivm_available() -> bool {
         let rows = client.select(
             "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
             None,
-            None,
+            &[],
         )?;
 
         for row in rows {
@@ -178,7 +179,7 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 /// Safety: Only installs hooks when running in a proper PostgreSQL backend,
 /// not during initdb or other bootstrap contexts.
 #[pg_guard]
-extern "C" fn _PG_init() {
+extern "C-unwind" fn _PG_init() {
     // For shared_preload_libraries extensions, _PG_init is called during postmaster startup
     // This is the CORRECT time to install hooks (they apply to all backends)
     unsafe {
@@ -349,9 +350,11 @@ fn pg_tviews_infer_types(
 #[pg_extern]
 fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 1: Load queue metadata BEFORE committing (verify it exists)
+    use pgrx::datum::DatumWithOid;
+    let args = vec![unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
         "SELECT refresh_queue FROM pg_tview_pending_refreshes WHERE gid = $1",
-        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())],
+        &args,
     )?;
 
     // STEP 2: COMMIT THE PREPARED TRANSACTION FIRST
@@ -393,7 +396,7 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 4: Clean up persistent entry
     Spi::run_with_args(
         "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1",
-        Some(vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())]),
+        &[unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
     )?;
 
     Ok(())
@@ -413,7 +416,7 @@ fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
     // STEP 2: Clean up pending queue (no refresh needed - transaction aborted)
     let deleted_count = Spi::get_one_with_args::<i32>(
         "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1 RETURNING 1",
-        vec![(PgOid::BuiltIn(PgBuiltInOids::TEXTOID), gid.into_datum())],
+        &[unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
     )?;
 
     if deleted_count.is_some() {
@@ -503,7 +506,7 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
         let mut lock_result = client.select(
             &format!("SELECT pg_try_advisory_lock({})", RECOVERY_LOCK_KEY),
             None,
-            None,
+            &[],
         )?;
 
         let lock_acquired = if let Some(row) = lock_result.next() {
@@ -526,7 +529,7 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
              WHERE prepared_at < now() - interval '1 hour'
              ORDER BY prepared_at",
             None,
-            None,
+            &[],
         )?;
 
         let mut results = Vec::new();
@@ -680,11 +683,11 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 m.dependency_types, m.dependency_paths, m.array_match_keys \
          FROM pg_tview_meta m \
          WHERE {:?} = ANY(m.dependencies)",
-        base_table_oid.as_u32()
+        base_table_oid.to_u32()
     );
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, None)?;
+        let rows = client.select(&query, None, &[])?;
         let mut result = Vec::new();
 
         for row in rows {
@@ -774,7 +777,7 @@ fn find_affected_tview_rows(
     );
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, None)?;
+        let rows = client.select(&query, None, &[])?;
         let mut pks = Vec::new();
 
         for row in rows {
@@ -905,7 +908,7 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
     );
 
     let results = Spi::connect(|client| {
-        match client.select(&query, None, None) {
+        match client.select(&query, None, &[]) {
             Ok(rows) => {
                 let mut paths = Vec::new();
                 for row in rows {
@@ -949,7 +952,7 @@ fn pg_tviews_performance_stats() -> TableIterator<'static, (
     ";
 
     let results = Spi::connect(|client| {
-        match client.select(query, None, None) {
+        match client.select(query, None, &[]) {
             Ok(rows) => {
                 let mut stats = Vec::new();
                 for row in rows {

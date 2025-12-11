@@ -140,7 +140,7 @@ fn get_table_columns(table_name: &str) -> TViewResult<Vec<ColumnInfo>> {
             table_name.replace("'", "''")
         );
 
-        let results = client.select(&query, None, None)?;
+        let results = client.select(&query, None, &[])?;
 
         for row in results {
             columns.push(ColumnInfo {
@@ -183,7 +183,7 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
 fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec<BackupRow>> {
     let backup = Spi::connect(|client| {
         let query = format!("SELECT * FROM {}", table_name);
-        let results = client.select(&query, None, None)?;
+        let results = client.select(&query, None, &[])?;
 
         let mut backup = Vec::new();
 
@@ -239,7 +239,7 @@ fn infer_base_tables_from_data(table_name: &str) -> TViewResult<Vec<String>> {
     Spi::connect(|client| {
         // Sample a few rows to analyze data patterns
         let query = format!("SELECT data FROM {} LIMIT 5", table_name);
-        let results = client.select(&query, None, None)?;
+        let results = client.select(&query, None, &[])?;
 
         for row in results {
             if let Some(data) = row["data"].value::<String>()? {
@@ -422,8 +422,8 @@ fn register_tview_metadata(
             fk_columns = EXCLUDED.fk_columns,
             uuid_fk_columns = EXCLUDED.uuid_fk_columns",
         entity_name.replace("'", "''"),
-        view_oid.as_u32(),
-        table_oid.as_u32(),
+        view_oid.to_u32(),
+        table_oid.to_u32(),
         definition.replace("'", "''")
     ))?;
 

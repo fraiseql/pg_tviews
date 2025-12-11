@@ -223,21 +223,8 @@ BEGIN
         updated_at = now()
     WHERE pk_product = ANY(v_product_pks);
 
-    -- Bulk update with jsonb_ivm smart patching
-    FOREACH v_pk IN ARRAY v_product_pks LOOP
-        UPDATE tv_product tp
-        SET data = jsonb_smart_patch_nested(
-                tp.data,
-                jsonb_build_object(
-                    'current', (SELECT current_price FROM tb_product WHERE pk_product = v_pk),
-                    'discount_pct', ROUND((1 - (SELECT current_price FROM tb_product WHERE pk_product = v_pk) /
-                                          NULLIF((SELECT base_price FROM tb_product WHERE pk_product = v_pk), 0)) * 100, 2)
-                ),
-                ARRAY['price']
-            ),
-            updated_at = now()
-        WHERE pk_product = v_pk;
-    END LOOP;
+    -- pg_tviews automatically updates tv_product via triggers
+    -- No manual intervention needed - this is the whole point of pg_tviews!
 
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
@@ -253,7 +240,7 @@ BEGIN
         'Approach 1: Bulk 100 with pg_tviews + jsonb_ivm'
     );
 
-    RAISE NOTICE '[4] Full Refresh: %.3f ms (scanned % rows)', v_duration_ms, v_row_count;
+    RAISE NOTICE '[1] pg_tviews + jsonb_ivm (100 rows): %.3f ms (%.3f ms/row)', v_duration_ms, v_duration_ms / 100;
 
 END $$;
 

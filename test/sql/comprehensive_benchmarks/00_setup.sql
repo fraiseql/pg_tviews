@@ -5,7 +5,7 @@
 -- This script runs inside the benchmark database
 
 -- Enable extensions
--- CREATE EXTENSION IF NOT EXISTS pg_tviews;  -- Commented out for testing without extension
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
 -- Try to load real jsonb_ivm extension, fallback to stubs
 DO $$
