@@ -61,6 +61,66 @@ cd jsonb_ivm
 make && sudo make install
 ```
 
+### 6. Install SBOM Tools (Optional)
+
+For generating Software Bill of Materials (SBOM) in compliance with international standards:
+
+```bash
+# SBOM generation for Rust (SPDX format)
+cargo install cargo-sbom
+
+# CycloneDX generator (CycloneDX format)
+cargo install cargo-cyclonedx
+
+# Optional: Validation and scanning tools
+npm install -g @cyclonedx/cyclonedx-cli  # CycloneDX validation
+pip install spdx-tools                    # SPDX validation
+
+# Container and filesystem vulnerability scanning
+# Trivy is used in CI/CD workflows for automated scanning
+```
+
+**SBOM Standards Compliance:**
+- **SPDX 2.3**: ISO/IEC 5962:2021 (International standard)
+- **CycloneDX 1.5**: OWASP security-focused format
+- **NTIA Minimum Elements**: US Federal requirements
+- **EU Cyber Resilience Act**: European requirements
+- **PCI-DSS 4.0**: Payment card industry requirements
+
+### 7. Install Signing Tools (For Releases)
+
+For cryptographic signing of release artifacts:
+
+```bash
+# Sigstore Cosign (keyless signing)
+# macOS
+brew install cosign
+
+# Linux
+wget "https://github.com/sigstore/cosign/releases/download/v2.2.2/cosign-linux-amd64"
+sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+sudo chmod +x /usr/local/bin/cosign
+
+# GPG (traditional signing)
+# Usually pre-installed on Linux/macOS
+gpg --version
+
+# GitHub CLI (for attestations)
+# macOS
+brew install gh
+
+# Ubuntu/Debian
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+```
+
+**Signing Standards Compliance:**
+- **Sigstore**: Keyless signing with transparency logs
+- **GPG**: OpenPGP standard for maintainer signatures
+- **SLSA Level 3**: Supply chain provenance
+- **ISO 27001**: Cryptographic signing requirements
+
 ## Building
 
 ### Development Build

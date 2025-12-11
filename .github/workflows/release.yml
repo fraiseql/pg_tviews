@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write  # Required for Sigstore
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install pgrx
+        run: cargo install --locked cargo-pgrx
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Build extension
+        run: |
+          cargo pgrx package --release
+          tar czf pg_tviews-${{ github.ref_name }}.tar.gz target/release/
+
+      - name: Generate SBOM
+        run: ./scripts/generate-sbom.sh ${{ github.ref_name }}
+
+      - name: Sign with Sigstore (keyless)
+        run: |
+          # Sign release tarball
+          cosign sign-blob \
+            --bundle pg_tviews-${{ github.ref_name }}.tar.gz.sigstore \
+            pg_tviews-${{ github.ref_name }}.tar.gz
+
+          # Sign SBOM files
+          cosign sign-blob \
+            --bundle sbom/pg_tviews-${{ github.ref_name }}.spdx.json.sigstore \
+            sbom/pg_tviews-${{ github.ref_name }}.spdx.json
+
+          cosign sign-blob \
+            --bundle sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json.sigstore \
+            sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
+
+      - name: Generate provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: pg_tviews-${{ github.ref_name }}.tar.gz
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            pg_tviews-${{ github.ref_name }}.tar.gz
+            pg_tviews-${{ github.ref_name }}.tar.gz.sigstore
+            sbom/pg_tviews-${{ github.ref_name }}.spdx.json
+            sbom/pg_tviews-${{ github.ref_name }}.spdx.json.sigstore
+            sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
+            sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json.sigstore
+            sbom/pg_tviews-${{ github.ref_name }}.sbom.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

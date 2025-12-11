@@ -1,0 +1,59 @@
+name: Generate SBOM
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install SBOM tools
+        run: |
+          cargo install cargo-sbom
+          cargo install cargo-cyclonedx
+
+      - name: Install pgrx
+        run: cargo install --locked cargo-pgrx
+
+      - name: Generate SBOM
+        run: ./scripts/generate-sbom.sh
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom
+          path: sbom/*
+
+      - name: Scan SBOM for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'sbom'
+          scan-ref: 'sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json'
+          severity: 'CRITICAL,HIGH'
+          format: 'sarif'
+          output: 'sbom-trivy-results.sarif'
+
+      - name: Upload SBOM vulnerability scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'sbom-trivy-results.sarif'
+
+      - name: Attach SBOM to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            sbom/pg_tviews-*.spdx.json
+            sbom/pg_tviews-*.cyclonedx.json
+            sbom/pg_tviews-*.sbom.txt

@@ -1,0 +1,42 @@
+# Reproducible build environment for pg_tviews
+FROM rust:1.91.1-slim-bookworm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    # PostgreSQL repository setup
+    wget \
+    gnupg \
+    lsb-release \
+    && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor > /usr/share/keyrings/postgresql-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/postgresql.list \
+    && apt-get update
+
+RUN apt-get install -y \
+    # PostgreSQL 17
+    postgresql-17 \
+    postgresql-server-dev-17 \
+    # Essential build tools only
+    build-essential \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pgrx with locked version for reproducibility
+RUN cargo install --locked cargo-pgrx
+
+# Initialize pgrx with PostgreSQL 17
+RUN cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+
+# Set up reproducible build environment
+ENV SOURCE_DATE_EPOCH=1
+ENV RUSTFLAGS="-C opt-level=3 -C debuginfo=0 -C strip=symbols -C relocation-model=pic -C link-arg=-Wl,-z,relro,-z,now -C link-arg=-Wl,-z,noexecstack -C embed-bitcode=no"
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+
+# Create build workspace
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Default command for reproducible builds
+CMD ["cargo", "pgrx", "package", "--release"]
