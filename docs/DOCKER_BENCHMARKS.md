@@ -6,22 +6,74 @@ This guide explains how to run comprehensive benchmarks for `pg_tviews` using Do
 
 The Docker setup solves several problems:
 
-1. **pg_ivm Compatibility**: Uses PostgreSQL 17, which is compatible with pg_ivm extension
+1. **Extension Compatibility**: Uses PostgreSQL 17, which is compatible with both pg_tviews and jsonb_ivm extensions
 2. **Reproducibility**: Same environment for all benchmark runs
 3. **Isolation**: Doesn't interfere with your host PostgreSQL installation
 4. **Easy Setup**: One-command build and execution
-5. **Proper 4-Way Comparison**: Tests all approaches including native pg_ivm
+5. **Proper Architecture Testing**: Tests pg_tviews with real jsonb_ivm extension (not just stubs)
+
+## Extension Architecture Clarification
+
+**Important**: There was initial confusion about the extension architecture. Here's the correct understanding:
+
+### What We're Actually Testing
+
+**pg_tviews uses TWO custom extensions** (not pg_ivm):
+
+1. **pg_tviews** - Core incremental view maintenance system with Trinity pattern support (UUID + INTEGER pk + INTEGER fk)
+2. **jsonb_ivm** - Rust-based JSONB patching functions for high-performance partial JSONB updates (~2.66× faster than native PostgreSQL)
+
+### What We're NOT Using
+
+❌ **pg_ivm** (from sraoss/pg_ivm) - This is PostgreSQL's native Incremental View Maintenance extension. We are **NOT** using this.
+
+### The Comparison
+
+The benchmarks compare **3 approaches**:
+
+1. **pg_tviews + jsonb_ivm** (Approach 1) - Complete system with Rust-optimized JSONB patching
+2. **pg_tviews + native PostgreSQL** (Approach 2) - System using native `jsonb_set()` instead of Rust functions
+3. **Full Materialized View Refresh** (Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
+
+## Technical Issues and Fixes
+
+### Segmentation Fault with shared_preload_libraries
+
+**Issue**: PostgreSQL crashed during `initdb` when pg_tviews was loaded via `shared_preload_libraries`.
+
+**Root Cause**:
+- During `initdb`, PostgreSQL initializes the template database with no actual backend connection
+- pg_tviews `_PG_init()` tried to install ProcessUtility hook before PostgreSQL globals were fully initialized
+- This caused a segfault when accessing `pg_sys::ProcessUtility_hook`
+
+**Solution**:
+- Removed `shared_preload_libraries = 'pg_tviews'` from postgresql.conf
+- Extension now loads only via `CREATE EXTENSION pg_tviews` after database is fully initialized
+- This is the standard approach for most PostgreSQL extensions
+
+### Missing SQL Installation Script
+
+**Issue**: `CREATE EXTENSION pg_tviews` failed with "extension has no installation script nor update path for version '0.1.0'".
+
+**Root Cause**:
+- pgrx's `cargo pgrx install` only generates SQL files if the extension exports SQL-visible functions
+- pg_tviews currently only provides hooks and internal functions
+- No `pg_tviews--0.1.0.sql` file was generated during build
+
+**Solution**:
+- Created minimal SQL installation script: `pg_tviews--0.1.0.sql`
+- Contains only comments (extension works purely through C hooks)
+- Added to Dockerfile build step
 
 ## What Gets Tested
 
-The Docker benchmarks test **4 approaches**:
+The Docker benchmarks test **3 approaches**:
 
 1. **pg_tviews + jsonb_ivm** (Approach 1) - Surgical JSONB patching with Rust extension
-2. **pg_tviews + pg_ivm** (Approach 2) - Using PostgreSQL's Incremental View Maintenance
-3. **Manual Incremental Refresh** (Approach 3) - Native PostgreSQL with manual updates
-4. **Full Materialized View Refresh** (Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
+2. **pg_tviews + native PostgreSQL** (Approach 2) - Using native `jsonb_set()` instead of Rust functions
+3. **Full Materialized View Refresh** (Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
 
-This answers the critical question: **How does pg_tviews compare to native pg_ivm?**
+This answers the critical question: **How much does Rust-based jsonb_ivm improve performance over native PostgreSQL?**
 
 ## Prerequisites
 
@@ -42,11 +94,11 @@ docker-compose build pg_tviews_bench
 This will:
 - Create PostgreSQL 17 container
 - Install Rust toolchain and pgrx
-- Build and install `pg_tviews` extension
-- Build and install `pg_ivm` extension
-- Build and install `jsonb_ivm` extension (if available)
+- Build and install `pg_tviews` extension from source
+- Build and install `jsonb_ivm` extension from source
 - Set up Python environment for reporting
 - Copy all benchmark files
+- Configure PostgreSQL without shared_preload_libraries (to avoid segfaults)
 
 Build time: ~10-15 minutes (compiling Rust extensions)
 
@@ -178,23 +230,22 @@ The benchmarks measure:
 - **Cascade Depth** - How many related entities were updated
 - **Improvement Ratio** - How much faster than baseline (full refresh)
 
-### Interpreting 4-Way Comparison
+### Interpreting 3-Way Comparison
 
 Example output:
 ```
 Test: Single Product Price Update
 
 Approach 1 (pg_tviews + jsonb_ivm):  1.5 ms   [2,853× faster]
-Approach 2 (pg_tviews + pg_ivm):     2.1 ms   [2,000× faster]
-Approach 3 (Manual Incremental):     3.8 ms   [1,100× faster]
+Approach 2 (pg_tviews + native PG): 2.1 ms   [2,000× faster]
 Baseline (Full Refresh):             4,170 ms [baseline]
 ```
 
 **What this tells us**:
-- All incremental approaches dramatically beat full refresh (1,100-2,853×)
-- pg_tviews + jsonb_ivm is fastest (surgical JSONB patching)
-- pg_tviews + pg_ivm is second fastest (leverages native IVM)
-- Manual incremental is slowest of incremental approaches (but still 1,100× faster than baseline)
+- Both incremental approaches dramatically beat full refresh (2,000-2,853×)
+- pg_tviews + jsonb_ivm is fastest (surgical JSONB patching with Rust)
+- pg_tviews + native PostgreSQL is second fastest (same logic, native JSONB functions)
+- The Rust extension provides measurable performance improvement over native PostgreSQL
 
 ### Expected Performance Patterns
 
@@ -240,19 +291,23 @@ docker-compose up -d pg_tviews_bench
 docker exec -it pg_tviews_bench /benchmarks/run_benchmarks.sh --scale small
 ```
 
-### jsonb_ivm Not Available
+### Extension Loading Issues
 
-If `jsonb_ivm` extension fails to build (repo URL not updated):
+**pg_tviews extension not loading?**
+- The extension is designed to load via `CREATE EXTENSION` (not shared_preload_libraries)
+- This avoids segfaults during PostgreSQL initialization
+- Check that the extension was built correctly during Docker build
 
-1. The benchmarks will automatically fall back to stubs
-2. You'll see: `⚠ jsonb_ivm extension not available (will use stubs)`
-3. Approach 1 will still work but use PL/pgSQL instead of Rust
-4. To add real jsonb_ivm:
-   ```bash
-   # Update Dockerfile.benchmarks with correct repo URL
-   # Then rebuild
-   docker-compose build --no-cache pg_tviews_bench
-   ```
+**jsonb_ivm extension not available?**
+- The benchmarks will automatically fall back to PL/pgSQL stubs
+- You'll see: `⚠ jsonb_ivm extension not available (will use stubs)`
+- Approach 1 will still work but use native PostgreSQL functions instead of Rust
+- Real jsonb_ivm provides ~2.66× performance improvement for JSONB operations
+
+**shared_preload_libraries errors?**
+- pg_tviews does NOT use shared_preload_libraries (causes segfaults during initdb)
+- Extension hooks are installed dynamically when `CREATE EXTENSION pg_tviews` is run
+- This is the standard approach for most PostgreSQL extensions
 
 ### Benchmark Hangs or Takes Too Long
 

@@ -1,0 +1,7 @@
+scenario,test_name,data_scale,operation_type,rows_affected,cascade_depth,execution_time_ms,ms_per_row,notes
+ecommerce,bulk_price_update,small,full_refresh,100000,1,7974.551,0.080,Approach 4: Bulk 100 with full refresh
+ecommerce,bulk_price_update,small,bulk_100_manual_func,100,1,10566.815,105.668,Approach 3: Bulk 100 with manual function refresh
+ecommerce,bulk_price_update,small,bulk_100_manual_native_pg,100,1,10285.702,102.857,Approach 2: Bulk 100 with manual + native PG
+ecommerce,price_update,small,manual_func,1,1,1.255,1.255,Approach 3: Manual function refresh with surgical updates
+ecommerce,price_update,small,manual_native_pg,1,1,1.201,1.201,Approach 2: Manual incremental with native PostgreSQL jsonb_set
+ecommerce,price_update,small,tviews_jsonb_ivm,1,1,0.591,0.591,Approach 1: pg_tviews with jsonb_ivm smart patching

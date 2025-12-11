@@ -124,6 +124,7 @@ fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<
 struct ColumnInfo {
     name: String,
     data_type: String,
+    #[allow(dead_code)]
     is_nullable: bool,
 }
 
@@ -390,7 +391,7 @@ fn register_tview_metadata(
     entity_name: &str,
     view_name: &str,
     tview_name: &str,
-    schema: &TViewSchema,
+    _schema: &TViewSchema,
 ) -> TViewResult<()> {
     // Get OIDs
     let view_oid = Spi::get_one::<pg_sys::Oid>(&format!(
@@ -410,9 +411,10 @@ fn register_tview_metadata(
     })?;
 
     // Insert metadata
+    let definition = format!("SELECT * FROM {}", view_name);
     Spi::run(&format!(
         "INSERT INTO pg_tview_meta (entity, view_oid, table_oid, definition, fk_columns, uuid_fk_columns)
-         VALUES ('{}', {}, {}, '{}', '{}', '{}')
+         VALUES ('{}', {}, {}, '{}', '{{}}', '{{}}')
          ON CONFLICT (entity) DO UPDATE SET
             view_oid = EXCLUDED.view_oid,
             table_oid = EXCLUDED.table_oid,
@@ -422,9 +424,7 @@ fn register_tview_metadata(
         entity_name.replace("'", "''"),
         view_oid.as_u32(),
         table_oid.as_u32(),
-        format!("SELECT * FROM {}", view_name), // Placeholder definition
-        "{}", // Empty fk_columns for now
-        "{}", // Empty uuid_fk_columns for now
+        definition.replace("'", "''")
     ))?;
 
     Ok(())

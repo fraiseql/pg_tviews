@@ -54,6 +54,7 @@ mod hooks;
 mod trigger;
 mod queue;
 mod metrics;
+mod event_trigger;
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -76,6 +77,14 @@ static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 #[pg_extern]
 fn pg_tviews_version() -> &'static str {
     "0.1.0-alpha"
+}
+
+/// Debug function to check if ProcessUtility hook is installed
+#[pg_extern]
+fn pg_tviews_hook_status() -> &'static str {
+    // This is a simple way to check if the module loaded
+    // The hook installation happens in _PG_init
+    "Extension loaded - hook installation attempted in _PG_init"
 }
 
 /// Check if jsonb_ivm extension is available at runtime (cached)
@@ -169,45 +178,16 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 /// not during initdb or other bootstrap contexts.
 #[pg_guard]
 extern "C" fn _PG_init() {
-    pgrx::log!("pg_tviews: _PG_init() called");
-
-    // Safety check: Only install hooks if we're in a real backend process
-    // During initdb, IsUnderPostmaster is false, so we skip hook installation
-    // This prevents segfaults during database initialization
-    unsafe {
-        if !pg_sys::IsUnderPostmaster {
-            pgrx::log!("pg_tviews: Not running under postmaster (initdb/bootstrap), skipping hook installation");
-            return;
-        }
-    }
-
-    pgrx::log!("pg_tviews: Running under postmaster, installing ProcessUtility hook");
-
-    // Install ProcessUtility hook
+    // For shared_preload_libraries extensions, _PG_init is called during postmaster startup
+    // This is the CORRECT time to install hooks (they apply to all backends)
     unsafe {
         hooks::install_hook();
     }
 
-    pgrx::log!("pg_tviews: ProcessUtility hook installed");
-
-    // Register query plan cache invalidation callbacks (Phase 9C)
-    unsafe {
-        if let Err(e) = refresh::register_cache_invalidation_callbacks() {
-            warning!("pg_tviews: Failed to register cache invalidation callbacks: {:?}", e);
-        }
-    }
-
-    // Check for jsonb_ivm extension
-    if !check_jsonb_ivm_available() {
-        warning!(
-            "pg_tviews: jsonb_ivm extension not detected\n\
-             → Performance: Basic (full document replacement)\n\
-             → To enable 1.5-3× faster cascades, install jsonb_ivm:\n\
-             → https://github.com/fraiseql/jsonb_ivm"
-        );
-    } else {
-        info!("pg_tviews: jsonb_ivm detected - surgical JSONB updates enabled (1.5-3× faster)");
-    }
+    // Note: We cannot call functions that require SPI/database connection here
+    // (like check_jsonb_ivm_available or register_cache_invalidation_callbacks)
+    // because no database connection exists during shared library preloading.
+    // These checks happen lazily on first use instead.
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB

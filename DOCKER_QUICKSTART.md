@@ -131,4 +131,8 @@ Reduce benchmark scale or increase Docker memory limit in Docker Desktop setting
 
 ## Full Documentation
 
-See [docs/DOCKER_BENCHMARKS.md](docs/DOCKER_BENCHMARKS.md) for comprehensive documentation.
+See [docs/DOCKER_BENCHMARKS.md](docs/DOCKER_BENCHMARKS.md) for comprehensive documentation, including:
+- Extension architecture details
+- Technical issues and fixes
+- Advanced usage and performance tuning
+- CI/CD integration examples

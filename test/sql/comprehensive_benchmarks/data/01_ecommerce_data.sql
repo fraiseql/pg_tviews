@@ -15,7 +15,7 @@
 
 DO $$
 DECLARE
-    v_scale TEXT := :'data_scale';
+    v_scale TEXT := 'large';  -- Hardcoded for now: small, medium, large
     v_num_categories INTEGER;
     v_num_products INTEGER;
     v_num_reviews INTEGER;
@@ -23,6 +23,7 @@ DECLARE
     v_start TIMESTAMPTZ;
     v_end TIMESTAMPTZ;
 BEGIN
+
     -- Set scale parameters
     CASE v_scale
         WHEN 'small' THEN
@@ -113,7 +114,11 @@ BEGIN
     RAISE NOTICE 'Populating manual table...';
     PERFORM refresh_manual_product();
 
-    -- 7. Populate materialized view (Approach 3: full refresh)
+    -- 7. Populate manual function table (Approach 3: generic refresh)
+    RAISE NOTICE 'Populating manual function table...';
+    PERFORM refresh_manual_func_product();
+
+    -- 8. Populate materialized view (Approach 4: full refresh)
     RAISE NOTICE 'Populating materialized view...';
     REFRESH MATERIALIZED VIEW mv_product;
 
@@ -129,6 +134,7 @@ BEGIN
     RAISE NOTICE '  Inventory records: %', (SELECT COUNT(*) FROM tb_inventory);
     RAISE NOTICE '  TVIEW rows (pg_tviews): %', (SELECT COUNT(*) FROM tv_product);
     RAISE NOTICE '  Manual table rows: %', (SELECT COUNT(*) FROM manual_product);
+    RAISE NOTICE '  Manual function table rows: %', (SELECT COUNT(*) FROM manual_func_product);
     RAISE NOTICE '  Materialized view rows: %', (SELECT COUNT(*) FROM mv_product);
 
     RAISE NOTICE '';
@@ -142,4 +148,5 @@ ANALYZE tb_review;
 ANALYZE tb_inventory;
 ANALYZE tv_product;
 ANALYZE manual_product;
+ANALYZE manual_func_product;
 ANALYZE mv_product;

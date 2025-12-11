@@ -1,0 +1,7 @@
+id,run_timestamp,scenario,test_name,data_scale,operation_type,rows_affected,cascade_depth,execution_time_ms,memory_mb,cache_hit_rate,notes
+1,2025-12-11 06:40:27.140532+01,ecommerce,price_update,small,tviews_jsonb_ivm,1,1,0.591,,,Approach 1: pg_tviews with jsonb_ivm smart patching
+2,2025-12-11 06:40:27.14489+01,ecommerce,price_update,small,manual_native_pg,1,1,1.201,,,Approach 2: Manual incremental with native PostgreSQL jsonb_set
+3,2025-12-11 06:40:27.146894+01,ecommerce,price_update,small,manual_func,1,1,1.255,,,Approach 3: Manual function refresh with surgical updates
+6,2025-12-11 06:40:44.114223+01,ecommerce,bulk_price_update,small,bulk_100_manual_native_pg,100,1,10285.702,,,Approach 2: Bulk 100 with manual + native PG
+7,2025-12-11 06:40:54.491584+01,ecommerce,bulk_price_update,small,bulk_100_manual_func,100,1,10566.815,,,Approach 3: Bulk 100 with manual function refresh
+8,2025-12-11 06:41:05.154659+01,ecommerce,bulk_price_update,small,full_refresh,100000,1,7974.551,,,Approach 4: Bulk 100 with full refresh

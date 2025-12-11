@@ -20,13 +20,17 @@ pub fn create_tview(
     tview_name: &str,
     select_sql: &str,
 ) -> TViewResult<()> {
+    info!("create_tview called: tview_name={}, select_sql={}", tview_name, select_sql);
+
     // Step 1: Check if TVIEW already exists
+    info!("Step 1: Checking if TVIEW already exists");
     let exists = tview_exists(tview_name)?;
     if exists {
         return Err(TViewError::TViewAlreadyExists {
             name: tview_name.to_string(),
         });
     }
+    info!("TVIEW does not exist, proceeding");
 
     // Step 1.5: Extract entity name from tview_name
     // Support both "tv_entity" and just "entity" formats
@@ -35,10 +39,13 @@ pub fn create_tview(
     } else {
         tview_name
     };
+    info!("Entity name: {}", entity_name);
 
     // Step 2: Infer schema from SELECT
     // If SELECT doesn't have TVIEW format (pk_<entity>, id, data), create a prepared view first
+    info!("Step 2: Inferring schema from SELECT");
     let schema = infer_schema(select_sql)?;
+    info!("Schema inferred successfully");
 
     // Check if we need to transform the SELECT to TVIEW format
     let (final_select_sql, final_schema) = if schema.entity_name.is_none() {
@@ -64,14 +71,17 @@ pub fn create_tview(
     create_materialized_table(tview_name, &final_schema)?;
 
     // Step 5: Populate initial data
+    info!("Step 5: Populating initial data");
     populate_initial_data(tview_name, &view_name, &final_schema)?;
+    info!("Initial data populated");
 
     // Step 6: Find base table dependencies
+    info!("Step 6: Finding base table dependencies");
     let dep_graph = crate::dependency::find_base_tables(&view_name)?;
-
     info!("Found {} base table dependencies for {}", dep_graph.base_tables.len(), tview_name);
 
     // Step 7: Register metadata (with dependencies)
+    info!("Step 7: Registering metadata");
     register_metadata(
         entity_name,
         &view_name,
@@ -80,8 +90,10 @@ pub fn create_tview(
         &final_schema,
         &dep_graph.base_tables,
     )?;
+    info!("Metadata registered");
 
     // Step 8: Install triggers on base tables
+    info!("Step 8: Installing triggers");
     if !dep_graph.base_tables.is_empty() {
         crate::dependency::install_triggers(&dep_graph.base_tables, entity_name)?;
         info!("Installed triggers on {} base tables", dep_graph.base_tables.len());
@@ -90,6 +102,7 @@ pub fn create_tview(
     }
 
     // Invalidate caches since new TVIEW was created
+    info!("Step 9: Invalidating caches");
     crate::queue::cache::invalidate_all_caches();
 
     info!("TVIEW {} created successfully", tview_name);
@@ -119,10 +132,25 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
         view_name, select_sql
     );
 
+    info!("Creating backing view with SQL: {}", create_view_sql);
     Spi::run(&create_view_sql).map_err(|e| TViewError::SpiError {
-        query: create_view_sql,
+        query: create_view_sql.clone(),
         error: e.to_string(),
     })?;
+
+    // Verify the view was created
+    let check_sql = format!("SELECT 1 FROM pg_class WHERE relname = '{}' AND relkind = 'v'", view_name);
+    let exists = Spi::get_one::<i32>(&check_sql).map_err(|e| TViewError::SpiError {
+        query: check_sql,
+        error: e.to_string(),
+    })?.is_some();
+
+    if !exists {
+        return Err(TViewError::CatalogError {
+            operation: format!("Create view {}", view_name),
+            pg_error: "View was not created".to_string(),
+        });
+    }
 
     info!("Created backing view: {}", view_name);
     Ok(())
@@ -241,35 +269,45 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
 /// Populate the materialized table with initial data from the backing view
 fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema) -> TViewResult<()> {
     // Build column list from schema (excluding created_at/updated_at which have defaults)
-    let mut columns = Vec::new();
+    let mut select_columns = Vec::new();
+    let mut insert_columns = Vec::new();
 
     if let Some(pk) = &schema.pk_column {
-        columns.push(pk.clone());
+        insert_columns.push(pk.clone());
+        select_columns.push(pk.clone());
     }
     if let Some(id) = &schema.id_column {
-        columns.push(id.clone());
+        insert_columns.push(id.clone());
+        // Cast id to UUID to ensure compatibility
+        select_columns.push(format!("{}::uuid", id));
     }
     if let Some(identifier) = &schema.identifier_column {
-        columns.push(identifier.clone());
+        insert_columns.push(identifier.clone());
+        select_columns.push(identifier.clone());
     }
     if let Some(data) = &schema.data_column {
-        columns.push(data.clone());
+        insert_columns.push(data.clone());
+        select_columns.push(data.clone());
     }
     for fk in &schema.fk_columns {
-        columns.push(fk.clone());
+        insert_columns.push(fk.clone());
+        select_columns.push(fk.clone());
     }
     for uuid_fk in &schema.uuid_fk_columns {
-        columns.push(uuid_fk.clone());
+        insert_columns.push(uuid_fk.clone());
+        select_columns.push(uuid_fk.clone());
     }
     for col in &schema.additional_columns {
-        columns.push(col.clone());
+        insert_columns.push(col.clone());
+        select_columns.push(col.clone());
     }
 
-    let column_list = columns.join(", ");
+    let insert_column_list = insert_columns.join(", ");
+    let select_column_list = select_columns.join(", ");
 
     let insert_sql = format!(
         "INSERT INTO public.{} ({}) SELECT {} FROM public.{}",
-        tview_name, column_list, column_list, view_name
+        tview_name, insert_column_list, select_column_list, view_name
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {

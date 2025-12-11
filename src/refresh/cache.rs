@@ -19,6 +19,7 @@ static PREPARED_STATEMENTS: Lazy<std::sync::Mutex<HashMap<String, String>>> =
 ///
 /// This ensures prepared statements are cleared when schema changes occur.
 /// Must be called from _PG_init().
+#[allow(dead_code)]
 pub unsafe fn register_cache_invalidation_callbacks() -> TViewResult<()> {
     // Cache invalidation callbacks not available in this pgrx version
     // Prepared statements will be managed manually
@@ -117,6 +118,7 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
 /// Clear all cached prepared statements
 ///
 /// Called during cache invalidation when schema changes occur.
+#[allow(dead_code)]
 pub fn clear_prepared_statement_cache() {
     let mut cache = PREPARED_STATEMENTS.lock().unwrap();
     if !cache.is_empty() {

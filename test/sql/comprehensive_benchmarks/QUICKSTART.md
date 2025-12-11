@@ -23,9 +23,10 @@ Complete benchmark for product catalog with:
 
 ### 3. **Test Coverage - Three-Way Comparison**
 Each scenario tests **three approaches**:
-- ✅ **Approach 1**: pg_tviews + jsonb_ivm (surgical JSONB patching)
-- ✅ **Approach 2**: Manual incremental with native PostgreSQL (`jsonb_set`)
-- ✅ **Approach 3**: Traditional full `REFRESH MATERIALIZED VIEW`
+- ✅ **Approach 1**: pg_tviews + jsonb_ivm (automatic surgical JSONB patching)
+- ✅ **Approach 2**: pg_tviews + native PG (automatic `jsonb_set` updates)
+- ✅ **Approach 3**: Manual function refresh (explicit calls with unlimited cascades)
+- ✅ **Approach 4**: Traditional full `REFRESH MATERIALIZED VIEW`
 
 **Test operations**:
 - Single row updates (price changes, inventory updates)
@@ -116,22 +117,23 @@ python3 generate_report.py
    - Incremental should be 0.1-5ms/row
    - Full refresh is constant (scans entire table)
 
-### Expected Performance Patterns (Three-Way Comparison)
+### Expected Performance Patterns (Four-Way Comparison)
 
 Based on architecture:
 
-| Operation | Table Size | Approach 1 (pg_tviews) | Approach 2 (Manual) | Approach 3 (Full) | 1 vs 3 |
-|-----------|------------|------------------------|---------------------|-------------------|--------|
-| Single row | 1K | 1-2ms | 2-4ms | 50-200ms | 50-100× |
-| Single row | 100K | 2-4ms | 4-8ms | 2000-8000ms | 500-2000× |
-| Single row | 1M | 3-6ms | 6-12ms | 20000-50000ms | 3000-10000× |
-| Bulk 100 | 1K | 10-20ms | 20-40ms | 100-400ms | 5-20× |
-| Bulk 100 | 100K | 20-40ms | 40-80ms | 2500-10000ms | 100-400× |
+| Operation | Table Size | Approach 1 (pg_tviews + ivm) | Approach 2 (pg_tviews + native) | Approach 3 (Manual Function) | Approach 4 (Full Refresh) | 1 vs 4 |
+|-----------|------------|-----------------------------|---------------------------------|-----------------------------|---------------------------|--------|
+| Single row | 1K | 1-2ms | 1.5-3ms | 2.5-4ms | 50-200ms | 50-100× |
+| Single row | 100K | 2-4ms | 3-6ms | 4-8ms | 2000-8000ms | 500-2000× |
+| Single row | 1M | 3-6ms | 4-8ms | 6-12ms | 20000-50000ms | 3000-10000× |
+| Bulk 100 | 1K | 10-20ms | 15-30ms | 20-40ms | 100-400ms | 5-20× |
+| Bulk 100 | 100K | 20-40ms | 30-60ms | 40-80ms | 2500-10000ms | 100-400× |
 
 **Key Insights**:
-- **pg_tviews vs Manual**: 2× faster (surgical patching optimization)
-- **pg_tviews vs Full**: 50-10000× faster depending on scale
-- **Manual vs Full**: Still 25-5000× faster (incremental wins)
+- **Approach 1 vs 2**: 1.5-2× faster (jsonb_ivm optimization)
+- **Approach 2 vs 3**: 1.3-1.8× faster (automatic vs manual triggers)
+- **Approach 3 vs 4**: 25-5000× faster (incremental vs full refresh)
+- **Approach 1 vs 4**: 50-10000× faster (best vs worst)
 - **Improvement grows with table size**: Full refresh must scan ALL rows
 
 ## Viewing Results in Database

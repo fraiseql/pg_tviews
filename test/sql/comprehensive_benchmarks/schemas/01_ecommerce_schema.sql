@@ -176,12 +176,28 @@ CREATE INDEX idx_manual_product_data ON manual_product USING GIN (data);
 CREATE INDEX idx_manual_product_category ON manual_product(fk_category);
 CREATE INDEX idx_manual_product_id ON manual_product((data->>'id'));
 
+-- Manual Function table for comparison
+-- Approach 3: Generic refresh function with unlimited cascade support
+CREATE TABLE manual_func_product (
+    pk_product INTEGER PRIMARY KEY,
+    fk_category INTEGER NOT NULL,
+    data JSONB NOT NULL,
+    version INTEGER DEFAULT 1,  -- For optimistic concurrency control
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- GIN index for JSONB queries
+CREATE INDEX idx_manual_func_product_data ON manual_func_product USING GIN (data);
+CREATE INDEX idx_manual_func_product_category ON manual_func_product(fk_category);
+CREATE INDEX idx_manual_func_product_id ON manual_func_product((data->>'id'));
+CREATE INDEX idx_manual_func_product_version ON manual_func_product(version);
+
 -- Note: pg_tview_meta insertion commented out for benchmark simulation
 -- In production, pg_tviews would automatically populate this metadata
 -- INSERT INTO pg_tview_meta (...) VALUES (...)
 
 -- Traditional materialized view for comparison
--- Approach 3: Full refresh (traditional approach)
+-- Approach 4: Full refresh (traditional approach)
 CREATE MATERIALIZED VIEW mv_product AS
 SELECT * FROM v_product;
 
@@ -205,6 +221,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION refresh_manual_func_product() RETURNS void AS $$
+BEGIN
+    TRUNCATE manual_func_product;
+    INSERT INTO manual_func_product (pk_product, fk_category, data)
+    SELECT pk_product, fk_category, data FROM v_product;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION product_counts() RETURNS TABLE(
     total_products BIGINT,
     active_products BIGINT,
@@ -224,7 +248,8 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON TABLE tv_product IS 'Approach 1: pg_tviews with jsonb_ivm optimization';
 COMMENT ON TABLE manual_product IS 'Approach 2: Manual incremental updates with native PostgreSQL';
-COMMENT ON MATERIALIZED VIEW mv_product IS 'Approach 3: Traditional full REFRESH MATERIALIZED VIEW';
+COMMENT ON TABLE manual_func_product IS 'Approach 3: Generic refresh function with unlimited cascade support';
+COMMENT ON MATERIALIZED VIEW mv_product IS 'Approach 4: Traditional full REFRESH MATERIALIZED VIEW';
 COMMENT ON TABLE tb_category IS 'Command side: Product categories';
 COMMENT ON TABLE tb_product IS 'Command side: Product catalog';
 COMMENT ON TABLE tb_review IS 'Command side: Product reviews';

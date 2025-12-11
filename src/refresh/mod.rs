@@ -15,4 +15,4 @@ pub use main::refresh_pk;
 // Re-export bulk functions
 pub use bulk::refresh_bulk;
 // Re-export cache functions
-pub use cache::{register_cache_invalidation_callbacks, clear_prepared_statement_cache};
+// pub use cache::{register_cache_invalidation_callbacks, clear_prepared_statement_cache};

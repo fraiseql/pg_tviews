@@ -93,6 +93,7 @@ pub fn reset_scheduled_flag() {
 }
 
 /// Clear queue and reset scheduled flag (public API for DISCARD ALL handling)
+#[allow(dead_code)]
 pub fn clear_queue_and_reset() {
     clear_queue();
     reset_scheduled_flag();

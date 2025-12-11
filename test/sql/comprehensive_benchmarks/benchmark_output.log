@@ -1,0 +1,12 @@
+[0;34m=========================================[0m
+[0;34mpg_tviews Comprehensive Benchmark Suite[0m
+[0;34m=========================================[0m
+
+Started at: Thu Dec 11 06:38:56 CET 2025
+Results will be saved to: results/benchmark_run_20251211_063856.log
+
+[1;33mChecking PostgreSQL connection...[0m
+[0;32m✓ PostgreSQL connection OK[0m
+
+[1;33mSetting up benchmark database...[0m
+  Database pg_tviews_benchmark already exists

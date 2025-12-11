@@ -191,8 +191,7 @@ unsafe extern "C" fn tview_process_utility_hook(
         } else {
             format!("{:?}", panic_info)
         };
-        error!("PANIC in ProcessUtility hook: {}", panic_msg);
-        error!("This is a bug in pg_tviews - please report it!");
+        error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
     }
 }
 
@@ -278,14 +277,13 @@ unsafe fn handle_create_table_as(
         Ok(()) => {
             info!("TVIEW syntax valid, letting PostgreSQL create table");
             info!("Event trigger will convert to TVIEW afterwards");
-            return false; // Pass through - let PostgreSQL create it
+            false // Pass through - let PostgreSQL create it
         }
         Err(e) => {
             // Validation failed - log error but let table creation proceed
             // Event trigger will detect invalid structure and log warnings
-            error!("Invalid TVIEW syntax for '{}': {}", table_name, e);
-            error!("TVIEW must have: pk_<entity>, id (UUID), data (JSONB) columns");
-            return false; // Still let PostgreSQL create it, event trigger will handle
+            warning!("Invalid TVIEW syntax for '{}': {} - TVIEW must have: pk_<entity>, id (UUID), data (JSONB) columns", table_name, e);
+            false // Still let PostgreSQL create it, event trigger will handle
         }
     }
 }

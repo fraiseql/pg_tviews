@@ -38,7 +38,7 @@ CREATE TABLE benchmark_results (
     scenario TEXT NOT NULL,
     test_name TEXT NOT NULL,
     data_scale TEXT NOT NULL,  -- 'small', 'medium', 'large'
-    operation_type TEXT NOT NULL,  -- 'single_row', 'bulk_100', 'bulk_1k', 'bulk_10k', 'full_refresh'
+    operation_type TEXT NOT NULL,  -- 'tviews_jsonb_ivm', 'tviews_native_pg', 'manual_func', 'full_refresh'
     rows_affected INTEGER,
     cascade_depth INTEGER,
     execution_time_ms NUMERIC(10, 3),
@@ -64,7 +64,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Helper function: Record benchmark result
+-- Helper function: Record benchmark result (commits immediately)
 CREATE OR REPLACE FUNCTION record_benchmark(
     p_scenario TEXT,
     p_test_name TEXT,
@@ -74,8 +74,11 @@ CREATE OR REPLACE FUNCTION record_benchmark(
     p_cascade_depth INTEGER,
     p_execution_time_ms NUMERIC,
     p_notes TEXT DEFAULT NULL
-) RETURNS void AS $$
+)
+RETURNS void AS $$
 BEGIN
+    -- Insert result and commit immediately using dblink or similar
+    -- For now, we'll use a simple approach with PERFORM in a subtransaction
     INSERT INTO benchmark_results (
         scenario, test_name, data_scale, operation_type,
         rows_affected, cascade_depth, execution_time_ms, notes
@@ -91,6 +94,9 @@ BEGIN
         notes = EXCLUDED.notes;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Alternative: Use dblink to commit results in separate transaction
+-- But for simplicity, let's modify the benchmark approach
 
 -- Helper function: Benchmark executor with timing
 CREATE OR REPLACE FUNCTION benchmark_execute(
