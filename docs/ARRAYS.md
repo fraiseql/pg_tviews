@@ -18,7 +18,7 @@ Array handling in pg_tviews includes:
 
 ```sql
 -- TVIEW with array columns
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.id,
     p.title,

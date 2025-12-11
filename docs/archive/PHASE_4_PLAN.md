@@ -156,8 +156,8 @@ BEGIN;
     INSERT INTO tb_post VALUES (1, gen_random_uuid(), 'Original');
 
     CREATE TVIEW tv_post AS
-    SELECT pk_post, id, jsonb_build_object('id', id, 'title', title) AS data
-    FROM tb_post;
+    SELECT p.pk_post, p.id, jsonb_build_object('id', p.id, 'title', p.title) AS data
+    FROM tb_post p;
 
     -- Verify initial
     SELECT data->>'title' FROM tv_post; -- 'Original'
@@ -287,8 +287,8 @@ BEGIN;
     INSERT INTO tb_post VALUES (11, gen_random_uuid(), 1, 'Post 2');
 
     CREATE TVIEW tv_user AS
-    SELECT pk_user, id, jsonb_build_object('id', id, 'name', name) AS data
-    FROM tb_user;
+    SELECT u.pk_user, u.id, jsonb_build_object('id', u.id, 'name', u.name) AS data
+    FROM tb_user u;
 
     CREATE TVIEW tv_post AS
     SELECT p.pk_post, p.id, p.fk_user, u.id AS user_id,

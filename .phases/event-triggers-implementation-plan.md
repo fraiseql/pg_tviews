@@ -420,7 +420,7 @@ INSERT INTO tb_test VALUES (1, 'Alice'), (2, 'Bob');
 
 -- Try DDL syntax (event trigger fires but doesn't convert yet)
 CREATE TABLE tv_test AS
-SELECT id as pk_test, id, jsonb_build_object('id', id, 'name', name) as data
+SELECT tb_test.pk_test, tb_test.id, jsonb_build_object('id', tb_test.id, 'name', tb_test.name) as data
 FROM tb_test;
 
 -- Check logs - should see "pg_tviews: Event trigger fired"
@@ -650,8 +650,8 @@ INSERT INTO tb_convert VALUES (1, 'Test1'), (2, 'Test2');
 
 -- This should now fully convert to TVIEW
 CREATE TABLE tv_convert AS
-SELECT id as pk_convert, gen_random_uuid() as id,
-       jsonb_build_object('id', id, 'name', name) as data
+SELECT tb_convert.pk_convert, gen_random_uuid() as id,
+       jsonb_build_object('id', gen_random_uuid(), 'name', tb_convert.name) as data
 FROM tb_convert;
 
 -- Verify TVIEW structure
@@ -940,9 +940,9 @@ INSERT INTO tb_basic VALUES (1, 'Alice', 100), (2, 'Bob', 200);
 
 -- Test 1: CREATE TABLE AS with TVIEW syntax
 CREATE TABLE tv_basic AS
-SELECT id as pk_basic,
+SELECT tb_basic.pk_basic,
        gen_random_uuid() as id,
-       jsonb_build_object('id', id, 'name', name, 'value', value) as data
+       jsonb_build_object('id', gen_random_uuid(), 'name', tb_basic.name, 'value', tb_basic.value) as data
 FROM tb_basic;
 
 -- Verify metadata

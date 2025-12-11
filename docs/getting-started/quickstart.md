@@ -92,7 +92,7 @@ VALUES
 ### Create a TVIEW
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- Primary key for lineage (required)
     p.id,                  -- GraphQL ID
@@ -116,13 +116,15 @@ FROM tb_post p
 JOIN tb_user u ON p.fk_user = u.pk_user;
 ```
 
+> **Alternative Syntax**: For programmatic creation, use `pg_tviews_create()`. See [Syntax Comparison](syntax-comparison.md) for details.
+
 ## 4. Test Automatic Updates
 
 ### Query Your TVIEW
 
 ```sql
 -- See your data
-SELECT pk_post, id, identifier, data FROM tv_posts;
+SELECT pk_post, id, identifier, data FROM tv_post;
 ```
 
 ### Add New Data
@@ -143,10 +145,10 @@ COMMIT;
 ### Verify Automatic Update
 
 ```sql
--- Check that tv_posts was automatically updated
+-- Check that tv_post was automatically updated
 SELECT pk_post, id, identifier, data->>'title' as title,
        data->'author'->>'name' as author_name
-FROM tv_posts
+FROM tv_post
 ORDER BY pk_post;
 ```
 
@@ -176,15 +178,15 @@ Your TVIEW is now ready for FraiseQL's GraphQL Cascade:
 
 ```sql
 -- Example GraphQL query pattern
-SELECT data FROM tv_posts
+SELECT data FROM tv_post
 WHERE data->>'identifier' = 'hello-world';
 
 -- UUID-based filtering (FraiseQL style)
-SELECT data FROM tv_posts
+SELECT data FROM tv_post
 WHERE id = '550e8400-e29b-41d4-a716-446655440000';
 
 -- Author filtering using UUID FK
-SELECT data FROM tv_posts
+SELECT data FROM tv_post
 WHERE user_id = '550e8400-e29b-41d4-a716-446655440001';
 ```
 

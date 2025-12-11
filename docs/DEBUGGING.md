@@ -245,24 +245,28 @@ SELECT pg_tviews_analyze_select('SELECT ... FROM table1 JOIN table2 ...');
 
 ### Issue: TVIEW Creation Fails
 
-**Symptoms**: `CREATE TVIEW` returns error
+**Symptoms**: `CREATE TABLE tv_*` returns error or doesn't create TVIEW
 
 **Debug Steps**:
 1. Check SQL syntax: `EXPLAIN SELECT ...;`
 2. Verify required columns: `pk_<entity>`, `data`
 3. Check table permissions: `\dp base_table`
 4. Validate dependencies: `SELECT pg_tviews_analyze_select('SELECT ...');`
+5. Check if hook is installed: Verify extension is loaded
 
 **Common Solutions**:
 ```sql
 -- Fix missing primary key
-CREATE TVIEW tv_posts AS
-SELECT id as pk_post, jsonb_build_object('title', title) as data
-FROM posts;
+CREATE TABLE tv_post AS
+SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'title', tb_post.title) as data
+FROM tb_post;
 
 -- Fix permissions
-GRANT SELECT ON posts TO pg_tviews_user;
-GRANT ALL ON tv_posts TO pg_tviews_user;
+GRANT SELECT ON tb_post TO pg_tviews_user;
+GRANT ALL ON tv_post TO pg_tviews_user;
+
+-- Alternative: Use function approach
+SELECT pg_tviews_create('tv_post', 'SELECT tb_post.pk_post, tb_post.id, jsonb_build_object(...) as data FROM tb_post');
 ```
 
 ### Issue: Automatic Refresh Not Working
@@ -301,8 +305,8 @@ FROM stuck_items;
 CREATE EXTENSION jsonb_ivm;
 
 -- Add indexes on JSONB fields
-CREATE INDEX idx_tv_posts_title ON tv_posts ((data->>'title'));
-CREATE INDEX idx_tv_posts_author ON tv_posts ((data->'author'->>'id'));
+CREATE INDEX idx_tv_post_title ON tv_post ((data->>'title'));
+CREATE INDEX idx_tv_post_author ON tv_post ((data->'author'->>'id'));
 
 -- Increase memory settings
 SET work_mem = '128MB';

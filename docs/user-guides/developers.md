@@ -320,13 +320,13 @@ app.post('/posts', async (req, res) => {
 **After**: Automatic with pg_tviews
 ```sql
 -- One-time setup
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_post AS SELECT ...;
 
 -- Application code unchanged, automatic refresh
 app.post('/posts', async (req, res) => {
   await db.query('INSERT INTO tb_post ...'); // Via FraiseQL
   // TVIEW automatically updated!
-  res.json(await db.query('SELECT data FROM tv_posts WHERE id = $1', [id]));
+  res.json(await db.query('SELECT data FROM tv_post WHERE id = $1', [id]));
 });
 ```
 
@@ -351,7 +351,7 @@ const result = {
 **After**: Pre-computed with pg_tviews
 ```javascript
 // Single query, always fresh
-const result = await db.query('SELECT data FROM tv_posts WHERE id = $1');
+const result = await db.query('SELECT data FROM tv_post WHERE id = $1');
 // Data automatically includes nested relationships
 ```
 
@@ -364,8 +364,8 @@ Test TVIEW definitions and refresh behavior:
 ```sql
 -- Test TVIEW creation
 CREATE TVIEW tv_test AS
-SELECT pk_post, id, jsonb_build_object('id', id, 'title', title) as data
-FROM tb_post WHERE pk_post < 100; -- Limited test data
+SELECT p.pk_post, p.id, jsonb_build_object('id', p.id, 'title', p.title) as data
+FROM tb_post p WHERE p.pk_post < 100; -- Limited test data
 
 -- Verify structure
 SELECT pk_post, id, jsonb_object_keys(data) as fields FROM tv_test;

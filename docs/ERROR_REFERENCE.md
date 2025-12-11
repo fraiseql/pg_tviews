@@ -55,9 +55,9 @@ SELECT pg_tviews_cascade('unknown_entity'::regclass::oid, 123);
 
 **Example**:
 ```sql
-SELECT pg_tviews_create('posts', 'SELECT id as pk_post, data FROM posts_source');
+SELECT pg_tviews_create('tv_post', 'SELECT tb_post.pk_post, tb_post.id, jsonb_build_object(''id'', tb_post.id, ''data'', tb_post.data) as data FROM tb_post');
 -- First call succeeds
-SELECT pg_tviews_create('posts', 'SELECT id as pk_post, data FROM posts_source');
+SELECT pg_tviews_create('tv_post', 'SELECT tb_post.pk_post, tb_post.id, jsonb_build_object(''id'', tb_post.id, ''data'', tb_post.data) as data FROM tb_post');
 -- ERROR: TVIEW 'posts' already exists
 ```
 
@@ -101,9 +101,9 @@ SELECT pg_tviews_create('posts', 'SELECT ...');  -- Missing tv_ prefix
 
 **Example**:
 ```sql
--- tv_posts depends on users, tv_users depends on posts
-CREATE TVIEW tv_posts AS SELECT p.id as pk_post, u.name, ... FROM posts p JOIN users u ON p.user_id = u.id;
-CREATE TVIEW tv_users AS SELECT u.id as pk_user, p.title, ... FROM users u JOIN posts p ON u.id = p.user_id;
+-- tv_post depends on users, tv_user depends on posts
+CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'userName', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
+CREATE TABLE tv_user AS SELECT tb_user.pk_user, tb_user.id, jsonb_build_object('id', tb_user.id, 'postTitle', tb_post.title) as data FROM tb_user JOIN tb_post ON tb_user.pk_user = tb_post.fk_user;
 -- ERROR: Circular dependency detected: posts → users → posts
 ```
 
@@ -147,15 +147,15 @@ CREATE TVIEW tv_users AS SELECT u.id as pk_user, p.title, ... FROM users u JOIN 
 
 **Example**:
 ```sql
-CREATE TVIEW tv_posts AS SELECT p.id as pk_post, u.name FROM posts p JOIN users u ON p.user_id = u.id;
+CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'userName', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
 -- Later: DROP TABLE users;
--- Then refresh: ERROR: Failed to resolve dependencies for 'tv_posts': table 'users' does not exist
+-- Then refresh: ERROR: Failed to resolve dependencies for 'tv_post': table 'users' does not exist
 ```
 
 **Resolution**:
 1. Verify all referenced tables exist
 2. Check foreign key constraints are intact
-3. Recreate TVIEW after schema changes: `DROP TVIEW tv_posts; CREATE TVIEW tv_posts AS ...;`
+3. Recreate TVIEW after schema changes: `DROP TABLE tv_post; CREATE TABLE tv_post AS ...;`
 
 ## SQL Parsing Errors
 
@@ -194,7 +194,7 @@ SELECT pg_tviews_create('posts', 'SELECT id FROM posts');  -- Missing pk_post an
 
 **Example**:
 ```sql
-SELECT pg_tviews_create('posts', 'SELECT id, title FROM posts');
+SELECT pg_tviews_create('tv_post', 'SELECT tb_post.id, tb_post.title FROM tb_post');
 -- ERROR: Required column 'pk_post' missing in SELECT statement
 ```
 
@@ -357,7 +357,7 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 **Example**:
 ```sql
 -- During automatic refresh
--- ERROR: Failed to refresh TVIEW 'posts' row 123: permission denied for table tv_posts
+-- ERROR: Failed to refresh TVIEW 'post' row 123: permission denied for table tv_post
 ```
 
 **Resolution**:
@@ -465,8 +465,8 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 
 **Example**:
 ```sql
--- ERROR: SPI query failed: permission denied for table tv_posts
--- Query: UPDATE tv_posts SET data = $1 WHERE pk_post = $2
+-- ERROR: SPI query failed: permission denied for table tv_post
+-- Query: UPDATE tv_post SET data = $1 WHERE pk_post = $2
 ```
 
 **Resolution**:
@@ -615,13 +615,13 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     -- Attempt operation
-    PERFORM pg_tviews_create('tv_posts', 'SELECT ...');
+    PERFORM pg_tviews_create('tv_post', 'SELECT ...');
 EXCEPTION
     WHEN sqlstate '42710' THEN  -- Duplicate object
         RAISE NOTICE 'TVIEW already exists, skipping';
     WHEN sqlstate 'P0001' THEN  -- TVIEW metadata not found
         RAISE NOTICE 'TVIEW missing, recreating';
-        PERFORM pg_tviews_create('tv_posts', 'SELECT ...');
+        PERFORM pg_tviews_create('tv_post', 'SELECT ...');
     WHEN OTHERS THEN
         RAISE;  -- Re-raise unexpected errors
 END;

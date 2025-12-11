@@ -239,15 +239,15 @@ FROM tb_post p
 JOIN tb_user u ON p.fk_user = u.pk_user;
 
 -- Use it like a table
-SELECT data FROM tv_posts WHERE data->>'title' ILIKE '%rust%';
+SELECT data FROM tv_post WHERE data->>'title' ILIKE '%rust%';
 
 -- It updates automatically!
 INSERT INTO tb_user (identifier, name, email) VALUES ('alice', 'Alice', 'alice@example.com');
 INSERT INTO tb_post (identifier, title, content, fk_user) VALUES
     ('learning-rust', 'Learning Rust', 'Rust is amazing!', 1);
 
--- tv_posts is now automatically up-to-date!
-SELECT data FROM tv_posts;
+-- tv_post is now automatically up-to-date!
+SELECT data FROM tv_post;
 ```
 
 ### Enable Advanced Features
@@ -352,6 +352,7 @@ SELECT * FROM pg_tviews_queue_realtime;
 ### Reference
 - **[API Reference](docs/reference/api.md)** - Complete function reference
 - **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TVIEW syntax
+- **[Syntax Comparison](docs/getting-started/syntax-comparison.md)** - TVIEW creation methods
 - **[Error Reference](docs/reference/errors.md)** - Error types and solutions
 - **[Configuration](docs/reference/configuration.md)** - Configuration options
 

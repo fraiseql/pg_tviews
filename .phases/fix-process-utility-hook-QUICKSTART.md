@@ -48,7 +48,7 @@ INSERT INTO tb_test VALUES (1, 'Alice'), (2, 'Bob');
 
 -- Test DDL syntax (should now work!)
 CREATE TABLE tv_test AS
-SELECT id as pk_test, id, jsonb_build_object('id', id, 'name', name) as data
+SELECT tb_test.pk_test, tb_test.id, jsonb_build_object('id', tb_test.id, 'name', tb_test.name) as data
 FROM tb_test;
 
 -- Verify TVIEW was created

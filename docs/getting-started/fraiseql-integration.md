@@ -62,7 +62,7 @@ CREATE TABLE tb_post (
 ### Basic TVIEW
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- Required: lineage root
     p.id,                  -- GraphQL ID
@@ -78,7 +78,7 @@ FROM tb_post p;
 ### Full Trinity TVIEW
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- lineage root
     p.id,                  -- GraphQL ID
@@ -111,7 +111,7 @@ pg_tviews automatically refreshes TVIEWs during transactions:
 INSERT INTO tb_post (id, title, content, fk_user)
 VALUES ('uuid-here', 'New Post', 'Content', 1);
 
--- pg_tviews automatically updates tv_posts within the same transaction
+-- pg_tviews automatically updates tv_post within the same transaction
 -- GraphQL Cascade immediately sees fresh data
 COMMIT;
 ```
@@ -120,13 +120,9 @@ COMMIT;
 
 ```sql
 -- UUID-based single post query
-SELECT data FROM tv_posts WHERE id = 'uuid-here';
-
--- SEO-friendly slug query
-SELECT data FROM tv_posts WHERE data->>'identifier' = 'my-post-slug';
-
--- Author filtering using UUID FK
-SELECT data FROM tv_posts WHERE user_id = 'author-uuid';
+SELECT data FROM tv_post WHERE id = 'uuid-here';
+SELECT data FROM tv_post WHERE data->>'identifier' = 'my-post-slug';
+SELECT data FROM tv_post WHERE user_id = 'author-uuid';
 ```
 
 ## Cascade Propagation
@@ -140,7 +136,7 @@ pg_tviews automatically handles cascading updates:
 UPDATE tb_user SET name = 'New Name' WHERE pk_user = 1;
 
 -- pg_tviews cascades to update all their posts:
--- tv_posts: Updates author.name in all related posts
+-- tv_post: Updates author.name in all related posts
 -- Automatic dependency resolution ensures correct order
 ```
 
@@ -149,9 +145,9 @@ UPDATE tb_user SET name = 'New Name' WHERE pk_user = 1;
 ```
 tb_user ──┬─cascade──▶ tv_user
           │
-          └─cascade──▶ tv_posts (via fk_user)
+          └─cascade──▶ tv_post (via fk_user)
                       │
-                      └─cascade──▶ tv_comments (via fk_post)
+                      └─cascade──▶ tv_comment (via fk_post)
 ```
 
 ## Performance Optimization
@@ -204,7 +200,7 @@ CREATE OR REPLACE FUNCTION refresh_posts()...
 
 ```sql
 -- One-time setup
-CREATE TVIEW tv_posts AS SELECT...;
+CREATE TABLE tv_post AS SELECT...;
 
 -- Automatic forever
 -- Just use your database normally!
@@ -239,7 +235,7 @@ CREATE TVIEW tv_posts AS SELECT...;
 ### Computed Fields
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
@@ -257,7 +253,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 ### Array Relationships
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,

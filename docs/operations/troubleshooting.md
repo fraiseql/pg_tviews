@@ -98,12 +98,12 @@ SELECT pg_tviews_debug_queue();
 **Solution**: Use correct naming:
 ```sql
 -- Correct
-CREATE TVIEW tv_posts AS SELECT ...;
-CREATE TVIEW tv_user_profiles AS SELECT ...;
+CREATE TABLE tv_post AS SELECT ...;
+CREATE TABLE tv_user_profiles AS SELECT ...;
 
 -- Incorrect
-CREATE TVIEW posts AS SELECT ...;        -- Missing tv_ prefix
-CREATE TVIEW my_posts AS SELECT ...;     -- Wrong prefix
+CREATE TABLE posts AS SELECT ...;        -- Missing tv_ prefix
+CREATE TABLE my_posts AS SELECT ...;     -- Wrong prefix
 ```
 
 ### Missing Required Columns
@@ -114,12 +114,12 @@ CREATE TVIEW my_posts AS SELECT ...;     -- Wrong prefix
 
 1. **Add primary key column**:
    ```sql
-   CREATE TVIEW tv_post AS
+   CREATE TABLE tv_post AS
    SELECT
-       p.pk_post as pk_post,  -- Required: lineage root
-       p.id,                  -- Optional: GraphQL ID
-       jsonb_build_object('id', p.id, 'title', p.title) as data
-   FROM tb_post p;
+       tb_post.pk_post as pk_post,  -- Required: lineage root
+       tb_post.id,                  -- Optional: GraphQL ID
+       jsonb_build_object('id', tb_post.id, 'title', tb_post.title) as data
+   FROM tb_post;
    ```
 
 2. **Check column naming**: Must be `pk_<entity>` exactly matching TVIEW name
@@ -130,15 +130,15 @@ CREATE TVIEW my_posts AS SELECT ...;     -- Wrong prefix
 
 **Solution**: Add JSONB data column:
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
-    p.pk_post as pk_post,
+    tb_post.pk_post as pk_post,
     jsonb_build_object(
-        'id', p.id,
-        'title', p.title,
-        'content', p.content
+        'id', tb_post.id,
+        'title', tb_post.title,
+        'content', tb_post.content
     ) as data  -- Required: must be named 'data' and be JSONB
-FROM tb_post p;
+FROM tb_post;
 ```
 
 ### Unsupported SQL Features
@@ -156,7 +156,7 @@ FROM tb_post p;
    SELECT 'page' as type, pk_page as pk_content, id, title as name, data FROM tv_page;
 
    -- Use separate TVIEWs
-   CREATE TVIEW tv_posts AS SELECT ... FROM tb_post;
+   CREATE TABLE tv_post AS SELECT ... FROM tb_post;
    CREATE TVIEW tv_pages AS SELECT ... FROM tb_page;
    ```
 
@@ -654,6 +654,172 @@ SELECT * FROM pg_tviews_recover_prepared_transactions();
 
 -- Verify data consistency
 -- Run your consistency checks
+```
+
+## Decision Trees
+
+### TVIEW Creation Issues
+
+```mermaid
+flowchart TD
+    A[CREATE TABLE tv_* fails] --> B{Error message?}
+    B -->|No error| C[Check syntax]
+    B -->|Yes| D{Error type?}
+
+    C --> E[Verify trinity pattern]
+    E --> F[Check column qualification]
+    F --> G[Validate JSONB structure]
+
+    D -->|Invalid name| H[Use tv_* naming]
+    D -->|Missing column| I[Add pk_* and data columns]
+    D -->|Unsupported SQL| J[Remove UNION/CTE/etc]
+    D -->|Circular dependency| K[Redesign relationships]
+
+    H --> L[Success]
+    I --> L
+    J --> L
+    K --> L
+    G --> L
+```
+
+### Refresh Not Working
+
+```mermaid
+flowchart TD
+    A[TVIEW not refreshing] --> B{Data changed in base table?}
+    B -->|No| C[Check application logic]
+    B -->|Yes| D{TVIEW shows changes?}
+
+    C --> E[Debug application code]
+
+    D -->|No| F{Triggers installed?}
+    D -->|Yes| G[Problem solved]
+
+    F -->|No| H[Run pg_tviews_install_stmt_triggers()]
+    F -->|Yes| I{Queue has items?}
+
+    I -->|No| J[Manual refresh: pg_tviews_cascade()]
+    I -->|Yes| K{Stuck transaction?}
+
+    K -->|No| L[Check PostgreSQL logs]
+    K -->|Yes| M[Kill or wait for transaction]
+
+    H --> N[Verify triggers work]
+    J --> N
+    M --> N
+    L --> N
+
+    N --> O{Working now?}
+    O -->|Yes| P[Success]
+    O -->|No| Q[Check TVIEW definition]
+    Q --> R[Recreate TVIEW]
+    R --> P
+```
+
+### Performance Issues
+
+```mermaid
+flowchart TD
+    A[Slow TVIEW operations] --> B{Operation type?}
+    B -->|Initial creation| C[Check query complexity]
+    B -->|Refresh| D[Check queue size]
+    B -->|Query| E[Check indexes]
+
+    C --> F{Complex JOINs?}
+    F -->|Yes| G[Simplify query or add indexes]
+    F -->|No| H[Check memory settings]
+
+    D --> I{Queue > 1000?}
+    I -->|Yes| J[Process in batches]
+    I -->|No| K[Check concurrent load]
+
+    E --> L{Using JSONB fields?}
+    L -->|Yes| M[Add GIN indexes]
+    L -->|No| N[Add B-tree indexes]
+
+    G --> O[Monitor improvement]
+    H --> O
+    J --> O
+    K --> O
+    M --> O
+    N --> O
+
+    O --> P{Performance better?}
+    P -->|Yes| Q[Success]
+    P -->|No| R[Check PostgreSQL config]
+    R --> S[Increase work_mem]
+    S --> Q
+```
+
+### Queue Buildup
+
+```mermaid
+flowchart TD
+    A[Queue size growing] --> B{Trend analysis}
+    B --> C{Steady growth?}
+    C -->|Yes| D[Continue diagnosis]
+    C -->|No| E[Monitor - may be normal]
+
+    D --> F{Long transactions?}
+    F -->|Yes| G[Optimize or split transactions]
+    F -->|No| H{Deadlocks?}
+
+    H -->|Yes| I[Review lock ordering]
+    H -->|No| J{Bulk operations?}
+
+    J -->|Yes| K[Use statement triggers]
+    J -->|No| L{Cascade chains > 3 levels?}
+
+    L -->|Yes| M[Restructure dependencies]
+    L -->|No| N[Check memory settings]
+
+    G --> O[Monitor queue]
+    I --> O
+    K --> O
+    M --> O
+    N --> O
+
+    O --> P{Queue stable?}
+    P -->|Yes| Q[Success]
+    P -->|No| R[Scale up resources]
+    R --> Q
+```
+
+### Memory Issues
+
+```mermaid
+flowchart TD
+    A[Out of memory errors] --> B{Current memory settings?}
+    B --> C[Check work_mem]
+    B --> D[Check maintenance_work_mem]
+    B --> E[Check shared_buffers]
+
+    C --> F{work_mem < 64MB?}
+    F -->|Yes| G[Increase work_mem to 128MB]
+    F -->|No| H[Check query patterns]
+
+    D --> I{maintenance_work_mem < 256MB?}
+    I -->|Yes| J[Increase maintenance_work_mem]
+    I -->|No| H
+
+    E --> K{shared_buffers < 256MB?}
+    K -->|Yes| L[Increase shared_buffers]
+    K -->|No| H
+
+    H --> M{Large datasets?}
+    M -->|Yes| N[Process in smaller batches]
+    M -->|No| O[Check for memory leaks]
+
+    G --> P[Restart PostgreSQL]
+    J --> P
+    L --> P
+    N --> P
+    O --> P
+
+    P --> Q{Memory errors gone?}
+    Q -->|Yes| R[Success]
+    Q -->|No| S[Scale up server memory]
+    S --> R
 ```
 
 ## Getting Help

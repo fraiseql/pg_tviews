@@ -747,8 +747,8 @@ For complete CREATE/DROP TVIEW syntax, see [DDL Reference](docs/DDL_REFERENCE.md
 ```sql
 -- Create a TVIEW
 CREATE TVIEW tv_posts AS
-SELECT p.id as pk_post, ... as data
-FROM tb_posts p ...;
+SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id) as data
+FROM tb_post ...;
 
 -- Drop a TVIEW
 DROP TVIEW tv_posts;

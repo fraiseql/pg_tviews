@@ -547,7 +547,7 @@ ERROR:  permission denied for function pg_tviews_commit_prepared
 ```sql
 ERROR: TVIEW name must follow tv_* convention
 ```
-**Solution**: Use names like `tv_users`, `tv_posts`, etc.
+**Solution**: Use names like `tv_user`, `tv_post`, etc.
 
 ## See Also
 

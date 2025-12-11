@@ -183,8 +183,8 @@ psql -d your_database -c "SELECT * FROM pg_tviews_health_check();"
 
 ```sql
 -- Restore specific TVIEW
-CREATE TVIEW tv_posts AS
-SELECT pk_post, data FROM tv_posts_backup;
+CREATE TABLE tv_post AS
+SELECT pk_post, data FROM tv_post_backup;
 
 -- Rebuild dependencies
 SELECT pg_tviews_install_stmt_triggers();
@@ -480,7 +480,7 @@ def with_tview_connection():
     try:
         # Perform TVIEW operations
         conn.cursor().execute("INSERT INTO posts ...")
-        conn.cursor().execute("SELECT * FROM tv_posts")
+        conn.cursor().execute("SELECT * FROM tv_post")
         conn.commit()
     finally:
         pool.putconn(conn)
@@ -669,11 +669,11 @@ WHERE tablename LIKE 'tb_%' AND indexname LIKE '%pkey';
 
 -- Foreign key indexes for performance
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_posts_user_fk
-ON tb_posts (fk_user);
+ON tb_post (fk_user);
 
 -- TVIEW query optimization
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tv_posts_author_name
-ON tv_posts ((data->'author'->>'name'));
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tv_post_author_name
+ON tv_post ((data->'author'->>'name'));
 ```
 
 ### Bulk Operation Optimization
@@ -795,11 +795,11 @@ WHERE recorded_at >= date_trunc('month', now() - interval '1 month')
 
 ```sql
 -- Reindex TVIEW tables
-REINDEX TABLE CONCURRENTLY tv_posts;
-REINDEX TABLE CONCURRENTLY tv_users;
+REINDEX TABLE CONCURRENTLY tv_post;
+REINDEX TABLE CONCURRENTLY tv_user;
 
 -- Update statistics
-ANALYZE tv_posts, tv_users;
+ANALYZE tv_post, tv_user;
 ```
 
 ### Automated Maintenance
@@ -945,7 +945,7 @@ WHERE tgname LIKE '%tview%';
 SELECT * FROM pg_tviews_debug_queue();
 
 -- Test manual refresh
-SELECT pg_tviews_cascade('tb_posts'::regclass::oid, 123);
+SELECT pg_tviews_cascade('tb_post'::regclass::oid, 123);
 ```
 
 **Solutions**:

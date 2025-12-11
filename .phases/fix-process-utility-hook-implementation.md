@@ -504,8 +504,8 @@ CREATE TABLE tv_invalid AS SELECT * FROM nonexistent_table;
 CREATE TABLE tb_a (id INT);
 CREATE TABLE tb_b (id INT);
 
-CREATE TABLE tv_a AS SELECT id as pk_a, id, jsonb_build_object('id', id) as data FROM tb_a;
-CREATE TABLE tv_b AS SELECT id as pk_b, id, jsonb_build_object('id', id) as data FROM tb_b;
+CREATE TABLE tv_a AS SELECT tb_a.id as pk_a, tb_a.id, jsonb_build_object('id', tb_a.id) as data FROM tb_a;
+CREATE TABLE tv_b AS SELECT tb_b.id as pk_b, tb_b.id, jsonb_build_object('id', tb_b.id) as data FROM tb_b;
 
 SELECT entity FROM pg_tview_meta ORDER BY entity;
 -- Expected: 'a', 'b'
@@ -700,8 +700,8 @@ If you cannot modify `shared_preload_libraries`, use function syntax:
 ```sql
 -- Create TVIEW
 SELECT pg_tviews_create('tv_user', $$
-    SELECT id as pk_user, uuid as id,
-           jsonb_build_object('id', uuid, 'name', name) as data
+    SELECT tb_user.pk_user, tb_user.id,
+           jsonb_build_object('id', tb_user.id, 'name', tb_user.name) as data
     FROM tb_user
 $$);
 

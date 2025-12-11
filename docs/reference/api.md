@@ -453,6 +453,173 @@ SELECT pg_tviews_delete('tb_user'::regclass::oid, 789);
 - Currently delegates to `pg_tviews_cascade`
 - Specialized handling for array relationships (future enhancement)
 
+### pg_tviews_convert_table()
+
+**Signature**:
+```sql
+pg_tviews_convert_table(
+    table_name TEXT,
+    entity_name TEXT DEFAULT NULL
+) RETURNS BOOLEAN
+```
+
+**Description**:
+Converts an existing regular table to a TVIEW by analyzing its structure and creating the necessary metadata and triggers.
+
+**Parameters**:
+- `table_name TEXT`: Name of the existing table to convert (must start with `tv_`)
+- `entity_name TEXT`: Optional entity name (defaults to table name without `tv_` prefix)
+
+**Returns**:
+- `BOOLEAN`: True if conversion successful
+
+**Example**:
+```sql
+-- Convert existing tv_* table to TVIEW
+SELECT pg_tviews_convert_table('tv_post', 'post');
+
+-- Check conversion result
+SELECT * FROM pg_tview_meta WHERE entity = 'post';
+SELECT * FROM tv_post LIMIT 5;
+```
+
+**Notes**:
+- Table must already be named `tv_<entity>` and have `pk_<entity>` and `data` columns
+- Creates backing view and installs triggers
+- Useful for migrating existing materialized views
+
+### pg_tviews_install_stmt_triggers()
+
+**Signature**:
+```sql
+pg_tviews_install_stmt_triggers() RETURNS INTEGER
+```
+
+**Description**:
+Installs statement-level triggers on all base tables to dramatically improve bulk operation performance (100-500× faster).
+
+**Parameters**:
+- None
+
+**Returns**:
+- `INTEGER`: Number of triggers installed
+
+**Example**:
+```sql
+-- Enable high-performance bulk operations
+SELECT pg_tviews_install_stmt_triggers();
+-- Returns: 5 (number of triggers installed)
+
+-- Verify triggers are active
+SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%tview%';
+```
+
+**Notes**:
+- Processes entire statements at once using transition tables
+- Reduces trigger overhead from N× to 1× per statement
+- Essential for high-throughput applications
+
+### pg_tviews_health_check()
+
+**Signature**:
+```sql
+pg_tviews_health_check() RETURNS TABLE (
+    check_name TEXT,
+    status TEXT,
+    details TEXT
+)
+```
+
+**Description**:
+Performs comprehensive health checks on the pg_tviews installation and all TVIEWs.
+
+**Parameters**:
+- None
+
+**Returns**:
+- `check_name TEXT`: Name of the health check
+- `status TEXT`: 'OK', 'WARNING', or 'ERROR'
+- `details TEXT`: Detailed information about the check
+
+**Example**:
+```sql
+-- Run full health check
+SELECT * FROM pg_tviews_health_check();
+
+-- Check only critical issues
+SELECT * FROM pg_tviews_health_check()
+WHERE status IN ('WARNING', 'ERROR');
+```
+
+**Notes**:
+- Checks extension installation, metadata consistency, trigger health
+- Run after upgrades or when troubleshooting issues
+- Safe to run frequently (read-only operations)
+
+## Views
+
+### pg_tviews_queue_realtime
+
+**Description**:
+Real-time view of the current refresh queue state.
+
+**Columns**:
+- `queue_size INTEGER`: Number of pending refresh operations
+- `oldest_entry TIMESTAMPTZ`: When the oldest queue entry was created
+- `newest_entry TIMESTAMPTZ`: When the newest queue entry was created
+
+**Example**:
+```sql
+-- Monitor queue in real-time
+SELECT * FROM pg_tviews_queue_realtime;
+
+-- Alert on queue buildup
+SELECT CASE
+    WHEN queue_size > 1000 THEN 'CRITICAL'
+    WHEN queue_size > 100 THEN 'WARNING'
+    ELSE 'OK'
+END as queue_status
+FROM pg_tviews_queue_realtime;
+```
+
+**Notes**:
+- Updated in real-time as operations are queued/dequeued
+- Useful for monitoring and alerting
+- Very fast (no table scans)
+
+### pg_tviews_cache_stats
+
+**Description**:
+Statistics about internal caching performance.
+
+**Columns**:
+- `cache_name TEXT`: Name of the cache
+- `entries INTEGER`: Number of cached entries
+- `hit_rate NUMERIC`: Cache hit rate (0.0 to 1.0)
+- `last_accessed TIMESTAMPTZ`: When cache was last accessed
+
+**Example**:
+```sql
+-- Check cache performance
+SELECT * FROM pg_tviews_cache_stats;
+
+-- Monitor cache efficiency
+SELECT
+    cache_name,
+    hit_rate * 100 as hit_percentage,
+    CASE
+        WHEN hit_rate > 0.9 THEN 'EXCELLENT'
+        WHEN hit_rate > 0.7 THEN 'GOOD'
+        ELSE 'NEEDS_ATTENTION'
+    END as performance
+FROM pg_tviews_cache_stats;
+```
+
+**Notes**:
+- Tracks prepared statements and graph cache performance
+- Useful for performance tuning
+- Reset on extension reload
+
 ## Common Usage Patterns
 
 ### Check Extension Status
@@ -549,7 +716,7 @@ ERROR:  permission denied for function pg_tviews_commit_prepared
 ```sql
 ERROR: TVIEW name must follow tv_* convention
 ```
-**Solution**: Use names like `tv_users`, `tv_posts`, etc.
+**Solution**: Use names like `tv_user`, `tv_post`, etc.
 
 ## See Also
 

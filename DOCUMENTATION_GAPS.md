@@ -107,7 +107,7 @@ pg_tviews_uninstall_stmt_triggers()    -- Uninstall statement-level triggers
 **Current Documentation:**
 ```sql
 -- README shows only basic example:
-CREATE TVIEW tv_posts AS SELECT ...
+CREATE TABLE tv_post AS SELECT ...
 ```
 
 **Missing Documentation:**
@@ -130,7 +130,7 @@ CREATE TVIEW tv_posts AS SELECT ...
 
 **Missing:**
 ```sql
-DROP TVIEW tv_posts;  -- Syntax not documented anywhere
+DROP TABLE tv_post;  -- Syntax not documented anywhere
 ```
 
 **Recommendation:**

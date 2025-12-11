@@ -67,10 +67,10 @@ Every TVIEW must have exactly one primary key column named `pk_<entity>`:
 SELECT p.pk_post as pk_post, ... FROM tb_post p
 
 -- Incorrect: Wrong name
-SELECT p.id as pk_post, ... FROM tb_post p  -- ERROR: not lineage root
+SELECT tb_post.id as pk_post, ... FROM tb_post  -- ERROR: not lineage root
 
 -- Incorrect: Wrong type
-SELECT p.id::bigint as pk_post, ... FROM tb_post p  -- ERROR: not original PK
+SELECT tb_post.id::bigint as pk_post, ... FROM tb_post  -- ERROR: not original PK
 ```
 
 **Requirements**:
@@ -156,7 +156,7 @@ JOIN tb_category c ON p.fk_category = c.pk_category;
 #### Simple TVIEW
 
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     u.pk_user as pk_user,
     u.id,
@@ -175,7 +175,7 @@ FROM tb_user u;
 #### Complex TVIEW with Relationships
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,
     p.id,
@@ -297,7 +297,7 @@ DROP TVIEW tv_post;           -- Can now be dropped
 ```sql
 -- Drop and recreate
 DROP TVIEW tv_post;
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT ... -- new definition
 FROM ...;
 ```

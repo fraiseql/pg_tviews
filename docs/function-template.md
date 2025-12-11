@@ -103,7 +103,7 @@ Creates a new transactional view (TVIEW) from a SELECT statement with automatic 
 
 **Example**:
 ```sql
-SELECT pg_tviews_create('tv_posts', '
+SELECT pg_tviews_create('tv_post', '
     SELECT
         p.pk_post as pk_post,
         p.id,
@@ -118,7 +118,7 @@ SELECT pg_tviews_create('tv_posts', '
 
 **Returns**:
 ```text
-TVIEW 'tv_posts' created successfully
+TVIEW 'tv_post' created successfully
 ```
 
 **Notes**:

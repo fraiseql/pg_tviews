@@ -151,8 +151,8 @@ SELECT * FROM pg_tviews_statement_stats LIMIT 3;
                                                                  query                                                                 | calls | total_time | mean_time | stddev_time | rows_affected
 ----------------------------------------------------------------------------------------------------------------------------------------+-------+------------+-----------+-------------+---------------
   SELECT pg_tviews_version()                                                                                                           |    12 |      0.123 |    0.010 |      0.005 |             0
-  SELECT * FROM tv_posts WHERE data->>'author_id' = $1                                                                                |   456 |    123.456 |    0.271 |      0.089 |           234
-  UPDATE tv_posts SET data = jsonb_set(data, '{title}', $1) WHERE pk_post = $2                                                        |    89 |     45.678 |    0.513 |      0.234 |            89
+  SELECT * FROM tv_post WHERE data->>'author_id' = $1                                                                                |   456 |    123.456 |    0.271 |      0.089 |           234
+  UPDATE tv_post SET data = jsonb_set(data, '{title}', $1) WHERE pk_post = $2                                                        |    89 |     45.678 |    0.513 |      0.234 |            89
 ```
 
 **Use Cases**:

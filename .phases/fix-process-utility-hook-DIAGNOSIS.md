@@ -251,7 +251,7 @@ User executes: CREATE TABLE tv_user AS SELECT ...
 
 ```sql
 CREATE TABLE tv_user AS
-SELECT id as pk_user, uuid as id, jsonb_build_object('id', uuid) as data
+SELECT tb_user.pk_user, tb_user.id, jsonb_build_object('id', tb_user.id) as data
 FROM tb_user;
 ```
 
@@ -289,7 +289,7 @@ FROM tb_user;
 
 -- Try to create TVIEW with DDL syntax
 CREATE TABLE tb_test (id INT);
-CREATE TABLE tv_test AS SELECT id as pk_test, id, jsonb_build_object('id', id) as data FROM tb_test;
+CREATE TABLE tv_test AS SELECT tb_test.id as pk_test, tb_test.id, jsonb_build_object('id', tb_test.id) as data FROM tb_test;
 
 -- Check what was created
 \d tv_test
@@ -329,7 +329,7 @@ psql -d postgres -c "CREATE EXTENSION pg_tviews;"
 ```sql
 -- Now retry the same test
 CREATE TABLE tb_test (id INT);
-CREATE TABLE tv_test AS SELECT id as pk_test, id, jsonb_build_object('id', id) as data FROM tb_test;
+CREATE TABLE tv_test AS SELECT tb_test.id as pk_test, tb_test.id, jsonb_build_object('id', tb_test.id) as data FROM tb_test;
 
 -- Check what was created
 \d tv_test
@@ -431,7 +431,7 @@ tail ~/.pgrx/data-17/postgresql.log | grep "pg_tviews.*_PG_init"
 # 4. Test DDL syntax
 psql -c "
 CREATE TABLE tb_test (id INT);
-CREATE TABLE tv_test AS SELECT id as pk_test, id, jsonb_build_object('id', id) as data FROM tb_test;
+CREATE TABLE tv_test AS SELECT tb_test.id as pk_test, tb_test.id, jsonb_build_object('id', tb_test.id) as data FROM tb_test;
 SELECT entity FROM pg_tview_meta WHERE entity = 'test';
 DROP TABLE tv_test;
 DROP TABLE tb_test;

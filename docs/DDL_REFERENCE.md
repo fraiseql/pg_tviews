@@ -19,9 +19,9 @@ SELECT ...
 
 ### Naming Conventions
 
-- **TVIEW name**: `tv_<entity>` (e.g., `tv_posts`, `tv_users`)
+- **TVIEW name**: `tv_<entity>` (e.g., `tv_post`, `tv_user`)
 - **Entity name**: Derived from TVIEW name by removing `tv_` prefix
-- **Source tables**: `tb_<entity>` (e.g., `tb_posts`, `tb_users`)
+- **Source tables**: `tb_<entity>` (e.g., `tb_post`, `tb_user`)
 - **Backing view**: `v_<entity>` (automatically created)
 
 ### Required Columns
@@ -45,7 +45,7 @@ The SELECT statement must include:
 ### Complete Example
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_post AS
 SELECT
     p.id as pk_post,
     p.title,
@@ -66,8 +66,8 @@ SELECT
             '[]'::jsonb
         )
     ) as data
-FROM tb_posts p
-JOIN tb_users u ON p.fk_user = u.id
+FROM tb_post p
+JOIN tb_user u ON p.fk_user = u.pk_user
 LEFT JOIN tb_comments c ON c.fk_post = p.id
 GROUP BY p.id, p.title, p.content, u.id, u.name, u.email;
 ```
@@ -76,11 +76,11 @@ GROUP BY p.id, p.title, p.content, u.id, u.name, u.email;
 
 When you CREATE TVIEW:
 
-1. **Backing View Created**: `v_posts` is created with your SELECT
-2. **Materialized Table Created**: `tv_posts` stores the cached data
+1. **Backing View Created**: `v_post` is created with your SELECT
+2. **Materialized Table Created**: `tv_post` stores the cached data
 3. **Dependencies Detected**: Analyzes FROM/JOIN to find source tables
 4. **Triggers Installed**: Automatically installs triggers on source tables
-5. **Initial Refresh**: Populates `tv_posts` with current data
+5. **Initial Refresh**: Populates `tv_post` with current data
 
 ### Supported SQL Features
 
@@ -132,7 +132,7 @@ When you DROP TVIEW:
 
 ```sql
 -- Simple drop
-DROP TVIEW tv_posts;
+DROP TABLE tv_post;
 
 -- Check before dropping
 SELECT entity, table_oid, view_oid
@@ -141,7 +141,7 @@ WHERE entity = 'post';
 
 -- If dependencies exist, drop them first
 DROP TVIEW tv_dependent_view;
-DROP TVIEW tv_posts;
+DROP TABLE tv_post;
 ```
 
 ### Cascade Behavior
@@ -168,8 +168,8 @@ DROP TVIEW tv_level1;
 
 ```sql
 -- To modify a TVIEW:
-DROP TVIEW tv_posts;
-CREATE TVIEW tv_posts AS SELECT ... -- new definition
+DROP TABLE tv_post;
+CREATE TABLE tv_post AS SELECT ... -- new definition
 ```
 
 ## Statement-Level Triggers
@@ -223,7 +223,7 @@ ERROR:  Dependency cycle detected: post -> comment -> post
 
 **Error**: `DependentObjectsExist`
 ```sql
-ERROR:  Cannot drop tv_posts: other TVIEWs depend on it
+ERROR:  Cannot drop tv_post: other TVIEWs depend on it
 ```
 **Solution**: Drop dependent TVIEWs first.
 

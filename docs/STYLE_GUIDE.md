@@ -136,7 +136,7 @@ TVIEW 'tv_example' created successfully
 | Term | Usage | Example |
 |------|-------|---------|
 | **TVIEW** | The feature/technology | "TVIEWs provide incremental refresh" |
-| **tv_posts** | Specific TVIEW name | "Create TVIEW `tv_posts`" |
+| **tv_post** | Specific TVIEW name | "Create TABLE `tv_post`" |
 | **pg_tviews** | The extension name | "Install pg_tviews extension" |
 | **FraiseQL** | The framework | "Part of the FraiseQL framework" |
 | **trinity pattern** | Identifier pattern | "Follow the trinity pattern" |
@@ -210,6 +210,43 @@ Brief one-paragraph description of what this document covers.
 ---
 
 ## Code Examples
+
+### SQL Example Standards
+
+**All SQL examples MUST follow the trinity pattern**:
+
+- ✅ **Singular table names**: `tb_post`, `tv_post`, `v_post` (NOT `tb_posts`)
+- ✅ **Qualified columns**: `tb_post.id` (NOT just `id`)
+- ✅ **pk_*/fk_* are INTEGER**: Internal database operations
+- ✅ **id is UUID**: External API/GraphQL identifiers
+- ✅ **JSONB uses camelCase**: `'userId'` (NOT `'user_id'`)
+
+**Correct example**:
+```sql
+SELECT
+    tb_post.pk_post,          -- INTEGER primary key
+    tb_post.id,               -- UUID for GraphQL
+    tb_post.fk_user,          -- INTEGER foreign key
+    jsonb_build_object(
+        'id', tb_post.id,     -- camelCase keys
+        'title', tb_post.title,
+        'userId', tb_user.id  -- Related UUID from JOIN
+    ) as data
+FROM tb_post
+INNER JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
+```
+
+**Incorrect examples** (DO NOT USE):
+```sql
+-- ❌ Unqualified columns
+SELECT id as pk_post, jsonb_build_object('id', id) as data FROM tb_post;
+
+-- ❌ Plural table names
+SELECT tb_post.pk_post, jsonb_build_object('id', tb_post.id) as data FROM tb_post;
+
+-- ❌ snake_case in JSONB
+SELECT tb_post.pk_post, jsonb_build_object('user_id', tb_user.id) as data FROM tb_post;
+```
 
 ### Good Examples
 
