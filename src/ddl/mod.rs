@@ -16,9 +16,11 @@
 
 pub mod create;
 pub mod drop;
+pub mod convert;
 
 pub use create::create_tview;
 pub use drop::drop_tview;
+pub use convert::convert_existing_table_to_tview;
 
 use pgrx::prelude::*;
 
@@ -27,6 +29,11 @@ use pgrx::prelude::*;
 /// Usage: SELECT pg_tviews_create('my_entity', 'SELECT id, name FROM users WHERE active = true');
 #[pg_extern]
 fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
+    // Ensure ProcessUtility hook is installed for DDL syntax support
+    unsafe {
+        crate::hooks::ensure_hook_installed();
+    }
+
     match create_tview(tview_name, select_sql) {
         Ok(()) => Ok(format!("TVIEW '{}' created successfully", tview_name)),
         Err(e) => Err(format!("Failed to create TVIEW: {}", e)),
