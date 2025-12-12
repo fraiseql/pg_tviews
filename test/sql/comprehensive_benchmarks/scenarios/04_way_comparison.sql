@@ -179,12 +179,57 @@ BEGIN
 
     v_start := clock_timestamp();
 
-    -- Generate data
-    PERFORM pg_tviews.generate_ecommerce_data(
-        v_config.num_categories,
-        v_config.num_products,
-        v_config.num_reviews
-    );
+    -- Generate data inline
+    DECLARE
+        v_batch_size INTEGER := 1000;
+        i INTEGER;
+        j INTEGER;
+    BEGIN
+        -- 1. Generate categories
+        INSERT INTO tb_category (name, slug, fk_parent_category)
+        SELECT
+            'Category ' || i,
+            'category-' || i,
+            CASE WHEN i > 5 THEN ((i - 1) % 5) + 1 ELSE NULL END
+        FROM generate_series(1, v_config.num_categories) AS i;
+
+        -- 2. Generate products
+        FOR i IN 1..v_config.num_products BY v_batch_size LOOP
+            INSERT INTO tb_product (fk_category, sku, name, description, base_price, current_price, status)
+            SELECT
+                ((j - 1) % v_config.num_categories) + 1,
+                'SKU-' || LPAD(j::TEXT, 10, '0'),
+                'Product ' || j,
+                'Description for product ' || j || '. ' || repeat('Lorem ipsum. ', 5),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                CASE WHEN random() < 0.9 THEN 'active' ELSE 'inactive' END
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_products)) AS j;
+        END LOOP;
+
+        -- 3. Generate inventory
+        INSERT INTO tb_inventory (fk_product, quantity, reserved, warehouse_location)
+        SELECT
+            pk_product,
+            (random() * 1000)::INTEGER,
+            (random() * 50)::INTEGER,
+            'WH-' || (((pk_product - 1) % 10) + 1)
+        FROM tb_product;
+
+        -- 4. Generate reviews
+        FOR i IN 1..v_config.num_reviews BY v_batch_size LOOP
+            INSERT INTO tb_review (fk_product, fk_user, rating, title, content, verified_purchase, helpful_count)
+            SELECT
+                ((j - 1) % v_config.num_products) + 1,
+                ((j - 1) % 10000) + 1,
+                (random() * 4 + 1)::INTEGER,
+                'Review Title ' || j,
+                'Review content ' || j || '. ' || repeat('Great product. ', 10),
+                random() < 0.7,
+                (random() * 100)::INTEGER
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_reviews)) AS j;
+        END LOOP;
+    END;
 
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
@@ -415,12 +460,57 @@ BEGIN
 
     v_start := clock_timestamp();
 
-    -- Generate data (same data as scenario 1)
-    PERFORM pg_tviews.generate_ecommerce_data(
-        v_config.num_categories,
-        v_config.num_products,
-        v_config.num_reviews
-    );
+    -- Generate data inline (same data as scenario 1)
+    DECLARE
+        v_batch_size INTEGER := 1000;
+        i INTEGER;
+        j INTEGER;
+    BEGIN
+        -- 1. Generate categories
+        INSERT INTO tb_category (name, slug, fk_parent_category)
+        SELECT
+            'Category ' || i,
+            'category-' || i,
+            CASE WHEN i > 5 THEN ((i - 1) % 5) + 1 ELSE NULL END
+        FROM generate_series(1, v_config.num_categories) AS i;
+
+        -- 2. Generate products
+        FOR i IN 1..v_config.num_products BY v_batch_size LOOP
+            INSERT INTO tb_product (fk_category, sku, name, description, base_price, current_price, status)
+            SELECT
+                ((j - 1) % v_config.num_categories) + 1,
+                'SKU-' || LPAD(j::TEXT, 10, '0'),
+                'Product ' || j,
+                'Description for product ' || j || '. ' || repeat('Lorem ipsum. ', 5),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                CASE WHEN random() < 0.9 THEN 'active' ELSE 'inactive' END
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_products)) AS j;
+        END LOOP;
+
+        -- 3. Generate inventory
+        INSERT INTO tb_inventory (fk_product, quantity, reserved, warehouse_location)
+        SELECT
+            pk_product,
+            (random() * 1000)::INTEGER,
+            (random() * 50)::INTEGER,
+            'WH-' || (((pk_product - 1) % 10) + 1)
+        FROM tb_product;
+
+        -- 4. Generate reviews
+        FOR i IN 1..v_config.num_reviews BY v_batch_size LOOP
+            INSERT INTO tb_review (fk_product, fk_user, rating, title, content, verified_purchase, helpful_count)
+            SELECT
+                ((j - 1) % v_config.num_products) + 1,
+                ((j - 1) % 10000) + 1,
+                (random() * 4 + 1)::INTEGER,
+                'Review Title ' || j,
+                'Review content ' || j || '. ' || repeat('Great product. ', 10),
+                random() < 0.7,
+                (random() * 100)::INTEGER
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_reviews)) AS j;
+        END LOOP;
+    END;
 
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
@@ -665,12 +755,57 @@ BEGIN
 
     v_start := clock_timestamp();
 
-    -- Generate data
-    PERFORM pg_tviews.generate_ecommerce_data(
-        v_config.num_categories,
-        v_config.num_products,
-        v_config.num_reviews
-    );
+    -- Generate data inline
+    DECLARE
+        v_batch_size INTEGER := 1000;
+        i INTEGER;
+        j INTEGER;
+    BEGIN
+        -- 1. Generate categories
+        INSERT INTO tb_category (name, slug, fk_parent_category)
+        SELECT
+            'Category ' || i,
+            'category-' || i,
+            CASE WHEN i > 5 THEN ((i - 1) % 5) + 1 ELSE NULL END
+        FROM generate_series(1, v_config.num_categories) AS i;
+
+        -- 2. Generate products
+        FOR i IN 1..v_config.num_products BY v_batch_size LOOP
+            INSERT INTO tb_product (fk_category, sku, name, description, base_price, current_price, status)
+            SELECT
+                ((j - 1) % v_config.num_categories) + 1,
+                'SKU-' || LPAD(j::TEXT, 10, '0'),
+                'Product ' || j,
+                'Description for product ' || j || '. ' || repeat('Lorem ipsum. ', 5),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                CASE WHEN random() < 0.9 THEN 'active' ELSE 'inactive' END
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_products)) AS j;
+        END LOOP;
+
+        -- 3. Generate inventory
+        INSERT INTO tb_inventory (fk_product, quantity, reserved, warehouse_location)
+        SELECT
+            pk_product,
+            (random() * 1000)::INTEGER,
+            (random() * 50)::INTEGER,
+            'WH-' || (((pk_product - 1) % 10) + 1)
+        FROM tb_product;
+
+        -- 4. Generate reviews
+        FOR i IN 1..v_config.num_reviews BY v_batch_size LOOP
+            INSERT INTO tb_review (fk_product, fk_user, rating, title, content, verified_purchase, helpful_count)
+            SELECT
+                ((j - 1) % v_config.num_products) + 1,
+                ((j - 1) % 10000) + 1,
+                (random() * 4 + 1)::INTEGER,
+                'Review Title ' || j,
+                'Review content ' || j || '. ' || repeat('Great product. ', 10),
+                random() < 0.7,
+                (random() * 100)::INTEGER
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_reviews)) AS j;
+        END LOOP;
+    END;
 
     -- Manual refresh required
     PERFORM refresh_product_catalog();
@@ -908,12 +1043,57 @@ BEGIN
 
     v_start := clock_timestamp();
 
-    -- Generate data
-    PERFORM pg_tviews.generate_ecommerce_data(
-        v_config.num_categories,
-        v_config.num_products,
-        v_config.num_reviews
-    );
+    -- Generate data inline
+    DECLARE
+        v_batch_size INTEGER := 1000;
+        i INTEGER;
+        j INTEGER;
+    BEGIN
+        -- 1. Generate categories
+        INSERT INTO tb_category (name, slug, fk_parent_category)
+        SELECT
+            'Category ' || i,
+            'category-' || i,
+            CASE WHEN i > 5 THEN ((i - 1) % 5) + 1 ELSE NULL END
+        FROM generate_series(1, v_config.num_categories) AS i;
+
+        -- 2. Generate products
+        FOR i IN 1..v_config.num_products BY v_batch_size LOOP
+            INSERT INTO tb_product (fk_category, sku, name, description, base_price, current_price, status)
+            SELECT
+                ((j - 1) % v_config.num_categories) + 1,
+                'SKU-' || LPAD(j::TEXT, 10, '0'),
+                'Product ' || j,
+                'Description for product ' || j || '. ' || repeat('Lorem ipsum. ', 5),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                ROUND((random() * 990 + 10)::NUMERIC, 2),
+                CASE WHEN random() < 0.9 THEN 'active' ELSE 'inactive' END
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_products)) AS j;
+        END LOOP;
+
+        -- 3. Generate inventory
+        INSERT INTO tb_inventory (fk_product, quantity, reserved, warehouse_location)
+        SELECT
+            pk_product,
+            (random() * 1000)::INTEGER,
+            (random() * 50)::INTEGER,
+            'WH-' || (((pk_product - 1) % 10) + 1)
+        FROM tb_product;
+
+        -- 4. Generate reviews
+        FOR i IN 1..v_config.num_reviews BY v_batch_size LOOP
+            INSERT INTO tb_review (fk_product, fk_user, rating, title, content, verified_purchase, helpful_count)
+            SELECT
+                ((j - 1) % v_config.num_products) + 1,
+                ((j - 1) % 10000) + 1,
+                (random() * 4 + 1)::INTEGER,
+                'Review Title ' || j,
+                'Review content ' || j || '. ' || repeat('Great product. ', 10),
+                random() < 0.7,
+                (random() * 100)::INTEGER
+            FROM generate_series(i, LEAST(i + v_batch_size - 1, v_config.num_reviews)) AS j;
+        END LOOP;
+    END;
 
     -- Full refresh required
     REFRESH MATERIALIZED VIEW mv_product_catalog;
