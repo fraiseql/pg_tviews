@@ -4,7 +4,7 @@ Complete installation instructions for pg_tviews in different environments.
 
 ## System Requirements
 
-- **PostgreSQL**: 15, 16, or 17
+- **PostgreSQL**: 13, 14, 15, 16, 17, or 18
 - **Rust**: 1.70+ (for building from source)
 - **Memory**: 2GB RAM minimum, 4GB recommended
 - **Disk**: 500MB free space for build artifacts
@@ -37,7 +37,7 @@ cargo pgrx init
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 
 # Build and install (release mode for production)
@@ -114,7 +114,7 @@ source ~/.cargo/env
 # Install pgrx and build
 cargo install --locked cargo-pgrx
 cargo pgrx init
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 ```
@@ -137,7 +137,7 @@ source ~/.cargo/env
 # Install pgrx and build
 cargo install --locked cargo-pgrx
 cargo pgrx init
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 ```
@@ -156,7 +156,7 @@ source ~/.cargo/env
 # Install pgrx and build
 cargo install --locked cargo-pgrx
 cargo pgrx init
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 ```
@@ -187,7 +187,7 @@ For contributors and development:
 ### Clone and Setup
 
 ```bash
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 
 # Install development dependencies

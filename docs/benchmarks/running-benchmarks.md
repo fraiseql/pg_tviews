@@ -6,53 +6,209 @@ This guide explains how to run the pg_tviews benchmark suite to validate functio
 
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+  - [Option A: Docker (Recommended)](#option-a-docker-recommended---full-4-way-benchmark)
+  - [Option B: Manual Approaches 3 & 4 Only](#option-b-manual-approaches-3--4-only-no-extensions-required)
+  - [Option C: pgrx-managed PostgreSQL](#option-c-pgrx-managed-postgresql-advanced)
+  - [Option D: System PostgreSQL](#option-d-system-postgresql-with-manual-extension-install-requires-sudo)
 - [Deployment Options](#deployment-options)
-  - [Option A: pgrx-managed PostgreSQL (Recommended)](#option-a-pgrx-managed-postgresql-recommended)
-  - [Option B: Docker](#option-b-docker)
 - [Running the Benchmark Suite](#running-the-benchmark-suite)
 - [Understanding Results](#understanding-results)
 - [Troubleshooting](#troubleshooting)
+- [Next Steps](#next-steps)
 
 ---
 
 ## Prerequisites
 
-**IMPORTANT**: pg_tviews requires **PostgreSQL 13-17**. The extension uses pgrx 0.16.1, which does **NOT** support PostgreSQL 18+.
+**IMPORTANT**: pg_tviews supports **PostgreSQL 13-18**. The extension uses pgrx 0.16.1 with full PostgreSQL 18 compatibility.
 
 ### System Requirements
 
+- **PostgreSQL**: 13-18 (all versions supported)
 - **Rust**: 1.70 or later (`rustc --version`)
-- **pgrx**: 0.12.8+ (`cargo install cargo-pgrx`)
-- **Disk Space**: At least 5GB free
-- **Memory**: 4GB+ recommended for benchmarks
+- **pgrx**: 0.16.1 (`cargo install cargo-pgrx --version 0.16.1 --locked`)
+- **Disk Space**:
+  - Small scale: 5GB free
+  - Medium scale: 10GB free
+  - Large scale: 20GB+ free
+- **Memory**:
+  - Small scale: 4GB+ recommended
+  - Medium scale: 8GB+ recommended
+  - Large scale: 16GB+ recommended
+- **Docker**: Optional but recommended for full 4-way benchmarks
+
+### Extension Dependencies
+
+- **pg_tviews**: Core extension (built from source) - **Required for approaches 1 & 2**
+- **jsonb_ivm**: Optional performance extension (built from source) - **Required for approach 1**
+- **pg_ivm**: Alternative incremental view extension (optional)
 
 ### Check Your PostgreSQL Version
 
 ```bash
 psql --version
-# If you have pg18+, you'll need to use pgrx's managed pg17 or Docker
+# pg_tviews supports PostgreSQL 13-18
 ```
+
+### Benchmark Capability Matrix
+
+| Approach | Extensions Required | Performance | Setup Difficulty |
+|----------|-------------------|-------------|------------------|
+| **1: pg_tviews + jsonb_ivm** | pg_tviews + jsonb_ivm | Maximum (1.0x) | Hard (system install) |
+| **2: pg_tviews + native PG** | pg_tviews only | 98% of maximum | Hard (system install) |
+| **3: Manual functions** | None | 95% of maximum | Medium (manual setup) |
+| **4: Full refresh** | None | 0.01-0.02% of max | Easy (built-in PG) |
 
 ---
 
-## Quick Start
+## Quick Start (4 Options)
 
-For the impatient:
+### Option A: Docker (Recommended - Full 4-Way Benchmark)
+
+**✅ Supports all 4 approaches** - Most reliable for complete testing
+
+**Prerequisites**:
+- Docker and Docker Compose installed
+- Both repositories cloned in same parent directory:
+  ```
+  /path/to/code/
+    ├── pg_tviews/
+    └── jsonb_ivm/    # Clone from https://github.com/fraiseql/jsonb_ivm
+  ```
 
 ```bash
-# 1. Start PostgreSQL 17 (pgrx-managed)
-cargo pgrx start pg17
+# 1. Build benchmark container with extensions
+# Note: Build context is parent directory (must contain both pg_tviews and jsonb_ivm)
+cd /path/to/pg_tviews
+docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
 
-# 2. Install extension
+# OR use docker-compose (recommended):
+cd /path/to/pg_tviews/docker
+docker-compose up -d --build
+
+# 2. Run container (if using docker build)
+docker run -d --name pg_tviews_benchmark \
+  -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres \
+  pg_tviews_bench
+
+# 3. Wait for startup (30 seconds)
+sleep 30
+
+# 4. Run benchmarks (choose scale)
+# Small scale (fastest, ~5 minutes total):
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+\i /benchmarks/00_setup.sql
+\i /benchmarks/schemas/01_ecommerce_schema.sql
+\i /benchmarks/data/01_ecommerce_data_small.sql
+\i /benchmarks/scenarios/01_ecommerce_benchmarks_small.sql
+"
+
+# Medium scale (~15 minutes, requires 8GB+ RAM):
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+\i /benchmarks/00_setup.sql
+\i /benchmarks/schemas/01_ecommerce_schema.sql
+\i /benchmarks/data/01_ecommerce_data_medium.sql
+\i /benchmarks/scenarios/01_ecommerce_benchmarks_medium.sql
+"
+
+# Large scale (~1 hour, requires 16GB+ RAM):
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+\i /benchmarks/00_setup.sql
+\i /benchmarks/schemas/01_ecommerce_schema.sql
+\i /benchmarks/data/01_ecommerce_data_large.sql
+\i /benchmarks/scenarios/01_ecommerce_benchmarks_large.sql
+"
+
+# 5. View results
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+SELECT * FROM benchmark_summary ORDER BY execution_time_ms;
+SELECT * FROM benchmark_comparison WHERE improvement_ratio IS NOT NULL ORDER BY improvement_ratio DESC;
+"
+```
+
+### Option B: Manual Approaches 3 & 4 Only (No Extensions Required)
+
+**✅ Works on any PostgreSQL** - Demonstrates incremental vs full refresh benefits
+
+#### Scale Options:
+- **Small**: 1K products, 5K reviews (~2 minutes setup, 4GB RAM)
+- **Medium**: 100K products, 500K reviews (~5 minutes setup, 8GB RAM)
+- **Large**: 1M products, 5M reviews (~30 minutes setup, 16GB RAM)
+
+```bash
+# 1. Create benchmark database
+createdb pg_tviews_benchmark
+psql -d pg_tviews_benchmark -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+
+# 2. Setup schema manually (skip pg_tviews parts)
+cd test/sql/comprehensive_benchmarks
+psql -d pg_tviews_benchmark -f 00_setup.sql
+
+# 3. Load data (choose scale)
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_small_manual.sql    # Small scale
+# OR
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_medium_manual.sql  # Medium scale
+# OR
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_large_manual.sql   # Large scale
+
+# 4. Load manual functions
+psql -d pg_tviews_benchmark -f functions/refresh_product_manual.sql
+
+# 5. Populate manual tables
+psql -d pg_tviews_benchmark -c "
+INSERT INTO manual_func_product (pk_product, fk_category, data)
+SELECT pk_product, fk_category, data FROM v_product;
+REFRESH MATERIALIZED VIEW mv_product;
+"
+
+# 6. Run manual benchmark
+psql -d pg_tviews_benchmark -c "
+-- Test Approach 3 vs 4
+UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
+SELECT refresh_product_manual('product', 1, 'price_current');
+UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
+REFRESH MATERIALIZED VIEW mv_product;
+"
+```
+
+### Option C: pgrx-managed PostgreSQL (Advanced)
+
+**⚠️ Time-intensive setup** - Compiles PostgreSQL from source
+
+```bash
+# 1. Initialize pgrx (30-60 minutes first time)
+cargo pgrx init
+
+# 2. Start managed PostgreSQL 18
+cargo pgrx start pg18
+
+# 3. Install extensions
 cargo pgrx install --release
 
-# 3. Run test suite
-cargo pgrx test pg17
+# 4. Run benchmarks (use port 28818 for pg18)
+psql -h localhost -p 28818 -c "CREATE DATABASE pg_tviews_benchmark;"
+psql -h localhost -p 28818 -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
+psql -h localhost -p 28818 -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/00_setup.sql
+psql -h localhost -p 28818 -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/schemas/01_ecommerce_schema.sql
+```
 
-# 4. Run e-commerce benchmark
-psql -h localhost -p 28817 -c "CREATE DATABASE pg_tviews_benchmark;"
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
-psql -h localhost -p 28817 -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/schemas/01_ecommerce_schema.sql
+### Option D: System PostgreSQL with Manual Extension Install (Requires sudo)
+
+**❌ Requires system admin access** - Not available in many environments
+
+```bash
+# 1. Install system-wide (requires sudo)
+sudo cargo pgrx install --release
+
+# 2. Create benchmark database
+createdb pg_tviews_benchmark
+psql -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
+
+# 3. Run full benchmarks
+cd test/sql/comprehensive_benchmarks
+psql -d pg_tviews_benchmark -f 00_setup.sql
+psql -d pg_tviews_benchmark -f scenarios/01_ecommerce_benchmarks_small.sql
 ```
 
 ---
@@ -123,11 +279,16 @@ Use Docker if you prefer containerized environments or need isolation from your 
 #### Build Benchmark Container
 
 ```bash
-# Build from parent directory (requires both pg_tviews and jsonb_ivm)
-docker build -f Dockerfile.benchmarks -t pg_tviews_bench ..
+# Build from pg_tviews directory (build context is parent directory)
+cd /path/to/pg_tviews
+docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
+
+# OR use docker-compose:
+cd /path/to/pg_tviews/docker
+docker-compose up -d --build
 ```
 
-**Note**: The Dockerfile expects the parent directory to contain both `pg_tviews/` and `jsonb_ivm/` projects.
+**Note**: The build context is the parent directory, which must contain both `pg_tviews/` and `jsonb_ivm/` projects side-by-side.
 
 #### Run Container
 
@@ -396,7 +557,20 @@ Expected performance (will vary based on hardware):
 
 ### Success Indicators
 
-#### Compilation Success
+#### Docker Setup Success
+- ✅ `docker build` completes without errors
+- ✅ Container starts: `docker ps` shows running container
+- ✅ PostgreSQL accessible: `docker exec pg_tviews_benchmark psql -U postgres -c "SELECT 1;"`
+- ✅ Extensions loaded: `SELECT * FROM pg_extension;` shows pg_tviews and jsonb_ivm
+
+#### Manual Setup Success (Approaches 3 & 4)
+- ✅ Database created: `psql -l` shows pg_tviews_benchmark
+- ✅ Setup script runs: `00_setup.sql` executes without errors
+- ✅ Data loads: `01_ecommerce_data_small_manual.sql` completes
+- ✅ Manual functions available: `\df refresh_product_manual` shows function
+- ✅ Tables populated: `SELECT COUNT(*) FROM manual_func_product;` > 0
+
+#### Compilation Success (pgrx/system)
 - ✅ `cargo pgrx install --release` exits with code 0
 - ✅ No "error" lines in output (warnings are OK)
 - ✅ Messages show "Installing shared library to..." and "Copying control file to..."
@@ -409,9 +583,10 @@ Expected performance (will vary based on hardware):
 
 #### Benchmark Success
 - ✅ All SQL files execute without errors
-- ✅ TVIEWs created and registered in catalog
+- ✅ TVIEWs created and registered in catalog (approaches 1 & 2)
+- ✅ Manual tables populated (approaches 3 & 4)
 - ✅ Refresh operations complete successfully
-- ✅ Data consistency checks pass
+- ✅ Performance improvements shown in benchmark_comparison table
 
 ---
 
@@ -452,17 +627,59 @@ cargo pgrx init
 ### Extension Installation Fails
 
 ```bash
-# Verify PostgreSQL is running
-cargo pgrx status  # Should show "Postgres v17 is running"
+# For system-wide installation (requires sudo)
+sudo cargo pgrx install --release
 
-# Verify you can connect
-psql -h localhost -p 28817 -c "SELECT 1;"
+# For pgrx-managed PostgreSQL
+cargo pgrx start pg18  # Use pg18 for PostgreSQL 18
+cargo pgrx install --release
 
-# Check pgrx knows about pg17
-cargo pgrx status
+# Verify installation
+psql -h localhost -p 28818 -c "SELECT * FROM pg_available_extensions WHERE name LIKE '%tviews%';"
+```
 
-# Re-install
-cargo pgrx install --release --pg-config $(which pg_config)
+### Permission Denied During Installation
+
+**Problem**: `cargo pgrx install` fails with "Permission denied"
+
+**Solutions**:
+1. **Use Docker** (recommended):
+   ```bash
+   cd /path/to/pg_tviews
+   docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
+   docker run -d --name pg_tviews_benchmark -p 5432:5432 -e POSTGRES_PASSWORD=postgres pg_tviews_bench
+   ```
+
+2. **Use pgrx-managed PostgreSQL**:
+   ```bash
+   cargo pgrx start pg18
+   cargo pgrx install --release
+   # Use port 28818 instead of 5432
+   ```
+
+3. **Manual approaches 3 & 4** (no extensions needed):
+   ```bash
+   # Skip extension installation entirely
+   # Use manual functions and materialized views
+   ```
+
+### pgrx init Takes Too Long
+
+**Problem**: `cargo pgrx init` compiles multiple PostgreSQL versions (30-60 minutes)
+
+**Solutions**:
+1. **Use Docker** - bypasses local compilation
+2. **Use manual approaches** - no extensions needed
+3. **Pre-built PostgreSQL** - use system PostgreSQL with manual setup
+
+### Data Loading Fails
+
+**Problem**: Foreign key constraint violations during data generation
+
+**Solution**: The data script expects specific sequence values. Use:
+```bash
+# Reset sequences before loading data
+psql -d pg_tviews_benchmark -c "TRUNCATE tb_category, tb_supplier, tb_product, tb_review, tb_inventory RESTART IDENTITY CASCADE;"
 ```
 
 ### Benchmarks Fail
@@ -516,6 +733,46 @@ docker run -d --name pg_tviews_benchmark \
   pg_tviews_bench
 ```
 
+### Manual Setup for Approaches 3 & 4
+
+**Problem**: Want to test incremental benefits without extension complexity
+
+**Solution**: Manual setup process (tested and working):
+
+```bash
+# 1. Create database and setup
+createdb pg_tviews_benchmark
+cd test/sql/comprehensive_benchmarks
+psql -d pg_tviews_benchmark -f 00_setup.sql
+
+# 2. Load modified data (skips extension-dependent parts)
+psql -d pg_tviews_benchmark -v data_scale="'small'" -f data/01_ecommerce_data_small_manual.sql
+
+# 3. Load manual functions
+psql -d pg_tviews_benchmark -f functions/refresh_product_manual.sql
+
+# 4. Populate manual tables
+psql -d pg_tviews_benchmark -c "
+INSERT INTO manual_func_product (pk_product, fk_category, data)
+SELECT pk_product, fk_category, data FROM v_product;
+REFRESH MATERIALIZED VIEW mv_product;
+"
+
+# 5. Run performance comparison
+psql -d pg_tviews_benchmark -c "
+-- Single product update comparison
+UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
+SELECT refresh_product_manual('product', 1, 'price_current');
+UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
+REFRESH MATERIALIZED VIEW mv_product;
+"
+```
+
+**Expected Results**:
+- Manual function: ~2-3ms (surgical update)
+- Full refresh: ~70-80ms (scans all products)
+- Improvement: 25-35× faster
+
 ### Docker-Specific Issues
 
 ```bash
@@ -528,20 +785,166 @@ docker logs pg_tviews_benchmark
 # Restart container
 docker restart pg_tviews_benchmark
 
-# Rebuild container
+# Rebuild container (from pg_tviews directory)
+cd /path/to/pg_tviews
 docker rm -f pg_tviews_benchmark
-docker build -f Dockerfile.benchmarks -t pg_tviews_bench ..
+docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
 docker run -d --name pg_tviews_benchmark -p 5432:5432 -e POSTGRES_PASSWORD=postgres pg_tviews_bench
 ```
 
-### pgrx Version Mismatch
+## Troubleshooting
 
-The project uses pgrx 0.16.1 in `Cargo.toml`, but you may have cargo-pgrx 0.12.8 installed. This is **compatible** - cargo-pgrx 0.12.x can build pgrx 0.16.x projects.
+### Extension Installation Issues
 
-If you encounter issues:
+#### pg_tviews not available
+```bash
+# Check PostgreSQL version
+psql --version  # Must be 13-17, not 18+
+
+# Check if extension is installed
+psql -d postgres -c "SELECT * FROM pg_available_extensions WHERE name = 'pg_tviews';"
+
+# Rebuild extension
+cargo clean && cargo pgrx install --release
+```
+
+#### jsonb_ivm not found
+```bash
+# Benchmarks will automatically use stubs
+# Check if stubs are loaded
+psql -d pg_tviews_benchmark -c "SELECT jsonb_ivm_available();"
+# Should return true
+```
+
+#### Build failures
+```bash
+# Check Rust version
+rustc --version  # Must be 1.70+
+
+# Check pgrx version
+cargo pgrx --version  # Should be 0.12.8+
+
+# Clean and rebuild
+cargo clean && cargo pgrx install --release
+```
+
+### Performance Issues
+
+#### Slow benchmark results
+```bash
+# Check PostgreSQL configuration
+psql -c "SHOW shared_buffers;"
+psql -c "SHOW work_mem;"
+
+# Check system resources
+free -h  # Memory
+df -h    # Disk space
+
+# Restart PostgreSQL with optimized settings
+pg_ctl restart -o "-c shared_buffers=512MB -c work_mem=256MB"
+```
+
+#### Inconsistent results
+```bash
+# Use fresh database for each test
+dropdb pg_tviews_benchmark
+createdb pg_tviews_benchmark
+
+# Clear system cache (Linux)
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+
+# Check for concurrent activity
+psql -c "SELECT * FROM pg_stat_activity;"
+```
+
+### PostgreSQL Connection Issues
+
+#### Port already in use
+```bash
+# Find what's using the port
+lsof -i :5432
+
+# Use different port for pgrx
+cargo pgrx start pg17 --port 5433
+```
+
+#### Permission denied
+```bash
+# Check PostgreSQL is running
+sudo systemctl status postgresql
+
+# Check your user can connect
+psql -U postgres -c "SELECT version();"
+```
+
+### Docker-Specific Issues
+
+#### Container won't start
+```bash
+# Check Docker is running
+docker ps
+
+# Check container logs
+docker logs pg_tviews_bench
+
+# Clean up and restart
+docker-compose down -v
+docker-compose up -d pg_tviews_bench
+```
+
+#### Extension build fails in Docker
+```bash
+# Check available memory
+docker system info | grep Memory
+
+# Increase Docker memory limit or reduce build parallelism
+export DOCKER_BUILDKIT=0
+```
+
+### Benchmark Script Issues
+
+#### Schema creation fails
+```bash
+# Check database exists and is accessible
+psql -l | grep pg_tviews_benchmark
+
+# Run setup manually
+psql -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/00_setup.sql
+```
+
+#### No results generated
+```bash
+# Check benchmark log
+tail -f test/sql/comprehensive_benchmarks/results/benchmark_run_*.log
+
+# Verify extensions are loaded
+psql -d pg_tviews_benchmark -c "\dx"
+```
+
+### pgrx Version Compatibility
+
+**Important**: There are two different version numbers:
+- **pgrx library** (in `Cargo.toml`): 0.16.1 - The Rust library used by the extension
+- **cargo-pgrx CLI tool**: 0.12.8 or 0.16.1 - The command-line tool to build extensions
+
+**These versions are cross-compatible**:
+- cargo-pgrx 0.12.8 can build projects using pgrx 0.16.1 ✅
+- cargo-pgrx 0.16.1 can build projects using pgrx 0.16.1 ✅
+
+**Current setup**:
+- Docker uses: cargo-pgrx 0.12.8 (stable, tested)
+- Project library: pgrx 0.16.1 (with PostgreSQL 18 support)
+
+If you encounter pgrx-related issues:
 
 ```bash
-# Upgrade cargo-pgrx
+# Check your cargo-pgrx version
+cargo pgrx --version
+
+# Option 1: Use 0.12.8 (stable, works with pgrx 0.16.1)
+cargo install cargo-pgrx --version 0.12.8 --locked
+
+# Option 2: Upgrade to 0.16.1 (latest, matching library version)
 cargo install cargo-pgrx --version 0.16.1 --locked
 ```
 
@@ -560,10 +963,28 @@ cargo install cargo-pgrx --version 0.16.1 --locked
 
 After running benchmarks:
 
-1. **Review Results**: Check `docs/benchmarks/results.md` for interpretation
-2. **Test Your Workload**: Create custom benchmarks matching your use case
-3. **Production Deployment**: See `docs/operations/` for deployment guides
-4. **Performance Tuning**: See `docs/operations/performance-tuning.md` (if available)
+1. **Review Results**:
+   - Docker: `docker exec pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "SELECT * FROM benchmark_comparison ORDER BY improvement_ratio DESC;"`
+   - Manual: `psql -d pg_tviews_benchmark -c "SELECT * FROM benchmark_summary;"`
+   - Check `docs/benchmarks/results.md` for interpretation
+
+2. **Choose Your Approach**:
+   - **Production with extensions**: Use Docker or pgrx-managed setup
+   - **Evaluation/development**: Use manual approaches 3 & 4
+   - **Existing systems**: Start with approach 3 (manual functions)
+
+3. **Test Your Workload**: Create custom benchmarks matching your use case
+4. **Production Deployment**: See `docs/operations/` for deployment guides
+5. **Performance Tuning**: See `docs/operations/performance-tuning.md` (if available)
+
+## Summary
+
+| Setup Method | Approaches Supported | Difficulty | Use Case |
+|-------------|---------------------|------------|----------|
+| **Docker** | 1, 2, 3, 4 | Easy | Complete evaluation, production testing |
+| **Manual (3 & 4 only)** | 3, 4 | Medium | Quick evaluation, existing PostgreSQL |
+| **pgrx-managed** | 1, 2, 3, 4 | Hard | Development, full control |
+| **System install** | 1, 2, 3, 4 | Hard | Production deployment (requires sudo) |
 
 ---
 

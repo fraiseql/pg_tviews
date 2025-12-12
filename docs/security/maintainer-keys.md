@@ -18,7 +18,7 @@ sub   cv25519 2024-05-08 [E] [expires: 2026-03-29]
 gpg --keyserver keys.openpgp.org --recv-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FDB6DB4
 
 # From file
-curl -fsSL https://github.com/your-org/pg_tviews/releases/download/keys/lionel.asc | gpg --import
+curl -fsSL https://github.com/fraiseql/pg_tviews/releases/download/keys/lionel.asc | gpg --import
 
 # Verify import
 gpg --list-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FDB6DB4
@@ -45,8 +45,8 @@ This key is used to sign:
 
 ```bash
 # Download release and signature
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.asc
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.asc
 
 # Verify signature
 gpg --verify pg_tviews-0.1.0.tar.gz.asc pg_tviews-0.1.0.tar.gz

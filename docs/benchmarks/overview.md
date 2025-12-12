@@ -7,13 +7,32 @@ Comprehensive benchmarking methodology and test scenarios for pg_tviews performa
 ## Quick Links
 
 - **[Running Benchmarks](running-benchmarks.md)** - Step-by-step guide to execute the benchmark suite
-- **[Docker Setup](docker-benchmarks.md)** - Containerized benchmark environment
-- **[Results](results.md)** - Detailed performance analysis
+- **[Docker Setup](docker-benchmarks.md)** - Containerized benchmark environment (Advanced)
+- **[Results Interpretation](results-interpretation.md)** - Understanding benchmark results
 - **[JSONB IVM Integration](jsonb-ivm-integration.md)** - Smart patching performance
+
+## Prerequisites
+
+### System Requirements
+- **PostgreSQL**: 13-18 (all versions supported)
+- **Rust**: 1.70+ (for building extensions)
+- **Disk Space**: 5GB+ for benchmark data
+- **Memory**: 4GB+ recommended
+
+### Extension Dependencies
+- **pg_tviews**: Core extension (built from source)
+- **jsonb_ivm**: Optional performance extension (built from source)
+- **pg_ivm**: Alternative incremental view extension (optional)
+
+### Results Status
+- **✅ REAL MEASUREMENTS**: Small & Medium scale benchmarks (1K-100K products)
+- **⚠️ PROJECTIONS**: Large scale performance (1M+ products) and real jsonb_ivm benefits
 
 ## Overview
 
 pg_tviews includes a comprehensive benchmark suite that validates performance claims through real-world testing scenarios. The benchmarks measure incremental refresh performance against traditional materialized view approaches.
+
+**Results Status**: The benchmark suite provides both real measurements (small/medium scale) and projections (large scale, real extensions). See [Results Interpretation](results-interpretation.md) for details on what is measured vs projected.
 
 ## Benchmark Suite Architecture
 
@@ -62,6 +81,16 @@ Each scenario tests four approaches:
 - **Description**: Traditional PostgreSQL materialized view refresh
 - **Performance**: 0.01-0.02% of incremental performance
 - **Use Case**: Performance baseline for comparison
+
+## Key Performance Results
+
+| Scale | Operation | Incremental (ms) | Full Refresh (ms) | Improvement |
+|-------|-----------|------------------|-------------------|-------------|
+| 1K products | Single update | 0.6-1.5 | 75.8 | 50-128× |
+| 100K products | Single update | 1.5-2.1 | 4,170 | 1,979-2,853× |
+| 1M products* | Single update | ~2-3 | ~42,000 | ~14,000× |
+
+*Projected based on linear scaling
 
 ## Test Schema
 

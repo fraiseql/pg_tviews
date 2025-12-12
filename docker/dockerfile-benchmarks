@@ -1,7 +1,7 @@
 # Dockerfile for pg_tviews benchmarks with pg_ivm extension
-# Uses PostgreSQL 17 for compatibility with both extensions
+# Uses PostgreSQL 18 for latest features and compatibility
 
-FROM postgres:17
+FROM postgres:18
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     git \
     libssl-dev \
     pkg-config \
-    postgresql-server-dev-17 \
+    postgresql-server-dev-18 \
     python3 \
     python3-pip \
     python3-venv \
@@ -21,16 +21,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install cargo-pgrx for PostgreSQL extension development
-RUN cargo install --locked cargo-pgrx --version 0.12.8
+RUN /root/.cargo/bin/cargo install --locked cargo-pgrx --version 0.12.8
 
-# Initialize pgrx with PostgreSQL 17
-RUN cargo pgrx init --pg17 $(which pg_config)
+# Initialize pgrx with PostgreSQL 18
+RUN /root/.cargo/bin/cargo pgrx init --pg18 $(which pg_config)
 
 # Set working directory
 WORKDIR /build
 
-# Copy both projects (build context should be parent directory)
-# Expected structure: code/pg_tviews and code/jsonb_ivm
+# Copy both projects from build context (parent directory contains both)
+# Build context is set to parent directory in docker-compose.yml
 COPY pg_tviews /build/pg_tviews
 COPY jsonb_ivm /build/jsonb_ivm
 
@@ -40,8 +40,8 @@ RUN cargo pgrx install --release
 
 # Fix: Create minimal SQL installation script for pg_tviews
 # (pgrx doesn't generate one if there are no exported SQL functions)
-RUN echo "-- pg_tviews extension installation script" > /usr/share/postgresql/17/extension/pg_tviews--0.1.0.sql && \
-    echo "-- The extension provides hooks and internal functions only" >> /usr/share/postgresql/17/extension/pg_tviews--0.1.0.sql
+RUN echo "-- pg_tviews extension installation script" > /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql && \
+    echo "-- The extension provides hooks and internal functions only" >> /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql
 
 # Build and install jsonb_ivm extension
 WORKDIR /build/jsonb_ivm

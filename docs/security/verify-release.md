@@ -59,13 +59,13 @@ sudo apt update && sudo apt install gh
 
 ```bash
 # Download release and signature bundle
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.sigstore
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.sigstore
 
 # Verify (keyless)
 cosign verify-blob \
   --bundle pg_tviews-0.1.0.tar.gz.sigstore \
-  --certificate-identity-regexp "https://github.com/your-org/pg_tviews" \
+  --certificate-identity-regexp "https://github.com/fraiseql/pg_tviews" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   pg_tviews-0.1.0.tar.gz
 ```
@@ -79,13 +79,13 @@ Verified OK
 
 ```bash
 # Download SBOM and signature
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json.sigstore
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json.sigstore
 
 # Verify SBOM
 cosign verify-blob \
   --bundle pg_tviews-0.1.0.spdx.json.sigstore \
-  --certificate-identity-regexp "https://github.com/your-org/pg_tviews" \
+  --certificate-identity-regexp "https://github.com/fraiseql/pg_tviews" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   sbom/pg_tviews-0.1.0.spdx.json
 ```
@@ -107,7 +107,7 @@ cosign verify-blob \
 gpg --keyserver keys.openpgp.org --recv-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FDB6DB4
 
 # Or import from file
-curl -fsSL https://github.com/your-org/pg_tviews/releases/download/keys/lionel.asc | gpg --import
+curl -fsSL https://github.com/fraiseql/pg_tviews/releases/download/keys/lionel.asc | gpg --import
 
 # Verify import
 gpg --list-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FDB6DB4
@@ -117,8 +117,8 @@ gpg --list-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FDB6DB4
 
 ```bash
 # Download release and signature
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.asc
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz.asc
 
 # Verify signature
 gpg --verify pg_tviews-0.1.0.tar.gz.asc pg_tviews-0.1.0.tar.gz
@@ -135,8 +135,8 @@ gpg: Good signature from "Lionel Hamayon (président, Évolution digitale) <lion
 
 ```bash
 # Download SBOM and signature
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json.asc
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/sbom/pg_tviews-0.1.0.spdx.json.asc
 
 # Verify SBOM signature
 gpg --verify sbom/pg_tviews-0.1.0.spdx.json.asc sbom/pg_tviews-0.1.0.spdx.json
@@ -155,8 +155,8 @@ gpg --verify sbom/pg_tviews-0.1.0.spdx.json.asc sbom/pg_tviews-0.1.0.spdx.json
 
 ```bash
 # Download artifact and checksum
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.sha256
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.sha256
 
 # Verify checksum
 sha256sum -c pg_tviews-0.1.0.sha256
@@ -171,7 +171,7 @@ pg_tviews-0.1.0.tar.gz: OK
 
 ```bash
 # Download SHA512 checksum
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.sha512
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.sha512
 
 # Verify
 sha512sum -c pg_tviews-0.1.0.sha512
@@ -214,14 +214,14 @@ jobs:
       - name: Verify pg_tviews Release
         run: |
           # Download latest release
-          VERSION=$(curl -s https://api.github.com/repos/your-org/pg_tviews/releases/latest | jq -r .tag_name)
-          wget "https://github.com/your-org/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz"
-          wget "https://github.com/your-org/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz.sigstore"
+          VERSION=$(curl -s https://api.github.com/repos/fraiseql/pg_tviews/releases/latest | jq -r .tag_name)
+          wget "https://github.com/fraiseql/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz"
+          wget "https://github.com/fraiseql/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz.sigstore"
 
           # Verify with Sigstore
           cosign verify-blob \
             --bundle pg_tviews-${VERSION}.tar.gz.sigstore \
-            --certificate-identity-regexp "https://github.com/your-org/pg_tviews" \
+            --certificate-identity-regexp "https://github.com/fraiseql/pg_tviews" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             pg_tviews-${VERSION}.tar.gz
 ```
@@ -233,7 +233,7 @@ jobs:
 **Cause**: Wrong repository or branch specified.
 
 **Solution**: Ensure you're using:
-- Identity regex: `https://github.com/your-org/pg_tviews`
+- Identity regex: `https://github.com/fraiseql/pg_tviews`
 - OIDC issuer: `https://token.actions.githubusercontent.com`
 
 ### Issue: "gpg: Can't check signature: No public key"
@@ -290,16 +290,16 @@ jobs:
       - name: Verify Latest Release
         run: |
           # Get latest release info
-          RELEASE=$(curl -s https://api.github.com/repos/your-org/pg_tviews/releases/latest)
+          RELEASE=$(curl -s https://api.github.com/repos/fraiseql/pg_tviews/releases/latest)
           VERSION=$(echo $RELEASE | jq -r .tag_name)
 
           # Download and verify
-          wget "https://github.com/your-org/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz"
-          wget "https://github.com/your-org/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz.sigstore"
+          wget "https://github.com/fraiseql/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz"
+          wget "https://github.com/fraiseql/pg_tviews/releases/download/${VERSION}/pg_tviews-${VERSION}.tar.gz.sigstore"
 
           cosign verify-blob \
             --bundle pg_tviews-${VERSION}.tar.gz.sigstore \
-            --certificate-identity-regexp "https://github.com/your-org/pg_tviews" \
+            --certificate-identity-regexp "https://github.com/fraiseql/pg_tviews" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             pg_tviews-${VERSION}.tar.gz
 ```

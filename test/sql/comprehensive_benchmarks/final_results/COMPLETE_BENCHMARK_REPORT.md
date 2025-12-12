@@ -8,6 +8,19 @@ This report contains the complete results from the 4-way benchmark comparison te
 **Database**: PostgreSQL $(psql --version | head -1)
 **Test Environment**: Local development with jsonb_ivm stubs
 
+## Results Status
+
+### ✅ REAL MEASUREMENTS (Small & Medium Scale)
+- **Small Scale (1K products)**: Actual PostgreSQL 13-18 execution times
+- **Medium Scale (100K products)**: Actual PostgreSQL 13-18 execution times
+- **Performance ratios**: Calculated from real measurements
+- **PostgreSQL Compatibility**: All versions 13-18 fully supported
+
+### ⚠️ PROJECTIONS (Large Scale & Real Extensions)
+- **Large Scale (1M+ products)**: Linear extrapolation from measured results
+- **Real jsonb_ivm performance**: Estimated 20-50% improvement over stubs
+- **pg_ivm extension performance**: Not measured (different architecture)
+
 ## Approaches Tested
 
 1. **pg_tviews + jsonb_ivm**: Automatic triggers with optimized JSONB patching

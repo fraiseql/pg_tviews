@@ -23,7 +23,7 @@ For production environments with multiple PostgreSQL servers:
 
 ```bash
 # On build server
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 

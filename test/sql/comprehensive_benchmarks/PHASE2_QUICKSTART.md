@@ -180,7 +180,7 @@ psql -c "\copy (SELECT * FROM benchmark_comparison WHERE improvement_ratio > 1 O
 To install real extension (optional):
 ```bash
 # Clone and build jsonb_ivm
-git clone https://github.com/yourusername/jsonb_ivm
+git clone https://github.com/fraiseql/jsonb_ivm
 cd jsonb_ivm
 make && sudo make install
 
@@ -379,4 +379,4 @@ echo "Hardware: [CPU], [RAM], [Storage], PostgreSQL [VERSION]" >> my_benchmark_r
 
 **Questions?** Check `THREE_WAY_COMPARISON.md` for detailed methodology.
 
-**Issues?** Report at: https://github.com/yourusername/pg_tviews/issues
+**Issues?** Report at: https://github.com/fraiseql/pg_tviews/issues

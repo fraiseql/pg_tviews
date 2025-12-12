@@ -148,7 +148,7 @@ jobs:
 
 Add to README.md:
 ```markdown
-[![codecov](https://codecov.io/gh/your-org/pg_tviews/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/pg_tviews)
+[![codecov](https://codecov.io/gh/fraiseql/pg_tviews/branch/main/graph/badge.svg)](https://codecov.io/gh/fraiseql/pg_tviews)
 ```
 
 ## Test Organization

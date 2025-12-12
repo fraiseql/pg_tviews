@@ -1,8 +1,8 @@
 services:
   pg_tviews_bench:
     build:
-      context: ..  # Build from parent directory (code/) to access both projects
-      dockerfile: pg_tviews/Dockerfile.benchmarks
+      context: ..  # Build from parent directory (contains pg_tviews)
+      dockerfile: pg_tviews/docker/dockerfile-benchmarks
     container_name: pg_tviews_bench
     environment:
       - POSTGRES_DB=pg_tviews_benchmark
@@ -11,12 +11,18 @@ services:
       - PGDATA=/var/lib/postgresql/data
     volumes:
       # Mount results directory for easy access from host
-      - ./test/sql/comprehensive_benchmarks/results:/benchmarks/results
+      - ../pg_tviews/test/sql/comprehensive_benchmarks/results:/benchmarks/results
       # Optional: mount PostgreSQL data for persistence
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5433:5432"  # Map to 5433 to avoid conflict with host PostgreSQL
-    shm_size: 1gb  # Important for PostgreSQL performance
+    shm_size: 2gb  # Important for PostgreSQL performance (increase for large scale)
+    deploy:
+      resources:
+        limits:
+          memory: 16G  # Adjust based on scale: 4G for small, 8G for medium, 16G+ for large
+        reservations:
+          memory: 4G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d pg_tviews_benchmark"]
       interval: 10s

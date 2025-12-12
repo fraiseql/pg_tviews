@@ -52,7 +52,7 @@ gpg --verify sbom/pg_tviews-v0.1.0.spdx.json.asc sbom/pg_tviews-v0.1.0.spdx.json
 **Keyless signing** via GitHub Actions OIDC:
 
 - **Signer**: GitHub Actions workflow (automated)
-- **Identity**: Verified via OIDC token from `github.com/your-org/pg_tviews`
+- **Identity**: Verified via OIDC token from `github.com/fraiseql/pg_tviews`
 - **Audit Trail**: Immutable transparency log (Rekor)
 - **Verification**: Against GitHub repository identity
 - **Security**: No long-term secrets, ephemeral keys

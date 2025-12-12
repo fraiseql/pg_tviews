@@ -5,10 +5,10 @@
 **Transactional Materialized Views with Incremental Refresh for PostgreSQL**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15%2B-blue.svg)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/your-org/pg_tviews/releases)
-[![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/your-org/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 *Core infrastructure for FraiseQL's GraphQL Cascade — automatic incremental refresh of JSONB read models with 5,000-12,000× performance gains.*
 
@@ -187,7 +187,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ```bash
 # Prerequisites
-# - PostgreSQL 15+ installed
+# - PostgreSQL 13-18 installed
 # - Rust toolchain 1.70+
 
 # Install pgrx
@@ -197,7 +197,7 @@ cargo install --locked cargo-pgrx
 cargo pgrx init
 
 # Clone and build
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 
@@ -382,7 +382,10 @@ SELECT * FROM pg_tviews_queue_realtime;
 - **[Upgrades](docs/operations/upgrades.md)** - Version migration guides
 
 ### Benchmarks
-- **[Overview](docs/benchmarks/overview.md)** - Performance testing methodology
+- **[Overview](docs/benchmarks/overview.md)** - Performance testing methodology and 4-way comparison
+- **[Running Benchmarks](docs/benchmarks/running-benchmarks.md)** - How to run benchmarks (Docker, pgrx, manual)
+- **[Docker Setup](docs/benchmarks/docker-benchmarks.md)** - Advanced Docker benchmarking (requires jsonb_ivm)
+- **[Results Interpretation](docs/benchmarks/results-interpretation.md)** - Understanding benchmark results
 - **[Results](docs/benchmarks/results.md)** - Detailed benchmark data
 
 ### Development

@@ -27,7 +27,7 @@ cargo pgrx init
 ### Build and Install pg_tviews
 
 ```bash
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 cargo pgrx install --release
 ```

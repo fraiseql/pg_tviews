@@ -1,12 +1,36 @@
-# Docker-Based Benchmarking with pg_ivm
+# Docker-Based Benchmarking (Advanced)
 
-This guide explains how to run comprehensive benchmarks for `pg_tviews` using Docker, which includes proper installation of the `pg_ivm` extension for accurate 4-way comparisons.
+**⚠️ Advanced Setup**: This guide explains how to run comprehensive benchmarks for `pg_tviews` using Docker. This is the most complex setup option and requires building multiple extensions from source.
+
+## Prerequisites
+
+### System Requirements
+- **Docker**: 29.1.1 or later
+- **Docker Compose**: 2.40.3 or later
+- **Disk Space**: 10GB+ (for building extensions)
+- **Memory**: 8GB+ recommended
+- **Time**: 15-30 minutes for initial build
+
+### PostgreSQL Version Support
+- **PostgreSQL 18**: Fully supported (recommended for latest features)
+- **PostgreSQL 17**: Fully supported (stable default)
+- **PostgreSQL 13-16**: Fully supported
+
+### Repository Requirements
+- **pg_tviews**: Current repository
+- **jsonb_ivm**: Separate repository (https://github.com/fraiseql/jsonb_ivm)
+
+### When to Use Docker
+- You need real jsonb_ivm extension performance (not stubs)
+- You want isolated testing environment
+- You have PostgreSQL 18+ on host system
+- You prefer containerized workflows
 
 ## Why Docker?
 
 The Docker setup solves several problems:
 
-1. **Extension Compatibility**: Uses PostgreSQL 17, which is compatible with both pg_tviews and jsonb_ivm extensions
+1. **Extension Compatibility**: Uses PostgreSQL 18, which is fully supported by both pg_tviews and jsonb_ivm extensions
 2. **Reproducibility**: Same environment for all benchmark runs
 3. **Isolation**: Doesn't interfere with your host PostgreSQL installation
 4. **Easy Setup**: One-command build and execution
@@ -29,11 +53,12 @@ The Docker setup solves several problems:
 
 ### The Comparison
 
-The benchmarks compare **3 approaches**:
+The benchmarks compare **4 approaches**:
 
 1. **pg_tviews + jsonb_ivm** (Approach 1) - Complete system with Rust-optimized JSONB patching
 2. **pg_tviews + native PostgreSQL** (Approach 2) - System using native `jsonb_set()` instead of Rust functions
-3. **Full Materialized View Refresh** (Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
+3. **Manual Refresh Functions** (Approach 3) - Explicit refresh calls with full cascade support
+4. **Full Materialized View Refresh** (Approach 4 / Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
 
 ## Technical Issues and Fixes
 
@@ -67,32 +92,59 @@ The benchmarks compare **3 approaches**:
 
 ## What Gets Tested
 
-The Docker benchmarks test **3 approaches**:
+The Docker benchmarks test **4 approaches**:
 
 1. **pg_tviews + jsonb_ivm** (Approach 1) - Surgical JSONB patching with Rust extension
 2. **pg_tviews + native PostgreSQL** (Approach 2) - Using native `jsonb_set()` instead of Rust functions
-3. **Full Materialized View Refresh** (Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
+3. **Manual Refresh Functions** (Approach 3) - Explicit refresh calls with full control
+4. **Full Materialized View Refresh** (Approach 4 / Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
 
-This answers the critical question: **How much does Rust-based jsonb_ivm improve performance over native PostgreSQL?**
+This answers critical questions:
+- **How much does Rust-based jsonb_ivm improve performance over native PostgreSQL?**
+- **What's the trade-off between automatic triggers (approaches 1-2) and manual control (approach 3)?**
+- **How do all incremental approaches compare to traditional full refresh?**
 
 ## Prerequisites
 
-- Docker (29.1.1 or later)
-- Docker Compose
-- At least 4GB free disk space
-- At least 2GB free RAM
+### Required Software
+- **Docker**: 29.1.1 or later
+- **Docker Compose**: 2.40.3 or later
+- **Disk Space**: At least 10GB free (for building extensions)
+- **Memory**: At least 8GB free RAM (4GB minimum)
+
+### Directory Structure
+Both repositories must be in the same parent directory:
+```
+/path/to/code/
+  ├── pg_tviews/       # This repository
+  └── jsonb_ivm/       # Clone from https://github.com/fraiseql/jsonb_ivm
+```
+
+**Clone jsonb_ivm if you haven't already**:
+```bash
+cd /path/to/code  # Parent directory containing pg_tviews
+git clone https://github.com/fraiseql/jsonb_ivm.git
+```
 
 ## Quick Start
 
 ### 1. Build the Container
 
 ```bash
+# From pg_tviews/docker directory
+cd /path/to/pg_tviews/docker
+docker-compose up -d --build
+```
+
+**OR build manually**:
+```bash
 # From pg_tviews root directory
-docker-compose build pg_tviews_bench
+cd /path/to/pg_tviews
+docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
 ```
 
 This will:
-- Create PostgreSQL 17 container
+- Create PostgreSQL 18 container
 - Install Rust toolchain and pgrx
 - Build and install `pg_tviews` extension from source
 - Build and install `jsonb_ivm` extension from source
@@ -100,18 +152,28 @@ This will:
 - Copy all benchmark files
 - Configure PostgreSQL without shared_preload_libraries (to avoid segfaults)
 
-Build time: ~10-15 minutes (compiling Rust extensions)
+Build time: ~15-30 minutes (compiling Rust extensions from source)
 
-### 2. Start the Container
+### 2. Verify Container is Running
 
 ```bash
-docker-compose up -d pg_tviews_bench
-```
+# Check container status
+docker ps | grep pg_tviews
 
-Wait for startup (30-60 seconds). Check health:
-```bash
+# OR with docker-compose
+cd /path/to/pg_tviews/docker
 docker-compose ps
 # Should show "healthy" status
+
+# Check logs
+docker logs pg_tviews_bench
+```
+
+Wait for startup (30-60 seconds) until you see:
+```
+================================================
+pg_tviews Benchmark Container Ready!
+================================================
 ```
 
 ### 3. Run Benchmarks

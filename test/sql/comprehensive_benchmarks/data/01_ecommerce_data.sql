@@ -15,7 +15,7 @@
 
 DO $$
 DECLARE
-    v_scale TEXT := 'large';  -- Hardcoded for now: small, medium, large
+    v_scale TEXT := :'data_scale';  -- Use psql variable: small, medium, large
     v_num_categories INTEGER;
     v_num_products INTEGER;
     v_num_reviews INTEGER;

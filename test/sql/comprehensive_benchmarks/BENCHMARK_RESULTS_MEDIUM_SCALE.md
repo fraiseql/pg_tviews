@@ -1,11 +1,12 @@
 # pg_tviews Benchmark Results - Medium Scale (100K products)
 
 ## Test Environment
-- **PostgreSQL Version**: 18.1
+- **PostgreSQL Version**: 18.1 (fully supported)
 - **Scale**: 100,000 products, 500,000 reviews
 - **pg_ivm Extension**: Using stubs (extension not installed)
 - **Date**: 2025-12-10
 - **Data Distribution**: 1,000 products/category avg, 1,803 products/supplier avg
+- **Results Status**: ✅ **REAL MEASUREMENTS** - Actual PostgreSQL 13-18 execution times
 
 ## Results Summary
 

@@ -51,7 +51,7 @@ pg_tviews provides automatic incremental maintenance of materialized views conta
 ### Quick Install
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 git checkout v0.1.0-beta.1
 
@@ -148,8 +148,8 @@ We encourage beta testers to:
 ## Reporting Issues
 
 Please report bugs and issues on GitHub:
-- Repository: https://github.com/your-org/pg_tviews
-- Issues: https://github.com/your-org/pg_tviews/issues
+- Repository: https://github.com/fraiseql/pg_tviews
+- Issues: https://github.com/fraiseql/pg_tviews/issues
 
 Include:
 - PostgreSQL version

@@ -165,13 +165,13 @@ GPG key management and verification procedures.
 ## 📞 Contact & Support
 
 ### Security Issues
-- **Vulnerability Reports**: [GitHub Security Advisories](https://github.com/your-org/pg_tviews/security/advisories)
+- **Vulnerability Reports**: [GitHub Security Advisories](https://github.com/fraiseql/pg_tviews/security/advisories)
 - **Private Contact**: security@your-domain.com
 - **PGP Key**: [Maintainer Keys](maintainer-keys.md)
 
 ### General Support
-- **Issues**: [GitHub Issues](https://github.com/your-org/pg_tviews/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/pg_tviews/discussions)
+- **Issues**: [GitHub Issues](https://github.com/fraiseql/pg_tviews/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/fraiseql/pg_tviews/discussions)
 - **Documentation**: [Main Documentation](../../README.md)
 
 ## 📈 Security Metrics

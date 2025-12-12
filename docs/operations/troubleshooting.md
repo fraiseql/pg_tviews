@@ -857,7 +857,7 @@ When reporting issues, include:
 
 ### Community Support
 
-- **GitHub Issues**: [github.com/your-org/pg_tviews/issues](https://github.com/your-org/pg_tviews/issues)
+- **GitHub Issues**: [github.com/fraiseql/pg_tviews/issues](https://github.com/fraiseql/pg_tviews/issues)
 - **FraiseQL Community**: For framework-specific integration questions
 
 ## See Also

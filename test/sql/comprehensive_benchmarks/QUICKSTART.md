@@ -46,48 +46,113 @@ cd /home/lionel/code/pg_tviews
 cargo pgrx install --release
 ```
 
-### Option 1: Run All Benchmarks (Recommended)
+### Option 1: Docker (Full 4-Way Benchmark - Recommended)
+
+**Prerequisites**: Both repositories in same parent directory:
+```
+/path/to/code/
+  ├── pg_tviews/
+  └── jsonb_ivm/    # Clone from https://github.com/fraiseql/jsonb_ivm
+```
 
 ```bash
-cd /home/lionel/code/pg_tviews/test/sql/comprehensive_benchmarks
+# Build and run complete benchmark environment
+cd /path/to/pg_tviews
+docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
 
-# Run all scenarios at all scales
+# OR use docker-compose:
+cd /path/to/pg_tviews/docker
+docker-compose up -d --build
+
+# If using docker build, run container:
+docker run -d --name pg_tviews_benchmark -p 5432:5432 -e POSTGRES_PASSWORD=postgres pg_tviews_bench
+
+# Run benchmarks
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+\i /benchmarks/00_setup.sql
+\i /benchmarks/schemas/01_ecommerce_schema.sql
+\i /benchmarks/data/01_ecommerce_data_small.sql
+\i /benchmarks/scenarios/01_ecommerce_benchmarks_small.sql
+"
+
+# View results
+docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
+SELECT operation_type, ROUND(execution_time_ms, 2) as time_ms,
+       CASE WHEN operation_type = 'full_refresh' THEN 'Baseline' ELSE 'Incremental' END as type
+FROM benchmark_results
+ORDER BY execution_time_ms;
+"
+```
+
+### Option 2: Manual Approaches 3 & 4 (No Extensions Required)
+
+```bash
+# 1. Setup database
+createdb pg_tviews_benchmark
+cd test/sql/comprehensive_benchmarks
+psql -d pg_tviews_benchmark -f 00_setup.sql
+
+# 2. Load data (choose scale - modified versions that skip extension parts)
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_small_manual.sql    # Small: 1K products, 5K reviews
+# OR
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_medium_manual.sql  # Medium: 100K products, 500K reviews
+# OR
+psql -d pg_tviews_benchmark -f data/01_ecommerce_data_large_manual.sql   # Large: 1M products, 5M reviews
+
+# 3. Load manual functions
+psql -d pg_tviews_benchmark -f functions/refresh_product_manual.sql
+
+# 4. Populate manual tables
+psql -d pg_tviews_benchmark -c "
+INSERT INTO manual_func_product (pk_product, fk_category, data)
+SELECT pk_product, fk_category, data FROM v_product;
+REFRESH MATERIALIZED VIEW mv_product;
+"
+
+# 5. Run performance test
+psql -d pg_tviews_benchmark -c "
+-- Single product update: Manual vs Full Refresh
+UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
+SELECT 'Manual function:' as method, refresh_product_manual('product', 1, 'price_current') ->> 'execution_ms' || 'ms' as time;
+UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
+
+UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
+SELECT 'Full refresh:' as method, clock_timestamp() - statement_timestamp() as time FROM (SELECT pg_sleep(0)) dummy;
+REFRESH MATERIALIZED VIEW mv_product;
+UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
+"
+```
+
+### Option 3: Run Automated Script (Requires Extensions)
+
+```bash
+# Run all scenarios at all scales (requires pg_tviews extension)
 ./run_benchmarks.sh
+
+# Or run specific scale
+./run_benchmarks.sh --scale small
 
 # Results will be in: results/benchmark_run_YYYYMMDD_HHMMSS.log
 ```
 
-### Option 2: Run Specific Scale
+### Option 4: Manual Step-by-Step (Requires Extensions)
 
 ```bash
-# Run only small scale (fast, ~1 minute)
-./run_benchmarks.sh --scale small
-
-# Run only medium scale (~10 minutes)
-./run_benchmarks.sh --scale medium
-
-# Run only large scale (~1 hour, requires 16GB+ RAM)
-./run_benchmarks.sh --scale large
-```
-
-### Option 3: Manual Step-by-Step
-
-```bash
-# 1. Setup
+# 1. Setup (requires pg_tviews extension installed)
 psql -d postgres -c "CREATE DATABASE pg_tviews_benchmark;"
+psql -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
 psql -d pg_tviews_benchmark -f 00_setup.sql
 
 # 2. Load schema
 psql -d pg_tviews_benchmark -f schemas/01_ecommerce_schema.sql
 
-# 3. Generate data (choose scale)
+# 3. Generate data
 psql -d pg_tviews_benchmark -v data_scale="'small'" -f data/01_ecommerce_data.sql
 
 # 4. Run benchmarks
 psql -d pg_tviews_benchmark -v data_scale="'small'" -f scenarios/01_ecommerce_benchmarks.sql
 
 # 5. View results
-psql -d pg_tviews_benchmark -c "SELECT * FROM benchmark_summary;"
 psql -d pg_tviews_benchmark -c "SELECT * FROM benchmark_comparison ORDER BY improvement_ratio DESC;"
 ```
 
@@ -238,6 +303,49 @@ comprehensive_benchmarks/
 
 ## Sample Output
 
+### Docker/Full Extensions (Approaches 1-4)
+```
+E-Commerce Benchmarks - small scale
+===================================
+
+Test 1: Single Product Price Update
+-----------------------------------
+NOTICE:  [1] pg_tviews + jsonb_ivm: 0.8 ms
+NOTICE:  [2] pg_tviews + native PG: 1.2 ms
+NOTICE:  [3] Manual function: 2.3 ms
+NOTICE:  [4] Full Refresh: 76.7 ms (scanned 1000 rows)
+
+Improvement: 96× to 32× faster
+
+Test 2: Bulk Price Update - 100 products
+-----------------------------------------
+NOTICE:  [1] pg_tviews + jsonb_ivm (100 rows): 8.5 ms (0.085 ms/row)
+NOTICE:  [2] pg_tviews + native PG (100 rows): 12.1 ms (0.121 ms/row)
+NOTICE:  [3] Manual function cascade (100 rows): 6.7 ms
+NOTICE:  [4] Full Refresh: 76.1 ms (scanned 1000 rows)
+
+Improvement: 11× to 9× faster
+```
+
+### Manual Setup (Approaches 3-4 Only)
+```
+Manual Benchmark Results
+========================
+
+Test: Single Product Update
+---------------------------
+Manual function: 2.337 ms (surgical JSONB update)
+Full refresh: 76.700 ms (scanned all 1000 products)
+Improvement: 32.8× faster
+
+Test: Category Cascade (100 products)
+-------------------------------------
+Manual function cascade: 6.656 ms (updated 100 products)
+Full refresh: 76.104 ms (scanned all 1000 products)
+Improvement: 11.4× faster
+
+Summary: Incremental refresh provides 11-33× performance improvement
+         over traditional materialized view refresh
 ```
 E-Commerce Benchmarks - small scale
 ====================================
@@ -259,11 +367,13 @@ Improvement: 41× faster
 
 ## Notes
 
-- ⚠️ The benchmark database will be dropped/recreated on each run
-- ⚠️ Large scale requires significant time and resources
-- ✅ All operations are rolled back (safe to run repeatedly)
-- ✅ Results are persisted in `benchmark_results` table
-- ✅ CSV export available for external analysis
+- ⚠️ **Extension Installation**: Approaches 1 & 2 require pg_tviews extension (system install or Docker)
+- ⚠️ **Manual Alternative**: Approaches 3 & 4 work on any PostgreSQL without extensions
+- ⚠️ **Large Scale**: Requires 16GB+ RAM and significant time (1+ hours)
+- ✅ **Safe Testing**: All operations are rolled back (safe to run repeatedly)
+- ✅ **Results Persistence**: Performance data stored in `benchmark_results` table
+- ✅ **CSV Export**: Available for external analysis with `generate_report.py`
+- ✅ **Docker Recommended**: Most reliable way to run complete 4-way benchmarks
 
 ## Questions?
 

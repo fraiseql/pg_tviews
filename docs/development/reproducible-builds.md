@@ -66,7 +66,7 @@ ENV RUSTFLAGS="-C opt-level=3 -C debuginfo=0 -C strip=symbols"
 curl -fsSL https://get.docker.com | sh
 
 # Clone repository
-git clone https://github.com/your-org/pg_tviews.git
+git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
 ```
 
@@ -88,7 +88,7 @@ ls -lh dist/
 
 ```bash
 # Download official checksums
-curl -fsSL https://github.com/your-org/pg_tviews/releases/download/v0.1.0/SHA256SUMS -o official-checksums.txt
+curl -fsSL https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/SHA256SUMS -o official-checksums.txt
 
 # Verify your build matches
 cd dist

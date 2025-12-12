@@ -194,13 +194,13 @@ Every release includes SBOM files:
 - `pg_tviews-{version}.cyclonedx.json` - CycloneDX format (OWASP)
 - `pg_tviews-{version}.sbom.txt` - Human-readable summary
 
-Download from: https://github.com/your-org/pg_tviews/releases
+Download from: https://github.com/fraiseql/pg_tviews/releases
 
 ### Verify SBOM
 
 ```bash
 # Download SBOM
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0-beta.1/pg_tviews-0.1.0-beta.1.spdx.json
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0-beta.1/pg_tviews-0.1.0-beta.1.spdx.json
 
 # Validate SPDX format
 pyspdxtools -i pg_tviews-0.1.0-beta.1.spdx.json
@@ -333,7 +333,7 @@ SBOM generation supports:
 ### Feedback
 
 For SBOM-related questions or suggestions:
-- **GitHub Issues**: https://github.com/your-org/pg_tviews/issues
+- **GitHub Issues**: https://github.com/fraiseql/pg_tviews/issues
 - **Security Reports**: Create a Security Advisory in GitHub
 - **Email**: security@your-domain.com (for non-security questions only)
 

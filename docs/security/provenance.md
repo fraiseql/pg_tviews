@@ -64,13 +64,13 @@ sudo chmod +x /usr/local/bin/slsa-verifier
 
 ```bash
 # Download release and provenance
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.intoto.jsonl
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.tar.gz
+wget https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/pg_tviews-0.1.0.intoto.jsonl
 
 # Verify provenance
 slsa-verifier verify-artifact \
   --provenance-path pg_tviews-0.1.0.intoto.jsonl \
-  --source-uri github.com/your-org/pg_tviews \
+  --source-uri github.com/fraiseql/pg_tviews \
   --source-tag v0.1.0 \
   pg_tviews-0.1.0.tar.gz
 ```
@@ -86,7 +86,7 @@ PASSED: Verified SLSA provenance
 ```bash
 # Alternative: Use GitHub CLI for attestations
 gh attestation verify pg_tviews-0.1.0.tar.gz \
-  --owner your-org \
+  --owner fraiseql \
   --repo pg_tviews
 ```
 
@@ -99,7 +99,7 @@ SLSA provenance includes comprehensive build metadata:
 {
   "materials": [
     {
-      "uri": "git+https://github.com/your-org/pg_tviews@refs/tags/v0.1.0",
+      "uri": "git+https://github.com/fraiseql/pg_tviews@refs/tags/v0.1.0",
       "digest": {
         "sha1": "abc123..."
       }
@@ -132,7 +132,7 @@ SLSA provenance includes comprehensive build metadata:
   "parameters": {
     "github": {
       "event_name": "push",
-      "repository": "your-org/pg_tviews",
+      "repository": "fraiseql/pg_tviews",
       "workflow_ref": "refs/tags/v0.1.0"
     }
   }
@@ -169,7 +169,7 @@ pg_tviews builds are fully reproducible using Docker containers:
 ./scripts/reproducible-build.sh 0.1.0
 
 # Verify against official checksums
-curl -fsSL https://github.com/your-org/pg_tviews/releases/download/v0.1.0/SHA256SUMS | sha256sum -c
+curl -fsSL https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/SHA256SUMS | sha256sum -c
 ```
 
 ### Build Verification

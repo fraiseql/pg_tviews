@@ -96,15 +96,15 @@ For contributors and advanced users:
 - **pgrx Framework**: [github.com/pgcentralfoundation/pgrx](https://github.com/pgcentralfoundation/pgrx)
 
 ### Related Files
-- **[CHANGELOG](https://github.com/your-org/pg_tviews/blob/main/CHANGELOG.md)** - Version history and release notes
+- **[CHANGELOG](https://github.com/fraiseql/pg_tviews/blob/main/CHANGELOG.md)** - Version history and release notes
 - **[ARCHITECTURE](ARCHITECTURE.md)** - High-level system architecture
 - **[DEVELOPMENT](DEVELOPMENT.md)** - Development environment setup
 
 ## 📞 Support & Community
 
 ### Getting Help
-- **Issues**: [GitHub Issues](https://github.com/your-org/pg_tviews/issues) for bug reports and feature requests
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/pg_tviews/discussions) for questions and community support
+- **Issues**: [GitHub Issues](https://github.com/fraiseql/pg_tviews/issues) for bug reports and feature requests
+- **Discussions**: [GitHub Discussions](https://github.com/fraiseql/pg_tviews/discussions) for questions and community support
 - **FraiseQL Community**: Connect with other FraiseQL users for integration questions
 
 ### Contributing
