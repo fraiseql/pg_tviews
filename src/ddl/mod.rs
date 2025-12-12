@@ -50,3 +50,38 @@ fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<
         Err(e) => Err(format!("Failed to drop TVIEW: {}", e)),
     }
 }
+
+/// SQL function: Convert existing table to TVIEW
+///
+/// Usage: SELECT pg_tviews_convert_table('tv_product', 'product');
+///
+/// This function converts a table that was created with standard DDL
+/// into a proper TVIEW structure with triggers and metadata.
+#[pg_extern]
+fn pg_tviews_convert_table(table_name: &str, _entity_name: &str) -> Result<String, String> {
+    match convert_existing_table_to_tview(table_name) {
+        Ok(()) => Ok(format!("Table '{}' converted to TVIEW successfully", table_name)),
+        Err(e) => Err(format!("Failed to convert table to TVIEW: {}", e)),
+    }
+}
+
+/// SQL function: Refresh TVIEW data (for benchmarking/testing)
+///
+/// Usage: SELECT pg_tviews_refresh('tv_product');
+///
+/// This is primarily for benchmarking - in production, TVIEWs auto-refresh via triggers.
+/// This function forces a full refresh by truncating and repopulating from the base view.
+#[pg_extern]
+fn pg_tviews_refresh(tview_name: &str) -> Result<String, String> {
+    // For benchmarking, we can do a simple truncate + insert from view
+    let view_name = tview_name.replace("tv_", "v_");
+    let sql = format!(
+        "TRUNCATE {}; INSERT INTO {} SELECT * FROM {}",
+        tview_name, tview_name, view_name
+    );
+
+    match Spi::run(&sql) {
+        Ok(_) => Ok(format!("TVIEW '{}' refreshed successfully", tview_name)),
+        Err(e) => Err(format!("Failed to refresh TVIEW: {}", e)),
+    }
+}
