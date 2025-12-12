@@ -67,7 +67,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     qc: *mut pg_sys::QueryCompletion,
 ) {
     // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
-    let result = std::panic::catch_unwind(|| {
+    // Returns true if the hook handled the statement, false if it should pass through
+    let result = std::panic::catch_unwind(|| -> bool {
         // Log ALL hook invocations to debug why DROP isn't being caught
         let query_str = if !query_string.is_null() {
             CStr::from_ptr(query_string).to_string_lossy().to_string()
@@ -85,17 +86,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         }
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
             info!("  → Extension statement, passing through without interception");
-            call_prev_hook_or_standard(
-                pstmt,
-                query_string,
-                read_only_tree,
-                context,
-                params,
-                query_env,
-                dest,
-                qc,
-            );
-            return;
+            return false; // Pass through
         }
 
         // Check if this is PREPARE TRANSACTION
@@ -110,17 +101,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Safety check
         if pstmt.is_null() {
             info!("  → pstmt is null, passing through");
-            call_prev_hook_or_standard(
-                pstmt,
-                query_string,
-                read_only_tree,
-                context,
-                params,
-                query_env,
-                dest,
-                qc,
-            );
-            return;
+            return false; // Pass through
         }
 
         let pstmt_ref = &*pstmt;
@@ -128,17 +109,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Check if this is a utility statement
         if pstmt_ref.utilityStmt.is_null() {
             info!("  → utilityStmt is null, passing through");
-            call_prev_hook_or_standard(
-                pstmt,
-                query_string,
-                read_only_tree,
-                context,
-                params,
-                query_env,
-                dest,
-                qc,
-            );
-            return;
+            return false; // Pass through
         }
 
         let utility_stmt = pstmt_ref.utilityStmt;
@@ -152,7 +123,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if handle_create_table_as(ctas, query_string) {
                 // We handled it - don't call standard utility
 
-                return;
+                return true; // Handled
             }
 
         }
@@ -164,12 +135,37 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if handle_drop_table(drop_stmt, query_string) {
                 // We handled it - don't call standard utility
                 info!("  ✓ DROP was handled by hook, NOT calling standard utility");
-                return;
+                return true; // Handled
             }
             info!("  → DROP not handled, passing through to standard utility");
         }
 
         // Not a tv_* statement - pass through
+        false
+    });
+
+    // Check if hook handled the statement or if we need to pass through
+    let should_pass_through = match result {
+        Ok(handled) => !handled, // Pass through if hook didn't handle it
+        Err(panic_info) => {
+            // PANIC in ProcessUtility hook - log it and pass through to standard utility!
+            let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                format!("{:?}", panic_info)
+            };
+            error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
+            #[allow(unreachable_code)]
+            {
+                true // Pass through after panic (error! macro is marked cold but doesn't actually diverge)
+            }
+        }
+    };
+
+    // Execute the statement if hook didn't handle it or if it panicked
+    if should_pass_through {
         call_prev_hook_or_standard(
             pstmt,
             query_string,
@@ -180,18 +176,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             dest,
             qc,
         );
-    });
-
-    if let Err(panic_info) = result {
-        // PANIC in ProcessUtility hook - log it!
-        let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = panic_info.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            format!("{:?}", panic_info)
-        };
-        error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
     }
 }
 
