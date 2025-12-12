@@ -7,29 +7,31 @@
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
--- Try to load real jsonb_ivm extension, fallback to stubs
+-- Setup benchmark schema for isolation
+\echo 'Setting up benchmark schema...'
+\i cleanup_schema.sql
+
+-- Require REAL jsonb_ivm extension - fail if not available
 DO $$
 BEGIN
     -- Try to create extension
     CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
     RAISE NOTICE '✓ Using REAL jsonb_ivm extension';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE '⚠ jsonb_ivm extension not available, loading stubs';
-    RAISE NOTICE 'Note: Approach 1 benchmarks will use stub functions';
-    RAISE NOTICE 'Real pg_ivm extension may provide better performance';
+    RAISE EXCEPTION 'jsonb_ivm extension not available! Benchmarks require the real extension, not stubs.';
 END $$;
 
--- Load jsonb_ivm stubs if extension not found
--- (stubs provide same API but are implemented in pure PL/pgSQL)
+-- Verify we have the real extension (not stubs)
 DO $$
+DECLARE
+    v_ext_exists BOOLEAN;
 BEGIN
-    -- Check if jsonb_smart_patch_nested exists
-    PERFORM 1 FROM pg_proc WHERE proname = 'jsonb_smart_patch_nested';
-    IF NOT FOUND THEN
-        RAISE NOTICE 'Loading jsonb_ivm stub functions...';
+    SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm') INTO v_ext_exists;
+    IF NOT v_ext_exists THEN
+        RAISE EXCEPTION 'jsonb_ivm extension not installed! Cannot proceed with benchmarks.';
     END IF;
+    RAISE NOTICE '✓ jsonb_ivm extension verified';
 END $$;
-\i ../jsonb_ivm_stubs.sql
 
 -- Create results tracking table
 CREATE TABLE benchmark_results (

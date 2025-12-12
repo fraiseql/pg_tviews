@@ -11,6 +11,21 @@ RESULTS_DIR="results"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="$RESULTS_DIR/benchmark_run_$TIMESTAMP.log"
 
+# Cleanup on error/exit
+cleanup_on_exit() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo -e "${YELLOW}Benchmark failed, cleaning up partial state...${NC}"
+
+        # Drop benchmark schema to clean up partial state
+        psql -d "$DB_NAME" -c "DROP SCHEMA IF EXISTS benchmark CASCADE;" 2>/dev/null || true
+
+        echo -e "${GREEN}✓ Cleanup complete${NC}"
+    fi
+}
+
+trap cleanup_on_exit EXIT INT TERM
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,6 +55,17 @@ error_exit() {
     exit 1
 }
 
+# Diagnostic function to check database state
+check_database_state() {
+    log "  Database state:"
+
+    local table_count=$($PSQL -t -c "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'benchmark' AND (tablename LIKE 'tb_%' OR tablename LIKE 'pk_%');")
+    local view_count=$($PSQL -t -c "SELECT COUNT(*) FROM pg_matviews WHERE schemaname = 'benchmark';")
+    local trigger_count=$($PSQL -t -c "SELECT COUNT(*) FROM pg_event_trigger WHERE evtname LIKE 'pg_tviews%';")
+
+    log "    Tables: ${table_count}, Views: ${view_count}, Triggers: ${trigger_count}"
+}
+
 # Check PostgreSQL connection
 log "${YELLOW}Checking PostgreSQL connection...${NC}"
 if ! psql -d postgres -c '\q' 2>/dev/null; then
@@ -50,14 +76,10 @@ log "${GREEN}✓ PostgreSQL connection OK${NC}\n"
 # Setup benchmark database
 log "${YELLOW}Setting up benchmark database...${NC}"
 if $PSQL -c '\q' 2>/dev/null; then
-    log "  Database $DB_NAME already exists"
-    read -p "  Drop and recreate? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        psql -d postgres -c "DROP DATABASE IF EXISTS $DB_NAME;" || error_exit "Failed to drop database"
-        psql -d postgres -c "CREATE DATABASE $DB_NAME;" || error_exit "Failed to create database"
-        log "  ${GREEN}✓ Database recreated${NC}"
-    fi
+    log "  Database $DB_NAME already exists - dropping and recreating"
+    psql -d postgres -c "DROP DATABASE IF EXISTS $DB_NAME;" || error_exit "Failed to drop database"
+    psql -d postgres -c "CREATE DATABASE $DB_NAME;" || error_exit "Failed to create database"
+    log "  ${GREEN}✓ Database recreated${NC}"
 else
     psql -d postgres -c "CREATE DATABASE $DB_NAME;" || error_exit "Failed to create database"
     log "  ${GREEN}✓ Database created${NC}"
@@ -76,8 +98,28 @@ run_scenario() {
 
     log "${BLUE}=== Running $scenario_name ($scale scale) ===${NC}"
 
+    # Show state before cleanup (if DEBUG mode enabled)
+    if [ "$DEBUG" = "true" ]; then
+        log "Before cleanup:"
+        check_database_state
+    fi
+
+    # Clean up previous scenario
+    log "  Cleaning up previous scenario..."
+    $PSQL -c "DROP SCHEMA IF EXISTS benchmark CASCADE; CREATE SCHEMA benchmark; SET search_path TO benchmark, public;" \
+        || error_exit "Schema cleanup failed"
+    log "  ${GREEN}✓ Cleanup complete${NC}"
+
+    # Show state after cleanup (if DEBUG mode enabled)
+    if [ "$DEBUG" = "true" ]; then
+        log "After cleanup:"
+        check_database_state
+    fi
+
     # Load schema
     log "  Loading schema..."
+    # Set search_path before loading schema
+    $PSQL -c "SET search_path TO benchmark, public;" || error_exit "Failed to set search_path"
     $PSQL -f "schemas/${scenario}_schema.sql" > /dev/null 2>&1 || error_exit "Schema load failed for $scenario"
 
     # Generate data
@@ -87,12 +129,6 @@ run_scenario() {
     # Run benchmarks
     log "  Running benchmarks..."
     $PSQL -v data_scale="'$scale'" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"
-
-    # Clean up for next run
-    log "  Cleaning up..."
-    $PSQL -c "DROP TABLE IF EXISTS tb_category, tb_product, tb_review, tb_inventory CASCADE;" > /dev/null 2>&1
-    $PSQL -c "DROP TABLE IF EXISTS tv_product, manual_product CASCADE;" > /dev/null 2>&1
-    $PSQL -c "DROP MATERIALIZED VIEW IF EXISTS mv_product CASCADE;" > /dev/null 2>&1
 
     log "${GREEN}✓ $scenario_name ($scale) complete${NC}\n"
 }

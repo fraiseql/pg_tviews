@@ -159,7 +159,7 @@ SELECT
 FROM v_product;
 
 -- Step 2: Convert to TVIEW (registers metadata and creates triggers)
-SELECT pg_tviews_convert_table('tv_product', 'product');
+SELECT pg_tviews_convert_existing_table('tv_product');
 
 -- GIN index for JSONB queries
 CREATE INDEX idx_tv_product_data ON tv_product USING GIN (data);
