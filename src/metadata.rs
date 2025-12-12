@@ -147,6 +147,7 @@ FROM pg_tview_meta
 GROUP BY entity;
     "#,
     name = "monitoring_views",
+    requires = ["create_metadata_tables"]
 );
 
 /// Create the metadata tables required for pg_tviews extension
