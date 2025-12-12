@@ -101,7 +101,7 @@ if ! podman exec "$CONTAINER_NAME" bash -c "
     export PGDATABASE=postgres
 
     cd /benchmarks
-    ./run_benchmarks.sh --scale $SCALES 2>&1
+    ./run_benchmarks.sh --scale \"$SCALES\" 2>&1
 " | tee "$RESULTS_LOG"; then
     echo ""
     echo "ERROR: Benchmark execution failed"
