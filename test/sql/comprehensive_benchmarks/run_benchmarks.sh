@@ -120,7 +120,7 @@ run_scenario() {
     log "  Loading schema..."
     # Set search_path before loading schema
     $PSQL -c "SET search_path TO benchmark, public;" || error_exit "Failed to set search_path"
-    $PSQL -f "schemas/${scenario}_schema.sql" > /dev/null 2>&1 || error_exit "Schema load failed for $scenario"
+    $PSQL -f "schemas/${scenario}_schema.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "Schema load failed for $scenario"
 
     # Generate data
     log "  Generating $scale scale data..."
