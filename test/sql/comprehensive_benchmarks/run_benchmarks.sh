@@ -124,7 +124,7 @@ run_scenario() {
 
     # Generate data
     log "  Generating $scale scale data..."
-    $PSQL -v data_scale="'$scale'" -f "data/${scenario}_data.sql" 2>&1 | grep -E "NOTICE|ERROR" | tee -a "$LOG_FILE"
+    $PSQL -v data_scale="$scale" -f "data/${scenario}_data.sql" 2>&1 | grep -E "NOTICE|ERROR" | tee -a "$LOG_FILE"
 
     # Run benchmarks
     log "  Running benchmarks..."
