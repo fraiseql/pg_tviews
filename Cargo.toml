@@ -12,7 +12,7 @@ keywords = ["postgresql", "materialized-views", "incremental-refresh", "database
 categories = ["database"]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "lib"]
 
 [[bin]]
 name = "pgrx_embed_pg_tviews"

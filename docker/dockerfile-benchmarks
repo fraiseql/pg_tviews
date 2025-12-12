@@ -21,7 +21,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install cargo-pgrx for PostgreSQL extension development
-RUN /root/.cargo/bin/cargo install --locked cargo-pgrx --version 0.12.8
+# Using version 0.16.1 for PostgreSQL 18 support
+RUN /root/.cargo/bin/cargo install --locked cargo-pgrx --version 0.16.1
 
 # Initialize pgrx with PostgreSQL 18
 RUN /root/.cargo/bin/cargo pgrx init --pg18 $(which pg_config)
@@ -38,10 +39,15 @@ COPY jsonb_ivm /build/jsonb_ivm
 WORKDIR /build/pg_tviews
 RUN cargo pgrx install --release
 
-# Fix: Create minimal SQL installation script for pg_tviews
-# (pgrx doesn't generate one if there are no exported SQL functions)
-RUN echo "-- pg_tviews extension installation script" > /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql && \
-    echo "-- The extension provides hooks and internal functions only" >> /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql
+# Check if pgrx generated SQL file, if not create minimal one
+RUN if [ ! -f /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql ]; then \
+      echo "-- pg_tviews extension (functions exported from Rust via pgrx .so file)" > /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql; \
+    fi && \
+    echo "=== Extension files installed ===" && \
+    ls -la /usr/share/postgresql/18/extension/pg_tviews* && \
+    ls -la /usr/lib/postgresql/18/lib/pg_tviews.so && \
+    echo "=== SQL file contents ===" && \
+    cat /usr/share/postgresql/18/extension/pg_tviews--0.1.0.sql
 
 # Build and install jsonb_ivm extension
 WORKDIR /build/jsonb_ivm

@@ -51,14 +51,17 @@ fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<
     }
 }
 
-/// SQL function: Convert existing table to TVIEW
+/// SQL function: Convert existing table to TVIEW (for benchmarking/testing)
 ///
-/// Usage: SELECT pg_tviews_convert_table('tv_product', 'product');
+/// Usage: SELECT pg_tviews_convert_existing_table('tv_product');
 ///
 /// This function converts a table that was created with standard DDL
 /// into a proper TVIEW structure with triggers and metadata.
+///
+/// Note: Different from the internal pg_tviews_convert_table() which is called
+/// by event triggers during CREATE TABLE interception.
 #[pg_extern]
-fn pg_tviews_convert_table(table_name: &str, _entity_name: &str) -> Result<String, String> {
+fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
     match convert_existing_table_to_tview(table_name) {
         Ok(()) => Ok(format!("Table '{}' converted to TVIEW successfully", table_name)),
         Err(e) => Err(format!("Failed to convert table to TVIEW: {}", e)),
