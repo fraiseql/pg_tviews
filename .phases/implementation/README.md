@@ -418,7 +418,7 @@ mod tests {
 - [ ] **NEW:** Cascade depth limited to 10 levels
 - [ ] Array column support
 - [ ] Batch optimization
-- [ ] `DROP TVIEW` cleanup
+- [ ] `DROP TABLE` cleanup
 
 ### Quality Requirements (Updated)
 

@@ -196,7 +196,7 @@ CREATE INDEX idx_manual_func_product_category ON manual_func_product(fk_category
 CREATE INDEX idx_manual_func_product_id ON manual_func_product((data->>'id'));
 CREATE INDEX idx_manual_func_product_version ON manual_func_product(version);
 
--- Note: CREATE TVIEW automatically handles pg_tview_meta registration and trigger setup
+-- Note: CREATE TABLE tv_ AS SELECT ... automatically handles pg_tview_meta registration and trigger setup
 
 -- Traditional materialized view for comparison
 -- Approach 4: Full refresh (traditional approach)
@@ -207,7 +207,7 @@ CREATE UNIQUE INDEX idx_mv_product_pk ON mv_product(pk_product);
 CREATE INDEX idx_mv_product_data ON mv_product USING GIN (data);
 
 -- Helper functions
--- Note: refresh_tv_product() is no longer needed since CREATE TVIEW auto-populates
+-- Note: refresh_tv_product() is no longer needed since CREATE TABLE tv_ AS SELECT ... auto-populates
 -- and automatic triggers keep tv_product synchronized
 
 CREATE OR REPLACE FUNCTION refresh_manual_product() RETURNS void AS $$

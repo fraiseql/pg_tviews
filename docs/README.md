@@ -22,9 +22,10 @@ Want to integrate pg_tviews into your FraiseQL application?
 Need to design CQRS systems with pg_tviews?
 
 1. **[Architect Guide](user-guides/architects.md)** - CQRS design patterns and decisions
-2. **[Performance Benchmarks](benchmarks/overview.md)** - Scaling characteristics and limits
-3. **[Architecture Deep Dive](development/architecture-deep-dive.md)** - Technical implementation details
-4. **[Configuration Reference](reference/configuration.md)** - Tuning and optimization options
+2. **[Running Benchmarks](benchmarks/running-benchmarks.md)** - Execute performance tests
+3. **[Performance Analysis](benchmarks/overview.md)** - Scaling characteristics and limits
+4. **[Architecture Deep Dive](development/architecture-deep-dive.md)** - Technical implementation details
+5. **[Configuration Reference](reference/configuration.md)** - Tuning and optimization options
 
 #### 🛠️ **I'm a Database Operator**
 Responsible for production deployment and monitoring?
@@ -75,8 +76,10 @@ Production operations and maintenance:
 ### Benchmarks
 Performance testing and validation:
 
+- **[Running Benchmarks](benchmarks/running-benchmarks.md)** - Step-by-step guide to execute benchmarks
 - **[Overview](benchmarks/overview.md)** - Benchmark methodology and test scenarios
 - **[Results](benchmarks/results.md)** - Detailed performance data and analysis
+- **[Docker Setup](benchmarks/docker-benchmarks.md)** - Containerized benchmark environment
 
 ### Development
 For contributors and advanced users:

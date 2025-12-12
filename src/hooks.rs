@@ -1,7 +1,7 @@
 //! ProcessUtility Hooks: DDL Interception and Transaction Management
 //!
 //! This module implements PostgreSQL hooks for DDL statement interception:
-//! - **ProcessUtility Hook**: Intercepts CREATE/DROP TVIEW statements
+//! - **ProcessUtility Hook**: Intercepts CREATE TABLE tv_* and DROP TABLE tv_* statements
 //! - **Transaction Callbacks**: Handles PREPARE/COMMIT/ABORT events
 //! - **GID Capture**: Stores transaction IDs for 2PC support
 //! - **DISCARD ALL**: Clears caches on connection pooling reset

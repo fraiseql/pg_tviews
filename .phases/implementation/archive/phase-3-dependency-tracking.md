@@ -28,7 +28,7 @@ Implement automatic dependency detection and trigger installation:
 - [ ] Triggers fire successfully on base table changes
 - [ ] Dependency metadata registered in pg_tview_meta
 - [ ] Helper view metadata registered in pg_tview_helpers
-- [ ] DROP TVIEW removes all triggers
+- [ ] DROP TABLE removes all triggers
 - [ ] All tests pass with nested dependencies
 
 ---
@@ -474,7 +474,7 @@ fn register_helper(
 }
 ```
 
-Update DROP TVIEW to remove triggers:
+Update DROP TABLE to remove triggers:
 
 ```rust
 // src/ddl/drop.rs (updated)
@@ -720,7 +720,7 @@ touch src/dependency/triggers.rs
 4. Test trigger fires
 5. Implement remove_triggers()
 
-### Step 4: Update CREATE/DROP TVIEW
+### Step 4: Update CREATE/DROP TABLE
 
 1. Integrate dependency detection into create_tview()
 2. Update metadata registration
@@ -741,7 +741,7 @@ touch src/dependency/triggers.rs
 - [x] Triggers fire on INSERT/UPDATE/DELETE
 - [x] Metadata includes dependencies array
 - [x] Helper metadata tracks used_by relationships
-- [x] DROP TVIEW removes all triggers
+- [x] DROP TABLE removes all triggers
 
 ### Quality Requirements
 

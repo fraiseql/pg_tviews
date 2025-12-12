@@ -6,7 +6,7 @@ This document focuses on **how TVIEW handles multi-update transactions**:
 * The **same TVIEW row** might be logically affected multiple times.
 * We want **exactly one refresh per `(entity, pk)` per transaction**, at **commit time**, in **dependency order**.
 
-We assume the rest of TVIEW (CREATE TVIEW, view/table generation, dependency graph) is already designed.
+We assume the rest of TVIEW (CREATE TABLE tv_ AS SELECT, view/table generation, dependency graph) is already designed.
 
 ---
 

@@ -21,7 +21,7 @@ This roadmap tracks the documentation work required to move from beta to product
 - **SQL Monitoring**: 7 functions + 4 views undocumented
 - **Operations Guide**: No backup/restore/pooling documentation
 - **Error Reference**: 14 error types undocumented
-- **DDL Reference**: CREATE/DROP TVIEW syntax incomplete
+- **DDL Reference**: CREATE/DROP TABLE syntax incomplete
 
 ## Documentation Phases
 
@@ -61,7 +61,7 @@ This roadmap tracks the documentation work required to move from beta to product
 
 **Deliverables**:
 - `docs/operations/monitoring.md` - Complete monitoring guide
-- `docs/reference/ddl.md` - CREATE/DROP TVIEW syntax
+- `docs/reference/ddl.md` - CREATE/DROP TABLE syntax
 - Updated `README.md` with monitoring section
 
 **SQL Objects to Document**:

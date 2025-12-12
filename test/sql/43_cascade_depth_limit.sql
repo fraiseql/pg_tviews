@@ -79,7 +79,7 @@ INSERT INTO tb_level_5 (fk_level_4, value) VALUES (1, 'Level 5');
 \echo ''
 \echo 'Test 1: Shallow hierarchy works (5 levels)'
 
-CREATE TVIEW tv_level_0 AS
+CREATE TABLE tv_level_0 AS
 SELECT
     pk_level_0,
     id,
@@ -89,7 +89,7 @@ SELECT
     ) AS data
 FROM tb_level_0;
 
-CREATE TVIEW tv_level_1 AS
+CREATE TABLE tv_level_1 AS
 SELECT
     l1.pk_level_1,
     l1.id,
@@ -103,7 +103,7 @@ SELECT
 FROM tb_level_1 l1
 JOIN v_level_0 ON v_level_0.pk_level_0 = l1.fk_level_0;
 
-CREATE TVIEW tv_level_2 AS
+CREATE TABLE tv_level_2 AS
 SELECT
     l2.pk_level_2,
     l2.id,
@@ -117,7 +117,7 @@ SELECT
 FROM tb_level_2 l2
 JOIN v_level_1 ON v_level_1.pk_level_1 = l2.fk_level_1;
 
-CREATE TVIEW tv_level_3 AS
+CREATE TABLE tv_level_3 AS
 SELECT
     l3.pk_level_3,
     l3.id,
@@ -131,7 +131,7 @@ SELECT
 FROM tb_level_3 l3
 JOIN v_level_2 ON v_level_2.pk_level_2 = l3.fk_level_2;
 
-CREATE TVIEW tv_level_4 AS
+CREATE TABLE tv_level_4 AS
 SELECT
     l4.pk_level_4,
     l4.id,
@@ -145,7 +145,7 @@ SELECT
 FROM tb_level_4 l4
 JOIN v_level_3 ON v_level_3.pk_level_3 = l4.fk_level_3;
 
-CREATE TVIEW tv_level_5 AS
+CREATE TABLE tv_level_5 AS
 SELECT
     l5.pk_level_5,
     l5.id,

@@ -110,7 +110,7 @@ SELECT pg_advisory_xact_lock(
 ```
 
 **Lock Hierarchy:**
-1. **Metadata locks:** Prevent concurrent CREATE/DROP TVIEW
+1. **Metadata locks:** Prevent concurrent CREATE/DROP TABLE
 2. **Row locks:** Prevent concurrent refresh of same row
 3. **Cascade locks:** (Optional) Prevent cascade storms
 

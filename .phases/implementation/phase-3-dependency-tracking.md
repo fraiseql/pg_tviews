@@ -43,7 +43,7 @@ Implement automatic dependency detection and trigger installation:
 - [ ] Triggers fire successfully on base table changes
 - [ ] Dependency metadata registered in pg_tview_meta
 - [ ] Helper view metadata registered in pg_tview_helpers
-- [ ] DROP TVIEW removes all triggers
+- [ ] DROP TABLE removes all triggers
 - [ ] All tests pass with nested dependencies (up to 10 levels)
 - [ ] **NEW:** Stress test with 100+ dependencies completes in <5s
 
@@ -720,7 +720,7 @@ fn trigger_exists(table_name: &str, trigger_name: &str) -> TViewResult<bool> {
 - [x] Triggers fire on INSERT/UPDATE/DELETE
 - [x] Metadata includes dependencies array
 - [x] Helper metadata tracks used_by relationships
-- [x] DROP TVIEW removes all triggers
+- [x] DROP TABLE removes all triggers
 - [x] **NEW:** Check jsonb_ivm extension installed
 
 ### Quality Requirements
@@ -773,7 +773,7 @@ touch src/dependency/triggers.rs
 5. Test trigger fires
 6. Implement remove_triggers()
 
-### Step 4: Update CREATE/DROP TVIEW
+### Step 4: Update CREATE/DROP TABLE
 
 1. Integrate dependency detection into create_tview()
 2. Update metadata registration
@@ -792,7 +792,7 @@ SELECT create_base_tables(100);
 SELECT create_view_hierarchy(100);
 
 -- Create TVIEW on top
-CREATE TVIEW tv_stress AS SELECT * FROM v_top;
+CREATE TABLE tv_stress AS SELECT * FROM v_top;
 
 -- Verify all dependencies found
 SELECT COUNT(*) FROM unnest(
@@ -801,7 +801,7 @@ SELECT COUNT(*) FROM unnest(
 -- Expected: 100
 
 -- Cleanup
-DROP TVIEW tv_stress;
+DROP TABLE tv_stress;
 EOF
 ```
 

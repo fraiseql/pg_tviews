@@ -104,12 +104,12 @@ Phase N: [Name]
 - Backing view `v_<entity>` created
 - Materialized table `tv_<entity>` with correct schema
 - Initial data population
-- `DROP TVIEW` cleanup
+- `DROP TABLE` cleanup
 
 **Critical Tests:**
 1. Basic TVIEW creation (minimal example)
 2. TVIEW with foreign keys
-3. DROP TVIEW cleanup
+3. DROP TABLE cleanup
 
 **Dependencies:** Phase 0 + Phase 1 complete
 
@@ -375,7 +375,7 @@ pub fn create_tview(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 - [ ] FK lineage cascade
 - [ ] Array column support
 - [ ] Batch optimization
-- [ ] `DROP TVIEW` cleanup
+- [ ] `DROP TABLE` cleanup
 
 ### Quality Requirements
 

@@ -1,5 +1,5 @@
 -- Test DDL Syntax Consistency
--- Verify CREATE TVIEW and pg_tviews_create() produce identical results
+-- Verify CREATE TABLE tv_ AS SELECT ... and pg_tviews_create() produce identical results
 
 -- Clean up any existing test data
 DROP TABLE IF EXISTS tb_test_user CASCADE;
@@ -21,8 +21,8 @@ INSERT INTO tb_test_user (name, email) VALUES
     ('Alice', 'alice@example.com'),
     ('Bob', 'bob@example.com');
 
--- Method 1: CREATE TVIEW DDL (intercepted by ProcessUtility hook)
-CREATE TVIEW tv_test_user1 AS
+-- Method 1: CREATE TABLE tv_ AS SELECT ... DDL (intercepted by ProcessUtility hook)
+CREATE TABLE tv_test_user1 AS
 SELECT
     pk_test_user as pk_test_user,
     id,

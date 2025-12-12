@@ -26,7 +26,7 @@ Implement `CREATE TVIEW` SQL syntax that automatically:
 - [ ] Materialized table `tv_post` created with correct schema
 - [ ] Initial data populated (`INSERT INTO tv_post SELECT * FROM v_post`)
 - [ ] Metadata registered in `pg_tview_meta`
-- [ ] `DROP TVIEW tv_post` cleans up all objects
+- [ ] `DROP TABLE tv_post` cleans up all objects
 - [ ] All tests pass with realistic examples
 
 ---
@@ -586,7 +586,7 @@ psql -d test_db -f test/sql/21_create_tview_with_fks.sql
 
 ---
 
-### Test 3: DROP TVIEW Cleanup
+### Test 3: DROP TABLE Cleanup
 
 **RED Phase - Write Failing Test:**
 
@@ -609,8 +609,8 @@ BEGIN;
     FROM pg_tview_meta WHERE entity = 'test';
     -- Expected: t
 
-    -- Test: DROP TVIEW
-    DROP TVIEW tv_test;
+    -- Test: DROP TABLE
+    DROP TABLE tv_test;
 
     -- Verification 1: Backing view dropped
     SELECT COUNT(*) = 0 AS view_dropped
@@ -687,8 +687,8 @@ fn process_utility_hook(...) {
             return;
         }
 
-        // Handle DROP TVIEW
-        if query_str.trim().to_uppercase().starts_with("DROP TVIEW") {
+        // Handle DROP TABLE
+        if query_str.trim().to_uppercase().starts_with("DROP TABLE") {
             handle_drop_tview(query_str);
             return;
         }
@@ -708,7 +708,7 @@ fn handle_drop_tview(query: &str) {
             Err(e) => error!("Failed to drop TVIEW: {}", e),
         }
     } else {
-        error!("Invalid DROP TVIEW syntax");
+        error!("Invalid DROP TABLE syntax");
     }
 }
 ```
@@ -742,7 +742,7 @@ Follow RED → GREEN → REFACTOR for each test:
 5. Add FK support
 6. Test edge cases
 
-### Step 3: Implement DROP TVIEW (TDD)
+### Step 3: Implement DROP TABLE (TDD)
 
 1. Write failing test
 2. Implement drop_tview() function
@@ -771,7 +771,7 @@ pub fn detect_helper_views(select_sql: &str) -> Vec<String> {
 - [x] Materialized table `tv_<entity>` with correct schema
 - [x] Initial data populated from view
 - [x] Metadata registered in `pg_tview_meta`
-- [x] `DROP TVIEW tv_<name>` removes all objects
+- [x] `DROP TABLE tv_<name>` removes all objects
 - [x] Indexes created on id, UUID FKs, and data columns
 
 ### Quality Requirements
@@ -787,7 +787,7 @@ pub fn detect_helper_views(select_sql: &str) -> Vec<String> {
 
 - [x] TVIEW creation < 1s for small tables (<1000 rows)
 - [x] TVIEW creation < 10s for medium tables (<100k rows)
-- [x] DROP TVIEW < 100ms
+- [x] DROP TABLE < 100ms
 
 ---
 
@@ -799,7 +799,7 @@ If Phase 2 fails:
 2. **Schema Generation Bugs**: Add validation before DDL execution
 3. **Performance Issues**: Add LIMIT to initial population, document separately
 
-Can rollback with `DROP TVIEW` - all objects cleaned up properly.
+Can rollback with `DROP TABLE` - all objects cleaned up properly.
 
 ---
 

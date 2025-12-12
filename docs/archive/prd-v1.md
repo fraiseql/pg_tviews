@@ -395,8 +395,8 @@ pub fn propagate(row: &ViewRow) -> spi::Result<()> {
 # 11. Error Handling
 
 * Changing a `v_*` schema invalidates TVIEW → requires full rebuild
-* Cyclic view dependencies detected on `CREATE TVIEW`
-* Missing FK columns → `CREATE TVIEW` error
+* Cyclic view dependencies detected on `CREATE TABLE tv_`
+* Missing FK columns → `CREATE TABLE tv_` error
 * JSON patch failure → fallback to full replacement
 * Misconfigured FK UUIDs → validation error on creation
 
@@ -407,13 +407,13 @@ pub fn propagate(row: &ViewRow) -> spi::Result<()> {
 ### Create
 
 ```sql
-CREATE TVIEW FOR v_post;
+CREATE TABLE tv_post AS SELECT * FROM v_post;
 ```
 
 ### Drop
 
 ```sql
-DROP TVIEW tv_post;
+DROP TABLE tv_post;
 ```
 
 ### Manual Refresh

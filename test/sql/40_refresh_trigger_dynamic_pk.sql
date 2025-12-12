@@ -34,7 +34,7 @@ CREATE TABLE tb_post (
 INSERT INTO tb_post (title, content)
 VALUES ('Original Post', 'Original Content');
 
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post,
     id,
@@ -91,7 +91,7 @@ CREATE TABLE tb_user (
 INSERT INTO tb_user (name, email)
 VALUES ('Alice', 'alice@example.com');
 
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user,
     id,

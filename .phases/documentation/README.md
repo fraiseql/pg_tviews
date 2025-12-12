@@ -40,7 +40,7 @@ Document all SQL monitoring functions, views, and statement-level trigger manage
 
 **Deliverables**:
 - `docs/operations/monitoring.md` - Monitoring and metrics guide
-- `docs/reference/ddl.md` - CREATE/DROP TVIEW syntax
+- `docs/reference/ddl.md` - CREATE/DROP TABLE syntax
 - Update README.md with monitoring section
 
 ### Phase Doc-3: Operations Guide (CRITICAL)

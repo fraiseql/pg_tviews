@@ -139,7 +139,7 @@ Establish processes to keep documentation at A+ quality forever.
 ### Method 1: SQL DDL (Recommended)
 Most users should use standard SQL DDL syntax:
 ```sql
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_posts AS SELECT ...;
 ```
 
 ### Method 2: Function API (Programmatic)
@@ -155,7 +155,7 @@ SELECT pg_tviews_create('tv_posts', 'SELECT ...');
 
 Use the SQL DDL syntax:
 ```sql
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_posts AS SELECT ...;
 ```
 
 ⚠️ **Deprecated**: The `pg_tviews_create()` function exists for
@@ -575,7 +575,7 @@ SELECT pg_tviews_cascade('tb_post'::regclass::oid, 123);
 
 ### Basic Syntax
 ```sql
-CREATE TVIEW tv_entity_name AS
+CREATE TABLE tv_entity_name AS
 SELECT ...;
 ```
 
@@ -653,7 +653,7 @@ user_id UUID  -- For efficient GraphQL filtering
 
 #### Simple TVIEW
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user,
     id,
@@ -668,7 +668,7 @@ FROM tb_user;
 
 #### TVIEW with JOINs
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
@@ -689,7 +689,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 #### TVIEW with Aggregations
 ```sql
-CREATE TVIEW tv_category AS
+CREATE TABLE tv_category AS
 SELECT
     c.pk_category,
     c.id,
@@ -717,14 +717,14 @@ GROUP BY c.pk_category, c.id, c.identifier;
 | "Invalid SELECT statement" | Unsupported SQL | Check supported features |
 ```
 
-2. **DROP TVIEW Documentation** (1 hour):
+2. **DROP TABLE Documentation** (1 hour):
 
 ```markdown
-## DROP TVIEW
+## DROP TABLE
 
 ### Syntax
 ```sql
-DROP TVIEW [ IF EXISTS ] tv_entity_name [ CASCADE ];
+DROP TABLE [ IF EXISTS ] tv_entity_name [ CASCADE ];
 ```
 
 ### Behavior
@@ -746,18 +746,18 @@ Currently `CASCADE` is **not implemented**. Attempting to drop a TVIEW that othe
 
 #### Simple Drop
 ```sql
-DROP TVIEW tv_posts;
+DROP TABLE tv_posts;
 ```
 
 #### Safe Drop (No Error if Missing)
 ```sql
-DROP TVIEW IF EXISTS tv_posts;
+DROP TABLE IF EXISTS tv_posts;
 ```
 
 #### Drop with Dependencies (Future)
 ```sql
 -- Not yet supported, will error if dependencies exist
-DROP TVIEW tv_user CASCADE;
+DROP TABLE tv_user CASCADE;
 ```
 
 ### Recovery
@@ -785,7 +785,7 @@ If you accidentally drop a TVIEW:
 
 ❌ **Does not work**:
 ```sql
-CREATE TVIEW tv_latest_post AS
+CREATE TABLE tv_latest_post AS
 SELECT DISTINCT ON (fk_user)
     pk_post, id, fk_user, ...
 FROM tb_post
@@ -794,7 +794,7 @@ ORDER BY fk_user, created_at DESC;
 
 ✅ **Workaround** (use window functions):
 ```sql
-CREATE TVIEW tv_latest_post AS
+CREATE TABLE tv_latest_post AS
 SELECT pk_post, id, fk_user, data
 FROM (
     SELECT
@@ -810,7 +810,7 @@ WHERE rn = 1;
 
 ❌ **Does not work**:
 ```sql
-CREATE TVIEW tv_all_content AS
+CREATE TABLE tv_all_content AS
 SELECT pk_post AS pk, 'post' AS type, ... FROM tb_post
 UNION ALL
 SELECT pk_page AS pk, 'page' AS type, ... FROM tb_page;
@@ -819,8 +819,8 @@ SELECT pk_page AS pk, 'page' AS type, ... FROM tb_page;
 ✅ **Workaround** (use separate TVIEWs):
 ```sql
 -- Create separate TVIEWs, query both from application
-CREATE TVIEW tv_post AS SELECT ... FROM tb_post;
-CREATE TVIEW tv_page AS SELECT ... FROM tb_page;
+CREATE TABLE tv_post AS SELECT ... FROM tb_post;
+CREATE TABLE tv_page AS SELECT ... FROM tb_page;
 ```
 
 ### Schema Limitations
@@ -851,7 +851,7 @@ SELECT
 FROM legacy_posts;
 
 -- Then create TVIEW on top of the view
-CREATE TVIEW tv_post AS SELECT ... FROM tb_post;
+CREATE TABLE tv_post AS SELECT ... FROM tb_post;
 ```
 
 #### 2. JSONB Data Column Required
@@ -896,7 +896,7 @@ Track known issues at: [GitHub Issues](https://github.com/your-org/pg_tviews/iss
 
 **Deliverables**:
 - Complete DDL syntax reference
-- DROP TVIEW documentation
+- DROP TABLE documentation
 - Comprehensive limitations guide
 - 10+ worked examples
 
@@ -1249,7 +1249,7 @@ SELECT * FROM pg_tview_meta WHERE entity = 'posts';
 
 If missing, recreate:
 ```sql
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_posts AS SELECT ...;
 ```
 
 If metadata corrupted:
@@ -1262,7 +1262,7 @@ CREATE EXTENSION pg_tviews;
 
 **Prevention**:
 - Never manually modify `pg_tview_meta`
-- Use DDL commands only (CREATE/DROP TVIEW)
+- Use DDL commands only (CREATE/DROP TABLE)
 
 ---
 
@@ -1292,21 +1292,21 @@ SELECT pg_tviews_analyze_select('your SELECT statement');
 Common fixes:
 ```sql
 -- ❌ UNION not supported
-CREATE TVIEW tv_content AS
+CREATE TABLE tv_content AS
 SELECT ... FROM tb_post
 UNION ALL
 SELECT ... FROM tb_page;
 
 -- ✅ Use separate TVIEWs instead
-CREATE TVIEW tv_post AS SELECT ... FROM tb_post;
-CREATE TVIEW tv_page AS SELECT ... FROM tb_page;
+CREATE TABLE tv_post AS SELECT ... FROM tb_post;
+CREATE TABLE tv_page AS SELECT ... FROM tb_page;
 
 -- ❌ Missing pk_ column
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT id, data FROM tb_post;
 
 -- ✅ Add required pk_ column
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT pk_post, id, data FROM tb_post;
 ```
 
@@ -1346,7 +1346,7 @@ WHERE entity IN ('user', 'post');
 Break the cycle:
 ```sql
 -- ❌ Creates cycle
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -1354,7 +1354,7 @@ SELECT
     ) AS data
 FROM tb_user;
 
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id,
     jsonb_build_object(
@@ -1363,7 +1363,7 @@ SELECT
 FROM tb_post;
 
 -- ✅ Use base tables instead
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(
@@ -1715,7 +1715,7 @@ CREATE POLICY post_isolation ON tb_post
     USING (tenant_id = current_setting('app.tenant_id')::uuid);
 
 -- TVIEW automatically enforces RLS when refreshing
-CREATE TVIEW tv_post AS SELECT ... FROM tb_post;
+CREATE TABLE tv_post AS SELECT ... FROM tb_post;
 ```
 
 ## SQL Injection Protection
@@ -1834,7 +1834,7 @@ const html = `<div>${escapeHtml(post.data.title)}</div>`;
 
 ❌ **Over-sharing**:
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -1847,7 +1847,7 @@ FROM tb_user;
 
 ✅ **Minimal exposure**:
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -1858,7 +1858,7 @@ SELECT
 FROM tb_user;
 
 -- Create separate TVIEW for admin access
-CREATE TVIEW tv_user_admin AS
+CREATE TABLE tv_user_admin AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -1890,7 +1890,7 @@ CREATE TABLE tb_user (
 );
 
 -- TVIEW can expose decrypted view (with proper permissions)
-CREATE TVIEW tv_user_admin AS
+CREATE TABLE tv_user_admin AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -2377,7 +2377,7 @@ SELECT
 FROM legacy_posts;
 
 -- Now create TVIEW on top
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT ... FROM tb_post;
 ```
 
@@ -2400,7 +2400,7 @@ FROM users u
 JOIN posts p ON u.id = p.user_id;
 
 -- Converted to TVIEW
-CREATE TVIEW tv_user_posts AS
+CREATE TABLE tv_user_posts AS
 SELECT
     p.pk_post,                    -- Required: PK
     p.id,                         -- Required: UUID
@@ -2569,8 +2569,8 @@ If migration fails, you can rollback:
 
 ```sql
 -- Switch application back to old MV
--- DROP TVIEW (keeps source data intact)
-DROP TVIEW tv_user_posts;
+-- DROP TABLE (keeps source data intact)
+DROP TABLE tv_user_posts;
 
 -- Original MV still exists, just refresh it
 REFRESH MATERIALIZED VIEW mv_user_posts;
@@ -2758,10 +2758,10 @@ After successful migration:
 
 ```sql
 -- 1. Drop corrupted TVIEW
-DROP TVIEW tv_posts;
+DROP TABLE tv_posts;
 
 -- 2. Recreate from original definition
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_posts AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(...) AS data
@@ -2871,7 +2871,7 @@ SELECT * FROM pg_tview_dependencies;
 
 -- 3. Break cycle
 -- Drop one TVIEW in the cycle
-DROP TVIEW tv_problematic;
+DROP TABLE tv_problematic;
 
 -- 4. Fix TVIEW definition to avoid cycle
 -- Then recreate
@@ -2932,7 +2932,7 @@ SELECT pg_tviews_cleanup_metrics(1);  # Keep only 1 day
 VACUUM FULL pg_tviews_metrics;  # Reclaim space
 
 # 3. Drop non-critical TVIEWs temporarily
-DROP TVIEW tv_optional;
+DROP TABLE tv_optional;
 ```
 
 **Long-Term Fix**:
@@ -2942,7 +2942,7 @@ DROP TVIEW tv_optional;
 
 ---
 
-### 7. Accidental DROP TVIEW
+### 7. Accidental DROP TABLE
 
 **Symptoms**:
 - TVIEW gone, applications failing
@@ -2958,7 +2958,7 @@ psql -f tview_definitions.sql
 
 # 3. Or recreate manually
 psql <<EOF
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_posts AS SELECT ...;
 EOF
 
 # 4. Verify
@@ -3006,9 +3006,9 @@ cat > tview_definitions.sql <<'EOF'
 -- Auto-generated TVIEW definitions
 -- Last updated: 2025-12-11
 
-CREATE TVIEW tv_user AS SELECT ...;
-CREATE TVIEW tv_post AS SELECT ...;
-CREATE TVIEW tv_comment AS SELECT ...;
+CREATE TABLE tv_user AS SELECT ...;
+CREATE TABLE tv_post AS SELECT ...;
+CREATE TABLE tv_comment AS SELECT ...;
 EOF
 
 # Commit to git

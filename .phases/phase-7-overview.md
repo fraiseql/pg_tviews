@@ -98,7 +98,7 @@ impl EntityDepGraph {
 
 **Invalidation Points:**
 - CREATE TVIEW → invalidate
-- DROP TVIEW → invalidate
+- DROP TABLE → invalidate
 - ALTER TVIEW (future) → invalidate
 
 **Expected Improvement**: 5ms → 0.001ms (5000× faster)
@@ -374,12 +374,12 @@ fn handle_pre_commit() -> TViewResult<()> {
 ### Integration Tests
 ```sql
 -- Test 1: Graph cache invalidation
-CREATE TVIEW tv_test AS SELECT ...;
+CREATE TABLE tv_test AS SELECT ...;
 -- First transaction: cache miss
 BEGIN; UPDATE tb_test ...; COMMIT;
 -- Second transaction: cache hit
 BEGIN; UPDATE tb_test ...; COMMIT;
-DROP TVIEW tv_test;
+DROP TABLE tv_test;
 -- Third transaction: cache miss (invalidated)
 BEGIN; UPDATE tb_test2 ...; COMMIT;
 
@@ -420,13 +420,13 @@ SELECT * FROM pg_tviews_queue_stats();
 
 ### Phase 7A: Graph Caching
 - ✅ EntityDepGraph cached after first load
-- ✅ Cache invalidated on CREATE/DROP TVIEW
+- ✅ Cache invalidated on CREATE/DROP TABLE
 - ✅ Transaction timing improved by 5ms
 - ✅ Cache hit rate > 95% in production workloads
 
 ### Phase 7B: entity_for_table() Caching
 - ✅ Table OID → entity mapping cached
-- ✅ Cache invalidated on CREATE/DROP TVIEW
+- ✅ Cache invalidated on CREATE/DROP TABLE
 - ✅ Trigger overhead reduced from 0.1ms to 0.001ms
 - ✅ Cache hit rate > 99% in production workloads
 

@@ -1,22 +1,27 @@
 //! SQL Parser: TVIEW DDL Statement Parsing
 //!
 //! This module parses TVIEW Data Definition Language statements:
-//! - **CREATE TVIEW**: Extracts name and SELECT statement
-//! - **DROP TVIEW**: Handles IF EXISTS and schema-qualified names
+//! - **CREATE TABLE tv_ AS SELECT**: Extracts name and SELECT statement
 //! - **Validation**: Ensures proper TVIEW naming conventions
 //!
 //! ## Supported Syntax
 //!
 //! ```sql
 //! -- Create TVIEW
-//! CREATE TVIEW tv_entity AS SELECT id, data FROM base_table;
+//! CREATE TABLE tv_entity AS SELECT id, data FROM base_table;
 //!
-//! -- Drop TVIEW
-//! DROP TVIEW [IF EXISTS] tv_entity;
+//! -- Drop TVIEW (handled by ProcessUtility hook, not parser)
+//! DROP TABLE tv_entity;
 //!
 //! -- Schema-qualified
-//! CREATE TVIEW schema.tv_entity AS SELECT * FROM schema.base_table;
+//! CREATE TABLE schema.tv_entity AS SELECT * FROM schema.base_table;
 //! ```
+//!
+//! ## Note on DROP Syntax
+//!
+//! DROP TABLE tv_* is handled directly by the ProcessUtility hook in src/hooks.rs,
+//! not by this parser module. The hook intercepts DROP TABLE statements and checks
+//! if the table name starts with "tv_", then calls the drop_tview() function.
 //!
 //! ## Limitations (v1)
 //!
@@ -35,18 +40,11 @@ pub struct CreateTViewStmt {
     pub select_sql: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct DropTViewStmt {
-    pub tview_name: String,
-    pub schema_name: Option<String>,
-    pub if_exists: bool,
-}
-
-/// Parse CREATE TVIEW statement
+/// Parse CREATE TABLE tv_ AS SELECT statement
 ///
 /// Supported syntax:
-/// - CREATE TVIEW tv_name AS SELECT ...
-/// - CREATE TVIEW schema.tv_name AS SELECT ...
+/// - CREATE TABLE tv_name AS SELECT ...
+/// - CREATE TABLE schema.tv_name AS SELECT ...
 ///
 /// Limitations (v1):
 /// - No CTE support (WITH clause)
@@ -56,7 +54,7 @@ pub struct DropTViewStmt {
 pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     let re = Regex::new(
         r"(?ix)                          # Case-insensitive, verbose
-        CREATE\s+TVIEW\s+                # CREATE TVIEW keyword
+        CREATE\s+TABLE\s+                # CREATE TABLE keyword
         (?:(\w+)\.)?                     # Optional schema name
         (\w+)                            # Table name (required)
         \s+AS\s+                         # AS keyword
@@ -71,8 +69,8 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     let caps = re.captures(sql.trim())
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: sql.to_string(),
-            reason: "Could not parse CREATE TVIEW statement. \
-                     Syntax: CREATE TVIEW name AS SELECT ...\n\
+            reason: "Could not parse CREATE TABLE tv_ AS SELECT statement. \
+                     Syntax: CREATE TABLE tv_name AS SELECT ...\n\
                      See docs for limitations.".to_string(),
         })?;
 
@@ -125,45 +123,13 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     })
 }
 
-/// Parse DROP TVIEW statement
-pub fn parse_drop_tview(sql: &str) -> TViewResult<DropTViewStmt> {
-    let re = Regex::new(
-        r"(?ix)
-        DROP\s+TVIEW\s+
-        (IF\s+EXISTS\s+)?                # Optional IF EXISTS
-        (?:(\w+)\.)?                     # Optional schema
-        (\w+)                            # Table name
-        "
-    ).map_err(|e| TViewError::InternalError {
-        message: format!("Regex compilation: {}", e),
-        file: file!(),
-        line: line!(),
-    })?;
-
-    let caps = re.captures(sql.trim())
-        .ok_or_else(|| TViewError::InvalidSelectStatement {
-            sql: sql.to_string(),
-            reason: "Could not parse DROP TVIEW. Syntax: DROP TVIEW [IF EXISTS] name".to_string(),
-        })?;
-
-    let if_exists = caps.get(1).is_some();
-    let schema_name = caps.get(2).map(|m| m.as_str().to_string());
-    let tview_name = caps.get(3).unwrap().as_str().to_string();
-
-    Ok(DropTViewStmt {
-        tview_name,
-        schema_name,
-        if_exists,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_simple() {
-        let sql = "CREATE TVIEW tv_post AS SELECT * FROM tb_post";
+        let sql = "CREATE TABLE tv_post AS SELECT * FROM tb_post";
         let parsed = parse_create_tview(sql).unwrap();
 
         assert_eq!(parsed.tview_name, "tv_post");
@@ -173,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_schema() {
-        let sql = "CREATE TVIEW public.tv_post AS SELECT pk_post FROM tb_post";
+        let sql = "CREATE TABLE public.tv_post AS SELECT pk_post FROM tb_post";
         let parsed = parse_create_tview(sql).unwrap();
 
         assert_eq!(parsed.tview_name, "tv_post");
@@ -183,7 +149,7 @@ mod tests {
     #[test]
     fn test_parse_multiline() {
         let sql = r#"
-            CREATE TVIEW tv_post AS
+            CREATE TABLE tv_post AS
             SELECT
                 pk_post,
                 id,
@@ -198,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_name() {
-        let sql = "CREATE TVIEW bad_name AS SELECT * FROM tb";
+        let sql = "CREATE TABLE bad_name AS SELECT * FROM tb";
         let result = parse_create_tview(sql);
 
         assert!(result.is_err());
@@ -208,23 +174,5 @@ mod tests {
             }
             _ => panic!("Wrong error type"),
         }
-    }
-
-    #[test]
-    fn test_parse_drop_simple() {
-        let sql = "DROP TVIEW tv_post";
-        let parsed = parse_drop_tview(sql).unwrap();
-
-        assert_eq!(parsed.tview_name, "tv_post");
-        assert!(!parsed.if_exists);
-    }
-
-    #[test]
-    fn test_parse_drop_if_exists() {
-        let sql = "DROP TVIEW IF EXISTS tv_post";
-        let parsed = parse_drop_tview(sql).unwrap();
-
-        assert_eq!(parsed.tview_name, "tv_post");
-        assert!(parsed.if_exists);
     }
 }

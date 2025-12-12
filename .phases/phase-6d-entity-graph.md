@@ -527,7 +527,7 @@ impl EntityDepGraph {
 
 Call `invalidate_cache()` when:
 - `CREATE TVIEW` adds a new entity
-- `DROP TVIEW` removes an entity
+- `DROP TABLE` removes an entity
 - Metadata is updated
 
 ### Step 4: Propagation Integration (REFACTOR)

@@ -72,7 +72,7 @@ Follow these phases **in exact order**. Each phase must be 100% complete before 
 - Backing view v_<entity> created
 - Materialized table tv_<entity> created
 - Initial data populated
-- `DROP TVIEW` cleanup works
+- `DROP TABLE` cleanup works
 
 **Next Step:** Phase 3 Dependency Detection
 

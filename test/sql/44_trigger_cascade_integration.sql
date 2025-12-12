@@ -73,7 +73,7 @@ INSERT INTO tb_post (fk_user, title, content, status, view_count) VALUES
 \echo ''
 \echo 'Step 1: Creating TVIEW hierarchy'
 
-CREATE TVIEW tv_company AS
+CREATE TABLE tv_company AS
 SELECT
     pk_company,
     id,
@@ -85,7 +85,7 @@ SELECT
     ) AS data
 FROM tb_company;
 
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     u.pk_user,
     u.id,
@@ -101,7 +101,7 @@ SELECT
 FROM tb_user u
 JOIN v_company ON v_company.pk_company = u.fk_company;
 
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,

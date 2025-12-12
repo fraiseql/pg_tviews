@@ -2,7 +2,14 @@
 
 Comprehensive benchmarking methodology and test scenarios for pg_tviews performance validation.
 
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
+**Version**: 0.1.0-beta.1 • **Last Updated**: December 12, 2025
+
+## Quick Links
+
+- **[Running Benchmarks](running-benchmarks.md)** - Step-by-step guide to execute the benchmark suite
+- **[Docker Setup](docker-benchmarks.md)** - Containerized benchmark environment
+- **[Results](results.md)** - Detailed performance analysis
+- **[JSONB IVM Integration](jsonb-ivm-integration.md)** - Smart patching performance
 
 ## Overview
 

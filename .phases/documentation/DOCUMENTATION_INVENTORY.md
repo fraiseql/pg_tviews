@@ -107,7 +107,7 @@
 | Command | Status | Location | Priority |
 |---------|--------|----------|----------|
 | `CREATE TVIEW` | ✅ Documented | `docs/reference/ddl.md` | High |
-| `DROP TVIEW` | ✅ Documented | `docs/reference/ddl.md` | High |
+| `DROP TABLE` | ✅ Documented | `docs/reference/ddl.md` | High |
 | `pg_tviews_create()` | ⚠️ **INCONSISTENT** | `docs/reference/api.md` | Critical |
 
 ---

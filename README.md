@@ -362,7 +362,7 @@ SELECT * FROM pg_tviews_queue_realtime;
 
 ### Reference
 - **[API Reference](docs/reference/api.md)** - Complete function reference
-- **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TVIEW syntax
+- **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TABLE syntax
 - **[Syntax Comparison](docs/getting-started/syntax-comparison.md)** - TVIEW creation methods
 - **[Error Reference](docs/reference/errors.md)** - Error types and solutions
 - **[Configuration](docs/reference/configuration.md)** - Configuration options

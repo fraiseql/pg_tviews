@@ -59,7 +59,7 @@ tv_entity      → materialized + incrementally updated read model
 2. Register TVIEW:
 
 ```sql
-CREATE TVIEW FOR v_entity;
+CREATE TABLE tv_entity AS SELECT * FROM v_entity;
 ```
 
 3. TVIEW engine auto-creates:

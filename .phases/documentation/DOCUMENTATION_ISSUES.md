@@ -15,7 +15,7 @@
 **Evidence**:
 ```sql
 -- Method 1: DDL Syntax (shown in Quick Start)
-CREATE TVIEW tv_posts AS SELECT ...;
+CREATE TABLE tv_posts AS SELECT ...;
 
 -- Method 2: Function Call (shown in API Reference)
 SELECT pg_tviews_create('tv_posts', 'SELECT ...');
@@ -232,7 +232,7 @@ SELECT pg_tviews_create('tv_posts', 'SELECT ...');
 CREATE TABLE tb_test (pk_test INT PRIMARY KEY, data TEXT);
 
 -- Method 1: DDL
-CREATE TVIEW tv_test1 AS
+CREATE TABLE tv_test1 AS
 SELECT pk_test, jsonb_build_object('data', data) as data FROM tb_test;
 
 -- Method 2: Function
@@ -254,15 +254,15 @@ INSERT INTO tb_perf (data) SELECT jsonb_build_object('field_' || i, 'value_' || 
 
 -- Test without jsonb_ivm
 DROP EXTENSION IF EXISTS jsonb_ivm;
-CREATE TVIEW tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
+CREATE TABLE tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
 
 -- Measure update performance
 EXPLAIN ANALYZE UPDATE tb_perf SET data = jsonb_set(data, '{field_1}', '"new_value"') WHERE pk_perf = 1;
 
 -- Install jsonb_ivm and retest
 CREATE EXTENSION jsonb_ivm;
-DROP TVIEW tv_perf;
-CREATE TVIEW tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
+DROP TABLE tv_perf;
+CREATE TABLE tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
 
 -- Measure update performance again
 EXPLAIN ANALYZE UPDATE tb_perf SET data = jsonb_set(data, '{field_1}', '"new_value"') WHERE pk_perf = 1;

@@ -1,8 +1,8 @@
 //! DDL Operations: TVIEW Creation and Management
 //!
 //! This module handles Data Definition Language operations for TVIEWs:
-//! - **CREATE TVIEW**: Parses SQL, creates metadata, sets up triggers
-//! - **DROP TVIEW**: Cleans up metadata, removes triggers and views
+//! - **CREATE TABLE tv_ AS SELECT**: Parses SQL, creates metadata, sets up triggers
+//! - **DROP TABLE tv_***: Cleans up metadata, removes triggers and views
 //! - **Validation**: Ensures TVIEW names and SQL are valid
 //!
 //! ## Architecture

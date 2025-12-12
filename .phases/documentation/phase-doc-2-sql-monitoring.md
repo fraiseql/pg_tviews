@@ -7,7 +7,7 @@
 
 ## Objective
 
-Document all SQL monitoring functions, views, and DDL commands (CREATE/DROP TVIEW). This enables beta testers to monitor production systems and understand the complete TVIEW lifecycle.
+Document all SQL monitoring functions, views, and DDL commands (CREATE/DROP TABLE). This enables beta testers to monitor production systems and understand the complete TVIEW lifecycle.
 
 ## Context
 
@@ -23,7 +23,7 @@ Phase 9 implemented comprehensive monitoring infrastructure (`sql/pg_tviews_moni
 ## Deliverables
 
 1. **`docs/operations/monitoring.md`** - Complete monitoring guide
-2. **`docs/reference/ddl.md`** - CREATE/DROP TVIEW syntax reference
+2. **`docs/reference/ddl.md`** - CREATE/DROP TABLE syntax reference
 3. **Updated `README.md`** - Add monitoring section
 
 ## Implementation Steps
@@ -480,7 +480,7 @@ This document describes the DDL (Data Definition Language) commands for creating
 ### Syntax
 
 ```sql
-CREATE TVIEW tv_<entity> AS
+CREATE TABLE tv_<entity> AS
 SELECT ...
 ```
 
@@ -514,7 +514,7 @@ The SELECT statement must include:
 ### Complete Example
 
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_posts AS
 SELECT
     p.id as pk_post,
     p.title,
@@ -579,17 +579,17 @@ When you CREATE TVIEW:
 - View definition must be parseable by inference engine
 - Performance degrades with >5 levels of TVIEW cascades
 
-## DROP TVIEW
+## DROP TABLE
 
 ### Syntax
 
 ```sql
-DROP TVIEW tv_<entity>;
+DROP TABLE tv_<entity>;
 ```
 
 ### What Happens
 
-When you DROP TVIEW:
+When you DROP TABLE:
 
 1. **Triggers Removed**: Uninstalls all triggers for this TVIEW
 2. **Backing View Dropped**: `v_<entity>` is dropped
@@ -601,7 +601,7 @@ When you DROP TVIEW:
 
 ```sql
 -- Simple drop
-DROP TVIEW tv_posts;
+DROP TABLE tv_posts;
 
 -- Check before dropping
 SELECT entity, table_oid, view_oid
@@ -609,8 +609,8 @@ FROM pg_tview_meta
 WHERE entity = 'post';
 
 -- If dependencies exist, drop them first
-DROP TVIEW tv_dependent_view;
-DROP TVIEW tv_posts;
+DROP TABLE tv_dependent_view;
+DROP TABLE tv_posts;
 ```
 
 ### Cascade Behavior
@@ -626,9 +626,9 @@ FROM pg_tview_meta
 WHERE ... -- TODO: Add dependency query
 
 -- Drop in reverse dependency order
-DROP TVIEW tv_level3;
-DROP TVIEW tv_level2;
-DROP TVIEW tv_level1;
+DROP TABLE tv_level3;
+DROP TABLE tv_level2;
+DROP TABLE tv_level1;
 ```
 
 ## ALTER TVIEW
@@ -637,8 +637,8 @@ DROP TVIEW tv_level1;
 
 ```sql
 -- To modify a TVIEW:
-DROP TVIEW tv_posts;
-CREATE TVIEW tv_posts AS SELECT ... -- new definition
+DROP TABLE tv_posts;
+CREATE TABLE tv_posts AS SELECT ... -- new definition
 ```
 
 ## Statement-Level Triggers
@@ -688,7 +688,7 @@ ERROR:  Dependency cycle detected: post -> comment -> post
 ```
 **Solution**: TVIEWs cannot have circular dependencies. Restructure dependencies.
 
-### DROP TVIEW Fails
+### DROP TABLE Fails
 
 **Error**: `DependentObjectsExist`
 ```sql
@@ -741,17 +741,17 @@ For complete monitoring guide, see [Monitoring Guide](docs/operations/monitoring
 
 ## DDL Reference
 
-For complete CREATE/DROP TVIEW syntax, see [DDL Reference](docs/reference/ddl.md).
+For complete CREATE/DROP TABLE syntax, see [DDL Reference](docs/reference/ddl.md).
 
 **Quick Reference**:
 ```sql
 -- Create a TVIEW
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_posts AS
 SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id) as data
 FROM tb_post ...;
 
 -- Drop a TVIEW
-DROP TVIEW tv_posts;
+DROP TABLE tv_posts;
 
 -- Install statement-level triggers (100-500× faster)
 SELECT pg_tviews_install_stmt_triggers();
@@ -780,7 +780,7 @@ SELECT * FROM pg_tviews_health_check();
 ### 2. Test Metrics Collection
 ```sql
 -- Generate some metrics
-CREATE TVIEW tv_test AS
+CREATE TABLE tv_test AS
 SELECT 1 as pk_test, '{}'::jsonb as data;
 
 INSERT INTO tb_source VALUES (1, 'test');
@@ -796,14 +796,14 @@ SELECT pg_tviews_cleanup_metrics(0);  -- Delete all
 ### 3. Validate DDL Documentation
 ```sql
 -- Test CREATE TVIEW with all documented features
-CREATE TVIEW tv_example AS
+CREATE TABLE tv_example AS
 SELECT ...;  -- Use example from DDL_REFERENCE.md
 
 -- Verify it works
 SELECT * FROM tv_example LIMIT 1;
 
--- Test DROP TVIEW
-DROP TVIEW tv_example;
+-- Test DROP TABLE
+DROP TABLE tv_example;
 
 -- Verify cleanup
 SELECT * FROM pg_tview_meta WHERE entity = 'example';  -- Should be empty
@@ -834,7 +834,7 @@ Phase Doc-2 is complete when:
   - [ ] Performance analysis examples
 - ✅ `docs/reference/ddl.md` exists and documents:
   - [ ] CREATE TVIEW full syntax
-  - [ ] DROP TVIEW syntax
+  - [ ] DROP TABLE syntax
   - [ ] Naming conventions
   - [ ] Supported/unsupported SQL features
   - [ ] Limitations
@@ -850,7 +850,7 @@ Phase Doc-2 is complete when:
 ## Success Metrics
 
 - Beta testers can monitor production systems without asking questions
-- Beta testers understand CREATE/DROP TVIEW syntax completely
+- Beta testers understand CREATE/DROP TABLE syntax completely
 - No ambiguity about what SQL features are supported
 - Alert thresholds prevent false positives
 

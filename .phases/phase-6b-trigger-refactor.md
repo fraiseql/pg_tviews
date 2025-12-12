@@ -370,7 +370,7 @@ pub fn entity_for_table_cached(table_oid: Oid) -> TViewResult<Option<String>> {
 **Trade-offs:**
 - ✅ 100× faster (0.001ms vs 0.1ms per trigger)
 - ✅ OIDs are stable within a PostgreSQL session
-- ❌ Requires invalidation on CREATE/DROP TVIEW
+- ❌ Requires invalidation on CREATE/DROP TABLE
 - ❌ Adds ~50 lines of code
 
 **Decision for Phase 6B:**

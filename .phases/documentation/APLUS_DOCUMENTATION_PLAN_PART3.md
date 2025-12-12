@@ -134,7 +134,7 @@ CREATE TABLE tb_category (
 
 ```sql
 -- User profile with post count
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     u.pk_user,
     u.id,
@@ -152,7 +152,7 @@ LEFT JOIN tb_post p ON p.fk_user = u.pk_user
 GROUP BY u.pk_user, u.id, u.identifier, u.name, u.bio, u.created_at;
 
 -- Posts with author, comments, likes
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
@@ -211,7 +211,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user
 LEFT JOIN tb_category c ON p.fk_category = c.pk_category;
 
 -- Category with post list
-CREATE TVIEW tv_category AS
+CREATE TABLE tv_category AS
 SELECT
     c.pk_category,
     c.id,
@@ -547,7 +547,7 @@ A: Yes! pg_tviews is compatible with PgBouncer and pgpool-II. Just ensure `DISCA
 
 A:
 ```sql
-CREATE TVIEW tv_posts AS
+CREATE TABLE tv_posts AS
 SELECT
     pk_post,  -- Required: integer PK
     id,       -- Required: UUID
@@ -667,8 +667,8 @@ A: TVIEW wasn't created or metadata corrupted. Solution:
 SELECT * FROM pg_tview_meta;
 
 -- Recreate TVIEW
-DROP TVIEW tv_posts;  -- If exists
-CREATE TVIEW tv_posts AS SELECT ...;
+DROP TABLE tv_posts;  -- If exists
+CREATE TABLE tv_posts AS SELECT ...;
 ```
 
 **Q: Queries are slow on TVIEWs?**
@@ -722,7 +722,7 @@ CREATE MATERIALIZED VIEW ...;
 ### Pattern 1: Nested Objects
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(
@@ -741,7 +741,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 ### Pattern 2: Arrays of Objects
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(
@@ -766,7 +766,7 @@ FROM tb_post p;
 ### Pattern 3: Aggregations
 
 ```sql
-CREATE TVIEW tv_category AS
+CREATE TABLE tv_category AS
 SELECT
     pk_category, id,
     jsonb_build_object(
@@ -785,7 +785,7 @@ GROUP BY c.pk_category, c.id, c.name;
 ### Pattern 4: Computed Fields
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(
@@ -805,7 +805,7 @@ FROM tb_post;
 ### Pattern 5: Conditional Fields
 
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -826,7 +826,7 @@ FROM tb_user;
 ### Pattern 6: Multiple Levels of Nesting
 
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -859,7 +859,7 @@ FROM tb_user u;
 ### Pattern 7: NULL Handling
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id, fk_user, fk_category,
     jsonb_build_object(
@@ -879,7 +879,7 @@ LEFT JOIN tb_category c ON p.fk_category = c.pk_category;
 
 ```sql
 -- Only published posts
-CREATE TVIEW tv_published_post AS
+CREATE TABLE tv_published_post AS
 SELECT
     pk_post, id, fk_user,
     jsonb_build_object(...) AS data
@@ -891,7 +891,7 @@ WHERE p.published = TRUE AND p.deleted_at IS NULL;
 
 ```sql
 -- Public view (limited fields)
-CREATE TVIEW tv_user_public AS
+CREATE TABLE tv_user_public AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -902,7 +902,7 @@ SELECT
 FROM tb_user;
 
 -- Admin view (includes sensitive data)
-CREATE TVIEW tv_user_admin AS
+CREATE TABLE tv_user_admin AS
 SELECT
     pk_user, id,
     jsonb_build_object(
@@ -938,7 +938,7 @@ LIMIT 20;
 
 ```sql
 -- DON'T DO THIS (creates dependency cycle risk)
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post, id,
     jsonb_build_object(
@@ -953,7 +953,7 @@ FROM tb_post p;
 
 ```sql
 -- DON'T DO THIS (missing required columns)
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     id,  -- Missing pk_post!
     title,
@@ -967,7 +967,7 @@ FROM tb_post;
 
 ```sql
 -- DON'T DO THIS (too deep, performance issues)
-CREATE TVIEW tv_company AS
+CREATE TABLE tv_company AS
 SELECT
     pk_company, id,
     jsonb_build_object(

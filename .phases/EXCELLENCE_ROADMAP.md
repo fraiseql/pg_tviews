@@ -109,7 +109,7 @@ grep -r "jsonb_build_object.*'id', id[^_a-z]" docs/ README.md
 CREATE TABLE tv_post AS SELECT ...;
 
 -- Method 2: CREATE TVIEW syntax (extension)
-CREATE TVIEW tv_post AS SELECT ...;
+CREATE TABLE tv_post AS SELECT ...;
 
 -- Method 3: Function syntax
 SELECT pg_tviews_create('post', 'SELECT ...');
@@ -143,7 +143,7 @@ FROM tb_post;
 
 ## 2. CREATE TVIEW Syntax (Explicit)
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
   tb_post.pk_post,
   tb_post.id,
@@ -340,7 +340,7 @@ CREATE POLICY post_owner_policy ON tb_post
 ```sql
 -- Sensitive columns should not be in JSONB data
 -- BAD: Including sensitive data
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
   tb_user.pk_user,
   tb_user.id,
@@ -351,7 +351,7 @@ SELECT
 FROM tb_user;
 
 -- GOOD: Exclude sensitive columns
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
   tb_user.pk_user,
   tb_user.id,

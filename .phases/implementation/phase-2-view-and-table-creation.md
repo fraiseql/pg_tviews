@@ -185,8 +185,8 @@ unsafe extern "C" fn process_utility_hook(
         }
     }
 
-    // Handle DROP TVIEW
-    if query_upper.starts_with("DROP TVIEW") {
+    // Handle DROP TABLE
+    if query_upper.starts_with("DROP TABLE") {
         match handle_drop_tview_safe(query_str) {
             Ok(_) => {
                 unsafe {
@@ -200,7 +200,7 @@ unsafe extern "C" fn process_utility_hook(
                 return;
             }
             Err(e) => {
-                error!("DROP TVIEW failed: {}", e);
+                error!("DROP TABLE failed: {}", e);
                 return;
             }
         }
@@ -375,7 +375,7 @@ pub fn parse_drop_tview(sql: &str) -> TViewResult<DropTViewStmt> {
     let caps = re.captures(sql.trim())
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: sql.to_string(),
-            reason: "Could not parse DROP TVIEW. Syntax: DROP TVIEW [IF EXISTS] name".to_string(),
+            reason: "Could not parse DROP TABLE. Syntax: DROP TABLE [IF EXISTS] name".to_string(),
         })?;
 
     let if_exists = caps.get(1).is_some();
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_parse_drop_simple() {
-        let sql = "DROP TVIEW tv_post";
+        let sql = "DROP TABLE tv_post";
         let parsed = parse_drop_tview(sql).unwrap();
 
         assert_eq!(parsed.tview_name, "tv_post");
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_parse_drop_if_exists() {
-        let sql = "DROP TVIEW IF EXISTS tv_post";
+        let sql = "DROP TABLE IF EXISTS tv_post";
         let parsed = parse_drop_tview(sql).unwrap();
 
         assert_eq!(parsed.tview_name, "tv_post");
@@ -636,8 +636,8 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 - [x] Materialized table `tv_<entity>` with correct schema
 - [x] Initial data populated from view
 - [x] Metadata registered in `pg_tview_meta`
-- [x] `DROP TVIEW tv_<name>` removes all objects
-- [x] **NEW:** DROP TVIEW IF EXISTS doesn't error
+- [x] `DROP TABLE tv_<name>` removes all objects
+- [x] **NEW:** DROP TABLE IF EXISTS doesn't error
 - [x] Indexes created on id, UUID FKs, and data columns
 - [x] **NEW:** Errors rollback cleanly (no partial state)
 
@@ -657,7 +657,7 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 
 - [x] TVIEW creation < 1s for small tables (<1000 rows)
 - [x] TVIEW creation < 10s for medium tables (<100k rows)
-- [x] DROP TVIEW < 100ms
+- [x] DROP TABLE < 100ms
 - [x] **NEW:** Hook overhead < 0.1ms for non-TVIEW statements
 
 ---
@@ -693,13 +693,13 @@ Create separate helper views:
 
 ```sql
 -- Instead of:
-CREATE TVIEW tv_complex AS
+CREATE TABLE tv_complex AS
 WITH temp AS (SELECT ...)
 SELECT * FROM temp;
 
 -- Do:
 CREATE VIEW v_temp AS SELECT ...;
-CREATE TVIEW tv_complex AS SELECT * FROM v_temp;
+CREATE TABLE tv_complex AS SELECT * FROM v_temp;
 ```
 
 ## v2 Plan

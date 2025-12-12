@@ -1292,7 +1292,7 @@ Now create a TVIEW that materializes posts with author information:
 
 ```sql
 psql tutorial <<'EOF'
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,

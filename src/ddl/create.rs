@@ -4,7 +4,7 @@ use crate::error::{TViewError, TViewResult};
 
 /// Create a TVIEW with atomic rollback on error
 ///
-/// This is the main entry point for CREATE TVIEW. PostgreSQL's transaction
+/// This is the main entry point for CREATE TABLE tv_ AS SELECT .... PostgreSQL's transaction
 /// system automatically provides atomicity - if any step fails, all changes
 /// are rolled back.
 ///

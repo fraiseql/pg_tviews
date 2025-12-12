@@ -58,7 +58,7 @@
   ✓ CREATE TVIEW syntax works
   ✓ Backing view created
   ✓ Materialized table created
-  ✓ DROP TVIEW cleanup
+  ✓ DROP TABLE cleanup
 
 
 ═══════════════════════════════════════════════════════════════════════════

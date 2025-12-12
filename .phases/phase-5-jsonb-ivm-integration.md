@@ -699,7 +699,7 @@ ROLLBACK;
 
 **Example:**
 ```sql
-CREATE TVIEW tv_feed AS
+CREATE TABLE tv_feed AS
 SELECT 1 AS pk_feed,
        jsonb_build_object(
            'posts', jsonb_agg(v_post.data ORDER BY v_post.id)

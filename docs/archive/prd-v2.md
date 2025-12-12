@@ -31,7 +31,7 @@ Traditional PostgreSQL tools like views and materialized views do *not* support:
 The **TVIEW extension** addresses all of these limitations by introducing:
 
 ```
-CREATE TVIEW name AS SELECT ...
+CREATE TABLE tv_name AS SELECT ...
 ```
 
 a new SQL object that defines:
@@ -49,7 +49,7 @@ All derived automatically from the SELECT definition.
 
 | ID   | Requirement                                                                              |
 | ---- | ---------------------------------------------------------------------------------------- |
-| FG1  | Support `CREATE TVIEW name AS SELECT ...`                                                |
+| FG1  | Support `CREATE TABLE tv_name AS SELECT ...`                                              |
 | FG2  | Automatically create a hidden view `v_name` containing the SELECT                        |
 | FG3  | Automatically create a table `tv_name` with inferred schema                              |
 | FG4  | Auto-build the initial materialized table (`INSERT INTO tv_<name> SELECT FROM v_<name>`) |
@@ -80,7 +80,7 @@ All derived automatically from the SELECT definition.
 ### Developer writes:
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
   p.pk_post,
   p.id,
@@ -119,7 +119,7 @@ No developer ever maintains update logic.
 
 ```
           +-------------------------+
-          |   CREATE TVIEW AS ...  |
+          | CREATE TABLE tv_ AS ... |
           +-----------+-------------+
                       |
                       v
@@ -204,7 +204,7 @@ After creating `v_entity`, TVIEW walks `pg_depend` recursively to find **all und
 Example:
 
 ```
-CREATE TVIEW tv_post AS ... FROM tb_post JOIN v_user ...
+CREATE TABLE tv_post AS ... FROM tb_post JOIN v_user ...
 
 v_post → v_user → v_company
 tb_post and tb_user and tb_company
@@ -408,11 +408,11 @@ CREATE TABLE tb_user (pk_user SERIAL, id UUID, fk_company INT, name TEXT);
 CREATE TABLE tb_post (pk_post SERIAL, id UUID, fk_user INT, title TEXT);
 
 -- TVIEWs
-CREATE TVIEW tv_company AS
+CREATE TABLE tv_company AS
 SELECT pk_company, id, jsonb_build_object('id', id, 'name', name) AS data
 FROM tb_company;
 
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT u.pk_user, u.id, u.fk_company, c.id AS company_id,
        jsonb_build_object(
            'id', u.id,
@@ -422,7 +422,7 @@ SELECT u.pk_user, u.id, u.fk_company, c.id AS company_id,
 FROM tb_user u
 JOIN v_company ON v_company.pk_company = u.fk_company;
 
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user, u.id AS user_id,
        jsonb_build_object(
            'id', p.id,
@@ -432,7 +432,7 @@ SELECT p.pk_post, p.id, p.fk_user, u.id AS user_id,
 FROM tb_post p
 JOIN v_user ON v_user.pk_user = p.fk_user;
 
-CREATE TVIEW tv_feed AS
+CREATE TABLE tv_feed AS
 SELECT 1 AS pk_feed,
        jsonb_build_object(
            'posts', jsonb_agg(v_post.data ORDER BY v_post.id)  -- ← Array
@@ -490,7 +490,7 @@ Step 4: Propagate to tv_feed (array update)
 ```
 src/
  ├ lib.rs
- ├ create.rs        -- CREATE TVIEW AS ... handler
+ ├ create.rs        -- CREATE TABLE tv_ AS ... handler
  ├ catalog.rs       -- pg_tview_meta handling
  ├ infer.rs         -- schema inference + dependency type detection
  ├ view.rs          -- backing view generator (v_entity)
@@ -590,7 +590,7 @@ pub fn tview_refresh_pk(source_oid: Oid, pk: i64) {
 ### Canonical Syntax
 
 ```sql
-CREATE TVIEW tv_<entity> AS
+CREATE TABLE tv_<entity> AS
 SELECT ...;
 ```
 
@@ -715,7 +715,7 @@ It transforms SQL-based projections into:
 With:
 
 ```sql
-CREATE TVIEW name AS SELECT ...
+CREATE TABLE tv_name AS SELECT ...
 ```
 
 developers gain:
