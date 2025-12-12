@@ -282,7 +282,7 @@ SELECT * FROM pg_tviews_health_check();
 
 -- Test basic functionality
 CREATE TABLE test_table (id SERIAL PRIMARY KEY, data TEXT);
-CREATE TVIEW test_tview AS SELECT id, data::jsonb as data FROM test_table;
+CREATE TABLE test_tview AS SELECT id, data::jsonb as data FROM test_table;
 INSERT INTO test_table (data) VALUES ('test');
 SELECT * FROM test_tview;
 ```
@@ -359,7 +359,7 @@ To remove pg_tviews:
 
 ```sql
 -- Drop all TVIEWs first
-DROP TVIEW tv_my_view;
+DROP TABLE tv_my_view;
 
 -- Drop extension
 DROP EXTENSION pg_tviews;

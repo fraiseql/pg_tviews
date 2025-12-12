@@ -133,7 +133,7 @@ TVIEW 'tv_post' created successfully
 - **TViewAlreadyExists**: A TVIEW with this name already exists
 
 **See Also**:
-- [DROP TVIEW](ddl.md#drop-tview)
+- [DROP TABLE tv_*](ddl.md#drop-table-tv_)
 - [TVIEW Creation Guide](../getting-started/quickstart.md)
 - [Troubleshooting](../operations/troubleshooting.md#creation-fails)
 

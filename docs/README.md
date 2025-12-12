@@ -61,7 +61,7 @@ Role-specific guidance:
 Technical reference materials:
 
 - **[API Reference](reference/api.md)** - Complete function reference with examples
-- **[DDL Reference](reference/ddl.md)** - CREATE/DROP TVIEW syntax and options
+- **[DDL Reference](reference/ddl.md)** - CREATE TABLE tv_* / DROP TABLE tv_* syntax and options
 - **[Error Reference](reference/errors.md)** - Error types, causes, and solutions
 - **[Configuration](reference/configuration.md)** - Configuration options and parameters
 

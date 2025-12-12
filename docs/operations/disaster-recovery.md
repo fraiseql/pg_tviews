@@ -360,5 +360,5 @@ ALTER SYSTEM SET wal_keep_size = '1GB';
 ## See Also
 
 - [Backup and Restore](https://www.postgresql.org/docs/current/backup.html) - PostgreSQL official documentation
-- [Monitoring Guide](../MONITORING.md) - Health check details
-- [Operations Guide](operations.md) - Production procedures
+- [Monitoring Guide](monitoring.md) - Health check details
+- [Troubleshooting Guide](troubleshooting.md) - Production procedures

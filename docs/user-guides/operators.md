@@ -489,8 +489,8 @@ SELECT tgname FROM pg_trigger WHERE tgname LIKE 'tview%';
 **Solutions**:
 ```sql
 -- Recreate TVIEW
-DROP TVIEW tv_post;
-CREATE TVIEW tv_post AS SELECT ...;
+DROP TABLE tv_post;
+CREATE TABLE tv_post AS SELECT ...;
 
 -- Manual refresh if needed
 SELECT pg_tviews_cascade('tb_post'::regclass::oid, pk_value);
@@ -577,8 +577,8 @@ WHERE schemaname = 'public' AND tablename LIKE 'tv_%';
 
 ```sql
 -- Quick TVIEW recreation
-DROP TVIEW tv_post;
-CREATE TVIEW tv_post AS SELECT ... FROM tv_post_backup;
+DROP TABLE tv_post;
+CREATE TABLE tv_post AS SELECT ... FROM tv_post_backup;
 
 -- Manual data repair
 UPDATE tv_post SET data = data || '{"status": "repaired"}'::jsonb

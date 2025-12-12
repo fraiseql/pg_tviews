@@ -150,14 +150,14 @@ FROM tb_post;
 1. **Rewrite without UNION**:
    ```sql
    -- Instead of UNION
-   CREATE TVIEW tv_content AS
+   CREATE TABLE tv_content AS
    SELECT 'post' as type, pk_post as pk_content, id, title as name, data FROM tv_post
    UNION
    SELECT 'page' as type, pk_page as pk_content, id, title as name, data FROM tv_page;
 
    -- Use separate TVIEWs
    CREATE TABLE tv_post AS SELECT ... FROM tb_post;
-   CREATE TVIEW tv_pages AS SELECT ... FROM tb_page;
+   CREATE TABLE tv_pages AS SELECT ... FROM tb_page;
    ```
 
 2. **Common unsupported features**:
@@ -178,7 +178,7 @@ FROM tb_post;
    -- post references comment, comment references post
 
    -- Solution: Make one direction optional or computed
-   CREATE TVIEW tv_post AS
+   CREATE TABLE tv_post AS
    SELECT
        p.pk_post,
        jsonb_build_object(
@@ -226,8 +226,8 @@ FROM tb_post;
 
 1. **Recreate TVIEW**:
    ```sql
-   DROP TVIEW tv_post;
-   CREATE TVIEW tv_post AS SELECT ...;  -- Original definition
+   DROP TABLE tv_post;
+   CREATE TABLE tv_post AS SELECT ...;  -- Original definition
    ```
 
 2. **Check for disabled triggers**:
@@ -409,8 +409,8 @@ WHERE p.id = 'some-uuid';
 
 1. **Recreate TVIEW**:
    ```sql
-   DROP TVIEW tv_post;
-   CREATE TVIEW tv_post AS SELECT ...;
+   DROP TABLE tv_post;
+   CREATE TABLE tv_post AS SELECT ...;
    ```
 
 2. **Manual data repair**:
@@ -632,7 +632,7 @@ DECLARE
     rec record;
 BEGIN
     FOR rec IN SELECT entity FROM pg_tview_meta LOOP
-        EXECUTE 'DROP TVIEW tv_' || rec.entity;
+        EXECUTE 'DROP TABLE tv_' || rec.entity;
     END LOOP;
 END;
 $$;

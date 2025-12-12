@@ -97,7 +97,7 @@ tb_inventory (stock levels)
 
 #### tv_product (Main Product View)
 ```sql
-CREATE TVIEW tv_product AS
+CREATE TABLE tv_product AS
 SELECT
     p.pk_product,
     p.id,
@@ -156,7 +156,7 @@ GROUP BY p.pk_product, p.id, p.name, p.description, p.price_current,
 
 #### tv_category (Category View)
 ```sql
-CREATE TVIEW tv_category AS
+CREATE TABLE tv_category AS
 SELECT
     c.pk_category,
     c.id,

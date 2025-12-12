@@ -95,7 +95,7 @@ COALESCE(jsonb_agg(...), '[]'::jsonb)
 
 ```sql
 -- Arrays with custom matching keys
-CREATE TVIEW tv_orders AS
+CREATE TABLE tv_orders AS
 SELECT
     o.id,
     jsonb_build_object(
@@ -113,7 +113,7 @@ GROUP BY o.id;
 
 ```sql
 -- Nested array structures
-CREATE TVIEW tv_categories AS
+CREATE TABLE tv_categories AS
 SELECT
     c.id,
     c.name,

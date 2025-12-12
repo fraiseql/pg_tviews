@@ -82,7 +82,7 @@ CREATE TRIGGER trig_maintain_user_id
 Design TVIEWs to match your GraphQL schema exactly:
 
 ```sql
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- Required: lineage root
     p.id,                  -- GraphQL ID
@@ -363,7 +363,7 @@ Test TVIEW definitions and refresh behavior:
 
 ```sql
 -- Test TVIEW creation
-CREATE TVIEW tv_test AS
+CREATE TABLE tv_test AS
 SELECT p.pk_post, p.id, jsonb_build_object('id', p.id, 'title', p.title) as data
 FROM tb_post p WHERE p.pk_post < 100; -- Limited test data
 
@@ -375,7 +375,7 @@ INSERT INTO tb_post (id, title) VALUES ('test-uuid', 'Test Post');
 SELECT COUNT(*) FROM tv_test WHERE id = 'test-uuid'; -- Should be 1
 
 -- Cleanup
-DROP TVIEW tv_test;
+DROP TABLE tv_test;
 ```
 
 ### Integration Testing

@@ -249,25 +249,28 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **Circular Dependencies**: Automatically detected and rejected
 - **Column Name Conflicts**: Must resolve ambiguous column names
 
-## DROP TVIEW
+## DROP TABLE tv_*
 
 ### Syntax
 
 ```sql
-DROP TVIEW [IF EXISTS] tv_<entity>;
+DROP TABLE [IF EXISTS] tv_<entity> [CASCADE];
 ```
 
 ### Examples
 
 ```sql
 -- Drop a TVIEW
-DROP TVIEW tv_post;
+DROP TABLE tv_post;
 
 -- Safe drop (no error if doesn't exist)
-DROP TVIEW IF EXISTS tv_missing;
+DROP TABLE IF EXISTS tv_missing;
+
+-- Drop with CASCADE (drops dependent objects)
+DROP TABLE tv_post CASCADE;
 ```
 
-### What Happens During DROP TVIEW
+### What Happens During DROP TABLE tv_*
 
 1. **Trigger Removal**: Uninstalls all triggers for this TVIEW
 2. **Backing View Drop**: Removes `v_<entity>` view
@@ -277,17 +280,23 @@ DROP TVIEW IF EXISTS tv_missing;
 
 ### Cascade Behavior
 
-**No CASCADE support in beta**: If other TVIEWs depend on this TVIEW, DROP will fail.
+**CASCADE behavior**: PostgreSQL's standard CASCADE option is supported.
 
-**Workaround**: Drop dependent TVIEWs first:
+**Drop dependent TVIEWs first** (without CASCADE):
 
 ```sql
 -- Find dependent TVIEWs (manual inspection for now)
 -- Look for TVIEWs that reference this entity in their SELECT
 
 -- Drop in reverse dependency order
-DROP TVIEW tv_post_comments;  -- Depends on tv_post
-DROP TVIEW tv_post;           -- Can now be dropped
+DROP TABLE tv_post_comments;  -- Depends on tv_post
+DROP TABLE tv_post;           -- Can now be dropped
+```
+
+**Or use CASCADE** (drops all dependents automatically):
+
+```sql
+DROP TABLE tv_post CASCADE;  -- Drops tv_post and all dependent TVIEWs
 ```
 
 ## ALTER TVIEW
@@ -296,7 +305,7 @@ DROP TVIEW tv_post;           -- Can now be dropped
 
 ```sql
 -- Drop and recreate
-DROP TVIEW tv_post;
+DROP TABLE tv_post;
 CREATE TABLE tv_post AS
 SELECT ... -- new definition
 FROM ...;
@@ -369,13 +378,16 @@ SELECT ... FROM table2
 -- Alternative: Use separate TVIEWs or application logic
 ```
 
-### DROP TVIEW Errors
+### DROP TABLE tv_* Errors
 
 **"Cannot drop tv_post: other TVIEWs depend on it"**
 ```sql
 -- Fix: Drop dependent TVIEWs first
-DROP TVIEW tv_post_comments;  -- Remove dependency
-DROP TVIEW tv_post;           -- Now works
+DROP TABLE tv_post_comments;  -- Remove dependency
+DROP TABLE tv_post;           -- Now works
+
+-- Or use CASCADE
+DROP TABLE tv_post CASCADE;   -- Drops all dependents
 ```
 
 ### Performance Issues

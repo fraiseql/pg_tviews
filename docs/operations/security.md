@@ -69,7 +69,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 **❌ BAD: Including sensitive data**
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
   tb_user.pk_user,
   tb_user.id,
@@ -83,7 +83,7 @@ FROM tb_user;
 
 **✅ GOOD: Exclude sensitive columns**
 ```sql
-CREATE TVIEW tv_user AS
+CREATE TABLE tv_user AS
 SELECT
   tb_user.pk_user,
   tb_user.id,
@@ -408,4 +408,4 @@ CREATE TRIGGER validate_tview_complexity_trigger
 
 - [API Reference](../reference/api.md) - Function permissions
 - [Troubleshooting Guide](troubleshooting.md) - Security-related issues
-- [Operations Guide](operations.md) - Production security
+- [Monitoring Guide](monitoring.md) - Production security monitoring

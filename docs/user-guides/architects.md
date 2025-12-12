@@ -50,7 +50,7 @@ Design entities following FraiseQL's trinity pattern for optimal performance:
 ```sql
 -- Entity: Post
 CREATE TABLE tb_post (
-    pk_post BIGSERIAL PRIMARY KEY,    -- 1. Primary Key (integer)
+    pk_post INT GENERATED ALWAYS AS IDENTITY,    -- 1. Primary Key (integer)
     id UUID NOT NULL DEFAULT gen_random_uuid(),  -- 2. Public ID (UUID)
     identifier TEXT UNIQUE,           -- 3. SEO slug (optional)
     title TEXT NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE tb_post (
 );
 
 -- Read Model: Post
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post as pk_post,  -- Required: lineage root
     p.id,                  -- GraphQL ID
@@ -95,7 +95,7 @@ Design aggregates that match your GraphQL schema boundaries:
 
 ```sql
 -- Product Aggregate (E-commerce)
-CREATE TVIEW tv_product AS
+CREATE TABLE tv_product AS
 SELECT
     p.pk_product,
     p.id,
@@ -208,7 +208,7 @@ CREATE TABLE tv_post_y2025 PARTITION OF tv_post
     FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
 
 -- Include partitioning key in TVIEW
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post,
     id,
@@ -268,7 +268,7 @@ CREATE TABLE tv_post_1 PARTITION OF tv_post
 -- etc.
 
 -- Update TVIEW to include partitioning key
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post,
     id,

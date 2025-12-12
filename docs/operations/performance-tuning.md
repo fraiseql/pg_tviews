@@ -230,7 +230,7 @@ RETURNS int AS $$
     SELECT abs(hashtext($1::text)) % 4;
 $$ LANGUAGE sql IMMUTABLE;
 
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     pk_post,
     id,
@@ -247,7 +247,7 @@ Optimize TVIEW SELECT statements for performance:
 
 ```sql
 -- ✅ Efficient: Pre-compute aggregations
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
@@ -272,7 +272,7 @@ LEFT JOIN (
 ) rating_stats ON p.pk_post = rating_stats.fk_post;
 
 -- ❌ Inefficient: Expensive operations in TVIEW
-CREATE TVIEW tv_post AS
+CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
@@ -543,11 +543,11 @@ Shard at application level for extreme scale:
 
 ```sql
 -- Shard by user ID ranges
-CREATE TVIEW tv_post_shard_1 AS
+CREATE TABLE tv_post_shard_1 AS
 SELECT * FROM tv_post WHERE user_id >= '00000000-0000-0000-0000-000000000000'
   AND user_id < '40000000-0000-0000-0000-000000000000';
 
-CREATE TVIEW tv_post_shard_2 AS
+CREATE TABLE tv_post_shard_2 AS
 SELECT * FROM tv_post WHERE user_id >= '40000000-0000-0000-0000-000000000000'
   AND user_id < '80000000-0000-0000-0000-000000000000';
 ```

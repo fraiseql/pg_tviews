@@ -256,5 +256,5 @@ ORDER BY n_tup_upd DESC;
 ## See Also
 
 - [Performance Tuning](../operations/performance-tuning.md) - Detailed optimization guides
-- [Monitoring Guide](../MONITORING.md) - Health check and metrics
-- [Operations Guide](operations.md) - Production procedures
+- [Monitoring Guide](../operations/monitoring.md) - Health check and metrics
+- [Troubleshooting Guide](../operations/troubleshooting.md) - Production procedures

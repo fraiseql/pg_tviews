@@ -83,7 +83,7 @@ pg_tviews uses **PostgreSQL advisory locks** to prevent concurrent refreshes of 
 
 | Level | Lock Type | Purpose | Example |
 |-------|-----------|---------|---------|
-| **Metadata** | Advisory (session) | Prevent concurrent CREATE/DROP TVIEW | During DDL operations |
+| **Metadata** | Advisory (session) | Prevent concurrent CREATE/DROP TABLE tv_* | During DDL operations |
 | **Row** | Advisory (transaction) | Prevent concurrent refresh of same row | `pg_advisory_xact_lock(hash('post:42'))` |
 | **Cascade** | _(Future)_ | Prevent cascade storms | Batch optimization |
 
