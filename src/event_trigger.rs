@@ -20,12 +20,22 @@ use crate::error::TViewResult;
 /// # Safety Context
 /// Event triggers fire AFTER the DDL completes, providing a safe context
 /// for SPI operations. The table already exists at this point.
-#[pg_extern]
-fn pg_tviews_handle_ddl_event() -> Result<(), Box<dyn std::error::Error>> {
+#[pg_extern(sql = r#"
+CREATE OR REPLACE FUNCTION pg_tviews_handle_ddl_event() RETURNS event_trigger
+AS 'MODULE_PATHNAME', 'pg_tviews_handle_ddl_event_wrapper'
+LANGUAGE c;
+"#)]
+fn pg_tviews_handle_ddl_event() {
     info!("pg_tviews: Event trigger fired");
 
     // Get information about the DDL command that just executed
-    let commands = get_ddl_commands()?;
+    let commands = match get_ddl_commands() {
+        Ok(cmds) => cmds,
+        Err(e) => {
+            warning!("pg_tviews: Failed to get DDL commands: {}", e);
+            return;
+        }
+    };
 
     for cmd in commands {
         // Only process CREATE TABLE and SELECT INTO
@@ -56,8 +66,6 @@ fn pg_tviews_handle_ddl_event() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
-    Ok(())
 }
 
 /// Get DDL commands from pg_event_trigger_ddl_commands()

@@ -1,8 +1,30 @@
 [32m[1m       Using[0m[39m [37m[1mCliArgument("pg18")[0m[39m and `pg_config` from [36m/usr/bin/pg_config[39m
 [32m[1m    Building[0m[39m for SQL generation with features `pg18`
+warning: unreachable statement
+  --> src/event_trigger.rs:36:13
+   |
+35 |             error!("pg_tviews: Failed to get DDL commands: {}", e);
+   |             ------------------------------------------------------ any code following this expression is unreachable
+36 |             return;
+   |             ^^^^^^^ unreachable statement
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pg_tviews` (lib) generated 1 warning
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
 [32m[1m  Discovered[0m[39m [36m[1m31[0m[39m SQL entities: [36m[1m0[0m[39m schemas ([36m[1m0[0m[39m unique), [36m[1m24[0m[39m functions, [36m[1m1[0m[39m types, [36m[1m0[0m[39m enums, [36m[1m4[0m[39m sqls, [36m[1m0[0m[39m ords, [36m[1m0[0m[39m hashes, [36m[1m0[0m[39m aggregates, [36m[1m2[0m[39m triggers
 [32m[1m  Rebuilding[0m[39m [36mpgrx_embed[39m, in debug mode, for SQL generation with features [36mpg18[39m
+warning: unreachable statement
+  --> src/event_trigger.rs:36:13
+   |
+35 |             error!("pg_tviews: Failed to get DDL commands: {}", e);
+   |             ------------------------------------------------------ any code following this expression is unreachable
+36 |             return;
+   |             ^^^^^^^ unreachable statement
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pg_tviews` (lib) generated 1 warning
    Compiling pg_tviews v0.1.0-beta.1 (/home/lionel/code/pg_tviews)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
 [32m[1m     Writing[0m[39m SQL entities to /dev/stdout
@@ -187,7 +209,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_convert_existing_table_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/event_trigger.rs:100
+-- src/event_trigger.rs:108
 -- pg_tviews::event_trigger::pg_tviews_convert_table
 CREATE  FUNCTION "pg_tviews_convert_table"(
 	"table_name" TEXT /* alloc::string::String */
@@ -245,10 +267,10 @@ AS 'MODULE_PATHNAME', 'pg_tviews_drop_wrapper';
 /* <begin connected objects> */
 -- src/event_trigger.rs:23
 -- pg_tviews::event_trigger::pg_tviews_handle_ddl_event
-CREATE  FUNCTION "pg_tviews_handle_ddl_event"() RETURNS VOID /* core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>> */
-STRICT
-LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_handle_ddl_event_wrapper';
+
+CREATE OR REPLACE FUNCTION pg_tviews_handle_ddl_event() RETURNS event_trigger
+AS 'MODULE_PATHNAME', 'pg_tviews_handle_ddl_event_wrapper'
+LANGUAGE c;
 /* </end connected objects> */
 
 /* <begin connected objects> */
