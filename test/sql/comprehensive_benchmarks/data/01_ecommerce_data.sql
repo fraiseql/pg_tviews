@@ -16,9 +16,12 @@ SET search_path TO benchmark, public;
 -- medium: 100 categories, 100K products, 500K reviews
 -- large:  500 categories, 1M products, 5M reviews
 
+-- Create temp table with scale
+CREATE TEMP TABLE temp_scale (scale_value TEXT);
+INSERT INTO temp_scale VALUES (:'data_scale');
 DO $$
 DECLARE
-    v_scale TEXT := :'data_scale';  -- Use psql variable: small, medium, large
+    v_scale TEXT;
     v_num_categories INTEGER;
     v_num_products INTEGER;
     v_num_reviews INTEGER;
@@ -27,6 +30,7 @@ DECLARE
     v_end TIMESTAMPTZ;
 BEGIN
 
+    SELECT scale_value INTO v_scale FROM temp_scale LIMIT 1;
     -- Set scale parameters
     CASE v_scale
         WHEN 'small' THEN
