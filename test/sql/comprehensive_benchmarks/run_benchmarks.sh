@@ -128,7 +128,7 @@ run_scenario() {
 
     # Run benchmarks
     log "  Running benchmarks..."
-    $PSQL -v data_scale="'$scale'" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"
+    $PSQL -v data_scale="$scale" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"
 
     log "${GREEN}✓ $scenario_name ($scale) complete${NC}\n"
 }
