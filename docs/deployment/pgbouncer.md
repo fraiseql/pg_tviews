@@ -20,7 +20,7 @@ Queue is automatically cleared via `DISCARD ALL` between transactions.
 
 ### Two-Phase Commit (2PC)
 
-2PC is fully supported. Queue entries are persisted in `pg_tview_queue_persistence` during `PREPARE TRANSACTION` and restored on `COMMIT PREPARED`.
+2PC is fully supported. Queue entries are persisted in `pg_tview_pending_refreshes` during `PREPARE TRANSACTION` and restored on `COMMIT PREPARED`.
 
 ## Known Limitations
 
