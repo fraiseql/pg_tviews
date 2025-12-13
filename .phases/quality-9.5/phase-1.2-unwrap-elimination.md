@@ -273,13 +273,13 @@ SELECT pg_tviews_metadata('nonexistent');  -- Should error gracefully
 
 ## Acceptance Criteria
 
-- [x] Zero `unwrap()` calls in `src/` directory (excluding tests)
-- [x] `#![deny(clippy::unwrap_used)]` enabled in `src/lib.rs`
-- [x] All error paths return proper `TViewError` variants
-- [x] No panics in FFI functions (all wrapped with `?` or safe defaults)
-- [x] Tests added for new error paths
-- [x] All existing tests still pass
-- [x] No performance regression (cached paths still fast)
+- [ ] Zero `unwrap()` calls in `src/` directory (excluding tests)
+- [ ] `#![deny(clippy::unwrap_used)]` enabled in `src/lib.rs`
+- [ ] All error paths return proper `TViewError` variants
+- [ ] No panics in FFI functions (all wrapped with `?` or safe defaults)
+- [ ] Tests added for new error paths
+- [ ] All existing tests still pass
+- [ ] No performance regression (cached paths still fast)
 
 ---
 

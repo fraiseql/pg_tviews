@@ -309,14 +309,14 @@ rg "#\[allow\(clippy::" src/ | wc -l
 
 ## Acceptance Criteria
 
-- [x] `clippy::pedantic` enabled in Cargo.toml
-- [x] Zero pedantic warnings with `-D clippy::pedantic`
-- [x] All `#[must_use]` attributes added appropriately
-- [x] Documentation includes `# Errors` and `# Panics` sections
-- [x] Numeric casts use `try_from()` or are explicitly allowed
-- [x] All tests pass
-- [x] No performance regression
-- [x] Allow directives are documented and justified
+- [ ] `clippy::pedantic` enabled in Cargo.toml
+- [ ] Zero pedantic warnings with `-D clippy::pedantic`
+- [ ] All `#[must_use]` attributes added appropriately
+- [ ] Documentation includes `# Errors` and `# Panics` sections
+- [ ] Numeric casts use `try_from()` or are explicitly allowed
+- [ ] All tests pass
+- [ ] No performance regression
+- [ ] Allow directives are documented and justified
 
 ---
 

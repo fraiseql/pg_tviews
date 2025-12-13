@@ -202,14 +202,14 @@ pg_tviews_version
 
 ## Acceptance Criteria
 
-- [x] `pg_tviews_version()` returns "0.1.0-beta.1"
-- [x] Version is sourced from `CARGO_PKG_VERSION`
-- [x] Unit tests verify version consistency
-- [x] No "alpha" strings remain in codebase
-- [x] Documentation references correct version
-- [x] CHANGELOG.md exists and is updated
-- [x] All tests pass
-- [x] No clippy warnings introduced
+- [ ] `pg_tviews_version()` returns "0.1.0-beta.1"
+- [ ] Version is sourced from `CARGO_PKG_VERSION`
+- [ ] Unit tests verify version consistency
+- [ ] No "alpha" strings remain in codebase
+- [ ] Documentation references correct version
+- [ ] CHANGELOG.md exists and is updated
+- [ ] All tests pass
+- [ ] No clippy warnings introduced
 
 ---
 

@@ -476,14 +476,14 @@ print('✅ All benchmarks have acceptable variance')
 
 ## Acceptance Criteria
 
-- [x] All performance claims validated with n≥100
-- [x] Statistical significance p < 0.05 for all improvements
-- [x] Coefficient of variation < 15% for all benchmarks
-- [x] 95% confidence intervals reported
-- [x] Hardware configuration documented
-- [x] Reproducibility protocol documented
-- [x] Results published in PERFORMANCE_VALIDATION.md
-- [x] README updated with validated numbers
+- [ ] All performance claims validated with n≥100
+- [ ] Statistical significance p < 0.05 for all improvements
+- [ ] Coefficient of variation < 15% for all benchmarks
+- [ ] 95% confidence intervals reported
+- [ ] Hardware configuration documented
+- [ ] Reproducibility protocol documented
+- [ ] Results published in PERFORMANCE_VALIDATION.md
+- [ ] README updated with validated numbers
 
 ---
 

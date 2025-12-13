@@ -1,6 +1,6 @@
 # pg_tviews Error Reference
 
-**Version**: 0.1.0-alpha
+**Version**: 0.1.0-beta.1
 **Last Updated**: December 10, 2025
 
 ## Overview

@@ -374,14 +374,14 @@ cargo doc --no-deps
 
 ## Acceptance Criteria
 
-- [x] No function exceeds 100 lines (excluding tests)
-- [x] Cyclomatic complexity <15 for all functions
-- [x] SQL builders extracted to dedicated module
-- [x] Validation logic separated from business logic
-- [x] All extracted functions have unit tests
-- [x] All integration tests still pass
-- [x] No performance regression
-- [x] Documentation updated for new modules
+- [ ] No function exceeds 100 lines (excluding tests)
+- [ ] Cyclomatic complexity <15 for all functions
+- [ ] SQL builders extracted to dedicated module
+- [ ] Validation logic separated from business logic
+- [ ] All extracted functions have unit tests
+- [ ] All integration tests still pass
+- [ ] No performance regression
+- [ ] Documentation updated for new modules
 
 ---
 

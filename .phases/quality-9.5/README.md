@@ -183,4 +183,4 @@ After all phases:
 
 **Start Date**: [To be determined]
 **Target Completion**: [Start + 6 weeks]
-**Release Target**: Q1 2026
+**Release Target**: Q2 2026 (April-June)

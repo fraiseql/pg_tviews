@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - **Migration Guide**: Created `docs/migration/jsonb-ivm-v2-migration.md` for upgrading to enhanced jsonb_ivm features
 - **Performance Validation**: Comprehensive validation with 2-10× faster operations and graceful fallback support
 
+### Fixed
+- Version consistency: `pg_tviews_version()` now returns "0.1.0-beta.1" matching Cargo.toml
+- Version function now uses `CARGO_PKG_VERSION` to prevent future drift
+
 ## [0.1.0-beta.1] - 2025-12-10
 
 ### 🚀 Beta Release: Feature-Complete TVIEW System

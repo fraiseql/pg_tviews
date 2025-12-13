@@ -76,10 +76,13 @@ pg_module_magic!();
 static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 
+/// Extension version (synced with Cargo.toml)
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Get the version of the pg_tviews extension
 #[pg_extern]
 fn pg_tviews_version() -> &'static str {
-    "0.1.0-alpha"
+    VERSION
 }
 
 /// Debug function to check if ProcessUtility hook is installed
@@ -304,21 +307,23 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
     TableIterator::new(results)
 }
 
-/// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
-#[pg_extern]
-fn pg_tviews_analyze_select(sql: &str) -> JsonB {
-    match schema::inference::infer_schema(sql) {
-        Ok(schema) => {
-            match schema.to_jsonb() {
-                Ok(jsonb) => jsonb,
-                Err(e) => {
-                    error!("Failed to serialize schema to JSONB: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            error!("Schema inference failed: {}", e);
-        }
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn version_matches_cargo_toml() {
+        let cargo_version = env!("CARGO_PKG_VERSION");
+        assert_eq!(pg_tviews_version(), cargo_version,
+            "Runtime version must match Cargo.toml version");
+    }
+
+    #[test]
+    fn version_format_is_valid() {
+        let version = pg_tviews_version();
+        // Should be semver: MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-PRERELEASE
+        assert!(version.contains('.'), "Version must be semver format");
+        assert!(!version.is_empty(), "Version cannot be empty");
     }
 }
 

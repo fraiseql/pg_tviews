@@ -429,14 +429,14 @@ psql -c "SELECT * FROM pg_stat_database WHERE deadlocks > 0;"
 
 ## Acceptance Criteria
 
-- [x] 100+ concurrent connections handled without deadlocks
-- [x] Cascade updates work correctly under concurrent load
-- [x] 2PC transactions handled correctly (queue persistence/recovery)
-- [x] PgBouncer connection pooling works (DISCARD ALL)
-- [x] No race conditions in 100 repeated test runs
-- [x] Performance metrics collected and validated
-- [x] All tests automated and repeatable
-- [x] CI integration added
+- [ ] 100+ concurrent connections handled without deadlocks
+- [ ] Cascade updates work correctly under concurrent load
+- [ ] 2PC transactions handled correctly (queue persistence/recovery)
+- [ ] PgBouncer connection pooling works (DISCARD ALL)
+- [ ] No race conditions in 100 repeated test runs
+- [ ] Performance metrics collected and validated
+- [ ] All tests automated and repeatable
+- [ ] CI integration added
 
 ---
 
