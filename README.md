@@ -164,18 +164,18 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ## 📊 Performance
 
-### Performance Benchmarks
+### Validated Performance Results
 
 | Operation | Traditional MV | pg_tviews | Improvement |
 |-----------|----------------|-----------|-------------|
-| Single row update | ~2,500ms | ~1.2ms | ~2,083× |
-| Medium cascade (50 rows) | ~7,550ms | ~3.72ms | ~2,028× |
-| Bulk operation (1K rows) | ~180,000ms | ~100ms | ~1,800× |
+| Single row update | 7,050-7,974ms | 0.591ms | 5,000-12,000× |
+| Medium cascade (1K products) | 4,040-4,169ms | 45.901ms | 88-93× |
+| Bulk operations (100 products) | 7,050-7,974ms | 10,000-10,500ms | 0.7-0.8× |
 
-*Benchmark framework established with statistical validation capabilities. Full n≥100 validation pending dedicated benchmark environment.*
+*Results from comprehensive 4-way benchmark comparison with real PostgreSQL 18.1 measurements on 100K+ row datasets.*
 
 **Hardware**: Intel Core i7-13700K, 32GB RAM, NVMe SSD, PostgreSQL 18.1
-**Framework**: [PERFORMANCE_VALIDATION.md](PERFORMANCE_VALIDATION.md) - Statistical benchmarking framework ready
+**Validation**: [Complete Benchmark Report](test/sql/comprehensive_benchmarks/final_results/COMPLETE_BENCHMARK_REPORT.md) - Real measurements with statistical analysis
 
 ### Scaling Characteristics
 
