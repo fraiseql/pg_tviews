@@ -44,9 +44,32 @@ echo "Started at: $(date)"
 echo "Results will be saved to: $LOG_FILE"
 echo ""
 
-# Log function
+# ============================================================================
+# Logging Functions
+# ============================================================================
+
 log() {
     echo -e "$1" | tee -a "$LOG_FILE"
+}
+
+log_info() {
+    log "[$(date '+%Y-%m-%d %H:%M:%S')] ℹ️  INFO: $1"
+}
+
+log_success() {
+    log "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ SUCCESS: $1"
+}
+
+log_error() {
+    log "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ ERROR: $1"
+}
+
+log_warning() {
+    log "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️  WARNING: $1"
+}
+
+log_step() {
+    log "[$(date '+%Y-%m-%d %H:%M:%S')] 📍 STEP: $1"
 }
 
 # Error handler
@@ -96,41 +119,73 @@ run_scenario() {
     local scale=$2
     local scenario_name=$3
 
-    log "${BLUE}=== Running $scenario_name ($scale scale) ===${NC}"
+    log_step "Starting $scenario_name ($scale scale) benchmark"
 
     # Show state before cleanup (if DEBUG mode enabled)
     if [ "$DEBUG" = "true" ]; then
-        log "Before cleanup:"
+        log_info "Checking database state before cleanup"
         check_database_state
     fi
 
     # Clean up previous scenario
-    log "  Cleaning up previous scenario..."
-    $PSQL -c "DROP SCHEMA IF EXISTS benchmark CASCADE; CREATE SCHEMA benchmark; SET search_path TO benchmark, public;" \
-        || error_exit "Schema cleanup failed"
-    log "  ${GREEN}✓ Cleanup complete${NC}"
+    log_step "Cleaning up previous scenario"
+    if $PSQL -c "DROP SCHEMA IF EXISTS benchmark CASCADE; CREATE SCHEMA benchmark; SET search_path TO benchmark, public;" 2>&1 | tee -a "$LOG_FILE"; then
+        log_success "Schema cleanup completed"
+    else
+        log_error "Schema cleanup failed"
+        return 1
+    fi
 
     # Show state after cleanup (if DEBUG mode enabled)
     if [ "$DEBUG" = "true" ]; then
-        log "After cleanup:"
+        log_info "Checking database state after cleanup"
         check_database_state
     fi
 
     # Load schema
-    log "  Loading schema..."
-    # Set search_path before loading schema
-    $PSQL -c "SET search_path TO benchmark, public;" || error_exit "Failed to set search_path"
-    $PSQL -f "schemas/${scenario}_schema.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "Schema load failed for $scenario"
+    log_step "Loading database schema"
+    if $PSQL -c "SET search_path TO benchmark, public;" 2>&1 | tee -a "$LOG_FILE"; then
+        log_info "Search path set successfully"
+    else
+        log_error "Failed to set search_path"
+        return 1
+    fi
+
+    if $PSQL -f "schemas/${scenario}_schema.sql" 2>&1 | tee -a "$LOG_FILE"; then
+        log_success "Schema loaded successfully"
+
+        # Verify schema
+        local table_count=$($PSQL -t -c "SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'benchmark';")
+        log_info "Found $table_count tables in benchmark schema"
+    else
+        log_error "Schema loading failed"
+        return 1
+    fi
 
     # Generate data
-    log "  Generating $scale scale data..."
-    $PSQL -v data_scale="$scale" -f "data/${scenario}_data.sql" 2>&1 | grep -E "NOTICE|ERROR" | tee -a "$LOG_FILE"
+    log_step "Generating $scale scale data"
+    if $PSQL -v data_scale="$scale" -f "data/${scenario}_data.sql" 2>&1 | grep -E "NOTICE|ERROR" | tee -a "$LOG_FILE"; then
+        log_success "Data generation completed"
+
+        # Verify data
+        local product_count=$($PSQL -t -c "SELECT COUNT(*) FROM benchmark.tb_product;")
+        log_info "Loaded $product_count products"
+    else
+        log_error "Data generation failed"
+        return 1
+    fi
 
     # Run benchmarks
-    log "  Running benchmarks..."
-    $PSQL -v data_scale="$scale" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"
+    log_step "Running benchmark scenarios"
+    if $PSQL -v data_scale="$scale" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"; then
+        log_success "Benchmark scenarios completed"
+    else
+        log_error "Benchmark scenarios failed"
+        return 1
+    fi
 
-    log "${GREEN}✓ $scenario_name ($scale) complete${NC}\n"
+    log_success "$scenario_name ($scale) benchmark completed successfully"
+    echo ""
 }
 
 # Parse command line arguments
@@ -171,6 +226,8 @@ done
 
 # Run benchmarks
 START_TIME=$(date +%s)
+log_info "Starting benchmark run at $(date)"
+log_info "Configuration: scenarios=$SCENARIOS, scales=$SCALES"
 
 for scenario in $SCENARIOS; do
     for scale in $SCALES; do
@@ -179,7 +236,7 @@ for scenario in $SCENARIOS; do
                 run_scenario "01_ecommerce" "$scale" "E-Commerce"
                 ;;
             *)
-                log "${RED}Unknown scenario: $scenario${NC}"
+                log_error "Unknown scenario: $scenario"
                 ;;
         esac
     done
@@ -229,10 +286,11 @@ CSV_FILE="$RESULTS_DIR/benchmark_results_$TIMESTAMP.csv"
 log "\n${YELLOW}Exporting results to CSV: $CSV_FILE${NC}"
 $PSQL -c "\COPY benchmark_results TO '$CSV_FILE' WITH CSV HEADER;" || log "${RED}CSV export failed${NC}"
 
-log "\n${GREEN}=========================================${NC}"
-log "${GREEN}Benchmarks Complete!${NC}"
-log "${GREEN}=========================================${NC}"
-log "Total duration: ${DURATION}s"
-log "Results logged to: $LOG_FILE"
-log "CSV results: $CSV_FILE"
-log ""
+log_info "Benchmark run summary:"
+log_info "  Scenarios: $SCENARIOS"
+log_info "  Scales: $SCALES"
+log_info "  Total time: ${DURATION}s"
+log_success "All benchmarks completed successfully"
+log_info "Results logged to: $LOG_FILE"
+log_info "CSV results: $CSV_FILE"
+echo ""
