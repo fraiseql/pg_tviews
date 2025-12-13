@@ -52,19 +52,12 @@ fn pg_tviews_handle_ddl_event() {
             continue;
         }
 
-        info!("pg_tviews: Converting '{}' to TVIEW", table_name);
+        // NOTE: Auto-conversion disabled due to PostgreSQL SPI limitations
+        // Event triggers cannot use SPI during DDL events (nested transaction issue)
+        // Users must manually call pg_tviews_convert_existing_table()
 
-        // Convert the newly-created table to a TVIEW
-        match convert_table_to_tview(&table_name) {
-            Ok(()) => {
-                info!("pg_tviews: Successfully converted '{}' to TVIEW", table_name);
-            }
-            Err(e) => {
-                // Log error but don't fail the transaction
-                // The table was already created by PostgreSQL
-                error!("pg_tviews: Failed to convert '{}' to TVIEW: {}", table_name, e);
-            }
-        }
+        info!("pg_tviews: TVIEW table '{}' created. To convert to TVIEW, run: SELECT pg_tviews_convert_existing_table('{}');",
+              table_name, table_name);
     }
 }
 
@@ -138,6 +131,10 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
 ///
 /// This function is called AFTER PostgreSQL has created the table.
 /// Delegates to the ddl::convert module for the actual conversion logic.
+///
+/// Note: Currently unused due to event trigger SPI limitations.
+/// Kept for future use or manual conversion scenarios.
+#[allow(dead_code)]
 fn convert_table_to_tview(table_name: &str) -> TViewResult<()> {
     info!("pg_tviews: convert_table_to_tview called for '{}'", table_name);
     crate::ddl::convert_existing_table_to_tview(table_name)
