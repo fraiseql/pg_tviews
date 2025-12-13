@@ -176,6 +176,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 **Hardware**: Intel Core i7-13700K, 32GB RAM, NVMe SSD, PostgreSQL 18.1
 **Validation**: [Complete Benchmark Report](test/sql/comprehensive_benchmarks/final_results/COMPLETE_BENCHMARK_REPORT.md) - Real measurements with statistical analysis
+**Memory**: [Memory Profiling Report](MEMORY_PROFILING_REPORT.md) - Comprehensive memory analysis framework
 
 ### Scaling Characteristics
 
