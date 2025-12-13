@@ -261,6 +261,53 @@ INSERT INTO tb_post (identifier, title, content, fk_user) VALUES
 SELECT data FROM tv_post;
 ```
 
+### TVIEW Creation Workflow
+
+Due to PostgreSQL event trigger limitations, TVIEW tables are not automatically converted during `CREATE TABLE AS SELECT`.
+
+#### Manual Conversion Process
+
+**Step 1: Create your TVIEW table**
+```sql
+CREATE TABLE tv_my_entity AS
+SELECT
+    id,           -- UUID (required)
+    data,         -- JSONB (required)
+    -- Optional optimization columns:
+    pk_entity,    -- INTEGER primary key
+    fk_parent,    -- INTEGER foreign key
+    parent_id,    -- UUID foreign key
+    path          -- LTREE for hierarchies
+FROM v_my_entity;
+```
+
+**Step 2: Manually convert to TVIEW**
+```sql
+SELECT pg_tviews_convert_existing_table('tv_my_entity');
+```
+
+**Step 3: Verify conversion**
+```sql
+SELECT * FROM pg_tviews_metadata WHERE table_name = 'tv_my_entity';
+```
+
+#### Event Trigger Behavior
+
+Event triggers now only validate TVIEW structure. After `CREATE TABLE AS SELECT`, you'll see:
+```
+INFO: TVIEW table created. To convert to TVIEW, run: SELECT pg_tviews_convert_existing_table('tv_my_entity');
+```
+
+#### Why Manual Conversion?
+
+PostgreSQL event triggers cannot use the Server Programming Interface (SPI) to query system catalogs during DDL events due to transaction isolation. This is a PostgreSQL architectural limitation, not a bug.
+
+**Technical Details**: Event triggers run within the same transaction as DDL commands. SPI calls create sub-transactions, which PostgreSQL prevents during DDL events to maintain consistency.
+
+#### Future: Automatic Conversion
+
+Background worker support for automatic conversion is planned for a future release. This will allow queued conversions to run in a separate transaction context.
+
 ### Enable Advanced Features
 
 ```sql
