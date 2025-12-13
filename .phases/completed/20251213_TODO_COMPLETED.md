@@ -1,8 +1,27 @@
 # Benchmark Fixes TODO - December 13, 2025
 
-## Status: Partial Fix Completed ✅
+## ✅ COMPLETED - 2025-12-13
 
-**Commit**: `5dcfa20` - Fixed critical psql variable quoting issue
+**Status**: Major fixes completed and committed (96054e4)
+
+### Work Completed:
+
+1. ✅ **Schema Context** - Added SET search_path to SQL files
+2. ✅ **Function Calls** - Schema-qualified all record_benchmark() calls
+3. ✅ **TVIEW Validation** - Updated Rust code to only require id + data
+4. ✅ **Schema Structure** - Added id column to tv_product
+
+**Final Commit**: `96054e4` - "fix(benchmarks): Fix schema context, function calls, validation, and TVIEW structure"
+**Files Changed**: 11 files (2 Rust, 9 SQL)
+**Next Steps**: See `.phases/20251214_TODO.md` for remaining tasks
+
+---
+
+## Original TODO (Archive)
+
+### Status: Partial Fix Completed ✅
+
+**Initial Commit**: `5dcfa20` - Fixed critical psql variable quoting issue
 
 ---
 
