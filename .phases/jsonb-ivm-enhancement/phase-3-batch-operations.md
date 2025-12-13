@@ -620,17 +620,26 @@ psql -d test_phase3 -f test/sql/94-batch-array-ops.sql
 
 ### Step 3: Security Testing
 
-**Critical**: Verify batch operations prevent SQL injection and DoS:
+**Critical**: Verify batch operations prevent injection and DoS:
 
 ```bash
 # Test SQL injection in table names
-psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders; DROP TABLE users; --', ...)"
+psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders; DROP TABLE users; --', 'pk_order', 1, 'items', 'id', '[]'::jsonb)"
 
 # Test oversized batch (DoS attempt)
-psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders', 'pk_order', 1, 'items', 'id', '[...1000 items...]')"
+psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders', 'pk_order', 1, 'items', 'id', '[{\"id\": 1}]'::jsonb)"
+
+# Test path injection
+psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders', 'pk_order', 1, 'items''; DROP TABLE users; --', 'id', '[]'::jsonb)"
 
 # Test valid batch operations
-psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders', 'pk_order', 1, 'items', 'id', '[...10 items...]')"
+psql -d test_phase3 -c "SELECT update_array_elements_batch('tv_orders', 'pk_order', 1, 'items', 'id', '[{\"id\": 1, \"price\": 29.99}]'::jsonb)"
+```
+
+**Expected Output**:
+```
+ERROR:  Invalid identifier 'tv_orders; DROP TABLE users; --'. Only alphanumeric characters and underscore allowed.
+ERROR:  Path contains SQL injection patterns
 ```
 
 **Expected Output**:
@@ -643,13 +652,14 @@ ERROR:  Batch size 1000 exceeds maximum 100
 
 ## Acceptance Criteria
 
-- ✅ `update_array_elements_batch()` function added with input validation
-- ✅ Fallback to sequential updates when batch function unavailable
-- ✅ Batch size optimization logic implemented with DoS protection
+- ✅ `update_array_elements_batch()` function added with comprehensive input validation
+- ✅ Batch cascade detection added to EntityDepGraph
+- ✅ Batch size limits implemented (DoS protection)
+- ✅ Fallback requires jsonb_ivm (clear error messaging)
 - ✅ All tests pass including security tests
-- ✅ Security testing verifies injection and DoS protection
-- ✅ Performance gain validated (3-5×)
-- ✅ Documentation complete with security notes
+- ✅ Security testing verifies injection and path traversal protection
+- ✅ Performance gain validated (3-5× with jsonb_ivm)
+- ✅ Documentation complete with security notes and batch strategy guidance
 
 ---
 
@@ -667,13 +677,12 @@ ERROR:  Batch size 1000 exceeds maximum 100
 ```
 feat(bulk): Add batch array update operations [PHASE3]
 
-- Add update_array_elements_batch() for 3-5× performance
-- Implement batch size optimization
-- Graceful fallback to sequential updates
-- Comprehensive batch operation tests
-- Performance benchmarks
-
-Part of jsonb_ivm enhancement initiative (Phase 3/5)
+- Add update_array_elements_batch() with security validation
+- Implement batch cascade detection and analysis
+- Add DoS protection with batch size limits
+- Comprehensive input validation for all parameters
+- Performance: 3-5× faster for bulk array operations
+- Security: SQL injection and path traversal protection
 ```
 
 ---

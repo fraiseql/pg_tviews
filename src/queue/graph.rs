@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use pgrx::prelude::*;
 use crate::TViewResult;
+use crate::catalog::TviewMeta;
 
 /// Entity dependency graph for refresh ordering
 ///
@@ -210,4 +211,127 @@ mod tests {
         assert!(user_idx < post_idx);
         assert!(post_idx < feed_idx);
     }
+
+    #[test]
+    fn test_batch_analysis() {
+        let graph = EntityDepGraph::load().unwrap();
+
+        let mut estimated_rows = HashMap::new();
+        estimated_rows.insert("post".to_string(), 100);
+        estimated_rows.insert("comment".to_string(), 500);
+
+        let analysis = graph.analyze_batch_potential(
+            "user",
+            &["post".to_string(), "comment".to_string()],
+            &estimated_rows,
+        );
+
+        // Should detect large row counts as batch candidates
+        assert!(analysis.total_entities >= 2);
+        assert!(analysis.total_estimated_rows >= 600);
+    }
+}
+
+/// Batch cascade detection and optimization
+///
+/// This module provides utilities for detecting when batch operations
+/// would provide performance benefits for cascade scenarios.
+impl EntityDepGraph {
+    /// Analyze cascade scenario to determine if batch operations are beneficial
+    ///
+    /// # Arguments
+    /// * `source_entity` - Entity that triggered the cascade
+    /// * `affected_entities` - Entities that need refreshing
+    /// * `estimated_rows` - Estimated number of rows per entity
+    ///
+    /// # Returns
+    /// Batch optimization recommendations
+    #[allow(dead_code)]  // Phase 3: Analysis method for future optimization
+    pub fn analyze_batch_potential(
+        &self,
+        _source_entity: &str,
+        affected_entities: &[String],
+        estimated_rows: &HashMap<String, usize>,
+    ) -> BatchAnalysis {
+        let mut analysis = BatchAnalysis::default();
+
+        for entity in affected_entities {
+            let row_count = estimated_rows.get(entity).copied().unwrap_or(0);
+
+            // Check if entity has array dependencies that could benefit from batch updates
+            if let Ok(Some(meta)) = TviewMeta::load_by_entity(entity) {
+                let has_array_deps = meta.dependency_types.iter().any(|dt| dt == &crate::catalog::DependencyType::Array);
+
+                if has_array_deps && row_count > 10 {
+                    analysis.batch_candidates.push(entity.clone());
+                    analysis.estimated_savings += row_count * 3; // Rough estimate: 3x speedup
+                }
+            }
+
+            // Check for large row counts that benefit from batch refresh
+            if row_count >= 50 {
+                analysis.large_refresh_candidates.push(entity.clone());
+                analysis.estimated_savings += row_count * 4; // Rough estimate: 4x speedup for large batches
+            }
+        }
+
+        analysis.total_entities = affected_entities.len();
+        analysis.total_estimated_rows = estimated_rows.values().sum();
+
+        analysis
+    }
+}
+
+/// Analysis result for batch optimization potential
+#[derive(Debug, Clone, Default)]
+pub struct BatchAnalysis {
+    /// Entities that would benefit from batch array updates
+    pub batch_candidates: Vec<String>,
+    /// Entities that would benefit from batch row refresh
+    pub large_refresh_candidates: Vec<String>,
+    /// Total entities in cascade
+    #[allow(dead_code)]  // Phase 3: Populated for future use
+    pub total_entities: usize,
+    /// Total estimated rows across all entities
+    #[allow(dead_code)]  // Phase 3: Populated for future use
+    pub total_estimated_rows: usize,
+    /// Estimated performance improvement (operations saved)
+    #[allow(dead_code)]  // Phase 3: Populated for future use
+    pub estimated_savings: usize,
+}
+
+impl BatchAnalysis {
+    /// Determine if batch operations are recommended
+    #[allow(dead_code)]  // Phase 3: Analysis methods for future optimization
+    pub fn should_use_batch(&self) -> bool {
+        !self.batch_candidates.is_empty() || !self.large_refresh_candidates.is_empty()
+    }
+
+    /// Get recommended batch strategy
+    #[allow(dead_code)]  // Phase 3: Analysis methods for future optimization
+    pub fn recommended_strategy(&self) -> BatchStrategy {
+        if !self.batch_candidates.is_empty() && !self.large_refresh_candidates.is_empty() {
+            BatchStrategy::Hybrid
+        } else if !self.batch_candidates.is_empty() {
+            BatchStrategy::ArrayBatch
+        } else if !self.large_refresh_candidates.is_empty() {
+            BatchStrategy::RowBatch
+        } else {
+            BatchStrategy::Individual
+        }
+    }
+}
+
+/// Recommended batch strategy for cascade operations
+#[allow(dead_code)]  // Phase 3: Strategy enum for future optimization
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BatchStrategy {
+    /// Use individual operations (default for small cascades)
+    Individual,
+    /// Use batch array updates for array dependencies
+    ArrayBatch,
+    /// Use batch row refresh for large row counts
+    RowBatch,
+    /// Use both array batch and row batch optimizations
+    Hybrid,
 }
