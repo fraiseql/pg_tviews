@@ -176,6 +176,42 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 **Hardware**: Intel Core i7-13700K, 32GB RAM, NVMe SSD, PostgreSQL 18.1
 **Validation**: [Complete Benchmark Report](test/sql/comprehensive_benchmarks/final_results/COMPLETE_BENCHMARK_REPORT.md) - Real measurements with statistical analysis
+
+## API Stability & Compatibility
+
+### For Users
+
+pg_tviews follows semantic versioning with three stability tiers:
+
+- **STABLE APIs**: Guaranteed compatible across minor versions (0.1 → 0.2 → 1.0)
+- **EVOLVING APIs**: May change in minor versions, stabilize before 1.0
+- **EXPERIMENTAL APIs**: No compatibility guarantee, debugging only
+
+See [API Stability Guide](./docs/api/SQL_FUNCTIONS.md) for detailed contracts.
+
+### Version Guarantees
+
+| Version | Stability | Production Ready |
+|---------|-----------|------------------|
+| 0.1.x | Beta | Yes, with caution |
+| 1.0.x | Stable | Yes |
+| 2.0.x | Next Gen | Future |
+
+### Migration Guide
+
+Upgrading between versions:
+- **0.1 → 0.2**: STABLE functions guaranteed to work
+- **0.2 → 1.0**: STABLE functions guaranteed to work
+- **1.0 → 1.1**: Minor version updates, STABLE functions only
+- **1.x → 2.0**: Breaking changes possible, migration guide required
+
+See [CHANGELOG.md](./CHANGELOG.md) and [Breaking Changes](./docs/api/BREAKING_CHANGES.md).
+
+### Getting Help
+
+- **STABLE APIs**: Safe to use, fully supported
+- **EVOLVING APIs**: Consider alternatives, report issues
+- **EXPERIMENTAL APIs**: Development only, not supported for production
 **Memory**: [Memory Profiling Report](MEMORY_PROFILING_REPORT.md) - Comprehensive memory analysis framework
 
 ### Scaling Characteristics

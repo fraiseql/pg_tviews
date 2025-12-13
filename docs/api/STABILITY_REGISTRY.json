@@ -1,0 +1,209 @@
+{
+  "version": "0.1.0-beta.1",
+  "last_updated": "2025-12-13",
+  "api_items": [
+    {
+      "name": "pg_tviews_convert_existing_table",
+      "type": "sql_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "breaking_changes": [],
+      "deprecated": false,
+      "notes": "Core functionality, long-term commitment"
+    },
+    {
+      "name": "pg_tviews_version",
+      "type": "sql_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "breaking_changes": [],
+      "deprecated": false,
+      "notes": "Version reporting, always stable"
+    },
+    {
+      "name": "pg_tviews_metadata",
+      "type": "sql_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "breaking_changes": [],
+      "deprecated": false,
+      "output_columns": ["entity_name", "primary_key", "created_at", "last_refreshed", "rows_cached"],
+      "notes": "Metadata introspection, stable schema"
+    },
+    {
+      "name": "pg_tviews_health_check",
+      "type": "sql_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "breaking_changes": [],
+      "deprecated": false,
+      "notes": "Health monitoring, stable output"
+    },
+    {
+      "name": "pg_tviews_debug_queue",
+      "type": "sql_function",
+      "stability": "EVOLVING",
+      "since_version": "0.1.0-beta.1",
+      "planned_changes": "Output structure may change for performance",
+      "target_stability_version": "1.1.0",
+      "deprecated": false,
+      "notes": "Debugging tool, output format may evolve"
+    },
+    {
+      "name": "pg_tviews_queue_stats",
+      "type": "sql_function",
+      "stability": "EVOLVING",
+      "since_version": "0.1.0-beta.1",
+      "planned_changes": "Statistics format may change",
+      "target_stability_version": "1.1.0",
+      "deprecated": false,
+      "notes": "Queue statistics, format may evolve"
+    },
+    {
+      "name": "pg_tviews_clear_queue",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Advanced debugging only, not for production use",
+      "deprecated": false,
+      "notes": "Dangerous operation, may be replaced with safer alternative"
+    },
+    {
+      "name": "pg_tviews_performance_stats",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Output format may change frequently",
+      "deprecated": false,
+      "notes": "Performance monitoring, experimental"
+    },
+    {
+      "name": "pg_tviews_create",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Limited validation, prefer DDL syntax",
+      "deprecated": false,
+      "notes": "Alternative to DDL, may be improved or removed"
+    },
+    {
+      "name": "pg_tviews_drop",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Limited validation, prefer DDL syntax",
+      "deprecated": false,
+      "notes": "Alternative to DDL, may be improved or removed"
+    },
+    {
+      "name": "pg_tviews_refresh",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Bypasses incremental refresh, testing only",
+      "deprecated": false,
+      "notes": "Benchmarking tool, not for production use"
+    },
+    {
+      "name": "pg_tviews_commit_prepared",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Advanced usage, requires 2PC knowledge",
+      "deprecated": false,
+      "notes": "2PC support, advanced usage"
+    },
+    {
+      "name": "pg_tviews_rollback_prepared",
+      "type": "sql_function",
+      "stability": "EXPERIMENTAL",
+      "since_version": "0.1.0-beta.1",
+      "warning": "Advanced usage, requires 2PC knowledge",
+      "deprecated": false,
+      "notes": "2PC support, advanced usage"
+    },
+    {
+      "name": "refresh_pk",
+      "type": "rust_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "module": "refresh",
+      "breaking_changes": [],
+      "notes": "Core refresh logic, guaranteed stable"
+    },
+    {
+      "name": "refresh_batch",
+      "type": "rust_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "module": "refresh",
+      "breaking_changes": [],
+      "notes": "Batch refresh, guaranteed stable"
+    },
+    {
+      "name": "find_base_tables",
+      "type": "rust_function",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "module": "dependency",
+      "breaking_changes": [],
+      "notes": "Dependency analysis, stable API"
+    },
+    {
+      "name": "ViewRow",
+      "type": "rust_struct",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "module": "refresh",
+      "breaking_changes": [],
+      "notes": "Data representation, stable structure"
+    },
+    {
+      "name": "TViewError",
+      "type": "rust_enum",
+      "stability": "STABLE",
+      "since_version": "0.1.0-beta.1",
+      "module": "error",
+      "breaking_changes": ["New variants only (never removed)"],
+      "variants_as_of_latest": [
+        "MetadataNotFound",
+        "RefreshFailed",
+        "CacheMiss",
+        "SerializationFailed"
+      ],
+      "notes": "Error handling, backward compatible"
+    },
+    {
+      "name": "RefreshKey",
+      "type": "rust_struct",
+      "stability": "EVOLVING",
+      "since_version": "0.1.0-beta.1",
+      "module": "queue",
+      "planned_changes": "May change as queue optimization evolves",
+      "notes": "Queue key, may evolve with optimizations"
+    }
+  ],
+  "stability_policy": {
+    "STABLE": {
+      "commitment": "Guaranteed compatible within major version",
+      "deprecation_notice_months": 12,
+      "breaking_change_policy": "Major version only"
+    },
+    "EVOLVING": {
+      "commitment": "May change in minor versions",
+      "deprecation_notice_months": 6,
+      "target_stability": "Future minor version"
+    },
+    "EXPERIMENTAL": {
+      "commitment": "No compatibility guarantee",
+      "deprecation_notice_months": 0,
+      "warning": "Use only for testing, not production"
+    },
+    "DEPRECATED": {
+      "commitment": "Scheduled removal",
+      "removal_version": "TBD",
+      "deprecation_notice_months": 6,
+      "replacement_api": "Documented in phase-4.3"
+    }
+  }
+}
