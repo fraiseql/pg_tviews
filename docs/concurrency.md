@@ -450,4 +450,3 @@ CREATE INDEX idx_post_user_id ON tv_post((data->>'userId'));
 - [PostgreSQL Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
 - [Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
 - [Lock Monitoring](https://www.postgresql.org/docs/current/monitoring-locks.html)
-- Phase 4 Implementation Plan: `/home/lionel/code/pg_tviews/PHASE_4_PLAN.md`

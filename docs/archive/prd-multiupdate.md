@@ -1,4 +1,4 @@
-# 1. Scope of This TDD
+# 1. Scope of This Document
 
 This document focuses on **how TVIEW handles multi-update transactions**:
 

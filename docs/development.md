@@ -303,38 +303,36 @@ test/
 
 ## Development Workflow
 
-### 1. Choose a Phase
-
-Follow the implementation plan in `.phases/implementation/`.
-
-### 2. Write Tests First (RED)
+### 1. Development Setup
 
 ```bash
-# Create failing tests
-cargo test --lib  # Should fail initially
+# Clone and setup the project
+git clone <repository-url>
+cd pg_tviews
+cargo build --release
 ```
 
-### 3. Implement Code (GREEN)
+### 2. Testing
 
 ```bash
-# Implement minimal code to pass tests
-cargo test --lib  # Should pass now
-```
-
-### 4. Refactor (REFACTOR)
-
-```bash
-# Improve code quality while maintaining tests
+# Run unit tests
 cargo test --lib
+
+# Run integration tests
 cargo pgrx test pg17
+
+# Run comprehensive test suite
+psql -d test_db -f test/sql/*.sql
 ```
 
-### 5. Integration Test (QA)
+### 3. Building
 
 ```bash
-# Run full test suite
-cargo pgrx test pg17
-psql -d test_db -f test/sql/*.sql
+# Build for development
+cargo build
+
+# Build for production
+cargo build --release
 ```
 
 ## Contributing

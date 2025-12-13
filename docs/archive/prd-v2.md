@@ -1,4 +1,4 @@
-# 📘 **TVIEW Extension — PRD + TDD (Final Architecture v2.0)**
+# 📘 **TVIEW Extension — PRD (Final Architecture v2.0)**
 
 ### *Incremental, Synchronous, Declarative Read Model Engine for PostgreSQL*
 
@@ -197,7 +197,7 @@ updated_at timestamptz
 
 ---
 
-# 7. Dependency Graph (TDD)
+# 7. Dependency Graph
 
 After creating `v_entity`, TVIEW walks `pg_depend` recursively to find **all underlying tables**.
 
@@ -222,7 +222,7 @@ This is maintained in memory and/or pg_tview_meta.
 
 ---
 
-# 8. Runtime Update Pipeline (TDD)
+# 8. Runtime Update Pipeline
 
 ### Trigger on base table (e.g. tb_post):
 

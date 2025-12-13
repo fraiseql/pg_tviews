@@ -183,8 +183,6 @@ SELECT pg_tviews_delete(TG_RELID, OLD.id);
 
 ## Testing
 
-### RED Phase Tests
-
 The implementation includes comprehensive test coverage:
 
 - `50_array_columns.sql`: Array column materialization
