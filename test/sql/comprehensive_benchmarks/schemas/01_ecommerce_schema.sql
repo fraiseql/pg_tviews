@@ -2,6 +2,9 @@
 -- Realistic schema: categories → products → reviews → inventory
 -- Uses trinity pattern: id (UUID) + pk_{entity} (INTEGER) + fk_{entity} (INTEGER)
 
+-- Ensure all objects are created in benchmark schema
+SET search_path TO benchmark, public;
+
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -81,6 +84,7 @@ CREATE INDEX idx_inventory_product ON tb_inventory(fk_product);
 -- Backing view for denormalized data
 CREATE VIEW v_product AS
 SELECT
+    p.id,           -- UUID (required for TVIEW)
     p.pk_product,
     p.fk_category,
     jsonb_build_object(
@@ -153,6 +157,7 @@ LEFT JOIN tb_inventory i ON p.pk_product = i.fk_product;
 -- Step 1: Create the table with initial data
 CREATE TABLE tv_product AS
 SELECT
+    id,            -- UUID (required for TVIEW)
     pk_product,
     fk_category,
     data

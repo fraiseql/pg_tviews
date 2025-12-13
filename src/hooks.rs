@@ -277,7 +277,7 @@ unsafe fn handle_create_table_as(
         Err(e) => {
             // Validation failed - log error but let table creation proceed
             // Event trigger will detect invalid structure and log warnings
-            warning!("Invalid TVIEW syntax for '{}': {} - TVIEW must have: pk_<entity>, id (UUID), data (JSONB) columns", table_name, e);
+            warning!("Invalid TVIEW syntax for '{}': {} - TVIEW must have: id (UUID), data (JSONB) columns. Optional: pk_<entity>, fk_<entity>, path, <entity>_id", table_name, e);
             false // Still let PostgreSQL create it, event trigger will handle
         }
     }
@@ -287,22 +287,35 @@ unsafe fn handle_create_table_as(
 fn validate_tview_select(select_sql: &str) -> Result<(), String> {
     // Check for required patterns in SELECT
     // This is basic validation - event trigger will do thorough validation
+    // Only require: id (UUID) + data (JSONB)
+    // Optional columns: pk_<entity>, fk_<entity>, path (LTREE), <entity>_id (UUID FKs)
 
     let sql_lower = select_sql.to_lowercase();
 
-    // Check for pk_<entity> column (required)
-    if !sql_lower.contains(" as pk_") && !sql_lower.contains(" pk_") {
-        return Err("Missing pk_<entity> column".to_string());
+    // Check for id column (required)
+    if !sql_lower.contains(" as id") && !sql_lower.contains(" id,") && !sql_lower.contains(" id ") {
+        return Err("Missing required 'id' column (UUID)".to_string());
     }
 
-    // Check for jsonb_build_object for data column (required)
-    if !sql_lower.contains("jsonb_build_object") {
-        return Err("Missing jsonb_build_object for data column".to_string());
+    // Check for data column - either jsonb_build_object or direct column (required)
+    let has_data = sql_lower.contains("jsonb_build_object")
+        || sql_lower.contains(" as data")
+        || sql_lower.contains(" data,")
+        || sql_lower.contains(" data ");
+
+    if !has_data {
+        return Err("Missing required 'data' column (JSONB)".to_string());
     }
 
-    // Check for id column (recommended but not strictly required)
-    if !sql_lower.contains(" as id") && !sql_lower.contains(" id") {
-        info!("TVIEW SELECT missing explicit 'id' column - this may cause issues");
+    // Log helpful info about optimization columns
+    if sql_lower.contains(" as pk_") || sql_lower.contains(" pk_") {
+        info!("TVIEW SELECT includes pk_<entity> column for optimized queries");
+    }
+    if sql_lower.contains(" as fk_") || sql_lower.contains(" fk_") {
+        info!("TVIEW SELECT includes fk_<entity> column(s) for foreign key filtering");
+    }
+    if sql_lower.contains(" as path") || sql_lower.contains(" path,") || sql_lower.contains(" path ") {
+        info!("TVIEW SELECT includes path column (LTREE) for hierarchical queries");
     }
 
     Ok(())

@@ -2,6 +2,9 @@
 -- Supports multiple scales: small, medium, large
 -- Uses trinity pattern: id (UUID), pk_{entity} (INTEGER), fk_{entity} (INTEGER)
 
+-- Ensure we're inserting into the benchmark schema
+SET search_path TO benchmark, public;
+
 -- Configuration via psql variables (set before running)
 -- \set data_scale 'small'  -- options: small, medium, large
 

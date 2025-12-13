@@ -85,19 +85,25 @@ fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<
     // Check required columns exist
     let columns = get_table_columns(table_name)?;
 
-    let has_pk = columns.iter().any(|c| c.name == pk_col);
     let has_id = columns.iter().any(|c| c.name == "id");
     let has_data = columns.iter().any(|c| c.name == "data");
 
-    if !has_pk || !has_id || !has_data {
+    // Only require id + data columns
+    // Optional optimization columns: pk_<entity>, fk_<entity>, path (LTREE), <entity>_id (UUID FKs)
+    if !has_id || !has_data {
         return Err(TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
             reason: format!(
-                "Table must have TVIEW structure: {}, id, data. Found: {}",
-                pk_col,
+                "Table must have TVIEW structure: id (UUID), data (JSONB). Found: {}",
                 columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
             ),
         });
+    }
+
+    // Log presence of optional optimization columns
+    let has_pk = columns.iter().any(|c| c.name == pk_col);
+    if has_pk {
+        info!("TVIEW '{}' has pk_{} column for optimized queries", table_name, entity_name);
     }
 
     // Validate types

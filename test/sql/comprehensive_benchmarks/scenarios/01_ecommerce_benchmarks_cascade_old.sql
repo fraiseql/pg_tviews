@@ -65,7 +65,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'category_cascade',
         'small',
@@ -109,7 +109,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'category_cascade',
         'small',
@@ -146,7 +146,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'category_cascade',
         'small',
@@ -239,7 +239,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'supplier_cascade',
         'small',
@@ -288,7 +288,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'supplier_cascade',
         'small',
@@ -325,7 +325,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark(
+    PERFORM public.record_benchmark(
         'ecommerce',
         'supplier_cascade',
         'small',

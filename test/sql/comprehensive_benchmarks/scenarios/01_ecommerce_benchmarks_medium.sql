@@ -64,7 +64,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'price_update', 'medium', 'tviews_jsonb_ivm', 1, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'price_update', 'medium', 'tviews_jsonb_ivm', 1, 1, v_duration_ms);
     RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -92,7 +92,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'price_update', 'medium', 'manual_jsonb_set', 1, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'price_update', 'medium', 'manual_jsonb_set', 1, 1, v_duration_ms);
     RAISE NOTICE '[2] Manual + jsonb_set: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -106,7 +106,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'price_update', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'price_update', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
     RAISE NOTICE '[3] Full refresh: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -154,7 +154,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'category_cascade', 'medium', 'tviews_jsonb_ivm', v_affected_count, 2, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'medium', 'tviews_jsonb_ivm', v_affected_count, 2, v_duration_ms);
     RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / v_affected_count;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -172,7 +172,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'category_cascade', 'medium', 'manual_jsonb_set', v_affected_count, 2, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'medium', 'manual_jsonb_set', v_affected_count, 2, v_duration_ms);
     RAISE NOTICE '[2] Manual + jsonb_set: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / v_affected_count;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -186,7 +186,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'category_cascade', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 2, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 2, v_duration_ms);
     RAISE NOTICE '[3] Full refresh: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -230,7 +230,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_update', 'medium', 'tviews_jsonb_ivm', 100, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_update', 'medium', 'tviews_jsonb_ivm', 100, 1, v_duration_ms);
     RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / 100;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -253,7 +253,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_update', 'medium', 'manual_jsonb_set', 100, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_update', 'medium', 'manual_jsonb_set', 100, 1, v_duration_ms);
     RAISE NOTICE '[2] Manual + jsonb_set: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / 100;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -268,7 +268,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_update', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_update', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
     RAISE NOTICE '[3] Full refresh: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -309,7 +309,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_1k', 'medium', 'tviews_jsonb_ivm', 1000, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_1k', 'medium', 'tviews_jsonb_ivm', 1000, 1, v_duration_ms);
     RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / 1000;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -332,7 +332,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_1k', 'medium', 'manual_jsonb_set', 1000, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_1k', 'medium', 'manual_jsonb_set', 1000, 1, v_duration_ms);
     RAISE NOTICE '[2] Manual + jsonb_set: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / 1000;
 
     ROLLBACK TO SAVEPOINT sp1;
@@ -346,7 +346,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM record_benchmark('ecommerce', 'bulk_1k', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
+    PERFORM public.record_benchmark('ecommerce', 'bulk_1k', 'medium', 'full_refresh', (SELECT COUNT(*) FROM tb_product)::INTEGER, 1, v_duration_ms);
     RAISE NOTICE '[3] Full refresh: %.3f ms', v_duration_ms;
 
     ROLLBACK TO SAVEPOINT sp1;
