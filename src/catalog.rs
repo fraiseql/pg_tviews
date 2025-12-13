@@ -68,6 +68,15 @@ pub struct TviewMeta {
     ///
     /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
+
+    /// For Array dependencies with nested path updates, the nested path within elements.
+    /// Used for surgical updates like "author.name" instead of replacing entire comment.
+    ///
+    /// - Scalar/NestedObject: None
+    /// - Array with nested updates: Some("author.name")
+    ///
+    /// Length matches `dependency_types`.
+    pub nested_paths: Vec<Option<String>>,
 }
 
 impl TviewMeta {
@@ -87,7 +96,7 @@ impl TviewMeta {
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys \
+                        dependency_types, dependency_paths, array_match_keys, nested_paths \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -112,6 +121,10 @@ impl TviewMeta {
                 let array_keys: Option<Vec<Option<String>>> =
                     row["array_match_keys"].value()?;
 
+                // nested_paths (TEXT[]) with NULL values
+                let nested_paths: Option<Vec<Option<String>>> =
+                    row["nested_paths"].value()?;
+
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
@@ -134,6 +147,7 @@ impl TviewMeta {
                     dependency_types: dep_types,
                     dependency_paths: dep_paths,
                     array_match_keys: array_keys.unwrap_or_default(),
+                    nested_paths: nested_paths.unwrap_or_default(),
                 })
             } else {
                 None
@@ -174,6 +188,10 @@ impl TviewMeta {
                 let array_keys: Option<Vec<Option<String>>> =
                     row["array_match_keys"].value()?;
 
+                // nested_paths (TEXT[]) with NULL values
+                let nested_paths: Option<Vec<Option<String>>> =
+                    row["nested_paths"].value()?;
+
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
@@ -196,6 +214,7 @@ impl TviewMeta {
                     dependency_types: dep_types,
                     dependency_paths: dep_paths,
                     array_match_keys: array_keys.unwrap_or_default(),
+                    nested_paths: nested_paths.unwrap_or_default(),
                 })
             } else {
                 None
@@ -294,6 +313,7 @@ impl TviewMeta {
             dependency_types: dep_types,
             dependency_paths: dep_paths,
             array_match_keys: array_keys.unwrap_or_default(),
+            nested_paths: vec![], // Default empty for now
         })
     }
 
@@ -332,11 +352,13 @@ impl TviewMeta {
             let dep_type = self.dependency_types.get(i).cloned().unwrap_or(DependencyType::Scalar);
             let path = self.dependency_paths.get(i).cloned().flatten();
             let match_key = self.array_match_keys.get(i).cloned().flatten();
+            let nested_path = self.nested_paths.get(i).cloned().flatten();
 
             details.push(DependencyDetail {
                 dep_type,
                 path,
                 match_key,
+                nested_path,
             });
         }
 
@@ -355,6 +377,8 @@ pub struct DependencyDetail {
     pub path: Option<Vec<String>>,
     /// Key to match for array elements (e.g., "id")
     pub match_key: Option<String>,
+    /// Nested path within array element for surgical updates (e.g., "author.name")
+    pub nested_path: Option<String>,
 }
 
 impl Default for TviewMeta {
@@ -369,6 +393,7 @@ impl Default for TviewMeta {
             dependency_types: vec![],
             dependency_paths: vec![],
             array_match_keys: vec![],
+            nested_paths: vec![],
         }
     }
 }

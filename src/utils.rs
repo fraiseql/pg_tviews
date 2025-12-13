@@ -158,6 +158,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
 /// let id = extract_jsonb_id(&data, "id")?;
 /// assert_eq!(id, Some("user_123".to_string()));
 /// ```
+#[allow(dead_code)]  // Phase 1: Will be integrated in Phase 2+
 pub fn extract_jsonb_id(data: &JsonB, id_key: &str) -> spi::Result<Option<String>> {
     // Validate id_key to prevent SQL injection
     crate::validation::validate_sql_identifier(id_key, "id_key")?;

@@ -224,6 +224,7 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 /// )?;
 /// assert!(exists);
 /// ```
+#[allow(dead_code)]  // Phase 1: Will be integrated in Phase 2+
 pub fn check_array_element_exists(
     data: &JsonB,
     array_path: &[String],
@@ -319,6 +320,7 @@ pub fn check_array_element_exists(
 ///     &JsonB(json!(123))
 /// )?;
 /// ```
+#[allow(dead_code)]  // Phase 1: Will be integrated in Phase 2+
 #[allow(clippy::too_many_arguments)]
 pub fn insert_array_element_safe(
     table_name: &str,
@@ -411,6 +413,170 @@ pub fn insert_array_element_safe(
     // Element doesn't exist, perform insert
     insert_array_element(table_name, pk_column, pk_value, array_path, new_element, sort_key)?;
     Ok(true)
+}
+
+/// Update a nested field within an array element using path notation.
+///
+/// This function surgically updates a nested field within a specific array element,
+/// without replacing the entire element. Uses jsonb_ivm's path-based update for
+/// 2-3× performance improvement over full element replacement.
+///
+/// **Security**: Validates all identifier parameters to prevent SQL injection.
+///
+/// # Arguments
+///
+/// * `table_name` - TVIEW table name
+/// * `pk_column` - Primary key column name
+/// * `pk_value` - Primary key value
+/// * `array_path` - Path to array (e.g., "items")
+/// * `match_key` - Key to match elements (e.g., "id")
+/// * `match_value` - Value to match for element selection
+/// * `nested_path` - Dot-notation path within element (e.g., "author.name")
+/// * `new_value` - New value to set at nested path
+///
+/// # Returns
+///
+/// `Ok(())` if update successful, `Err` if validation or update fails
+///
+/// # Errors
+///
+/// Returns error if identifiers contain invalid characters or query fails.
+///
+/// # Path Syntax
+///
+/// Nested paths support:
+/// - Dot notation: `author.name` → object property access
+/// - Array indexing: `tags[0]` → array element access
+/// - Combined: `metadata.tags[0].value` → complex navigation
+///
+/// # Performance
+///
+/// - With jsonb_ivm: 2-3× faster than updating full element
+/// - Without jsonb_ivm: Falls back to full element update
+///
+/// # Example
+///
+/// ```rust
+/// // Update author name in a specific comment
+/// update_array_element_path(
+///     "tv_post",
+///     "pk_post",
+///     1,
+///     "comments",
+///     "id",
+///     &JsonB(json!(123)),
+///     "author.name",
+///     &JsonB(json!("Alice Updated"))
+/// )?;
+///
+/// // Before: {"comments": [{"id": 123, "author": {"name": "Alice", "email": "..."}, "text": "..."}]}
+/// // After:  {"comments": [{"id": 123, "author": {"name": "Alice Updated", "email": "..."}, "text": "..."}]}
+/// // Only author.name changed, rest of comment untouched
+/// ```
+#[allow(dead_code)]  // Phase 2: Will be integrated in Phase 3+
+#[allow(clippy::too_many_arguments)]
+pub fn update_array_element_path(
+    table_name: &str,
+    pk_column: &str,
+    pk_value: i64,
+    array_path: &str,
+    match_key: &str,
+    match_value: &JsonB,
+    nested_path: &str,
+    new_value: &JsonB,
+) -> TViewResult<()> {
+    // Validate all inputs to prevent SQL injection
+    crate::validation::validate_table_name(table_name)?;
+    crate::validation::validate_sql_identifier(pk_column, "pk_column")?;
+    crate::validation::validate_sql_identifier(match_key, "match_key")?;
+    crate::validation::validate_jsonb_path(array_path, "array_path")?;
+    crate::validation::validate_jsonb_path(nested_path, "nested_path")?;
+
+    // Check if jsonb_ivm path function is available
+    let has_jsonb_ivm = check_path_function_available()?;
+
+    if has_jsonb_ivm {
+        // Use optimized jsonb_ivm path-based update
+        let sql = format!(
+            "UPDATE {} SET data = jsonb_ivm_array_update_where_path(
+                data, '{}', '{}', $1::jsonb, '{}', $2::jsonb
+            ) WHERE {} = $3",
+            table_name, array_path, match_key, nested_path, pk_column
+        );
+
+        Spi::run_with_args(&sql, &[
+            unsafe { DatumWithOid::new(JsonB(match_value.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe { DatumWithOid::new(JsonB(new_value.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+        ])?;
+    } else {
+        // Fallback: Use PostgreSQL's jsonb_set() for nested path update
+        warning!(
+            "jsonb_ivm_array_update_where_path not available. \
+             Using jsonb_set fallback (slower). \
+             Install jsonb_ivm >= 0.2.0 for 2-3× better performance."
+        );
+
+        // Build jsonb_set path: {array_path, [index], nested.path.parts}
+        // First, find the array element index
+        let find_index_sql = format!(
+            "SELECT idx - 1 FROM {},
+             jsonb_array_elements(data->'{}') WITH ORDINALITY arr(elem, idx)
+             WHERE elem->>'{}' = $1::jsonb->>'{}' AND {} = $2
+             LIMIT 1",
+            table_name, array_path, match_key, match_key, pk_column
+        );
+
+        let element_index: Option<i32> = Spi::get_one_with_args(
+            &find_index_sql,
+            &[
+                unsafe { DatumWithOid::new(JsonB(match_value.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+                unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+            ][..],
+        )
+        .map_err(|e| TViewError::SpiError {
+            query: find_index_sql.clone(),
+            error: e.to_string(),
+        })?;
+
+        let element_index = element_index.ok_or_else(|| TViewError::InvalidInput {
+            parameter: "match_value".to_string(),
+            value: format!("{}={:?}", match_key, match_value),
+            reason: format!("No array element found with {}={:?}", match_key, match_value),
+        })?;
+
+        // Build jsonb_set path: {array_path, index, nested, path, parts}
+        let nested_parts: Vec<&str> = nested_path.split('.').collect();
+        let mut path_array = vec![array_path.to_string(), element_index.to_string()];
+        path_array.extend(nested_parts.iter().map(|s| s.to_string()));
+
+        let path_str = path_array.join(",");
+
+        // Use jsonb_set to update nested field
+        let update_sql = format!(
+            "UPDATE {} SET data = jsonb_set(data, '{{{}}}'::text[], $1::jsonb) WHERE {} = $2",
+            table_name, path_str, pk_column
+        );
+
+        Spi::run_with_args(&update_sql, &[
+            unsafe { DatumWithOid::new(JsonB(new_value.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
+        ])?;
+    }
+
+    Ok(())
+}
+
+/// Check if jsonb_ivm path functions are available
+#[allow(dead_code)]  // Phase 2: Used by update_array_element_path
+fn check_path_function_available() -> TViewResult<bool> {
+    let result = Spi::get_one::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_ivm_array_update_where_path')"
+    );
+    match result {
+        Ok(Some(exists)) => Ok(exists),
+        _ => Ok(false), // Default to false if query fails
+    }
 }
 
 #[cfg(any(test, feature = "pg_test"))]

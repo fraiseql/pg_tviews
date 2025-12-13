@@ -734,6 +734,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 dependency_types: dep_types,
                 dependency_paths: dep_paths,
                 array_match_keys: array_keys.unwrap_or_default(),
+                nested_paths: vec![], // Default empty for now
             });
         }
 

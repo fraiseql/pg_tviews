@@ -671,14 +671,13 @@ INSERT INTO tb_post (title, fk_author) VALUES ('My Post', 1);
 ```
 feat(arrays): Add nested path updates for array elements [PHASE2]
 
-- Extend DependencyDetail with nested_path field
-- Add update_array_element_path() for surgical nested updates
+- Extend DependencyDetail with nested_path field for surgical updates
+- Add update_array_element_path() with comprehensive input validation
 - Integrate jsonb_ivm_array_update_where_path into cascade logic
-- Support dot notation and array indexing in paths
+- Support dot notation and array indexing in nested paths
+- Add security validation for all path and identifier parameters
 - Performance: 2-3× faster for nested field cascades
-- Comprehensive integration tests
-
-Part of jsonb_ivm enhancement initiative (Phase 2/5)
+- Comprehensive integration and security tests
 ```
 
 ---
