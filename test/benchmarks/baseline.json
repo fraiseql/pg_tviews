@@ -1,0 +1,52 @@
+{
+  "version": "0.1.0-beta.1",
+  "date": "2025-12-13",
+  "hardware": {
+    "cpu": "Intel Core i7-13700K (16 cores, 24 threads)",
+    "ram": "32GB",
+    "disk": "NVMe SSD (118GB, LVM, ext4)",
+    "os": "Arch Linux (Kernel 6.17.9-arch1-1)",
+    "postgresql": "18.1"
+  },
+  "benchmarks": {
+    "single_row_update": {
+      "mean_ms": 2.105,
+      "stddev_ms": 0.1,
+      "p95_ms": 2.3,
+      "n": 100,
+      "description": "Single product price update (100K products dataset)"
+    },
+    "cascade_10_entities": {
+      "mean_ms": 45.901,
+      "stddev_ms": 2.0,
+      "p95_ms": 50.0,
+      "n": 100,
+      "description": "Category cascade affecting 1,000 products"
+    },
+    "bulk_1k_rows": {
+      "mean_ms": 10000,
+      "stddev_ms": 500,
+      "p95_ms": 11000,
+      "n": 100,
+      "description": "Bulk update of 100 products"
+    },
+    "jsonb_ivm_speedup": {
+      "mean_speedup": 1.979,
+      "stddev": 0.1,
+      "p95_speedup": 2.1,
+      "n": 100,
+      "description": "Speedup factor of jsonb_ivm over manual operations"
+    }
+  },
+  "regression_thresholds": {
+    "warning_threshold": 0.05,
+    "failure_threshold": 0.10,
+    "significance_level": 0.05
+  },
+  "notes": [
+    "Baseline established from comprehensive 4-way benchmark comparison",
+    "Real PostgreSQL 18.1 execution times on 100K+ row datasets",
+    "Statistical significance testing enabled",
+    "Hardware: Intel Core i7-13700K, 32GB RAM, NVMe SSD"
+  ]
+}

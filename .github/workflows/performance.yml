@@ -1,0 +1,63 @@
+name: Performance Regression Tests
+
+on:
+  pull_request:
+    branches: [ main, benchmark-fixes-20251214 ]
+  push:
+    branches: [ main, benchmark-fixes-20251214 ]
+  workflow_dispatch:
+
+jobs:
+  performance:
+    name: Performance Regression Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pgrx
+        run: cargo install cargo-pgrx --locked
+
+      - name: Initialize pgrx
+        run: cargo pgrx init --pg17=/usr/lib/postgresql/17/bin/pg_config
+
+      - name: Build and install extension
+        run: cargo pgrx install --release
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Run regression tests
+        run: |
+          cd test/benchmarks
+          python3 regression_test.py
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: test/benchmarks/results-*.json
+
+      - name: Comment on PR (if regression)
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ Performance regression detected. See CI logs for details.'
+            })
