@@ -1,2 +1,6 @@
 /target/
 Cargo.lock
+
+# Benchmark results (generated files)
+test/sql/comprehensive_benchmarks/results/*.log
+test/sql/comprehensive_benchmarks/results/*.csv
