@@ -10,6 +10,30 @@
 
 ---
 
+## 🚨 CRITICAL REQUIREMENT - Fallback Testing
+
+**PATTERN ALERT**: Phases 2 and 3 both initially failed to implement fallbacks properly. This phase MUST verify that all fallbacks work correctly.
+
+### Mandatory Fallback Testing
+
+Phase 5 MUST include comprehensive testing of graceful degradation:
+
+1. **Test WITH jsonb_ivm** - Verify optimized paths work
+2. **Test WITHOUT jsonb_ivm** - Verify fallback paths work
+3. **Compare results** - Both paths must produce identical results
+4. **Verify warnings** - Fallback paths should log performance warnings
+
+### Required Test Scenarios
+
+- ✅ Phase 1 fallbacks (helper functions without jsonb_ivm)
+- ✅ Phase 2 fallbacks (nested path updates using jsonb_set)
+- ✅ Phase 3 fallbacks (batch operations using sequential updates)
+- ✅ Phase 4 fallbacks (path operations using jsonb_set)
+
+**If ANY fallback test fails, the phase is BLOCKED.**
+
+---
+
 ## Context
 
 This final phase validates that all integrated jsonb_ivm functions work correctly together and deliver the promised performance improvements. We'll create comprehensive tests, benchmarks, and documentation updates.
@@ -106,7 +130,13 @@ SELECT assert_rejects_injection(
 \echo '### All security tests passed! ✓'
 ```
 
-### Step 2: Fallback Testing
+### Step 2: **CRITICAL** - Comprehensive Fallback Testing
+
+**MOST IMPORTANT TEST**: This validates that all phases work WITHOUT jsonb_ivm extension.
+
+**Create File**: `test/sql/96-fallback-comprehensive.sql`
+
+**Purpose**: Test ALL phases without jsonb_ivm to verify graceful degradation
 
 **Content**:
 
@@ -919,7 +949,7 @@ All existing TVIEWs continue to work without modification. New features are opt-
 
 ## Verification Steps
 
-### Step 1: Run All Tests
+### Step 1: Run All Tests WITH jsonb_ivm
 
 ```bash
 cargo pgrx install --release
@@ -940,6 +970,34 @@ psql -d test_integration -f test/sql/98-regression-tests.sql
 ```
 
 **Expected**: All tests pass, performance targets met
+
+---
+
+### Step 1b: **CRITICAL** - Run Tests WITHOUT jsonb_ivm
+
+**THIS IS THE MOST IMPORTANT TEST** - Verifies graceful degradation across all phases.
+
+```bash
+# Create database WITHOUT jsonb_ivm extension
+psql -d postgres -c "DROP DATABASE IF EXISTS test_fallback"
+psql -d postgres -c "CREATE DATABASE test_fallback"
+psql -d test_fallback -c "CREATE EXTENSION pg_tviews"  # NO jsonb_ivm!
+
+# Run fallback tests
+psql -d test_fallback -f test/sql/96-fallback-comprehensive.sql
+
+# Run security tests (should work without jsonb_ivm)
+psql -d test_fallback -f test/sql/99-security-comprehensive.sql
+```
+
+**Expected**:
+- ✅ All tests PASS (using fallback implementations)
+- ✅ WARNING messages logged about using slower paths
+- ✅ Results identical to optimized path (just slower)
+- ❌ NO ERRORS about missing dependencies
+- ❌ NO FAILURES due to missing jsonb_ivm
+
+**If any test FAILS**, this indicates incomplete fallback implementation - **BLOCK THE PHASE**.
 
 ---
 
@@ -965,17 +1023,35 @@ Review and verify:
 
 ## Acceptance Criteria
 
-- ✅ All integration tests pass
-- ✅ Performance benchmarks meet targets:
+### Integration Testing
+- ✅ All integration tests pass WITH jsonb_ivm
+- ✅ **CRITICAL**: All integration tests pass WITHOUT jsonb_ivm (fallback testing)
+- ✅ Results identical between optimized and fallback paths
+- ✅ Warning messages present in fallback paths
+
+### Performance Validation
+- ✅ Performance benchmarks meet targets WITH jsonb_ivm:
   - jsonb_extract_id: 5× faster
   - jsonb_array_contains_id: 10× faster
   - Nested paths: 2-3× faster
   - Batch operations: 3-5× faster
   - Path fallback: 2× faster
+- ✅ Fallback performance acceptable (works, even if slower)
+
+### Graceful Degradation (CRITICAL)
+- ✅ **Phase 1 fallbacks tested and working**
+- ✅ **Phase 2 fallbacks tested and working**
+- ✅ **Phase 3 fallbacks tested and working**
+- ✅ **Phase 4 fallbacks tested and working**
+- ✅ No hard errors when jsonb_ivm unavailable
+- ✅ Appropriate warnings logged
+
+### Regression & Documentation
 - ✅ Regression tests pass (no breakage)
 - ✅ Documentation complete and accurate
 - ✅ Migration guide tested
 - ✅ All existing tests still pass
+- ✅ Fallback behavior documented
 
 ---
 
@@ -986,6 +1062,10 @@ Review and verify:
 - ❌ **DO NOT** commit without full verification
 - ❌ **DO NOT** skip documentation updates
 - ❌ **DO NOT** merge without performance validation
+- ❌ **DO NOT** skip fallback testing (test WITHOUT jsonb_ivm!)
+- ❌ **DO NOT** accept errors in fallback paths
+- ❌ **DO NOT** assume fallbacks work without testing them
+- ❌ **DO NOT** move to production without verifying graceful degradation
 
 ---
 

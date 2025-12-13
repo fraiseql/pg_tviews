@@ -10,6 +10,45 @@
 
 ---
 
+## 🚨 CRITICAL REQUIREMENT - READ BEFORE IMPLEMENTING
+
+**PATTERN ALERT**: Phases 2 and 3 both had **THE EXACT SAME MISTAKE** where fallback paths returned errors instead of implementing graceful degradation.
+
+### ❌ NEVER DO THIS (Failed Pattern from Phases 2 & 3):
+
+```rust
+} else {
+    warning!("Falling back to alternative approach");
+    // TODO: Implement fallback
+    return Err(TViewError::MissingDependency { ... });  // ❌ WRONG!
+}
+```
+
+### ✅ ALWAYS DO THIS (Correct Fallback Pattern):
+
+```rust
+} else {
+    warning!("Using alternative approach (slower)");
+
+    // Implement actual fallback logic here
+    // For path updates, use standard jsonb_set() or other PostgreSQL functions
+
+    // Process the operation using standard PostgreSQL features
+    // Example: jsonb_set(), unnest(), etc.
+}
+```
+
+### Requirements for This Phase:
+
+1. **Fallback MUST be implemented** - No TODOs, no errors in fallback paths
+2. **Fallback MUST be tested** - Create tests that run WITHOUT jsonb_ivm
+3. **Fallback MUST work** - Verify it produces correct results
+4. **Ask for help** - If fallback logic is unclear, ASK before moving on
+
+**This is NON-NEGOTIABLE. Fallbacks are architectural requirements, not nice-to-haves.**
+
+---
+
 ## Context
 
 When dependency metadata is incomplete or the structure is too complex to classify, we need a flexible fallback that can update any nested path. The `jsonb_ivm_set_path()` function provides this capability with **~2× performance improvement** over multiple `jsonb_set()` calls.
@@ -541,7 +580,7 @@ DROP TABLE test_path_updates;
 cargo pgrx install --release
 ```
 
-### Step 2: Run Tests
+### Step 2: Run Tests WITH jsonb_ivm
 
 ```bash
 cargo pgrx test
@@ -553,6 +592,30 @@ psql -d test_phase4 -f test/sql/95-fallback-paths.sql
 ```
 
 **Expected**: All tests pass, path updates ~2× faster than jsonb_set
+
+---
+
+### Step 2b: **CRITICAL** - Test Fallback WITHOUT jsonb_ivm
+
+This step verifies graceful degradation when jsonb_ivm is not available.
+
+```bash
+# Create database WITHOUT jsonb_ivm extension
+psql -d postgres -c "DROP DATABASE IF EXISTS test_phase4_fallback"
+psql -d postgres -c "CREATE DATABASE test_phase4_fallback"
+psql -d test_phase4_fallback -c "CREATE EXTENSION pg_tviews"
+
+# Run subset of tests (fallback paths only)
+# These should work even without jsonb_ivm
+psql -d test_phase4_fallback -f test/sql/95-fallback-paths-no-ivm.sql
+```
+
+**Expected**: Tests pass with warnings about using standard PostgreSQL functions
+
+**Create**: `test/sql/95-fallback-paths-no-ivm.sql` with tests that verify fallback behavior:
+- Test 1: Basic path update using standard jsonb_set
+- Test 2: Verify warning messages about missing jsonb_ivm
+- Test 3: Confirm correct results (slower but correct)
 
 ---
 
@@ -581,14 +644,30 @@ ERROR:  Invalid identifier 'tv_posts; DROP TABLE users; --'. Only alphanumeric c
 
 ## Acceptance Criteria
 
+### Functional Requirements
 - ✅ Fallback logic added to `apply_patch()` with input validation
 - ✅ `apply_path_based_fallback()` function implemented with security checks
 - ✅ `update_single_path()` utility added with path validation
 - ✅ Path change detection logic (basic version)
-- ✅ All tests pass including security tests
-- ✅ Security testing verifies injection and path traversal protection
-- ✅ Performance improvement verified
+
+### **CRITICAL** - Graceful Degradation (Fallback)
+- ✅ **Fallback MUST be fully implemented** - No TODOs, no errors returned
+- ✅ **Fallback MUST be tested WITHOUT jsonb_ivm** - Separate test file created
+- ✅ **Fallback MUST work correctly** - Produces same results as optimized path
+- ✅ **Fallback warnings present** - User informed when using slower path
+- ✅ **No hard dependencies on jsonb_ivm** - Extension is optional
+
+### Testing Requirements
+- ✅ All tests pass WITH jsonb_ivm (optimized path)
+- ✅ All tests pass WITHOUT jsonb_ivm (fallback path)
+- ✅ Security tests verify injection and path traversal protection
+- ✅ Performance improvement verified (2× faster with jsonb_ivm)
+- ✅ Fallback performance acceptable (works, even if slower)
+
+### Documentation
 - ✅ Documentation complete with security notes
+- ✅ Fallback behavior documented
+- ✅ Performance characteristics documented for both paths
 
 ---
 
@@ -598,6 +677,10 @@ ERROR:  Invalid identifier 'tv_posts; DROP TABLE users; --'. Only alphanumeric c
 - ❌ **DO NOT** skip validation of path syntax
 - ❌ **DO NOT** create paths with user input (injection risk)
 - ❌ **DO NOT** remove full replacement fallback
+- ❌ **DO NOT** write TODO comments in fallback paths (implement it fully!)
+- ❌ **DO NOT** return errors in fallback branches (defeats graceful degradation)
+- ❌ **DO NOT** skip testing without jsonb_ivm extension
+- ❌ **DO NOT** move on without completing fallback implementation
 
 ---
 
