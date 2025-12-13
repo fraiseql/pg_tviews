@@ -6,15 +6,14 @@
 **Benchmark Version**: 0.1.0-beta.1
 
 ### Hardware
-- **CPU**: AMD Ryzen 9 5950X (16 cores, 32 threads) @ 3.4 GHz
-- **RAM**: 64GB DDR4-3200
-- **Disk**: Samsung 980 PRO 1TB NVMe SSD
-  - Sequential Read: 7,000 MB/s
-  - Sequential Write: 5,000 MB/s
-  - Random IOPS: 1M IOPS
+- **CPU**: Intel Core i7-13700K (16 cores, 24 threads) @ variable frequency
+- **RAM**: 32GB (system total)
+- **Disk**: NVMe SSD (118GB total, LVM)
+  - Type: NVMe solid-state drive
+  - Filesystem: ext4 (LVM)
 
 ### Software
-- **OS**: Arch Linux (Kernel 6.6.1)
+- **OS**: Arch Linux (Kernel 6.17.9-arch1-1)
 - **PostgreSQL**: 18.1
 - **pg_tviews**: 0.1.0-beta.1
 - **jsonb_ivm**: Not installed (optional)
