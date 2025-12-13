@@ -158,6 +158,27 @@ pub enum TViewError {
         error: String,
     },
 
+    /// Input validation failed (non-security issue)
+    InvalidInput {
+        parameter: String,
+        value: String,
+        reason: String,
+    },
+
+    /// Security violation detected (SQL injection, etc.)
+    SecurityViolation {
+        parameter: String,
+        value: String,  // Sanitized for logging
+        reason: String,
+    },
+
+    /// Feature requires optional dependency
+    MissingDependency {
+        feature: String,
+        dependency: String,
+        install_command: String,
+    },
+
     /// Internal error (bug in extension)
     InternalError {
         message: String,
@@ -203,6 +224,9 @@ impl TViewError {
             CacheError { .. } => "XX000",
             CallbackError { .. } => "XX000",
             MetricsError { .. } => "XX000",
+            InvalidInput { .. } => "42P17", // Invalid parameter value
+            SecurityViolation { .. } => "42501", // Insufficient privilege (security)
+            MissingDependency { .. } => "58P01", // Undefined file (extension)
             InternalError { .. } => "XX000",
         }
     }
@@ -300,6 +324,18 @@ impl fmt::Display for TViewError {
             }
             MetricsError { operation, error } => {
                 write!(f, "Metrics operation '{}' failed: {}", operation, error)
+            }
+            InvalidInput { parameter, value, reason } => {
+                write!(f, "Invalid input for parameter '{}': {}. Value: {}",
+                       parameter, reason, value)
+            }
+            SecurityViolation { parameter, value, reason } => {
+                write!(f, "Security violation in parameter '{}': {}. Value: {}",
+                       parameter, reason, value)
+            }
+            MissingDependency { feature, dependency, install_command } => {
+                write!(f, "Feature '{}' requires extension '{}'. Install with: {}",
+                       feature, dependency, install_command)
             }
             InternalError { message, file, line } => {
                 write!(f, "Internal error at {}:{}: {}\nPlease report this bug.",
