@@ -1,7 +1,7 @@
 services:
   pg_tviews_bench:
     build:
-      context: ..  # Build from parent directory (contains pg_tviews)
+      context: ../..  # Build from parent of pg_tviews (contains both pg_tviews and jsonb_ivm)
       dockerfile: pg_tviews/docker/dockerfile-benchmarks
     container_name: pg_tviews_bench
     environment:
@@ -11,7 +11,7 @@ services:
       - PGDATA=/var/lib/postgresql/data
     volumes:
       # Mount results directory for easy access from host
-      - ../pg_tviews/test/sql/comprehensive_benchmarks/results:/benchmarks/results
+      - ../test/sql/comprehensive_benchmarks/results:/benchmarks/results
       # Optional: mount PostgreSQL data for persistence
       - pgdata:/var/lib/postgresql/data
     ports:
