@@ -120,7 +120,7 @@ BEGIN
     -- The tv_product table was already created with data by the schema
     -- But we need to verify it has rows (it should from CREATE TABLE AS SELECT)
     IF (SELECT COUNT(*) FROM tv_product) = 0 THEN
-        INSERT INTO tv_product SELECT pk_product, fk_category, data FROM v_product;
+        INSERT INTO tv_product SELECT id, pk_product, fk_category, data FROM v_product;
     END IF;
 
     -- 6. Populate manual table (Approach 2: manual updates)
