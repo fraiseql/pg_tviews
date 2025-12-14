@@ -7,16 +7,18 @@ on:
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -27,7 +29,7 @@ jobs:
 
       - name: Check for vulnerabilities
         run: |
-          if cargo audit | grep -q "error:"; then
+          if cargo audit 2>&1 | grep -q "error:"; then
             echo "⚠️ Vulnerabilities found!"
             cargo audit
             exit 1
@@ -36,7 +38,7 @@ jobs:
           fi
 
       - name: Upload audit report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: security-audit
           path: audit-report.json
@@ -51,7 +53,7 @@ jobs:
           output: 'filesystem-trivy-results.sarif'
 
       - name: Upload filesystem scan results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'filesystem-trivy-results.sarif'

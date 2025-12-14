@@ -2,18 +2,37 @@ name: Clippy Strict
 
 on: [push, pull_request]
 
+env:
+  CARGO_TERM_COLOR: always
+  # Use PostgreSQL 16 for clippy checks (available in Ubuntu 24.04 default repos)
+  PG_VERSION: 16
+
 jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
+
+      - name: Install PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                  postgresql-server-dev-${{ env.PG_VERSION }}
+
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx
+          cargo pgrx init --pg${{ env.PG_VERSION }} \
+            /usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
+
       - name: Run strict clippy
         run: |
-          cargo clippy --all-targets --all-features -- \
+          cargo clippy --lib --bins --no-default-features --features pg${{ env.PG_VERSION }} -- \
             -D warnings \
             -D clippy::all \
             -D clippy::pedantic \

@@ -2,15 +2,41 @@ name: Documentation
 
 on: [push, pull_request]
 
+env:
+  CARGO_TERM_COLOR: always
+  # Use PostgreSQL 16 for doc generation (available in Ubuntu 24.04 default repos)
+  PG_VERSION: 16
+
 jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                  postgresql-server-dev-${{ env.PG_VERSION }}
+
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx
+          cargo pgrx init --pg${{ env.PG_VERSION }} \
+            /usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
+
       - name: Build docs
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --no-deps --no-default-features --features pg${{ env.PG_VERSION }}
+
       - name: Check for warnings
-        run: cargo doc --no-deps 2>&1 | grep -q "warning:" && exit 1 || exit 0
+        run: |
+          output=$(cargo doc --no-deps --no-default-features --features pg${{ env.PG_VERSION }} 2>&1)
+          if echo "$output" | grep -q "warning:"; then
+            echo "Documentation warnings found:"
+            echo "$output" | grep "warning:"
+            exit 1
+          fi
+          echo "No documentation warnings found"

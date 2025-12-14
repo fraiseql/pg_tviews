@@ -8,27 +8,45 @@ on:
 permissions:
   contents: write
   id-token: write  # Required for Sigstore
+  attestations: write  # Required for build provenance
+
+env:
+  CARGO_TERM_COLOR: always
+  PG_VERSION: 16
 
 jobs:
   build-and-sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+      - name: Install PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                  postgresql-server-dev-${{ env.PG_VERSION }}
 
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx
+        run: |
+          cargo install --locked cargo-pgrx
+          cargo pgrx init --pg${{ env.PG_VERSION }} \
+            /usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Build extension
         run: |
-          cargo pgrx package --release
+          cargo pgrx package --no-default-features --features pg${{ env.PG_VERSION }}
           tar czf pg_tviews-${{ github.ref_name }}.tar.gz target/release/
 
       - name: Generate SBOM
@@ -51,12 +69,12 @@ jobs:
             sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
 
       - name: Generate provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: pg_tviews-${{ github.ref_name }}.tar.gz
 
       - name: Create release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             pg_tviews-${{ github.ref_name }}.tar.gz

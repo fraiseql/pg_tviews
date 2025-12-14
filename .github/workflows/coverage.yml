@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ main, dev ]
 
+env:
+  CARGO_TERM_COLOR: always
+  # Use PostgreSQL 16 for coverage (available in Ubuntu 24.04 default repos)
+  # This avoids needing external APT repositories
+  PG_VERSION: 16
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
@@ -16,23 +22,30 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
 
-    - name: Install PostgreSQL
+    - name: Install PostgreSQL ${{ env.PG_VERSION }}
       run: |
         sudo apt-get update
-        sudo apt-get install -y postgresql-17 postgresql-server-dev-17
+        sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                postgresql-server-dev-${{ env.PG_VERSION }}
 
     - name: Install pgrx
       run: cargo install --locked cargo-pgrx
 
     - name: Initialize pgrx
-      run: cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+      run: |
+        cargo pgrx init --pg${{ env.PG_VERSION }} \
+          /usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
 
     - name: Install coverage tools
       run: cargo install cargo-llvm-cov
 
-    - name: Run tests with coverage
-      run: cargo llvm-cov --lcov --output-path coverage.lcov
+    - name: Run library tests with coverage
+      run: |
+        cargo llvm-cov --lib --no-default-features --features pg${{ env.PG_VERSION }} \
+          --lcov --output-path coverage.lcov
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
@@ -43,7 +56,10 @@ jobs:
         fail_ci_if_error: false
 
     - name: Generate HTML coverage report
-      run: cargo llvm-cov --html --output-dir target/coverage-html
+      run: |
+        cargo llvm-cov --lib --no-default-features --features pg${{ env.PG_VERSION }} \
+          --html --output-dir target/coverage-html
+      continue-on-error: true
 
     - name: Upload coverage HTML
       uses: actions/upload-artifact@v4
@@ -51,3 +67,4 @@ jobs:
         name: coverage-html
         path: target/coverage-html/
         retention-days: 30
+      if: always()

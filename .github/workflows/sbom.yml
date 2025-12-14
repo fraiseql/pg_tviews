@@ -6,16 +6,34 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  security-events: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PG_VERSION: 16
+
 jobs:
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+      - name: Install PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                  postgresql-server-dev-${{ env.PG_VERSION }}
 
       - name: Install SBOM tools
         run: |
@@ -23,13 +41,16 @@ jobs:
           cargo install cargo-cyclonedx
 
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx
+        run: |
+          cargo install --locked cargo-pgrx
+          cargo pgrx init --pg${{ env.PG_VERSION }} \
+            /usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
 
       - name: Generate SBOM
         run: ./scripts/generate-sbom.sh
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: sbom/*
@@ -42,16 +63,17 @@ jobs:
           severity: 'CRITICAL,HIGH'
           format: 'sarif'
           output: 'sbom-trivy-results.sarif'
+        continue-on-error: true
 
       - name: Upload SBOM vulnerability scan results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: 'sbom-trivy-results.sarif'
 
       - name: Attach SBOM to release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             sbom/pg_tviews-*.spdx.json

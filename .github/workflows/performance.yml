@@ -7,6 +7,10 @@ on:
     branches: [ main, benchmark-fixes-20251214 ]
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  PG_VERSION: 17
+
 jobs:
   performance:
     name: Performance Regression Testing
@@ -16,25 +20,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-17 postgresql-server-dev-17
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Add PostgreSQL APT repository
+        run: |
+          # Add the official PostgreSQL APT repository for PG17
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+
+      - name: Install PostgreSQL ${{ env.PG_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ env.PG_VERSION }} \
+                                  postgresql-server-dev-${{ env.PG_VERSION }}
 
       - name: Install pgrx
         run: cargo install cargo-pgrx --locked
 
       - name: Initialize pgrx
-        run: cargo pgrx init --pg17=/usr/lib/postgresql/17/bin/pg_config
+        run: |
+          cargo pgrx init --pg${{ env.PG_VERSION }}=/usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
 
       - name: Build and install extension
-        run: cargo pgrx install --release
+        run: cargo pgrx install --release --pg${{ env.PG_VERSION }}
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -45,14 +58,14 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: performance-results
           path: test/benchmarks/results-*.json
 
       - name: Comment on PR (if regression)
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             github.rest.issues.createComment({
