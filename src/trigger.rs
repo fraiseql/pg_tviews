@@ -40,10 +40,34 @@ fn pg_tview_trigger_handler<'a>(
             return Ok(None);
         }
     };
-    let pk_value = match crate::utils::extract_pk(trigger) {
+    // Get table name from OID to derive entity
+    let table_name = match Spi::get_one::<String>(&format!(
+        "SELECT relname::text FROM pg_class WHERE oid = {table_oid:?}"
+    )) {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            warning!("Table OID {} not found in pg_class", table_oid);
+            return Ok(None);
+        }
+        Err(e) => {
+            warning!("Failed to query table name for OID {}: {:?}", table_oid, e);
+            return Ok(None);
+        }
+    };
+
+    // Derive entity from table name (tb_user -> user)
+    let entity = match crate::utils::derive_entity_from_table(&table_name) {
+        Some(entity) => entity,
+        None => {
+            warning!("Table '{}' does not follow tb_<entity> naming convention", table_name);
+            return Ok(None);
+        }
+    };
+
+    let pk_value = match crate::utils::extract_pk(trigger, entity) {
         Ok(pk) => pk,
         Err(e) => {
-            warning!("Failed to extract primary key from trigger: {:?}", e);
+            warning!("Failed to extract primary key '{}' from trigger: {:?}", entity, e);
             return Ok(None);
         }
     };

@@ -23,26 +23,83 @@ use pgrx::datum::DatumWithOid;
 /// - Reusable across different modules
 use pgrx::pg_sys::Oid;
 
-/// Extracts a `pk_*` integer from NEW or OLD tuple by convention.
-/// For MVP we assume the column name is literally "pk_*".
-#[allow(dead_code)]
-pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
-    // For simplicity we assume there's a column named 'pk_*' and you know the entity.
-    // For real code:
-    //  - inspect relation attributes,
-    //  - find first "pk_" column,
-    //  - read value.
+/// Extracts primary key from NEW or OLD tuple using naming convention
+///
+/// Looks for column `pk_<entity>` in the tuple.
+///
+/// # Arguments
+///
+/// * `trigger` - The trigger context
+/// * `entity` - Entity name (e.g., "user", "post")
+///
+/// # Returns
+///
+/// The primary key value as i64, or error if column not found/null.
+///
+/// # Example
+///
+/// For entity "user", looks for column "pk_user".
+pub fn extract_pk(trigger: &PgTrigger, entity: &str) -> spi::Result<i64> {
     let tuple = trigger
         .new()
         .or(trigger.old())
         .expect("Row must exist for AFTER trigger");
 
-    // TODO: detect column name dynamically. For now, assume "pk_*" is "pk_post".
-    // You might want to store the pk column name in pg_tview_meta.
+    // Build column name from entity: "user" -> "pk_user"
+    let pk_column = format!("pk_{}", entity);
+
     let pk: i64 = tuple
-        .get_by_name("pk_post")? // <-- placeholder: replace per entity
-        .expect("pk_post must not be null");
+        .get_by_name(&pk_column)?
+        .ok_or_else(|| {
+            spi::Error::from(crate::TViewError::SpiError {
+                query: format!("extract pk from column {}", pk_column),
+                error: format!("Column '{}' is NULL or missing", pk_column),
+            })
+        })?;
+
     Ok(pk)
+}
+
+/// Derive entity name from table name using naming convention
+///
+/// Follows the pattern: `tb_<entity>` → `<entity>`
+///
+/// # Arguments
+///
+/// * `table_name` - Full table name (e.g., "tb_user")
+///
+/// # Returns
+///
+/// Entity name if table follows convention, None otherwise.
+///
+/// # Example
+///
+/// ```
+/// derive_entity_from_table("tb_user") // => Some("user")
+/// derive_entity_from_table("users")   // => None
+/// ```
+pub fn derive_entity_from_table(table_name: &str) -> Option<&str> {
+    table_name.strip_prefix("tb_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_entity_from_table() {
+        // Test valid cases
+        assert_eq!(derive_entity_from_table("tb_user"), Some("user"));
+        assert_eq!(derive_entity_from_table("tb_post"), Some("post"));
+        assert_eq!(derive_entity_from_table("tb_category"), Some("category"));
+
+        // Test invalid cases
+        assert_eq!(derive_entity_from_table("user"), None);
+        assert_eq!(derive_entity_from_table("users"), None);
+        assert_eq!(derive_entity_from_table("tv_user"), None);
+        assert_eq!(derive_entity_from_table(""), None);
+        assert_eq!(derive_entity_from_table("tb"), None);
+    }
 }
 
 // ✅ Tests at module level (outside function)
