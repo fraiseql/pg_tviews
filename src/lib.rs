@@ -739,9 +739,17 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 .collect();
 
             // dependency_paths (TEXT[][]) - array of arrays
-            // TODO: pgrx doesn't support TEXT[][] extraction yet
-            // For now, use empty default (Task 3 will populate these)
-            let dep_paths: Vec<Option<Vec<String>>> = vec![];
+            // Extract using JSON conversion workaround for pgrx TEXT[][] limitation
+            let entity_name: String = row["entity"].value()?
+                .ok_or_else(|| crate::TViewError::SpiError {
+                    query: "SELECT m.entity, ... FROM pg_tview_meta m WHERE ...".to_string(),
+                    error: "entity column is NULL".to_string(),
+                })?;
+            let dep_paths = crate::catalog::extract_text_2d_array(&entity_name, "dependency_paths")
+                .unwrap_or_else(|e| {
+                    pgrx::warning!("Failed to extract dependency_paths for {}: {}", entity_name, e);
+                    vec![]
+                });
 
             // array_match_keys (TEXT[]) with NULL values
             let array_keys: Option<Vec<Option<String>>> =
