@@ -21,14 +21,25 @@ jobs:
 
       - name: Install PostgreSQL 16
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-16 \
-                                  postgresql-server-dev-16
+          # Increase timeout for slow package installations
+          timeout 600 bash -c '
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-16 \
+                                    postgresql-server-dev-16
+          ' || {
+            echo "PostgreSQL installation failed or timed out"
+            exit 1
+          }
 
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
+
+      - name: Start PostgreSQL service
+        run: |
+          sudo systemctl start postgresql
+          sudo systemctl enable postgresql
 
       - name: Run strict clippy
         run: |

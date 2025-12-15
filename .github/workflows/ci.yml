@@ -29,15 +29,26 @@ jobs:
 
       - name: Install PostgreSQL ${{ matrix.pg_version }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-${{ matrix.pg_version }} \
-                                  postgresql-server-dev-${{ matrix.pg_version }}
+          # Increase timeout for slow package installations
+          timeout 600 bash -c '
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg_version }} \
+                                    postgresql-server-dev-${{ matrix.pg_version }}
+          ' || {
+            echo "PostgreSQL installation failed or timed out"
+            exit 1
+           }
 
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx
           cargo pgrx init --pg${{ matrix.pg_version }} \
             /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Start PostgreSQL service
+        run: |
+          sudo systemctl start postgresql
+          sudo systemctl enable postgresql
 
       - name: Run tests
         run: |
