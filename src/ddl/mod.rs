@@ -26,10 +26,10 @@ use pgrx::prelude::*;
 
 /// SQL function: Create a TVIEW
 ///
-/// Usage: SELECT pg_tviews_create('my_entity', 'SELECT id, name FROM users WHERE active = true');
+/// Usage: `SELECT pg_tviews_create('my_entity', 'SELECT id, name FROM users WHERE active = true')`;
 #[pg_extern]
 fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
-    // Ensure ProcessUtility hook is installed for DDL syntax support
+    // Ensure `ProcessUtility` hook is installed for DDL syntax support
     unsafe {
         crate::hooks::ensure_hook_installed();
     }
@@ -42,7 +42,7 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
 
 /// SQL function: Drop a TVIEW
 ///
-/// Usage: SELECT pg_tviews_drop('my_entity', true);  -- true = IF EXISTS
+/// Usage: `SELECT pg_tviews_drop('my_entity', true)`;  -- true = IF EXISTS
 #[pg_extern]
 fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<String, String> {
     match drop_tview(tview_name, if_exists) {
@@ -53,12 +53,12 @@ fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<
 
 /// SQL function: Convert existing table to TVIEW (for benchmarking/testing)
 ///
-/// Usage: SELECT pg_tviews_convert_existing_table('tv_product');
+/// Usage: `SELECT pg_tviews_convert_existing_table('tv_product')`;
 ///
-/// This function converts a table that was created with standard DDL
+/// This function converts a table that was created with standard `DDL`
 /// into a proper TVIEW structure with triggers and metadata.
 ///
-/// Note: Different from the internal pg_tviews_convert_table() which is called
+/// Note: Different from the internal `pg_tviews_convert_table()` which is called
 /// by event triggers during CREATE TABLE interception.
 #[pg_extern]
 fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
@@ -70,7 +70,7 @@ fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> 
 
 /// SQL function: Refresh TVIEW data (for benchmarking/testing)
 ///
-/// Usage: SELECT pg_tviews_refresh('tv_product');
+/// Usage: `SELECT pg_tviews_refresh('tv_product')`;
 ///
 /// This is primarily for benchmarking - in production, TVIEWs auto-refresh via triggers.
 /// This function forces a full refresh by truncating and repopulating from the base view.

@@ -1,13 +1,13 @@
 use pgrx::prelude::*;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
-/// Utilities: Common Helper Functions and PostgreSQL Integration
+/// Utilities: Common Helper Functions and `PostgreSQL` Integration
 ///
-/// This module provides utility functions used throughout pg_tviews:
+/// This module provides utility functions used throughout `pg_tviews`:
 /// - **Primary Key Extraction**: Gets PK values from trigger tuples
-/// - **OID Resolution**: Maps PostgreSQL OIDs to names and vice versa
+/// - **OID Resolution**: Maps `PostgreSQL` OIDs to names and vice versa
 /// - **SPI Helpers**: Common database query patterns
-/// - **Type Conversions**: PostgreSQL type handling
+/// - **Type Conversions**: `PostgreSQL` type handling
 ///
 /// ## Key Functions
 ///
@@ -46,7 +46,7 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
 }
 
 // ✅ Tests at module level (outside function)
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod helper_tests {
     use super::*;
@@ -95,13 +95,13 @@ mod helper_tests {
 
 
 /// Look up the view name from an OID
-/// Used to find the backing view (v_entity) for a TVIEW
+/// Used to find the backing view (`v_entity`) for a TVIEW
 pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
     // Simply get the relation name from pg_class
     relname_from_oid(view_oid)
 }
 
-/// Look up the TVIEW table name given its OID (from pg_tview_meta).
+/// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     Spi::connect(|client| {
         let args = vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
@@ -126,15 +126,15 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     })
 }
 
-/// Extract ID field from JSONB data using jsonb_ivm extension.
+/// Extract ID field from JSONB data using `jsonb_ivm` extension.
 ///
-/// **Security**: This function validates the id_key parameter to prevent SQL injection.
-/// Only alphanumeric characters and underscores are allowed in id_key.
+/// **Security**: This function validates the `id_key` parameter to prevent SQL injection.
+/// Only alphanumeric characters and underscores are allowed in `id_key`.
 ///
 /// # Arguments
 ///
 /// * `data` - JSONB data to extract ID from
-/// * `id_key` - Key name for ID field (must be valid identifier: [a-zA-Z0-9_]+)
+/// * `id_key` - Key name for ID field (must be valid identifier: `[a-zA-Z0-9_]+`)
 ///
 /// # Returns
 ///
@@ -148,8 +148,8 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
 ///
 /// # Performance
 ///
-/// - With jsonb_ivm: ~5× faster than data->>'id'
-/// - Without jsonb_ivm: Same as data->>'id'
+/// - With `jsonb_ivm`: ~5× faster than `data->>'id'`
+/// - Without `jsonb_ivm`: Same as `data->>'id'`
 ///
 /// # Example
 ///

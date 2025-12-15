@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 use std::collections::HashMap;
 use crate::error::TViewResult;
 
-/// Infer column types from PostgreSQL catalog
+/// Infer column types from `PostgreSQL` catalog
 pub fn infer_column_types(
     table_name: &str,
     columns: &[String],
@@ -53,13 +53,13 @@ pub fn table_exists(table_name: &str) -> TViewResult<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types() {
         // Create test table
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(types.get("data"), Some(&"jsonb".to_string()));
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types_missing_table() {
         let columns = vec!["id".to_string()];
@@ -102,7 +102,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types_missing_column() {
         // Create test table
@@ -113,7 +113,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_table_exists() {
         // Create test table

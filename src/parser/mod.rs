@@ -19,9 +19,9 @@
 //!
 //! ## Note on DROP Syntax
 //!
-//! DROP TABLE tv_* is handled directly by the ProcessUtility hook in src/hooks.rs,
+//! `DROP TABLE tv_*` is handled directly by the `ProcessUtility` hook in src/hooks.rs,
 //! not by this parser module. The hook intercepts DROP TABLE statements and checks
-//! if the table name starts with "tv_", then calls the drop_tview() function.
+//! if the table name starts with `"tv_"`, then calls the `drop_tview()` function.
 //!
 //! ## Limitations (v1)
 //!
@@ -43,8 +43,8 @@ pub struct CreateTViewStmt {
 /// Parse CREATE TABLE tv_ AS SELECT statement
 ///
 /// Supported syntax:
-/// - CREATE TABLE tv_name AS SELECT ...
-/// - CREATE TABLE schema.tv_name AS SELECT ...
+/// - `CREATE TABLE tv_name AS SELECT ...`
+/// - `CREATE TABLE schema.tv_name AS SELECT ...`
 ///
 /// Limitations (v1):
 /// - No CTE support (WITH clause)

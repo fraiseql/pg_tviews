@@ -1,15 +1,15 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 /**
-# pg_tviews - PostgreSQL Transactional Views
+# `pg_tviews` - `PostgreSQL` Transactional Views
 
-A PostgreSQL extension that provides transactional materialized views with
+A `PostgreSQL` extension that provides transactional materialized views with
 incremental refresh capabilities. TVIEWs automatically maintain consistency
 between base tables and derived views through trigger-based change tracking.
 
 ## Architecture
 
-pg_tviews implements a sophisticated refresh system:
+`pg_tviews` implements a sophisticated refresh system:
 
 1. **Change Tracking**: Triggers on base tables enqueue changes to a transaction-scoped queue
 2. **Dependency Analysis**: Resolves view dependencies using topological sorting
@@ -21,7 +21,7 @@ pg_tviews implements a sophisticated refresh system:
 - **Transactional Consistency**: View refreshes are atomic with base table changes
 - **Dependency Resolution**: Handles complex multi-level view dependencies
 - **Performance Optimized**: Incremental updates avoid full view rebuilds
-- **PostgreSQL Native**: Written as a C extension using pgrx framework
+- **`PostgreSQL` Native**: Written as a C extension using pgrx framework
 - **2PC Support**: Transaction queue persistence for prepared transactions
 
 ## Usage
@@ -38,7 +38,7 @@ INSERT INTO posts (user_id, title) VALUES (1, 'Hello World');
 
 ## Safety
 
-This extension is designed with PostgreSQL's safety requirements in mind:
+This extension is designed with `PostgreSQL`'s safety requirements in mind:
 - No panics in FFI callbacks (all wrapped in `catch_unwind`)
 - Proper error handling with meaningful error messages
 - Transaction rollback on refresh failures
@@ -79,25 +79,25 @@ static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 /// Extension version (synced with Cargo.toml)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Get the version of the pg_tviews extension
+/// Get the version of the `pg_tviews` extension
 #[pg_extern]
 fn pg_tviews_version() -> &'static str {
     VERSION
 }
 
-/// Debug function to check if ProcessUtility hook is installed
+/// Debug function to check if `ProcessUtility` hook is installed
 #[pg_extern]
 fn pg_tviews_hook_status() -> &'static str {
     // This is a simple way to check if the module loaded
-    // The hook installation happens in _PG_init
-    "Extension loaded - hook installation attempted in _PG_init"
+    // The hook installation happens in `_PG_init`
+    "Extension loaded - hook installation attempted in `_PG_init`"
 }
 
-/// Check if jsonb_ivm extension is available at runtime (cached)
+/// Check if `jsonb_ivm` extension is available at runtime (cached)
 /// Returns true if extension is installed, false otherwise
 ///
 /// This function caches the result after the first check to avoid
-/// repeated queries to pg_extension on every cascade operation.
+/// repeated queries to `pg_extension` on every cascade operation.
 pub fn check_jsonb_ivm_available() -> bool {
     // Return cached result if already checked
     if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
@@ -178,9 +178,9 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 }
 
 /// Initialize the extension
-/// Installs the ProcessUtility hook to intercept CREATE TABLE tv_* commands
+/// Installs the `ProcessUtility` hook to intercept CREATE TABLE tv_* commands
 ///
-/// Safety: Only installs hooks when running in a proper PostgreSQL backend,
+/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
 /// not during initdb or other bootstrap contexts.
 #[pg_guard]
 extern "C-unwind" fn _PG_init() {
@@ -200,7 +200,7 @@ extern "C-unwind" fn _PG_init() {
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - jsonb_ivm availability
+/// - `jsonb_ivm` availability
 /// - Metadata consistency
 /// - Orphaned triggers
 /// - Queue status
@@ -327,7 +327,7 @@ mod version_tests {
     }
 }
 
-/// Infer column types from PostgreSQL catalog
+/// Infer column types from `PostgreSQL` catalog
 #[pg_extern]
 fn pg_tviews_infer_types(
     table_name: &str,
@@ -432,7 +432,7 @@ fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
     Ok(())
 }
 
-/// Process refresh queue (extracted from handle_pre_commit for reuse)
+/// Process refresh queue (extracted from `handle_pre_commit` for reuse)
 fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshKey>) -> TViewResult<()> {
     let mut pending = queue;
     let mut processed = std::collections::HashSet::new();
@@ -487,14 +487,14 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
 }
 
 /// Get maximum propagation depth from config
-fn get_max_propagation_depth() -> usize {
+const fn get_max_propagation_depth() -> usize {
     crate::config::max_propagation_depth()
 }
 
 /// Recover orphaned prepared transactions
 /// Processes pending refreshes for prepared transactions that may have been interrupted
 ///
-/// Returns a table with recovery results: (gid, queue_size, status)
+/// Returns a table with recovery results: `(gid, queue_size, status)`
 #[pg_extern]
 fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
     'static,
@@ -582,7 +582,7 @@ struct AdvisoryLockGuard {
 }
 
 impl AdvisoryLockGuard {
-    fn new(lock_key: i64) -> Self {
+    const fn new(lock_key: i64) -> Self {
         Self { lock_key }
     }
 }
@@ -598,8 +598,8 @@ impl Drop for AdvisoryLockGuard {
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the changed row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the changed row
 #[pg_extern]
 fn pg_tviews_cascade(
     base_table_oid: pg_sys::Oid,
@@ -650,8 +650,8 @@ fn pg_tviews_cascade(
 /// Called by trigger handler when rows are inserted
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the inserted row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the inserted row
 #[pg_extern]
 fn pg_tviews_insert(
     base_table_oid: pg_sys::Oid,
@@ -666,8 +666,8 @@ fn pg_tviews_insert(
 /// Called by trigger handler when rows are deleted
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the deleted row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the deleted row
 #[pg_extern]
 fn pg_tviews_delete(
     base_table_oid: pg_sys::Oid,
@@ -797,26 +797,26 @@ fn find_affected_tview_rows(
     })
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use crate::TViewError;
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn sanity_check() {
         assert_eq!(2, 1 + 1);
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_version_function() {
         let version = crate::pg_tviews_version();
         assert!(version.starts_with("0.1.0"));
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_version_callable_from_sql() {
         let result = Spi::get_one::<String>(
@@ -828,7 +828,7 @@ mod tests {
         assert!(version.unwrap().starts_with("0.1.0"));
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     #[should_panic(expected = "TVIEW metadata not found")]
     fn test_error_propagates_to_postgres() {
@@ -839,7 +839,7 @@ mod tests {
     }
 
     // Phase 5 Task 1 RED: Tests for jsonb_ivm detection
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_jsonb_ivm_check_function_exists() {
         // This test will fail because pg_tviews_check_jsonb_ivm doesn't exist yet
@@ -847,7 +847,7 @@ mod tests {
         assert!(result.is_ok(), "pg_tviews_check_jsonb_ivm() function should exist");
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_check_jsonb_ivm_available_function() {
         // This test will fail because check_jsonb_ivm_available() doesn't exist yet
@@ -855,7 +855,7 @@ mod tests {
         // Just calling it is enough - function must exist
     }
 
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_pg_tviews_works_without_jsonb_ivm() {
         // Setup: Ensure jsonb_ivm is NOT installed
@@ -911,7 +911,7 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
         SELECT depth, entity_name, depends_on
         FROM dep_tree
         ORDER BY depth, entity_name",
-        entity.replace("'", "''")
+        entity.replace('\'', "''")
     );
 
     let results = Spi::connect(|client| {

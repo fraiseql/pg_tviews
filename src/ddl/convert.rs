@@ -1,7 +1,7 @@
 //! Convert existing tables to TVIEWs
 //!
 //! This module handles converting a table that was created by standard
-//! PostgreSQL DDL into a proper TVIEW structure.
+//! `PostgreSQL` DDL into a proper TVIEW structure.
 
 use pgrx::prelude::*;
 use crate::error::{TViewError, TViewResult};
@@ -11,12 +11,12 @@ use crate::schema::TViewSchema;
 ///
 /// # Strategy
 ///
-/// PostgreSQL has already created tv_entity as a regular table.
+/// `PostgreSQL` has already created `tv_entity` as a regular table.
 /// We need to:
-/// 1. Validate it has TVIEW structure (pk_*, id, data columns)
+/// 1. Validate it has TVIEW structure (`pk_*`, `id`, `data` columns)
 /// 2. Extract the data
-/// 3. Create backing view v_entity (reconstructed SELECT)
-/// 4. Recreate tv_entity as a view that reads from v_entity
+/// 3. Create backing view `v_entity` (reconstructed SELECT)
+/// 4. Recreate `tv_entity` as a view that reads from `v_entity`
 /// 5. Install triggers on base tables
 /// 6. Populate metadata
 ///
@@ -309,7 +309,7 @@ fn table_exists(table_name: &str) -> bool {
 }
 
 /// Check for user-provided base table hints in table comment
-/// Format: COMMENT ON TABLE tv_entity IS 'TVIEW_BASES: tb_table1, tb_table2';
+/// Format: `COMMENT ON TABLE tv_entity IS 'TVIEW_BASES: tb_table1, tb_table2'`;
 fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
     let query = format!(
         "SELECT obj_description(oid, 'pg_class') as comment

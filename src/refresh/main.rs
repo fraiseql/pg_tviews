@@ -16,7 +16,7 @@
 //! The `apply_patch()` function dispatches to different `jsonb_ivm` functions based
 //! on dependency type metadata:
 //!
-//! | Dependency Type | jsonb_ivm Function | Use Case |
+//! | Dependency Type | `jsonb_ivm` Function | Use Case |
 //! |-----------------|-------------------|----------|
 //! | `nested_object` | `jsonb_smart_patch_nested(data, patch, path)` | Author/category objects |
 //! | `array` | `jsonb_smart_patch_array(data, patch, path, key)` | Comments/tags arrays |
@@ -24,8 +24,8 @@
 //!
 //! ## Performance Impact
 //!
-//! - **Without jsonb_ivm**: Full document replacement (~870ms for 100-row cascade)
-//! - **With jsonb_ivm**: Surgical updates (~400-600ms for 100-row cascade)
+//! - **Without `jsonb_ivm`**: Full document replacement (~870ms for 100-row cascade)
+//! - **With `jsonb_ivm`**: Surgical updates (~400-600ms for 100-row cascade)
 //! - **Speedup**: 1.45× to 2.2× faster
 //!
 //! ## Fallback Behavior
@@ -64,7 +64,7 @@ use crate::utils::relname_from_oid;
 /// Default match key for array patching (assumes 'id' field)
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 
-/// Represents a materialized view row pulled from v_entity.
+/// Represents a materialized view row pulled from `v_entity`.
 pub struct ViewRow {
     pub entity_name: String,
     pub pk: i64,
@@ -72,7 +72,7 @@ pub struct ViewRow {
     pub data: JsonB,
 }
 
-/// Recompute a single row from the backing view (v_entity).
+/// Recompute a single row from the backing view (`v_entity`).
 ///
 /// Queries the backing view to get fresh JSONB data for a specific primary key.
 /// This is used when source data changes and we need to refresh the TVIEW.
@@ -90,8 +90,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
     let pk_col = format!("pk_{}", meta.entity_name);
 
     let sql = format!(
-        "SELECT data FROM {} WHERE {} = $1",
-        view_name, pk_col
+        "SELECT data FROM {view_name} WHERE {pk_col} = $1"
     );
 
     let data = Spi::get_one_with_args::<JsonB>(
@@ -108,7 +107,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
         }),
         None => Err(spi::Error::from(TViewError::SpiError {
             query: sql,
-            error: format!("No row found in view {} for {} = {}", view_name, pk_col, pk),
+            error: format!("No row found in view {view_name} for {pk_col} = {pk}"),
         })),
     }
 }
@@ -165,7 +164,7 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// Apply patch using path-based updates when metadata is missing.
 ///
 /// This is a fallback strategy that attempts to intelligently update nested
-/// paths by comparing old and new data structures. Uses jsonb_ivm_set_path()
+/// paths by comparing old and new data structures. Uses `jsonb_ivm_set_path()`
 /// for better performance than full replacement.
 ///
 /// # Strategy
@@ -173,7 +172,7 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// 1. Fetch current data from TVIEW
 /// 2. Compare with new data from view
 /// 3. Identify changed paths
-/// 4. Apply surgical updates using jsonb_ivm_set_path()
+/// 4. Apply surgical updates using `jsonb_ivm_set_path()`
 ///
 /// # Performance
 ///
@@ -183,7 +182,7 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 ///
 /// # Arguments
 ///
-/// * `row` - ViewRow with fresh data from v_entity
+/// * `row` - `ViewRow` with fresh data from `v_entity`
 ///
 /// # Returns
 ///
@@ -267,7 +266,7 @@ fn apply_path_based_fallback(row: &ViewRow) -> spi::Result<()> {
 ///
 /// # Returns
 ///
-/// Vector of (path, new_value) tuples for changed fields
+/// `Vec` of `(path, new_value)` tuples for changed fields
 ///
 /// # Note
 ///
@@ -286,7 +285,7 @@ fn detect_changed_paths(old: &JsonB, new: &JsonB) -> spi::Result<Vec<(String, Js
     }
 }
 
-/// Check if jsonb_ivm_set_path function is available.
+/// Check if `jsonb_ivm_set_path` function is available.
 fn check_set_path_available() -> spi::Result<bool> {
     let sql = r"
         SELECT EXISTS(
@@ -299,7 +298,7 @@ fn check_set_path_available() -> spi::Result<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-/// Simplified path-based update using jsonb_ivm_set_path.
+/// Simplified path-based update using `jsonb_ivm_set_path`.
 ///
 /// This is a utility function that can be called directly for single-path updates.
 ///
@@ -336,12 +335,12 @@ pub fn update_single_path(
     crate::validation::validate_jsonb_path(path, "path")?;
 
     let sql = format!(
-        r#"
+        "
         UPDATE {table_name} SET
             data = jsonb_ivm_set_path(data, '{path}', $1::jsonb),
             updated_at = now()
         WHERE {pk_column} = $2
-        "#
+        "
     );
 
     Spi::run_with_args(
@@ -360,7 +359,7 @@ pub fn update_single_path(
 
 /// Apply JSON patch to `tv_entity` using smart JSONB patching.
 ///
-/// This function is the **core performance optimization** of pg_tviews. Instead of
+/// This function is the **core performance optimization** of `pg_tviews`. Instead of
 /// replacing the entire JSONB document, it uses `jsonb_ivm` functions to surgically
 /// update only the changed paths.
 ///
@@ -392,7 +391,7 @@ pub fn update_single_path(
 ///
 /// # Arguments
 ///
-/// * `row` - ViewRow with fresh data from `v_entity` and metadata references
+/// * `row` - `ViewRow` with fresh data from `v_entity` and metadata references
 ///
 /// # Returns
 ///
@@ -426,14 +425,13 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
                     row.tview_oid, row.entity_name
                 );
                 return apply_path_based_fallback(row);
-            } else {
-                warning!(
-                    "No metadata found for TVIEW OID {:?}, entity '{}'. \
-                     Using full replacement (install jsonb_ivm for better performance).",
-                    row.tview_oid, row.entity_name
-                );
-                return apply_full_replacement(row);
             }
+            warning!(
+                "No metadata found for TVIEW OID {:?}, entity '{}'. \
+                 Using full replacement (install jsonb_ivm for better performance).",
+                row.tview_oid, row.entity_name
+            );
+            return apply_full_replacement(row);
         }
     };
 
@@ -600,7 +598,7 @@ fn check_jsonb_ivm_available() -> spi::Result<bool> {
 /// Performs a complete document replacement instead of surgical patching.
 /// This is the slower but more compatible approach, used in these scenarios:
 ///
-/// - **jsonb_ivm not installed**: Extension unavailable
+/// - **`jsonb_ivm` not installed**: Extension unavailable
 /// - **Metadata missing**: Legacy TVIEW without dependency info
 /// - **No dependencies**: TVIEW has no FK relationships
 ///
@@ -611,7 +609,7 @@ fn check_jsonb_ivm_available() -> spi::Result<bool> {
 ///
 /// # Arguments
 ///
-/// * `row` - ViewRow with fresh data to write
+/// * `row` - `ViewRow` with fresh data to write
 ///
 /// # Returns
 ///
@@ -642,7 +640,7 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;

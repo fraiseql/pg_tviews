@@ -6,10 +6,10 @@ use crate::catalog::TviewMeta;
 /// Entity dependency graph for refresh ordering
 ///
 /// Example:
-/// - tv_company (no dependencies)
-/// - tv_user (depends on tv_company via fk_company)
-/// - tv_post (depends on tv_user via fk_user)
-/// - tv_feed (depends on tv_post via fk_post)
+/// - `tv_company` (no dependencies)
+/// - `tv_user` (depends on `tv_company` via `fk_company`)
+/// - `tv_post` (depends on `tv_user` via `fk_user`)
+/// - `tv_feed` (depends on `tv_post` via `fk_post`)
 ///
 /// Topological order: ["company", "user", "post", "feed"]
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct EntityDepGraph {
 }
 
 impl EntityDepGraph {
-    /// Build dependency graph from pg_tview_meta
+    /// Build dependency graph from `pg_tview_meta`
     pub fn load() -> TViewResult<Self> {
         // Query pg_tview_meta for all entities and their FK columns
         let query = "SELECT entity, fk_columns FROM pg_tview_meta";
@@ -94,7 +94,7 @@ impl EntityDepGraph {
 
     /// Sort refresh keys by dependency order
     ///
-    /// Keys are grouped by entity, then sorted by topo_order.
+    /// Keys are grouped by entity, then sorted by `topo_order`.
     /// Within each entity group, PK order is preserved.
     pub fn sort_keys(&self, keys: Vec<super::key::RefreshKey>) -> Vec<super::key::RefreshKey> {
         // Group by entity
@@ -303,13 +303,13 @@ pub struct BatchAnalysis {
 impl BatchAnalysis {
     /// Determine if batch operations are recommended
     #[allow(dead_code)]  // Phase 3: Analysis methods for future optimization
-    pub fn should_use_batch(&self) -> bool {
+    pub const fn should_use_batch(&self) -> bool {
         !self.batch_candidates.is_empty() || !self.large_refresh_candidates.is_empty()
     }
 
     /// Get recommended batch strategy
     #[allow(dead_code)]  // Phase 3: Analysis methods for future optimization
-    pub fn recommended_strategy(&self) -> BatchStrategy {
+    pub const fn recommended_strategy(&self) -> BatchStrategy {
         if !self.batch_candidates.is_empty() && !self.large_refresh_candidates.is_empty() {
             BatchStrategy::Hybrid
         } else if !self.batch_candidates.is_empty() {

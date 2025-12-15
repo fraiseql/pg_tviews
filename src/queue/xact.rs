@@ -27,7 +27,7 @@ enum XactEvent {
 
 /// Register the transaction callback (called from enqueue logic)
 ///
-/// This uses PostgreSQL's RegisterXactCallback FFI to install our handler.
+/// This uses `PostgreSQL`'s `RegisterXactCallback` FFI to install our handler.
 /// The callback will be invoked at transaction commit/abort.
 pub unsafe fn register_xact_callback() -> TViewResult<()> {
     // Safety: We're calling into PostgreSQL FFI
@@ -51,7 +51,7 @@ pub unsafe fn register_xact_callback() -> TViewResult<()> {
 
 /// Register the subtransaction callback for savepoint support
 ///
-/// This uses PostgreSQL's RegisterSubXactCallback FFI to handle savepoints.
+/// This uses `PostgreSQL`'s `RegisterSubXactCallback` FFI to handle savepoints.
 /// The callback will be invoked when savepoints are created/released/rolled back.
 pub unsafe fn register_subxact_callback() -> TViewResult<()> {
     // Safety: We're calling into PostgreSQL FFI
@@ -67,12 +67,12 @@ pub unsafe fn register_subxact_callback() -> TViewResult<()> {
     Ok(())
 }
 
-/// Transaction callback handler (invoked by PostgreSQL)
+/// Transaction callback handler (invoked by `PostgreSQL`)
 ///
 /// This is called at transaction events (COMMIT, ABORT, etc.)
 ///
 /// # Safety
-/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
@@ -140,10 +140,10 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// Start-of-transaction callback for connection pooling safety (Phase 9D)
 ///
 /// This ensures thread-local state is cleared at the start of each transaction,
-/// preventing queue leakage between transactions in connection poolers like PgBouncer.
+/// preventing queue leakage between transactions in connection poolers like `PgBouncer`.
 ///
 /// # Safety
-/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
@@ -163,13 +163,13 @@ unsafe extern "C-unwind" fn tview_xact_start_callback(event: u32, _arg: *mut c_v
     }
 }
 
-/// Subtransaction callback handler (invoked by PostgreSQL for savepoints)
+/// Subtransaction callback handler (invoked by `PostgreSQL` for savepoints)
 ///
 /// This is called when savepoints are created, released, or rolled back to.
 /// We need to maintain queue snapshots to properly handle ROLLBACK TO SAVEPOINT.
 ///
 /// # Safety
-/// This is an extern "C-unwind" callback invoked by PostgreSQL internals.
+/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_subxact_callback(
@@ -235,7 +235,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
     }
 }
 
-/// Handle PRE_COMMIT event: flush the queue and refresh TVIEWs
+/// Handle `PRE_COMMIT` event: flush the queue and refresh TVIEWs
 ///
 /// This implementation correctly handles propagation by using a local queue
 /// for discovered parent refreshes. The workflow:
@@ -380,10 +380,10 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
     Ok(parent_keys)
 }
 
-/// Handle PREPARE TRANSACTION event: persist queue to database
+/// Handle `PREPARE TRANSACTION` event: persist queue to database
 ///
 /// This ensures that 2PC transactions don't lose pending refreshes.
-/// The queue is serialized and stored in pg_tview_pending_refreshes.
+/// The queue is serialized and stored in `pg_tview_pending_refreshes`.
 fn handle_prepare() -> TViewResult<()> {
     // Get global transaction ID (GID) captured by ProcessUtility hook
     let gid = get_prepared_transaction_id()?;
@@ -425,7 +425,7 @@ fn handle_prepare() -> TViewResult<()> {
 
 /// Get the global transaction ID for the currently preparing transaction
 ///
-/// This retrieves the GID captured by the ProcessUtility hook during PREPARE TRANSACTION.
+/// This retrieves the GID captured by the `ProcessUtility` hook during `PREPARE TRANSACTION`.
 fn get_prepared_transaction_id() -> TViewResult<String> {
     crate::hooks::get_prepared_transaction_id()
 }

@@ -3,14 +3,14 @@ use pgrx::pg_sys::Oid;
 use pgrx::datum::DatumWithOid;
 use serde::{Deserialize, Serialize};
 
-/// Type of dependency relationship for jsonb_ivm optimization
+/// Type of dependency relationship for `jsonb_ivm` optimization
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DependencyType {
     /// Direct column from base table (no nested JSONB)
     Scalar,
-    /// Embedded object via jsonb_build_object in nested key
+    /// Embedded object via `jsonb_build_object` in nested key
     NestedObject,
-    /// Array created via jsonb_agg
+    /// Array created via `jsonb_agg`
     Array,
 }
 
@@ -18,24 +18,23 @@ impl DependencyType {
     /// Parse from database string representation
     pub fn from_str(s: &str) -> Self {
         match s {
-            "scalar" => DependencyType::Scalar,
-            "nested_object" => DependencyType::NestedObject,
-            "array" => DependencyType::Array,
-            _ => DependencyType::Scalar, // default fallback
+            "nested_object" => Self::NestedObject,
+            "array" => Self::Array,
+            _ => Self::Scalar, // default fallback
         }
     }
 
     /// Convert to database string representation
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            DependencyType::Scalar => "scalar",
-            DependencyType::NestedObject => "nested_object",
-            DependencyType::Array => "array",
+            Self::Scalar => "scalar",
+            Self::NestedObject => "nested_object",
+            Self::Array => "array",
         }
     }
 }
 
-/// Represents a row in pg_tview_meta (your own catalog table).
+/// Represents a row in `pg_tview_meta` (your own catalog table).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TviewMeta {
     pub tview_oid: Oid,
@@ -45,16 +44,16 @@ pub struct TviewMeta {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
 
-    /// Type of each dependency: Scalar (direct column), NestedObject (embedded JSONB),
-    /// or Array (jsonb_agg aggregation).
+    /// Type of each dependency: `Scalar` (direct column), `NestedObject` (embedded JSONB),
+    /// or `Array` (`jsonb_agg` aggregation).
     ///
     /// Length matches `fk_columns` and `dependencies` arrays.
-    /// Used by jsonb_ivm to choose patch function (scalar/nested/array).
+    /// Used by `jsonb_ivm` to choose patch function (scalar/nested/array).
     pub dependency_types: Vec<DependencyType>,
 
     /// JSONB path for each dependency, if nested.
     /// - Scalar: None
-    /// - NestedObject: Some(vec!["author"]) for { "author": {...} }
+    /// - `NestedObject`: Some(vec!["author"]) for { "author": {...} }
     /// - Array: Some(vec!["comments"]) for { "comments": [...] }
     ///
     /// Length matches `dependency_types`.
@@ -64,7 +63,7 @@ pub struct TviewMeta {
     /// Used by `jsonb_smart_patch_array(target, 'comments', '{...}', 'id')`.
     ///
     /// - Scalar/NestedObject: None
-    /// - Array: Some("id") or Some("pk_comment")
+    /// - `Array`: Some("id") or Some(`"pk_comment`")
     ///
     /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
@@ -128,17 +127,17 @@ impl TviewMeta {
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
                     sync_mode: 's', // Default to synchronous
@@ -195,17 +194,17 @@ impl TviewMeta {
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
                     sync_mode: 's',
@@ -270,8 +269,8 @@ impl TviewMeta {
         })
     }
 
-    /// Parse SPI row into TviewMeta struct
-    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<TviewMeta> {
+    /// Parse SPI row into `TviewMeta` struct
+    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<Self> {
         // Extract existing arrays
         let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
         let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
@@ -291,20 +290,20 @@ impl TviewMeta {
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
-        Ok(TviewMeta {
+        Ok(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
             sync_mode: 's', // Default to synchronous
@@ -369,7 +368,7 @@ impl TviewMeta {
 
 /// Represents a single dependency with its type, path, and match key.
 /// Used by the refresh engine to determine how to update related TVIEWs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyDetail {
     /// Type of dependency (Scalar, Array, etc.)
     pub dep_type: DependencyType,
@@ -400,16 +399,16 @@ impl Default for TviewMeta {
 
 /// Map a base table OID to its entity name
 ///
-/// Example: OID of tb_user → Some("user")
+/// Example: OID of `tb_user` → Some("user")
 ///
 /// Returns:
-/// - Ok(Some(entity)) if table is tracked in pg_tview_meta
+/// - Ok(Some(entity)) if table is tracked in `pg_tview_meta`
 /// - Ok(None) if table is not tracked
 /// - Err(...) on database error
 ///
 /// # Cached Version
 ///
-/// This function caches the mapping to avoid repeated pg_class queries.
+/// This function caches the mapping to avoid repeated `pg_class` queries.
 /// Performance improvement: 0.1ms → 0.001ms per trigger
 pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     crate::queue::cache::table_cache::entity_for_table_cached(table_oid)
@@ -417,7 +416,7 @@ pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
 
 /// Get entity name for table OID without caching (internal use)
 ///
-/// This is the slow path that queries pg_class every time.
+/// This is the slow path that queries `pg_class` every time.
 /// Used by the cache when there's a cache miss.
 pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     // Query pg_class to get table name from OID
@@ -472,11 +471,13 @@ mod tests {
             dependency_types: vec![DependencyType::Scalar],
             dependency_paths: vec![None],
             array_match_keys: vec![None],
+            nested_paths: vec![None],
         };
 
         assert_eq!(meta.dependency_types.len(), 1);
         assert_eq!(meta.dependency_paths.len(), 1);
         assert_eq!(meta.array_match_keys.len(), 1);
+        assert_eq!(meta.nested_paths.len(), 1);
     }
 
     #[test]

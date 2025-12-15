@@ -14,7 +14,7 @@ use crate::error::TViewError;
 
 /// Refresh multiple rows of the same entity in a single operation
 ///
-/// This is the bulk refresh API that replaces individual refresh_pk() calls
+/// This is the bulk refresh API that replaces individual `refresh_pk()` calls
 /// for statement-level triggers and other bulk operations.
 ///
 /// # Arguments
@@ -86,12 +86,12 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
         for row in rows {
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: format!("{} column is NULL", pk_col),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
             update_pks.push(pk);
@@ -131,7 +131,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 
 /// Update multiple elements in a JSONB array in a single operation.
 ///
-/// This function uses jsonb_ivm's batch update capability to modify multiple
+/// This function uses `jsonb_ivm`'s batch update capability to modify multiple
 /// array elements at once, providing 3-5× performance improvement over
 /// sequential updates.
 ///
@@ -144,11 +144,11 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 /// * `pk_value` - Primary key value of the row to update
 /// * `array_path` - Path to array within JSONB (must be valid JSONB path)
 /// * `match_key` - Key to match elements (must be valid identifier)
-/// * `updates` - Array of update objects, each containing match_key and fields to update
+/// * `updates` - Array of update objects, each containing `match_key` and fields to update
 ///
 /// # Update Format
 ///
-/// Each update object in the array should have the match_key field plus any
+/// Each update object in the array should have the `match_key` field plus any
 /// fields to update. Example:
 /// ```json
 /// [
@@ -171,8 +171,8 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 ///
 /// # Performance
 ///
-/// - With jsonb_ivm: 3-5× faster than sequential updates
-/// - Without jsonb_ivm: Falls back to sequential updates
+/// - With `jsonb_ivm`: 3-5× faster than sequential updates
+/// - Without `jsonb_ivm`: Falls back to sequential updates
 ///
 /// # Example
 ///
@@ -321,7 +321,7 @@ pub fn update_array_elements_batch(
     Ok(())
 }
 
-/// Check if jsonb_ivm batch functions are available
+/// Check if `jsonb_ivm` batch functions are available
 fn check_batch_function_available() -> TViewResult<bool> {
     let result = Spi::get_one::<bool>(
         "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_array_update_where_batch')"

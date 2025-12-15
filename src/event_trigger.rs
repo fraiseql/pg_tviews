@@ -1,7 +1,7 @@
 //! Event Trigger handler for DDL interception
 //!
-//! This module handles PostgreSQL Event Triggers that fire AFTER DDL commands
-//! complete. This provides a safe context for SPI operations, unlike ProcessUtility
+//! This module handles `PostgreSQL` Event Triggers that fire AFTER DDL commands
+//! complete. This provides a safe context for SPI operations, unlike `ProcessUtility`
 //! hooks which cannot safely use SPI.
 
 use pgrx::prelude::*;
@@ -61,7 +61,7 @@ fn pg_tviews_handle_ddl_event() {
     }
 }
 
-/// Get DDL commands from pg_event_trigger_ddl_commands()
+/// Get DDL commands from `pg_event_trigger_ddl_commands()`
 fn get_ddl_commands() -> spi::Result<Vec<DdlCommand>> {
     Spi::connect(|client| {
         let query = "SELECT command_tag, object_identity
@@ -91,13 +91,13 @@ struct DdlCommand {
 
 /// Public API: Convert an existing table to a TVIEW
 ///
-/// Called by the event trigger after PostgreSQL creates the table.
+/// Called by the event trigger after `PostgreSQL` creates the table.
 /// This runs in a safe SPI context (after DDL completed).
 ///
 /// Strategy:
 /// 1. Retrieve original SELECT from hook cache
-/// 2. Drop the table PostgreSQL created
-/// 3. Create proper TVIEW using standard create_tview() flow
+/// 2. Drop the table `PostgreSQL` created
+/// 3. Create proper TVIEW using standard `create_tview()` flow
 #[pg_extern]
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
     info!("pg_tviews_convert_table: Converting '{}' to TVIEW", table_name);
@@ -129,8 +129,8 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
 
 /// Convert an existing table to a TVIEW
 ///
-/// This function is called AFTER PostgreSQL has created the table.
-/// Delegates to the ddl::convert module for the actual conversion logic.
+/// This function is called AFTER `PostgreSQL` has created the table.
+/// Delegates to the `ddl::convert` module for the actual conversion logic.
 ///
 /// Note: Currently unused due to event trigger SPI limitations.
 /// Kept for future use or manual conversion scenarios.

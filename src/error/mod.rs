@@ -3,7 +3,7 @@ use std::fmt;
 
 pub mod testing;
 
-/// Main error type for pg_tviews extension
+/// Main error type for `pg_tviews` extension
 #[derive(Debug, Clone, PartialEq)]
 pub enum TViewError {
     // ============ Metadata Errors (P0xxx) ============
@@ -61,7 +61,7 @@ pub enum TViewError {
     },
 
     // ============ Extension Dependency Errors (58xxx) ============
-    /// jsonb_ivm extension not installed
+    /// `jsonb_ivm` extension not installed
     JsonbIvmNotInstalled,
 
     /// Extension version mismatch
@@ -116,7 +116,7 @@ pub enum TViewError {
     },
 
     // ============ I/O and System Errors (XX000) ============
-    /// PostgreSQL catalog operation failed
+    /// `PostgreSQL` catalog operation failed
     CatalogError {
         operation: String,
         pg_error: String,
@@ -188,8 +188,8 @@ pub enum TViewError {
 }
 
 impl TViewError {
-    /// Get PostgreSQL SQLSTATE code for this error
-    pub fn sqlstate(&self) -> &'static str {
+    /// Get `PostgreSQL` SQLSTATE code for this error
+    pub const fn sqlstate(&self) -> &'static str {
         use TViewError::*;
         match self {
             MetadataNotFound { .. } => "P0001", // Raise exception
@@ -350,7 +350,7 @@ impl std::error::Error for TViewError {}
 /// Result type for TVIEW operations
 pub type TViewResult<T> = Result<T, TViewError>;
 
-/// Convert SpiError to TViewError
+/// Convert `SpiError` to `TViewError`
 impl From<pgrx::spi::Error> for TViewError {
     fn from(e: pgrx::spi::Error) -> Self {
         TViewError::SpiError {
@@ -360,7 +360,7 @@ impl From<pgrx::spi::Error> for TViewError {
     }
 }
 
-/// Convert serde_json::Error to TViewError
+/// Convert `serde_json::Error` to `TViewError`
 impl From<serde_json::Error> for TViewError {
     fn from(e: serde_json::Error) -> Self {
         TViewError::SerializationError {
@@ -369,7 +369,7 @@ impl From<serde_json::Error> for TViewError {
     }
 }
 
-/// Convert bincode::Error to TViewError
+/// Convert `bincode::Error` to `TViewError`
 impl From<bincode::Error> for TViewError {
     fn from(e: bincode::Error) -> Self {
         TViewError::SerializationError {
@@ -378,7 +378,7 @@ impl From<bincode::Error> for TViewError {
     }
 }
 
-/// Convert regex::Error to TViewError
+/// Convert `regex::Error` to `TViewError`
 impl From<regex::Error> for TViewError {
     fn from(e: regex::Error) -> Self {
         TViewError::InvalidSelectStatement {
@@ -388,7 +388,7 @@ impl From<regex::Error> for TViewError {
     }
 }
 
-/// Convert std::io::Error to TViewError
+/// Convert `std::io::Error` to `TViewError`
 impl From<std::io::Error> for TViewError {
     fn from(e: std::io::Error) -> Self {
         TViewError::SerializationError {
@@ -397,7 +397,7 @@ impl From<std::io::Error> for TViewError {
     }
 }
 
-/// Convert TViewError to pgrx error (for raising to PostgreSQL)
+/// Convert `TViewError` to pgrx error (for raising to `PostgreSQL`)
 impl From<TViewError> for pgrx::spi::Error {
     fn from(e: TViewError) -> Self {
         let _sqlstate = e.sqlstate();

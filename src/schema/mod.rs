@@ -1,7 +1,7 @@
 //! Schema Analysis: TVIEW Structure Inference and Validation
 //!
 //! This module analyzes SELECT statements to understand TVIEW structure:
-//! - **Column Type Inference**: Determines PostgreSQL types for TVIEW columns
+//! - **Column Type Inference**: Determines `PostgreSQL` types for TVIEW columns
 //! - **Primary Key Detection**: Identifies PK columns for refresh operations
 //! - **Foreign Key Analysis**: Discovers relationships for cascade updates
 //! - **Dependency Resolution**: Maps base tables to TVIEW columns

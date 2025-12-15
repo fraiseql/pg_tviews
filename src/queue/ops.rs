@@ -6,7 +6,7 @@ use crate::TViewResult;
 /// Enqueue a refresh request for the given entity and pk
 ///
 /// This is the main entry point from triggers.
-/// Deduplication is automatic (HashSet).
+/// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
 pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
     let key = RefreshKey {
@@ -25,7 +25,7 @@ pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
 /// Bulk enqueue refresh requests for multiple PKs of the same entity (Phase 9A)
 ///
 /// This is the statement-level trigger entry point.
-/// Deduplication is automatic (HashSet).
+/// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
 pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
     TX_REFRESH_QUEUE.with(|q| {

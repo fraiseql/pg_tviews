@@ -1,18 +1,18 @@
-//! Dependency type detection for jsonb_ivm optimization
+//! Dependency type detection for `jsonb_ivm` optimization
 //!
 //! This module analyzes TVIEW SELECT statements to determine how foreign key
 //! relationships manifest in the JSONB structure. This information is used
-//! to choose the appropriate jsonb_ivm patch function for efficient updates.
+//! to choose the appropriate `jsonb_ivm` patch function for efficient updates.
 //!
 //! # Detection Patterns
 //!
-//! ## Nested Object
+//! ## `Nested Object`
 //! ```sql
-//! jsonb_build_object('author', v_user.data)
+//! `jsonb_build_object`('author', `v_user.data`)
 //! ```
 //! → `dependency_type = 'nested_object'`, `path = ['author']`
 //!
-//! ## Array Aggregation
+//! ## `Array Aggregation`
 //! ```sql
 //! jsonb_build_object('comments', jsonb_agg(v_comment.data))
 //! ```
@@ -26,12 +26,12 @@ use crate::catalog::DependencyType;
 use regex::Regex;
 
 /// Regex pattern template for nested object detection
-/// Matches: 'key_name', v_something.data
+/// Matches: `'key_name'`, `v_something.data`
 const NESTED_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*{}.data";
 
 /// Regex pattern template for array aggregation detection
-/// Matches: 'array_name', jsonb_agg(v_something.data ...)
-/// Also handles COALESCE wrapper: COALESCE(jsonb_agg(...), '[]'::jsonb)
+/// Matches: `'array_name'`, `jsonb_agg`(`v_something.data` ...)
+/// Also handles `COALESCE` wrapper: `COALESCE`(`jsonb_agg`(...), `'[]'::jsonb`)
 const ARRAY_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*{}.data";
 
 /// Default match key for array dependencies
@@ -40,7 +40,7 @@ const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 /// Information about a detected dependency
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyInfo {
-    /// Type of dependency (Scalar, NestedObject, Array)
+    /// Type of dependency (`Scalar`, `NestedObject`, `Array`)
     pub dep_type: DependencyType,
     /// JSONB path to the nested data (e.g., ["author"], ["comments"])
     pub jsonb_path: Option<Vec<String>>,
@@ -50,7 +50,7 @@ pub struct DependencyInfo {
 
 impl DependencyInfo {
     /// Create a scalar dependency (default)
-    fn scalar() -> Self {
+    const fn scalar() -> Self {
         Self {
             dep_type: DependencyType::Scalar,
             jsonb_path: None,
@@ -84,7 +84,7 @@ impl DependencyInfo {
 /// * `fk_columns` - List of FK column names from schema inference
 ///
 /// # Returns
-/// Vector of DependencyInfo, one per FK column (order matches input)
+/// `Vec` of `DependencyInfo`, one per FK column (order matches input)
 pub fn analyze_dependencies(
     select_sql: &str,
     fk_columns: &[String],
@@ -174,7 +174,7 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     DependencyInfo::scalar()
 }
 
-/// Detect array dependencies from jsonb_agg patterns in SELECT statement
+/// Detect array dependencies from `jsonb_agg` patterns in SELECT statement
 /// This finds arrays that aggregate data from other TVIEWs, even if no direct FK exists
 fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
     let mut deps = Vec::new();

@@ -44,7 +44,7 @@ jobs:
           cargo pgrx init --pg${{ env.PG_VERSION }}=/usr/lib/postgresql/${{ env.PG_VERSION }}/bin/pg_config
 
       - name: Build and install extension
-        run: cargo pgrx install --release --pg${{ env.PG_VERSION }}
+        run: cargo pgrx install --release --no-default-features --features pg${{ env.PG_VERSION }}
 
       - name: Setup Python
         uses: actions/setup-python@v5

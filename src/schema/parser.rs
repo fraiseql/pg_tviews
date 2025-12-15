@@ -2,13 +2,13 @@
 
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
-/// Future versions will use PostgreSQL's native parser API
+/// Future versions will use `PostgreSQL`'s native parser API
 pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
     extract_columns_regex(sql)
 }
 
 /// Parse SELECT statement to extract column names with their full expressions
-/// Returns Vec<(column_name, expression)> for type inference
+/// Returns `Vec<(column_name, expression)>` for type inference
 pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, String)>, String> {
     extract_columns_with_expressions_regex(sql)
 }
@@ -18,7 +18,7 @@ pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, S
 /// - Doesn't handle nested commas in function calls
 /// - Doesn't handle complex expressions
 /// - Doesn't handle subqueries properly
-/// - Future: Replace with PostgreSQL parser API
+/// - Future: Replace with `PostgreSQL` parser API
 fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     let mut columns = Vec::new();
 
@@ -168,7 +168,7 @@ fn split_by_top_level_comma(s: &str) -> Result<Vec<String>, String> {
 }
 
 /// Extract column name from a SELECT clause part
-/// Handles: column_name, table.column_name, expression AS alias
+/// Handles: `column_name`, `table.column_name`, expression `AS` alias
 fn extract_column_name(part: &str) -> Result<String, String> {
     let part_lower = part.to_lowercase();
 

@@ -7,19 +7,19 @@ use pgrx::prelude::*;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use std::collections::HashMap;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use crate::TViewResult;
 
 /// Cache prepared statement names per entity
 /// Key: entity name (e.g., "post", "user")
-/// Value: prepared statement name (e.g., "tview_refresh_post")
-static PREPARED_STATEMENTS: Lazy<std::sync::Mutex<HashMap<String, String>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+/// Value: prepared statement name (e.g., `"tview_refresh_post"`)
+static PREPARED_STATEMENTS: LazyLock<std::sync::Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Register cache invalidation callbacks during extension initialization
 ///
 /// This ensures prepared statements are cleared when schema changes occur.
-/// Must be called from _PG_init().
+/// Must be called from `_PG_init()`.
 #[allow(dead_code)]
 pub unsafe fn register_cache_invalidation_callbacks() -> TViewResult<()> {
     // Cache invalidation callbacks not available in this pgrx version
@@ -64,7 +64,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
             // Extract data and apply patch (delegate to main refresh logic)
             let _data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
             // TODO: Integrate with main refresh logic to apply patches
@@ -80,7 +80,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
 /// Get or create prepared statement for entity refresh
 ///
 /// Creates prepared statement on first use, reuses on subsequent calls.
-/// Statement format: SELECT * FROM v_entity WHERE pk_entity = $1
+/// Statement format: SELECT * FROM `v_entity` WHERE `pk_entity` = $1
 #[allow(dead_code)]
 fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
     let mut cache = PREPARED_STATEMENTS.lock().unwrap();

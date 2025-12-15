@@ -48,4 +48,4 @@ jobs:
 
       - name: Build extension
         run: |
-          cargo pgrx install --release --pg${{ matrix.pg_version }}
+          cargo pgrx install --release --no-default-features --features pg${{ matrix.pg_version }}

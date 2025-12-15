@@ -1,17 +1,17 @@
 //! Array Operations Module: INSERT/DELETE for JSONB Arrays
 //!
 //! This module provides functions to handle INSERT and DELETE operations
-//! on JSONB array elements using jsonb_ivm functions. These operations
+//! on JSONB array elements using `jsonb_ivm` functions. These operations
 //! are triggered when source table rows are inserted or deleted.
 //!
 //! ## Architecture
 //!
-//! When a row is INSERTed into a source table:
+//! When a row is `INSERT`ed into a source table:
 //! 1. Detect if it contributes to an array in a parent TVIEW
 //! 2. Use `jsonb_array_insert_where()` to add the element
 //! 3. Maintain proper ordering (if specified)
 //!
-//! When a row is DELETEd from a source table:
+//! When a row is `DELETE`d from a source table:
 //! 1. Find the element in the parent TVIEW array
 //! 2. Use `jsonb_array_delete_where()` to remove it
 //! 3. Preserve array integrity
@@ -35,12 +35,12 @@ use crate::error::{TViewError, TViewResult};
 /// ordering if a sort key is specified.
 ///
 /// # Arguments
-/// * `table_name` - TVIEW table name (e.g., "tv_post")
-/// * `pk_column` - Primary key column name (e.g., "pk_post")
+/// * `table_name` - TVIEW table name (e.g., `"tv_post"`)
+/// * `pk_column` - Primary key column name (e.g., `"pk_post"`)
 /// * `pk_value` - Primary key value of the row to update
 /// * `array_path` - JSONB path to the array (e.g., ["comments"])
 /// * `new_element` - JSONB object to insert
-/// * `sort_key` - Optional key for sorting (e.g., "created_at")
+/// * `sort_key` - Optional key for sorting (e.g., `"created_at"`)
 ///
 /// # Example
 /// ```sql
@@ -106,8 +106,8 @@ pub fn insert_array_element(
 /// the specified key-value pair.
 ///
 /// # Arguments
-/// * `table_name` - TVIEW table name (e.g., "tv_post")
-/// * `pk_column` - Primary key column name (e.g., "pk_post")
+/// * `table_name` - TVIEW table name (e.g., `"tv_post"`)
+/// * `pk_column` - Primary key column name (e.g., `"pk_post"`)
 /// * `pk_value` - Primary key value of the row to update
 /// * `array_path` - JSONB path to the array (e.g., ["comments"])
 /// * `match_key` - Key to match for deletion (e.g., "id")
@@ -157,10 +157,10 @@ pub fn delete_array_element(
     Ok(())
 }
 
-/// Check if jsonb_ivm array functions are available
+/// Check if `jsonb_ivm` array functions are available
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
-/// The array operations require jsonb_ivm for proper functionality.
+/// The array operations require `jsonb_ivm` for proper functionality.
 #[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r"
@@ -181,8 +181,8 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 
 /// Check if an array element with the given ID exists.
 ///
-/// This function uses jsonb_ivm's optimized existence check when available,
-/// providing ~10× performance improvement over jsonb_path_query.
+/// This function uses `jsonb_ivm`'s optimized existence check when available,
+/// providing ~10× performance improvement over `jsonb_path_query`.
 ///
 /// **Security**: Validates all identifier parameters to prevent SQL injection.
 ///
@@ -203,8 +203,8 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 ///
 /// # Performance
 ///
-/// - With jsonb_ivm: ~10× faster than jsonb_path_query
-/// - Without jsonb_ivm: Falls back to jsonb_path_query
+/// - With `jsonb_ivm`: ~10× faster than `jsonb_path_query`
+/// - Without `jsonb_ivm`: Falls back to `jsonb_path_query`
 ///
 /// # Example
 ///
@@ -291,7 +291,7 @@ pub fn check_array_element_exists(
 /// Insert array element only if it doesn't already exist.
 ///
 /// This prevents duplicate entries in arrays by checking existence first
-/// using the fast jsonb_array_contains_id() function.
+/// using the fast `jsonb_array_contains_id()` function.
 ///
 /// # Arguments
 ///
@@ -418,7 +418,7 @@ pub fn insert_array_element_safe(
 /// Update a nested field within an array element using path notation.
 ///
 /// This function surgically updates a nested field within a specific array element,
-/// without replacing the entire element. Uses jsonb_ivm's path-based update for
+/// without replacing the entire element. Uses `jsonb_ivm`'s path-based update for
 /// 2-3× performance improvement over full element replacement.
 ///
 /// **Security**: Validates all identifier parameters to prevent SQL injection.
@@ -451,8 +451,8 @@ pub fn insert_array_element_safe(
 ///
 /// # Performance
 ///
-/// - With jsonb_ivm: 2-3× faster than updating full element
-/// - Without jsonb_ivm: Falls back to full element update
+/// - With `jsonb_ivm`: 2-3× faster than updating full element
+/// - Without `jsonb_ivm`: Falls back to full element update
 ///
 /// # Example
 ///
@@ -567,7 +567,7 @@ pub fn update_array_element_path(
     Ok(())
 }
 
-/// Check if jsonb_ivm path functions are available
+/// Check if `jsonb_ivm` path functions are available
 #[allow(dead_code)]  // Phase 2: Used by update_array_element_path
 fn check_path_function_available() -> TViewResult<bool> {
     let result = Spi::get_one::<bool>(
@@ -579,14 +579,14 @@ fn check_path_function_available() -> TViewResult<bool> {
     }
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
     /// Test insert_array_element function
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_insert_array_element() {
         // Setup test table
@@ -620,7 +620,7 @@ mod tests {
     }
 
     /// Test delete_array_element function
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_delete_array_element() {
         // Setup test table with array element
@@ -653,7 +653,7 @@ mod tests {
     }
 
     /// Test array functions availability check
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_check_array_functions_available() {
         // This will depend on whether jsonb_ivm is installed

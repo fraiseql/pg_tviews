@@ -14,7 +14,7 @@
 //! ## Architecture
 //!
 //! 1. **Threshold Detection**: Check if batch size > threshold (default: 10)
-//! 2. **Data Collection**: Gather all fresh data from v_entity views
+//! 2. **Data Collection**: Gather all fresh data from `v_entity` views
 //! 3. **Batch Update**: Use single UPDATE with CASE statements or temp tables
 //! 4. **Fallback**: Individual updates for small batches
 //!
@@ -115,12 +115,12 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
         for row in rows {
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: format!("{} column is NULL", pk_col),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
 
@@ -225,14 +225,14 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     Ok(())
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
     /// Test batch threshold detection
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_batch_threshold() {
         // Small batch should use individual updates

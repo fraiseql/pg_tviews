@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 pub fn assert_error_sqlstate<T>(
     result: crate::TViewResult<T>,
     expected_sqlstate: &str,
@@ -20,7 +20,7 @@ pub fn assert_error_sqlstate<T>(
     }
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 pub fn assert_error_contains<T>(
     result: crate::TViewResult<T>,
     expected_substring: &str,

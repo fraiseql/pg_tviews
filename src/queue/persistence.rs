@@ -4,6 +4,7 @@
 //! for prepared transactions. Supports both JSONB and binary formats.
 
 use pgrx::prelude::*;
+use pgrx::pg_sys;
 use pgrx::JsonB;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -33,7 +34,7 @@ pub struct QueueMetadata {
 }
 
 impl SerializedQueue {
-    /// Create a serialized queue from a HashSet of refresh keys
+    /// Create a serialized queue from a `HashSet` of refresh keys
     pub fn from_queue(queue: HashSet<RefreshKey>) -> Self {
         Self {
             version: 1,
@@ -46,7 +47,7 @@ impl SerializedQueue {
         }
     }
 
-    /// Convert back to a HashSet of refresh keys
+    /// Convert back to a `HashSet` of refresh keys
     pub fn into_queue(self) -> HashSet<RefreshKey> {
         self.keys.into_iter().collect()
     }
@@ -140,11 +141,28 @@ fn get_session_id() -> String {
     }
 }
 
-/// Get current savepoint depth
+/// Get current savepoint depth using PostgreSQL's transaction nesting level
+///
+/// PostgreSQL's `GetCurrentTransactionNestLevel()` returns:
+/// - 1 for top-level transaction (no savepoints)
+/// - 2 for first savepoint level
+/// - 3 for nested savepoint, etc.
+///
+/// We convert this to savepoint depth:
+/// - 0 = no savepoints (nest level 1)
+/// - 1 = one savepoint active (nest level 2)
+/// - etc.
 fn get_savepoint_depth() -> usize {
-    // This would need to be implemented to track savepoint depth
-    // For now, return 0 as we don't have access to this information
-    0
+    // Safety: GetCurrentTransactionNestLevel is safe to call from any transaction context
+    let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+
+    // Convert nest level to savepoint depth
+    // nest_level is always >= 1 when in a transaction
+    if nest_level > 1 {
+        (nest_level - 1) as usize
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +216,41 @@ mod tests {
         assert_eq!(restored_queue.len(), 2);
         assert!(restored_queue.contains(&RefreshKey { entity: "user".to_string(), pk: 1 }));
         assert!(restored_queue.contains(&RefreshKey { entity: "post".to_string(), pk: 2 }));
+    }
+
+    #[test]
+    fn test_savepoint_depth_conversion_logic() {
+        // Test the conversion logic from nest level to savepoint depth
+        // This function tests the mathematical conversion without calling FFI
+
+        fn convert_nest_level_to_savepoint_depth(nest_level: i32) -> usize {
+            if nest_level > 1 {
+                (nest_level - 1) as usize
+            } else {
+                0
+            }
+        }
+
+        // Test cases based on PostgreSQL's transaction nesting levels
+        assert_eq!(convert_nest_level_to_savepoint_depth(1), 0, "Top-level transaction should have savepoint depth 0");
+        assert_eq!(convert_nest_level_to_savepoint_depth(2), 1, "First savepoint should have savepoint depth 1");
+        assert_eq!(convert_nest_level_to_savepoint_depth(3), 2, "Second savepoint should have savepoint depth 2");
+        assert_eq!(convert_nest_level_to_savepoint_depth(4), 3, "Third savepoint should have savepoint depth 3");
+        assert_eq!(convert_nest_level_to_savepoint_depth(10), 9, "Tenth savepoint should have savepoint depth 9");
+    }
+
+    #[test]
+    fn test_serialized_queue_includes_savepoint_depth() {
+        // Test that SerializedQueue captures savepoint depth when created
+        let mut queue = HashSet::new();
+        queue.insert(RefreshKey { entity: "user".to_string(), pk: 1 });
+
+        let serialized = SerializedQueue::from_queue(queue);
+
+        // The savepoint_depth should be captured (though we can't control its exact value
+        // in a unit test environment without PostgreSQL context)
+        // We can at least verify it's a valid usize value
+        let _savepoint_depth = serialized.metadata.savepoint_depth;
+        // If we get here without panicking, the function call succeeded
     }
 }

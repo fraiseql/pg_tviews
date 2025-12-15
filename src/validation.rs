@@ -1,7 +1,7 @@
 //! Input Validation Module
 //!
 //! This module provides security-critical validation functions used throughout
-//! pg_tviews to prevent SQL injection and other input-based attacks.
+//! `pg_tviews` to prevent SQL injection and other input-based attacks.
 //!
 //! ## Security Principles
 //!
@@ -22,12 +22,12 @@
 
 use crate::error::{TViewError, TViewResult};
 
-/// Validate PostgreSQL identifier (table, column, schema names)
+/// Validate `PostgreSQL` identifier (table, column, schema names)
 ///
 /// # Security
 ///
 /// Prevents SQL injection by ensuring only safe identifier characters.
-/// Allows: alphanumeric + underscore (PostgreSQL identifier rules)
+/// Allows: alphanumeric + underscore (`PostgreSQL` identifier rules)
 /// Rejects: quotes, semicolons, dashes, spaces, special chars
 ///
 /// # Arguments
