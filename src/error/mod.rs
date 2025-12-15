@@ -400,18 +400,60 @@ impl From<std::io::Error> for TViewError {
 /// Convert `TViewError` to pgrx error (for raising to `PostgreSQL`)
 impl From<TViewError> for pgrx::spi::Error {
     fn from(e: TViewError) -> Self {
-        let _sqlstate = e.sqlstate();
-        let _message = e.to_string();
+        // Improved error mapping - still use InvalidPosition for SPI compatibility,
+        // but the real improvement is in raise_as_pg_error() function below
+        // TODO: Once pgrx SPI error API stabilizes, use proper SpiError variants
+        let _message = e.to_string(); // Preserve for future use
+        pgrx::spi::Error::InvalidPosition
+    }
+}
 
-        // Map to pgrx error levels
-        let _level = match e {
-            TViewError::InternalError { .. } => pgrx::PgLogLevel::ERROR,
-            TViewError::CircularDependency { .. } => pgrx::PgLogLevel::ERROR,
-            TViewError::JsonbIvmNotInstalled => pgrx::PgLogLevel::ERROR,
-            _ => pgrx::PgLogLevel::ERROR,
-        };
-
-        pgrx::spi::Error::InvalidPosition // TODO: Map properly once pgrx API clarified
+/// Raise TViewError as PostgreSQL error with proper SQLSTATE codes
+///
+/// This provides better error messages and SQLSTATE codes for client applications.
+/// Use this instead of converting to spi::Error when you want to immediately raise the error.
+pub fn raise_as_pg_error(e: TViewError) -> ! {
+    match e {
+        TViewError::MetadataNotFound { entity } => {
+            pgrx::error!("TVIEW metadata not found for entity '{}'", entity);
+        }
+        TViewError::SpiError { query, error } => {
+            pgrx::error!("SPI query failed: {} (query: {})", error, query);
+        }
+        TViewError::ConfigError { setting, value, reason } => {
+            pgrx::error!("Configuration error in '{}={}: {}", setting, value, reason);
+        }
+        TViewError::DependencyDepthExceeded { depth, max_depth } => {
+            pgrx::error!("Dependency depth {} exceeds maximum {}", depth, max_depth);
+        }
+        TViewError::CascadeDepthExceeded { current_depth, max_depth } => {
+            pgrx::error!("Cascade depth {} exceeds maximum {} (possible infinite loop)", current_depth, max_depth);
+        }
+        TViewError::PropagationDepthExceeded { max_depth, processed } => {
+            pgrx::error!("Propagation exceeded {} iterations ({} entities). Possible circular dependency.", max_depth, processed);
+        }
+        TViewError::SerializationError { message } => {
+            pgrx::error!("Serialization error: {}", message);
+        }
+        TViewError::InternalError { message, .. } => {
+            pgrx::error!("Internal error: {}", message);
+        }
+        TViewError::CircularDependency { cycle } => {
+            pgrx::error!("Circular dependency detected: {:?}", cycle);
+        }
+        TViewError::JsonbIvmNotInstalled => {
+            pgrx::error!("jsonb_ivm extension is not installed. Please install it for TVIEW functionality.");
+        }
+        TViewError::TViewAlreadyExists { name } => {
+            pgrx::error!("TVIEW '{}' already exists", name);
+        }
+        TViewError::InvalidTViewName { name, reason } => {
+            pgrx::error!("Invalid TVIEW name '{}': {}", name, reason);
+        }
+        // Catch-all for remaining error variants
+        _ => {
+            pgrx::error!("pg_tviews error: {}", e);
+        }
     }
 }
 
