@@ -22,9 +22,9 @@ use pgrx::prelude::*;
 /// - Early termination for unchanged data
 /// - Dependency graph caching
 /// - Configurable propagation depth limits
-use crate::refresh::main::{ViewRow, refresh_pk};
+use crate::refresh::main::ViewRow;
 use crate::refresh::batch;
-use crate::catalog::TviewMeta;
+use crate::refresh::cache;
 use crate::queue::RefreshKey;
 
 /// Discover parents (entities that depend on this entity) and refresh them.
@@ -54,23 +54,14 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
 
         info!("  Cascading to {}: {} affected rows", parent_entity, affected_pks.len());
 
-        // Load parent TVIEW metadata to get view_oid for refresh
-        let parent_meta = match TviewMeta::load_by_entity(&parent_entity)? {
-            Some(meta) => meta,
-            None => {
-                warning!("No metadata found for parent entity {}", parent_entity);
-                continue;
-            }
-        };
-
         // Use batch refresh for large cascades, individual refresh for small ones
         if affected_pks.len() >= 10 {
             info!("  Using batch refresh for {} rows", affected_pks.len());
             batch::refresh_batch(&parent_entity, &affected_pks)?;
         } else {
-            // Refresh each affected row individually
+            // Refresh each affected row individually (with cache optimization)
             for pk in affected_pks {
-                refresh_pk(parent_meta.view_oid, pk)?;
+                cache::refresh_entity_pk(&parent_entity, pk)?;
             }
         }
     }

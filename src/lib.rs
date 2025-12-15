@@ -502,13 +502,13 @@ fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshK
 fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<crate::queue::RefreshKey>> {
     // Load metadata
     use crate::catalog::TviewMeta;
-    let meta = TviewMeta::load_by_entity(&key.entity)?
+    let _meta = TviewMeta::load_by_entity(&key.entity)?
         .ok_or_else(|| crate::TViewError::MetadataNotFound {
             entity: key.entity.clone(),
         })?;
 
-    // Refresh this entity (existing logic)
-    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    // Refresh this entity (with cached path optimization)
+    crate::refresh::cache::refresh_entity_pk(&key.entity, key.pk)?;
 
     // Find parent entities (returns keys instead of refreshing)
     let parent_keys = crate::propagate::find_parents_for(key)?;
