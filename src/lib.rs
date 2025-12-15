@@ -177,6 +177,33 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
     pgrx::JsonB(serde_json::json!(json_contents))
 }
 
+/// Get current transaction's refresh queue information
+///
+/// Returns a single row with queue statistics for the current backend.
+/// This is useful for monitoring long-running transactions.
+///
+/// # Example
+///
+/// ```sql
+/// SELECT * FROM pg_tviews_queue_info();
+/// -- Returns: (queue_size, entities[])
+/// ```
+#[pg_extern]
+fn pg_tviews_queue_info() -> pgrx::iter::TableIterator<
+    'static,
+    (
+        pgrx::name!(queue_size, i32),
+        pgrx::name!(entities, Vec<String>),
+    ),
+> {
+    let stats = crate::queue::get_queue_stats();
+
+    pgrx::iter::TableIterator::new(vec![(
+        stats.size as i32,
+        stats.entities,
+    )])
+}
+
 /// Initialize the extension
 /// Installs the `ProcessUtility` hook to intercept CREATE TABLE tv_* commands
 ///

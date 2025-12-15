@@ -16,7 +16,7 @@ pub mod persistence;
 mod integration_tests;
 
 pub use key::RefreshKey;
-pub use ops::{enqueue_refresh, enqueue_refresh_bulk, register_commit_callback_once};
+pub use ops::{enqueue_refresh, enqueue_refresh_bulk, register_commit_callback_once, get_queue_stats};
 pub use state::{get_queue_size, get_queue_contents};
 // pub use ops::{take_queue_snapshot, clear_queue}; // Internal use only
 // pub use graph::EntityDepGraph; // Internal use only

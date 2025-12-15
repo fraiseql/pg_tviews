@@ -120,9 +120,10 @@ SELECT
     current_setting('application_name') as session,
     pg_backend_pid() as backend_pid,
     txid_current() as transaction_id,
-    0 as queue_size,  -- TODO: Implement queue introspection
-    ARRAY[]::TEXT[] as entities,
-    NOW() as last_enqueued;
+    q.queue_size,
+    q.entities,
+    NOW() as snapshot_time
+FROM pg_tviews_queue_info() q;
 
 -- Cache statistics view
 CREATE OR REPLACE VIEW pg_tviews_cache_stats AS

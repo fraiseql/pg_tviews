@@ -99,6 +99,36 @@ pub fn clear_queue_and_reset() {
     reset_scheduled_flag();
 }
 
+/// Queue statistics for introspection
+#[derive(Debug, Clone)]
+pub struct QueueStats {
+    pub size: usize,
+    pub entities: Vec<String>,
+}
+
+/// Get current queue statistics (for introspection)
+///
+/// Returns the number of pending refresh requests and list of unique entities.
+/// Safe to call from SQL context.
+pub fn get_queue_stats() -> QueueStats {
+    TX_REFRESH_QUEUE.with(|q| {
+        let queue = q.borrow();
+
+        // Count unique entities
+        let mut entity_set = std::collections::HashSet::new();
+        for key in queue.iter() {
+            entity_set.insert(key.entity.clone());
+        }
+
+        let entities: Vec<String> = entity_set.into_iter().collect();
+
+        QueueStats {
+            size: queue.len(),
+            entities,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +160,33 @@ mod tests {
 
         let snapshot = take_queue_snapshot();
         assert_eq!(snapshot.len(), 0);
+    }
+
+    #[test]
+    fn test_get_queue_stats() {
+        clear_queue();
+
+        // Empty queue
+        let stats = get_queue_stats();
+        assert_eq!(stats.size, 0);
+        assert!(stats.entities.is_empty());
+
+        // Add some items
+        enqueue_refresh("user", 1).unwrap();
+        enqueue_refresh("user", 2).unwrap();
+        enqueue_refresh("post", 1).unwrap();
+        enqueue_refresh("user", 1).unwrap(); // duplicate
+
+        let stats = get_queue_stats();
+        assert_eq!(stats.size, 3); // 3 unique keys
+        assert_eq!(stats.entities.len(), 2); // 2 unique entities
+        assert!(stats.entities.contains(&"user".to_string()));
+        assert!(stats.entities.contains(&"post".to_string()));
+
+        // Clear and check again
+        clear_queue();
+        let stats = get_queue_stats();
+        assert_eq!(stats.size, 0);
+        assert!(stats.entities.is_empty());
     }
 }
