@@ -2,12 +2,11 @@
 //!
 //! This module centralizes all configuration for `pg_tviews`:
 //! - **Compile-time constants**: Fixed limits and defaults
-//! - **Runtime settings**: GUC-based configuration (PostgreSQL Grand Unified Configuration)
-//! - **Feature flags**: Enable/disable optional functionality
+//! - **Runtime settings**: GUC-based configuration (`PostgreSQL` Grand Unified Configuration)
 //!
 //! ## Configuration System
 //!
-//! Settings are now configurable at runtime via PostgreSQL GUC variables:
+//! Settings are now configurable at runtime via `PostgreSQL` GUC variables:
 //! - `pg_tviews.max_propagation_depth`: Maximum cascade refresh iterations (default: 100)
 //! - `pg_tviews.graph_cache_enabled`: Enable dependency graph caching (default: on)
 //! - `pg_tviews.table_cache_enabled`: Enable table OID caching (default: on)
@@ -35,7 +34,7 @@ pub const MAX_DEPENDENCY_DEPTH: usize = 10;
 /// Enable verbose dependency logging (for debugging)
 pub const DEBUG_DEPENDENCIES: bool = false;
 
-/// Register all pg_tviews GUC variables
+/// Register all `pg_tviews` GUC variables
 ///
 /// Must be called from `_PG_init()` during extension loading.
 pub fn register_gucs() {
@@ -82,7 +81,7 @@ pub fn register_gucs() {
 ///
 /// Configurable via: `SET pg_tviews.max_propagation_depth = N;`
 pub fn max_propagation_depth() -> usize {
-    MAX_PROPAGATION_DEPTH.get() as usize
+    usize::try_from(MAX_PROPAGATION_DEPTH.get().max(1)).unwrap_or(100)
 }
 
 /// Check if graph caching is enabled
@@ -102,6 +101,7 @@ pub fn table_cache_enabled() -> bool {
 /// Get the current log level (still compile-time for now)
 ///
 /// Log level configuration requires more complex enum handling.
+#[must_use]
 pub const fn log_level() -> &'static str {
     "info"
 }

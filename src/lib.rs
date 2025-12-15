@@ -199,7 +199,7 @@ fn pg_tviews_queue_info() -> pgrx::iter::TableIterator<
     let stats = crate::queue::get_queue_stats();
 
     pgrx::iter::TableIterator::new(vec![(
-        stats.size as i32,
+        i32::try_from(stats.size).unwrap_or(i32::MAX),
         stats.entities,
     )])
 }
