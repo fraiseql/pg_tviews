@@ -812,7 +812,7 @@ cargo clean && cargo pgrx install --release
 ```bash
 # Benchmarks will automatically use stubs
 # Check if stubs are loaded
-psql -d pg_tviews_benchmark -c "SELECT jsonb_ivm_available();"
+psql -d pg_tviews_benchmark -c "SELECT jsonb_delta_available();"
 # Should return true
 ```
 

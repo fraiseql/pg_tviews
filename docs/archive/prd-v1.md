@@ -278,7 +278,7 @@ SELECT * FROM v_post WHERE pk_post = $pk;
 
 ```sql
 UPDATE tv_post
-SET data       = jsonb_ivm_patch(data, $new.data),
+SET data       = jsonb_smart_patch_scalar(data, $new.data),
     fk_user    = $new.fk_user,
     user_id    = $new.user_id,
     updated_at = now()

@@ -1,4 +1,4 @@
--- Test nested path array updates - jsonb_ivm_array_update_where_path
+-- Test nested path array updates - jsonb_delta_array_update_where_path
 \set ECHO none
 \set QUIET 1
 
@@ -27,7 +27,7 @@ INSERT INTO test_nested_arrays VALUES (1);
 
 -- Update color of tag in first item
 UPDATE test_nested_arrays
-SET data = jsonb_ivm_array_update_where_path(
+SET data = jsonb_delta_array_update_where_path(
     data,
     'items',
     'id',
@@ -57,7 +57,7 @@ END $$;
 
 -- Update name in second item
 UPDATE test_nested_arrays
-SET data = jsonb_ivm_array_update_where_path(
+SET data = jsonb_delta_array_update_where_path(
     data,
     'items',
     'id',

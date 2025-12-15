@@ -210,7 +210,7 @@ cargo pgrx run pg17
 
 # 3. In PostgreSQL shell:
 CREATE EXTENSION pg_tviews;
-\i test/sql/jsonb_ivm_stubs.sql
+\i test/sql/jsonb_delta_stubs.sql
 \i test/sql/benchmark_schema.sql
 \i test/sql/benchmark_data.sql
 

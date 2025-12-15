@@ -102,11 +102,11 @@ match error {
 
 ---
 
-## Function: check_jsonb_ivm_available() -> bool
+## Function: check_jsonb_delta_available() -> bool
 
 **Status**: STABLE
-**Description**: Check if jsonb_ivm extension is available
-**Returns**: true if jsonb_ivm can be used for optimization
+**Description**: Check if jsonb_delta extension is available
+**Returns**: true if jsonb_delta can be used for optimization
 
 ---
 

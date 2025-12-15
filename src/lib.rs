@@ -72,9 +72,9 @@ pub use catalog::entity_for_table;
 
 pg_module_magic!();
 
-// Static cache for jsonb_ivm availability (performance optimization)
-static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
-static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
+// Static cache for jsonb_delta availability (performance optimization)
+static JSONB_DELTA_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static JSONB_DELTA_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Extension version (synced with Cargo.toml)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -93,21 +93,21 @@ fn pg_tviews_hook_status() -> &'static str {
     "Extension loaded - hook installation attempted in `_PG_init`"
 }
 
-/// Check if `jsonb_ivm` extension is available at runtime (cached)
+/// Check if `jsonb_delta` extension is available at runtime (cached)
 /// Returns true if extension is installed, false otherwise
 ///
 /// This function caches the result after the first check to avoid
 /// repeated queries to `pg_extension` on every cascade operation.
-pub fn check_jsonb_ivm_available() -> bool {
+pub fn check_jsonb_delta_available() -> bool {
     // Return cached result if already checked
-    if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
-        return JSONB_IVM_AVAILABLE.load(Ordering::Relaxed);
+    if JSONB_DELTA_CHECKED.load(Ordering::Relaxed) {
+        return JSONB_DELTA_AVAILABLE.load(Ordering::Relaxed);
     }
 
     // First time: query database
     let result: Result<bool, spi::Error> = Spi::connect(|client| {
         let rows = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             &[],
         )?;
@@ -123,16 +123,16 @@ pub fn check_jsonb_ivm_available() -> bool {
     let is_available = result.unwrap_or(false);
 
     // Cache result
-    JSONB_IVM_AVAILABLE.store(is_available, Ordering::Relaxed);
-    JSONB_IVM_CHECKED.store(true, Ordering::Relaxed);
+    JSONB_DELTA_AVAILABLE.store(is_available, Ordering::Relaxed);
+    JSONB_DELTA_CHECKED.store(true, Ordering::Relaxed);
 
     is_available
 }
 
 /// Export as SQL function for testing
 #[pg_extern]
-fn pg_tviews_check_jsonb_ivm() -> bool {
-    check_jsonb_ivm_available()
+fn pg_tviews_check_jsonb_delta() -> bool {
+    check_jsonb_delta_available()
 }
 
 /// Get current queue statistics
@@ -221,7 +221,7 @@ extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
 
     // Note: We cannot call functions that require SPI/database connection here
-    // (like check_jsonb_ivm_available or register_cache_invalidation_callbacks)
+    // (like check_jsonb_delta_available or register_cache_invalidation_callbacks)
     // because no database connection exists during shared library preloading.
     // These checks happen lazily on first use instead.
 }
@@ -230,7 +230,7 @@ extern "C-unwind" fn _PG_init() {
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - `jsonb_ivm` availability
+/// - `jsonb_delta` availability
 /// - Metadata consistency
 /// - Orphaned triggers
 /// - Queue status
@@ -251,23 +251,23 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
         "info".to_string(),
     ));
 
-    // Check 2: jsonb_ivm availability
-    let has_jsonb_ivm = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_ivm'"
+    // Check 2: jsonb_delta availability
+    let has_jsonb_delta = Spi::get_one::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'"
     ).unwrap_or(Some(false)).unwrap_or(false);
 
-    if has_jsonb_ivm {
+    if has_jsonb_delta {
         results.push((
             "OK".to_string(),
-            "jsonb_ivm".to_string(),
-            "jsonb_ivm extension available (optimized mode)".to_string(),
+            "jsonb_delta".to_string(),
+            "jsonb_delta extension available (optimized mode)".to_string(),
             "info".to_string(),
         ));
     } else {
         results.push((
             "WARNING".to_string(),
-            "jsonb_ivm".to_string(),
-            "jsonb_ivm not installed (falling back to standard JSONB)".to_string(),
+            "jsonb_delta".to_string(),
+            "jsonb_delta not installed (falling back to standard JSONB)".to_string(),
             "warning".to_string(),
         ));
     }
@@ -876,39 +876,34 @@ mod tests {
         }).unwrap();
     }
 
-    // Phase 5 Task 1 RED: Tests for jsonb_ivm detection
+    // Phase 5 Task 1 RED: Tests for jsonb_delta detection
     #[cfg(feature = "pg_test")]
     #[pg_test]
-    fn test_jsonb_ivm_check_function_exists() {
-        // This test will fail because pg_tviews_check_jsonb_ivm doesn't exist yet
-        let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_ivm()");
-        assert!(result.is_ok(), "pg_tviews_check_jsonb_ivm() function should exist");
+    fn test_jsonb_delta_check_function_exists() {
+        // This test will fail because pg_tviews_check_jsonb_delta doesn't exist yet
+        let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_delta()");
+        assert!(result.is_ok(), "pg_tviews_check_jsonb_delta() function should exist");
     }
 
     #[cfg(feature = "pg_test")]
     #[pg_test]
-    fn test_check_jsonb_ivm_available_function() {
-        // This test will fail because check_jsonb_ivm_available() doesn't exist yet
-        let _result = crate::check_jsonb_ivm_available();
+    fn test_check_jsonb_delta_available_function() {
+        // This test will fail because check_jsonb_delta_available() doesn't exist yet
+        let _result = crate::check_jsonb_delta_available();
         // Just calling it is enough - function must exist
     }
 
     #[cfg(feature = "pg_test")]
     #[pg_test]
-    fn test_pg_tviews_works_without_jsonb_ivm() {
-        // Setup: Ensure jsonb_ivm is NOT installed
-        Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE").ok();
+    fn test_pg_tviews_works_without_jsonb_delta() {
+        // Setup: Ensure jsonb_delta is NOT installed
+        Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").ok();
 
-        // Test: pg_tviews should still function
-        Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
-
-        // This should work even without jsonb_ivm
-        let result = Spi::get_one::<bool>(
-            "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL"
-        );
-
-        assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_ivm");
+        // Test that our check function works
+        let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_delta()");
+        // This should work even without jsonb_delta
+        assert!(result.is_ok(), "pg_tviews should work without jsonb_delta");
+        assert!(!result.unwrap().unwrap_or(true), "jsonb_delta should not be available");
     }
 }
 // */

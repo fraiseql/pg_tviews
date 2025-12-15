@@ -8,10 +8,10 @@ SET log_min_messages TO WARNING;
 
 \set ECHO all
 
--- Setup WITHOUT jsonb_ivm extension
+-- Setup WITHOUT jsonb_delta extension
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
-\echo '### Test 1: Verify jsonb_ivm_set_path is NOT available'
+\echo '### Test 1: Verify jsonb_delta_set_path is NOT available'
 
 DO $$
 DECLARE
@@ -19,13 +19,13 @@ DECLARE
 BEGIN
     SELECT EXISTS(
         SELECT 1 FROM pg_proc
-        WHERE proname = 'jsonb_ivm_set_path'
+        WHERE proname = 'jsonb_delta_set_path'
     ) INTO available;
 
     IF NOT available THEN
-        RAISE NOTICE 'PASS: jsonb_ivm_set_path not available (expected)';
+        RAISE NOTICE 'PASS: jsonb_delta_set_path not available (expected)';
     ELSE
-        RAISE EXCEPTION 'FAIL: jsonb_ivm_set_path should not be available for this test';
+        RAISE EXCEPTION 'FAIL: jsonb_delta_set_path should not be available for this test';
     END IF;
 END $$;
 
@@ -84,16 +84,16 @@ DECLARE
     ivm_available boolean;
     set_path_available boolean;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm') INTO ivm_available;
-    SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_ivm_set_path') INTO set_path_available;
+    SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta') INTO ivm_available;
+    SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_delta_set_path') INTO set_path_available;
 
-    RAISE NOTICE 'jsonb_ivm available: %', ivm_available;
-    RAISE NOTICE 'jsonb_ivm_set_path available: %', set_path_available;
+    RAISE NOTICE 'jsonb_delta available: %', ivm_available;
+    RAISE NOTICE 'jsonb_delta_set_path available: %', set_path_available;
 
     IF NOT ivm_available AND NOT set_path_available THEN
-        RAISE NOTICE 'PASS: Both jsonb_ivm extension and set_path function unavailable';
+        RAISE NOTICE 'PASS: Both jsonb_delta extension and set_path function unavailable';
     ELSE
-        RAISE NOTICE 'INFO: jsonb_ivm partially available - some functions may work';
+        RAISE NOTICE 'INFO: jsonb_delta partially available - some functions may work';
     END IF;
 END $$;
 

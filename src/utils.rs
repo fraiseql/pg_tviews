@@ -183,7 +183,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     })
 }
 
-/// Extract ID field from JSONB data using `jsonb_ivm` extension.
+/// Extract ID field from JSONB data using `jsonb_delta` extension.
 ///
 /// **Security**: This function validates the `id_key` parameter to prevent SQL injection.
 /// Only alphanumeric characters and underscores are allowed in `id_key`.
@@ -205,8 +205,8 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
 ///
 /// # Performance
 ///
-/// - With `jsonb_ivm`: ~5× faster than `data->>'id'`
-/// - Without `jsonb_ivm`: Same as `data->>'id'`
+/// - With `jsonb_delta`: ~5× faster than `data->>'id'`
+/// - Without `jsonb_delta`: Same as `data->>'id'`
 ///
 /// # Example
 ///
@@ -220,12 +220,12 @@ pub fn extract_jsonb_id(data: &JsonB, id_key: &str) -> spi::Result<Option<String
     // Validate id_key to prevent SQL injection
     crate::validation::validate_sql_identifier(id_key, "id_key")?;
 
-    // Check if jsonb_ivm is available
-    let has_jsonb_ivm = Spi::get_one::<bool>(
+    // Check if jsonb_delta is available
+    let has_jsonb_delta = Spi::get_one::<bool>(
         "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_extract_id')"
     )?.unwrap_or(false);
 
-    if has_jsonb_ivm {
+    if has_jsonb_delta {
         // Use optimized jsonb_ivm function with parameterized id_key
         let sql = "SELECT jsonb_extract_id($1::jsonb, $2::text)";
         Spi::get_one_with_args::<String>(

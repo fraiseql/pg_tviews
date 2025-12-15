@@ -1322,10 +1322,10 @@ native AS (
 )
 SELECT
     j.test_name AS operation,
-    ROUND(j.jsonb_ms, 2) AS jsonb_ivm_ms,
+    ROUND(j.jsonb_ms, 2) AS jsonb_delta_ms,
     ROUND(n.native_ms, 2) AS native_pg_ms,
     CASE
-        WHEN j.jsonb_ms < n.native_ms THEN 'jsonb_ivm ' || ROUND(n.native_ms / j.jsonb_ms, 2) || 'x faster'
+        WHEN j.jsonb_ms < n.native_ms THEN 'jsonb_delta ' || ROUND(n.native_ms / j.jsonb_ms, 2) || 'x faster'
         WHEN n.native_ms < j.jsonb_ms THEN 'native_pg ' || ROUND(j.jsonb_ms / n.native_ms, 2) || 'x faster'
         ELSE 'tie'
     END AS winner,

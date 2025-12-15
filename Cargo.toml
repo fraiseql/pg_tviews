@@ -5,9 +5,9 @@ edition = "2021"
 authors = ["Lionel Hamayon <lionel.hamayon@evolution-digitale.fr>"]
 description = "Transactional materialized views with incremental refresh for PostgreSQL"
 license = "MIT"
-repository = "https://github.com/your-org/pg_tviews"
-homepage = "https://github.com/your-org/pg_tviews"
-documentation = "https://github.com/your-org/pg_tviews"
+repository = "https://github.com/fraiseql/pg_tviews"
+homepage = "https://github.com/fraiseql/pg_tviews"
+documentation = "https://github.com/fraiseql/pg_tviews"
 keywords = ["postgresql", "materialized-views", "incremental-refresh", "database", "pgrx"]
 categories = ["database"]
 

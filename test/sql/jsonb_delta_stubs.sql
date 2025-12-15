@@ -1,4 +1,4 @@
--- Stub implementation of jsonb_ivm functions for performance testing
+-- Stub implementation of jsonb_delta functions for performance testing
 -- These implement the same interface but with simplified logic
 
 -- Drop existing if any
@@ -112,7 +112,7 @@ END;
 $$;
 
 -- Create extension check function for testing
-CREATE OR REPLACE FUNCTION jsonb_ivm_available() RETURNS boolean
+CREATE OR REPLACE FUNCTION jsonb_delta_available() RETURNS boolean
 LANGUAGE sql IMMUTABLE
 AS $$
     SELECT true; -- Always return true since we have stubs

@@ -1,7 +1,7 @@
 //! # Refresh Module: Smart JSONB Patching for Cascade Updates
 //!
 //! This module handles refreshing transformed views (TVIEWs) when underlying source
-//! table rows change. It uses **smart JSONB patching** via the `jsonb_ivm` extension
+//! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
 //! for 1.5-3× performance improvement on cascade updates.
 //!
 //! ## Architecture
@@ -13,10 +13,10 @@
 //!
 //! ## Smart Patching Strategy
 //!
-//! The `apply_patch()` function dispatches to different `jsonb_ivm` functions based
+//! The `apply_patch()` function dispatches to different `jsonb_delta` functions based
 //! on dependency type metadata:
 //!
-//! | Dependency Type | `jsonb_ivm` Function | Use Case |
+//! | Dependency Type | `jsonb_delta` Function | Use Case |
 //! |-----------------|-------------------|----------|
 //! | `nested_object` | `jsonb_smart_patch_nested(data, patch, path)` | Author/category objects |
 //! | `array` | `jsonb_smart_patch_array(data, patch, path, key)` | Comments/tags arrays |
@@ -24,13 +24,13 @@
 //!
 //! ## Performance Impact
 //!
-//! - **Without `jsonb_ivm`**: Full document replacement (~870ms for 100-row cascade)
-//! - **With `jsonb_ivm`**: Surgical updates (~400-600ms for 100-row cascade)
+//! - **Without `jsonb_delta`**: Full document replacement (~870ms for 100-row cascade)
+//! - **With `jsonb_delta`**: Surgical updates (~400-600ms for 100-row cascade)
 //! - **Speedup**: 1.45× to 2.2× faster
 //!
 //! ## Fallback Behavior
 //!
-//! If `jsonb_ivm` is not installed, falls back to full replacement (slower but functional).
+//! If `jsonb_delta` is not installed, falls back to full replacement (slower but functional).
 //!
 //! ## Example
 //!
@@ -164,7 +164,7 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// Apply patch using path-based updates when metadata is missing.
 ///
 /// This is a fallback strategy that attempts to intelligently update nested
-/// paths by comparing old and new data structures. Uses `jsonb_ivm_set_path()`
+/// paths by comparing old and new data structures. Uses `jsonb_delta_set_path()`
 /// for better performance than full replacement.
 ///
 /// # Strategy
@@ -172,7 +172,7 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// 1. Fetch current data from TVIEW
 /// 2. Compare with new data from view
 /// 3. Identify changed paths
-/// 4. Apply surgical updates using `jsonb_ivm_set_path()`
+/// 4. Apply surgical updates using `jsonb_delta_set_path()`
 ///
 /// # Performance
 ///
@@ -224,7 +224,7 @@ fn apply_path_based_fallback(row: &ViewRow) -> spi::Result<()> {
 
     for (path, _value) in changed_paths.iter() {
         update_expr = format!(
-            "jsonb_ivm_set_path({}, '{}', ${}::jsonb)",
+            "jsonb_delta_set_path({}, '{}', ${}::jsonb)",
             update_expr,
             path,
             1 // We'll build this dynamically
@@ -285,12 +285,12 @@ fn detect_changed_paths(old: &JsonB, new: &JsonB) -> spi::Result<Vec<(String, Js
     }
 }
 
-/// Check if `jsonb_ivm_set_path` function is available.
+/// Check if `jsonb_delta_set_path` function is available.
 fn check_set_path_available() -> spi::Result<bool> {
     let sql = r"
         SELECT EXISTS(
             SELECT 1 FROM pg_proc
-            WHERE proname = 'jsonb_ivm_set_path'
+            WHERE proname = 'jsonb_delta_set_path'
         )
     ";
 
@@ -298,7 +298,7 @@ fn check_set_path_available() -> spi::Result<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-/// Simplified path-based update using `jsonb_ivm_set_path`.
+/// Simplified path-based update using `jsonb_delta_set_path`.
 ///
 /// This is a utility function that can be called directly for single-path updates.
 ///
@@ -337,7 +337,7 @@ pub fn update_single_path(
     let sql = format!(
         "
         UPDATE {table_name} SET
-            data = jsonb_ivm_set_path(data, '{path}', $1::jsonb),
+            data = jsonb_delta_set_path(data, '{path}', $1::jsonb),
             updated_at = now()
         WHERE {pk_column} = $2
         "
@@ -360,13 +360,13 @@ pub fn update_single_path(
 /// Apply JSON patch to `tv_entity` using smart JSONB patching.
 ///
 /// This function is the **core performance optimization** of `pg_tviews`. Instead of
-/// replacing the entire JSONB document, it uses `jsonb_ivm` functions to surgically
+/// replacing the entire JSONB document, it uses `jsonb_delta` functions to surgically
 /// update only the changed paths.
 ///
 /// # Strategy
 ///
 /// 1. **Load Metadata**: Determine dependency types for this TVIEW
-/// 2. **Check Availability**: Verify `jsonb_ivm` extension is installed
+/// 2. **Check Availability**: Verify `jsonb_delta` extension is installed
 /// 3. **Build Smart SQL**: Construct nested `jsonb_smart_patch_*()` calls
 /// 4. **Execute Update**: Apply surgical patch to `tv_entity.data` column
 ///
@@ -386,7 +386,7 @@ pub fn update_single_path(
 ///
 /// # Fallback
 ///
-/// If `jsonb_ivm` is not installed or metadata is missing, uses `apply_full_replacement()`
+/// If `jsonb_delta` is not installed or metadata is missing, uses `apply_full_replacement()`
 /// for backward compatibility.
 ///
 /// # Arguments
@@ -417,7 +417,7 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
     let meta = match meta {
         Some(m) => m,
         None => {
-            // Check if jsonb_ivm_set_path is available for flexible fallback
+            // Check if jsonb_delta_set_path is available for flexible fallback
             if check_set_path_available()? {
                 warning!(
                     "No metadata found for TVIEW OID {:?}, entity '{}'. \
@@ -428,18 +428,18 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
             }
             warning!(
                 "No metadata found for TVIEW OID {:?}, entity '{}'. \
-                 Using full replacement (install jsonb_ivm for better performance).",
+                 Using full replacement (install jsonb_delta for better performance).",
                 row.tview_oid, row.entity_name
             );
             return apply_full_replacement(row);
         }
     };
 
-    // Check if jsonb_ivm is available
-    if !check_jsonb_ivm_available()? {
+    // Check if jsonb_delta is available
+    if !check_jsonb_delta_available()? {
         warning!(
-            "jsonb_ivm extension not installed. Smart patching disabled. \
-             Install with: CREATE EXTENSION jsonb_ivm; \
+            "jsonb_delta extension not installed. Smart patching disabled. \
+             Install with: CREATE EXTENSION jsonb_delta; \
              Performance: Full replacement is ~2× slower for cascades."
         );
         return apply_full_replacement(row);
@@ -557,7 +557,7 @@ fn build_smart_patch_sql(
     ))
 }
 
-/// Check if `jsonb_ivm` extension is installed in the current database.
+/// Check if `jsonb_delta` extension is installed in the current database.
 ///
 /// Queries `pg_extension` system catalog to detect if the smart patching functions
 /// are available. Used to determine whether to use optimized patching or fall back
@@ -565,7 +565,7 @@ fn build_smart_patch_sql(
 ///
 /// # Returns
 ///
-/// - `Ok(true)` if `jsonb_ivm` extension is installed
+/// - `Ok(true)` if `jsonb_delta` extension is installed
 /// - `Ok(false)` if extension is not found
 /// - `Err` if query fails
 ///
@@ -573,12 +573,12 @@ fn build_smart_patch_sql(
 ///
 /// ```sql
 /// -- Checks for:
-/// SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')
+/// SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')
 /// ```
-fn check_jsonb_ivm_available() -> spi::Result<bool> {
+fn check_jsonb_delta_available() -> spi::Result<bool> {
     Spi::connect(|client| {
         let result = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             &[],
         )?;
@@ -895,7 +895,7 @@ mod tests {
         // test infrastructure issues. The implementation is complete and correct.
 
         // Setup: Create extension if available (graceful fallback if not)
-        let _ = Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_ivm");
+        let _ = Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta");
 
         // Create tables
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT, email TEXT)").unwrap();
@@ -999,17 +999,17 @@ mod tests {
         assert_eq!(comment_2["text"], "Thanks for sharing!");
     }
 
-    /// Test fallback behavior when jsonb_ivm is not available.
+    /// Test fallback behavior when jsonb_delta is not available.
     ///
     /// Verifies that the system gracefully falls back to full replacement
-    /// when the jsonb_ivm extension is not installed.
+    /// when the jsonb_delta extension is not installed.
     #[pg_test]
-    fn test_fallback_without_jsonb_ivm() {
+    fn test_fallback_without_jsonb_delta() {
         // Note: This test documents fallback behavior but may not run due to
         // test infrastructure issues. The implementation is complete and correct.
 
-        // Explicitly ensure jsonb_ivm is NOT available for this test
-        let _ = Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE");
+        // Explicitly ensure jsonb_delta is NOT available for this test
+        let _ = Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE");
 
         // Create simple test case
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
@@ -1039,12 +1039,12 @@ mod tests {
             $$)
         ").unwrap();
 
-        // Verify metadata is still captured (even without jsonb_ivm)
+        // Verify metadata is still captured (even without jsonb_delta)
         let meta = Spi::get_one::<String>("
             SELECT dependency_types::text FROM pg_tview_meta WHERE entity_name = 'post'
         ");
-        // Metadata should exist regardless of jsonb_ivm availability
-        assert!(meta.is_ok(), "Metadata should be captured even without jsonb_ivm");
+        // Metadata should exist regardless of jsonb_delta availability
+        assert!(meta.is_ok(), "Metadata should be captured even without jsonb_delta");
 
         // Update should still work via fallback
         Spi::run("UPDATE tb_user SET name = 'Alice Fallback' WHERE pk_user = 1").unwrap();
@@ -1054,7 +1054,7 @@ mod tests {
 
         // This should succeed using full replacement fallback
         let result = crate::refresh::refresh_pk(user_oid, 1);
-        assert!(result.is_ok(), "Fallback should work without jsonb_ivm");
+        assert!(result.is_ok(), "Fallback should work without jsonb_delta");
 
         // Verify data was updated (via fallback)
         let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(updated.0["author"]["name"], "Alice Fallback");
         assert_eq!(updated.0["title"], "Hello");
 
-        // Note: A warning should be logged about jsonb_ivm not being available
+        // Note: A warning should be logged about jsonb_delta not being available
         // (Check server logs manually if needed)
     }
 

@@ -226,13 +226,13 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 
 ## Extension Dependency Errors
 
-### JsonbIvmNotInstalled
+### JsonbDeltaNotInstalled
 
 **SQLSTATE**: 58P01
-**Description**: Required jsonb_ivm extension is not installed.
+**Description**: Required jsonb_delta extension is not installed.
 
 **Common Causes**:
-- jsonb_ivm extension not installed
+- jsonb_delta extension not installed
 - Performance optimization disabled
 - Fresh PostgreSQL installation
 

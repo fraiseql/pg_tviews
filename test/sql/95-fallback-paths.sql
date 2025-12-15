@@ -1,4 +1,4 @@
--- Test jsonb_ivm_set_path fallback functionality
+-- Test jsonb_delta_set_path fallback functionality
 \set ECHO none
 \set QUIET 1
 
@@ -32,7 +32,7 @@ INSERT INTO test_path_updates VALUES (1, '{
 
 -- Update nested path
 UPDATE test_path_updates
-SET data = jsonb_ivm_set_path(
+SET data = jsonb_delta_set_path(
     data,
     'user.profile.email',
     '"alice@new.com"'::jsonb
@@ -77,7 +77,7 @@ WHERE pk_test = 1;
 
 -- Update deep path with array index
 UPDATE test_path_updates
-SET data = jsonb_ivm_set_path(
+SET data = jsonb_delta_set_path(
     data,
     'items[0].metadata.status',
     '"inactive"'::jsonb
@@ -118,9 +118,9 @@ WHERE pk_test = 1;
 
 -- Chain multiple path updates
 UPDATE test_path_updates
-SET data = jsonb_ivm_set_path(
-    jsonb_ivm_set_path(
-        jsonb_ivm_set_path(
+SET data = jsonb_delta_set_path(
+    jsonb_delta_set_path(
+        jsonb_delta_set_path(
             data,
             'config.server',
             '"staging"'::jsonb
@@ -156,7 +156,7 @@ UPDATE test_path_updates SET data = '{}'::jsonb WHERE pk_test = 1;
 
 -- Set path that doesn't exist yet (creates intermediate objects)
 UPDATE test_path_updates
-SET data = jsonb_ivm_set_path(
+SET data = jsonb_delta_set_path(
     data,
     'new.nested.deep.value',
     '"created"'::jsonb
@@ -204,14 +204,14 @@ END $$;
 
 \echo 'jsonb_set (nested calls) ^^^'
 
--- Using jsonb_ivm_set_path
+-- Using jsonb_delta_set_path
 DO $$
 BEGIN
     FOR i IN 1..100 LOOP
         UPDATE test_path_updates
-        SET data = jsonb_ivm_set_path(
-            jsonb_ivm_set_path(
-                jsonb_ivm_set_path(
+        SET data = jsonb_delta_set_path(
+            jsonb_delta_set_path(
+                jsonb_delta_set_path(
                     data,
                     'user.name',
                     to_jsonb('User ' || i)
@@ -226,7 +226,7 @@ BEGIN
     END LOOP;
 END $$;
 
-\echo 'jsonb_ivm_set_path (dot notation) ^^^'
+\echo 'jsonb_delta_set_path (dot notation) ^^^'
 \echo 'Note: set_path should be ~2× faster'
 
 \timing off

@@ -225,7 +225,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_cascade_wrapper';
 CREATE  FUNCTION "pg_tviews_check_jsonb_ivm"() RETURNS bool /* bool */
 STRICT
 LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_ivm_wrapper';
+AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_delta_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */

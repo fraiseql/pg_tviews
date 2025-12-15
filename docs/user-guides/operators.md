@@ -142,7 +142,7 @@ BEGIN
     -- Extension health
     SELECT jsonb_build_object(
         'extension_version', pg_tviews_version(),
-        'jsonb_ivm_available', pg_tviews_check_jsonb_ivm(),
+        'jsonb_delta_available', pg_tviews_check_jsonb_delta(),
         'server_version', version(),
         'current_time', now()
     ) INTO result;

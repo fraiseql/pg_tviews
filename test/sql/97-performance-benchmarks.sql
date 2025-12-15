@@ -112,7 +112,7 @@ BEGIN;
 
 -- New approach: Path-based update
 UPDATE bench_orders
-SET data = jsonb_ivm_array_update_where_path(
+SET data = jsonb_delta_array_update_where_path(
     data,
     'items',
     'id',
@@ -121,7 +121,7 @@ SET data = jsonb_ivm_array_update_where_path(
     '"updated"'::jsonb
 )
 WHERE pk_order <= 100;
-\echo 'jsonb_ivm_array_update_where_path ^^^'
+\echo 'jsonb_delta_array_update_where_path ^^^'
 \echo 'Expected: 2-3× faster'
 
 ROLLBACK;
@@ -208,7 +208,7 @@ UNION ALL SELECT
     '10× faster',
     'Array element existence check'
 UNION ALL SELECT
-    'Phase 2: jsonb_ivm_array_update_where_path',
+    'Phase 2: jsonb_delta_array_update_where_path',
     '2-3× faster',
     'Nested field updates in arrays'
 UNION ALL SELECT
@@ -216,7 +216,7 @@ UNION ALL SELECT
     '3-5× faster',
     'Bulk array element updates'
 UNION ALL SELECT
-    'Phase 4: jsonb_ivm_set_path',
+    'Phase 4: jsonb_delta_set_path',
     '2× faster',
     'Flexible path-based updates';
 

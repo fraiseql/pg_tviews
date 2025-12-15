@@ -8,14 +8,14 @@ BEGIN;
     DROP EXTENSION IF EXISTS jsonb_ivm CASCADE;
     DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 
-    -- Create pg_tviews without jsonb_ivm
+    -- Create pg_tviews without jsonb_delta
     CREATE EXTENSION pg_tviews;
 
-    -- Should detect absence of jsonb_ivm
-    SELECT pg_tviews_check_jsonb_ivm() AS jsonb_ivm_available;
+    -- Should detect absence of jsonb_delta
+    SELECT pg_tviews_check_jsonb_delta() AS jsonb_delta_available;
     -- Expected: f (false)
 
-    -- Verify pg_tviews still works without jsonb_ivm
+    -- Verify pg_tviews still works without jsonb_delta
     CREATE TABLE tb_test (pk_test INT PRIMARY KEY, id UUID, name TEXT);
     INSERT INTO tb_test VALUES (1, gen_random_uuid(), 'Test');
 
@@ -38,13 +38,13 @@ BEGIN;
     SELECT pg_tviews_drop('test');
 
     -- Test Case 2: Detection when jsonb_ivm IS installed
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
-    -- Should detect presence of jsonb_ivm
-    SELECT pg_tviews_check_jsonb_ivm() AS jsonb_ivm_available;
+    -- Should detect presence of jsonb_delta
+    SELECT pg_tviews_check_jsonb_delta() AS jsonb_delta_available;
     -- Expected: t (true)
 
-    -- Verify pg_tviews still works with jsonb_ivm
+    -- Verify pg_tviews still works with jsonb_delta
     CREATE TABLE tb_test2 (pk_test2 INT PRIMARY KEY, id UUID, title TEXT);
     INSERT INTO tb_test2 VALUES (1, gen_random_uuid(), 'Test 2');
 

@@ -174,7 +174,7 @@ BEGIN
 
     -- Update using nested path
     UPDATE tv_order
-    SET data = jsonb_ivm_array_update_where_path(
+    SET data = jsonb_delta_array_update_where_path(
         data,
         'items',
         'id',
@@ -259,7 +259,7 @@ END $$;
 
 -- Test: Direct path update
 UPDATE tv_order
-SET data = jsonb_ivm_set_path(
+SET data = jsonb_delta_set_path(
     data,
     'status',
     '"shipped"'::jsonb
@@ -273,7 +273,7 @@ BEGIN
     SELECT data->>'status' INTO status FROM tv_order WHERE pk_order = 1;
 
     IF status = 'shipped' THEN
-        RAISE NOTICE 'PASS: jsonb_ivm_set_path works for simple paths';
+        RAISE NOTICE 'PASS: jsonb_delta_set_path works for simple paths';
     ELSE
         RAISE EXCEPTION 'FAIL: Status not updated correctly';
     END IF;
@@ -293,8 +293,8 @@ BEGIN
 
     -- Chain multiple operations
     UPDATE tv_order
-    SET data = jsonb_ivm_set_path(
-        jsonb_ivm_array_update_where_path(
+    SET data = jsonb_delta_set_path(
+        jsonb_delta_array_update_where_path(
             data,
             'items',
             'id',
@@ -326,7 +326,7 @@ END $$;
 DO $$
 BEGIN
     UPDATE tv_order
-    SET data = jsonb_ivm_set_path(
+    SET data = jsonb_delta_set_path(
         data,
         'invalid..path..syntax',
         '"test"'::jsonb
@@ -344,7 +344,7 @@ DO $$
 DECLARE
     result jsonb;
 BEGIN
-    SELECT jsonb_ivm_array_update_where_path(
+    SELECT jsonb_delta_array_update_where_path(
         '{"items": []}'::jsonb,
         'items',
         'id',

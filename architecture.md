@@ -151,7 +151,7 @@ WHERE pk_post = $1;
 
 ```sql
 UPDATE tv_post
-SET data = jsonb_ivm_patch(data, $new.data),
+SET data = jsonb_smart_patch_scalar(data, $new.data),
     updated_at = now(),
     user_id = $new.user_id,
     fk_user = $new.fk_user

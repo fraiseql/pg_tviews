@@ -65,11 +65,11 @@ RUN pip install --no-cache-dir psycopg[binary]
 # Copy benchmark files from pg_tviews
 WORKDIR /benchmarks
 COPY pg_tviews/test/sql/comprehensive_benchmarks/ /benchmarks/
-COPY pg_tviews/test/sql/jsonb_ivm_stubs.sql /benchmarks/
+COPY pg_tviews/test/sql/jsonb_delta_stubs.sql /benchmarks/
 
 # Fix relative path in 00_setup.sql (we won't need stubs since real extension is installed)
 # But keep them as fallback
-RUN sed -i 's|../jsonb_ivm_stubs.sql|jsonb_ivm_stubs.sql|g' /benchmarks/00_setup.sql
+RUN sed -i 's|../jsonb_delta_stubs.sql|jsonb_delta_stubs.sql|g' /benchmarks/00_setup.sql
 
 # Create results directory
 RUN mkdir -p /benchmarks/results

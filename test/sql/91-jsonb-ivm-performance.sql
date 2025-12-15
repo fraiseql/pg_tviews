@@ -65,7 +65,7 @@ BEGIN
     END LOOP;
     
     RETURN QUERY SELECT 
-        'jsonb_ivm_' || CASE WHEN pg_tviews_check_jsonb_ivm() THEN 'enabled' ELSE 'disabled' END,
+        'jsonb_delta_' || CASE WHEN pg_tviews_check_jsonb_delta() THEN 'enabled' ELSE 'disabled' END,
         total_time / iterations,
         total_time;
 END;

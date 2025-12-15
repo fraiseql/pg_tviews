@@ -1,7 +1,7 @@
 //! Array Operations Module: INSERT/DELETE for JSONB Arrays
 //!
 //! This module provides functions to handle INSERT and DELETE operations
-//! on JSONB array elements using `jsonb_ivm` functions. These operations
+//! on JSONB array elements using `jsonb_delta` functions. These operations
 //! are triggered when source table rows are inserted or deleted.
 //!
 //! ## Architecture
@@ -157,10 +157,10 @@ pub fn delete_array_element(
     Ok(())
 }
 
-/// Check if `jsonb_ivm` array functions are available
+/// Check if `jsonb_delta` array functions are available
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
-/// The array operations require `jsonb_ivm` for proper functionality.
+/// The array operations require `jsonb_delta` for proper functionality.
 #[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r"
@@ -181,7 +181,7 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 
 /// Check if an array element with the given ID exists.
 ///
-/// This function uses `jsonb_ivm`'s optimized existence check when available,
+/// This function uses `jsonb_delta`'s optimized existence check when available,
 /// providing ~10× performance improvement over `jsonb_path_query`.
 ///
 /// **Security**: Validates all identifier parameters to prevent SQL injection.
@@ -203,8 +203,8 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 ///
 /// # Performance
 ///
-/// - With `jsonb_ivm`: ~10× faster than `jsonb_path_query`
-/// - Without `jsonb_ivm`: Falls back to `jsonb_path_query`
+/// - With `jsonb_delta`: ~10× faster than `jsonb_path_query`
+/// - Without `jsonb_delta`: Falls back to `jsonb_path_query`
 ///
 /// # Example
 ///
@@ -238,10 +238,10 @@ pub fn check_array_element_exists(
     crate::validation::validate_sql_identifier(id_key, "id_key")?;
     crate::validation::validate_jsonb_path(&array_path.join("."), "array_path")?;
 
-    // Check if jsonb_ivm is available
-    let has_jsonb_ivm = check_array_functions_available()?;
+    // Check if jsonb_delta is available
+    let has_jsonb_delta = check_array_functions_available()?;
 
-    if has_jsonb_ivm {
+    if has_jsonb_delta {
         // Use optimized jsonb_ivm function
         // Now safe to use in format! after validation
         let path_str = array_path.join("','");
@@ -493,12 +493,12 @@ pub fn update_array_element_path(
     crate::validation::validate_jsonb_path(nested_path, "nested_path")?;
 
     // Check if jsonb_ivm path function is available
-    let has_jsonb_ivm = check_path_function_available()?;
+    let has_jsonb_delta = check_path_function_available()?;
 
-    if has_jsonb_ivm {
-        // Use optimized jsonb_ivm path-based update
+    if has_jsonb_delta {
+        // Use optimized jsonb_delta path-based update
         let sql = format!(
-            "UPDATE {} SET data = jsonb_ivm_array_update_where_path(
+            "UPDATE {} SET data = jsonb_delta_array_update_where_path(
                 data, '{}', '{}', $1::jsonb, '{}', $2::jsonb
             ) WHERE {} = $3",
             table_name, array_path, match_key, nested_path, pk_column
@@ -512,9 +512,9 @@ pub fn update_array_element_path(
     } else {
         // Fallback: Use PostgreSQL's jsonb_set() for nested path update
         warning!(
-            "jsonb_ivm_array_update_where_path not available. \
+            "jsonb_delta_array_update_where_path not available. \
              Using jsonb_set fallback (slower). \
-             Install jsonb_ivm >= 0.2.0 for 2-3× better performance."
+             Install jsonb_delta >= 0.2.0 for 2-3× better performance."
         );
 
         // Build jsonb_set path: {array_path, [index], nested.path.parts}
@@ -571,7 +571,7 @@ pub fn update_array_element_path(
 #[allow(dead_code)]  // Phase 2: Used by update_array_element_path
 fn check_path_function_available() -> TViewResult<bool> {
     let result = Spi::get_one::<bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_ivm_array_update_where_path')"
+        "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_delta_array_update_where_path')"
     );
     match result {
         Ok(Some(exists)) => Ok(exists),

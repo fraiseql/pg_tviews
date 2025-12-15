@@ -650,13 +650,13 @@ Fast array element existence check.
 
 ### Nested Path Updates
 
-#### jsonb_ivm_array_update_where_path()
+#### jsonb_delta_array_update_where_path()
 
 Update nested fields in array elements using path notation.
 
 **Signature**:
 ```sql
-jsonb_ivm_array_update_where_path(
+jsonb_delta_array_update_where_path(
     data JSONB,
     array_path TEXT[],
     match_key TEXT,
@@ -685,7 +685,7 @@ Updates a specific field in array elements that match a condition, using dot-not
 **Example**:
 ```sql
 -- Update product name in specific order item
-UPDATE tv_orders SET data = jsonb_ivm_array_update_where_path(
+UPDATE tv_orders SET data = jsonb_delta_array_update_where_path(
     data,
     ARRAY['items'],
     'id',
@@ -747,13 +747,13 @@ WHERE pk_order = 1;
 
 ### Fallback Path Operations
 
-#### jsonb_ivm_set_path()
+#### jsonb_delta_set_path()
 
 Flexible path-based JSONB updates with fallback support.
 
 **Signature**:
 ```sql
-jsonb_ivm_set_path(
+jsonb_delta_set_path(
     data JSONB,
     path TEXT,
     value JSONB
@@ -771,12 +771,12 @@ Updates JSONB data at a specified path, with graceful fallback when jsonb_ivm is
 **Returns**:
 - `JSONB`: Updated data
 
-**Performance**: 2× faster than jsonb_set when jsonb_ivm available
+**Performance**: 2× faster than jsonb_set when jsonb_delta available
 
 **Example**:
 ```sql
 -- Update order status
-UPDATE tv_orders SET data = jsonb_ivm_set_path(
+UPDATE tv_orders SET data = jsonb_delta_set_path(
     data,
     'status',
     '"shipped"'::jsonb
@@ -801,13 +801,13 @@ All jsonb_ivm integration functions include comprehensive security validation:
 |----------|------------------|----------|
 | `extract_jsonb_id` | 5× faster | ID field extraction |
 | `check_array_element_exists` | 10× faster | Array element existence checks |
-| `jsonb_ivm_array_update_where_path` | 2-3× faster | Nested field updates in arrays |
+| `jsonb_delta_array_update_where_path` | 2-3× faster | Nested field updates in arrays |
 | `jsonb_array_update_where_batch` | 3-5× faster | Bulk array element updates |
-| `jsonb_ivm_set_path` | 2× faster | Flexible path-based updates |
+| `jsonb_delta_set_path` | 2× faster | Flexible path-based updates |
 
 ### Fallback Behavior
 
-When `jsonb_ivm` extension is not available, all functions automatically fall back to standard PostgreSQL JSONB operations:
+When `jsonb_delta` extension is not available, all functions automatically fall back to standard PostgreSQL JSONB operations:
 
 - Performance warnings are logged
 - Results remain identical

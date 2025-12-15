@@ -30,12 +30,12 @@
       "n": 100,
       "description": "Bulk update of 100 products"
     },
-    "jsonb_ivm_speedup": {
+    "jsonb_delta_speedup": {
       "mean_speedup": 1.979,
       "stddev": 0.1,
       "p95_speedup": 2.1,
       "n": 100,
-      "description": "Speedup factor of jsonb_ivm over manual operations"
+      "description": "Speedup factor of jsonb_delta over manual operations"
     }
   },
   "regression_thresholds": {

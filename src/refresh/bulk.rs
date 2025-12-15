@@ -131,7 +131,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 
 /// Update multiple elements in a JSONB array in a single operation.
 ///
-/// This function uses `jsonb_ivm`'s batch update capability to modify multiple
+/// This function uses `jsonb_delta`'s batch update capability to modify multiple
 /// array elements at once, providing 3-5× performance improvement over
 /// sequential updates.
 ///
@@ -171,8 +171,8 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 ///
 /// # Performance
 ///
-/// - With `jsonb_ivm`: 3-5× faster than sequential updates
-/// - Without `jsonb_ivm`: Falls back to sequential updates
+/// - With `jsonb_delta`: 3-5× faster than sequential updates
+/// - Without `jsonb_delta`: Falls back to sequential updates
 ///
 /// # Example
 ///
@@ -242,7 +242,7 @@ pub fn update_array_elements_batch(
         warning!(
             "jsonb_array_update_where_batch not available. \
              Using sequential updates (slower, 3-5× performance penalty). \
-             Install jsonb_ivm >= 0.3.0 for better performance."
+             Install jsonb_delta >= 0.3.0 for better performance."
         );
 
         // Process each update sequentially using jsonb_set
@@ -321,7 +321,7 @@ pub fn update_array_elements_batch(
     Ok(())
 }
 
-/// Check if `jsonb_ivm` batch functions are available
+/// Check if `jsonb_delta` batch functions are available
 fn check_batch_function_available() -> TViewResult<bool> {
     let result = Spi::get_one::<bool>(
         "SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = 'jsonb_array_update_where_batch')"

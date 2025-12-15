@@ -3,7 +3,7 @@ use pgrx::pg_sys::Oid;
 use pgrx::datum::DatumWithOid;
 use serde::{Deserialize, Serialize};
 
-/// Type of dependency relationship for `jsonb_ivm` optimization
+/// Type of dependency relationship for `jsonb_delta` optimization
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DependencyType {
     /// Direct column from base table (no nested JSONB)
@@ -48,7 +48,7 @@ pub struct TviewMeta {
     /// or `Array` (`jsonb_agg` aggregation).
     ///
     /// Length matches `fk_columns` and `dependencies` arrays.
-    /// Used by `jsonb_ivm` to choose patch function (scalar/nested/array).
+    /// Used by `jsonb_delta` to choose patch function (scalar/nested/array).
     pub dependency_types: Vec<DependencyType>,
 
     /// JSONB path for each dependency, if nested.

@@ -61,8 +61,8 @@ pub enum TViewError {
     },
 
     // ============ Extension Dependency Errors (58xxx) ============
-    /// `jsonb_ivm` extension not installed
-    JsonbIvmNotInstalled,
+    /// `jsonb_delta` extension not installed
+    JsonbDeltaNotInstalled,
 
     /// Extension version mismatch
     ExtensionVersionMismatch {
@@ -204,7 +204,7 @@ impl TViewError {
             RequiredColumnMissing { .. } => "42703", // Undefined column
             TypeInferenceFailed { .. } => "42804", // Datatype mismatch
 
-            JsonbIvmNotInstalled => "58P01", // Undefined file (extension)
+            JsonbDeltaNotInstalled => "58P01", // Undefined file (extension)
             ExtensionVersionMismatch { .. } => "58P01",
 
             LockTimeout { .. } => "40P01", // Deadlock detected (timeout)
@@ -269,8 +269,8 @@ impl fmt::Display for TViewError {
             TypeInferenceFailed { column_name, reason } => {
                 write!(f, "Failed to infer type for column '{}': {}", column_name, reason)
             }
-            JsonbIvmNotInstalled => {
-                write!(f, "Required extension 'jsonb_ivm' is not installed. Run: CREATE EXTENSION jsonb_ivm;")
+            JsonbDeltaNotInstalled => {
+                write!(f, "Required extension 'jsonb_delta' is not installed. Run: CREATE EXTENSION jsonb_delta;")
             }
             ExtensionVersionMismatch { extension, required, found } => {
                 write!(f, "Extension '{}' version mismatch: required {}, found {}",
@@ -441,8 +441,8 @@ pub fn raise_as_pg_error(e: TViewError) -> ! {
         TViewError::CircularDependency { cycle } => {
             pgrx::error!("Circular dependency detected: {:?}", cycle);
         }
-        TViewError::JsonbIvmNotInstalled => {
-            pgrx::error!("jsonb_ivm extension is not installed. Please install it for TVIEW functionality.");
+        TViewError::JsonbDeltaNotInstalled => {
+            pgrx::error!("jsonb_delta extension is not installed. Please install it for TVIEW functionality.");
         }
         TViewError::TViewAlreadyExists { name } => {
             pgrx::error!("TVIEW '{}' already exists", name);
@@ -532,7 +532,7 @@ mod tests {
             TViewError::InvalidSelectStatement { sql: "test".to_string(), reason: "test".to_string() },
             TViewError::RequiredColumnMissing { column_name: "test".to_string(), context: "test".to_string() },
             TViewError::TypeInferenceFailed { column_name: "test".to_string(), reason: "test".to_string() },
-            TViewError::JsonbIvmNotInstalled,
+            TViewError::JsonbDeltaNotInstalled,
             TViewError::ExtensionVersionMismatch { extension: "test".to_string(), required: "1".to_string(), found: "2".to_string() },
             TViewError::LockTimeout { resource: "test".to_string(), timeout_ms: 1000 },
             TViewError::DeadlockDetected { context: "test".to_string() },
