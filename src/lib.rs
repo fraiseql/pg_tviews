@@ -190,6 +190,9 @@ extern "C-unwind" fn _PG_init() {
         hooks::install_hook();
     }
 
+    // Register GUC configuration variables
+    crate::config::register_gucs();
+
     // Note: We cannot call functions that require SPI/database connection here
     // (like check_jsonb_ivm_available or register_cache_invalidation_callbacks)
     // because no database connection exists during shared library preloading.
@@ -487,7 +490,7 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
 }
 
 /// Get maximum propagation depth from config
-const fn get_max_propagation_depth() -> usize {
+fn get_max_propagation_depth() -> usize {
     crate::config::max_propagation_depth()
 }
 
