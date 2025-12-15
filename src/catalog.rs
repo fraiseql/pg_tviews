@@ -529,6 +529,21 @@ mod tests {
             // In regular unit tests, this will fail due to no database connection,
             // but the function signature and basic logic should work
         }
+
+        #[test]
+        fn test_extract_text_2d_array_input_validation() {
+            // Test input validation for empty column name
+            let result = extract_text_2d_array("test_entity", "");
+            assert!(result.is_err(), "Empty column name should return error");
+
+            if let Err(crate::TViewError::ConfigError { setting, value, reason }) = result {
+                assert_eq!(setting, "column_name");
+                assert_eq!(value, "");
+                assert!(reason.contains("cannot be empty"));
+            } else {
+                panic!("Expected ConfigError for empty column name");
+            }
+        }
     }
 }
 
@@ -540,10 +555,34 @@ pub fn extract_text_2d_array(
     entity: &str,
     column: &str,
 ) -> crate::TViewResult<Vec<Option<Vec<String>>>> {
+    // Input validation
+    if column.is_empty() {
+        return Err(crate::TViewError::ConfigError {
+            setting: "column_name".to_string(),
+            value: "".to_string(),
+            reason: "Column name cannot be empty".to_string(),
+        });
+    }
+
     let query = format!(
         "SELECT COALESCE(array_to_json({})::text, '[]') FROM pg_tview_meta WHERE entity = $1",
-        column
+        quote_identifier_local(column)
     );
+
+    /// Local helper: Quote identifier safely
+    fn quote_identifier_local(name: &str) -> String {
+        // Use PostgreSQL's quote_ident() for safety
+        let quote_args = vec![unsafe {
+            pgrx::datum::DatumWithOid::new(name, pgrx::pg_sys::PgOid::BuiltIn(pgrx::pg_sys::PgBuiltInOids::TEXTOID).value())
+        }];
+        match pgrx::spi::Spi::get_one_with_args::<String>(
+            "SELECT quote_ident($1)",
+            &quote_args,
+        ) {
+            Ok(Some(quoted)) => quoted,
+            _ => format!("\"{}\"", name.replace("\"", "\"\"")),
+        }
+    }
 
     let args = vec![unsafe {
         pgrx::datum::DatumWithOid::new(entity, pgrx::pg_sys::PgOid::BuiltIn(pgrx::pg_sys::PgBuiltInOids::TEXTOID).value())
