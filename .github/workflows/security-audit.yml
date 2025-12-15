@@ -27,12 +27,14 @@ jobs:
 
       - name: Check for vulnerabilities
         run: |
-          if cargo audit | grep -q "error:"; then
-            echo "⚠️ Vulnerabilities found!"
+          # Check for actual vulnerabilities (not warnings)
+          if jq -e '.vulnerabilities.found > 0' audit-report.json > /dev/null; then
+            echo "❌ Critical vulnerabilities found!"
             cargo audit
             exit 1
           else
-            echo "✅ No vulnerabilities detected"
+            echo "✅ No critical vulnerabilities detected (warnings may exist)"
+            cargo audit
           fi
 
       - name: Upload audit report
