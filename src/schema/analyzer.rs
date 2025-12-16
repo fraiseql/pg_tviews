@@ -123,7 +123,7 @@ fn infer_view_name(fk_col: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("v_{}", entity))
+    Some(format!("v_{entity}"))
 }
 
 /// Detect how a single FK is used in the SELECT statement

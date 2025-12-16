@@ -61,7 +61,7 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
         (.+)                             # SELECT statement (rest of query)
         "
     ).map_err(|e| TViewError::InternalError {
-        message: format!("Regex compilation failed: {}", e),
+        message: format!("Regex compilation failed: {e}"),
         file: file!(),
         line: line!(),
     })?;

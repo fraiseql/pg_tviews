@@ -15,7 +15,7 @@ pub fn drop_tview(
     if_exists: bool,
 ) -> TViewResult<()> {
     let entity_name = tview_name.trim_start_matches("tv_");
-    let view_name = format!("v_{}", entity_name);
+    let view_name = format!("v_{entity_name}");
 
     // Step 1: Check if TVIEW exists
     let exists = tview_exists_in_metadata(entity_name)?;
@@ -75,8 +75,8 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
         entity_name.replace("'", "''")
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check TVIEW metadata: {}", entity_name),
-        pg_error: format!("{:?}", e),
+        operation: format!("Check TVIEW metadata: {entity_name}"),
+        pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
 }

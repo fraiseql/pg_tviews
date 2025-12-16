@@ -189,10 +189,10 @@ fn get_pk_column_name(table_oid: pg_sys::Oid) -> spi::Result<String> {
         }.into()),
         Err(e) => return Err(crate::TViewError::SpiError {
             query: "entity_for_table".to_string(),
-            error: format!("Failed to get entity: {:?}", e),
+            error: format!("Failed to get entity: {e:?}"),
         }.into()),
     };
 
     // Convention: pk_<entity>
-    Ok(format!("pk_{}", entity))
+    Ok(format!("pk_{entity}"))
 }

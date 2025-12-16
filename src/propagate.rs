@@ -130,7 +130,7 @@ fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
     // Query pg_tview_meta to find entities whose fk_columns reference this entity
     // e.g., if child_entity = "user", look for entities with "fk_user" in fk_columns
 
-    let fk_col = format!("fk_{}", child_entity);
+    let fk_col = format!("fk_{child_entity}");
 
     let query = format!(
         "SELECT entity FROM public.pg_tview_meta
@@ -161,9 +161,9 @@ fn find_affected_pks(
     child_entity: &str,
     child_pk: i64,
 ) -> spi::Result<Vec<i64>> {
-    let fk_col = format!("fk_{}", child_entity);
-    let parent_table = format!("tv_{}", parent_entity);
-    let parent_pk_col = format!("pk_{}", parent_entity);
+    let fk_col = format!("fk_{child_entity}");
+    let parent_table = format!("tv_{parent_entity}");
+    let parent_pk_col = format!("pk_{parent_entity}");
 
     let query = format!(
         "SELECT {} FROM {} WHERE {} = {}",

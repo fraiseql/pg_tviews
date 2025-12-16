@@ -13,7 +13,7 @@ pub fn install_triggers(
         let table_name = get_table_name(table_oid)?;
 
         // Use deterministic trigger name: trg_tview_{entity}_on_{table}
-        let trigger_name = format!("trg_tview_{}_on_{}", tview_entity, table_name);
+        let trigger_name = format!("trg_tview_{tview_entity}_on_{table_name}");
 
         // Check if trigger already exists
         if trigger_exists(&table_name, &trigger_name)? {
@@ -33,8 +33,8 @@ pub fn install_triggers(
 
         Spi::run(&trigger_sql)
             .map_err(|e| TViewError::CatalogError {
-                operation: format!("Install trigger on {}", table_name),
-                pg_error: format!("{:?}", e),
+                operation: format!("Install trigger on {table_name}"),
+                pg_error: format!("{e:?}"),
             })?;
 
         info!("Installed trigger {} on {}", trigger_name, table_name);
@@ -49,7 +49,7 @@ pub fn remove_triggers(
 ) -> TViewResult<()> {
     for &table_oid in table_oids {
         let table_name = get_table_name(table_oid)?;
-        let trigger_name = format!("trg_tview_{}_on_{}", tview_entity, table_name);
+        let trigger_name = format!("trg_tview_{tview_entity}_on_{table_name}");
 
         let drop_sql = format!(
             "DROP TRIGGER IF EXISTS {} ON {}",
@@ -58,8 +58,8 @@ pub fn remove_triggers(
 
         Spi::run(&drop_sql)
             .map_err(|e| TViewError::CatalogError {
-                operation: format!("Drop trigger from {}", table_name),
-                pg_error: format!("{:?}", e),
+                operation: format!("Drop trigger from {table_name}"),
+                pg_error: format!("{e:?}"),
             })?;
 
         info!("Removed trigger {} from {}", trigger_name, table_name);
@@ -130,7 +130,7 @@ fn create_trigger_handler() -> TViewResult<()> {
     Spi::run(handler_sql)
         .map_err(|e| TViewError::CatalogError {
             operation: "Create trigger handler".to_string(),
-            pg_error: format!("{:?}", e),
+            pg_error: format!("{e:?}"),
         })?;
 
     Ok(())
@@ -142,11 +142,11 @@ fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
         oid
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get table name for OID {:?}", oid),
-        pg_error: format!("{:?}", e),
+        operation: format!("Get table name for OID {oid:?}"),
+        pg_error: format!("{e:?}"),
     })?
     .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: format!("OID {:?}", oid),
+        view_name: format!("OID {oid:?}"),
         reason: "Table not found".to_string(),
     })
 }
@@ -159,8 +159,8 @@ fn trigger_exists(table_name: &str, trigger_name: &str) -> TViewResult<bool> {
         table_name, trigger_name
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check trigger {}", trigger_name),
-        pg_error: format!("{:?}", e),
+        operation: format!("Check trigger {trigger_name}"),
+        pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
 }

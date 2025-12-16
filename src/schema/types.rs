@@ -27,7 +27,7 @@ pub fn infer_column_types(
                 error: e.to_string(),
             })?
             .ok_or_else(|| crate::error::TViewError::CatalogError {
-                operation: format!("find column '{}' in table '{}'", col, table_name),
+                operation: format!("find column '{col}' in table '{table_name}'"),
                 pg_error: "Column not found".to_string(),
             })?;
 

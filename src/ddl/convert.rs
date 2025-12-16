@@ -63,7 +63,7 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
     let base_tables = infer_base_tables(table_name)?;
 
     // Step 5: Drop the existing table
-    Spi::run(&format!("DROP TABLE {} CASCADE", table_name))?;
+    Spi::run(&format!("DROP TABLE {table_name} CASCADE"))?;
     info!("Dropped existing table '{}'", table_name);
 
     // Step 6: Reconstruct as proper TVIEW
@@ -80,7 +80,7 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
 
 /// Validate that table has required TVIEW structure
 fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<()> {
-    let pk_col = format!("pk_{}", entity_name);
+    let pk_col = format!("pk_{entity_name}");
 
     // Check required columns exist
     let columns = get_table_columns(table_name)?;
@@ -188,7 +188,7 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
 
 fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec<BackupRow>> {
     let backup = Spi::connect(|client| {
-        let query = format!("SELECT * FROM {}", table_name);
+        let query = format!("SELECT * FROM {table_name}");
         let results = client.select(&query, None, &[])?;
 
         let mut backup = Vec::new();
@@ -244,7 +244,7 @@ fn infer_base_tables_from_data(table_name: &str) -> TViewResult<Vec<String>> {
 
     Spi::connect(|client| {
         // Sample a few rows to analyze data patterns
-        let query = format!("SELECT data FROM {} LIMIT 5", table_name);
+        let query = format!("SELECT data FROM {table_name} LIMIT 5");
         let results = client.select(&query, None, &[])?;
 
         for row in results {
@@ -351,7 +351,7 @@ fn reconstruct_as_tview(
     data_backup: &[BackupRow],
 ) -> TViewResult<()> {
     // Step 1: Create the backing view
-    let view_name = format!("v_{}", entity_name);
+    let view_name = format!("v_{entity_name}");
 
     // Create view that preserves the backed up data
     if data_backup.is_empty() {
@@ -369,7 +369,7 @@ fn reconstruct_as_tview(
         let mut values = Vec::new();
         for row in data_backup {
             if let (Some(id), Some(data)) = (&row.id, &row.data) {
-                values.push(format!("('{}'::uuid, '{}')", id, data));
+                values.push(format!("('{id}'::uuid, '{data}')"));
             }
         }
 
@@ -404,7 +404,7 @@ fn register_tview_metadata(
         "SELECT oid FROM pg_class WHERE relname = '{}'",
         view_name
     ))?.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Get OID for view {}", view_name),
+        operation: format!("Get OID for view {view_name}"),
         pg_error: "View not found".to_string(),
     })?;
 
@@ -412,12 +412,12 @@ fn register_tview_metadata(
         "SELECT oid FROM pg_class WHERE relname = '{}'",
         tview_name
     ))?.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Get OID for table {}", tview_name),
+        operation: format!("Get OID for table {tview_name}"),
         pg_error: "Table not found".to_string(),
     })?;
 
     // Insert metadata
-    let definition = format!("SELECT * FROM {}", view_name);
+    let definition = format!("SELECT * FROM {view_name}");
     Spi::run(&format!(
         "INSERT INTO pg_tview_meta (entity, view_oid, table_oid, definition, fk_columns, uuid_fk_columns)
          VALUES ('{}', {}, {}, '{}', '{{}}', '{{}}')

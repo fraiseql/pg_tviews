@@ -35,8 +35,8 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
     }
 
     match create_tview(tview_name, select_sql) {
-        Ok(()) => Ok(format!("TVIEW '{}' created successfully", tview_name)),
-        Err(e) => Err(format!("Failed to create TVIEW: {}", e)),
+        Ok(()) => Ok(format!("TVIEW '{tview_name}' created successfully")),
+        Err(e) => Err(format!("Failed to create TVIEW: {e}")),
     }
 }
 
@@ -46,8 +46,8 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
 #[pg_extern]
 fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<String, String> {
     match drop_tview(tview_name, if_exists) {
-        Ok(()) => Ok(format!("TVIEW '{}' dropped successfully", tview_name)),
-        Err(e) => Err(format!("Failed to drop TVIEW: {}", e)),
+        Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
+        Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
     }
 }
 
@@ -63,8 +63,8 @@ fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<
 #[pg_extern]
 fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
     match convert_existing_table_to_tview(table_name) {
-        Ok(()) => Ok(format!("Table '{}' converted to TVIEW successfully", table_name)),
-        Err(e) => Err(format!("Failed to convert table to TVIEW: {}", e)),
+        Ok(()) => Ok(format!("Table '{table_name}' converted to TVIEW successfully")),
+        Err(e) => Err(format!("Failed to convert table to TVIEW: {e}")),
     }
 }
 
@@ -84,7 +84,7 @@ fn pg_tviews_refresh(tview_name: &str) -> Result<String, String> {
     );
 
     match Spi::run(&sql) {
-        Ok(_) => Ok(format!("TVIEW '{}' refreshed successfully", tview_name)),
-        Err(e) => Err(format!("Failed to refresh TVIEW: {}", e)),
+        Ok(_) => Ok(format!("TVIEW '{tview_name}' refreshed successfully")),
+        Err(e) => Err(format!("Failed to refresh TVIEW: {e}")),
     }
 }

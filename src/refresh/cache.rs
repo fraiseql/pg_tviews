@@ -54,7 +54,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
     Spi::connect(|client| {
         let args = vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
         let mut result = client.select(
-            &format!("EXECUTE {}", stmt_name),
+            &format!("EXECUTE {stmt_name}"),
             None,
             &args,
         )?;
@@ -101,11 +101,11 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
     }
 
     // Prepare statement
-    let stmt_name = format!("tview_refresh_{}", entity);
+    let stmt_name = format!("tview_refresh_{entity}");
     let query = format!(
         "SELECT * FROM v_{} WHERE pk_{} = $1",
         quote_identifier(entity),
-        quote_identifier(&format!("pk_{}", entity))
+        quote_identifier(&format!("pk_{entity}"))
     );
 
     Spi::run(&format!(

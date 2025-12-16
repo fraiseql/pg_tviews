@@ -17,7 +17,7 @@
 //!
 //! // Validate before using in SQL
 //! validate_sql_identifier(table_name, "table_name")?;
-//! let sql = format!("SELECT * FROM {}", table_name); // Now safe
+//! let sql = format!("SELECT * FROM {table_name}"); // Now safe
 //! ```
 
 use crate::error::{TViewError, TViewResult};
@@ -70,7 +70,7 @@ pub fn validate_sql_identifier(identifier: &str, param_name: &str) -> TViewResul
             return Err(TViewError::SecurityViolation {
                 parameter: param_name.to_string(),
                 value: sanitize_for_logging(identifier),
-                reason: format!("Identifier contains dangerous character: '{}'", ch),
+                reason: format!("Identifier contains dangerous character: '{ch}'"),
             });
         }
     }
@@ -109,7 +109,7 @@ pub fn validate_sql_identifier(identifier: &str, param_name: &str) -> TViewResul
     if identifier.len() > 63 {
         return Err(TViewError::InvalidInput {
             parameter: param_name.to_string(),
-            value: format!("{}... ({} chars)", &identifier[..20], identifier.len()),
+            value: format!("{&identifier[..20]}... ({} chars)", identifier.len()),
             reason: "Identifier too long (max 63 characters)".to_string(),
         });
     }
@@ -168,7 +168,7 @@ pub fn validate_jsonb_path(path: &str, param_name: &str) -> TViewResult<()> {
     if path.len() > 500 {
         return Err(TViewError::InvalidInput {
             parameter: param_name.to_string(),
-            value: format!("{}... ({} chars)", &path[..50], path.len()),
+            value: format!("{&path[..50]}... ({} chars)", path.len()),
             reason: "Path too long (max 500 characters)".to_string(),
         });
     }
@@ -205,7 +205,7 @@ pub fn validate_jsonb_path(path: &str, param_name: &str) -> TViewResult<()> {
     if depth > 100 {
         return Err(TViewError::InvalidInput {
             parameter: param_name.to_string(),
-            value: format!("depth={}", depth),
+            value: format!("depth={depth}"),
             reason: "Path too deep (max 100 levels)".to_string(),
         });
     }
@@ -226,7 +226,7 @@ fn validate_bracket_matching(path: &str, param_name: &str) -> TViewResult<()> {
                     return Err(TViewError::InvalidInput {
                         parameter: param_name.to_string(),
                         value: sanitize_for_logging(path),
-                        reason: format!("Unmatched closing bracket ']' at position {}", pos),
+                        reason: format!("Unmatched closing bracket ']' at position {pos}"),
                     });
                 }
             }
@@ -238,7 +238,7 @@ fn validate_bracket_matching(path: &str, param_name: &str) -> TViewResult<()> {
         return Err(TViewError::InvalidInput {
             parameter: param_name.to_string(),
             value: sanitize_for_logging(path),
-            reason: format!("Unmatched opening bracket '[' ({} unclosed)", depth),
+            reason: format!("Unmatched opening bracket '[' ({depth} unclosed)"),
         });
     }
 
@@ -290,7 +290,7 @@ fn validate_array_indices(path: &str, param_name: &str) -> TViewResult<()> {
 fn sanitize_for_logging(s: &str) -> String {
     let max_len = 50;
     let truncated = if s.len() > max_len {
-        format!("{}...", &s[..max_len])
+        format!("{&s[..max_len]}...")
     } else {
         s.to_string()
     };

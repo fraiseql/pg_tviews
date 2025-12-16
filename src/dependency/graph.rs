@@ -91,7 +91,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                     let refobjid = row["refobjid"].value::<pg_sys::Oid>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract refobjid".to_string(),
-                            pg_error: format!("{:?}", e),
+                            pg_error: format!("{e:?}"),
                         })?
                         .ok_or_else(|| TViewError::CatalogError {
                             operation: "Extract refobjid".to_string(),
@@ -100,13 +100,13 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                     let refobjsubid = row["refobjsubid"].value::<i32>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract refobjsubid".to_string(),
-                            pg_error: format!("{:?}", e),
+                            pg_error: format!("{e:?}"),
                         })?.unwrap_or(0);
                     // deptype is "char" (single byte), not text/String
                     let deptype = row["deptype"].value::<i8>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract deptype".to_string(),
-                            pg_error: format!("{:?}", e),
+                            pg_error: format!("{e:?}"),
                         })?
                         .map(|c| (c as u8 as char).to_string())
             .unwrap_or_default();
@@ -114,7 +114,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
                     let relkind = row["relkind"].value::<i8>()
                         .map_err(|e| TViewError::CatalogError {
                             operation: "Extract relkind".to_string(),
-                            pg_error: format!("{:?}", e),
+                            pg_error: format!("{e:?}"),
                         })?
                         .map(|c| (c as u8 as char).to_string());
 
@@ -228,7 +228,7 @@ pub fn find_helper_views(select_sql: &str) -> TViewResult<Vec<String>> {
     // TODO: Use PostgreSQL parser API in v2
     let re = regex::Regex::new(r"\bv_(\w+)\b")
         .map_err(|e| TViewError::InternalError {
-            message: format!("Regex compilation failed: {}", e),
+            message: format!("Regex compilation failed: {e}"),
             file: file!(),
             line: line!(),
         })?;
@@ -255,8 +255,8 @@ fn get_oid(object_name: &str) -> TViewResult<pg_sys::Oid> {
         object_name
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for '{}'", object_name),
-        pg_error: format!("{:?}", e),
+        operation: format!("Get OID for '{object_name}'"),
+        pg_error: format!("{e:?}"),
     })?
     .ok_or_else(|| TViewError::DependencyResolutionFailed {
         view_name: object_name.to_string(),
@@ -271,11 +271,11 @@ fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
         oid
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get relkind for OID {:?}", oid),
-        pg_error: format!("{:?}", e),
+        operation: format!("Get relkind for OID {oid:?}"),
+        pg_error: format!("{e:?}"),
     })?
     .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: format!("OID {:?}", oid),
+        view_name: format!("OID {oid:?}"),
         reason: "Object not found in pg_class".to_string(),
     })
 }
@@ -286,11 +286,11 @@ fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
         oid
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get name for OID {:?}", oid),
-        pg_error: format!("{:?}", e),
+        operation: format!("Get name for OID {oid:?}"),
+        pg_error: format!("{e:?}"),
     })?
     .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: format!("OID {:?}", oid),
+        view_name: format!("OID {oid:?}"),
         reason: "Object not found".to_string(),
     })
 }
@@ -302,8 +302,8 @@ fn view_exists(view_name: &str) -> TViewResult<bool> {
         view_name
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check existence of '{}'", view_name),
-        pg_error: format!("{:?}", e),
+        operation: format!("Check existence of '{view_name}'"),
+        pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
 }

@@ -250,7 +250,7 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
         results.push((
             "ERROR".to_string(),
             "metadata".to_string(),
-            format!("{} orphaned metadata entries found", orphaned_meta),
+            format!("{orphaned_meta} orphaned metadata entries found"),
             "error".to_string(),
         ));
     } else {
@@ -276,7 +276,7 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
         results.push((
             "WARNING".to_string(),
             "triggers".to_string(),
-            format!("{} orphaned triggers found", orphaned_triggers),
+            format!("{orphaned_triggers} orphaned triggers found"),
             "warning".to_string(),
         ));
     } else {
@@ -296,7 +296,7 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
     results.push((
         "OK".to_string(),
         "tviews".to_string(),
-        format!("{} TVIEWs registered", tview_count),
+        format!("{tview_count} TVIEWs registered"),
         "info".to_string(),
     ));
 
@@ -346,7 +346,7 @@ fn pg_tviews_infer_types(
 /// Processes pending refreshes for a committed prepared transaction
 ///
 /// Arguments:
-/// - gid: Global transaction ID of the prepared transaction
+/// - `gid`: Global transaction ID of the prepared transaction
 #[pg_extern]
 fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 1: Load queue metadata BEFORE committing (verify it exists)
@@ -359,7 +359,7 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
 
     // STEP 2: COMMIT THE PREPARED TRANSACTION FIRST
     // This ensures TVIEWs never show uncommitted data
-    let commit_sql = format!("COMMIT PREPARED '{}'", gid);
+    let commit_sql = format!("COMMIT PREPARED '{gid}'");
     Spi::run(&commit_sql)?;
 
     // STEP 3: Now process the queue (transaction is committed, safe to refresh)
@@ -406,11 +406,11 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
 /// Cleans up pending refreshes for a rolled back prepared transaction
 ///
 /// Arguments:
-/// - gid: Global transaction ID of the prepared transaction
+/// - `gid`: Global transaction ID of the prepared transaction
 #[pg_extern]
 fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
     // STEP 1: Rollback the prepared transaction first
-    let rollback_sql = format!("ROLLBACK PREPARED '{}'", gid);
+    let rollback_sql = format!("ROLLBACK PREPARED '{gid}'");
     Spi::run(&rollback_sql)?;
 
     // STEP 2: Clean up pending queue (no refresh needed - transaction aborted)
@@ -504,7 +504,7 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
         const RECOVERY_LOCK_KEY: i64 = 0x7476_6965_7773_5F72; // "tviews_r" in hex
 
         let mut lock_result = client.select(
-            &format!("SELECT pg_try_advisory_lock({})", RECOVERY_LOCK_KEY),
+            &format!("SELECT pg_try_advisory_lock({RECOVERY_LOCK_KEY})"),
             None,
             &[],
         )?;
@@ -592,8 +592,8 @@ impl Drop for AdvisoryLockGuard {
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the changed row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the changed row
 #[pg_extern]
 fn pg_tviews_cascade(
     base_table_oid: pg_sys::Oid,
@@ -644,8 +644,8 @@ fn pg_tviews_cascade(
 /// Called by trigger handler when rows are inserted
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the inserted row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the inserted row
 #[pg_extern]
 fn pg_tviews_insert(
     base_table_oid: pg_sys::Oid,
@@ -660,8 +660,8 @@ fn pg_tviews_insert(
 /// Called by trigger handler when rows are deleted
 ///
 /// Arguments:
-/// - base_table_oid: OID of the base table that changed
-/// - pk_value: Primary key value of the deleted row
+/// - `base_table_oid`: OID of the base table that changed
+/// - `pk_value`: Primary key value of the deleted row
 #[pg_extern]
 fn pg_tviews_delete(
     base_table_oid: pg_sys::Oid,
@@ -763,12 +763,12 @@ fn find_affected_tview_rows(
     let where_clause = if tview_meta.entity_name == base_entity {
         // Direct match: the TVIEW is for this entity (e.g., tv_user depends on tb_user)
         // Match on the primary key column directly
-        format!("{} = {}", tview_pk_col, base_pk)
+        format!("{tview_pk_col} = {base_pk}")
     } else {
         // FK relationship: the TVIEW depends on this entity via FK
         // (e.g., tv_post depends on tb_user via fk_user)
-        let fk_col = format!("fk_{}", base_entity);
-        format!("{} = {}", fk_col, base_pk)
+        let fk_col = format!("fk_{base_entity}");
+        format!("{fk_col} = {base_pk}")
     };
 
     let query = format!(

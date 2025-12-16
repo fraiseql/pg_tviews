@@ -153,7 +153,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             } else if let Some(s) = panic_info.downcast_ref::<String>() {
                 s.clone()
             } else {
-                format!("{:?}", panic_info)
+                format!("{panic_info:?}")
             };
             error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
             #[allow(unreachable_code)]
@@ -329,7 +329,7 @@ fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), 
     // We can't use SPI here (we're in a hook), but we can use a global cache
     // The event trigger will pick it up when it fires (safe SPI context)
     PENDING_TVIEW_SELECTS.lock()
-        .map_err(|e| format!("Failed to lock cache: {}", e))?
+        .map_err(|e| format!("Failed to lock cache: {e}"))?
         .insert(table_name.to_string(), select_sql.to_string());
 
     info!("Stored SELECT for '{}' in cache (event trigger will retrieve it)", table_name);

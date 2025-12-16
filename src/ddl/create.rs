@@ -64,7 +64,7 @@ pub fn create_tview(
         })?;
 
     // Step 3: Create backing view v_<entity>
-    let view_name = format!("v_{}", entity_name);
+    let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql)?;
 
     // Step 4: Create materialized table tv_<entity>
@@ -124,8 +124,8 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
         entity_name.replace("'", "''")
     ))
     .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check TVIEW exists: {}", tview_name),
-        pg_error: format!("{:?}", e),
+        operation: format!("Check TVIEW exists: {tview_name}"),
+        pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
 }
@@ -144,7 +144,7 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
     })?;
 
     // Verify the view was created
-    let check_sql = format!("SELECT 1 FROM pg_class WHERE relname = '{}' AND relkind = 'v'", view_name);
+    let check_sql = format!("SELECT 1 FROM pg_class WHERE relname = '{view_name}' AND relkind = 'v'");
     let exists = Spi::get_one::<i32>(&check_sql).map_err(|e| TViewError::SpiError {
         query: check_sql,
         error: e.to_string(),
@@ -152,7 +152,7 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
 
     if !exists {
         return Err(TViewError::CatalogError {
-            operation: format!("Create view {}", view_name),
+            operation: format!("Create view {view_name}"),
             pg_error: "View was not created".to_string(),
         });
     }
@@ -171,37 +171,37 @@ fn create_materialized_table(
 
     // Primary key column (if exists)
     if let Some(pk) = &schema.pk_column {
-        columns.push(format!("{} BIGINT PRIMARY KEY", pk));
+        columns.push(format!("{pk} BIGINT PRIMARY KEY"));
     }
 
     // ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
-        columns.push(format!("{} UUID NOT NULL", id));
+        columns.push(format!("{id} UUID NOT NULL"));
     }
 
     // Identifier column (optional Trinity identifier)
     if let Some(identifier) = &schema.identifier_column {
-        columns.push(format!("{} TEXT", identifier));
+        columns.push(format!("{identifier} TEXT"));
     }
 
     // Data column (JSONB read model)
     if let Some(data) = &schema.data_column {
-        columns.push(format!("{} JSONB", data));
+        columns.push(format!("{data} JSONB"));
     }
 
     // Foreign key columns (for lineage tracking)
     for fk in &schema.fk_columns {
-        columns.push(format!("{} BIGINT", fk));
+        columns.push(format!("{fk} BIGINT"));
     }
 
     // UUID foreign key columns (for filtering)
     for uuid_fk in &schema.uuid_fk_columns {
-        columns.push(format!("{} UUID", uuid_fk));
+        columns.push(format!("{uuid_fk} UUID"));
     }
 
     // Additional columns with inferred types
     for (col_name, col_type) in &schema.additional_columns_with_types {
-        columns.push(format!("{} {}", col_name, col_type));
+        columns.push(format!("{col_name} {col_type}"));
     }
 
     // Add timestamps for tracking
@@ -231,7 +231,7 @@ fn create_materialized_table(
 fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<()> {
     // Index on ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
-        let idx_name = format!("idx_{}_{}", tview_name, id);
+        let idx_name = format!("idx_{tview_name}_{id}");
         let create_idx = format!(
             "CREATE INDEX {} ON public.{} ({})",
             idx_name, tview_name, id
@@ -244,7 +244,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
 
     // Index on UUID foreign key columns
     for uuid_fk in &schema.uuid_fk_columns {
-        let idx_name = format!("idx_{}_{}", tview_name, uuid_fk);
+        let idx_name = format!("idx_{tview_name}_{uuid_fk}");
         let create_idx = format!(
             "CREATE INDEX {} ON public.{} ({})",
             idx_name, tview_name, uuid_fk
@@ -257,7 +257,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
 
     // Index on data column if it exists (for JSONB queries)
     if let Some(data) = &schema.data_column {
-        let idx_name = format!("idx_{}_{}_gin", tview_name, data);
+        let idx_name = format!("idx_{tview_name}_{data}_gin");
         let create_idx = format!(
             "CREATE INDEX {} ON public.{} USING GIN ({})",
             idx_name, tview_name, data
@@ -284,7 +284,7 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
     if let Some(id) = &schema.id_column {
         insert_columns.push(id.clone());
         // Cast id to UUID to ensure compatibility
-        select_columns.push(format!("{}::uuid", id));
+        select_columns.push(format!("{id}::uuid"));
     }
     if let Some(identifier) = &schema.identifier_column {
         insert_columns.push(identifier.clone());
@@ -375,7 +375,7 @@ fn register_metadata(
         "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'v'",
         view_name
     )).map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for view {}", view_name),
+        operation: format!("Get OID for view {view_name}"),
         pg_error: e.to_string(),
     })?;
 
@@ -383,17 +383,17 @@ fn register_metadata(
         "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'r'",
         tview_name
     )).map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for table {}", tview_name),
+        operation: format!("Get OID for table {tview_name}"),
         pg_error: e.to_string(),
     })?;
 
     let view_oid = view_oid_result.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find view {}", view_name),
+        operation: format!("Find view {view_name}"),
         pg_error: "View OID not found".to_string(),
     })?;
 
     let table_oid = table_oid_result.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find table {}", tview_name),
+        operation: format!("Find table {tview_name}"),
         pg_error: "Table OID not found".to_string(),
     })?;
 
@@ -447,7 +447,7 @@ fn transform_raw_select_to_tview(
     select_sql: &str,
 ) -> TViewResult<(String, TViewSchema)> {
     // Create a temporary view to analyze the raw SELECT
-    let temp_view_name = format!("_temp_raw_{}", entity_name);
+    let temp_view_name = format!("_temp_raw_{entity_name}");
 
     // First, create temp view to analyze columns
     let create_temp = format!(
@@ -489,11 +489,11 @@ fn transform_raw_select_to_tview(
         Ok(result)
     }).map_err(|e: spi::Error| TViewError::CatalogError {
         operation: "Get columns from temp view".to_string(),
-        pg_error: format!("{:?}", e),
+        pg_error: format!("{e:?}"),
     })?;
 
     // Drop temp view
-    Spi::run(&format!("DROP VIEW {}", temp_view_name)).ok();
+    Spi::run(&format!("DROP VIEW {temp_view_name}")).ok();
 
     // Find primary key column (look for 'id' or first integer/bigint column)
     let pk_source_col = columns.iter()
@@ -511,13 +511,13 @@ fn transform_raw_select_to_tview(
 
     // 1. Build the source column list (from the subquery)
     let _source_columns: Vec<String> = columns.iter()
-        .map(|(name, _)| format!("source.{}", name))
+        .map(|(name, _)| format!("source.{name}"))
         .collect();
 
     // 2. Build JSONB data column pairs explicitly
     let data_columns: Vec<String> = columns.iter()
         .map(|(name, _)| {
-            format!("'{}', source.{}", name, name)
+            format!("'{name}', source.{name}")
         })
         .collect();
 

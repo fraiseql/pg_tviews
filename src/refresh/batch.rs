@@ -116,7 +116,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
                     query: "".to_string(),
-                    error: format!("{} column is NULL", pk_col),
+                    error: format!("{pk_col} column is NULL"),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
@@ -146,7 +146,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
         "CASE\n{}\nELSE data\nEND",
         case_when.into_iter()
             .enumerate()
-            .map(|(i, when)| format!("{} {}", when, i + 1))
+            .map(|(i, when)| format!("{when} {}", i + 1))
             .collect::<Vec<_>>()
             .join("\n")
     );

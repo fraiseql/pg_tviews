@@ -45,7 +45,7 @@ impl EntityDepGraph {
                 let entity: String = row["entity"].value()
                     .map_err(|e| crate::TViewError::SpiError {
                         query: query.to_string(),
-                        error: format!("Failed to get entity: {}", e),
+                        error: format!("Failed to get entity: {e}"),
                     })?
                     .ok_or_else(|| crate::TViewError::SpiError {
                         query: query.to_string(),
@@ -54,7 +54,7 @@ impl EntityDepGraph {
                 let fk_columns: Option<Vec<String>> = row["fk_columns"].value()
                     .map_err(|e| crate::TViewError::SpiError {
                         query: query.to_string(),
-                        error: format!("Failed to get fk_columns: {}", e),
+                        error: format!("Failed to get fk_columns: {e}"),
                     })?;
 
                 all_entities.insert(entity.clone());

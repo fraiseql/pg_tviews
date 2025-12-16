@@ -328,7 +328,7 @@ impl From<pgrx::spi::Error> for TViewError {
 impl From<serde_json::Error> for TViewError {
     fn from(e: serde_json::Error) -> Self {
         TViewError::SerializationError {
-            message: format!("JSON serialization error: {}", e),
+            message: format!("JSON serialization error: {e}"),
         }
     }
 }
@@ -337,7 +337,7 @@ impl From<serde_json::Error> for TViewError {
 impl From<bincode::Error> for TViewError {
     fn from(e: bincode::Error) -> Self {
         TViewError::SerializationError {
-            message: format!("Binary serialization error: {}", e),
+            message: format!("Binary serialization error: {e}"),
         }
     }
 }
@@ -347,7 +347,7 @@ impl From<regex::Error> for TViewError {
     fn from(e: regex::Error) -> Self {
         TViewError::InvalidSelectStatement {
             sql: "Unknown".to_string(),
-            reason: format!("Regex compilation failed: {}", e),
+            reason: format!("Regex compilation failed: {e}"),
         }
     }
 }
@@ -356,7 +356,7 @@ impl From<regex::Error> for TViewError {
 impl From<std::io::Error> for TViewError {
     fn from(e: std::io::Error) -> Self {
         TViewError::SerializationError {
-            message: format!("I/O error: {}", e),
+            message: format!("I/O error: {e}"),
         }
     }
 }

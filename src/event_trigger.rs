@@ -112,22 +112,22 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
     // Retrieve the original SELECT from the hook cache
     let select_sql = crate::hooks::take_pending_tview_select(&table_name)
         .ok_or_else(|| {
-            format!("No SELECT statement found for '{}' - was the hook called?", table_name)
+            format!("No SELECT statement found for '{table_name}' - was the hook called?")
         })?;
 
     info!("pg_tviews_convert_table: Retrieved SELECT for '{}'", table_name);
 
     // Drop the table that PostgreSQL created
     // We need to create our own structure with proper TVIEW semantics
-    Spi::run(&format!("DROP TABLE IF EXISTS {} CASCADE", table_name))
-        .map_err(|e| format!("Failed to drop table '{}': {}", table_name, e))?;
+    Spi::run(&format!("DROP TABLE IF EXISTS {table_name} CASCADE"))
+        .map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
     info!("pg_tviews_convert_table: Dropped PostgreSQL's table '{}'", table_name);
 
     // Create proper TVIEW using the original SELECT
     // This has all the TVIEW semantics: backing view, materialized table, triggers, etc.
     crate::ddl::create_tview(&table_name, &select_sql)
-        .map_err(|e| format!("Failed to create TVIEW '{}': {}", table_name, e))?;
+        .map_err(|e| format!("Failed to create TVIEW '{table_name}': {e}"))?;
 
     info!("pg_tviews_convert_table: Successfully created TVIEW '{}'", table_name);
 

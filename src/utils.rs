@@ -70,7 +70,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         } else {
             Err(spi::Error::from(crate::TViewError::SpiError {
                 query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
-                error: format!("No pg_class entry for oid: {:?}", oid),
+                error: format!("No pg_class entry for oid: {oid:?}"),
             }))
         }
     })

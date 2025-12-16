@@ -33,7 +33,7 @@ fn infer_array_element_type(array_expr: &str) -> String {
 
             // Parse the subquery to find the selected column
             if let Some(element_type) = infer_element_type_from_subquery(subquery) {
-                return format!("{}[]", element_type);
+                return format!("{element_type}[]");
             }
         }
     }
@@ -247,7 +247,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(pk) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", pk),
+                reason: format!("Column '{pk}' appears in multiple categories"),
             });
         }
     }
@@ -256,7 +256,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(id) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", id),
+                reason: format!("Column '{id}' appears in multiple categories"),
             });
         }
     }
@@ -265,7 +265,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(identifier) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", identifier),
+                reason: format!("Column '{identifier}' appears in multiple categories"),
             });
         }
     }
@@ -274,7 +274,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(data) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", data),
+                reason: format!("Column '{data}' appears in multiple categories"),
             });
         }
     }
@@ -283,7 +283,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(fk) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", fk),
+                reason: format!("Column '{fk}' appears in multiple categories"),
             });
         }
     }
@@ -292,7 +292,7 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
         if !all_categorized.insert(uuid_fk) {
             return Err(crate::error::TViewError::InvalidSelectStatement {
                 sql: "N/A".to_string(),
-                reason: format!("Column '{}' appears in multiple categories", uuid_fk),
+                reason: format!("Column '{uuid_fk}' appears in multiple categories"),
             });
         }
     }

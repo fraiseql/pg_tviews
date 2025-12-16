@@ -55,7 +55,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 
     // Recompute ALL rows in a single query using parameterized ANY($1)
     let view_name = lookup_view_for_source(meta.view_oid)?;
-    let pk_col = format!("pk_{}", entity);
+    let pk_col = format!("pk_{entity}");
 
     // SAFE: Use ANY($1) with array parameter (prevents SQL injection)
     let query = format!(
@@ -86,7 +86,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
                     query: "".to_string(),
-                    error: format!("{} column is NULL", pk_col),
+                    error: format!("{pk_col} column is NULL"),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {

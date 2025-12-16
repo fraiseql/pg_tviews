@@ -55,7 +55,7 @@ impl SerializedQueue {
     pub fn into_jsonb(self) -> TViewResult<JsonB> {
         let json = serde_json::to_value(self)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to serialize queue to JSON: {}", e),
+                message: format!("Failed to serialize queue to JSON: {e}"),
             })?;
         Ok(JsonB(json))
     }
@@ -64,7 +64,7 @@ impl SerializedQueue {
     pub fn from_jsonb(jsonb: JsonB) -> TViewResult<Self> {
         serde_json::from_value(jsonb.0)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to deserialize queue from JSON: {}", e),
+                message: format!("Failed to deserialize queue from JSON: {e}"),
             })
     }
 
@@ -73,7 +73,7 @@ impl SerializedQueue {
     pub fn to_binary(&self) -> TViewResult<Vec<u8>> {
         bincode::serialize(self)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to serialize queue to binary: {}", e),
+                message: format!("Failed to serialize queue to binary: {e}"),
             })
     }
 
@@ -82,7 +82,7 @@ impl SerializedQueue {
     pub fn from_binary(data: &[u8]) -> TViewResult<Self> {
         bincode::deserialize(data)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to deserialize binary queue: {}", e),
+                message: format!("Failed to deserialize binary queue: {e}"),
             })
     }
 
@@ -95,18 +95,18 @@ impl SerializedQueue {
 
         let json = serde_json::to_vec(self)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to serialize queue to JSON: {}", e),
+                message: format!("Failed to serialize queue to JSON: {e}"),
             })?;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(&json)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to compress queue: {}", e),
+                message: format!("Failed to compress queue: {e}"),
             })?;
 
         encoder.finish()
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to finish compression: {}", e),
+                message: format!("Failed to finish compression: {e}"),
             })
     }
 
@@ -120,12 +120,12 @@ impl SerializedQueue {
         let mut json_bytes = Vec::new();
         decoder.read_to_end(&mut json_bytes)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Decompression failed: {}", e),
+                message: format!("Decompression failed: {e}"),
             })?;
 
         serde_json::from_slice(&json_bytes)
             .map_err(|e| crate::TViewError::SerializationError {
-                message: format!("Failed to deserialize JSON: {}", e),
+                message: format!("Failed to deserialize JSON: {e}"),
             })
     }
 }
