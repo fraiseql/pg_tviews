@@ -14,11 +14,10 @@ pub fn infer_column_types(
         let type_query = format!(
             "SELECT format_type(atttypid, atttypmod)
              FROM pg_attribute
-             WHERE attrelid = '{}'::regclass
-               AND attname = '{}'
+             WHERE attrelid = '{table_name}'::regclass
+               AND attname = '{col}'
                AND attnum > 0
-               AND NOT attisdropped",
-            table_name, col
+               AND NOT attisdropped"
         );
 
         let col_type = Spi::get_one::<String>(&type_query)
@@ -41,8 +40,7 @@ pub fn infer_column_types(
 pub fn table_exists(table_name: &str) -> TViewResult<bool> {
     let query = format!(
         "SELECT COUNT(*) = 1 FROM pg_class
-         WHERE relname = '{}' AND relkind = 'r'",
-        table_name
+         WHERE relname = '{table_name}' AND relkind = 'r'"
     );
 
     Spi::get_one::<bool>(&query)

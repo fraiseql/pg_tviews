@@ -72,7 +72,7 @@ pub fn drop_tview(
 fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
     Spi::get_one::<bool>(&format!(
         "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace("'", "''")
+        entity_name.replace('\'', "''")
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW metadata: {entity_name}"),
@@ -84,8 +84,7 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
 /// Drop the materialized table (tv_<entity>)
 fn drop_materialized_table(tview_name: &str) -> TViewResult<()> {
     let drop_table_sql = format!(
-        "DROP TABLE IF EXISTS public.{}",
-        tview_name
+        "DROP TABLE IF EXISTS public.{tview_name}"
     );
 
     Spi::run(&drop_table_sql).map_err(|e| TViewError::SpiError {
@@ -100,8 +99,7 @@ fn drop_materialized_table(tview_name: &str) -> TViewResult<()> {
 /// Drop the backing view (v_<entity>)
 fn drop_backing_view(view_name: &str) -> TViewResult<()> {
     let drop_view_sql = format!(
-        "DROP VIEW IF EXISTS public.{}",
-        view_name
+        "DROP VIEW IF EXISTS public.{view_name}"
     );
 
     Spi::run(&drop_view_sql).map_err(|e| TViewError::SpiError {
@@ -117,7 +115,7 @@ fn drop_backing_view(view_name: &str) -> TViewResult<()> {
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     let delete_meta_sql = format!(
         "DELETE FROM public.pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace("'", "''")
+        entity_name.replace('\'', "''")
     );
 
     Spi::run(&delete_meta_sql).map_err(|e| TViewError::SpiError {

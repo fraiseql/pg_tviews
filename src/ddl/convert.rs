@@ -143,7 +143,7 @@ fn get_table_columns(table_name: &str) -> TViewResult<Vec<ColumnInfo>> {
              FROM information_schema.columns
              WHERE table_name = '{}'
              ORDER BY ordinal_position",
-            table_name.replace("'", "''")
+            table_name.replace('\'', "''")
         );
 
         let results = client.select(&query, None, &[])?;
@@ -304,7 +304,7 @@ fn extract_table_references(json: &serde_json::Value, tables: &mut Vec<String>) 
 fn table_exists(table_name: &str) -> bool {
     Spi::get_one::<bool>(&format!(
         "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = '{}')",
-        table_name.replace("'", "''")
+        table_name.replace('\'', "''")
     )).unwrap_or(Some(false)).unwrap_or(false)
 }
 
@@ -315,7 +315,7 @@ fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
         "SELECT obj_description(oid, 'pg_class') as comment
          FROM pg_class
          WHERE relname = '{}'",
-        table_name.replace("'", "''")
+        table_name.replace('\'', "''")
     );
 
     let comment: Option<String> = Spi::get_one(&query)?;
@@ -357,11 +357,10 @@ fn reconstruct_as_tview(
     if data_backup.is_empty() {
         // Empty table: create view with proper structure but no rows
         Spi::run(&format!(
-            "CREATE VIEW {} AS SELECT
+            "CREATE VIEW {view_name} AS SELECT
                 NULL::uuid as id,
                 NULL::jsonb as data
-             WHERE false",
-            view_name
+             WHERE false"
         ))?;
         info!("Created empty view {} for empty table", view_name);
     } else {
@@ -382,8 +381,7 @@ fn reconstruct_as_tview(
 
     // Step 2: Create the TVIEW wrapper
     Spi::run(&format!(
-        "CREATE VIEW {} AS SELECT * FROM {}",
-        table_name, view_name
+        "CREATE VIEW {table_name} AS SELECT * FROM {view_name}"
     ))?;
     info!("Created wrapper view {}", table_name);
 
@@ -401,16 +399,14 @@ fn register_tview_metadata(
 ) -> TViewResult<()> {
     // Get OIDs
     let view_oid = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{}'",
-        view_name
+        "SELECT oid FROM pg_class WHERE relname = '{view_name}'"
     ))?.ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for view {view_name}"),
         pg_error: "View not found".to_string(),
     })?;
 
     let table_oid = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{}'",
-        tview_name
+        "SELECT oid FROM pg_class WHERE relname = '{tview_name}'"
     ))?.ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for table {tview_name}"),
         pg_error: "Table not found".to_string(),
@@ -427,10 +423,10 @@ fn register_tview_metadata(
             definition = EXCLUDED.definition,
             fk_columns = EXCLUDED.fk_columns,
             uuid_fk_columns = EXCLUDED.uuid_fk_columns",
-        entity_name.replace("'", "''"),
+        entity_name.replace('\'', "''"),
         view_oid.to_u32(),
         table_oid.to_u32(),
-        definition.replace("'", "''")
+        definition.replace('\'', "''")
     ))?;
 
     Ok(())

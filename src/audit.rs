@@ -8,8 +8,8 @@ pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
     Spi::run(&format!(
         "INSERT INTO pg_tview_audit_log (operation, entity, performed_by, details)
          VALUES ('CREATE', '{}', '{}', '{}'::jsonb)",
-        entity.replace("'", "''"),
-        current_user.replace("'", "''"),
+        entity.replace('\'', "''"),
+        current_user.replace('\'', "''"),
         serde_json::json!({
             "definition": definition,
             "version": env!("CARGO_PKG_VERSION")
@@ -27,8 +27,8 @@ pub fn log_drop(entity: &str) -> spi::Result<()> {
     Spi::run(&format!(
         "INSERT INTO pg_tview_audit_log (operation, entity, performed_by, details)
          VALUES ('DROP', '{}', '{}', '{{}}'::jsonb)",
-        entity.replace("'", "''"),
-        current_user.replace("'", "''")
+        entity.replace('\'', "''"),
+        current_user.replace('\'', "''")
     ))?;
 
     Ok(())
@@ -43,8 +43,8 @@ pub fn log_refresh(entity: &str, rows_affected: i64) -> spi::Result<()> {
     Spi::run(&format!(
         "INSERT INTO pg_tview_audit_log (operation, entity, performed_by, details)
          VALUES ('REFRESH', '{}', '{}', '{}'::jsonb)",
-        entity.replace("'", "''"),
-        current_user.replace("'", "''"),
+        entity.replace('\'', "''"),
+        current_user.replace('\'', "''"),
         serde_json::json!({
             "rows_affected": rows_affected
         })

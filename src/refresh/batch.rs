@@ -115,12 +115,12 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
         for row in rows {
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: format!("{pk_col} column is NULL"),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
 

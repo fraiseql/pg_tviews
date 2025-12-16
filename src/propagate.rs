@@ -134,8 +134,7 @@ fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
 
     let query = format!(
         "SELECT entity FROM public.pg_tview_meta
-         WHERE '{}' = ANY(fk_columns)",
-        fk_col
+         WHERE '{fk_col}' = ANY(fk_columns)"
     );
 
     Spi::connect(|client| {
@@ -166,8 +165,7 @@ fn find_affected_pks(
     let parent_pk_col = format!("pk_{parent_entity}");
 
     let query = format!(
-        "SELECT {} FROM {} WHERE {} = {}",
-        parent_pk_col, parent_table, fk_col, child_pk
+        "SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = {child_pk}"
     );
 
     Spi::connect(|client| {

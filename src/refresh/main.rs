@@ -169,14 +169,14 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
 
         let row_data = rows.next()
             .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                query: "".to_string(),
+                query: String::new(),
                 error: format!("No row in v_* for given pk: {pk}"),
             }))?;
 
         // Extract data column
         let data: JsonB = row_data["data"].value()?
             .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                query: "".to_string(),
+                query: String::new(),
                 error: "data column is NULL".to_string(),
             }))?;
 

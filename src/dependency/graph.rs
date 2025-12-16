@@ -73,11 +73,10 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
              FROM pg_rewrite r
              JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
              LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
-             WHERE r.ev_class = {:?}
+             WHERE r.ev_class = {view_oid:?}
                AND d.deptype IN ('n', 'a')
                AND d.refclassid = 'pg_class'::regclass::oid
-               AND c.oid != {:?}",  // Exclude self-reference
-            current_oid, current_oid
+               AND c.oid != {current_oid:?}"  // Exclude self-reference
         );
 
         info!("Executing query: {}", deps_query);

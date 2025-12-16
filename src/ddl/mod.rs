@@ -79,8 +79,7 @@ fn pg_tviews_refresh(tview_name: &str) -> Result<String, String> {
     // For benchmarking, we can do a simple truncate + insert from view
     let view_name = tview_name.replace("tv_", "v_");
     let sql = format!(
-        "TRUNCATE {}; INSERT INTO {} SELECT * FROM {}",
-        tview_name, tview_name, view_name
+        "TRUNCATE {tview_name}; INSERT INTO {tview_name} SELECT * FROM {view_name}"
     );
 
     match Spi::run(&sql) {

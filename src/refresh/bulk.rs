@@ -85,12 +85,12 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
         for row in rows {
             let pk: i64 = row[&pk_col as &str].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: format!("{pk_col} column is NULL"),
                 }))?;
             let data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
             update_pks.push(pk);
@@ -137,7 +137,7 @@ pub fn quote_identifier(name: &str) -> String {
         &quote_args,
     ) {
         Ok(Some(quoted)) => quoted,
-        _ => format!("\"{}\"", name.replace("\"", "\"\"")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
 

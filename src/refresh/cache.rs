@@ -64,7 +64,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
             // Extract data and apply patch (delegate to main refresh logic)
             let _data: JsonB = row["data"].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "".to_string(),
+                    query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
             // TODO: Integrate with main refresh logic to apply patches
@@ -150,7 +150,7 @@ fn quote_identifier(name: &str) -> String {
         &quote_args,
     ) {
         Ok(Some(quoted)) => quoted,
-        _ => format!("\"{}\"", name.replace("\"", "\"\"")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
 

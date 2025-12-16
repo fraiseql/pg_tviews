@@ -218,55 +218,53 @@ impl fmt::Display for TViewError {
         use TViewError::*;
         match self {
             MetadataNotFound { entity } => {
-                write!(f, "TVIEW metadata not found for entity '{}'", entity)
+                write!(f, "TVIEW metadata not found for entity '{entity}'")
             }
             TViewAlreadyExists { name } => {
-                write!(f, "TVIEW '{}' already exists", name)
+                write!(f, "TVIEW '{name}' already exists")
             }
             InvalidTViewName { name, reason } => {
-                write!(f, "Invalid TVIEW name '{}': {}", name, reason)
+                write!(f, "Invalid TVIEW name '{name}': {reason}")
             }
             CircularDependency { cycle } => {
                 write!(f, "Circular dependency detected: {}", cycle.join(" → "))
             }
             DependencyDepthExceeded { depth, max_depth } => {
-                write!(f, "Dependency depth {} exceeds maximum {}", depth, max_depth)
+                write!(f, "Dependency depth {depth} exceeds maximum {max_depth}")
             }
             DependencyResolutionFailed { view_name, reason } => {
-                write!(f, "Failed to resolve dependencies for '{}': {}", view_name, reason)
+                write!(f, "Failed to resolve dependencies for '{view_name}': {reason}")
             }
             InvalidSelectStatement { sql, reason } => {
-                write!(f, "Invalid SELECT statement: {}\nSQL: {}", reason,
+                write!(f, "Invalid SELECT statement: {reason}\nSQL: {}",
                        if sql.len() > 100 { &sql[..100] } else { sql })
             }
             RequiredColumnMissing { column_name, context } => {
-                write!(f, "Required column '{}' missing in {}", column_name, context)
+                write!(f, "Required column '{column_name}' missing in {context}")
             }
             TypeInferenceFailed { column_name, reason } => {
-                write!(f, "Failed to infer type for column '{}': {}", column_name, reason)
+                write!(f, "Failed to infer type for column '{column_name}': {reason}")
             }
             JsonbIvmNotInstalled => {
                 write!(f, "Required extension 'jsonb_ivm' is not installed. Run: CREATE EXTENSION jsonb_ivm;")
             }
             ExtensionVersionMismatch { extension, required, found } => {
-                write!(f, "Extension '{}' version mismatch: required {}, found {}",
-                       extension, required, found)
+                write!(f, "Extension '{extension}' version mismatch: required {required}, found {found}")
             }
             LockTimeout { resource, timeout_ms } => {
-                write!(f, "Lock timeout on resource '{}' after {}ms", resource, timeout_ms)
+                write!(f, "Lock timeout on resource '{resource}' after {timeout_ms}ms")
             }
             DeadlockDetected { context } => {
-                write!(f, "Deadlock detected in {}", context)
+                write!(f, "Deadlock detected in {context}")
             }
             CascadeDepthExceeded { current_depth, max_depth } => {
-                write!(f, "Cascade depth {} exceeds maximum {}. Possible infinite cascade loop.",
-                       current_depth, max_depth)
+                write!(f, "Cascade depth {current_depth} exceeds maximum {max_depth}. Possible infinite cascade loop.")
             }
             RefreshFailed { entity, pk_value, reason } => {
-                write!(f, "Failed to refresh TVIEW '{}' row {}: {}", entity, pk_value, reason)
+                write!(f, "Failed to refresh TVIEW '{entity}' row {pk_value}: {reason}")
             }
             BatchTooLarge { size, max_size } => {
-                write!(f, "Batch size {} exceeds maximum {}", size, max_size)
+                write!(f, "Batch size {size} exceeds maximum {max_size}")
             }
             DependencyCycle { entities } => {
                 write!(f, "Dependency cycle detected in entity graph: {}", entities.join(" -> "))
@@ -274,36 +272,34 @@ impl fmt::Display for TViewError {
             PropagationDepthExceeded { max_depth, processed } => {
                 write!(
                     f,
-                    "Propagation exceeded maximum depth of {} iterations ({} entities processed). \
-                     Possible infinite loop or extremely deep dependency chain.",
-                    max_depth, processed
+                    "Propagation exceeded maximum depth of {max_depth} iterations ({processed} entities processed). \
+                     Possible infinite loop or extremely deep dependency chain."
                 )
             }
             CatalogError { operation, pg_error } => {
-                write!(f, "Catalog operation '{}' failed: {}", operation, pg_error)
+                write!(f, "Catalog operation '{operation}' failed: {pg_error}")
             }
             SpiError { query, error } => {
-                write!(f, "SPI query failed: {}\nQuery: {}", error,
+                write!(f, "SPI query failed: {error}\nQuery: {}",
                        if query.len() > 100 { &query[..100] } else { query })
             }
             SerializationError { message } => {
-                write!(f, "Serialization error: {}", message)
+                write!(f, "Serialization error: {message}")
             }
             ConfigError { setting, value, reason } => {
-                write!(f, "Configuration error for '{}': {} (value: {})", setting, reason, value)
+                write!(f, "Configuration error for '{setting}': {reason} (value: {value})")
             }
             CacheError { cache_name, reason } => {
-                write!(f, "Cache '{}' error: {}", cache_name, reason)
+                write!(f, "Cache '{cache_name}' error: {reason}")
             }
             CallbackError { callback_name, error } => {
-                write!(f, "FFI callback '{}' failed: {}", callback_name, error)
+                write!(f, "FFI callback '{callback_name}' failed: {error}")
             }
             MetricsError { operation, error } => {
-                write!(f, "Metrics operation '{}' failed: {}", operation, error)
+                write!(f, "Metrics operation '{operation}' failed: {error}")
             }
             InternalError { message, file, line } => {
-                write!(f, "Internal error at {}:{}: {}\nPlease report this bug.",
-                       file, line, message)
+                write!(f, "Internal error at {file}:{line}: {message}\nPlease report this bug.")
             }
         }
     }

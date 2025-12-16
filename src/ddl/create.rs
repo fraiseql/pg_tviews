@@ -121,7 +121,7 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 
     Spi::get_one::<bool>(&format!(
         "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace("'", "''")
+        entity_name.replace('\'', "''")
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW exists: {tview_name}"),
@@ -133,8 +133,7 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 /// Create the backing view that contains the user's SELECT definition
 fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
     let create_view_sql = format!(
-        "CREATE VIEW public.{} AS {}",
-        view_name, select_sql
+        "CREATE VIEW public.{view_name} AS {select_sql}"
     );
 
     info!("Creating backing view with SQL: {}", create_view_sql);
@@ -211,8 +210,7 @@ fn create_materialized_table(
     let columns_sql = columns.join(",\n    ");
 
     let create_table_sql = format!(
-        "CREATE TABLE public.{} (\n    {}\n)",
-        tview_name, columns_sql
+        "CREATE TABLE public.{tview_name} (\n    {columns_sql}\n)"
     );
 
     Spi::run(&create_table_sql).map_err(|e| TViewError::SpiError {
@@ -233,8 +231,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
     if let Some(id) = &schema.id_column {
         let idx_name = format!("idx_{tview_name}_{id}");
         let create_idx = format!(
-            "CREATE INDEX {} ON public.{} ({})",
-            idx_name, tview_name, id
+            "CREATE INDEX {idx_name} ON public.{tview_name} ({id})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -246,8 +243,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
     for uuid_fk in &schema.uuid_fk_columns {
         let idx_name = format!("idx_{tview_name}_{uuid_fk}");
         let create_idx = format!(
-            "CREATE INDEX {} ON public.{} ({})",
-            idx_name, tview_name, uuid_fk
+            "CREATE INDEX {idx_name} ON public.{tview_name} ({uuid_fk})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -259,8 +255,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
     if let Some(data) = &schema.data_column {
         let idx_name = format!("idx_{tview_name}_{data}_gin");
         let create_idx = format!(
-            "CREATE INDEX {} ON public.{} USING GIN ({})",
-            idx_name, tview_name, data
+            "CREATE INDEX {idx_name} ON public.{tview_name} USING GIN ({data})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -311,8 +306,7 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
     let select_column_list = select_columns.join(", ");
 
     let insert_sql = format!(
-        "INSERT INTO public.{} ({}) SELECT {} FROM public.{}",
-        tview_name, insert_column_list, select_column_list, view_name
+        "INSERT INTO public.{tview_name} ({insert_column_list}) SELECT {select_column_list} FROM public.{view_name}"
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
@@ -350,7 +344,7 @@ fn register_metadata(
     let dep_paths = dep_infos.iter()
         .map(|d| match &d.jsonb_path {
             Some(path) => path.join("."),
-            None => "".to_string(),
+            None => String::new(),
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -359,7 +353,7 @@ fn register_metadata(
     let array_keys = dep_infos.iter()
         .map(|d| match &d.array_match_key {
             Some(key) => key.clone(),
-            None => "".to_string(),
+            None => String::new(),
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -372,16 +366,14 @@ fn register_metadata(
 
     // Get OIDs for the created objects
     let view_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'v'",
-        view_name
+        "SELECT oid FROM pg_class WHERE relname = '{view_name}' AND relkind = 'v'"
     )).map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for view {view_name}"),
         pg_error: e.to_string(),
     })?;
 
     let table_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{}' AND relkind = 'r'",
-        tview_name
+        "SELECT oid FROM pg_class WHERE relname = '{tview_name}' AND relkind = 'r'"
     )).map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for table {tview_name}"),
         pg_error: e.to_string(),
@@ -412,10 +404,10 @@ fn register_metadata(
             array_match_keys
         ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
-        entity_name.replace("'", "''"),
+        entity_name.replace('\'', "''"),
         view_oid.to_u32(),
         table_oid.to_u32(),
-        definition_sql.replace("'", "''"),
+        definition_sql.replace('\'', "''"),
         deps_str,
         fk_columns,
         uuid_fk_columns,
@@ -451,8 +443,7 @@ fn transform_raw_select_to_tview(
 
     // First, create temp view to analyze columns
     let create_temp = format!(
-        "CREATE TEMP VIEW {} AS {}",
-        temp_view_name, select_sql
+        "CREATE TEMP VIEW {temp_view_name} AS {select_sql}"
     );
 
     Spi::run(&create_temp).map_err(|e| TViewError::SpiError {
@@ -465,9 +456,8 @@ fn transform_raw_select_to_tview(
     let get_columns_sql = format!(
         "SELECT column_name::text, data_type::text
          FROM information_schema.columns
-         WHERE table_name = '{}'
-         ORDER BY ordinal_position",
-        temp_view_name
+         WHERE table_name = '{temp_view_name}'
+         ORDER BY ordinal_position"
     );
 
     let columns: Vec<(String, String)> = Spi::connect(|client| {
