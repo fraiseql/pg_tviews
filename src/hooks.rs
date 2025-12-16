@@ -79,10 +79,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Skip extension-related statements to avoid infinite recursion during installation
         let query_lower = query_str.to_lowercase();
 
-        // TEMP: Log ALL DDL statements to see if hook is called
-        if query_lower.contains("create table") {
-            // Hook is being called for CREATE TABLE statements
-        }
+        // Skip extension-related statements
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
             info!("  → Extension statement, passing through without interception");
             return false; // Pass through
@@ -296,12 +293,11 @@ fn validate_tview_select(select_sql: &str) -> Result<(), String> {
     }
 
     // Check for data column - either jsonb_build_object or direct column (required)
-    let has_data = sql_lower.contains("jsonb_build_object")
-        || sql_lower.contains(" as data")
-        || sql_lower.contains(" data,")
-        || sql_lower.contains(" data ");
-
-    if !has_data {
+    if !sql_lower.contains("jsonb_build_object")
+        && !sql_lower.contains(" as data")
+        && !sql_lower.contains(" data,")
+        && !sql_lower.contains(" data ")
+    {
         return Err("Missing required 'data' column (JSONB)".to_string());
     }
 
