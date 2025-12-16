@@ -5,9 +5,9 @@ use super::key::RefreshKey;
 thread_local! {
     /// Transaction-local queue of refresh requests
     ///
-    /// - Populated by triggers on tb_* tables
-    /// - Deduplicated automatically (HashSet)
-    /// - Flushed at commit time by tx_commit_handler()
+    /// - Populated by triggers on `tb_*` tables
+    /// - Deduplicated automatically (`HashSet`)
+    /// - Flushed at commit time by `tx_commit_handler()`
     /// - Cleared on transaction abort
     pub static TX_REFRESH_QUEUE: RefCell<HashSet<RefreshKey>> = RefCell::new(HashSet::new());
 

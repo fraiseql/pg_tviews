@@ -10,21 +10,21 @@ use crate::TViewResult;
 /// - `tv_post` (depends on `tv_user` via `fk_user`)
 /// - `tv_feed` (depends on `tv_post` via `fk_post`)
 ///
-/// Topological order: ["company", "user", "post", "feed"]
+/// Topological order: `["company", "user", "post", "feed"]`
 #[derive(Debug, Clone)]
 pub struct EntityDepGraph {
     /// Parent relationships: entity -> list of entities that depend on it
-    /// Example: "user" -> ["post", "feed"]
+    /// Example: "user" -> `["post", "feed"]`
     #[allow(dead_code)]
     pub parents: HashMap<String, Vec<String>>,
 
     /// Child relationships: entity -> list of entities it depends on
-    /// Example: "post" -> ["user"]
+    /// Example: "post" -> `["user"]`
     #[allow(dead_code)]
     pub children: HashMap<String, Vec<String>>,
 
     /// Topological order (refresh from low to high dependency)
-    /// Example: ["company", "user", "post", "feed"]
+    /// Example: `["company", "user", "post", "feed"]`
     pub topo_order: Vec<String>,
 }
 

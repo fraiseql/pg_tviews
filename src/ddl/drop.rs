@@ -111,7 +111,7 @@ fn drop_backing_view(view_name: &str) -> TViewResult<()> {
     Ok(())
 }
 
-/// Drop metadata record from pg_tview_meta
+/// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     let delete_meta_sql = format!(
         "DELETE FROM public.pg_tview_meta WHERE entity = '{}'",

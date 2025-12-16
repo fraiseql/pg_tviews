@@ -1,8 +1,8 @@
 //! Transaction-level refresh queue for coalesced TVIEW updates
 //!
-//! This module implements the transaction queue architecture from PRD_multiupdate.md:
-//! - RefreshKey: Identifies unique (entity, pk) pairs
-//! - TX_REFRESH_QUEUE: Thread-local HashSet for deduplication
+//! This module implements the transaction queue architecture from `PRD_multiupdate.md`:
+//! - `RefreshKey`: Identifies unique (entity, pk) pairs
+//! - `TX_REFRESH_QUEUE`: Thread-local `HashSet` for deduplication
 //! - Enqueue/dequeue operations
 //! - Transaction callback registration
 

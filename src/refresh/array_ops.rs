@@ -105,9 +105,9 @@ pub fn insert_array_element(
 ///
 /// # Arguments
 /// * `table_name` - TVIEW table name (e.g., "`tv_post`")
-/// * `pk_column` - Primary key column name (e.g., "pk_post")
+/// * `pk_column` - Primary key column name (e.g., "`pk_post`")
 /// * `pk_value` - Primary key value of the row to update
-/// * `array_path` - JSONB path to the array (e.g., ["comments"])
+/// * `array_path` - JSONB path to the array (e.g., `["comments"]`)
 /// * `match_key` - Key to match for deletion (e.g., "id")
 /// * `match_value` - Value to match for deletion
 ///
@@ -155,10 +155,10 @@ pub fn delete_array_element(
     Ok(())
 }
 
-/// Check if jsonb_ivm array functions are available
+/// Check if `jsonb_ivm` array functions are available
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
-/// The array operations require jsonb_ivm for proper functionality.
+/// The array operations require `jsonb_ivm` for proper functionality.
 #[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r"

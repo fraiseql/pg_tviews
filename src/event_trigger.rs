@@ -1,7 +1,7 @@
 //! Event Trigger handler for DDL interception
 //!
-//! This module handles PostgreSQL Event Triggers that fire AFTER DDL commands
-//! complete. This provides a safe context for SPI operations, unlike ProcessUtility
+//! This module handles `PostgreSQL` Event Triggers that fire AFTER DDL commands
+//! complete. This provides a safe context for SPI operations, unlike `ProcessUtility`
 //! hooks which cannot safely use SPI.
 
 use pgrx::prelude::*;
@@ -98,13 +98,13 @@ struct DdlCommand {
 
 /// Public API: Convert an existing table to a TVIEW
 ///
-/// Called by the event trigger after PostgreSQL creates the table.
+/// Called by the event trigger after `PostgreSQL` creates the table.
 /// This runs in a safe SPI context (after DDL completed).
 ///
 /// Strategy:
 /// 1. Retrieve original SELECT from hook cache
-/// 2. Drop the table PostgreSQL created
-/// 3. Create proper TVIEW using standard create_tview() flow
+/// 2. Drop the table `PostgreSQL` created
+/// 3. Create proper TVIEW using standard `create_tview()` flow
 #[pg_extern]
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
     info!("pg_tviews_convert_table: Converting '{}' to TVIEW", table_name);
@@ -136,8 +136,8 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
 
 /// Convert an existing table to a TVIEW
 ///
-/// This function is called AFTER PostgreSQL has created the table.
-/// Delegates to the ddl::convert module for the actual conversion logic.
+/// This function is called AFTER `PostgreSQL` has created the table.
+/// Delegates to the `ddl::convert` module for the actual conversion logic.
 fn convert_table_to_tview(table_name: &str) -> TViewResult<()> {
     info!("pg_tviews: convert_table_to_tview called for '{}'", table_name);
     crate::ddl::convert_existing_table_to_tview(table_name)

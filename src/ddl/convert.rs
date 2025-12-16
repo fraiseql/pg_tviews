@@ -309,7 +309,7 @@ fn table_exists(table_name: &str) -> bool {
 }
 
 /// Check for user-provided base table hints in table comment
-/// Format: COMMENT ON TABLE `tv_entity` IS 'TVIEW_BASES: `tb_table1`, `tb_table2`';
+/// Format: COMMENT ON TABLE `tv_entity` IS '`TVIEW_BASES`: `tb_table1`, `tb_table2`';
 fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
     let query = format!(
         "SELECT obj_description(oid, 'pg_class') as comment

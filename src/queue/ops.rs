@@ -6,7 +6,7 @@ use crate::TViewResult;
 /// Enqueue a refresh request for the given entity and pk
 ///
 /// This is the main entry point from triggers.
-/// Deduplication is automatic (HashSet).
+/// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
 pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
     let key = RefreshKey {

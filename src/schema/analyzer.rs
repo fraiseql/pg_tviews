@@ -42,7 +42,7 @@ const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 pub struct DependencyInfo {
     /// Type of dependency (Scalar, `NestedObject`, Array)
     pub dep_type: DependencyType,
-    /// JSONB path to the nested data (e.g., ["author"], ["comments"])
+    /// JSONB path to the nested data (e.g., `["author"]`, `["comments"]`)
     pub jsonb_path: Option<Vec<String>>,
     /// For arrays, the key used to match elements (e.g., "id")
     pub array_match_key: Option<String>,
@@ -134,12 +134,9 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
         .to_lowercase();
 
     // Try to infer view name from FK column
-    let view_name = match infer_view_name(fk_col) {
-        Some(name) => name,
-        None => {
-            // Can't infer view name → assume scalar
-            return DependencyInfo::scalar();
-        }
+    let Some(view_name) = infer_view_name(fk_col) else {
+        // Can't infer view name → assume scalar
+        return DependencyInfo::scalar();
     };
 
     // Pattern 1: Nested Object
@@ -187,9 +184,8 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
     // Pattern to match: 'array_name', jsonb_agg(v_something.data ...)
     // Captures: (1) array_name, (2) view_name
     let array_pattern = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data";
-    let re = match Regex::new(array_pattern) {
-        Ok(re) => re,
-        Err(_) => return deps, // Return empty if regex fails
+    let Ok(re) = Regex::new(array_pattern) else {
+        return deps; // Return empty if regex fails
     };
 
     for capture in re.captures_iter(&sql_normalized) {

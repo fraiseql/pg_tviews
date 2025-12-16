@@ -205,9 +205,8 @@ unsafe fn handle_create_table_as(
     }
 
     // Get table name
-    let table_name = match CStr::from_ptr(rel.relname).to_str() {
-        Ok(name) => name,
-        Err(_) => return false,
+    let Ok(table_name) = CStr::from_ptr(rel.relname).to_str() else {
+        return false;
     };
 
     // Check if it starts with tv_

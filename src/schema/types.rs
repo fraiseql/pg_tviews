@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 use std::collections::HashMap;
 use crate::error::TViewResult;
 
-/// Infer column types from PostgreSQL catalog
+/// Infer column types from `PostgreSQL` catalog
 pub fn infer_column_types(
     table_name: &str,
     columns: &[String],

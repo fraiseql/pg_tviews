@@ -55,12 +55,9 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
         info!("  Cascading to {}: {} affected rows", parent_entity, affected_pks.len());
 
         // Load parent TVIEW metadata to get view_oid for refresh
-        let parent_meta = match TviewMeta::load_by_entity(&parent_entity)? {
-            Some(meta) => meta,
-            None => {
-                warning!("No metadata found for parent entity {}", parent_entity);
-                continue;
-            }
+        let Some(parent_meta) = TviewMeta::load_by_entity(&parent_entity)? else {
+            warning!("No metadata found for parent entity {}", parent_entity);
+            continue;
         };
 
         // Use batch refresh for large cascades, individual refresh for small ones
@@ -124,7 +121,7 @@ pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>>
 
 /// Find all parent entities that depend on the given entity.
 ///
-/// Example: `find_parent_entities`("user") -> ["post", "comment"]
+/// Example: `find_parent_entities`("user") -> `["post", "comment"]`
 /// This means `tv_post` and `tv_comment` both have FK references to `tv_user`
 fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
     // Query pg_tview_meta to find entities whose fk_columns reference this entity
@@ -154,7 +151,7 @@ fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
 /// Find all PKs in the parent TVIEW that reference the given child PK.
 ///
 /// Example: `find_affected_pks`("post", "user", 1)
-/// Returns all pk_post values where fk_user = 1
+/// Returns all `pk_post` values where `fk_user` = 1
 fn find_affected_pks(
     parent_entity: &str,
     child_entity: &str,

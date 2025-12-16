@@ -2,7 +2,7 @@
 
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
-/// Future versions will use PostgreSQL's native parser API
+/// Future versions will use `PostgreSQL`'s native parser API
 pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
     extract_columns_regex(sql)
 }
@@ -18,7 +18,7 @@ pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, S
 /// - Doesn't handle nested commas in function calls
 /// - Doesn't handle complex expressions
 /// - Doesn't handle subqueries properly
-/// - Future: Replace with PostgreSQL parser API
+/// - Future: Replace with `PostgreSQL` parser API
 fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     let mut columns = Vec::new();
 

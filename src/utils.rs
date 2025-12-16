@@ -1,12 +1,12 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
-/// Utilities: Common Helper Functions and PostgreSQL Integration
+/// Utilities: Common Helper Functions and `PostgreSQL` Integration
 ///
-/// This module provides utility functions used throughout pg_tviews:
+/// This module provides utility functions used throughout `pg_tviews`:
 /// - **Primary Key Extraction**: Gets PK values from trigger tuples
-/// - **OID Resolution**: Maps PostgreSQL OIDs to names and vice versa
+/// - **OID Resolution**: Maps `PostgreSQL` OIDs to names and vice versa
 /// - **SPI Helpers**: Common database query patterns
-/// - **Type Conversions**: PostgreSQL type handling
+/// - **Type Conversions**: `PostgreSQL` type handling
 ///
 /// ## Key Functions
 ///

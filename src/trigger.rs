@@ -1,7 +1,7 @@
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
 ///
-/// This module implements PostgreSQL triggers for TVIEW change tracking:
+/// This module implements `PostgreSQL` triggers for TVIEW change tracking:
 /// - **Row-level Triggers**: Detects INSERT/UPDATE/DELETE on base tables
 /// - **Primary Key Extraction**: Identifies changed rows for selective refresh
 /// - **Queue Enqueueing**: Adds refresh requests to transaction queue
@@ -133,7 +133,7 @@ fn pg_tview_stmt_trigger_handler<'a>(
     Ok(None)
 }
 
-/// Extract primary keys from PostgreSQL transition tables
+/// Extract primary keys from `PostgreSQL` transition tables
 /// Transition tables are special references visible only in trigger context
 fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64>> {
     // Determine which transition table to use based on operation type

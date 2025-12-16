@@ -111,11 +111,8 @@ pub struct ViewRow {
 pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 1. Find TVIEW metadata (tview_oid, view_oid, entity_name, etc.)
     let meta = TviewMeta::load_for_source(source_oid)?;
-    let meta = match meta {
-        Some(m) => m,
-        None => {
-            error!("No TVIEW metadata for source_oid: {:?}", source_oid);
-        }
+    let Some(meta) = meta else {
+        error!("No TVIEW metadata for source_oid: {:?}", source_oid);
     };
 
     // 2. Recompute row from v_entity
@@ -251,15 +248,12 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
 
     // Load metadata to determine patch strategy
     let meta = TviewMeta::load_for_tview(row.tview_oid)?;
-    let meta = match meta {
-        Some(m) => m,
-        None => {
-            warning!(
-                "No metadata found for TVIEW OID {:?}, entity '{}'. Using full replacement.",
-                row.tview_oid, row.entity_name
-            );
-            return apply_full_replacement(row);
-        }
+    let Some(meta) = meta else {
+        warning!(
+            "No metadata found for TVIEW OID {:?}, entity '{}'. Using full replacement.",
+            row.tview_oid, row.entity_name
+        );
+        return apply_full_replacement(row);
     };
 
     // Check if jsonb_ivm is available

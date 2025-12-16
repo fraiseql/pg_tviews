@@ -84,11 +84,10 @@ fn refresh_individual(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
 fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
     // Get TVIEW metadata
     let meta_opt = TviewMeta::load_by_entity(entity)?;
-    let _meta = match meta_opt {
-        Some(m) => m,
-        None => return Err(TViewError::MetadataNotFound {
+    let Some(_meta) = meta_opt else {
+        return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),
-        }),
+        });
     };
 
     // Get fresh data for all PKs in one query
@@ -174,11 +173,10 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
 fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     // Get TVIEW metadata
     let meta_opt = TviewMeta::load_by_entity(entity)?;
-    let _meta = match meta_opt {
-        Some(m) => m,
-        None => return Err(TViewError::MetadataNotFound {
+    let Some(_meta) = meta_opt else {
+        return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),
-        }),
+        });
     };
 
     // Get fresh data from view

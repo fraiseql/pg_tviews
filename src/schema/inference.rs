@@ -1,10 +1,10 @@
 use super::{TViewSchema, parser};
 use crate::error::TViewResult;
 
-/// Infer PostgreSQL type for a column based on its SQL expression
+/// Infer `PostgreSQL` type for a column based on its SQL expression
 ///
 /// This function analyzes the SQL expression to determine the appropriate
-/// PostgreSQL type. For array columns, it detects `ARRAY(...)` subqueries
+/// `PostgreSQL` type. For array columns, it detects `ARRAY(...)` subqueries
 /// and infers element types.
 pub fn infer_column_type(sql_expression: &str) -> String {
     let expr = sql_expression.trim();

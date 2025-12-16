@@ -1,9 +1,9 @@
 //! Metadata Management: TVIEW Catalog Tables and Schema
 //!
 //! This module manages the system catalog tables for TVIEW metadata:
-//! - **pg_tview_meta**: Core TVIEW definitions and relationships
-//! - **pg_tview_pending_refreshes**: 2PC transaction queue persistence
-//! - **pg_tview_monitoring**: Performance metrics and statistics
+//! - **`pg_tview_meta`**: Core TVIEW definitions and relationships
+//! - **`pg_tview_pending_refreshes`**: 2PC transaction queue persistence
+//! - **`pg_tview_monitoring`**: Performance metrics and statistics
 //! - **Schema Management**: Automatic table creation and updates
 //!
 //! ## Catalog Tables
@@ -150,7 +150,7 @@ GROUP BY entity;
     requires = ["create_metadata_tables"]
 );
 
-/// Create the metadata tables required for pg_tviews extension
+/// Create the metadata tables required for `pg_tviews` extension
 pub fn create_metadata_tables() -> TViewResult<()> {
     Spi::run(
         r"

@@ -4,7 +4,7 @@ use crate::error::{TViewError, TViewResult};
 
 /// Create a TVIEW with atomic rollback on error
 ///
-/// This is the main entry point for CREATE TABLE tv_ AS SELECT .... PostgreSQL's transaction
+/// This is the main entry point for CREATE TABLE tv_ AS SELECT .... `PostgreSQL`'s transaction
 /// system automatically provides atomicity - if any step fails, all changes
 /// are rolled back.
 ///
@@ -427,7 +427,7 @@ fn register_metadata(
 
 /// Transform a raw SELECT statement into TVIEW format
 ///
-/// Takes a simple SELECT like "SELECT id, name, price FROM tb_product"
+/// Takes a simple SELECT like "SELECT id, name, price FROM `tb_product`"
 /// and transforms it into a proper TVIEW format with:
 /// - pk_<entity> column (generated from the source table's primary key or id column)
 /// - id column (UUID, generated from the source table's primary key)
