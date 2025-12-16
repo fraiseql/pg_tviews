@@ -4,6 +4,13 @@ use crate::error::{TViewError, TViewResult};
 use crate::config::MAX_DEPENDENCY_DEPTH;
 
 #[derive(Debug, Clone)]
+struct DependencyNode {
+    oid: pg_sys::Oid,
+    depth: usize,
+    relkind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DependencyGraph {
     pub base_tables: Vec<pg_sys::Oid>,
     pub helper_views: Vec<String>,
@@ -27,15 +34,46 @@ pub struct DependencyGraph {
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
 pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
-    let view_oid = get_oid(view_name)?;
-    let mut base_tables = HashSet::new();
-    let mut all_dependencies = HashSet::new();
-    let mut visited = HashSet::new();
-    let mut visiting = HashSet::new();  // For cycle detection
-    let mut queue = VecDeque::new();
-    let mut max_depth = 0;
+    let view_oid = get_view_oid(view_name)?;
+    let dependencies = traverse_dependencies(view_oid, view_name, 0)?;
+    let base_tables = filter_base_tables(&dependencies);
+    let max_depth = dependencies.iter().map(|d| d.depth).max().unwrap_or(0);
 
-    queue.push_back((view_oid, 0usize));  // (oid, depth)
+    Ok(DependencyGraph {
+        base_tables,
+        helper_views: Vec::new(),  // Filled in later
+        all_dependencies: dependencies.into_iter().map(|d| d.oid).collect(),
+        max_depth_reached: max_depth,
+    })
+}
+
+// Helper functions for find_base_tables()
+
+fn get_view_oid(view_name: &str) -> TViewResult<pg_sys::Oid> {
+    Spi::get_one::<pg_sys::Oid>(&format!(
+        "SELECT '{view_name}'::regclass::oid"
+    ))
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Get OID for '{view_name}'"),
+        pg_error: format!("{e:?}"),
+    })?
+    .ok_or_else(|| TViewError::DependencyResolutionFailed {
+        view_name: view_name.to_string(),
+        reason: "Object not found".to_string(),
+    })
+}
+
+fn traverse_dependencies(
+    view_oid: pg_sys::Oid,
+    _view_name: &str,
+    initial_depth: usize,
+) -> TViewResult<Vec<DependencyNode>> {
+    let mut all_dependencies = Vec::new();
+    let mut visited = HashSet::new();
+    let mut visiting = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    queue.push_back((view_oid, initial_depth));
 
     while let Some((current_oid, depth)) = queue.pop_front() {
         // Check depth limit
@@ -46,11 +84,8 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
             });
         }
 
-        max_depth = max_depth.max(depth);
-
         // Check for cycles
         if visiting.contains(&current_oid) {
-            // Build cycle path for error message
             let cycle = reconstruct_cycle(&visiting, current_oid);
             return Err(TViewError::CircularDependency { cycle });
         }
@@ -62,210 +97,146 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 
         visiting.insert(current_oid);
 
-        // Debug: Log what we're querying
+        // Debug logging
         if let Ok(name) = get_object_name(current_oid) {
             info!("Checking dependencies for: {} (OID {:?}) at depth {}", name, current_oid, depth);
         }
 
-        // CORRECTED ALGORITHM: Views depend on tables via `pg_rewrite` rules!
-        // 1. Find the `pg_rewrite` rule for this view/relation
-        // 2. Query dependencies of the RULE (not the view directly)
-        // 3. The rule's dependencies point to the actual base tables/views
-        let deps_query = format!(
-            "SELECT DISTINCT d.refobjid, d.refobjsubid, d.deptype, c.relkind
-             FROM pg_rewrite r
-             JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
-             LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
-             WHERE r.ev_class = {view_oid:?}
-               AND d.deptype IN ('n', 'a')
-               AND d.refclassid = 'pg_class'::regclass::oid
-               AND c.oid != {current_oid:?}"  // Exclude self-reference
-        );
-
-        info!("Executing query: {}", deps_query);
-
-        let deps: Vec<(pg_sys::Oid, i32, String, Option<String>)> =
-            Spi::connect(|client| {
-                let rows = client.select(&deps_query, None, &[])?;
-                let mut results = Vec::new();
-
-                for row in rows {
-                    let refobjid = row["refobjid"].value::<pg_sys::Oid>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "Extract refobjid".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?
-                        .ok_or_else(|| TViewError::CatalogError {
-                            operation: "Extract refobjid".to_string(),
-                            pg_error: "NULL OID in pg_depend".to_string(),
-                        })?;
-                    let refobjsubid = row["refobjsubid"].value::<i32>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "Extract refobjsubid".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?.unwrap_or(0);
-                    // deptype is "char" (single byte), not text/String
-                    let deptype = row["deptype"].value::<i8>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "Extract deptype".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?
-                        .map(|c| (c as u8 as char).to_string())
-            .unwrap_or_default();
-                    // relkind is also "char" (single byte)
-                    let relkind = row["relkind"].value::<i8>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "Extract relkind".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?
-                        .map(|c| (c as u8 as char).to_string());
-
-                    results.push((refobjid, refobjsubid, deptype, relkind));
-                }
-
-                Ok(Some(results))
-            })
-            .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
-                query: deps_query.clone(),
-                error: e.to_string(),
-            })?
-            .unwrap_or_default();
-
-        info!("Found {} dependency rows", deps.len());
+        // Query dependencies
+        let deps = query_dependencies(view_oid, current_oid)?;
 
         // Process each dependency
-        for (dep_oid, _subid, _deptype, relkind_opt) in deps {
-            all_dependencies.insert(dep_oid);
+        for (dep_oid, relkind_opt) in deps {
+            // Add to all dependencies
+            all_dependencies.push(DependencyNode {
+                oid: dep_oid,
+                depth,
+                relkind: relkind_opt.clone(),
+            });
 
-            // Skip if no relkind (not a pg_class object)
-            let Some(relkind) = relkind_opt else {
-                info!("Skipping dependency OID {:?} (not in pg_class)", dep_oid);
-                continue;
-            };
-
-            if let Ok(dep_name) = get_object_name(dep_oid) {
-                info!("  Found dependency: {} (OID {:?}, relkind '{}')", dep_name, dep_oid, relkind);
+            if let Some("v") = relkind_opt.as_deref() {
+                // View - recurse
+                queue.push_back((dep_oid, depth + 1));
             }
-
-            match relkind.as_str() {
-                "r" => {
-                    // Regular table - add to base_tables
-                    base_tables.insert(dep_oid);
-                    if let Ok(name) = get_object_name(dep_oid) {
-                        info!("  -> Base table: {}", name);
-                    }
-                }
-                "v" => {
-                    // View - recurse
-                    queue.push_back((dep_oid, depth + 1));
-                    if let Ok(name) = get_object_name(dep_oid) {
-                        info!("  -> View (will recurse): {} at depth {}", name, depth + 1);
-                    }
-                }
-                "m" => {
-                    // Materialized view - treat as base table
-                    base_tables.insert(dep_oid);
-                    if let Ok(name) = get_object_name(dep_oid) {
-                        info!("  -> Materialized view: {}", name);
-                    }
-                }
-                "p" => {
-                    // Partitioned table - treat as base table
-                    base_tables.insert(dep_oid);
-                    if let Ok(name) = get_object_name(dep_oid) {
-                        info!("  -> Partitioned table: {}", name);
-                    }
-                }
-                _ => {
-                    // Ignore other types (indexes, sequences, etc.)
-                    if crate::config::DEBUG_DEPENDENCIES {
-                        if let Ok(name) = get_object_name(dep_oid) {
-                            info!("  -> Ignoring '{}' with relkind '{}'", name, relkind);
-                        }
-                    }
-                }
-            }
+            // Base tables and others handled later
         }
 
         visiting.remove(&current_oid);
         visited.insert(current_oid);
     }
 
-    Ok(DependencyGraph {
-        base_tables: base_tables.into_iter().collect(),
-        helper_views: Vec::new(),  // Filled in later
-        all_dependencies: all_dependencies.into_iter().collect(),
-        max_depth_reached: max_depth,
+    Ok(all_dependencies)
+}
+
+fn query_dependencies(view_oid: pg_sys::Oid, current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid, Option<String>)>> {
+    let deps_query = format!(
+        "SELECT DISTINCT d.refobjid, c.relkind
+         FROM pg_rewrite r
+         JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
+         LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
+         WHERE r.ev_class = {view_oid:?}
+           AND d.refclassid = 'pg_class'::regclass::oid
+           AND c.oid != {current_oid:?}"
+    );
+
+    info!("Executing query: {}", deps_query);
+
+    let deps = Spi::connect(|client| {
+        let rows = client.select(&deps_query, None, &[])?;
+        let mut results = Vec::new();
+
+        for row in rows {
+            let refobjid = row["refobjid"].value::<pg_sys::Oid>()
+                .map_err(|e| TViewError::CatalogError {
+                    operation: "Extract refobjid".to_string(),
+                    pg_error: format!("{e:?}"),
+                })?
+                .ok_or_else(|| TViewError::CatalogError {
+                    operation: "Extract refobjid".to_string(),
+                    pg_error: "NULL OID in pg_depend".to_string(),
+                })?;
+
+            #[allow(clippy::cast_sign_loss)]
+            let relkind = row["relkind"].value::<i8>()
+                .map_err(|e| TViewError::CatalogError {
+                    operation: "Extract relkind".to_string(),
+                    pg_error: format!("{e:?}"),
+                })?
+                .map(|c| (c as u8 as char).to_string());
+
+            results.push((refobjid, relkind));
+        }
+
+        Ok(Some(results))
     })
+    .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
+        query: deps_query.clone(),
+        error: e.to_string(),
+    })?
+    .unwrap_or_default();
+
+    info!("Found {} dependency rows", deps.len());
+    Ok(deps)
 }
 
-/// Reconstruct cycle path for error reporting
-fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) -> Vec<String> {
-    let mut cycle_names = Vec::new();
+fn filter_base_tables(dependencies: &[DependencyNode]) -> Vec<pg_sys::Oid> {
+    let mut base_tables = HashSet::new();
 
-    for &oid in visiting {
-        if let Ok(name) = get_object_name(oid) {
-            cycle_names.push(name);
-        }
+    for dep in dependencies {
+        if let Some(relkind) = &dep.relkind {
+            if let Ok(dep_name) = get_object_name(dep.oid) {
+                info!("  Found dependency: {} (OID {:?}, relkind '{}')", dep_name, dep.oid, relkind);
+            }
 
-        if oid == cycle_oid {
-            break;
-        }
-    }
-
-    // Add the repeated node to show cycle
-    if let Ok(name) = get_object_name(cycle_oid) {
-        cycle_names.push(name);
-    }
-
-    cycle_names
-}
-
-/// Find all helper views (`v_*`) used by a SELECT statement.
-///
-/// # Errors
-/// Returns error if regex compilation fails (internal error).
-pub fn find_helper_views(select_sql: &str) -> TViewResult<Vec<String>> {
-    let mut helpers = Vec::new();
-
-    // Simple regex to find `v_*` references
-    // LIMITATION: This is v1 - doesn't handle all cases (subqueries, CTEs, etc.)
-    // TODO: Use PostgreSQL parser API in v2
-    let re = regex::Regex::new(r"\bv_(\w+)\b")
-        .map_err(|e| TViewError::InternalError {
-            message: format!("Regex compilation failed: {e}"),
-            file: file!(),
-            line: line!(),
-        })?;
-
-    for cap in re.captures_iter(select_sql) {
-        let helper_name = format!("v_{}", &cap[1]);
-
-        // Verify view actually exists
-        if view_exists(&helper_name)? {
-            if !helpers.contains(&helper_name) {
-                helpers.push(helper_name);
+            match relkind.as_str() {
+                "r" => {
+                    // Regular table
+                    base_tables.insert(dep.oid);
+                    if let Ok(name) = get_object_name(dep.oid) {
+                        info!("  -> Base table: {}", name);
+                    }
+                }
+                "m" => {
+                    // Materialized view - treat as base table
+                    base_tables.insert(dep.oid);
+                    if let Ok(name) = get_object_name(dep.oid) {
+                        info!("  -> Materialized view: {}", name);
+                    }
+                }
+                "p" => {
+                    // Partitioned table - treat as base table
+                    base_tables.insert(dep.oid);
+                    if let Ok(name) = get_object_name(dep.oid) {
+                        info!("  -> Partitioned table: {}", name);
+                    }
+                }
+                "v" => {
+                    // View - already handled in traversal
+                }
+                _ => {
+                    // Ignore other types
+                    if crate::config::DEBUG_DEPENDENCIES {
+                        if let Ok(name) = get_object_name(dep.oid) {
+                            info!("  -> Ignoring '{}' with relkind '{}'", name, relkind);
+                        }
+                    }
+                }
             }
         } else {
-            warning!("Helper view '{}' referenced in SELECT but does not exist", helper_name);
+            info!("Skipping dependency OID {:?} (not in pg_class)", dep.oid);
         }
     }
 
-    Ok(helpers)
+    base_tables.into_iter().collect()
 }
 
-fn get_oid(object_name: &str) -> TViewResult<pg_sys::Oid> {
-    Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT '{object_name}'::regclass::oid"
-    ))
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for '{object_name}'"),
-        pg_error: format!("{e:?}"),
-    })?
-    .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: object_name.to_string(),
-        reason: "Object not found".to_string(),
-    })
+fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, current: pg_sys::Oid) -> Vec<String> {
+    // Simple cycle representation: just list the OIDs in visiting set + current
+    visiting
+        .iter()
+        .chain(std::iter::once(&current))
+        .filter_map(|oid| get_object_name(*oid).ok())
+        .collect()
 }
 
 #[allow(dead_code)]
@@ -297,17 +268,7 @@ fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
     })
 }
 
-fn view_exists(view_name: &str) -> TViewResult<bool> {
-    Spi::get_one::<bool>(&format!(
-        "SELECT COUNT(*) > 0 FROM pg_class
-         WHERE relname = '{view_name}' AND relkind IN ('v', 'm')"
-    ))
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check existence of '{view_name}'"),
-        pg_error: format!("{e:?}"),
-    })
-    .map(|opt| opt.unwrap_or(false))
-}
+
 
 #[cfg(feature = "pg_test")]
 #[pg_schema]

@@ -40,9 +40,9 @@ use crate::TViewResult;
 /// }
 ///
 /// // Use:
-/// refresh_bulk("post", vec![1, 2, 3, 4, 5])?;
+/// refresh_bulk("post", &[1, 2, 3, 4, 5])?;
 /// ```
-pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
+pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     if pks.is_empty() {
         return Ok(());
     }
@@ -67,7 +67,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
     Spi::connect(|client| {
         // Create PostgreSQL BIGINT[] array from Vec<i64>
         let args = vec![unsafe {
-            DatumWithOid::new(pks.clone(), PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value())
+            DatumWithOid::new(pks.to_vec(), PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value())
         }];
         let rows = client.select(
             &query,
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn test_refresh_bulk_empty() {
         // Empty PK list should succeed without doing anything
-        assert!(refresh_bulk("test", vec![]).is_ok());
+        assert!(refresh_bulk("test", &[]).is_ok());
     }
 
     #[test]

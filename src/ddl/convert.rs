@@ -328,7 +328,7 @@ fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
         if let Some(bases_part) = comment
             .split("TVIEW_BASES:")
             .nth(1)
-            .map(|s| s.trim())
+            .map(str::trim)
         {
             // Parse comma-separated list
             let tables: Vec<String> = bases_part

@@ -69,7 +69,7 @@ fn refresh_individual(entity: &str, pk_values: &[i64]) -> usize {
 
     for &pk in pk_values {
         match refresh_single_row(entity, pk) {
-            Ok(_) => refreshed += 1,
+            Ok(()) => refreshed += 1,
             Err(e) => {
                 warning!("Failed to refresh {} row {}: {}", entity, pk, e);
                 // Continue with other rows
@@ -96,7 +96,7 @@ fn refresh_batch_optimized(entity: &str, pk_values: &[i64]) -> TViewResult<usize
 
     // Build IN clause for PK values
     let pk_list = pk_values.iter()
-        .map(|pk| pk.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
 

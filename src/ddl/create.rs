@@ -97,11 +97,11 @@ pub fn create_tview(
 
     // Step 8: Install triggers on base tables
     info!("Step 8: Installing triggers");
-    if !dep_graph.base_tables.is_empty() {
+    if dep_graph.base_tables.is_empty() {
+        warning!("No base table dependencies found for {}", tview_name);
+    } else {
         crate::dependency::install_triggers(&dep_graph.base_tables, entity_name)?;
         info!("Installed triggers on {} base tables", dep_graph.base_tables.len());
-    } else {
-        warning!("No base table dependencies found for {}", tview_name);
     }
 
     // Invalidate caches since new TVIEW was created

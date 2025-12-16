@@ -323,6 +323,7 @@ fn pg_tviews_analyze_select(sql: &str) -> JsonB {
 
 /// Infer column types from `PostgreSQL` catalog
 #[pg_extern]
+#[allow(clippy::needless_pass_by_value)]
 fn pg_tviews_infer_types(
     table_name: &str,
     columns: Vec<String>,

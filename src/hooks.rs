@@ -69,10 +69,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // Returns true if the hook handled the statement, false if it should pass through
     let result = std::panic::catch_unwind(|| -> bool {
         // Log ALL hook invocations to debug why DROP isn't being caught
-        let query_str = if !query_string.is_null() {
-            CStr::from_ptr(query_string).to_string_lossy().to_string()
-        } else {
+        let query_str = if query_string.is_null() {
             "[NULL]".to_string()
+        } else {
+            CStr::from_ptr(query_string).to_string_lossy().to_string()
         };
 
 
@@ -115,7 +115,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
 
-            let ctas = utility_stmt as *mut pg_sys::CreateTableAsStmt;
+            #[allow(clippy::cast_ptr_alignment)]
+            let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
             if handle_create_table_as(ctas, query_string) {
                 // We handled it - don't call standard utility
 
@@ -127,7 +128,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Check for DROP TABLE
         if node_tag == pg_sys::NodeTag::T_DropStmt {
             info!("  ✓ Detected T_DropStmt!");
-            let drop_stmt = utility_stmt as *mut pg_sys::DropStmt;
+            #[allow(clippy::cast_ptr_alignment)]
+            let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
             if handle_drop_table(drop_stmt, query_string) {
                 // We handled it - don't call standard utility
                 info!("  ✓ DROP was handled by hook, NOT calling standard utility");
@@ -146,7 +148,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         Err(panic_info) => {
             // PANIC in ProcessUtility hook - log it and pass through to standard utility!
             let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
+                (*s).to_string()
             } else if let Some(s) = panic_info.downcast_ref::<String>() {
                 s.clone()
             } else {
@@ -219,34 +221,31 @@ unsafe fn handle_create_table_as(
     }
 
     // Get the SELECT query
-    let select_sql = if !query_string.is_null() {
-        match CStr::from_ptr(query_string).to_str() {
-            Ok(sql) => {
-                info!("Full query string: {}", sql);
-                // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
-                // We need to find the AS that comes after the table name, not column aliases
-                // Strategy: Find "CREATE TABLE <name> AS" pattern
-                let sql_lower = sql.to_lowercase();
-                // Find the table name position (we already know it's tv_<entity>)
-                let table_pattern = format!("{} as", table_name.to_lowercase());
-                info!("Looking for pattern: '{}'", table_pattern);
+    let select_sql = if query_string.is_null() {
+        error!("No query string provided");
+    } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
+        info!("Full query string: {}", sql);
+        // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
+        // We need to find the AS that comes after the table name, not column aliases
+        // Strategy: Find "CREATE TABLE <name> AS" pattern
+        let sql_lower = sql.to_lowercase();
+        // Find the table name position (we already know it's tv_<entity>)
+        let table_pattern = format!("{} as", table_name.to_lowercase());
+        info!("Looking for pattern: '{}'", table_pattern);
 
-                if let Some(table_pos) = sql_lower.find(&table_pattern) {
-                    // Found "tv_<entity> AS" - skip past it
-                    let select_start = table_pos + table_pattern.len();
-                    info!("Found table+AS pattern at position {}, SELECT starts at {}", table_pos, select_start);
-                    let select_part = sql[select_start..].trim();
-                    info!("Extracted SELECT part: {}", select_part);
-                    // Remove trailing semicolon if present
-                    select_part.trim_end_matches(';').trim().to_string()
-                } else {
-                    error!("Could not find '{}' in query", table_pattern);
-                }
-            }
-            Err(_) => error!("Failed to parse query string"),
+        if let Some(table_pos) = sql_lower.find(&table_pattern) {
+            // Found "tv_<entity> AS" - skip past it
+            let select_start = table_pos + table_pattern.len();
+            info!("Found table+AS pattern at position {}, SELECT starts at {}", table_pos, select_start);
+            let select_part = sql[select_start..].trim();
+            info!("Extracted SELECT part: {}", select_part);
+            // Remove trailing semicolon if present
+            select_part.trim_end_matches(';').trim().to_string()
+        } else {
+            error!("Could not find '{}' in query", table_pattern);
         }
     } else {
-        error!("No query string provided");
+        error!("Failed to parse query string")
     };
 
     info!("Validating TVIEW DDL syntax for '{}'", table_name);
@@ -380,15 +379,12 @@ unsafe fn handle_drop_table(
         return false;
     }
 
-    let sql = match CStr::from_ptr(query_string).to_str() {
-        Ok(s) => {
-            info!("  query_string = '{}'", s);
-            s
-        }
-        Err(_) => {
-            info!("  failed to parse query_string, returning false");
-            return false;
-        }
+    let sql = if let Ok(s) = CStr::from_ptr(query_string).to_str() {
+        info!("  query_string = '{}'", s);
+        s
+    } else {
+        info!("  failed to parse query_string, returning false");
+        return false;
     };
 
     // Parse DROP TABLE statement to find tv_* tables
@@ -407,7 +403,7 @@ unsafe fn handle_drop_table(
     let mut found_tv_table = false;
     let mut table_name = String::new();
 
-    for word in words.iter() {
+    for word in &words {
         // Remove trailing punctuation (comma, semicolon)
         let clean_word = word.trim_end_matches([',', ';']);
 

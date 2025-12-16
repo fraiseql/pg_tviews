@@ -184,7 +184,7 @@ fn extract_column_name(part: &str) -> Result<String, String> {
         if alias_part.is_empty() {
             return Err("Empty alias after AS".to_string());
         }
-        return Ok(alias_part.to_string());
+        return Ok((*alias_part).to_string());
     }
 
     // No alias - extract column name from expression

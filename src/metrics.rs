@@ -78,6 +78,7 @@ impl QueueMetrics {
 
 /// Public interface for metrics tracking
 pub mod metrics_api {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
 
     /// Record the start of a refresh operation
@@ -89,7 +90,7 @@ pub mod metrics_api {
     pub fn record_refresh_complete(
         refresh_count: usize,
         iteration_count: usize,
-        timer: RefreshTimer,
+        timer: &RefreshTimer,
     ) {
         METRICS.with(|m| {
             let mut metrics = m.borrow_mut();
@@ -240,25 +241,31 @@ pub struct QueueStats {
 
 impl QueueStats {
     /// Convert timing to milliseconds
+    #[allow(clippy::cast_precision_loss)]
     pub fn total_timing_ms(&self) -> f64 {
+        // Safe: Metrics counters won't exceed f64 precision (2^53)
         self.total_timing_ns as f64 / 1_000_000.0
     }
 
     /// Calculate cache hit rates
+    #[allow(clippy::cast_precision_loss)]
     pub fn graph_cache_hit_rate(&self) -> f64 {
         let total = self.graph_cache_hits + self.graph_cache_misses;
         if total == 0 {
             0.0
         } else {
+            // Safe: Cache counters won't exceed f64 precision (2^53)
             self.graph_cache_hits as f64 / total as f64
         }
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub fn table_cache_hit_rate(&self) -> f64 {
         let total = self.table_cache_hits + self.table_cache_misses;
         if total == 0 {
             0.0
         } else {
+            // Safe: Cache counters won't exceed f64 precision (2^53)
             self.table_cache_hits as f64 / total as f64
         }
     }

@@ -170,26 +170,25 @@ impl TViewError {
     /// Get `PostgreSQL` SQLSTATE code for this error
     #[must_use]
     pub fn sqlstate(&self) -> &'static str {
-        use TViewError::*;
         match self {
-            MetadataNotFound { .. } => "P0001", // Raise exception
-            TViewAlreadyExists { .. } => "42710", // Duplicate object
-            InvalidTViewName { .. } => "42602", // Invalid name
+            Self::MetadataNotFound { .. } => "P0001", // Raise exception
+            Self::TViewAlreadyExists { .. } => "42710", // Duplicate object
+            Self::InvalidTViewName { .. } => "42602", // Invalid name
 
-            CircularDependency { .. } | DependencyCycle { .. } => "55P03", // Lock not available (cycle)
-            DependencyDepthExceeded { .. } | CascadeDepthExceeded { .. } | PropagationDepthExceeded { .. } => "54001", // Statement too complex
-            DependencyResolutionFailed { .. } => "55000", // Object not in prerequisite state
+            Self::CircularDependency { .. } | Self::DependencyCycle { .. } => "55P03", // Lock not available (cycle)
+            Self::DependencyDepthExceeded { .. } | Self::CascadeDepthExceeded { .. } | Self::PropagationDepthExceeded { .. } => "54001", // Statement too complex
+            Self::DependencyResolutionFailed { .. } => "55000", // Object not in prerequisite state
 
-            InvalidSelectStatement { .. } => "42601", // Syntax error
-            RequiredColumnMissing { .. } => "42703", // Undefined column
-            TypeInferenceFailed { .. } => "42804", // Datatype mismatch
+            Self::InvalidSelectStatement { .. } => "42601", // Syntax error
+            Self::RequiredColumnMissing { .. } => "42703", // Undefined column
+            Self::TypeInferenceFailed { .. } => "42804", // Datatype mismatch
 
-            JsonbIvmNotInstalled | ExtensionVersionMismatch { .. } => "58P01", // Undefined file (extension)
+            Self::JsonbIvmNotInstalled | Self::ExtensionVersionMismatch { .. } => "58P01", // Undefined file (extension)
 
-            LockTimeout { .. } | DeadlockDetected { .. } => "40P01", // Deadlock detected (timeout)
+            Self::LockTimeout { .. } | Self::DeadlockDetected { .. } => "40P01", // Deadlock detected (timeout)
 
-            RefreshFailed { .. } | CatalogError { .. } | SpiError { .. } | SerializationError { .. } | ConfigError { .. } | CacheError { .. } | CallbackError { .. } | MetricsError { .. } | InternalError { .. } => "XX000", // Internal error
-            BatchTooLarge { .. } => "54000", // Program limit exceeded
+            Self::RefreshFailed { .. } | Self::CatalogError { .. } | Self::SpiError { .. } | Self::SerializationError { .. } | Self::ConfigError { .. } | Self::CacheError { .. } | Self::CallbackError { .. } | Self::MetricsError { .. } | Self::InternalError { .. } => "XX000", // Internal error
+            Self::BatchTooLarge { .. } => "54000", // Program limit exceeded
         }
     }
 
@@ -202,90 +201,89 @@ impl TViewError {
 
 impl fmt::Display for TViewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use TViewError::*;
         match self {
-            MetadataNotFound { entity } => {
+            Self::MetadataNotFound { entity } => {
                 write!(f, "TVIEW metadata not found for entity '{entity}'")
             }
-            TViewAlreadyExists { name } => {
+            Self::TViewAlreadyExists { name } => {
                 write!(f, "TVIEW '{name}' already exists")
             }
-            InvalidTViewName { name, reason } => {
+            Self::InvalidTViewName { name, reason } => {
                 write!(f, "Invalid TVIEW name '{name}': {reason}")
             }
-            CircularDependency { cycle } => {
+            Self::CircularDependency { cycle } => {
                 write!(f, "Circular dependency detected: {}", cycle.join(" → "))
             }
-            DependencyDepthExceeded { depth, max_depth } => {
+            Self::DependencyDepthExceeded { depth, max_depth } => {
                 write!(f, "Dependency depth {depth} exceeds maximum {max_depth}")
             }
-            DependencyResolutionFailed { view_name, reason } => {
+            Self::DependencyResolutionFailed { view_name, reason } => {
                 write!(f, "Failed to resolve dependencies for '{view_name}': {reason}")
             }
-            InvalidSelectStatement { sql, reason } => {
+            Self::InvalidSelectStatement { sql, reason } => {
                 write!(f, "Invalid SELECT statement: {reason}\nSQL: {}",
                        if sql.len() > 100 { &sql[..100] } else { sql })
             }
-            RequiredColumnMissing { column_name, context } => {
+            Self::RequiredColumnMissing { column_name, context } => {
                 write!(f, "Required column '{column_name}' missing in {context}")
             }
-            TypeInferenceFailed { column_name, reason } => {
+            Self::TypeInferenceFailed { column_name, reason } => {
                 write!(f, "Failed to infer type for column '{column_name}': {reason}")
             }
-            JsonbIvmNotInstalled => {
+            Self::JsonbIvmNotInstalled => {
                 write!(f, "Required extension 'jsonb_ivm' is not installed. Run: CREATE EXTENSION jsonb_ivm;")
             }
-            ExtensionVersionMismatch { extension, required, found } => {
+            Self::ExtensionVersionMismatch { extension, required, found } => {
                 write!(f, "Extension '{extension}' version mismatch: required {required}, found {found}")
             }
-            LockTimeout { resource, timeout_ms } => {
+            Self::LockTimeout { resource, timeout_ms } => {
                 write!(f, "Lock timeout on resource '{resource}' after {timeout_ms}ms")
             }
-            DeadlockDetected { context } => {
+            Self::DeadlockDetected { context } => {
                 write!(f, "Deadlock detected in {context}")
             }
-            CascadeDepthExceeded { current_depth, max_depth } => {
+            Self::CascadeDepthExceeded { current_depth, max_depth } => {
                 write!(f, "Cascade depth {current_depth} exceeds maximum {max_depth}. Possible infinite cascade loop.")
             }
-            RefreshFailed { entity, pk_value, reason } => {
+            Self::RefreshFailed { entity, pk_value, reason } => {
                 write!(f, "Failed to refresh TVIEW '{entity}' row {pk_value}: {reason}")
             }
-            BatchTooLarge { size, max_size } => {
+            Self::BatchTooLarge { size, max_size } => {
                 write!(f, "Batch size {size} exceeds maximum {max_size}")
             }
-            DependencyCycle { entities } => {
+            Self::DependencyCycle { entities } => {
                 write!(f, "Dependency cycle detected in entity graph: {}", entities.join(" -> "))
             }
-            PropagationDepthExceeded { max_depth, processed } => {
+            Self::PropagationDepthExceeded { max_depth, processed } => {
                 write!(
                     f,
                     "Propagation exceeded maximum depth of {max_depth} iterations ({processed} entities processed). \
                      Possible infinite loop or extremely deep dependency chain."
                 )
             }
-            CatalogError { operation, pg_error } => {
+            Self::CatalogError { operation, pg_error } => {
                 write!(f, "Catalog operation '{operation}' failed: {pg_error}")
             }
-            SpiError { query, error } => {
+            Self::SpiError { query, error } => {
                 write!(f, "SPI query failed: {error}\nQuery: {}",
                        if query.len() > 100 { &query[..100] } else { query })
             }
-            SerializationError { message } => {
+            Self::SerializationError { message } => {
                 write!(f, "Serialization error: {message}")
             }
-            ConfigError { setting, value, reason } => {
+            Self::ConfigError { setting, value, reason } => {
                 write!(f, "Configuration error for '{setting}': {reason} (value: {value})")
             }
-            CacheError { cache_name, reason } => {
+            Self::CacheError { cache_name, reason } => {
                 write!(f, "Cache '{cache_name}' error: {reason}")
             }
-            CallbackError { callback_name, error } => {
+            Self::CallbackError { callback_name, error } => {
                 write!(f, "FFI callback '{callback_name}' failed: {error}")
             }
-            MetricsError { operation, error } => {
+            Self::MetricsError { operation, error } => {
                 write!(f, "Metrics operation '{operation}' failed: {error}")
             }
-            InternalError { message, file, line } => {
+            Self::InternalError { message, file, line } => {
                 write!(f, "Internal error at {file}:{line}: {message}\nPlease report this bug.")
             }
         }
@@ -351,9 +349,8 @@ impl From<TViewError> for pgrx::spi::Error {
         let _message = e.to_string();
 
         // Map to pgrx error levels
-        let _level = pgrx::PgLogLevel::ERROR;
-
-        pgrx::spi::Error::InvalidPosition // TODO: Map properly once pgrx API clarified
+        // TODO: Map properly once pgrx API clarified
+        pgrx::spi::Error::InvalidPosition
     }
 }
 

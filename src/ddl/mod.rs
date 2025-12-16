@@ -83,7 +83,7 @@ fn pg_tviews_refresh(tview_name: &str) -> Result<String, String> {
     );
 
     match Spi::run(&sql) {
-        Ok(_) => Ok(format!("TVIEW '{tview_name}' refreshed successfully")),
+        Ok(()) => Ok(format!("TVIEW '{tview_name}' refreshed successfully")),
         Err(e) => Err(format!("Failed to refresh TVIEW: {e}")),
     }
 }

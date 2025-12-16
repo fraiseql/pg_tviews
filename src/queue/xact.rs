@@ -308,7 +308,7 @@ fn handle_pre_commit() -> TViewResult<()> {
 
                 // Bulk refresh this entity
                 // FAIL-FAST: Propagate error immediately to abort transaction
-                crate::refresh::refresh_bulk(&entity, pks)?;
+                crate::refresh::refresh_bulk(&entity, &pks)?;
 
                 // Discover parents for all keys in this entity group
                 for key in &entity_keys {
@@ -342,7 +342,7 @@ fn handle_pre_commit() -> TViewResult<()> {
     crate::metrics::metrics_api::record_refresh_complete(
         processed.len(),
         iteration - 1,
-        refresh_timer,
+        &refresh_timer,
     );
 
     Ok(())
@@ -397,7 +397,8 @@ fn handle_prepare() -> TViewResult<()> {
 
     // Serialize queue using JSONB format (configurable in future)
     let serialized = super::persistence::SerializedQueue::from_queue(queue);
-    let queue_size = serialized.keys.len() as i32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let queue_size = serialized.keys.len() as i32; // Safe: Queue size is bounded by GUC max_prepared_transactions (typically < 1000)
     let queue_jsonb = serialized.into_jsonb()?;
 
     // Store in persistent table

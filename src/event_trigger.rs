@@ -106,6 +106,7 @@ struct DdlCommand {
 /// 2. Drop the table `PostgreSQL` created
 /// 3. Create proper TVIEW using standard `create_tview()` flow
 #[pg_extern]
+#[allow(clippy::needless_pass_by_value)]
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
     info!("pg_tviews_convert_table: Converting '{}' to TVIEW", table_name);
 
