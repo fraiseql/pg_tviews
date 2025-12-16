@@ -20,7 +20,7 @@ jobs:
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
 
       - name: Build docs
-        run: cargo doc --no-deps --features pg16
+        run: cargo doc --no-deps --no-default-features --features pg16
 
       - name: Check for warnings
-        run: cargo doc --no-deps --features pg16 2>&1 | grep -q "warning:" && exit 1 || exit 0
+        run: cargo doc --no-deps --no-default-features --features pg16 2>&1 | grep -q "warning:" && exit 1 || exit 0
