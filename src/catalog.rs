@@ -272,7 +272,7 @@ impl TviewMeta {
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
-        Ok(TviewMeta {
+        Ok(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
                             query: String::new(),
@@ -347,11 +347,11 @@ impl TviewMeta {
 
 /// Represents a single dependency with its type, path, and match key.
 /// Used by the refresh engine to determine how to update related TVIEWs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyDetail {
     /// Type of dependency (Scalar, Array, etc.)
     pub dep_type: DependencyType,
-    /// JSONB path to the dependent data (e.g., ["author"] or ["comments"])
+    /// JSONB path to the dependent data (e.g., `["author"]` or `["comments"]`)
     pub path: Option<Vec<String>>,
     /// Key to match for array elements (e.g., "id")
     pub match_key: Option<String>,
@@ -375,16 +375,16 @@ impl Default for TviewMeta {
 
 /// Map a base table OID to its entity name
 ///
-/// Example: OID of tb_user → Some("user")
+/// Example: OID of `tb_user` → Some("user")
 ///
 /// Returns:
-/// - Ok(Some(entity)) if table is tracked in pg_tview_meta
+/// - Ok(Some(entity)) if table is tracked in `pg_tview_meta`
 /// - Ok(None) if table is not tracked
 /// - Err(...) on database error
 ///
 /// # Cached Version
 ///
-/// This function caches the mapping to avoid repeated pg_class queries.
+/// This function caches the mapping to avoid repeated `pg_class` queries.
 /// Performance improvement: 0.1ms → 0.001ms per trigger
 pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     crate::queue::cache::table_cache::entity_for_table_cached(table_oid)
