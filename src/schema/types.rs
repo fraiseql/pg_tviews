@@ -42,7 +42,7 @@ pub fn infer_column_types(
 /// Check if a table exists in the database
 ///
 /// # Errors
-/// Returns error if pg_class query fails
+/// Returns error if `pg_class` query fails
 pub fn table_exists(table_name: &str) -> TViewResult<bool> {
     let query = format!(
         "SELECT COUNT(*) = 1 FROM pg_class

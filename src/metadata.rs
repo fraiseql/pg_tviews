@@ -213,7 +213,7 @@ pub fn drop_metadata_tables() -> TViewResult<()> {
 /// Check if metadata tables exist
 ///
 /// # Errors
-/// Returns error if information_schema query fails
+/// Returns error if `information_schema` query fails
 pub fn metadata_tables_exist() -> TViewResult<bool> {
     let meta_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables
