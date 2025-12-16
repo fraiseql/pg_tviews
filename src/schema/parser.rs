@@ -43,7 +43,7 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     }
 
     // Split by commas, respecting parentheses and quotes
-    let parts = split_by_top_level_comma(select_clause)?;
+    let parts = split_by_top_level_comma(select_clause);
 
     for part in parts {
         let trimmed = part.trim();
@@ -89,7 +89,7 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
     }
 
     // Split by commas, respecting parentheses and quotes
-    let parts = split_by_top_level_comma(select_clause)?;
+    let parts = split_by_top_level_comma(select_clause);
 
     for part in parts {
         let trimmed = part.trim();
@@ -111,7 +111,7 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
 }
 
 /// Split string by commas, but only at top level (outside parentheses and quotes)
-fn split_by_top_level_comma(s: &str) -> Result<Vec<String>, String> {
+fn split_by_top_level_comma(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut paren_depth: i32 = 0;
@@ -164,7 +164,7 @@ fn split_by_top_level_comma(s: &str) -> Result<Vec<String>, String> {
         parts.push(current.trim().to_string());
     }
 
-    Ok(parts)
+    parts
 }
 
 /// Extract column name from a SELECT clause part

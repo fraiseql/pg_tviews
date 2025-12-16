@@ -29,6 +29,7 @@ use crate::refresh::bulk::quote_identifier;
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)]
 fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -62,10 +63,7 @@ fn pg_tview_trigger_handler<'a>(
     };
 
     // Enqueue refresh request (deferred to commit)
-    if let Err(e) = enqueue_refresh(&entity, pk_value) {
-        warning!("Failed to enqueue refresh for {}[{}]: {:?}", entity, pk_value, e);
-        return Ok(None);
-    }
+    enqueue_refresh(&entity, pk_value);
 
     // Register commit callback (once per transaction)
     if let Err(e) = register_commit_callback_once() {
@@ -79,6 +77,7 @@ fn pg_tview_trigger_handler<'a>(
 /// Statement-level trigger handler for bulk operations (Phase 9A)
 /// This is called once per statement instead of once per row
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)]
 fn pg_tview_stmt_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -119,10 +118,7 @@ fn pg_tview_stmt_trigger_handler<'a>(
     }
 
     // Bulk enqueue all changed PKs
-    if let Err(e) = enqueue_refresh_bulk(&entity, changed_pks) {
-        warning!("Failed to bulk enqueue refresh for {}: {:?}", entity, e);
-        return Ok(None);
-    }
+    enqueue_refresh_bulk(&entity, changed_pks);
 
     // Register commit callback (once per transaction)
     if let Err(e) = register_commit_callback_once() {

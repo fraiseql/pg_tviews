@@ -48,7 +48,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
         // Check for cycles
         if visiting.contains(&current_oid) {
             // Build cycle path for error message
-            let cycle = reconstruct_cycle(&visiting, current_oid)?;
+            let cycle = reconstruct_cycle(&visiting, current_oid);
             return Err(TViewError::CircularDependency { cycle });
         }
 
@@ -197,7 +197,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 }
 
 /// Reconstruct cycle path for error reporting
-fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) -> TViewResult<Vec<String>> {
+fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) -> Vec<String> {
     let mut cycle_names = Vec::new();
 
     for &oid in visiting {
@@ -215,7 +215,7 @@ fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) ->
         cycle_names.push(name);
     }
 
-    Ok(cycle_names)
+    cycle_names
 }
 
 /// Find all helper views (`v_*`) used by a SELECT statement

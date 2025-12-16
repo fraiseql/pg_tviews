@@ -21,10 +21,9 @@ static PREPARED_STATEMENTS: LazyLock<std::sync::Mutex<HashMap<String, String>>> 
 /// This ensures prepared statements are cleared when schema changes occur.
 /// Must be called from `_PG_init()`.
 #[allow(dead_code)]
-pub unsafe fn register_cache_invalidation_callbacks() -> TViewResult<()> {
+pub unsafe fn register_cache_invalidation_callbacks() {
     // Cache invalidation callbacks not available in this pgrx version
     // Prepared statements will be managed manually
-    Ok(())
 }
 
 /// Refresh a single entity+pk using cached prepared statement

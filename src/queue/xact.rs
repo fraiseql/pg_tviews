@@ -29,7 +29,7 @@ enum XactEvent {
 ///
 /// This uses `PostgreSQL`'s `RegisterXactCallback` FFI to install our handler.
 /// The callback will be invoked at transaction commit/abort.
-pub unsafe fn register_xact_callback() -> TViewResult<()> {
+pub unsafe fn register_xact_callback() {
     // Safety: We're calling into PostgreSQL FFI
     // The callback function must be extern "C" and #[no_mangle]
 
@@ -45,15 +45,13 @@ pub unsafe fn register_xact_callback() -> TViewResult<()> {
             std::ptr::null_mut(),
         );
     }
-
-    Ok(())
 }
 
 /// Register the subtransaction callback for savepoint support
 ///
 /// This uses `PostgreSQL`'s `RegisterSubXactCallback` FFI to handle savepoints.
 /// The callback will be invoked when savepoints are created/released/rolled back.
-pub unsafe fn register_subxact_callback() -> TViewResult<()> {
+pub unsafe fn register_subxact_callback() {
     // Safety: We're calling into PostgreSQL FFI
     // The callback function must be extern "C" and #[no_mangle]
 
@@ -63,8 +61,6 @@ pub unsafe fn register_subxact_callback() -> TViewResult<()> {
             std::ptr::null_mut(),
         );
     }
-
-    Ok(())
 }
 
 /// Transaction callback handler (invoked by `PostgreSQL`)

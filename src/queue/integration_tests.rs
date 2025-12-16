@@ -8,11 +8,11 @@ mod tests {
         clear_queue();
 
         // Simulate multiple trigger firings
-        enqueue_refresh("user", 1).unwrap();
-        enqueue_refresh("post", 10).unwrap();
-        enqueue_refresh("user", 1).unwrap(); // duplicate
-        enqueue_refresh("post", 20).unwrap();
-        enqueue_refresh("user", 2).unwrap();
+        enqueue_refresh("user", 1);
+        enqueue_refresh("post", 10);
+        enqueue_refresh("user", 1); // duplicate
+        enqueue_refresh("post", 20);
+        enqueue_refresh("user", 2);
 
         let snapshot = take_queue_snapshot();
 

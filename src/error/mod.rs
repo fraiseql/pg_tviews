@@ -175,35 +175,20 @@ impl TViewError {
             TViewAlreadyExists { .. } => "42710", // Duplicate object
             InvalidTViewName { .. } => "42602", // Invalid name
 
-            CircularDependency { .. } => "55P03", // Lock not available (cycle)
-            DependencyDepthExceeded { .. } => "54001", // Statement too complex
+            CircularDependency { .. } | DependencyCycle { .. } => "55P03", // Lock not available (cycle)
+            DependencyDepthExceeded { .. } | CascadeDepthExceeded { .. } | PropagationDepthExceeded { .. } => "54001", // Statement too complex
             DependencyResolutionFailed { .. } => "55000", // Object not in prerequisite state
 
             InvalidSelectStatement { .. } => "42601", // Syntax error
             RequiredColumnMissing { .. } => "42703", // Undefined column
             TypeInferenceFailed { .. } => "42804", // Datatype mismatch
 
-            JsonbIvmNotInstalled => "58P01", // Undefined file (extension)
-            ExtensionVersionMismatch { .. } => "58P01",
+            JsonbIvmNotInstalled | ExtensionVersionMismatch { .. } => "58P01", // Undefined file (extension)
 
-            LockTimeout { .. } => "40P01", // Deadlock detected (timeout)
-            DeadlockDetected { .. } => "40P01",
+            LockTimeout { .. } | DeadlockDetected { .. } => "40P01", // Deadlock detected (timeout)
 
-            CascadeDepthExceeded { .. } => "54001", // Statement too complex
-            RefreshFailed { .. } => "XX000", // Internal error
+            RefreshFailed { .. } | CatalogError { .. } | SpiError { .. } | SerializationError { .. } | ConfigError { .. } | CacheError { .. } | CallbackError { .. } | MetricsError { .. } | InternalError { .. } => "XX000", // Internal error
             BatchTooLarge { .. } => "54000", // Program limit exceeded
-
-            DependencyCycle { .. } => "55P03", // Lock not available (cycle)
-            PropagationDepthExceeded { .. } => "54001", // Statement too complex
-
-            CatalogError { .. } => "XX000",
-            SpiError { .. } => "XX000",
-            SerializationError { .. } => "XX000",
-            ConfigError { .. } => "XX000",
-            CacheError { .. } => "XX000",
-            CallbackError { .. } => "XX000",
-            MetricsError { .. } => "XX000",
-            InternalError { .. } => "XX000",
         }
     }
 
@@ -364,12 +349,7 @@ impl From<TViewError> for pgrx::spi::Error {
         let _message = e.to_string();
 
         // Map to pgrx error levels
-        let _level = match e {
-            TViewError::InternalError { .. } => pgrx::PgLogLevel::ERROR,
-            TViewError::CircularDependency { .. } => pgrx::PgLogLevel::ERROR,
-            TViewError::JsonbIvmNotInstalled => pgrx::PgLogLevel::ERROR,
-            _ => pgrx::PgLogLevel::ERROR,
-        };
+        let _level = pgrx::PgLogLevel::ERROR;
 
         pgrx::spi::Error::InvalidPosition // TODO: Map properly once pgrx API clarified
     }

@@ -84,11 +84,11 @@ fn infer_element_type_from_subquery(subquery: &str) -> Option<String> {
         // Table.column reference - try to infer from column name patterns
         let parts: Vec<&str> = selected_expr.split('.').collect();
         if let Some(col_name) = parts.last() {
-            return infer_type_from_column_name(col_name);
+            return Some(infer_type_from_column_name(col_name));
         }
     } else {
         // Simple column name
-        return infer_type_from_column_name(selected_expr);
+        return Some(infer_type_from_column_name(selected_expr));
     }
 
     // Fallback
@@ -96,40 +96,40 @@ fn infer_element_type_from_subquery(subquery: &str) -> Option<String> {
 }
 
 /// Infer `PostgreSQL` type from column name patterns
-fn infer_type_from_column_name(col_name: &str) -> Option<String> {
+fn infer_type_from_column_name(col_name: &str) -> String {
     let name = col_name.to_lowercase();
 
     // Common UUID column names
     if name == "id" || name.ends_with("_id") || name.contains("uuid") {
-        return Some("UUID".to_string());
+        return "UUID".to_string();
     }
 
     // Common TEXT column names
     if name.contains("name") || name.contains("title") || name.contains("text")
         || name.contains("description") || name.contains("email") {
-        return Some("TEXT".to_string());
+        return "TEXT".to_string();
     }
 
     // Common INTEGER column names
     if name.starts_with("pk_") || name.starts_with("fk_") || name.contains("count")
         || name.contains("number") || name.contains("size") {
-        return Some("INTEGER".to_string());
+        return "INTEGER".to_string();
     }
 
     // Common TIMESTAMP column names
     if name.contains("date") || name.contains("time") || name.contains("created")
         || name.contains("updated") || name.contains("timestamp") {
-        return Some("TIMESTAMP".to_string());
+        return "TIMESTAMP".to_string();
     }
 
     // Common BOOLEAN column names
     if name.starts_with("is_") || name.starts_with("has_") || name.contains("active")
         || name.contains("enabled") || name.contains("deleted") {
-        return Some("BOOLEAN".to_string());
+        return "BOOLEAN".to_string();
     }
 
     // Default to UUID for unknown patterns (most common in our use case)
-    Some("UUID".to_string())
+    "UUID".to_string()
 }
 
 /// Infer TVIEW schema from SELECT statement

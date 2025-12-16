@@ -8,7 +8,7 @@ use crate::TViewResult;
 /// This is the main entry point from triggers.
 /// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
-pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
+pub fn enqueue_refresh(entity: &str, pk: i64) {
     let key = RefreshKey {
         entity: entity.to_string(),
         pk,
@@ -18,8 +18,6 @@ pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
         let mut queue = q.borrow_mut();
         queue.insert(key);
     });
-
-    Ok(())
 }
 
 /// Bulk enqueue refresh requests for multiple PKs of the same entity (Phase 9A)
@@ -27,7 +25,7 @@ pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
-pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
+pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) {
     TX_REFRESH_QUEUE.with(|q| {
         let mut queue = q.borrow_mut();
 
@@ -40,8 +38,6 @@ pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
             queue.insert(key);
         }
     });
-
-    Ok(())
 }
 
 /// Take a snapshot of the current queue and clear it
@@ -75,8 +71,8 @@ pub fn register_commit_callback_once() -> TViewResult<()> {
 
         // Register transaction and subtransaction callbacks
         unsafe {
-            super::xact::register_xact_callback()?;
-            super::xact::register_subxact_callback()?;
+            super::xact::register_xact_callback();
+            super::xact::register_subxact_callback();
         }
 
         *scheduled = true;
@@ -107,9 +103,9 @@ mod tests {
     fn test_enqueue_and_snapshot() {
         clear_queue();
 
-        enqueue_refresh("user", 1).unwrap();
-        enqueue_refresh("post", 2).unwrap();
-        enqueue_refresh("user", 1).unwrap(); // duplicate
+        enqueue_refresh("user", 1);
+        enqueue_refresh("post", 2);
+        enqueue_refresh("user", 1); // duplicate
 
         let snapshot = take_queue_snapshot();
         assert_eq!(snapshot.len(), 2); // Deduplicated
@@ -123,8 +119,8 @@ mod tests {
     fn test_clear_queue() {
         clear_queue();
 
-        enqueue_refresh("user", 1).unwrap();
-        enqueue_refresh("post", 2).unwrap();
+        enqueue_refresh("user", 1);
+        enqueue_refresh("post", 2);
 
         clear_queue();
 

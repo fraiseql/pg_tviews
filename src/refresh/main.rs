@@ -275,7 +275,7 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
     }
 
     // Build SQL UPDATE with smart patch calls for each dependency
-    let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps)?;
+    let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps);
 
     // Execute update
     Spi::run_with_args(
@@ -329,12 +329,12 @@ fn build_smart_patch_sql(
     tv_name: &str,
     pk_col: &str,
     deps: &[DependencyDetail],
-) -> spi::Result<String> {
+) -> String {
     if deps.is_empty() {
         // No dependencies = full replacement
-        return Ok(format!(
+        return format!(
             "UPDATE {tv_name} SET data = $1::jsonb, updated_at = now() WHERE {pk_col} = $2"
-        ));
+        );
     }
 
     // Start with current data column
@@ -373,9 +373,9 @@ fn build_smart_patch_sql(
         };
     }
 
-    Ok(format!(
+    format!(
         "UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() WHERE {pk_col} = $2"
-    ))
+    )
 }
 
 /// Check if `jsonb_ivm` extension is installed in the current database.

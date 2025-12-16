@@ -135,8 +135,7 @@ fn get_session_id() -> String {
     // Try to get session ID from PostgreSQL
     match Spi::get_one::<String>("SELECT session_user") {
         Ok(Some(user)) => user,
-        Ok(None) => "unknown".to_string(),
-        Err(_) => "unknown".to_string(),
+        Ok(None) | Err(_) => "unknown".to_string(),
     }
 }
 

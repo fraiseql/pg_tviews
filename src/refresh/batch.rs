@@ -56,7 +56,7 @@ pub fn refresh_batch(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
 
     // Use individual updates for small batches
     if pk_values.len() < BATCH_THRESHOLD {
-        return refresh_individual(entity, pk_values);
+        return Ok(refresh_individual(entity, pk_values));
     }
 
     // Use batch optimization for large batches
@@ -64,7 +64,7 @@ pub fn refresh_batch(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
 }
 
 /// Refresh using individual `UPDATE` statements (fallback for small batches)
-fn refresh_individual(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
+fn refresh_individual(entity: &str, pk_values: &[i64]) -> usize {
     let mut refreshed = 0;
 
     for &pk in pk_values {
@@ -77,7 +77,7 @@ fn refresh_individual(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
         }
     }
 
-    Ok(refreshed)
+    refreshed
 }
 
 /// Refresh using optimized batch update (for large batches)
