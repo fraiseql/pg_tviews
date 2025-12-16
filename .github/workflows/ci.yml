@@ -34,7 +34,8 @@ jobs:
       - name: Run efficient jsonb_delta tests
         run: |
           # Focus on proven efficient jsonb_delta methods instead of full matrix testing
-          cargo pgrx test pg16 --no-default-features --features pg16,pg_test
+          # Use --no-default-features to skip pg18, then specify pg16 explicitly
+          cargo test --lib --no-default-features --features pg16,pg_test
 
       - name: Build extension
         run: |
