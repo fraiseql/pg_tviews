@@ -75,25 +75,25 @@ pg_module_magic!();
 static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 
-/// Get the version of the pg_tviews extension
+/// Get the version of the `pg_tviews` extension
 #[pg_extern]
-fn pg_tviews_version() -> &'static str {
+const fn pg_tviews_version() -> &'static str {
     "0.1.0-alpha"
 }
 
-/// Debug function to check if ProcessUtility hook is installed
+/// Debug function to check if `ProcessUtility` hook is installed
 #[pg_extern]
-fn pg_tviews_hook_status() -> &'static str {
+const fn pg_tviews_hook_status() -> &'static str {
     // This is a simple way to check if the module loaded
     // The hook installation happens in _PG_init
     "Extension loaded - hook installation attempted in _PG_init"
 }
 
-/// Check if jsonb_ivm extension is available at runtime (cached)
+/// Check if `jsonb_ivm` extension is available at runtime (cached)
 /// Returns true if extension is installed, false otherwise
 ///
 /// This function caches the result after the first check to avoid
-/// repeated queries to pg_extension on every cascade operation.
+/// repeated queries to `pg_extension` on every cascade operation.
 pub fn check_jsonb_ivm_available() -> bool {
     // Return cached result if already checked
     if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
@@ -174,7 +174,7 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 }
 
 /// Initialize the extension
-/// Installs the ProcessUtility hook to intercept CREATE TABLE tv_* commands
+/// Installs the `ProcessUtility` hook to intercept `CREATE TABLE` `tv_*` commands
 ///
 /// Safety: Only installs hooks when running in a proper PostgreSQL backend,
 /// not during initdb or other bootstrap contexts.

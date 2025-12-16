@@ -154,9 +154,8 @@ fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
 fn trigger_exists(table_name: &str, trigger_name: &str) -> TViewResult<bool> {
     Spi::get_one::<bool>(&format!(
         "SELECT COUNT(*) > 0 FROM pg_trigger
-         WHERE tgrelid = '{}'::regclass
-           AND tgname = '{}'",
-        table_name, trigger_name
+         WHERE tgrelid = '{table_name}'::regclass
+           AND tgname = '{trigger_name}'"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check trigger {trigger_name}"),
