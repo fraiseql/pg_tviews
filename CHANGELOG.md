@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2025-12-16
+
+### Code Quality & Refactoring
+
+#### Clippy Improvements
+- **Dependency graph refactoring**: Extracted helper functions for better code organization
+- **Error handling improvements**: Consistent use of `Self::` in error module patterns
+- **Code clarity**: Simplified match arms and removed unnecessary wrapping
+- **Documentation fixes**: Corrected backticks and added missing error documentation
+- **Must-use attributes**: Added to functions returning values that should not be ignored
+
+#### CI/CD Improvements
+- **prek migration**: Moved from bash-based pre-commit hooks to Rust-based prek
+- **Workflow optimizations**: Fixed PostgreSQL version handling and feature flags
+- **Security audit**: Enhanced vulnerability detection logic
+- **Coverage improvements**: Better test coverage reporting
+
+#### Modernization
+- **LazyLock migration**: Replaced deprecated `once_cell::Lazy` with `std::sync::LazyLock`
+- **Code style**: Inline format strings and consistent identifier patterns
+- **Boolean simplification**: Removed unnecessary boolean operations
+
+### 🔧 Technical Debt
+- **Known Issue**: Rust unit tests with `#[pg_test]` require pgrx test framework
+  - SQL-based integration tests in `test/sql/*.sql` provide comprehensive coverage
+  - CI uses `cargo build` verification instead of problematic `cargo test --lib`
+
 ## [0.1.0-beta.1] - 2025-12-10
 
 ### 🚀 Beta Release: Feature-Complete TVIEW System
