@@ -53,6 +53,8 @@ impl TViewSchema {
         Self::default()
     }
 
+    /// # Errors
+    /// Returns error if schema serialization to JSON fails
     pub fn to_jsonb(&self) -> Result<JsonB, serde_json::Error> {
         let json_value = serde_json::to_value(self)?;
         Ok(JsonB(json_value))

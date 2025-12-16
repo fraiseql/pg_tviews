@@ -133,6 +133,9 @@ fn infer_type_from_column_name(col_name: &str) -> String {
 }
 
 /// Infer TVIEW schema from SELECT statement
+///
+/// # Errors
+/// Returns error if SQL parsing fails or no columns found in SELECT statement
 pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
     let columns_with_expressions = parser::parse_select_columns_with_expressions(sql)
         .map_err(|e| crate::error::TViewError::InvalidSelectStatement {

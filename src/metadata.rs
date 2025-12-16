@@ -151,6 +151,9 @@ GROUP BY entity;
 );
 
 /// Create the metadata tables required for `pg_tviews` extension
+///
+/// # Errors
+/// Returns error if table creation fails due to insufficient permissions or SQL errors
 pub fn create_metadata_tables() -> TViewResult<()> {
     Spi::run(
         r"
@@ -190,6 +193,9 @@ pub fn create_metadata_tables() -> TViewResult<()> {
 }
 
 /// Drop all metadata tables (for testing/cleanup)
+///
+/// # Errors
+/// Returns error if table drop fails due to insufficient permissions or SQL errors
 pub fn drop_metadata_tables() -> TViewResult<()> {
     Spi::run(
         r"
@@ -205,6 +211,9 @@ pub fn drop_metadata_tables() -> TViewResult<()> {
 }
 
 /// Check if metadata tables exist
+///
+/// # Errors
+/// Returns error if information_schema query fails
 pub fn metadata_tables_exist() -> TViewResult<bool> {
     let meta_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables

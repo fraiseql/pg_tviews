@@ -25,6 +25,9 @@ use crate::schema::TViewSchema;
 /// - We don't have the original SELECT statement
 /// - Must infer base tables from data
 /// - Must handle edge cases (empty tables, complex JOINs)
+///
+/// # Errors
+/// Returns error if table doesn't exist, conversion fails, or rollback is needed
 pub fn convert_existing_table_to_tview(
     table_name: &str,
 ) -> TViewResult<()> {

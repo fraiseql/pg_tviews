@@ -3,12 +3,18 @@
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
 /// Future versions will use `PostgreSQL`'s native parser API
+///
+/// # Errors
+/// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
 pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
     extract_columns_regex(sql)
 }
 
 /// Parse SELECT statement to extract column names with their full expressions
 /// Returns `Vec<(column_name, expression)>` for type inference
+///
+/// # Errors
+/// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
 pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, String)>, String> {
     extract_columns_with_expressions_regex(sql)
 }

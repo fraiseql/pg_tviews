@@ -10,6 +10,9 @@ use crate::error::{TViewError, TViewResult};
 ///
 /// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
 /// `PostgreSQL's` transaction system provides automatic atomicity.
+///
+/// # Errors
+/// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
 pub fn drop_tview(
     tview_name: &str,
     if_exists: bool,

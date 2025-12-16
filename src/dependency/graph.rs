@@ -23,6 +23,9 @@ pub struct DependencyGraph {
 /// 5. Enforce `MAX_DEPENDENCY_DEPTH`
 ///
 /// CORRECTED: Was using `refobjid` = {}, now uses `objid` = {}
+///
+/// # Errors
+/// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
 pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
     let view_oid = get_oid(view_name)?;
     let mut base_tables = HashSet::new();
@@ -218,7 +221,10 @@ fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) ->
     cycle_names
 }
 
-/// Find all helper views (`v_*`) used by a SELECT statement
+/// Find all helper views (`v_*`) used by a SELECT statement.
+///
+/// # Errors
+/// Returns error if regex compilation fails (internal error).
 pub fn find_helper_views(select_sql: &str) -> TViewResult<Vec<String>> {
     let mut helpers = Vec::new();
 

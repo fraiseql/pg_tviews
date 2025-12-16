@@ -51,6 +51,9 @@ pub struct CreateTViewStmt {
 /// - No parenthesized `SELECT`
 /// - Comments may cause issues
 /// - String literals containing `AS` may confuse parser
+///
+/// # Errors
+/// Returns error if SQL doesn't match CREATE TABLE AS pattern or regex compilation fails
 pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     let re = Regex::new(
         r"(?ix)                          # Case-insensitive, verbose

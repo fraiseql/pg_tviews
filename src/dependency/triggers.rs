@@ -1,6 +1,10 @@
 use pgrx::prelude::*;
 use crate::error::{TViewError, TViewResult};
 
+/// Install cascade triggers on all base tables for a TVIEW.
+///
+/// # Errors
+/// Returns error if trigger creation or installation fails.
 pub fn install_triggers(
     table_oids: &[pg_sys::Oid],
     tview_entity: &str,
@@ -42,6 +46,10 @@ pub fn install_triggers(
     Ok(())
 }
 
+/// Remove cascade triggers from all base tables for a TVIEW.
+///
+/// # Errors
+/// Returns error if trigger removal fails.
 pub fn remove_triggers(
     table_oids: &[pg_sys::Oid],
     tview_entity: &str,

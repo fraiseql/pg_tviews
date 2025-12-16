@@ -386,6 +386,9 @@ impl Default for TviewMeta {
 ///
 /// This function caches the mapping to avoid repeated `pg_class` queries.
 /// Performance improvement: 0.1ms → 0.001ms per trigger
+///
+/// # Errors
+/// Returns error if table OID lookup fails or cache access fails
 pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     crate::queue::cache::table_cache::entity_for_table_cached(table_oid)
 }

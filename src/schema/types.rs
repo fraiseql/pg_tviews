@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use crate::error::TViewResult;
 
 /// Infer column types from `PostgreSQL` catalog
+///
+/// # Errors
+/// Returns error if column type lookup fails or column not found in table
 pub fn infer_column_types(
     table_name: &str,
     columns: &[String],
@@ -37,6 +40,9 @@ pub fn infer_column_types(
 }
 
 /// Check if a table exists in the database
+///
+/// # Errors
+/// Returns error if pg_class query fails
 pub fn table_exists(table_name: &str) -> TViewResult<bool> {
     let query = format!(
         "SELECT COUNT(*) = 1 FROM pg_class

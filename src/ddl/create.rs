@@ -16,6 +16,9 @@ use crate::error::{TViewError, TViewResult};
 /// 5. Populate initial data
 /// 6. Register metadata
 /// 7. Find base table dependencies and install triggers
+///
+/// # Errors
+/// Returns error if TVIEW already exists, SQL is invalid, or trigger installation fails
 pub fn create_tview(
     tview_name: &str,
     select_sql: &str,
