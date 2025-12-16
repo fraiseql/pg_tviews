@@ -18,15 +18,14 @@ impl DependencyType {
     /// Parse from database string representation
     pub fn from_str(s: &str) -> Self {
         match s {
-            "scalar" => Self::Scalar,
             "nested_object" => Self::NestedObject,
             "array" => Self::Array,
-            _ => Self::Scalar, // default fallback
+            _ => Self::Scalar, // default fallback (includes "scalar")
         }
     }
 
     /// Convert to database string representation
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Scalar => "scalar",
             Self::NestedObject => "nested_object",
@@ -35,7 +34,8 @@ impl DependencyType {
     }
 }
 
-/// Represents a row in pg_tview_meta (your own catalog table).
+/// Represents a row in `pg_tview_meta` (your own catalog table).
+#[allow(clippy::unsafe_derive_deserialize)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TviewMeta {
     pub tview_oid: Oid,
@@ -45,16 +45,16 @@ pub struct TviewMeta {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
 
-    /// Type of each dependency: Scalar (direct column), NestedObject (embedded JSONB),
-    /// or Array (jsonb_agg aggregation).
+    /// Type of each dependency: Scalar (direct column), `NestedObject` (embedded JSONB),
+    /// or Array (`jsonb_agg` aggregation).
     ///
     /// Length matches `fk_columns` and `dependencies` arrays.
-    /// Used by jsonb_ivm to choose patch function (scalar/nested/array).
+    /// Used by `jsonb_ivm` to choose patch function (scalar/nested/array).
     pub dependency_types: Vec<DependencyType>,
 
     /// JSONB path for each dependency, if nested.
     /// - Scalar: None
-    /// - NestedObject: Some(vec!["author"]) for { "author": {...} }
+    /// - `NestedObject`: Some(vec!["author"]) for { "author": {...} }
     /// - Array: Some(vec!["comments"]) for { "comments": [...] }
     ///
     /// Length matches `dependency_types`.
@@ -63,8 +63,8 @@ pub struct TviewMeta {
     /// For Array dependencies, the key used to match elements (e.g., "id").
     /// Used by `jsonb_smart_patch_array(target, 'comments', '{...}', 'id')`.
     ///
-    /// - Scalar/NestedObject: None
-    /// - Array: Some("id") or Some("pk_comment")
+    /// - Scalar/`NestedObject`: None
+    /// - Array: Some("id") or `Some("pk_comment")`
     ///
     /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
@@ -115,17 +115,17 @@ impl TviewMeta {
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
                     sync_mode: 's', // Default to synchronous
@@ -177,17 +177,17 @@ impl TviewMeta {
                 Some(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
                     sync_mode: 's',
@@ -251,8 +251,8 @@ impl TviewMeta {
         })
     }
 
-    /// Parse SPI row into TviewMeta struct
-    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<TviewMeta> {
+    /// Parse SPI row into `TviewMeta` struct
+    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<Self> {
         // Extract existing arrays
         let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
         let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
@@ -275,17 +275,17 @@ impl TviewMeta {
         Ok(TviewMeta {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "tview_oid column is NULL".to_string(),
                         }))?,
                     view_oid: row["view_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "view_oid column is NULL".to_string(),
                         }))?,
                     entity_name: row["entity"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: "".to_string(),
+                            query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
             sync_mode: 's', // Default to synchronous

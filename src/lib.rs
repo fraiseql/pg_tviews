@@ -1,7 +1,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 /**
-# `pg_tviews` - PostgreSQL Transactional Views
+# `pg_tviews` - `PostgreSQL` Transactional Views
 
 A `PostgreSQL` extension that provides transactional materialized views with
 incremental refresh capabilities. `TVIEW`s automatically maintain consistency
@@ -21,7 +21,7 @@ between base tables and derived views through trigger-based change tracking.
 - **Transactional Consistency**: View refreshes are atomic with base table changes
 - **Dependency Resolution**: Handles complex multi-level view dependencies
 - **Performance Optimized**: Incremental updates avoid full view rebuilds
-- **PostgreSQL Native**: Written as a C extension using `pgrx` framework
+- **`PostgreSQL` Native**: Written as a C extension using `pgrx` framework
 - **2PC Support**: Transaction queue persistence for prepared transactions
 
 ## Usage
