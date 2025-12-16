@@ -1,21 +1,21 @@
-//! ProcessUtility Hooks: DDL Interception and Transaction Management
+//! `ProcessUtility` Hooks: DDL Interception and Transaction Management
 //!
-//! This module implements PostgreSQL hooks for DDL statement interception:
-//! - **ProcessUtility Hook**: Intercepts CREATE TABLE tv_* and DROP TABLE tv_* statements
+//! This module implements `PostgreSQL` hooks for DDL statement interception:
+//! - **`ProcessUtility` Hook**: Intercepts CREATE TABLE `tv_*` and DROP TABLE `tv_*` statements
 //! - **Transaction Callbacks**: Handles PREPARE/COMMIT/ABORT events
 //! - **GID Capture**: Stores transaction IDs for 2PC support
 //! - **DISCARD ALL**: Clears caches on connection pooling reset
 //!
 //! ## Hook Architecture
 //!
-//! PostgreSQL calls hooks at strategic points:
-//! 1. **ProcessUtility**: Before executing utility statements (DDL)
+//! `PostgreSQL` calls hooks at strategic points:
+//! 1. **`ProcessUtility`**: Before executing utility statements (DDL)
 //! 2. **Transaction Events**: At commit, abort, and prepare phases
 //! 3. **Subtransaction Events**: For savepoint handling
 //!
 //! ## Safety Considerations
 //!
-//! - Hooks run in PostgreSQL's execution context
+//! - Hooks run in `PostgreSQL`'s execution context
 //! - Must not panic (all wrapped in `catch_unwind`)
 //! - Proper error handling to avoid corrupting transactions
 //! - Thread-safe global state management
@@ -28,14 +28,14 @@ use std::sync::{LazyLock, Mutex};
 use crate::ddl::drop_tview;
 use crate::TViewError;
 
-/// Previous ProcessUtility hook (if any other extension installed one)
+/// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 
 /// Global storage for GID during PREPARE TRANSACTION
 static PREPARING_GID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
-/// Install the ProcessUtility hook to intercept CREATE/DROP TABLE tv_*
-/// Install the ProcessUtility hook to intercept CREATE TABLE tv_* commands
+/// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
+/// Install the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 pub unsafe fn install_hook() {
     PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
     pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
@@ -52,7 +52,7 @@ pub unsafe fn ensure_hook_installed() {
     }
 }
 
-/// ProcessUtility hook that intercepts CREATE TABLE tv_* and DROP TABLE tv_*
+/// `ProcessUtility` hook that intercepts CREATE TABLE `tv_*` and DROP TABLE `tv_*`
 #[pg_guard]
 #[allow(clippy::too_many_arguments)]
 unsafe extern "C-unwind" fn tview_process_utility_hook(
@@ -338,8 +338,8 @@ fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), 
 
 /// Global cache for pending TVIEW SELECT statements
 ///
-/// Maps: table_name -> original SELECT statement
-/// Written by: ProcessUtility hook (before table creation)
+/// Maps: `table_name` -> original SELECT statement
+/// Written by: `ProcessUtility` hook (before table creation)
 /// Read by: Event trigger (after table creation, safe SPI context)
 /// Cleared by: Event trigger after successful conversion
 static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
@@ -358,7 +358,7 @@ pub fn take_pending_tview_select(table_name: &str) -> Option<String> {
 /// Handle DROP TABLE tv_*
 ///
 /// Uses a simpler approach: parse the query string instead of traversing
-/// complex PostgreSQL List structures which are prone to segfaults.
+/// complex `PostgreSQL` List structures which are prone to segfaults.
 unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
     query_string: *const ::std::os::raw::c_char,
@@ -450,7 +450,7 @@ unsafe fn handle_drop_table(
     }
 }
 
-/// Call the previous hook if it exists, otherwise call standard_ProcessUtility
+/// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`
 #[allow(clippy::too_many_arguments)]
 unsafe fn call_prev_hook_or_standard(
     pstmt: *mut pg_sys::PlannedStmt,
@@ -514,7 +514,7 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
     None
 }
 
-/// Get the prepared transaction GID captured by the ProcessUtility hook
+/// Get the prepared transaction GID captured by the `ProcessUtility` hook
 ///
 /// This is called by the transaction callback during PREPARE TRANSACTION.
 pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {

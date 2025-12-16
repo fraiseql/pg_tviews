@@ -392,7 +392,7 @@ pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
 
 /// Get entity name for table OID without caching (internal use)
 ///
-/// This is the slow path that queries pg_class every time.
+/// This is the slow path that queries `pg_class` every time.
 /// Used by the cache when there's a cache miss.
 pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     // Query pg_class to get table name from OID

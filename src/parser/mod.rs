@@ -19,9 +19,9 @@
 //!
 //! ## Note on DROP Syntax
 //!
-//! DROP TABLE tv_* is handled directly by the ProcessUtility hook in src/hooks.rs,
-//! not by this parser module. The hook intercepts DROP TABLE statements and checks
-//! if the table name starts with "tv_", then calls the drop_tview() function.
+//! `DROP TABLE tv_*` is handled directly by the `ProcessUtility` hook in `src/hooks.rs`,
+//! not by this parser module. The hook intercepts `DROP TABLE` statements and checks
+//! if the table name starts with `tv_`, then calls the `drop_tview()` function.
 //!
 //! ## Limitations (v1)
 //!
@@ -40,17 +40,17 @@ pub struct CreateTViewStmt {
     pub select_sql: String,
 }
 
-/// Parse CREATE TABLE tv_ AS SELECT statement
+/// Parse `CREATE TABLE tv_` AS SELECT statement
 ///
 /// Supported syntax:
-/// - CREATE TABLE tv_name AS SELECT ...
-/// - CREATE TABLE schema.tv_name AS SELECT ...
+/// - `CREATE TABLE tv_name AS SELECT ...`
+/// - `CREATE TABLE schema.tv_name AS SELECT ...`
 ///
 /// Limitations (v1):
-/// - No CTE support (WITH clause)
-/// - No parenthesized SELECT
+/// - No CTE support (`WITH` clause)
+/// - No parenthesized `SELECT`
 /// - Comments may cause issues
-/// - String literals containing 'AS' may confuse parser
+/// - String literals containing `AS` may confuse parser
 pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     let re = Regex::new(
         r"(?ix)                          # Case-insensitive, verbose
@@ -109,7 +109,7 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
 
     // Warn about unsupported features
     if select_sql.to_uppercase().contains(" WITH ") {
-        pgrx::warning!("CTEs (WITH clause) may not be fully supported in v1");
+        pgrx::warning!("CTEs (`WITH` clause) may not be fully supported in v1");
     }
 
     if select_sql.contains("/*") || select_sql.contains("--") {

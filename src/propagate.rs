@@ -29,9 +29,9 @@ use crate::queue::RefreshKey;
 
 /// Discover parents (entities that depend on this entity) and refresh them.
 ///
-/// Example: When tv_user row (pk=1) changes:
-/// 1. Find parent entities (e.g., tv_post depends on tv_user)
-/// 2. Find affected rows (all tv_post where fk_user = 1)
+/// Example: When `tv_user` row (pk=1) changes:
+/// 1. Find parent entities (e.g., `tv_post` depends on `tv_user`)
+/// 2. Find affected rows (all `tv_post` where `fk_user` = 1)
 /// 3. Refresh each affected row
 pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
     // Find all parent entities that depend on this entity
@@ -124,8 +124,8 @@ pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>>
 
 /// Find all parent entities that depend on the given entity.
 ///
-/// Example: find_parent_entities("user") -> ["post", "comment"]
-/// This means tv_post and tv_comment both have FK references to tv_user
+/// Example: `find_parent_entities`("user") -> ["post", "comment"]
+/// This means `tv_post` and `tv_comment` both have FK references to `tv_user`
 fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
     // Query pg_tview_meta to find entities whose fk_columns reference this entity
     // e.g., if child_entity = "user", look for entities with "fk_user" in fk_columns
@@ -154,7 +154,7 @@ fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
 
 /// Find all PKs in the parent TVIEW that reference the given child PK.
 ///
-/// Example: find_affected_pks("post", "user", 1)
+/// Example: `find_affected_pks`("post", "user", 1)
 /// Returns all pk_post values where fk_user = 1
 fn find_affected_pks(
     parent_entity: &str,

@@ -15,14 +15,14 @@ pub struct DependencyGraph {
 ///
 /// ALGORITHM:
 /// 1. Start from view OID
-/// 2. Query pg_depend WHERE objid = current_oid (objects THIS depends on)
+/// 2. Query `pg_depend` WHERE `objid` = `current_oid` (objects THIS depends on)
 /// 3. For each dependency:
-///    - If it's a table (relkind='r'), add to base_tables
-///    - If it's a view (relkind='v'), recurse
+///    - If it's a table (`relkind='r'`), add to `base_tables`
+///    - If it's a view (`relkind='v'`), recurse
 /// 4. Track visited to detect cycles
-/// 5. Enforce MAX_DEPENDENCY_DEPTH
+/// 5. Enforce `MAX_DEPENDENCY_DEPTH`
 ///
-/// CORRECTED: Was using refobjid = {}, now uses objid = {}
+/// CORRECTED: Was using `refobjid` = {}, now uses `objid` = {}
 pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
     let view_oid = get_oid(view_name)?;
     let mut base_tables = HashSet::new();
@@ -64,8 +64,8 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
             info!("Checking dependencies for: {} (OID {:?}) at depth {}", name, current_oid, depth);
         }
 
-        // CORRECTED ALGORITHM: Views depend on tables via pg_rewrite rules!
-        // 1. Find the pg_rewrite rule for this view/relation
+        // CORRECTED ALGORITHM: Views depend on tables via `pg_rewrite` rules!
+        // 1. Find the `pg_rewrite` rule for this view/relation
         // 2. Query dependencies of the RULE (not the view directly)
         // 3. The rule's dependencies point to the actual base tables/views
         let deps_query = format!(
@@ -219,11 +219,11 @@ fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) ->
     Ok(cycle_names)
 }
 
-/// Find all helper views (v_*) used by a SELECT statement
+/// Find all helper views (`v_*`) used by a SELECT statement
 pub fn find_helper_views(select_sql: &str) -> TViewResult<Vec<String>> {
     let mut helpers = Vec::new();
 
-    // Simple regex to find v_* references
+    // Simple regex to find `v_*` references
     // LIMITATION: This is v1 - doesn't handle all cases (subqueries, CTEs, etc.)
     // TODO: Use PostgreSQL parser API in v2
     let re = regex::Regex::new(r"\bv_(\w+)\b")

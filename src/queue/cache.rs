@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use pgrx::prelude::*;
 
-/// Global cache for EntityDepGraph to avoid repeated pg_tview_meta queries
+/// Global cache for `EntityDepGraph` to avoid repeated `pg_tview_meta` queries
 static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> = LazyLock::new(|| {
     Mutex::new(None)
 });
@@ -12,11 +12,11 @@ static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, String>>> = LazyL
     Mutex::new(HashMap::new())
 });
 
-/// Cache operations for EntityDepGraph
+/// Cache operations for `EntityDepGraph`
 pub mod graph_cache {
     use super::*;
 
-    /// Get cached EntityDepGraph, loading from database if not cached
+    /// Get cached `EntityDepGraph`, loading from database if not cached
     pub fn load_cached() -> crate::TViewResult<crate::queue::graph::EntityDepGraph> {
         // Check if caching is enabled
         if !crate::config::graph_cache_enabled() {
@@ -38,7 +38,7 @@ pub mod graph_cache {
         Ok(graph)
     }
 
-    /// Invalidate the EntityDepGraph cache
+    /// Invalidate the `EntityDepGraph` cache
     /// Should be called when TVIEWs are created or dropped
     pub fn invalidate() {
         let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap();

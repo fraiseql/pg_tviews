@@ -4,12 +4,12 @@ use crate::error::{TViewError, TViewResult};
 /// Drop a TVIEW and all its associated objects
 ///
 /// This function handles the removal of:
-/// - The materialized table (tv_<entity>)
-/// - The backing view (v_<entity>)
-/// - The metadata record in pg_tview_meta
+/// - The materialized table (`tv_<entity>`)
+/// - The backing view (`v_<entity>`)
+/// - The metadata record in `pg_tview_meta`
 ///
 /// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
-/// PostgreSQL's transaction system provides automatic atomicity.
+/// `PostgreSQL's` transaction system provides automatic atomicity.
 pub fn drop_tview(
     tview_name: &str,
     if_exists: bool,

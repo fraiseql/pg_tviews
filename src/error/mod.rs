@@ -3,7 +3,7 @@ use std::fmt;
 
 pub mod testing;
 
-/// Main error type for pg_tviews extension
+/// Main error type for `pg_tviews` extension
 #[derive(Debug, Clone, PartialEq)]
 pub enum TViewError {
     // ============ Metadata Errors (P0xxx) ============
@@ -61,7 +61,7 @@ pub enum TViewError {
     },
 
     // ============ Extension Dependency Errors (58xxx) ============
-    /// jsonb_ivm extension not installed
+    /// `jsonb_ivm` extension not installed
     JsonbIvmNotInstalled,
 
     /// Extension version mismatch

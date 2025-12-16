@@ -11,15 +11,15 @@ use std::sync::LazyLock;
 use crate::TViewResult;
 
 /// Cache prepared statement names per entity
-/// Key: entity name (e.g., "post", "user")
-/// Value: prepared statement name (e.g., "tview_refresh_post")
+/// Key: entity name (e.g., `post`, `user`)
+/// Value: prepared statement name (e.g., `tview_refresh_post`)
 static PREPARED_STATEMENTS: LazyLock<std::sync::Mutex<HashMap<String, String>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Register cache invalidation callbacks during extension initialization
 ///
 /// This ensures prepared statements are cleared when schema changes occur.
-/// Must be called from _PG_init().
+/// Must be called from `_PG_init()`.
 #[allow(dead_code)]
 pub unsafe fn register_cache_invalidation_callbacks() -> TViewResult<()> {
     // Cache invalidation callbacks not available in this pgrx version
@@ -80,7 +80,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
 /// Get or create prepared statement for entity refresh
 ///
 /// Creates prepared statement on first use, reuses on subsequent calls.
-/// Statement format: SELECT * FROM v_entity WHERE pk_entity = $1
+/// Statement format: `SELECT * FROM v_entity WHERE pk_entity = $1`
 #[allow(dead_code)]
 fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
     let mut cache = PREPARED_STATEMENTS.lock().unwrap();
@@ -143,7 +143,7 @@ pub fn get_cache_stats() -> (usize, Vec<String>) {
 /// Helper: Quote identifier safely
 #[allow(dead_code)]
 fn quote_identifier(name: &str) -> String {
-    // Use PostgreSQL's quote_ident() for safety
+    // Use PostgreSQL's `quote_ident()` for safety
     let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",

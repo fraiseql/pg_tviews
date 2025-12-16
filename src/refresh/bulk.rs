@@ -13,7 +13,7 @@ use crate::TViewResult;
 
 /// Refresh multiple rows of the same entity in a single operation
 ///
-/// This is the bulk refresh API that replaces individual refresh_pk() calls
+/// This is the bulk refresh API that replaces individual `refresh_pk()` calls
 /// for statement-level triggers and other bulk operations.
 ///
 /// # Arguments
@@ -130,7 +130,7 @@ pub fn refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
 
 /// Helper: Quote identifier safely
 pub fn quote_identifier(name: &str) -> String {
-    // Use PostgreSQL's quote_ident() for safety
+    // Use PostgreSQL's `quote_ident()` for safety
     let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     match Spi::get_one_with_args::<String>(
         "SELECT quote_ident($1)",

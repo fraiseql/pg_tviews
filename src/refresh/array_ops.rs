@@ -1,17 +1,17 @@
 //! Array Operations Module: INSERT/DELETE for JSONB Arrays
 //!
 //! This module provides functions to handle INSERT and DELETE operations
-//! on JSONB array elements using jsonb_ivm functions. These operations
+//! on JSONB array elements using `jsonb_ivm` functions. These operations
 //! are triggered when source table rows are inserted or deleted.
 //!
 //! ## Architecture
 //!
-//! When a row is INSERTed into a source table:
+//! When a row is `INSERTed` into a source table:
 //! 1. Detect if it contributes to an array in a parent TVIEW
 //! 2. Use `jsonb_array_insert_where()` to add the element
 //! 3. Maintain proper ordering (if specified)
 //!
-//! When a row is DELETEd from a source table:
+//! When a row is `DELETEd` from a source table:
 //! 1. Find the element in the parent TVIEW array
 //! 2. Use `jsonb_array_delete_where()` to remove it
 //! 3. Preserve array integrity
@@ -33,12 +33,12 @@ use crate::error::{TViewError, TViewResult};
 /// ordering if a sort key is specified.
 ///
 /// # Arguments
-/// * `table_name` - TVIEW table name (e.g., "tv_post")
-/// * `pk_column` - Primary key column name (e.g., "pk_post")
+/// * `table_name` - TVIEW table name (e.g., `tv_post`)
+/// * `pk_column` - Primary key column name (e.g., `pk_post`)
 /// * `pk_value` - Primary key value of the row to update
-/// * `array_path` - JSONB path to the array (e.g., ["comments"])
+/// * `array_path` - JSONB path to the array (e.g., `["comments"]`)
 /// * `new_element` - JSONB object to insert
-/// * `sort_key` - Optional key for sorting (e.g., "created_at")
+/// * `sort_key` - Optional key for sorting (e.g., `created_at`)
 ///
 /// # Example
 /// ```sql
@@ -104,7 +104,7 @@ pub fn insert_array_element(
 /// the specified key-value pair.
 ///
 /// # Arguments
-/// * `table_name` - TVIEW table name (e.g., "tv_post")
+/// * `table_name` - TVIEW table name (e.g., "`tv_post`")
 /// * `pk_column` - Primary key column name (e.g., "pk_post")
 /// * `pk_value` - Primary key value of the row to update
 /// * `array_path` - JSONB path to the array (e.g., ["comments"])

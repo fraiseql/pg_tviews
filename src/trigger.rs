@@ -9,10 +9,10 @@ use pgrx::prelude::*;
 ///
 /// ## Trigger Lifecycle
 ///
-/// 1. PostgreSQL calls trigger for each changed row
+/// 1. `PostgreSQL` calls trigger for each changed row
 /// 2. Extract primary key of changed row
 /// 3. Map table OID to entity name
-/// 4. Enqueue (entity, pk) pair for refresh
+/// 4. Enqueue `(entity, pk)` pair for refresh
 /// 5. Transaction commit processes the queue
 ///
 /// ## Performance Considerations
@@ -178,7 +178,7 @@ fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64
 }
 
 /// Get primary key column name for a table
-/// Uses convention: pk_<entity> where entity is derived from table name tb_<entity>
+/// Uses convention: `pk_<entity>` where entity is derived from table name `tb_<entity>`
 fn get_pk_column_name(table_oid: pg_sys::Oid) -> spi::Result<String> {
     // Get entity name from table OID
     let entity = match entity_for_table(table_oid) {

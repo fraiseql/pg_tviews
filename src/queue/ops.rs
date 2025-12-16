@@ -25,7 +25,7 @@ pub fn enqueue_refresh(entity: &str, pk: i64) -> TViewResult<()> {
 /// Bulk enqueue refresh requests for multiple PKs of the same entity (Phase 9A)
 ///
 /// This is the statement-level trigger entry point.
-/// Deduplication is automatic (HashSet).
+/// Deduplication is automatic (`HashSet`).
 #[allow(dead_code)]
 pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) -> TViewResult<()> {
     TX_REFRESH_QUEUE.with(|q| {
@@ -92,7 +92,7 @@ pub fn reset_scheduled_flag() {
     });
 }
 
-/// Clear queue and reset scheduled flag (public API for DISCARD ALL handling)
+/// Clear queue and reset scheduled flag (public API for `DISCARD ALL` handling)
 #[allow(dead_code)]
 pub fn clear_queue_and_reset() {
     clear_queue();

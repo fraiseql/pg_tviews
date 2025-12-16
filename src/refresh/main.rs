@@ -16,7 +16,7 @@
 //! The `apply_patch()` function dispatches to different `jsonb_ivm` functions based
 //! on dependency type metadata:
 //!
-//! | Dependency Type | jsonb_ivm Function | Use Case |
+//! | Dependency Type | `jsonb_ivm` Function | Use Case |
 //! |-----------------|-------------------|----------|
 //! | `nested_object` | `jsonb_smart_patch_nested(data, patch, path)` | Author/category objects |
 //! | `array` | `jsonb_smart_patch_array(data, patch, path, key)` | Comments/tags arrays |
@@ -24,8 +24,8 @@
 //!
 //! ## Performance Impact
 //!
-//! - **Without jsonb_ivm**: Full document replacement (~870ms for 100-row cascade)
-//! - **With jsonb_ivm**: Surgical updates (~400-600ms for 100-row cascade)
+//! - **Without `jsonb_ivm`**: Full document replacement (~870ms for 100-row cascade)
+//! - **With `jsonb_ivm`**: Surgical updates (~400-600ms for 100-row cascade)
 //! - **Speedup**: 1.45× to 2.2× faster
 //!
 //! ## Fallback Behavior
@@ -63,7 +63,7 @@ use crate::utils::{lookup_view_for_source, relname_from_oid};
 /// Default match key for array patching (assumes 'id' field)
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 
-/// Represents a materialized view row pulled from v_entity.
+/// Represents a materialized view row pulled from `v_entity`.
 pub struct ViewRow {
     pub entity_name: String,
     pub pk: i64,
@@ -196,7 +196,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
 
 /// Apply JSON patch to `tv_entity` using smart JSONB patching.
 ///
-/// This function is the **core performance optimization** of pg_tviews. Instead of
+/// This function is the **core performance optimization** of `pg_tviews`. Instead of
 /// replacing the entire JSONB document, it uses `jsonb_ivm` functions to surgically
 /// update only the changed paths.
 ///
@@ -228,7 +228,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
 ///
 /// # Arguments
 ///
-/// * `row` - ViewRow with fresh data from `v_entity` and metadata references
+/// * `row` - `ViewRow` with fresh data from `v_entity` and metadata references
 ///
 /// # Returns
 ///
@@ -425,7 +425,7 @@ fn check_jsonb_ivm_available() -> spi::Result<bool> {
 /// Performs a complete document replacement instead of surgical patching.
 /// This is the slower but more compatible approach, used in these scenarios:
 ///
-/// - **jsonb_ivm not installed**: Extension unavailable
+/// - **`jsonb_ivm` not installed**: Extension unavailable
 /// - **Metadata missing**: Legacy TVIEW without dependency info
 /// - **No dependencies**: TVIEW has no FK relationships
 ///
@@ -436,7 +436,7 @@ fn check_jsonb_ivm_available() -> spi::Result<bool> {
 ///
 /// # Arguments
 ///
-/// * `row` - ViewRow with fresh data to write
+/// * `row` - `ViewRow` with fresh data to write
 ///
 /// # Returns
 ///

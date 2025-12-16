@@ -33,7 +33,7 @@ pub struct QueueMetadata {
 }
 
 impl SerializedQueue {
-    /// Create a serialized queue from a HashSet of refresh keys
+    /// Create a serialized queue from a `HashSet` of refresh keys
     pub fn from_queue(queue: HashSet<RefreshKey>) -> Self {
         Self {
             version: 1,
@@ -46,12 +46,12 @@ impl SerializedQueue {
         }
     }
 
-    /// Convert back to a HashSet of refresh keys
+    /// Convert back to a `HashSet` of refresh keys
     pub fn into_queue(self) -> HashSet<RefreshKey> {
         self.keys.into_iter().collect()
     }
 
-    /// Serialize to JSONB format (human-readable, easier debugging)
+    /// Serialize to `JSONB` format (human-readable, easier debugging)
     pub fn into_jsonb(self) -> TViewResult<JsonB> {
         let json = serde_json::to_value(self)
             .map_err(|e| crate::TViewError::SerializationError {
@@ -60,7 +60,7 @@ impl SerializedQueue {
         Ok(JsonB(json))
     }
 
-    /// Deserialize from JSONB format
+    /// Deserialize from `JSONB` format
     pub fn from_jsonb(jsonb: JsonB) -> TViewResult<Self> {
         serde_json::from_value(jsonb.0)
             .map_err(|e| crate::TViewError::SerializationError {

@@ -68,7 +68,7 @@ fn pg_tviews_handle_ddl_event() {
     }
 }
 
-/// Get DDL commands from pg_event_trigger_ddl_commands()
+/// Get DDL commands from `pg_event_trigger_ddl_commands()`
 fn get_ddl_commands() -> spi::Result<Vec<DdlCommand>> {
     Spi::connect(|client| {
         let query = "SELECT command_tag, object_identity

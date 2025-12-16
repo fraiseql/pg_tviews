@@ -14,8 +14,8 @@
 //! ## Architecture
 //!
 //! 1. **Threshold Detection**: Check if batch size > threshold (default: 10)
-//! 2. **Data Collection**: Gather all fresh data from v_entity views
-//! 3. **Batch Update**: Use single UPDATE with CASE statements or temp tables
+//! 2. **Data Collection**: Gather all fresh data from `v_entity` views
+//! 3. **Batch Update**: Use single `UPDATE` with `CASE` statements or temp tables
 //! 4. **Fallback**: Individual updates for small batches
 //!
 //! ## Performance Characteristics
@@ -63,7 +63,7 @@ pub fn refresh_batch(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
     refresh_batch_optimized(entity, pk_values)
 }
 
-/// Refresh using individual UPDATE statements (fallback for small batches)
+/// Refresh using individual `UPDATE` statements (fallback for small batches)
 fn refresh_individual(entity: &str, pk_values: &[i64]) -> TViewResult<usize> {
     let mut refreshed = 0;
 
