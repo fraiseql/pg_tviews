@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: clippy-strict
+        name: "Clippy Strict"
+        entry: cargo clippy --lib -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [commit]
