@@ -34,7 +34,7 @@ jobs:
       - name: Run efficient jsonb_delta tests
         run: |
           # Focus on proven efficient jsonb_delta methods instead of full matrix testing
-          cargo pgrx test pg16
+          cargo pgrx test pg16 --features pg_test
 
       - name: Build extension
         run: |
