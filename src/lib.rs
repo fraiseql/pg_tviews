@@ -383,7 +383,7 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
         Spi::run("BEGIN")?;
 
         match process_refresh_queue(queue) {
-            Ok(_) => {
+            Ok(()) => {
                 Spi::run("COMMIT")?;
             }
             Err(e) => {
@@ -426,7 +426,7 @@ fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
     Ok(())
 }
 
-/// Process refresh queue (extracted from handle_pre_commit for reuse)
+/// Process refresh queue (extracted from `handle_pre_commit` for reuse)
 fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshKey>) -> TViewResult<()> {
     let mut pending = queue;
     let mut processed = std::collections::HashSet::new();
@@ -488,7 +488,7 @@ fn get_max_propagation_depth() -> usize {
 /// Recover orphaned prepared transactions
 /// Processes pending refreshes for prepared transactions that may have been interrupted
 ///
-/// Returns a table with recovery results: (gid, queue_size, status)
+/// Returns a table with recovery results: (gid, `queue_size`, status)
 #[pg_extern]
 fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
     'static,
@@ -547,7 +547,7 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
                 }))?;
 
             let status = match pg_tviews_commit_prepared(&gid) {
-                Ok(_) => {
+                Ok(()) => {
                     info!("TVIEW: Recovered prepared transaction '{}' ({} refreshes)", gid, queue_size);
                     "processed".to_string()
                 }
@@ -576,7 +576,7 @@ struct AdvisoryLockGuard {
 }
 
 impl AdvisoryLockGuard {
-    fn new(lock_key: i64) -> Self {
+    const fn new(lock_key: i64) -> Self {
         Self { lock_key }
     }
 }
@@ -748,8 +748,7 @@ fn find_affected_tview_rows(
 ) -> spi::Result<Vec<i64>> {
     // Get the base table name to figure out which FK column to check
     let base_table_name = Spi::get_one::<String>(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
-        base_table_oid
+        "SELECT relname::text FROM pg_class WHERE oid = {base_table_oid:?}"
     ))?.ok_or(spi::Error::InvalidPosition)?;
 
     // Extract entity name from table name (e.g., "tb_user" -> "user")
@@ -772,8 +771,7 @@ fn find_affected_tview_rows(
     };
 
     let query = format!(
-        "SELECT {} FROM {} WHERE {}",
-        tview_pk_col, view_name, where_clause
+        "SELECT {tview_pk_col} FROM {view_name} WHERE {where_clause}"
     );
 
     Spi::connect(|client| {
@@ -907,7 +905,7 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
         SELECT depth, entity_name, depends_on
         FROM dep_tree
         ORDER BY depth, entity_name",
-        entity.replace("'", "''")
+        entity.replace('\'',"''")
     );
 
     let results = Spi::connect(|client| {
