@@ -174,9 +174,9 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 }
 
 /// Initialize the extension
-/// Installs the `ProcessUtility` hook to intercept `CREATE TABLE` `tv_*` commands
+/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 ///
-/// Safety: Only installs hooks when running in a proper PostgreSQL backend,
+/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
 /// not during initdb or other bootstrap contexts.
 #[pg_guard]
 extern "C-unwind" fn _PG_init() {
@@ -187,7 +187,7 @@ extern "C-unwind" fn _PG_init() {
     }
 
     // Note: We cannot call functions that require SPI/database connection here
-    // (like check_jsonb_ivm_available or register_cache_invalidation_callbacks)
+    // (like `check_jsonb_ivm_available` or `register_cache_invalidation_callbacks`)
     // because no database connection exists during shared library preloading.
     // These checks happen lazily on first use instead.
 }
@@ -196,7 +196,7 @@ extern "C-unwind" fn _PG_init() {
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - jsonb_ivm availability
+/// - `jsonb_ivm` availability
 /// - Metadata consistency
 /// - Orphaned triggers
 /// - Queue status
@@ -321,7 +321,7 @@ fn pg_tviews_analyze_select(sql: &str) -> JsonB {
     }
 }
 
-/// Infer column types from PostgreSQL catalog
+/// Infer column types from `PostgreSQL` catalog
 #[pg_extern]
 fn pg_tviews_infer_types(
     table_name: &str,
@@ -363,17 +363,14 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     Spi::run(&commit_sql)?;
 
     // STEP 3: Now process the queue (transaction is committed, safe to refresh)
-    let queue = match queue_jsonb {
-        Some(jsonb) => {
-            let serialized = crate::queue::persistence::SerializedQueue::from_jsonb(jsonb)?;
-            serialized.into_queue()
-        }
-        None => {
-            // No pending refreshes for this GID
-            info!("TVIEW: No pending refreshes for prepared transaction '{}'", gid);
-            return Ok(());
-        }
+    let Some(jsonb) = queue_jsonb else {
+        // No pending refreshes for this GID
+        info!("TVIEW: No pending refreshes for prepared transaction '{}'", gid);
+        return Ok(());
     };
+
+    let serialized = crate::queue::persistence::SerializedQueue::from_jsonb(jsonb)?;
+    let queue = serialized.into_queue();
 
     if !queue.is_empty() {
         info!("TVIEW: Processing {} deferred refreshes for committed transaction '{}'",

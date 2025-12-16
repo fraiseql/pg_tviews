@@ -24,11 +24,10 @@ pub fn install_triggers(
         // Install AFTER INSERT OR UPDATE OR DELETE trigger
         // Pass entity name as trigger argument
         let trigger_sql = format!(
-            "CREATE TRIGGER {}
-             AFTER INSERT OR UPDATE OR DELETE ON {}
+            "CREATE TRIGGER {trigger_name}
+             AFTER INSERT OR UPDATE OR DELETE ON {table_name}
              FOR EACH ROW
-             EXECUTE FUNCTION tview_trigger_handler('{}')",
-            trigger_name, table_name, tview_entity
+             EXECUTE FUNCTION tview_trigger_handler('{tview_entity}')"
         );
 
         Spi::run(&trigger_sql)
@@ -52,8 +51,7 @@ pub fn remove_triggers(
         let trigger_name = format!("trg_tview_{tview_entity}_on_{table_name}");
 
         let drop_sql = format!(
-            "DROP TRIGGER IF EXISTS {} ON {}",
-            trigger_name, table_name
+            "DROP TRIGGER IF EXISTS {trigger_name} ON {table_name}"
         );
 
         Spi::run(&drop_sql)
@@ -138,8 +136,7 @@ fn create_trigger_handler() -> TViewResult<()> {
 
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
-        oid
+        "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get table name for OID {oid:?}"),

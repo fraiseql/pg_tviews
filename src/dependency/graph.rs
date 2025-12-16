@@ -201,7 +201,7 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, cycle_oid: pg_sys::Oid) -> TViewResult<Vec<String>> {
     let mut cycle_names = Vec::new();
 
-    for &oid in visiting.iter() {
+    for &oid in visiting {
         if let Ok(name) = get_object_name(oid) {
             cycle_names.push(name);
         }
@@ -251,8 +251,7 @@ pub fn find_helper_views(select_sql: &str) -> TViewResult<Vec<String>> {
 
 fn get_oid(object_name: &str) -> TViewResult<pg_sys::Oid> {
     Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT '{}'::regclass::oid",
-        object_name
+        "SELECT '{object_name}'::regclass::oid"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for '{object_name}'"),
@@ -267,8 +266,7 @@ fn get_oid(object_name: &str) -> TViewResult<pg_sys::Oid> {
 #[allow(dead_code)]
 fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
-        "SELECT relkind::text FROM pg_class WHERE oid = {:?}",
-        oid
+        "SELECT relkind::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get relkind for OID {oid:?}"),
@@ -282,8 +280,7 @@ fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
 
 fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
     Spi::get_one::<String>(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {:?}",
-        oid
+        "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get name for OID {oid:?}"),
@@ -298,8 +295,7 @@ fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
 fn view_exists(view_name: &str) -> TViewResult<bool> {
     Spi::get_one::<bool>(&format!(
         "SELECT COUNT(*) > 0 FROM pg_class
-         WHERE relname = '{}' AND relkind IN ('v', 'm')",
-        view_name
+         WHERE relname = '{view_name}' AND relkind IN ('v', 'm')"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check existence of '{view_name}'"),
