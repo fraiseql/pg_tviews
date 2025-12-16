@@ -85,6 +85,7 @@ impl DependencyInfo {
 ///
 /// # Returns
 /// Vector of `DependencyInfo`, one per FK column (order matches input)
+#[must_use]
 pub fn analyze_dependencies(
     select_sql: &str,
     fk_columns: &[String],

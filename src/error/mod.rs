@@ -168,6 +168,7 @@ pub enum TViewError {
 
 impl TViewError {
     /// Get `PostgreSQL` SQLSTATE code for this error
+    #[must_use]
     pub fn sqlstate(&self) -> &'static str {
         use TViewError::*;
         match self {
@@ -193,6 +194,7 @@ impl TViewError {
     }
 
     /// Create internal error with file/line info
+    #[must_use]
     pub fn internal(message: String, file: &'static str, line: u32) -> Self {
         TViewError::InternalError { message, file, line }
     }

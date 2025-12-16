@@ -6,6 +6,7 @@ use crate::error::TViewResult;
 /// This function analyzes the SQL expression to determine the appropriate
 /// `PostgreSQL` type. For array columns, it detects `ARRAY(...)` subqueries
 /// and infers element types.
+#[must_use]
 pub fn infer_column_type(sql_expression: &str) -> String {
     let expr = sql_expression.trim();
 
