@@ -1,15 +1,14 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
-use once_cell::sync::Lazy;
+use std::sync::{LazyLock, Mutex};
 use pgrx::prelude::*;
 
 /// Global cache for EntityDepGraph to avoid repeated pg_tview_meta queries
-static ENTITY_GRAPH_CACHE: Lazy<Mutex<Option<super::graph::EntityDepGraph>>> = Lazy::new(|| {
+static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> = LazyLock::new(|| {
     Mutex::new(None)
 });
 
 /// Global cache for table OID → entity name mapping
-static TABLE_ENTITY_CACHE: Lazy<Mutex<HashMap<pg_sys::Oid, String>>> = Lazy::new(|| {
+static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, String>>> = LazyLock::new(|| {
     Mutex::new(HashMap::new())
 });
 

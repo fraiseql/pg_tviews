@@ -177,14 +177,17 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
+    #[cfg(feature = "pg_test")]
+    use pgrx_tests::pg_test;
+
     /// Test insert_array_element function
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_insert_array_element() {
         // Setup test table
@@ -218,7 +221,7 @@ mod tests {
     }
 
     /// Test delete_array_element function
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_delete_array_element() {
         // Setup test table with array element
@@ -251,7 +254,7 @@ mod tests {
     }
 
     /// Test array functions availability check
-    #[cfg(any(test, feature = "pg_test"))]
+    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_check_array_functions_available() {
         // This will depend on whether jsonb_ivm is installed

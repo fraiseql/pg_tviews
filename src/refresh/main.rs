@@ -467,11 +467,14 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(feature = "pg_test")]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use pgrx::JsonB;
+
+    #[cfg(feature = "pg_test")]
+    use pgrx_tests::pg_test;
 
     /// Test smart patching for nested object dependencies.
     ///

@@ -7,14 +7,14 @@ use pgrx::prelude::*;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use std::collections::HashMap;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use crate::TViewResult;
 
 /// Cache prepared statement names per entity
 /// Key: entity name (e.g., "post", "user")
 /// Value: prepared statement name (e.g., "tview_refresh_post")
-static PREPARED_STATEMENTS: Lazy<std::sync::Mutex<HashMap<String, String>>> =
-    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+static PREPARED_STATEMENTS: LazyLock<std::sync::Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Register cache invalidation callbacks during extension initialization
 ///

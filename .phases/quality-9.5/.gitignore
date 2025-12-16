@@ -1,0 +1,8 @@
+# Ignore generated reports and metrics
+*.csv
+*.json
+results/
+reports/
+
+# Keep markdown documentation
+!*.md

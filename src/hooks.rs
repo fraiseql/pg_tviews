@@ -23,8 +23,7 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::ffi::CStr;
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use crate::ddl::drop_tview;
 use crate::TViewError;
@@ -33,7 +32,7 @@ use crate::TViewError;
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 
 /// Global storage for GID during PREPARE TRANSACTION
-static PREPARING_GID: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static PREPARING_GID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Install the ProcessUtility hook to intercept CREATE/DROP TABLE tv_*
 /// Install the ProcessUtility hook to intercept CREATE TABLE tv_* commands
@@ -343,8 +342,8 @@ fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), 
 /// Written by: ProcessUtility hook (before table creation)
 /// Read by: Event trigger (after table creation, safe SPI context)
 /// Cleared by: Event trigger after successful conversion
-static PENDING_TVIEW_SELECTS: Lazy<Mutex<std::collections::HashMap<String, String>>> =
-    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Retrieve and remove a pending TVIEW SELECT statement
 ///
