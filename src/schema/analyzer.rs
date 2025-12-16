@@ -212,12 +212,12 @@ mod tests {
 
     #[test]
     fn test_detect_nested_object_simple() {
-        let sql = r#"
+        let sql = r"
             SELECT pk_post, fk_user,
                    jsonb_build_object('id', id, 'author', v_user.data) AS data
             FROM tb_post
             LEFT JOIN v_user ON v_user.pk_user = fk_user
-        "#;
+        ";
         let fk_cols = vec!["fk_user".to_string()];
 
         let deps = analyze_dependencies(sql, &fk_cols);
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_detect_array_simple() {
-        let sql = r#"
+        let sql = r"
             SELECT pk_user,
                    jsonb_build_object(
                        'id', id,
@@ -239,7 +239,7 @@ mod tests {
             FROM tb_user
             LEFT JOIN v_post ON v_post.fk_user = pk_user
             GROUP BY pk_user, id
-        "#;
+        ";
         let fk_cols = vec!["fk_post".to_string()]; // Inferred from v_post reference
 
         let deps = analyze_dependencies(sql, &fk_cols);
@@ -252,10 +252,10 @@ mod tests {
 
     #[test]
     fn test_detect_scalar_direct_column() {
-        let sql = r#"
+        let sql = r"
             SELECT pk_post, jsonb_build_object('id', id, 'title', title) AS data
             FROM tb_post
-        "#;
+        ";
         let fk_cols = vec![]; // No FKs
 
         let deps = analyze_dependencies(sql, &fk_cols);
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_detect_multiple_dependencies() {
-        let sql = r#"
+        let sql = r"
             SELECT pk_post, fk_user, fk_category,
                    jsonb_build_object(
                        'id', id,
@@ -279,7 +279,7 @@ mod tests {
             LEFT JOIN v_category ON v_category.pk_category = fk_category
             LEFT JOIN v_comment ON v_comment.fk_post = pk_post
             GROUP BY pk_post, fk_user, fk_category, v_user.data, v_category.data
-        "#;
+        ";
         let fk_cols = vec!["fk_user".to_string(), "fk_category".to_string(), "fk_comment".to_string()];
 
         let deps = analyze_dependencies(sql, &fk_cols);
@@ -303,10 +303,10 @@ mod tests {
     #[test]
     fn test_detect_no_fk_in_select() {
         // FK exists in schema but isn't referenced in SELECT
-        let sql = r#"
+        let sql = r"
             SELECT pk_post, jsonb_build_object('id', id) AS data
             FROM tb_post
-        "#;
+        ";
         let fk_cols = vec!["fk_user".to_string()];
 
         let deps = analyze_dependencies(sql, &fk_cols);

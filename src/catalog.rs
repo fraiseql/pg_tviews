@@ -3,14 +3,14 @@ use pgrx::pg_sys::Oid;
 use pgrx::datum::DatumWithOid;
 use serde::{Deserialize, Serialize};
 
-/// Type of dependency relationship for jsonb_ivm optimization
+/// Type of dependency relationship for `jsonb_ivm` optimization
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DependencyType {
     /// Direct column from base table (no nested JSONB)
     Scalar,
-    /// Embedded object via jsonb_build_object in nested key
+    /// Embedded object via `jsonb_build_object` in nested key
     NestedObject,
-    /// Array created via jsonb_agg
+    /// Array created via `jsonb_agg`
     Array,
 }
 
@@ -18,19 +18,19 @@ impl DependencyType {
     /// Parse from database string representation
     pub fn from_str(s: &str) -> Self {
         match s {
-            "scalar" => DependencyType::Scalar,
-            "nested_object" => DependencyType::NestedObject,
-            "array" => DependencyType::Array,
-            _ => DependencyType::Scalar, // default fallback
+            "scalar" => Self::Scalar,
+            "nested_object" => Self::NestedObject,
+            "array" => Self::Array,
+            _ => Self::Scalar, // default fallback
         }
     }
 
     /// Convert to database string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            DependencyType::Scalar => "scalar",
-            DependencyType::NestedObject => "nested_object",
-            DependencyType::Array => "array",
+            Self::Scalar => "scalar",
+            Self::NestedObject => "nested_object",
+            Self::Array => "array",
         }
     }
 }

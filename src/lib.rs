@@ -1,15 +1,15 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 /**
-# pg_tviews - PostgreSQL Transactional Views
+# `pg_tviews` - PostgreSQL Transactional Views
 
-A PostgreSQL extension that provides transactional materialized views with
-incremental refresh capabilities. TVIEWs automatically maintain consistency
+A `PostgreSQL` extension that provides transactional materialized views with
+incremental refresh capabilities. `TVIEW`s automatically maintain consistency
 between base tables and derived views through trigger-based change tracking.
 
 ## Architecture
 
-pg_tviews implements a sophisticated refresh system:
+`pg_tviews` implements a sophisticated refresh system:
 
 1. **Change Tracking**: Triggers on base tables enqueue changes to a transaction-scoped queue
 2. **Dependency Analysis**: Resolves view dependencies using topological sorting
@@ -21,7 +21,7 @@ pg_tviews implements a sophisticated refresh system:
 - **Transactional Consistency**: View refreshes are atomic with base table changes
 - **Dependency Resolution**: Handles complex multi-level view dependencies
 - **Performance Optimized**: Incremental updates avoid full view rebuilds
-- **PostgreSQL Native**: Written as a C extension using pgrx framework
+- **PostgreSQL Native**: Written as a C extension using `pgrx` framework
 - **2PC Support**: Transaction queue persistence for prepared transactions
 
 ## Usage
@@ -38,7 +38,7 @@ INSERT INTO posts (user_id, title) VALUES (1, 'Hello World');
 
 ## Safety
 
-This extension is designed with PostgreSQL's safety requirements in mind:
+This extension is designed with `PostgreSQL`'s safety requirements in mind:
 - No panics in FFI callbacks (all wrapped in `catch_unwind`)
 - Proper error handling with meaningful error messages
 - Transaction rollback on refresh failures
@@ -791,9 +791,6 @@ fn find_affected_tview_rows(
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
-    use crate::TViewError;
-
     #[cfg(feature = "pg_test")]
     use pgrx_tests::pg_test;
 

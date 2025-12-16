@@ -148,14 +148,14 @@ mod tests {
 
     #[test]
     fn test_parse_multiline() {
-        let sql = r#"
+        let sql = r"
             CREATE TABLE tv_post AS
             SELECT
                 pk_post,
                 id,
                 data
             FROM tb_post
-        "#;
+        ";
         let parsed = parse_create_tview(sql).unwrap();
 
         assert_eq!(parsed.tview_name, "tv_post");
