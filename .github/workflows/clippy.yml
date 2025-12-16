@@ -29,7 +29,7 @@ jobs:
 
       - name: Run strict clippy with efficient jsonb_delta focus
         run: |
-          cargo clippy --all-targets --all-features -- \
+          cargo clippy --all-targets --features pg16 -- \
             -D warnings \
             -D clippy::all \
             -D clippy::pedantic \

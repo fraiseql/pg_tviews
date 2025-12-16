@@ -7,10 +7,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install PostgreSQL 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-server-dev-16
+
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx
+          cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
+
       - name: Build docs
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --no-deps --features pg16
+
       - name: Check for warnings
-        run: cargo doc --no-deps 2>&1 | grep -q "warning:" && exit 1 || exit 0
+        run: cargo doc --no-deps --features pg16 2>&1 | grep -q "warning:" && exit 1 || exit 0
