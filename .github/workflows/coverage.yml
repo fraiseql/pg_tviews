@@ -22,6 +22,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-16 postgresql-server-dev-16 pkg-config
 
+    - name: Start PostgreSQL service
+      run: |
+        sudo systemctl start postgresql
+        sudo systemctl enable postgresql
+
     - name: Install pgrx
       run: cargo install --locked cargo-pgrx
 
