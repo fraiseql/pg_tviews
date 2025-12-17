@@ -30,6 +30,22 @@ Phase 5: jsonb_ivm Integration ⏳ IN PROGRESS
   └─ Task 7: Array Handling (optional)
 ```
 
+## CI/CD Fixes & Quality Improvements
+
+### Quick Navigation
+- **[INDEX.txt](./INDEX.txt)** - Master index and navigation guide
+- **[QUICK_START.md](./QUICK_START.md)** - 60-second overview
+- **[CICD_FIX_README.md](./CICD_FIX_README.md)** - Complete CI/CD status & strategy
+- **[CLIPPY_FIX_PLAN.md](./CLIPPY_FIX_PLAN.md)** - All 55 Clippy errors analyzed & phased
+- **[PHASE_A_IMPLEMENTATION.md](./PHASE_A_IMPLEMENTATION.md)** - Step-by-step guide for Phase A (9 errors)
+
+**Status**:
+- ✅ CI Build & Install: PASSING
+- ✅ Documentation: PASSING
+- ❌ Clippy Strict: 55 errors (planned fix)
+- ❌ Code Coverage: Blocked by Clippy (will pass after fixes)
+- ❌ Security Audit: Blocked by Clippy (will pass after fixes)
+
 ## Available Phase Plans
 
 ### Completed Phases
