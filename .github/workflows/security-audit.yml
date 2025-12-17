@@ -23,20 +23,8 @@ jobs:
           cargo install cargo-audit
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install PostgreSQL 16
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16 pkg-config
 
-      - name: Install pgrx
-        run: |
-          cargo install --locked cargo-pgrx
-          cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
-
-      - name: Build and install extension with pgrx
-        run: cargo pgrx install --release --no-default-features --features pg16 --sudo
-
-      - name: Run cargo audit
+      - name: Audit Cargo dependencies (without extension build)
         run: cargo audit --json > audit-report.json
         continue-on-error: true
 
