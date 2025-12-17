@@ -39,8 +39,10 @@ jobs:
 
     - name: Run tests with coverage
       env:
-        RUSTFLAGS: "-C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+        RUSTFLAGS: "-C link-arg=-L/usr/lib/postgresql/16/lib -C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
         LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
+        PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
+        LD_LIBRARY_PATH: /usr/lib/postgresql/16/lib
       run: cargo llvm-cov --lcov --output-path coverage.lcov --no-default-features --features pg16
 
     - name: Upload coverage to Codecov
@@ -53,8 +55,10 @@ jobs:
 
     - name: Generate HTML coverage report
       env:
-        RUSTFLAGS: "-C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+        RUSTFLAGS: "-C link-arg=-L/usr/lib/postgresql/16/lib -C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
         LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
+        PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
+        LD_LIBRARY_PATH: /usr/lib/postgresql/16/lib
       run: cargo llvm-cov --html --output-dir target/coverage-html --no-default-features --features pg16
 
     - name: Upload coverage HTML

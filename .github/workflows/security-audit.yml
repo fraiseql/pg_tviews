@@ -41,7 +41,9 @@ jobs:
 
       - name: Run cargo audit
         env:
-          RUSTFLAGS: "-C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+          RUSTFLAGS: "-C link-arg=-L/usr/lib/postgresql/16/lib -C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+          LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
+          PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
         run: cargo audit --json > audit-report.json
         continue-on-error: true
 
