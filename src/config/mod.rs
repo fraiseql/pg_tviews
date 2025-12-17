@@ -29,34 +29,34 @@ pub const DEBUG_DEPENDENCIES: bool = false;
 /// Prevents infinite loops in dependency chains
 /// TODO: Make this configurable via GUC in future version
 #[must_use]
-pub fn max_propagation_depth() -> usize {
+pub const fn max_propagation_depth() -> usize {
     100
 }
 
 /// Check if graph caching is enabled
 /// TODO: Make this configurable via GUC in future version
 #[must_use]
-pub fn graph_cache_enabled() -> bool {
+pub const fn graph_cache_enabled() -> bool {
     true
 }
 
 /// Check if table caching is enabled
 /// TODO: Make this configurable via GUC in future version
 #[must_use]
-pub fn table_cache_enabled() -> bool {
+pub const fn table_cache_enabled() -> bool {
     true
 }
 
 /// Get the current log level
 /// TODO: Make this configurable via GUC in future version
 #[must_use]
-pub fn log_level() -> &'static str {
+pub const fn log_level() -> &'static str {
     "info"
 }
 
 /// Check if metrics collection is enabled
 /// TODO: Make this configurable via GUC in future version
 #[must_use]
-pub fn metrics_enabled() -> bool {
+pub const fn metrics_enabled() -> bool {
     false
 }

@@ -114,7 +114,7 @@ fn traverse_dependencies(
                 relkind: relkind_opt.clone(),
             });
 
-            if let Some("v") = relkind_opt.as_deref() {
+            if relkind_opt.as_deref() == Some("v") {
                 // View - recurse
                 queue.push_back((dep_oid, depth + 1));
             }
