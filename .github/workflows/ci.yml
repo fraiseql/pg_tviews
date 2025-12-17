@@ -40,5 +40,5 @@ jobs:
 
       - name: Install extension
         run: |
-          cargo pgrx install --release --no-default-features --features pg16
+          cargo pgrx install --release --no-default-features --features pg16 --sudo
 
