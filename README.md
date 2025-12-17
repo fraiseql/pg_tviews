@@ -10,6 +10,13 @@
 [![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
+**CI/CD Status**:
+[![CI](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml)
+[![Clippy Strict](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy-strict.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy-strict.yml)
+[![Code Coverage](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml)
+[![Security Audit](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml)
+[![Documentation](https://github.com/fraiseql/pg_tviews/actions/workflows/documentation.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/documentation.yml)
+
 *Core infrastructure for FraiseQL's GraphQL Cascade — automatic incremental refresh of JSONB read models with 5,000-12,000× performance gains.*
 
 By Lionel Hamayon • Part of the FraiseQL framework
