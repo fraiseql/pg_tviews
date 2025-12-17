@@ -33,17 +33,10 @@ jobs:
           cargo install --locked cargo-pgrx
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
 
-      - name: Set PostgreSQL library paths
-        run: |
-          echo "LIBPQ_LIB_DIR=/usr/lib/postgresql/16/lib" >> $GITHUB_ENV
-          echo "PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/lib/postgresql/16/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+      - name: Build and install extension with pgrx
+        run: cargo pgrx install --release --no-default-features --features pg16 --sudo
 
       - name: Run cargo audit
-        env:
-          RUSTFLAGS: "-C link-arg=-L/usr/lib/postgresql/16/lib -C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
-          LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
-          PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
         run: cargo audit --json > audit-report.json
         continue-on-error: true
 
