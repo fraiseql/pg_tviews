@@ -20,7 +20,7 @@ jobs:
     - name: Install PostgreSQL
       run: |
         sudo apt-get update
-        sudo apt-get install -y postgresql-16 postgresql-server-dev-16
+        sudo apt-get install -y postgresql-16 postgresql-server-dev-16 pkg-config
 
     - name: Install pgrx
       run: cargo install --locked cargo-pgrx
@@ -28,10 +28,19 @@ jobs:
     - name: Initialize pgrx
       run: cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
 
+    - name: Set PostgreSQL library paths
+      run: |
+        echo "LIBPQ_LIB_DIR=/usr/lib/postgresql/16/lib" >> $GITHUB_ENV
+        echo "PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=/usr/lib/postgresql/16/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
     - name: Install coverage tools
       run: cargo install cargo-llvm-cov
 
     - name: Run tests with coverage
+      env:
+        RUSTFLAGS: "-C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+        LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
       run: cargo llvm-cov --lcov --output-path coverage.lcov --no-default-features --features pg16
 
     - name: Upload coverage to Codecov
@@ -43,6 +52,9 @@ jobs:
         fail_ci_if_error: false
 
     - name: Generate HTML coverage report
+      env:
+        RUSTFLAGS: "-C link-arg=-Wl,-rpath,/usr/lib/postgresql/16/lib"
+        LIBPQ_LIB_DIR: /usr/lib/postgresql/16/lib
       run: cargo llvm-cov --html --output-dir target/coverage-html --no-default-features --features pg16
 
     - name: Upload coverage HTML
