@@ -789,7 +789,9 @@ fn find_affected_tview_rows(
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
+    #[cfg(feature = "pg_test")]
     use pgrx::prelude::*;
+    #[cfg(feature = "pg_test")]
     use crate::error::TViewError;
 
     #[cfg(feature = "pg_test")]

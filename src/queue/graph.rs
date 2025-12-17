@@ -189,7 +189,7 @@ mod tests {
         // feed -> post
 
         let entities: HashSet<String> = ["company", "user", "post", "feed"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter().map(|&s| s.to_string()).collect();
 
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         children.insert("user".to_string(), vec!["company".to_string()]);

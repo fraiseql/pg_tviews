@@ -34,7 +34,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Create results directory
-mkdir -p "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR" 2>/dev/null || RESULTS_DIR="/tmp"
 
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE}pg_tviews Comprehensive Benchmark Suite${NC}"
@@ -46,7 +46,7 @@ echo ""
 
 # Log function
 log() {
-    echo -e "$1" | tee -a "$LOG_FILE"
+    echo -e "$1"
 }
 
 # Error handler
@@ -120,15 +120,16 @@ run_scenario() {
     log "  Loading schema..."
     # Set search_path before loading schema
     $PSQL -c "SET search_path TO benchmark, public;" || error_exit "Failed to set search_path"
-    $PSQL -f "schemas/${scenario}_schema.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "Schema load failed for $scenario"
+    $PSQL -f "schemas/${scenario}_schema.sql" || error_exit "Schema load failed for $scenario"
 
     # Generate data
     log "  Generating $scale scale data..."
-    $PSQL -v data_scale="$scale" -f "data/${scenario}_data.sql" 2>&1 | grep -E "NOTICE|ERROR" | tee -a "$LOG_FILE"
+    # Substitute the data scale directly into the SQL file
+    sed "s/__DATA_SCALE__/'$scale'/g" "data/${scenario}_data.sql" | $PSQL 2>&1 | grep -E "NOTICE|ERROR"
 
     # Run benchmarks
     log "  Running benchmarks..."
-    $PSQL -v data_scale="'$scale'" -f "scenarios/${scenario}_benchmarks.sql" 2>&1 | tee -a "$LOG_FILE"
+    $PSQL -c "SET search_path TO benchmark, public;" -v data_scale="$scale" -f "scenarios/${scenario}_benchmarks.sql"
 
     log "${GREEN}✓ $scenario_name ($scale) complete${NC}\n"
 }

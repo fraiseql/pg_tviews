@@ -8,8 +8,7 @@ SET search_path TO benchmark, public;
 -- Configuration via psql variables (set before running)
 -- \set data_scale 'small'  -- options: small, medium, large
 
--- Default to small if not set
-\set data_scale 'small'
+-- Data scale is set via sed substitution from run_benchmarks.sh
 
 -- Scale definitions:
 -- small:  10 categories, 1K products, 5K reviews
@@ -18,7 +17,7 @@ SET search_path TO benchmark, public;
 
 DO $$
 DECLARE
-    v_scale TEXT := :'data_scale';  -- Use psql variable: small, medium, large
+    v_scale TEXT := __DATA_SCALE__;
     v_num_categories INTEGER;
     v_num_products INTEGER;
     v_num_reviews INTEGER;
@@ -26,6 +25,23 @@ DECLARE
     v_start TIMESTAMPTZ;
     v_end TIMESTAMPTZ;
 BEGIN
+    -- Ensure we're in the right schema
+    SET LOCAL search_path TO benchmark, public;
+
+    -- Clear existing data for clean benchmark runs
+    TRUNCATE TABLE tb_review CASCADE;
+    TRUNCATE TABLE tb_inventory CASCADE;
+    TRUNCATE TABLE tb_product CASCADE;
+    TRUNCATE TABLE tb_category CASCADE;
+    TRUNCATE TABLE tv_product CASCADE;
+
+    -- Reset sequences for consistent IDs
+    ALTER SEQUENCE tb_category_pk_category_seq RESTART WITH 1;
+    ALTER SEQUENCE tb_product_pk_product_seq RESTART WITH 1;
+    ALTER SEQUENCE tb_review_pk_review_seq RESTART WITH 1;
+    ALTER SEQUENCE tb_inventory_pk_inventory_seq RESTART WITH 1;
+
+    v_start := clock_timestamp();
 
     -- Set scale parameters
     CASE v_scale
@@ -48,19 +64,27 @@ BEGIN
     RAISE NOTICE 'Generating % scale data: % categories, % products, % reviews',
         v_scale, v_num_categories, v_num_products, v_num_reviews;
 
-    v_start := clock_timestamp();
-
     -- 1. Generate categories
     RAISE NOTICE 'Generating categories...';
-    INSERT INTO tb_category (name, slug, fk_parent_category)
+    -- Insert all categories without parent references first
+    INSERT INTO tb_category (name, slug)
     SELECT
         'Category ' || i,
-        'category-' || i,
-        CASE WHEN i > 5 THEN ((i - 1) % 5) + 1 ELSE NULL END  -- Some have parents
+        'category-' || i
     FROM generate_series(1, v_num_categories) AS i;
+
+    -- Then update child categories to have parents
+    -- Temporarily disable constraint checking for this update
+    SET LOCAL session_replication_role = 'replica';
+    UPDATE tb_category
+    SET fk_parent_category = ((pk_category - 1) % 5) + 1
+    WHERE pk_category > 5;
+    SET LOCAL session_replication_role = 'origin';
 
     -- 2. Generate products in batches
     RAISE NOTICE 'Generating products...';
+    -- Disable constraints for bulk insert
+    SET LOCAL session_replication_role = 'replica';
     FOR i IN 1..v_num_products BY v_batch_size LOOP
         INSERT INTO tb_product (fk_category, sku, name, description, base_price, current_price, status)
         SELECT
@@ -77,6 +101,8 @@ BEGIN
             RAISE NOTICE '  Products: % / %', LEAST(i + v_batch_size - 1, v_num_products), v_num_products;
         END IF;
     END LOOP;
+    -- Re-enable constraints
+    SET LOCAL session_replication_role = 'origin';
 
     -- 3. Generate inventory
     RAISE NOTICE 'Generating inventory...';
@@ -115,9 +141,9 @@ BEGIN
     RAISE NOTICE 'Populating TVIEW (pg_tviews)...';
     -- The tv_product table was already created with data by the schema
     -- But we need to verify it has rows (it should from CREATE TABLE AS SELECT)
-    IF (SELECT COUNT(*) FROM tv_product) = 0 THEN
-        INSERT INTO tv_product SELECT pk_product, fk_category, data FROM v_product;
-    END IF;
+     IF (SELECT COUNT(*) FROM tv_product) = 0 THEN
+         INSERT INTO tv_product SELECT id, pk_product, fk_category, data FROM v_product;
+     END IF;
 
     -- 6. Populate manual table (Approach 2: manual updates)
     RAISE NOTICE 'Populating manual table...';

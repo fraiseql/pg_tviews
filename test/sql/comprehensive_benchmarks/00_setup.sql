@@ -5,7 +5,17 @@
 -- This script runs inside the benchmark database
 
 -- Enable extensions
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+-- For development, skip pg_tviews extension since shared library is not installed
+-- CREATE EXTENSION IF NOT EXISTS pg_tviews;
+-- \i ../../../sql/pg_tviews--0.1.0.sql;  -- Skipped: requires installed extension
+
+-- Create minimal metadata table for benchmark tracking
+CREATE TABLE IF NOT EXISTS pg_tviews_metadata (
+    entity_name TEXT PRIMARY KEY,
+    backing_view TEXT,
+    pk_column TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 
 -- Setup benchmark schema for isolation
 \echo 'Setting up benchmark schema...'
@@ -54,7 +64,7 @@ CREATE INDEX idx_benchmark_results_scenario ON benchmark_results(scenario, data_
 CREATE INDEX idx_benchmark_results_operation ON benchmark_results(operation_type);
 
 -- Helper function: Calculate improvement ratio
-CREATE OR REPLACE FUNCTION calculate_improvement(
+CREATE OR REPLACE FUNCTION benchmark.calculate_improvement(
     baseline_ms NUMERIC,
     optimized_ms NUMERIC
 ) RETURNS NUMERIC AS $$
@@ -67,7 +77,7 @@ END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- Helper function: Record benchmark result (commits immediately)
-CREATE OR REPLACE FUNCTION record_benchmark(
+CREATE OR REPLACE FUNCTION benchmark.record_benchmark(
     p_scenario TEXT,
     p_test_name TEXT,
     p_data_scale TEXT,
@@ -101,7 +111,7 @@ $$ LANGUAGE plpgsql;
 -- But for simplicity, let's modify the benchmark approach
 
 -- Helper function: Benchmark executor with timing
-CREATE OR REPLACE FUNCTION benchmark_execute(
+CREATE OR REPLACE FUNCTION benchmark.benchmark_execute(
     p_scenario TEXT,
     p_test_name TEXT,
     p_data_scale TEXT,

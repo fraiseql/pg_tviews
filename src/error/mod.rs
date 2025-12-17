@@ -446,8 +446,8 @@ mod tests {
             TViewError::InternalError { message: "test".to_string(), file: "test", line: 1 },
         ];
 
-        let sqlstates: Vec<&str> = errors.iter().map(|e| e.sqlstate()).collect();
-        let unique_sqlstates: std::collections::HashSet<&str> = sqlstates.iter().cloned().collect();
+        let sqlstates: Vec<&str> = errors.iter().map(TViewError::sqlstate).collect();
+        let unique_sqlstates: std::collections::HashSet<&str> = sqlstates.iter().copied().collect();
 
         // All SQLSTATEs should be unique (though some may share codes intentionally)
         assert!(unique_sqlstates.len() >= 15, "Too many duplicate SQLSTATE codes");

@@ -32,6 +32,7 @@ DECLARE
     v_duration_ms NUMERIC;
     v_product_pk INTEGER;
 BEGIN
+    SET LOCAL search_path TO benchmark, public;
     SELECT pk_product INTO v_product_pk FROM tb_product LIMIT 1;
 
     v_start := clock_timestamp();
@@ -46,15 +47,15 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
-        'ecommerce',
-        'price_update',
-        'small',
-        'tviews_jsonb_ivm',
-        1,
-        1,
-        v_duration_ms,
-        'Approach 1: pg_tviews with jsonb_ivm smart patching'
+    SELECT record_benchmark(
+        'ecommerce'::text,
+        'price_update'::text,
+        'small'::text,
+        'tviews_jsonb_ivm'::text,
+        1::integer,
+        1::integer,
+        v_duration_ms::numeric,
+        'Approach 1: pg_tviews with jsonb_ivm smart patching'::text
     );
 
     RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms', v_duration_ms;
@@ -100,7 +101,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'price_update',
         'small',
@@ -139,7 +140,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'price_update',
         'small',
@@ -178,7 +179,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'price_update',
         'small',
@@ -229,7 +230,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'bulk_price_update',
         'small',
@@ -286,7 +287,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'bulk_price_update',
         'small',
@@ -334,7 +335,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'bulk_price_update',
         'small',
@@ -378,7 +379,7 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark(
+    SELECT record_benchmark(
         'ecommerce',
         'bulk_price_update',
         'small',

@@ -469,11 +469,7 @@ mod tests {
         ];
 
         for (table_name, expected_entity) in test_cases {
-            let result = if let Some(entity) = table_name.strip_prefix("tb_") {
-                Some(entity.to_string())
-            } else {
-                None
-            };
+            let result = table_name.strip_prefix("tb_").map(str::to_string);
 
             assert_eq!(result.as_deref(), expected_entity);
         }
