@@ -21,7 +21,7 @@ static PREPARED_STATEMENTS: LazyLock<std::sync::Mutex<HashMap<String, String>>> 
 /// This ensures prepared statements are cleared when schema changes occur.
 /// Must be called from `_PG_init()`.
 #[allow(dead_code)]
-pub unsafe fn register_cache_invalidation_callbacks() {
+pub const unsafe fn register_cache_invalidation_callbacks() {
     // Cache invalidation callbacks not available in this pgrx version
     // Prepared statements will be managed manually
 }
@@ -114,6 +114,7 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
     ))?;
 
     cache.insert(entity.to_string(), stmt_name.clone());
+    drop(cache);
     Ok(stmt_name)
 }
 
@@ -136,6 +137,7 @@ pub fn get_cache_stats() -> (usize, Vec<String>) {
     let cache = PREPARED_STATEMENTS.lock().unwrap();
     let size = cache.len();
     let entities: Vec<String> = cache.keys().cloned().collect();
+    drop(cache);
     (size, entities)
 }
 

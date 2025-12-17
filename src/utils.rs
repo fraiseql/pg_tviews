@@ -33,7 +33,7 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
     //  - read value.
     let tuple = trigger
         .new()
-        .or(trigger.old())
+        .or_else(|| trigger.old())
         .expect("Row must exist for AFTER trigger");
 
     // TODO: detect column name dynamically. For now, assume "pk_*" is "pk_post".

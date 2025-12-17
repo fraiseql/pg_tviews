@@ -71,11 +71,7 @@ fn infer_element_type_from_subquery(subquery: &str) -> Option<String> {
     }
 
     // Extract the SELECT clause
-    let select_part = if let Some(from_pos) = query.to_uppercase().find(" FROM ") {
-        &query[7..from_pos] // Skip "SELECT "
-    } else {
-        &query[7..] // Skip "SELECT "
-    };
+    let select_part = query.to_uppercase().find(" FROM ").map_or_else(|| &query[7..], |from_pos| &query[7..from_pos]);
 
     // Parse the selected expression
     let selected_expr = select_part.trim();

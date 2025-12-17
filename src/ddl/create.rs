@@ -37,11 +37,7 @@ pub fn create_tview(
 
     // Step 1.5: Extract entity name from tview_name
     // Support both "tv_entity" and just "entity" formats
-    let entity_name = if let Some(stripped) = tview_name.strip_prefix("tv_") {
-        stripped
-    } else {
-        tview_name
-    };
+    let entity_name = tview_name.strip_prefix("tv_").map_or(tview_name, |stripped| stripped);
     info!("Entity name: {}", entity_name);
 
     // Step 2: Infer schema from SELECT
@@ -345,19 +341,13 @@ fn register_metadata(
 
     // Serialize dependency paths (TEXT[] format, NULL for None)
     let dep_paths = dep_infos.iter()
-        .map(|d| match &d.jsonb_path {
-            Some(path) => path.join("."),
-            None => String::new(),
-        })
+        .map(|d| d.jsonb_path.as_ref().map_or_else(String::new, |path| path.join(".")))
         .collect::<Vec<_>>()
         .join(",");
 
     // Serialize array match keys (NULL for None)
     let array_keys = dep_infos.iter()
-        .map(|d| match &d.array_match_key {
-            Some(key) => key.clone(),
-            None => String::new(),
-        })
+        .map(|d| d.array_match_key.clone().unwrap_or_default())
         .collect::<Vec<_>>()
         .join(",");
 

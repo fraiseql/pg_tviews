@@ -11,22 +11,18 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-
       - name: Install PostgreSQL 16 (Ubuntu default)
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-16 postgresql-server-dev-16
-
       - name: Start PostgreSQL service
         run: |
           sudo systemctl start postgresql
           sudo systemctl enable postgresql
-
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
-
       - name: Run strict clippy with efficient jsonb_delta focus
         run: |
           cargo clippy --all-targets --no-default-features --features pg16 -- \
@@ -36,4 +32,5 @@ jobs:
             -W clippy::nursery \
             -W clippy::cargo \
             -A clippy::missing_errors_doc \
-            -A clippy::module_name_repetitions
+            -A clippy::module_name_repetitions \
+            -A clippy::multiple_crate_versions

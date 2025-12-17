@@ -403,7 +403,7 @@ fn handle_prepare() -> TViewResult<()> {
 
     // Store in persistent table
     let insert_args = vec![
-        unsafe { DatumWithOid::new(gid.clone(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe { DatumWithOid::new(queue_jsonb, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
         unsafe { DatumWithOid::new(queue_size, PgOid::BuiltIn(PgBuiltInOids::INT4OID).value()) },
     ];

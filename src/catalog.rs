@@ -407,12 +407,7 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     })?;
 
     // Check if table name matches "tb_<entity>" pattern
-    if let Some(entity) = table_name.strip_prefix("tb_") {
-        Ok(Some(entity.to_string()))
-    } else {
-        // Not a tb_* table, skip
-        Ok(None)
-    }
+    table_name.strip_prefix("tb_").map_or(Ok(None), |entity| Ok(Some(entity.to_string())))
 }
 
 // Phase 5 Task 2 RED: Tests for metadata enhancement

@@ -136,22 +136,18 @@ fn split_by_top_level_comma(s: &str) -> Vec<String> {
                 current.push(c);
             }
             '\'' if !in_double_quote => {
-                // Toggle single quote state (handle escaping)
-                if prev_char == '\\' {
-                    current.push(c);
-                } else {
+                // Toggle single quote state
+                if prev_char != '\\' {
                     in_single_quote = !in_single_quote;
-                    current.push(c);
                 }
+                current.push(c);
             }
             '"' if !in_single_quote => {
                 // Toggle double quote state (handle escaping)
-                if prev_char == '\\' {
-                    current.push(c);
-                } else {
+                if prev_char != '\\' {
                     in_double_quote = !in_double_quote;
-                    current.push(c);
                 }
+                current.push(c);
             }
             ',' if paren_depth == 0 && !in_single_quote && !in_double_quote => {
                 // Top-level comma - split here

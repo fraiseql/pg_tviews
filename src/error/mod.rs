@@ -4,7 +4,7 @@ use std::fmt;
 pub mod testing;
 
 /// Main error type for `pg_tviews` extension
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
     // ============ Metadata Errors (P0xxx) ============
     /// TVIEW metadata not found
@@ -169,7 +169,7 @@ pub enum TViewError {
 impl TViewError {
     /// Get `PostgreSQL` SQLSTATE code for this error
     #[must_use]
-    pub fn sqlstate(&self) -> &'static str {
+    pub const fn sqlstate(&self) -> &'static str {
         match self {
             Self::MetadataNotFound { .. } => "P0001", // Raise exception
             Self::TViewAlreadyExists { .. } => "42710", // Duplicate object
@@ -194,8 +194,8 @@ impl TViewError {
 
     /// Create internal error with file/line info
     #[must_use]
-    pub fn internal(message: String, file: &'static str, line: u32) -> Self {
-        TViewError::InternalError { message, file, line }
+    pub const fn internal(message: String, file: &'static str, line: u32) -> Self {
+        Self::InternalError { message, file, line }
     }
 }
 
@@ -298,7 +298,7 @@ pub type TViewResult<T> = Result<T, TViewError>;
 /// Convert `SpiError` to `TViewError`
 impl From<pgrx::spi::Error> for TViewError {
     fn from(e: pgrx::spi::Error) -> Self {
-        TViewError::SpiError {
+        Self::SpiError {
             query: "Unknown".to_string(),
             error: e.to_string(),
         }
@@ -308,7 +308,7 @@ impl From<pgrx::spi::Error> for TViewError {
 /// Convert `serde_json::Error` to `TViewError`
 impl From<serde_json::Error> for TViewError {
     fn from(e: serde_json::Error) -> Self {
-        TViewError::SerializationError {
+        Self::SerializationError {
             message: format!("JSON serialization error: {e}"),
         }
     }
@@ -317,7 +317,7 @@ impl From<serde_json::Error> for TViewError {
 /// Convert `bincode::Error` to `TViewError`
 impl From<bincode::Error> for TViewError {
     fn from(e: bincode::Error) -> Self {
-        TViewError::SerializationError {
+        Self::SerializationError {
             message: format!("Binary serialization error: {e}"),
         }
     }
@@ -326,7 +326,7 @@ impl From<bincode::Error> for TViewError {
 /// Convert `regex::Error` to `TViewError`
 impl From<regex::Error> for TViewError {
     fn from(e: regex::Error) -> Self {
-        TViewError::InvalidSelectStatement {
+        Self::InvalidSelectStatement {
             sql: "Unknown".to_string(),
             reason: format!("Regex compilation failed: {e}"),
         }
@@ -336,7 +336,7 @@ impl From<regex::Error> for TViewError {
 /// Convert `std::io::Error` to `TViewError`
 impl From<std::io::Error> for TViewError {
     fn from(e: std::io::Error) -> Self {
-        TViewError::SerializationError {
+        Self::SerializationError {
             message: format!("I/O error: {e}"),
         }
     }
@@ -350,7 +350,7 @@ impl From<TViewError> for pgrx::spi::Error {
 
         // Map to pgrx error levels
         // TODO: Map properly once pgrx API clarified
-        pgrx::spi::Error::InvalidPosition
+        Self::InvalidPosition
     }
 }
 

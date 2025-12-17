@@ -97,7 +97,7 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     // Validate TVIEW name format
     if !tview_name.starts_with("tv_") {
         return Err(TViewError::InvalidTViewName {
-            name: tview_name.clone(),
+            name: tview_name,
             reason: "TVIEW name must start with 'tv_'".to_string(),
         });
     }
@@ -105,7 +105,7 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     // Basic validation of SELECT statement
     if !select_sql.to_uppercase().starts_with("SELECT") {
         return Err(TViewError::InvalidSelectStatement {
-            sql: select_sql.clone(),
+            sql: select_sql,
             reason: "Expected SELECT statement after AS".to_string(),
         });
     }

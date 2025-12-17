@@ -351,7 +351,9 @@ fn pg_tviews_infer_types(
 #[pg_extern]
 fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 1: Load queue metadata BEFORE committing (verify it exists)
-    use pgrx::datum::DatumWithOid;
+#![allow(clippy::multiple_crate_versions)]
+
+use pgrx::datum::DatumWithOid;
     let args = vec![unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
         "SELECT refresh_queue FROM pg_tview_pending_refreshes WHERE gid = $1",
@@ -479,7 +481,7 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
 }
 
 /// Get maximum propagation depth from config
-fn get_max_propagation_depth() -> usize {
+const fn get_max_propagation_depth() -> usize {
     crate::config::max_propagation_depth()
 }
 

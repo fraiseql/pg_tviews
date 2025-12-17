@@ -140,7 +140,7 @@ fn get_session_id() -> String {
 }
 
 /// Get current savepoint depth
-fn get_savepoint_depth() -> usize {
+const fn get_savepoint_depth() -> usize {
     // This would need to be implemented to track savepoint depth
     // For now, return 0 as we don't have access to this information
     0

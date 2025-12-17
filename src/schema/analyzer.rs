@@ -50,7 +50,7 @@ pub struct DependencyInfo {
 
 impl DependencyInfo {
     /// Create a scalar dependency (default)
-    fn scalar() -> Self {
+    const fn scalar() -> Self {
         Self {
             dep_type: DependencyType::Scalar,
             jsonb_path: None,

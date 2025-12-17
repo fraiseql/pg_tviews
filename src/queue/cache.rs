@@ -36,6 +36,7 @@ pub mod graph_cache {
         crate::metrics::metrics_api::record_graph_cache_miss();
         let graph = crate::queue::graph::EntityDepGraph::load()?;
         *cache = Some(graph.clone());
+        drop(cache);
         Ok(graph)
     }
 
@@ -104,8 +105,7 @@ mod tests {
         // Test that invalidate clears the cache
         graph_cache::invalidate();
 
-        let cache = ENTITY_GRAPH_CACHE.lock().unwrap();
-        assert!(cache.is_none());
+        assert!(ENTITY_GRAPH_CACHE.lock().unwrap().is_none());
     }
 
     #[test]
@@ -117,18 +117,12 @@ mod tests {
         }
 
         // Verify it's there
-        {
-            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
-            assert_eq!(cache.get(&pg_sys::Oid::from(123)), Some(&"test".to_string()));
-        }
+        assert_eq!(TABLE_ENTITY_CACHE.lock().unwrap().get(&pg_sys::Oid::from(123)), Some(&"test".to_string()));
 
         // Invalidate
         table_cache::invalidate();
 
         // Verify it's gone
-        {
-            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
-            assert!(cache.is_empty());
-        }
+        assert!(TABLE_ENTITY_CACHE.lock().unwrap().is_empty());
     }
 }

@@ -147,13 +147,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         Ok(handled) => !handled, // Pass through if hook didn't handle it
         Err(panic_info) => {
             // PANIC in ProcessUtility hook - log it and pass through to standard utility!
-            let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                format!("{panic_info:?}")
-            };
+            let panic_msg = panic_info.downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic_info.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| format!("{panic_info:?}"));
             error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
             #[allow(unreachable_code)]
             {
@@ -233,7 +230,9 @@ unsafe fn handle_create_table_as(
         let table_pattern = format!("{} as", table_name.to_lowercase());
         info!("Looking for pattern: '{}'", table_pattern);
 
-        if let Some(table_pos) = sql_lower.find(&table_pattern) {
+        sql_lower.find(&table_pattern).map_or_else(|| {
+            error!("Could not find '{}' in query", table_pattern);
+        }, |table_pos| {
             // Found "tv_<entity> AS" - skip past it
             let select_start = table_pos + table_pattern.len();
             info!("Found table+AS pattern at position {}, SELECT starts at {}", table_pos, select_start);
@@ -241,9 +240,7 @@ unsafe fn handle_create_table_as(
             info!("Extracted SELECT part: {}", select_part);
             // Remove trailing semicolon if present
             select_part.trim_end_matches(';').trim().to_string()
-        } else {
-            error!("Could not find '{}' in query", table_pattern);
-        }
+        })
     } else {
         error!("Failed to parse query string")
     };

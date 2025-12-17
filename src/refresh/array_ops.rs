@@ -61,17 +61,7 @@ pub fn insert_array_element(
     let path_str = array_path.join(",");
     let path_array = format!("ARRAY['{path_str}']");
 
-    let sql = if let Some(key) = sort_key {
-        // Insert with sorting
-        format!(
-            r"
-            UPDATE {table_name} SET
-                data = jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC'),
-                updated_at = now()
-            WHERE {pk_column} = $2
-            "
-        )
-    } else {
+    let sql = sort_key.map_or_else(|| {
         // Insert at end (no sorting)
         format!(
             r"
@@ -81,7 +71,17 @@ pub fn insert_array_element(
             WHERE {pk_column} = $2
             "
         )
-    };
+    }, |key| {
+        // Insert with sorting
+        format!(
+            r"
+            UPDATE {table_name} SET
+                data = jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC'),
+                updated_at = now()
+            WHERE {pk_column} = $2
+            "
+        )
+    });
 
     let args = vec![
         unsafe { DatumWithOid::new(new_element, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
