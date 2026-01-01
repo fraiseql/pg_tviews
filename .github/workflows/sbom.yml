@@ -44,7 +44,7 @@ jobs:
           output: 'sbom-trivy-results.sarif'
 
       - name: Upload SBOM vulnerability scan results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'sbom-trivy-results.sarif'
