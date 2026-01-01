@@ -158,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial beta release
 - Incremental materialized view refresh
-- JSONB optimization with jsonb_ivm
+- JSONB optimization with jsonb_delta
 - Comprehensive documentation
 - Production-ready security features
 

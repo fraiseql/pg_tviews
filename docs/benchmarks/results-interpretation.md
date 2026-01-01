@@ -12,12 +12,12 @@ This guide explains how to interpret pg_tviews benchmark results, including the 
 
 ### ⚠️ PROJECTIONS (Large Scale & Extensions)
 - **Large Scale (1M+ products)**: Linear extrapolation from measured results
-- **Real jsonb_ivm performance**: Estimated 20-50% improvement over stubs
+- **Real jsonb_delta performance**: Estimated 20-50% improvement over stubs
 - **pg_ivm extension performance**: Not measured (different architecture)
 
 ## Understanding the Approaches
 
-### 1. pg_tviews + jsonb_ivm (Optimal)
+### 1. pg_tviews + jsonb_delta (Optimal)
 - **What it does**: Automatic triggers + optimized JSONB patching
 - **Performance**: Best when real extension is available
 - **Current results**: Using PL/pgSQL stubs (20-50% slower than real C extension)
@@ -26,7 +26,7 @@ This guide explains how to interpret pg_tviews benchmark results, including the 
 ### 2. pg_tviews + Native PG (Compatible)
 - **What it does**: Automatic triggers + standard `jsonb_set()` operations
 - **Performance**: 98% of optimal, no additional extensions required
-- **Advantage**: Works without jsonb_ivm extension
+- **Advantage**: Works without jsonb_delta extension
 - **Measured performance**: 1.461-2.105ms for single updates
 
 ### 3. Manual Function (Controlled)
@@ -79,7 +79,7 @@ This guide explains how to interpret pg_tviews benchmark results, including the 
 
 ### Current Benchmark Limitation
 
-**All published results use PL/pgSQL stubs**, not the real jsonb_ivm C extension:
+**All published results use PL/pgSQL stubs**, not the real jsonb_delta C extension:
 
 | Test | Current (PL/pgSQL Stubs) | Projected (Real C Extension) |
 |------|--------------------------|------------------------------|
@@ -95,7 +95,7 @@ This guide explains how to interpret pg_tviews benchmark results, including the 
 
 ### Real Extension Benefits
 
-The real jsonb_ivm C extension provides:
+The real jsonb_delta C extension provides:
 - **Direct C calls**: No PL/pgSQL overhead
 - **Optimized memory usage**: No intermediate variables
 - **SIMD operations**: Potential vectorized JSONB processing
@@ -108,7 +108,7 @@ The real jsonb_ivm C extension provides:
 ```
 | Approach | Time (ms) | Notes |
 |----------|-----------|-------|
-| pg_tviews + jsonb_ivm | 2.105 | Incremental JSONB patching |
+| pg_tviews + jsonb_delta | 2.105 | Incremental JSONB patching |
 | Manual + native PG | 1.461 | Direct jsonb_set calls |
 | Full Refresh | 4169.995 | Entire table refresh |
 ```
@@ -136,7 +136,7 @@ Medium Scale: Incremental approaches are 1,979× - 2,853× faster
 - **Reality**: At small scale, yes. At production scale (100K+), 2000×+ faster
 - **Why**: Full refresh scales poorly, incremental stays constant
 
-### ❌ "Results are invalid without real jsonb_ivm"
+### ❌ "Results are invalid without real jsonb_delta"
 - **Reality**: Results prove architectural advantage of incremental approach
 - **Why**: Even with stubs, incremental beats full refresh by orders of magnitude
 
@@ -150,7 +150,7 @@ Medium Scale: Incremental approaches are 1,979× - 2,853× faster
 
 | Scenario | Recommended Approach | Why |
 |----------|---------------------|-----|
-| **Real-time e-commerce** | pg_tviews + jsonb_ivm | Automatic, fast enough for user interactions |
+| **Real-time e-commerce** | pg_tviews + jsonb_delta | Automatic, fast enough for user interactions |
 | **Batch ETL processing** | Manual Function | Full control over refresh timing |
 | **Legacy system migration** | pg_tviews + Native PG | No additional dependencies |
 | **Analytics dashboard** | Any incremental | Orders of magnitude faster than full refresh |
@@ -161,7 +161,7 @@ Medium Scale: Incremental approaches are 1,979× - 2,853× faster
 |-------------|----------|-------------------------|---------------------|
 | 1K products | Development | <100ms | Any approach |
 | 100K products | Production | <50ms | Incremental only |
-| 1M products | Enterprise | <100ms | Incremental with jsonb_ivm |
+| 1M products | Enterprise | <100ms | Incremental with jsonb_delta |
 
 ## Troubleshooting Results
 
@@ -193,7 +193,7 @@ Medium Scale: Incremental approaches are 1,979× - 2,853× faster
 
 1. **Run your own benchmarks** with your specific schema and workload
 2. **Test at your expected scale** to validate performance
-3. **Consider real jsonb_ivm extension** for production deployments
+3. **Consider real jsonb_delta extension** for production deployments
 4. **Monitor performance** in your actual application environment
 
 ## Related Documentation

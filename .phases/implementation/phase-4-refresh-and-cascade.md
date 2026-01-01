@@ -3,7 +3,7 @@
 **Status:** Planning (FIXED - Concurrency, locking, and correctness issues addressed)
 **Duration:** 14-21 days (revised from 7-10 days)
 **Complexity:** CRITICAL (revised from Very High)
-**Prerequisites:** Phase 0-A + Phase 0-3 complete + jsonb_ivm extension installed
+**Prerequisites:** Phase 0-A + Phase 0-3 complete + jsonb_delta extension installed
 
 ---
 
@@ -23,7 +23,7 @@
 
 Implement the core refresh and cascade logic:
 1. Row-level refresh function that recomputes from backing view
-2. Integration with jsonb_ivm for surgical JSONB updates
+2. Integration with jsonb_delta for surgical JSONB updates
 3. Cascade propagation through dependent TVIEWs
 4. FK lineage tracking to find affected rows
 5. Performance optimization with batch updates
@@ -38,7 +38,7 @@ This is the **MOST CRITICAL PHASE** - it brings pg_tviews to life!
 ## Success Criteria
 
 - [ ] Single row refresh works (SELECT FROM v_*, UPDATE tv_*)
-- [ ] jsonb_ivm integration (jsonb_smart_patch_* functions)
+- [ ] jsonb_delta integration (jsonb_smart_patch_* functions)
 - [ ] FK lineage propagation (fk_user = 42 → find all posts)
 - [ ] **NEW:** UPDATE FK change handled (OLD.fk != NEW.fk)
 - [ ] Cascade to dependent TVIEWs
@@ -207,7 +207,7 @@ BEGIN;
     -- Set isolation level (REQUIRED)
     SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     -- Create base table
@@ -261,7 +261,7 @@ use crate::error::{TViewError, TViewResult};
 pub mod single_row;
 pub mod cascade;
 pub mod batch;
-pub mod jsonb_ivm;
+pub mod jsonb_delta;
 
 pub use single_row::refresh_tview_row;
 pub use cascade::propagate_cascade;
@@ -373,7 +373,7 @@ fn update_tview_row(
     new_data: JsonB,
 ) -> TViewResult<()> {
     // For Phase 4, simple full replace
-    // Phase 4b will use jsonb_ivm for surgical updates
+    // Phase 4b will use jsonb_delta for surgical updates
     let update_sql = format!(
         "UPDATE {} SET data = $1, updated_at = NOW() WHERE {} = {}",
         table_name, meta.pk_column, pk_value
@@ -697,7 +697,7 @@ pub fn propagate_cascade(
 - [x] Single row refresh works
 - [x] **FIXED:** Dynamic PK column name extraction
 - [x] **FIXED:** FK change detection on UPDATE
-- [x] jsonb_ivm integration (scalar + nested object)
+- [x] jsonb_delta integration (scalar + nested object)
 - [x] FK lineage cascade
 - [x] Multi-level cascade (A → B → C)
 - [x] INSERT/UPDATE/DELETE all trigger refresh
@@ -720,7 +720,7 @@ pub fn propagate_cascade(
 
 - [x] Single row refresh < 5ms
 - [x] 100-row cascade < 500ms
-- [x] jsonb_ivm 2-3× faster than native SQL
+- [x] jsonb_delta 2-3× faster than native SQL
 - [x] Batch updates 4× faster (100+ rows)
 - [x] **NEW:** 1000-row cascade < 5s
 - [x] **NEW:** Memory usage < 50MB for large cascades

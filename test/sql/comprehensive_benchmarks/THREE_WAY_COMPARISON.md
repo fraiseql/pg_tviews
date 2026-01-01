@@ -4,7 +4,7 @@
 
 The benchmark suite now compares **three different approaches** for maintaining denormalized JSONB views:
 
-### Approach 1: pg_tviews + jsonb_ivm (Optimized)
+### Approach 1: pg_tviews + jsonb_delta (Optimized)
 - **What**: Automatic incremental refresh with surgical JSONB patching
 - **How**: Uses `jsonb_smart_patch_nested()` to update only changed keys
 - **Benefit**: Fastest - minimal data processing, optimal cache usage
@@ -92,7 +92,7 @@ The comparison helps users choose:
 **Scenario**: Update product price (nested in `{price: {current: X}}`)
 
 ```sql
--- Approach 1: pg_tviews + jsonb_ivm
+-- Approach 1: pg_tviews + jsonb_delta
 UPDATE tv_product
 SET data = jsonb_smart_patch_nested(
     data,
@@ -157,18 +157,18 @@ ORDER BY test_name, execution_time_ms;
 ```
 Test 1: Single Product Price Update
 -----------------------------------
-[1] pg_tviews + jsonb_ivm: 1.234 ms
+[1] pg_tviews + jsonb_delta: 1.234 ms
 [2] Manual + native PG: 2.456 ms
 [3] Full Refresh: 123.456 ms (scanned 1000 rows)
 
 Test 2: Bulk Price Update - 100 products
 ----------------------------------------
-[1] pg_tviews + jsonb_ivm (100 rows): 12.345 ms (0.123 ms/row)
+[1] pg_tviews + jsonb_delta (100 rows): 12.345 ms (0.123 ms/row)
 [2] Manual + native PG (100 rows): 24.567 ms (0.246 ms/row)
 [3] Full Refresh: 156.789 ms (scanned 1000 rows)
 
 Summary of Approaches:
-  [1] pg_tviews + jsonb_ivm: Surgical JSONB patching (fastest)
+  [1] pg_tviews + jsonb_delta: Surgical JSONB patching (fastest)
   [2] Manual + native PG: Manual jsonb_set updates (middle ground)
   [3] Full Refresh: Traditional REFRESH MATERIALIZED VIEW (baseline)
 ```

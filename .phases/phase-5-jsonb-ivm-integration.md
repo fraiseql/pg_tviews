@@ -1,4 +1,4 @@
-# Phase 5: jsonb_ivm Integration for Performance Optimization
+# Phase 5: jsonb_delta Integration for Performance Optimization
 
 **Status:** Ready to implement
 **Duration:** 7-10 days
@@ -9,7 +9,7 @@
 
 ## Overview
 
-Phase 5 integrates the **jsonb_ivm v0.3.1** extension to provide **2-3× faster cascade updates** through surgical JSONB patching instead of full document replacement.
+Phase 5 integrates the **jsonb_delta v0.3.1** extension to provide **2-3× faster cascade updates** through surgical JSONB patching instead of full document replacement.
 
 **Current Performance (Phase 4):**
 - Single row refresh: Full document replacement
@@ -34,7 +34,7 @@ Phase 5 integrates the **jsonb_ivm v0.3.1** extension to provide **2-3× faster 
 - Tests passing: All Phase 4 tests working
 
 ### ⏳ What Needs Implementation
-1. **Install jsonb_ivm dependency**
+1. **Install jsonb_delta dependency**
 2. **Detect update type** (scalar vs nested vs array)
 3. **Smart function dispatch** based on dependency metadata
 4. **Metadata enhancement** to track JSONB paths
@@ -45,9 +45,9 @@ Phase 5 integrates the **jsonb_ivm v0.3.1** extension to provide **2-3× faster 
 
 ## Implementation Tasks
 
-### Task 1: Add jsonb_ivm Dependency & Installation
+### Task 1: Add jsonb_delta Dependency & Installation
 
-**Goal:** Make jsonb_ivm available to pg_tviews users.
+**Goal:** Make jsonb_delta available to pg_tviews users.
 
 #### Step 1a: Update Documentation
 
@@ -57,12 +57,12 @@ Add dependency section:
 ```markdown
 ## Dependencies
 
-pg_tviews requires the **jsonb_ivm** extension for optimal performance:
+pg_tviews requires the **jsonb_delta** extension for optimal performance:
 
 ```bash
-# Install jsonb_ivm
-git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+# Install jsonb_delta
+git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 cargo pgrx install --release
 
 # Then install pg_tviews
@@ -70,27 +70,27 @@ cd ../pg_tviews
 cargo pgrx install --release
 
 # In PostgreSQL:
-CREATE EXTENSION jsonb_ivm;  -- Required
+CREATE EXTENSION jsonb_delta;  -- Required
 CREATE EXTENSION pg_tviews;
 ```
 
 **Performance Impact:**
-- Without jsonb_ivm: Basic functionality works (full document replacement)
-- With jsonb_ivm: **1.5-3× faster cascades** (surgical JSONB updates)
+- Without jsonb_delta: Basic functionality works (full document replacement)
+- With jsonb_delta: **1.5-3× faster cascades** (surgical JSONB updates)
 ```
 
 #### Step 1b: Add Runtime Dependency Check
 
 **File:** `src/lib.rs`
 
-Add function to check if jsonb_ivm is installed:
+Add function to check if jsonb_delta is installed:
 
 ```rust
-/// Check if jsonb_ivm extension is available
-fn check_jsonb_ivm_available() -> bool {
+/// Check if jsonb_delta extension is available
+fn check_jsonb_delta_available() -> bool {
     Spi::connect(|client| {
         let result = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             None,
         );
@@ -114,31 +114,31 @@ Call in `_PG_init()`:
 pub extern "C" fn _PG_init() {
     // ... existing code ...
 
-    if !check_jsonb_ivm_available() {
+    if !check_jsonb_delta_available() {
         warning!(
-            "jsonb_ivm extension not found. \
+            "jsonb_delta extension not found. \
              pg_tviews will work but with reduced performance. \
-             Install jsonb_ivm for 1.5-3× faster cascades: \
-             https://github.com/fraiseql/jsonb_ivm"
+             Install jsonb_delta for 1.5-3× faster cascades: \
+             https://github.com/fraiseql/jsonb_delta"
         );
     } else {
-        info!("jsonb_ivm extension detected - performance optimizations enabled");
+        info!("jsonb_delta extension detected - performance optimizations enabled");
     }
 }
 ```
 
 **Test:**
 ```sql
--- test/sql/50_jsonb_ivm_detection.sql
+-- test/sql/50_jsonb_delta_detection.sql
 BEGIN;
-    -- Should warn if jsonb_ivm not installed
+    -- Should warn if jsonb_delta not installed
     CREATE EXTENSION pg_tviews;
 
-    -- Install jsonb_ivm
-    CREATE EXTENSION jsonb_ivm;
+    -- Install jsonb_delta
+    CREATE EXTENSION jsonb_delta;
 
     -- Reload pg_tviews (or check logs)
-    -- Should show: "jsonb_ivm extension detected"
+    -- Should show: "jsonb_delta extension detected"
 ROLLBACK;
 ```
 
@@ -166,7 +166,7 @@ CREATE TABLE pg_tview_meta (
 **File:** `sql/pg_tviews--0.2.0.sql` (migration)
 
 ```sql
--- Migration: Add dependency type tracking for jsonb_ivm optimization
+-- Migration: Add dependency type tracking for jsonb_delta optimization
 ALTER TABLE pg_tview_meta
 ADD COLUMN dependency_types text[],     -- e.g. ['scalar', 'nested_object']
 ADD COLUMN dependency_paths text[][],   -- e.g. [NULL, ['author']]
@@ -196,7 +196,7 @@ pub struct TviewMeta {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
 
-    // NEW: jsonb_ivm optimization metadata
+    // NEW: jsonb_delta optimization metadata
     pub dependency_types: Vec<DependencyType>,
     pub dependency_paths: Vec<Option<Vec<String>>>,
     pub array_match_keys: Vec<Option<String>>,
@@ -337,7 +337,7 @@ mod tests {
 
 ---
 
-### Task 4: Update apply_patch() to Use jsonb_ivm Functions
+### Task 4: Update apply_patch() to Use jsonb_delta Functions
 
 **Goal:** Replace full document replacement with surgical JSONB updates.
 
@@ -348,20 +348,20 @@ Replace `apply_patch()` function:
 ```rust
 use crate::catalog::{DependencyType, TviewMeta};
 
-/// Apply JSON patch using jsonb_ivm smart functions
+/// Apply JSON patch using jsonb_delta smart functions
 fn apply_patch(row: &ViewRow, meta: &TviewMeta, changed_fk: Option<&str>) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
 
-    // Check if jsonb_ivm is available
-    let has_jsonb_ivm = check_jsonb_ivm_available();
+    // Check if jsonb_delta is available
+    let has_jsonb_delta = check_jsonb_delta_available();
 
-    if !has_jsonb_ivm || changed_fk.is_none() {
+    if !has_jsonb_delta || changed_fk.is_none() {
         // Fallback: Full document replacement (Phase 4 behavior)
         return apply_patch_full_replace(row, &tv_name, &pk_col);
     }
 
-    // Determine which jsonb_ivm function to use
+    // Determine which jsonb_delta function to use
     let changed_fk = changed_fk.unwrap();
     let dep_idx = meta.fk_columns.iter().position(|fk| fk == changed_fk);
 
@@ -376,7 +376,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta, changed_fk: Option<&str>) -> spi
     let dep_type = &meta.dependency_types[dep_idx];
     let dep_path = &meta.dependency_paths[dep_idx];
 
-    // Dispatch to appropriate jsonb_ivm function
+    // Dispatch to appropriate jsonb_delta function
     match dep_type {
         DependencyType::Scalar => {
             apply_patch_scalar(row, &tv_name, &pk_col)
@@ -500,7 +500,7 @@ fn execute_update(sql: &str, data: &JsonB, pk: i64) -> spi::Result<()> {
 }
 
 fn extract_match_value(data: &JsonB, match_key: &str) -> spi::Result<JsonB> {
-    // Use jsonb_extract_id from jsonb_ivm
+    // Use jsonb_extract_id from jsonb_delta
     let sql = format!("SELECT jsonb_extract_id($1, $2)");
 
     Spi::connect(|client| {
@@ -524,12 +524,12 @@ fn extract_match_value(data: &JsonB, match_key: &str) -> spi::Result<JsonB> {
     })
 }
 
-fn check_jsonb_ivm_available() -> bool {
+fn check_jsonb_delta_available() -> bool {
     // Use cached result from _PG_init() check
     // For simplicity, re-check here (could be optimized with static cache)
     Spi::connect(|client| {
         let result = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             None,
         );
@@ -604,18 +604,18 @@ fn pg_tviews_cascade(
 
 ### Task 6: Performance Benchmarking & Testing
 
-**Goal:** Verify 1.5-3× speedup with jsonb_ivm.
+**Goal:** Verify 1.5-3× speedup with jsonb_delta.
 
 #### Benchmark Test
 
-**File:** `test/sql/51_jsonb_ivm_performance.sql`
+**File:** `test/sql/51_jsonb_delta_performance.sql`
 
 ```sql
--- Phase 5 Task 6: Performance benchmark with jsonb_ivm
+-- Phase 5 Task 6: Performance benchmark with jsonb_delta
 BEGIN;
     SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
     CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
     -- Setup: Company → User → Post hierarchy
@@ -677,14 +677,14 @@ BEGIN;
     SELECT (data->'author'->'company'->>'name') AS company_in_post FROM tv_post WHERE pk_post = 1;
     -- Expected: 'ACME Corporation Updated'
 
-    -- Performance check: Should be < 100ms with jsonb_ivm (vs ~150ms without)
+    -- Performance check: Should be < 100ms with jsonb_delta (vs ~150ms without)
 
 ROLLBACK;
 ```
 
 #### Expected Results:
 
-| Scenario | Without jsonb_ivm | With jsonb_ivm | Speedup |
+| Scenario | Without jsonb_delta | With jsonb_delta | Speedup |
 |----------|------------------|----------------|---------|
 | Single nested update | 2.5ms | 1.2ms | **2.1×** |
 | 10-user cascade | 18ms | 11ms | **1.6×** |
@@ -716,7 +716,7 @@ FROM v_post;
 
 **Test:**
 ```sql
--- test/sql/52_jsonb_ivm_array_update.sql
+-- test/sql/52_jsonb_delta_array_update.sql
 -- Test array element updates with jsonb_smart_patch_array
 ```
 
@@ -727,12 +727,12 @@ FROM v_post;
 ## Acceptance Criteria
 
 ### Functional
-- [ ] jsonb_ivm dependency documented and checked at runtime
+- [ ] jsonb_delta dependency documented and checked at runtime
 - [ ] Metadata stores dependency_types, dependency_paths, array_match_keys
 - [ ] Dependency type detection working for scalar, nested_object
 - [ ] apply_patch() uses jsonb_smart_patch_scalar() for scalar updates
 - [ ] apply_patch() uses jsonb_smart_patch_nested() for nested object updates
-- [ ] Fallback to full replacement when jsonb_ivm not available
+- [ ] Fallback to full replacement when jsonb_delta not available
 - [ ] All Phase 4 tests still passing
 
 ### Performance
@@ -744,8 +744,8 @@ FROM v_post;
 ### Quality
 - [ ] Rust unit tests for dependency detection
 - [ ] SQL integration test with performance benchmark
-- [ ] Documentation updated with jsonb_ivm installation
-- [ ] Warning shown if jsonb_ivm not installed
+- [ ] Documentation updated with jsonb_delta installation
+- [ ] Warning shown if jsonb_delta not installed
 - [ ] No regressions in functionality
 
 ---
@@ -756,30 +756,30 @@ FROM v_post;
 1. **`.phases/phase-5-jsonb-ivm-integration.md`** - This file
 2. **`src/schema/analyzer.rs`** - Dependency type detection
 3. **`sql/pg_tviews--0.2.0.sql`** - Migration for new metadata columns
-4. **`test/sql/50_jsonb_ivm_detection.sql`** - Extension detection test
-5. **`test/sql/51_jsonb_ivm_performance.sql`** - Performance benchmark
-6. **`test/sql/52_jsonb_ivm_array_update.sql`** - Array handling (Phase 5.1)
+4. **`test/sql/50_jsonb_delta_detection.sql`** - Extension detection test
+5. **`test/sql/51_jsonb_delta_performance.sql`** - Performance benchmark
+6. **`test/sql/52_jsonb_delta_array_update.sql`** - Array handling (Phase 5.1)
 
 ### Modified Files
-1. **`README.md`** - Add jsonb_ivm dependency documentation
+1. **`README.md`** - Add jsonb_delta dependency documentation
 2. **`Cargo.toml`** - Bump version to 0.2.0
-3. **`src/lib.rs`** - Add jsonb_ivm availability check
+3. **`src/lib.rs`** - Add jsonb_delta availability check
 4. **`src/catalog.rs`** - Add dependency_types fields to TviewMeta
-5. **`src/refresh.rs`** - Rewrite apply_patch() with jsonb_ivm dispatch
+5. **`src/refresh.rs`** - Rewrite apply_patch() with jsonb_delta dispatch
 6. **`src/ddl/create.rs`** - Call dependency analyzer, store metadata
 
 ---
 
 ## Rollback Plan
 
-If Phase 5 fails or jsonb_ivm causes issues:
+If Phase 5 fails or jsonb_delta causes issues:
 
 1. **Keep fallback path**: apply_patch_full_replace() always available
-2. **Disable optimization**: Set flag `use_jsonb_ivm = false`
+2. **Disable optimization**: Set flag `use_jsonb_delta = false`
 3. **Revert metadata**: Columns are optional, can be NULL
 4. **Phase 4 still works**: All existing functionality preserved
 
-Can rollback to Phase 4 behavior by simply not installing jsonb_ivm.
+Can rollback to Phase 4 behavior by simply not installing jsonb_delta.
 
 ---
 
@@ -803,12 +803,12 @@ Can rollback to Phase 4 behavior by simply not installing jsonb_ivm.
 
 **Phase 5 is complete when:**
 
-✅ jsonb_ivm dependency documented and optional
+✅ jsonb_delta dependency documented and optional
 ✅ Metadata tracks dependency types (scalar, nested_object)
 ✅ apply_patch() uses smart functions when available
 ✅ Performance benchmark shows **1.5-2× speedup**
 ✅ All Phase 4 tests still pass
-✅ Fallback works when jsonb_ivm not installed
+✅ Fallback works when jsonb_delta not installed
 ✅ No breaking changes to existing API
 
 ---
@@ -824,7 +824,7 @@ Can rollback to Phase 4 behavior by simply not installing jsonb_ivm.
 
 ## References
 
-- [jsonb_ivm GitHub](https://github.com/fraiseql/jsonb_ivm) - v0.3.1 documentation
+- [jsonb_delta GitHub](https://github.com/fraiseql/jsonb_delta) - v0.3.1 documentation
 - Phase 4 Plan: `docs/archive/PHASE_4_PLAN.md`
-- PRD v2: `PRD_v2.md` - jsonb_ivm integration strategy
-- Benchmark expectations: 1.5-3× faster cascades (validated by jsonb_ivm tests)
+- PRD v2: `PRD_v2.md` - jsonb_delta integration strategy
+- Benchmark expectations: 1.5-3× faster cascades (validated by jsonb_delta tests)

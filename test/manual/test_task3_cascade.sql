@@ -9,7 +9,7 @@ CREATE DATABASE test_cascade;
 \c test_cascade
 
 -- Load extensions
-CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
 \echo '=========================================='

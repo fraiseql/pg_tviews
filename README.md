@@ -31,6 +31,49 @@ By Lionel Hamayon • Part of the FraiseQL framework
 
 ---
 
+## 🍓 Part of the FraiseQL Ecosystem
+
+**pg_tviews** is the performance foundation for FraiseQL's CQRS architecture:
+
+### **Server Stack (PostgreSQL + Python/Rust)**
+
+| Tool | Purpose | Status | Performance Gain |
+|------|---------|--------|------------------|
+| **[pg_tviews](https://github.com/fraiseql/pg_tviews)** | Incremental materialized views | **Beta** ⭐ | **100-500× faster** |
+| **[jsonb_delta](https://github.com/evoludigit/jsonb_delta)** | JSONB surgical updates | Stable | **2-7× faster** |
+| **[pgGit](https://pggit.dev)** | Database version control | Stable | Git for databases |
+| **[confiture](https://github.com/fraiseql/confiture)** | PostgreSQL migrations | Stable | **300-600× faster** |
+| **[fraiseql](https://fraiseql.dev)** | GraphQL framework | Stable | **7-10× faster** |
+| **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Phase 6 | Auto-dependency resolution |
+
+### **Client Libraries (TypeScript/JavaScript)**
+
+| Library | Purpose | Framework Support |
+|---------|---------|-------------------|
+| **[graphql-cascade](https://github.com/graphql-cascade/graphql-cascade)** | Automatic cache invalidation | Apollo, React Query, Relay, URQL |
+
+**How pg_tviews fits:**
+- **fraiseql** uses pg_tviews for GraphQL read models (tv_* tables)
+- **jsonb_delta** optimizes JSONB updates (1.5-3× faster)
+- **confiture** manages TVIEW schema evolution
+- **graphql-cascade** (client-side) invalidates browser caches when mutations trigger refreshes
+
+**Stack it up:**
+```bash
+# Install extensions
+CREATE EXTENSION pg_tviews;
+CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB
+
+# Create incremental view
+CREATE TABLE tv_post AS SELECT ...;
+
+# Use with fraiseql GraphQL
+@fraiseql.type(sql_source="tv_post")
+class Post: ...
+```
+
+---
+
 ## 📋 Version Status
 
 **Current Version**: `0.1.0-beta.1` (December 2025)
@@ -79,14 +122,14 @@ COMMIT;  -- tv_post automatically updated with ONLY the affected row!
 
 ### 🚀 Performance Optimization
 
-For **1.5-3× faster JSONB updates**, install the optional `jsonb_ivm` extension:
+For **1.5-3× faster JSONB updates**, install the optional `jsonb_delta` extension:
 
 ```sql
-CREATE EXTENSION jsonb_ivm;  -- Optional: 1.5-3× faster JSONB updates
+CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB updates
 CREATE EXTENSION pg_tviews;
 ```
 
-Without `jsonb_ivm`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
+Without `jsonb_delta`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
 
 ---
 
@@ -140,7 +183,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **⚡ 100-500× Faster Triggers**: Statement-level triggers for bulk operations
 - **💾 Query Plan Caching**: 10× faster with cached prepared statements
 - **📦 Bulk Optimization**: N rows with just 2 queries instead of N queries
-- **🎨 Smart Patching**: 2× performance boost with optional jsonb_ivm integration
+- **🎨 Smart Patching**: 2× performance boost with optional jsonb_delta integration
 
 ### Production-Ready
 
@@ -391,7 +434,7 @@ SELECT * FROM pg_tviews_queue_realtime;
 ### Benchmarks
 - **[Overview](docs/benchmarks/overview.md)** - Performance testing methodology and 4-way comparison
 - **[Running Benchmarks](docs/benchmarks/running-benchmarks.md)** - How to run benchmarks (Docker, pgrx, manual)
-- **[Docker Setup](docs/benchmarks/docker-benchmarks.md)** - Advanced Docker benchmarking (requires jsonb_ivm)
+- **[Docker Setup](docs/benchmarks/docker-benchmarks.md)** - Advanced Docker benchmarking (requires jsonb_delta)
 - **[Results Interpretation](docs/benchmarks/results-interpretation.md)** - Understanding benchmark results
 - **[Results](docs/benchmarks/results.md)** - Detailed benchmark data
 

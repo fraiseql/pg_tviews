@@ -16,7 +16,7 @@
 - **OS**: Arch Linux (Kernel 6.17.9-arch1-1)
 - **PostgreSQL**: 18.1
 - **pg_tviews**: 0.1.0-beta.1
-- **jsonb_ivm**: Not installed (optional)
+- **jsonb_delta**: Not installed (optional)
 
 ### PostgreSQL Configuration
 ```ini

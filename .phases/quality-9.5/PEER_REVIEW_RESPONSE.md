@@ -100,7 +100,7 @@ The original assessment (8.5/10) is **generally accurate** but misses critical t
 
 **Current claims** (from README):
 - "2,083× faster" - **unvalidated**
-- "1.5-3× speedup with jsonb_ivm" - **no sample size**
+- "1.5-3× speedup with jsonb_delta" - **no sample size**
 - No confidence intervals, p-values, or reproducibility protocol
 
 **Impact**: Unverified performance claims hurt credibility.

@@ -398,7 +398,7 @@ DROP TABLE tv_post CASCADE;   -- Drops all dependents
 
 **Slow refreshes**:
 - Deep cascade chains (>3 levels)
-- Large JSONB objects (consider jsonb_ivm extension)
+- Large JSONB objects (consider jsonb_delta extension)
 
 ## Best Practices
 

@@ -172,20 +172,20 @@ psql -c "\copy (SELECT * FROM benchmark_comparison WHERE improvement_ratio > 1 O
 
 ### pg_ivm Extension Not Found
 ```
-⚠ jsonb_ivm extension not available, loading stubs
+⚠ jsonb_delta extension not available, loading stubs
 ```
 
 **This is OK!** Benchmarks will use compatible stub functions. Real extension would be 20-50% faster, but comparison ratios remain valid.
 
 To install real extension (optional):
 ```bash
-# Clone and build jsonb_ivm
-git clone https://github.com/fraiseql/jsonb_ivm
-cd jsonb_ivm
+# Clone and build jsonb_delta
+git clone https://github.com/fraiseql/jsonb_delta
+cd jsonb_delta
 make && sudo make install
 
 # In PostgreSQL
-CREATE EXTENSION jsonb_ivm;
+CREATE EXTENSION jsonb_delta;
 ```
 
 ### Out of Memory (Large Scale)
@@ -262,7 +262,7 @@ WHERE query LIKE '%REFRESH%';
 
 ### Three Approaches Compared
 
-**Approach 1: pg_tviews + jsonb_ivm**
+**Approach 1: pg_tviews + jsonb_delta**
 - Incremental updates only to affected rows
 - Smart JSONB patching (no full object rebuild)
 - Best for: Frequent small updates, real-time systems
@@ -309,7 +309,7 @@ SELECT
     ROUND(execution_time_ms / NULLIF(rows_affected, 0), 3) as ms_per_row
 FROM benchmark_summary
 WHERE test_name = 'price_update'
-  AND operation_type IN ('tviews_jsonb_ivm', 'full_refresh')
+  AND operation_type IN ('tviews_jsonb_delta', 'full_refresh')
 ORDER BY data_scale, operation_type;
 ```
 

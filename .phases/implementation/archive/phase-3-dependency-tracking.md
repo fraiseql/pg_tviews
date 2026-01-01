@@ -775,7 +775,7 @@ Can rollback by removing triggers manually if needed.
 ## Next Phase
 
 Once Phase 3 complete:
-- **Phase 4**: Refresh Logic & jsonb_ivm Integration
+- **Phase 4**: Refresh Logic & jsonb_delta Integration
 - Implement row-level refresh
 - Integrate jsonb_smart_patch_* functions
 - Implement cascade propagation

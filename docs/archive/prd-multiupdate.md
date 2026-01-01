@@ -86,7 +86,7 @@ We register a **transaction callback** (xact callback) via pgrx / PG hooks:
 For each `(entity, pk)`:
 
 1. Recompute the row from `v_entity` (the view).
-2. Patch the corresponding `tv_entity` row via `jsonb_ivm_patch`.
+2. Patch the corresponding `tv_entity` row via `jsonb_delta_patch`.
 3. Determine parents (e.g. from FK columns) and enqueue them into the same transaction queue (if not already processed).
 
 Processing continues until the queue is empty (closure of the graph).
@@ -306,7 +306,7 @@ For a given `(entity, pk)`:
 3. If row exists:
 
    * Extract `data` and any updated FK / UUID columns.
-   * Patch `tv_entity` row using `jsonb_ivm_patch`.
+   * Patch `tv_entity` row using `jsonb_delta_patch`.
 4. If row does not exist (e.g. deletion):
 
    * Delete from `tv_entity`.
@@ -367,9 +367,9 @@ pub fn refresh_entity_pk(key: &crate::RefreshKey) -> spi::Result<()> {
         let fk_updates = crate::infer::extract_fk_updates(&row, &meta)?;
         let uuid_fk_updates = crate::infer::extract_uuid_fk_updates(&row, &meta)?;
 
-        // 2. Apply patch using jsonb_ivm_patch
+        // 2. Apply patch using jsonb_delta_patch
         let mut set_fragments: Vec<String> = Vec::new();
-        set_fragments.push("data = jsonb_ivm_patch(data, $1)".to_string());
+        set_fragments.push("data = jsonb_delta_patch(data, $1)".to_string());
         set_fragments.push("updated_at = now()".to_string());
 
         // Add fk/uuid columns to SET clause
@@ -489,7 +489,7 @@ This is intentionally a **high-level stub**; the real implementation will depend
 * Triggers only **enqueue** refreshes.
 * Coalescing happens in a **transaction-local HashSet**.
 * Actual refresh work happens **once per (entity,pk) at COMMIT**.
-* Refresh uses `v_entity` to recompute and `jsonb_ivm_patch` to apply.
+* Refresh uses `v_entity` to recompute and `jsonb_delta_patch` to apply.
 * Propagation is driven by FK and dependency graph, and uses the same queue (so it’s coalesced too).
 
 **Key pieces to implement:**
@@ -497,7 +497,7 @@ This is intentionally a **high-level stub**; the real implementation will depend
 1. `RefreshKey` + transaction-local queue (`TX_REFRESH_QUEUE`, `TX_REFRESH_SCHEDULED`)
 2. Trigger → `enqueue_refresh_from_trigger`
 3. Commit callback → `tx_commit_handler`
-4. `refresh_entity_pk` (recompute + jsonb_ivm_patch + delete-if-missing)
+4. `refresh_entity_pk` (recompute + jsonb_delta_patch + delete-if-missing)
 5. `parents_for` + entity dependency graph
 6. Metadata layer (`TviewMeta`) to map entities → v_*/tv_* names, PK/FK columns
 

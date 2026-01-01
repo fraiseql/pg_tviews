@@ -21,12 +21,12 @@ Comprehensive benchmarking methodology and test scenarios for pg_tviews performa
 
 ### Extension Dependencies
 - **pg_tviews**: Core extension (built from source)
-- **jsonb_ivm**: Optional performance extension (built from source)
+- **jsonb_delta**: Optional performance extension (built from source)
 - **pg_ivm**: Alternative incremental view extension (optional)
 
 ### Results Status
 - **✅ REAL MEASUREMENTS**: Small & Medium scale benchmarks (1K-100K products)
-- **⚠️ PROJECTIONS**: Large scale performance (1M+ products) and real jsonb_ivm benefits
+- **⚠️ PROJECTIONS**: Large scale performance (1M+ products) and real jsonb_delta benefits
 
 ## Overview
 
@@ -62,7 +62,7 @@ The benchmark suite includes three scale levels:
 
 Each scenario tests four approaches:
 
-#### 1. pg_tviews + jsonb_ivm (Recommended)
+#### 1. pg_tviews + jsonb_delta (Recommended)
 - **Description**: Automatic triggers with optimized JSONB patching
 - **Performance**: Maximum performance (baseline)
 - **Use Case**: Production applications requiring maximum performance
@@ -70,7 +70,7 @@ Each scenario tests four approaches:
 #### 2. pg_tviews + Native PG
 - **Description**: Automatic triggers with standard jsonb_set operations
 - **Performance**: 98% of maximum performance
-- **Use Case**: Applications without jsonb_ivm extension
+- **Use Case**: Applications without jsonb_delta extension
 
 #### 3. Manual Function Refresh
 - **Description**: Explicit function calls with full cascade support
@@ -401,16 +401,16 @@ python3 generate_report.py --format detailed
 ### Comparative Analysis
 
 #### Approach Performance Hierarchy
-1. **pg_tviews + jsonb_ivm**: Maximum performance (1.0x baseline)
+1. **pg_tviews + jsonb_delta**: Maximum performance (1.0x baseline)
 2. **pg_tviews + Native**: 98% of maximum performance
 3. **Manual Function**: 95% of maximum performance with full control
 4. **Full Refresh**: 0.01-0.02% of incremental performance
 
 #### Use Case Recommendations
 
-- **Maximum Performance**: Use pg_tviews + jsonb_ivm
+- **Maximum Performance**: Use pg_tviews + jsonb_delta
 - **Full Control**: Use Manual Function approach
-- **Compatibility**: Use pg_tviews + Native (no jsonb_ivm dependency)
+- **Compatibility**: Use pg_tviews + Native (no jsonb_delta dependency)
 - **Baseline**: Full Refresh for comparison only
 
 ## Validation Criteria

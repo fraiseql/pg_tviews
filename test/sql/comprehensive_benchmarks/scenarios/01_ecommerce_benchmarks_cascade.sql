@@ -15,7 +15,7 @@
 \echo 'Test 1: Category name change cascade (1 parent → multiple products)'
 \echo '---------------------------------------------------------------------'
 
--- Approach 1: pg_tviews + jsonb_ivm
+-- Approach 1: pg_tviews + jsonb_delta
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -47,10 +47,10 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'small', 'tviews_jsonb_ivm',
+    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'small', 'tviews_jsonb_delta',
                             v_affected_count, 2, v_duration_ms);
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)',
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms (%.3f ms/product)',
         v_duration_ms, v_duration_ms / NULLIF(v_affected_count, 0);
 
     ROLLBACK;
@@ -183,10 +183,10 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark('ecommerce', 'supplier_cascade', 'small', 'tviews_jsonb_ivm',
+    PERFORM public.record_benchmark('ecommerce', 'supplier_cascade', 'small', 'tviews_jsonb_delta',
                             v_affected_count, 2, v_duration_ms);
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)',
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms (%.3f ms/product)',
         v_duration_ms, v_duration_ms / NULLIF(v_affected_count, 0);
 
     ROLLBACK;

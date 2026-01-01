@@ -9,14 +9,14 @@ SELECT 'Creating test database...' as status;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Note: gen_random_uuid() is available in uuid-ossp extension
 
--- Load jsonb_ivm stubs if real extension not available
+-- Load jsonb_delta stubs if real extension not available
 DO $$
 BEGIN
     -- Try to create extension
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
-    RAISE NOTICE '✓ Using REAL jsonb_ivm extension';
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+    RAISE NOTICE '✓ Using REAL jsonb_delta extension';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE '⚠ jsonb_ivm extension not available, loading stubs';
+    RAISE NOTICE '⚠ jsonb_delta extension not available, loading stubs';
     -- Load stubs would go here
 END $$;
 

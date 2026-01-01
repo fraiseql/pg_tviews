@@ -25,9 +25,9 @@
 
 **Behavior**:
 ```sql
--- Tries: CREATE EXTENSION IF NOT EXISTS jsonb_ivm
+-- Tries: CREATE EXTENSION IF NOT EXISTS jsonb_delta
 -- If success: Uses real extension (faster)
--- If fails: Loads stubs from jsonb_ivm_stubs.sql (compatible API)
+-- If fails: Loads stubs from jsonb_delta_stubs.sql (compatible API)
 ```
 
 ### 3. Data Generation Scripts

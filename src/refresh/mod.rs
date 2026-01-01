@@ -1,7 +1,7 @@
 //! Refresh Module: Smart JSONB Patching for Cascade Updates
 //!
 //! This module handles refreshing transformed views (TVIEWs) when underlying source
-//! table rows change. It uses **smart JSONB patching** via the `jsonb_ivm` extension
+//! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
 //! for 1.5-3× performance improvement on cascade updates.
 
 pub mod main;

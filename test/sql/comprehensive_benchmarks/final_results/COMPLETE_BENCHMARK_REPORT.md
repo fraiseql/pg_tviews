@@ -6,7 +6,7 @@ This report contains the complete results from the 4-way benchmark comparison te
 
 **Test Date**: $(date)
 **Database**: PostgreSQL $(psql --version | head -1)
-**Test Environment**: Local development with jsonb_ivm stubs
+**Test Environment**: Local development with jsonb_delta stubs
 
 ## Results Status
 
@@ -18,12 +18,12 @@ This report contains the complete results from the 4-way benchmark comparison te
 
 ### ⚠️ PROJECTIONS (Large Scale & Real Extensions)
 - **Large Scale (1M+ products)**: Linear extrapolation from measured results
-- **Real jsonb_ivm performance**: Estimated 20-50% improvement over stubs
+- **Real jsonb_delta performance**: Estimated 20-50% improvement over stubs
 - **pg_ivm extension performance**: Not measured (different architecture)
 
 ## Approaches Tested
 
-1. **pg_tviews + jsonb_ivm**: Automatic triggers with optimized JSONB patching
+1. **pg_tviews + jsonb_delta**: Automatic triggers with optimized JSONB patching
 2. **pg_tviews + native PG**: Automatic triggers with `jsonb_set()` operations
 3. **Manual Function**: Explicit refresh function with unlimited cascade support
 4. **Full Refresh**: Traditional `REFRESH MATERIALIZED VIEW`
@@ -59,13 +59,13 @@ This report contains the complete results from the 4-way benchmark comparison te
 ### Small Scale Results
 
 #### Single Product Price Update
-- **pg_tviews + jsonb_ivm**: 0.364 ms
+- **pg_tviews + jsonb_delta**: 0.364 ms
 - **pg_tviews + native PG**: 0.678 ms
 - **Manual Function**: 0.912 ms
 - **Full Refresh**: 78.604 ms
 
 #### Bulk 100 Products Update
-- **pg_tviews + jsonb_ivm**: ~59 ms (estimated)
+- **pg_tviews + jsonb_delta**: ~59 ms (estimated)
 - **pg_tviews + native PG**: 58.185 ms (0.58 ms/row)
 - **Manual Function**: 62.441 ms (0.62 ms/row)
 - **Full Refresh**: 100.940 ms
@@ -73,13 +73,13 @@ This report contains the complete results from the 4-way benchmark comparison te
 ### Medium Scale Results
 
 #### Single Product Price Update
-- **pg_tviews + jsonb_ivm**: 0.591 ms
+- **pg_tviews + jsonb_delta**: 0.591 ms
 - **pg_tviews + native PG**: 1.201 ms
 - **Manual Function**: 1.255 ms
 - **Full Refresh**: 7,050.436 ms
 
 #### Bulk 100 Products Update
-- **pg_tviews + jsonb_ivm**: ~9,894 ms (estimated)
+- **pg_tviews + jsonb_delta**: ~9,894 ms (estimated)
 - **pg_tviews + native PG**: 10,285.702 ms (102.86 ms/row)
 - **Manual Function**: 10,566.815 ms (105.67 ms/row)
 - **Full Refresh**: 7,974.551 ms
@@ -89,12 +89,12 @@ This report contains the complete results from the 4-way benchmark comparison te
 ### Improvement Ratios
 
 #### Small Scale
-- **pg_tviews + jsonb_ivm vs Full Refresh**: 216× faster
+- **pg_tviews + jsonb_delta vs Full Refresh**: 216× faster
 - **pg_tviews + native PG vs Full Refresh**: 137× faster
 - **Manual Function vs Full Refresh**: 128× faster
 
 #### Medium Scale
-- **pg_tviews + jsonb_ivm vs Full Refresh**: 11,900× faster
+- **pg_tviews + jsonb_delta vs Full Refresh**: 11,900× faster
 - **pg_tviews + native PG vs Full Refresh**: 5,900× faster
 - **Manual Function vs Full Refresh**: 5,600× faster
 
@@ -140,7 +140,7 @@ This report contains the complete results from the 4-way benchmark comparison te
 
 ### Use Case Recommendations
 
-#### Choose Approach 1 (pg_tviews + jsonb_ivm):
+#### Choose Approach 1 (pg_tviews + jsonb_delta):
 - High-performance requirements
 - Automatic refresh acceptable
 - Complex cascade relationships
@@ -234,7 +234,7 @@ The implementation provides developers with a complete spectrum of options for i
 ## Next Steps
 
 1. **Run large scale benchmarks** (1M products) to validate projections
-2. **Test with real jsonb_ivm extension** for Approach 1 optimization
+2. **Test with real jsonb_delta extension** for Approach 1 optimization
 3. **Implement additional entity types** (users, orders, etc.)
 4. **Add performance monitoring** to production deployments
 5. **Create migration guides** for existing applications

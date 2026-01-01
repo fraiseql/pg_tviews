@@ -15,7 +15,7 @@ Create and execute comprehensive performance benchmarks to validate that smart J
 - ✅ Extension builds and installs successfully in PostgreSQL
 - ✅ Benchmark schema created with realistic test data
 - ✅ Baseline performance measured (full replacement)
-- ✅ Smart patching performance measured (with jsonb_ivm)
+- ✅ Smart patching performance measured (with jsonb_delta)
 - ✅ Results documented showing actual improvement ratio
 - ✅ Performance report committed to repository
 
@@ -27,7 +27,7 @@ Create and execute comprehensive performance benchmarks to validate that smart J
 - ✅ Smart patching implementation complete in `src/refresh.rs`
 - ✅ Metadata parsing from `pg_tview_meta` table
 - ✅ Dispatch logic for NestedObject, Array, Scalar dependencies
-- ✅ Graceful fallback when jsonb_ivm unavailable
+- ✅ Graceful fallback when jsonb_delta unavailable
 - ✅ 6 tests written (cannot execute due to test infrastructure issues)
 - ❌ **No actual performance measurements yet**
 
@@ -92,28 +92,28 @@ SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_tviews';
 #  pg_tviews  | 0.1.0
 ```
 
-### 2. Install jsonb_ivm Extension
+### 2. Install jsonb_delta Extension
 
-**Why:** Smart patching requires the `jsonb_ivm` extension functions.
+**Why:** Smart patching requires the `jsonb_delta` extension functions.
 
 **Current Status:** This extension needs to be located or created.
 
 **Action Required:**
 ```bash
-# Option 1: Check if jsonb_ivm exists in the codebase
-find /home/lionel/code -name "*jsonb_ivm*" -type d
+# Option 1: Check if jsonb_delta exists in the codebase
+find /home/lionel/code -name "*jsonb_delta*" -type d
 
 # Option 2: Check if it's in a separate repository
 # If not found, we need to create stub functions for testing
 ```
 
-**If jsonb_ivm Does Not Exist:**
-We'll create stub SQL functions that simulate the jsonb_ivm interface for benchmarking purposes.
+**If jsonb_delta Does Not Exist:**
+We'll create stub SQL functions that simulate the jsonb_delta interface for benchmarking purposes.
 
-**Create:** `test/sql/jsonb_ivm_stubs.sql`
+**Create:** `test/sql/jsonb_delta_stubs.sql`
 
 ```sql
--- Stub implementation of jsonb_ivm functions for performance testing
+-- Stub implementation of jsonb_delta functions for performance testing
 -- These implement the same interface but with simplified logic
 
 -- Drop existing if any
@@ -227,7 +227,7 @@ END;
 $$;
 
 -- Create extension check function for testing
-CREATE OR REPLACE FUNCTION jsonb_ivm_available() RETURNS boolean
+CREATE OR REPLACE FUNCTION jsonb_delta_available() RETURNS boolean
 LANGUAGE sql IMMUTABLE
 AS $$
     SELECT true; -- Always return true since we have stubs
@@ -285,16 +285,16 @@ cargo pgrx install --release 2>&1 | grep -i "installed"
 
 ---
 
-#### Step 1.2: Create jsonb_ivm Stub Functions
+#### Step 1.2: Create jsonb_delta Stub Functions
 
-**File to Create:** `test/sql/jsonb_ivm_stubs.sql`
+**File to Create:** `test/sql/jsonb_delta_stubs.sql`
 
 **Content:** (see full SQL above in Prerequisites section)
 
 **Actions:**
 1. Create the file with all three stub functions
 2. Add comments explaining these are test stubs
-3. Include the `jsonb_ivm_available()` helper
+3. Include the `jsonb_delta_available()` helper
 
 **Code Structure:**
 ```sql
@@ -307,13 +307,13 @@ DROP FUNCTION IF EXISTS jsonb_smart_patch_scalar(...);
 CREATE OR REPLACE FUNCTION jsonb_smart_patch_nested(...) ...
 CREATE OR REPLACE FUNCTION jsonb_smart_patch_array(...) ...
 CREATE OR REPLACE FUNCTION jsonb_smart_patch_scalar(...) ...
-CREATE OR REPLACE FUNCTION jsonb_ivm_available() RETURNS boolean ...
+CREATE OR REPLACE FUNCTION jsonb_delta_available() RETURNS boolean ...
 ```
 
 **Success Criteria:**
-- ✅ File created at `test/sql/jsonb_ivm_stubs.sql`
+- ✅ File created at `test/sql/jsonb_delta_stubs.sql`
 - ✅ All three patch functions defined
-- ✅ Helper function `jsonb_ivm_available()` defined
+- ✅ Helper function `jsonb_delta_available()` defined
 
 ---
 
@@ -697,7 +697,7 @@ ERROR:  ROLLBACK - Test complete
 **Actions:**
 1. Start PostgreSQL with extension loaded
 2. Load schema and data
-3. Load jsonb_ivm stubs
+3. Load jsonb_delta stubs
 4. Run baseline benchmark
 5. Record results
 
@@ -711,7 +711,7 @@ cargo pgrx run pg17
 # Step 2: In the PostgreSQL shell that opens:
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
-\i test/sql/jsonb_ivm_stubs.sql
+\i test/sql/jsonb_delta_stubs.sql
 \i test/sql/benchmark_schema.sql
 \i test/sql/benchmark_data.sql
 
@@ -1028,7 +1028,7 @@ For a system with:
 ## Limitations and Caveats
 
 1. **Test Data:** Synthetic data may not reflect production patterns
-2. **jsonb_ivm Stubs:** Used stub implementations (not fully optimized)
+2. **jsonb_delta Stubs:** Used stub implementations (not fully optimized)
 3. **Hardware:** Results may vary on different hardware
 4. **Cache Effects:** PostgreSQL caching may affect results
 5. **Concurrency:** Single-threaded benchmark (no concurrent updates)
@@ -1051,7 +1051,7 @@ For a system with:
 - Update changes >50% of document
 
 ### Performance Tuning
-- Ensure `jsonb_ivm` extension is installed
+- Ensure `jsonb_delta` extension is installed
 - Create GIN indexes on JSONB columns
 - Use FILLFACTOR < 100 on TVIEW tables for HOT updates
 - Monitor with `pg_stat_statements`
@@ -1072,7 +1072,7 @@ cargo pgrx run pg17
 
 # 3. In PostgreSQL shell:
 CREATE EXTENSION pg_tviews;
-\i test/sql/jsonb_ivm_stubs.sql
+\i test/sql/jsonb_delta_stubs.sql
 \i test/sql/benchmark_schema.sql
 \i test/sql/benchmark_data.sql
 
@@ -1091,7 +1091,7 @@ CREATE EXTENSION pg_tviews;
 - **OS:** Linux [kernel version]
 - **PostgreSQL:** 17.7 (pgrx)
 - **pg_tviews:** 0.1.0
-- **jsonb_ivm:** stub implementation
+- **jsonb_delta:** stub implementation
 
 ### Schema Metadata
 
@@ -1162,7 +1162,7 @@ Time Saved = 870.42 - 420.15 = 450.27 ms (52% reduction)
 cd /home/lionel/code/pg_tviews
 
 # Add all benchmark files
-git add test/sql/jsonb_ivm_stubs.sql
+git add test/sql/jsonb_delta_stubs.sql
 git add test/sql/benchmark_schema.sql
 git add test/sql/benchmark_data.sql
 git add test/sql/benchmark_baseline.sql
@@ -1176,7 +1176,7 @@ perf(benchmark): Phase 5 Task 5 - Performance benchmarking results [COMPLETE]
 Added comprehensive performance benchmarking suite for smart JSONB patching:
 
 **Benchmark Infrastructure:**
-- test/sql/jsonb_ivm_stubs.sql - Stub implementations of jsonb_ivm functions
+- test/sql/jsonb_delta_stubs.sql - Stub implementations of jsonb_delta functions
 - test/sql/benchmark_schema.sql - Realistic blog schema (authors/posts/comments)
 - test/sql/benchmark_data.sql - Test data generator (100/1000/5000 rows)
 - test/sql/benchmark_baseline.sql - Full replacement benchmark
@@ -1221,11 +1221,11 @@ Before marking this phase complete, verify:
 
 **Environment:**
 - [ ] pg_tviews extension installed in PostgreSQL
-- [ ] jsonb_ivm stub functions created
+- [ ] jsonb_delta stub functions created
 - [ ] Can connect to PostgreSQL and run queries
 
 **Benchmark Files:**
-- [ ] `test/sql/jsonb_ivm_stubs.sql` - 3 patch functions defined
+- [ ] `test/sql/jsonb_delta_stubs.sql` - 3 patch functions defined
 - [ ] `test/sql/benchmark_schema.sql` - Tables, views, metadata created
 - [ ] `test/sql/benchmark_data.sql` - Data generation script
 - [ ] `test/sql/benchmark_baseline.sql` - Full replacement benchmark
@@ -1283,7 +1283,7 @@ Status: ⚠️  BELOW TARGET - Investigate
 
 **Possible Causes:**
 1. **Data Too Small:** Increase to 10K posts, 50K comments
-2. **Stub Functions Not Optimized:** Use real jsonb_ivm extension
+2. **Stub Functions Not Optimized:** Use real jsonb_delta extension
 3. **Cache Effects:** Run benchmark multiple times, average results
 4. **Hardware Limitations:** Try on different machine
 5. **PostgreSQL Configuration:** Tune shared_buffers, work_mem
@@ -1330,7 +1330,7 @@ WHERE author_id = 1;
 5. ❌ **DO NOT** rely on single measurement
    - ✅ Instead: Run each benchmark 3-5 times, average the results
 
-6. ❌ **DO NOT** forget to check if jsonb_ivm_available() returns true
+6. ❌ **DO NOT** forget to check if jsonb_delta_available() returns true
    - ✅ Instead: Verify stub functions are loaded before smart patch benchmark
 
 7. ❌ **DO NOT** commit performance report with placeholder values

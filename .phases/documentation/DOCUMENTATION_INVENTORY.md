@@ -28,7 +28,7 @@
 | Function | Status | Location | Priority |
 |----------|--------|----------|----------|
 | `pg_tviews_version()` | ✅ Documented | `docs/reference/api.md` | Low |
-| `pg_tviews_check_jsonb_ivm()` | ✅ Documented | `docs/reference/api.md` | High |
+| `pg_tviews_check_jsonb_delta()` | ✅ Documented | `docs/reference/api.md` | High |
 | `pg_tviews_queue_stats()` | ✅ Documented | `docs/reference/api.md` | Medium |
 | `pg_tviews_debug_queue()` | ✅ Documented | `docs/reference/api.md` | Medium |
 | `pg_tviews_analyze_select()` | ✅ Documented | `docs/reference/api.md` | Medium |
@@ -127,16 +127,16 @@
 
 **Resolution Needed**: Decide on one approach and document clearly.
 
-### 2. jsonb_ivm Dependency Confusion (HIGH)
+### 2. jsonb_delta Dependency Confusion (HIGH)
 
-**Problem**: Documentation doesn't clearly state if jsonb_ivm is required or optional.
+**Problem**: Documentation doesn't clearly state if jsonb_delta is required or optional.
 
 **Evidence**:
 - Code shows it's optional (feature detection exists)
 - Some docs imply it's required
 - Performance impact not quantified
 
-**Impact**: Users may unnecessarily avoid pg_tviews thinking jsonb_ivm is required.
+**Impact**: Users may unnecessarily avoid pg_tviews thinking jsonb_delta is required.
 
 ### 3. Missing Error Reference (HIGH)
 
@@ -180,7 +180,7 @@
 
 **Issues Found**:
 - DDL syntax inconsistency (CREATE TVIEW vs function)
-- jsonb_ivm dependency status unclear
+- jsonb_delta dependency status unclear
 - Version labeling confusion (0.1.0-beta.1 but claims production-ready)
 
 ### Consistency Assessment
@@ -202,7 +202,7 @@
 ### Critical Path (Must Fix for v1.0.0)
 
 1. **DDL Syntax Resolution** - Decide CREATE TVIEW vs pg_tviews_create()
-2. **jsonb_ivm Clarity** - Document dependency status and performance impact
+2. **jsonb_delta Clarity** - Document dependency status and performance impact
 3. **Error Reference** - Document all 14 error types
 4. **Missing SQL Functions** - Document 5 key operational functions
 
@@ -225,7 +225,7 @@
 ### Immediate Actions (Phase A2-A4)
 
 1. **Investigate DDL Implementation** - Check if CREATE TVIEW and pg_tviews_create() are truly equivalent
-2. **Test jsonb_ivm Performance** - Quantify the performance difference
+2. **Test jsonb_delta Performance** - Quantify the performance difference
 3. **Create Error Reference** - Document all error types with examples
 4. **Document Missing Functions** - Add the 5 undocumented SQL functions
 
@@ -234,7 +234,7 @@
 **Phase A (Foundation)**: 16-24 hours
 - A1: Documentation audit ✅ (4h) - **COMPLETED**
 - A2: DDL syntax resolution (6h) - **NEXT**
-- A3: jsonb_ivm clarity (4h)
+- A3: jsonb_delta clarity (4h)
 - A4: Version consistency (2h)
 - A5: Documentation standards (4h)
 

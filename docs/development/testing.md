@@ -61,7 +61,7 @@ done
 createdb pg_tviews_test
 
 # Enable extensions
-psql -d pg_tviews_test -c "CREATE EXTENSION jsonb_ivm;"
+psql -d pg_tviews_test -c "CREATE EXTENSION jsonb_delta;"
 psql -d pg_tviews_test -c "CREATE EXTENSION pg_tviews;"
 
 # Run tests

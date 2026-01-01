@@ -11,10 +11,10 @@ SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
 -- Clean up any existing test objects
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
-DROP EXTENSION IF EXISTS jsonb_ivm CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 
 -- Load extensions
-CREATE EXTENSION jsonb_ivm;
+CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 \echo '=========================================='

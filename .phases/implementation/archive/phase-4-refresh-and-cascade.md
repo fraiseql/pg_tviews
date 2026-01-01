@@ -3,7 +3,7 @@
 **Status:** Planning
 **Duration:** 7-10 days
 **Complexity:** Very High
-**Prerequisites:** Phase 0 + Phase 1 + Phase 2 + Phase 3 complete + jsonb_ivm extension installed
+**Prerequisites:** Phase 0 + Phase 1 + Phase 2 + Phase 3 complete + jsonb_delta extension installed
 
 ---
 
@@ -11,7 +11,7 @@
 
 Implement the core refresh and cascade logic:
 1. Row-level refresh function that recomputes from backing view
-2. Integration with jsonb_ivm for surgical JSONB updates
+2. Integration with jsonb_delta for surgical JSONB updates
 3. Cascade propagation through dependent TVIEWs
 4. FK lineage tracking to find affected rows
 5. Performance optimization with batch updates
@@ -23,7 +23,7 @@ This is the **most complex phase** - it brings pg_tviews to life!
 ## Success Criteria
 
 - [ ] Single row refresh works (SELECT FROM v_*, UPDATE tv_*)
-- [ ] jsonb_ivm integration (jsonb_smart_patch_* functions)
+- [ ] jsonb_delta integration (jsonb_smart_patch_* functions)
 - [ ] FK lineage propagation (fk_user = 42 → find all posts)
 - [ ] Cascade to dependent TVIEWs
 - [ ] Batch update optimization for multi-row changes
@@ -41,7 +41,7 @@ This is the **most complex phase** - it brings pg_tviews to life!
 ```sql
 -- test/sql/40_refresh_single_row.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     -- Create base table
@@ -163,7 +163,7 @@ fn update_tview_row(
     new_data: JsonB,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For now, simple full replace
-    // Phase 4b will use jsonb_ivm for surgical updates
+    // Phase 4b will use jsonb_delta for surgical updates
     let update_sql = format!(
         "UPDATE {} SET data = $1, updated_at = NOW() WHERE {} = {}",
         table_name, pk_column, pk_value
@@ -306,14 +306,14 @@ psql -d test_db -f test/sql/40_refresh_single_row.sql
 
 ---
 
-### Test 2: jsonb_ivm Integration (Surgical Updates)
+### Test 2: jsonb_delta Integration (Surgical Updates)
 
 **RED Phase - Write Failing Test:**
 
 ```sql
--- test/sql/41_jsonb_ivm_integration.sql
+-- test/sql/41_jsonb_delta_integration.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     CREATE TABLE tb_company (
@@ -377,7 +377,7 @@ ROLLBACK;
 **GREEN Phase - Implementation:**
 
 ```rust
-// src/refresh/jsonb_ivm.rs
+// src/refresh/jsonb_delta.rs
 use pgrx::prelude::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,11 +502,11 @@ mod tests {
 }
 ```
 
-Update refresh logic to use jsonb_ivm:
+Update refresh logic to use jsonb_delta:
 
 ```rust
 // src/refresh/single_row.rs (updated)
-use crate::refresh::jsonb_ivm::{apply_jsonb_patch, detect_dependency_type, extract_jsonb_path, DependencyType};
+use crate::refresh::jsonb_delta::{apply_jsonb_patch, detect_dependency_type, extract_jsonb_path, DependencyType};
 
 pub fn refresh_tview_row(
     entity: &str,
@@ -530,7 +530,7 @@ pub fn refresh_tview_row(
     let dep_type = detect_dependency_type(&meta.definition, &view_name);
     let jsonb_path = extract_jsonb_path(&meta.definition, &view_name);
 
-    // Apply patch using jsonb_ivm
+    // Apply patch using jsonb_delta
     apply_jsonb_patch(
         &table_name,
         &pk_column,
@@ -547,7 +547,7 @@ pub fn refresh_tview_row(
 **Verify GREEN:**
 ```bash
 cargo pgrx test pg17
-psql -d test_db -f test/sql/41_jsonb_ivm_integration.sql
+psql -d test_db -f test/sql/41_jsonb_delta_integration.sql
 ```
 
 **Expected Output:**
@@ -571,7 +571,7 @@ psql -d test_db -f test/sql/41_jsonb_ivm_integration.sql
 ```sql
 -- test/sql/42_fk_lineage_cascade.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     CREATE TABLE tb_company (
@@ -831,7 +831,7 @@ psql -d test_db -f test/sql/42_fk_lineage_cascade.sql
 mkdir -p src/refresh
 touch src/refresh/mod.rs
 touch src/refresh/single_row.rs
-touch src/refresh/jsonb_ivm.rs
+touch src/refresh/jsonb_delta.rs
 touch src/refresh/cascade.rs
 touch src/refresh/batch.rs
 ```
@@ -843,7 +843,7 @@ touch src/refresh/batch.rs
 3. Update trigger handler
 4. Test with UPDATE/INSERT/DELETE
 
-### Step 3: Integrate jsonb_ivm (TDD)
+### Step 3: Integrate jsonb_delta (TDD)
 
 1. Write test for nested object update
 2. Implement dependency type detection
@@ -887,7 +887,7 @@ pub fn refresh_batch(
 ### Functional Requirements
 
 - [x] Single row refresh works
-- [x] jsonb_ivm integration (scalar + nested object)
+- [x] jsonb_delta integration (scalar + nested object)
 - [x] FK lineage cascade
 - [x] Multi-level cascade (A → B → C)
 - [x] INSERT/UPDATE/DELETE all trigger refresh
@@ -906,7 +906,7 @@ pub fn refresh_batch(
 
 - [x] Single row refresh < 5ms
 - [x] 100-row cascade < 500ms
-- [x] jsonb_ivm 2-3× faster than native SQL
+- [x] jsonb_delta 2-3× faster than native SQL
 - [x] Batch updates 4× faster (100+ rows)
 
 ---
@@ -916,7 +916,7 @@ pub fn refresh_batch(
 If Phase 4 fails:
 
 1. **Refresh Issues**: Add verbose logging, validate metadata
-2. **jsonb_ivm Integration**: Fall back to full replace
+2. **jsonb_delta Integration**: Fall back to full replace
 3. **Cascade Issues**: Limit cascade depth, add circuit breaker
 
 Can rollback to Phase 3 (triggers fire but don't refresh).

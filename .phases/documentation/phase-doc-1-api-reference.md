@@ -99,14 +99,14 @@ SELECT pg_tviews_version();
 -- Returns: '0.1.0-beta.1'
 ```
 
-2. **pg_tviews_check_jsonb_ivm()**
+2. **pg_tviews_check_jsonb_delta()**
 ```sql
 -- Location: src/lib.rs
 -- Returns: BOOLEAN
--- Description: Check if optional jsonb_ivm extension is available
+-- Description: Check if optional jsonb_delta extension is available
 -- Example:
-SELECT pg_tviews_check_jsonb_ivm();
--- Returns: true if jsonb_ivm is installed, false otherwise
+SELECT pg_tviews_check_jsonb_delta();
+-- Returns: true if jsonb_delta is installed, false otherwise
 ```
 
 **Documentation Template**:
@@ -272,7 +272,7 @@ Create "Common Usage Patterns" section with real-world examples:
 SELECT pg_tviews_version();
 
 -- Check for optional performance extension
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 ```
 
 ### Monitor Queue Activity
@@ -383,7 +383,7 @@ psql -d test_db -c "CREATE EXTENSION pg_tviews;"
 psql -d test_db << 'EOF'
 -- Test extension management
 SELECT pg_tviews_version();
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Test queue functions
 SELECT * FROM pg_tviews_queue_stats();
@@ -436,7 +436,7 @@ Phase Doc-1 is complete when:
 - ✅ `docs/reference/api.md` exists with complete documentation
 - ✅ All 12 public functions documented:
   1. pg_tviews_version()
-  2. pg_tviews_check_jsonb_ivm()
+  2. pg_tviews_check_jsonb_delta()
   3. pg_tviews_queue_stats()
   4. pg_tviews_debug_queue()
   5. pg_tviews_analyze_select()
@@ -480,8 +480,8 @@ Create a test script `test/api_reference_validation.sql`:
 \echo 'Testing pg_tviews_version...'
 SELECT pg_tviews_version();
 
-\echo 'Testing pg_tviews_check_jsonb_ivm...'
-SELECT pg_tviews_check_jsonb_ivm();
+\echo 'Testing pg_tviews_check_jsonb_delta...'
+SELECT pg_tviews_check_jsonb_delta();
 
 -- [Continue for all 12 functions]
 ```

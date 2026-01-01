@@ -228,7 +228,7 @@ INSERT INTO comments (post_id, text) VALUES (1, 'Benchmark comment');
 
 **Performance issues:**
 ```sql
--- Check: Ensure jsonb_ivm extension is installed
+-- Check: Ensure jsonb_delta extension is installed
 -- Verify: Large arrays (>10 elements) use batch optimization
 ```
 

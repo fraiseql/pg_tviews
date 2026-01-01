@@ -92,7 +92,7 @@ pub enum TViewError {
     },
 
     // ============ Extension Dependency Errors (58xxx) ============
-    /// jsonb_ivm extension not installed
+    /// jsonb_delta extension not installed
     JsonbIvmNotInstalled,
 
     /// Extension version mismatch
@@ -227,7 +227,7 @@ impl fmt::Display for TViewError {
                 write!(f, "Failed to infer type for column '{}': {}", column_name, reason)
             }
             JsonbIvmNotInstalled => {
-                write!(f, "Required extension 'jsonb_ivm' is not installed. Run: CREATE EXTENSION jsonb_ivm;")
+                write!(f, "Required extension 'jsonb_delta' is not installed. Run: CREATE EXTENSION jsonb_delta;")
             }
             ExtensionVersionMismatch { extension, required, found } => {
                 write!(f, "Extension '{}' version mismatch: required {}, found {}",
@@ -612,7 +612,7 @@ Create `docs/ERROR_CODES.md`:
 | P0001 | MetadataNotFound | TVIEW not found in metadata | Verify TVIEW exists with `SELECT * FROM pg_tview_meta` |
 | 42710 | TViewAlreadyExists | TVIEW name collision | Choose different name or DROP existing TVIEW |
 | 55P03 | CircularDependency | Circular view dependencies | Break cycle by removing one dependency |
-| 58P01 | JsonbIvmNotInstalled | Missing extension | Run `CREATE EXTENSION jsonb_ivm` |
+| 58P01 | JsonbIvmNotInstalled | Missing extension | Run `CREATE EXTENSION jsonb_delta` |
 | 54001 | DepthExceeded | Too many nested dependencies | Simplify view hierarchy |
 | ... | ... | ... | ... |
 ```

@@ -1,4 +1,4 @@
--- Comprehensive integration test for all jsonb_ivm enhancements
+-- Comprehensive integration test for all jsonb_delta enhancements
 \set ECHO none
 \set QUIET 1
 

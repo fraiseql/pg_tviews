@@ -167,7 +167,7 @@ rg "#\[pg_test\]" src/
 #[cfg(test)]
 mod tests {
     #[pg_test]  // <- This fails because pg_test not in scope
-    fn test_jsonb_ivm_check() {
+    fn test_jsonb_delta_check() {
         // ...
     }
 }
@@ -178,7 +178,7 @@ mod tests {
     use pgrx::prelude::*;  // <- Add this to bring pg_test into scope
 
     #[pg_test]
-    fn test_jsonb_ivm_check() {
+    fn test_jsonb_delta_check() {
         // ...
     }
 }
@@ -573,7 +573,7 @@ test/sql/51_jsonb_array_update.sql ... ok
 ```
 ERROR:  Both comments changed (expected only updated one to change)
 ```
-→ Not using smart patching, falling back to full replacement. Check jsonb_ivm integration.
+→ Not using smart patching, falling back to full replacement. Check jsonb_delta integration.
 
 **Scenario C: Test fails - Dependency not detected**
 ```
@@ -884,10 +884,10 @@ psql -h localhost -p 28817 -d pg_tviews_test -f test/sql/benchmark_baseline.sql
 # Expected output: Timing results for full document replacement
 ```
 
-2. **Run smart patch benchmark (with jsonb_ivm):**
+2. **Run smart patch benchmark (with jsonb_delta):**
 ```bash
-# Ensure jsonb_ivm is installed
-psql -h localhost -p 28817 -d pg_tviews_test -c "CREATE EXTENSION IF NOT EXISTS jsonb_ivm;"
+# Ensure jsonb_delta is installed
+psql -h localhost -p 28817 -d pg_tviews_test -c "CREATE EXTENSION IF NOT EXISTS jsonb_delta;"
 
 # Run benchmark
 psql -h localhost -p 28817 -d pg_tviews_test -f test/sql/benchmark_smart_patch.sql
@@ -919,7 +919,7 @@ psql -h localhost -p 28817 -d pg_tviews_test -f test/sql/benchmark_cascade_sizes
 ## Test Configuration
 
 - **Baseline Method:** Full JSONB document replacement
-- **Optimized Method:** Smart JSONB patching with jsonb_ivm
+- **Optimized Method:** Smart JSONB patching with jsonb_delta
 - **Cascade Sizes Tested:** 1, 10, 50, 100, 200 rows
 
 ## Results Summary
@@ -992,7 +992,7 @@ psql -h localhost -p 28817 -d pg_tviews_test -f test/sql/benchmark_cascade_sizes
 
 ## Performance (Verified)
 
-| Scenario | Without jsonb_ivm | With jsonb_ivm | Speedup |
+| Scenario | Without jsonb_delta | With jsonb_delta | Speedup |
 |----------|------------------|----------------|---------|
 | Single nested update | [X.X]ms | [X.X]ms | **[X.X]×** |
 | Medium cascade (50 rows) | [X.XX]ms | [X.XX]ms | **[X.XX]×** |

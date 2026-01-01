@@ -368,7 +368,7 @@ So the fix was correct!
 ```
 Database: pg_tviews_benchmark
 ├── public schema
-│   ├── Extensions: pg_tviews, jsonb_ivm, uuid-ossp
+│   ├── Extensions: pg_tviews, jsonb_delta, uuid-ossp
 │   ├── Infrastructure:
 │   │   ├── benchmark_results (table)
 │   │   ├── benchmark_comparison (view)
@@ -386,7 +386,7 @@ Database: pg_tviews_benchmark
     ├── Helper views:
     │   └── v_product
     ├── TVIEWs (4 approaches):
-    │   ├── tv_product (pg_tviews+jsonb_ivm)
+    │   ├── tv_product (pg_tviews+jsonb_delta)
     │   ├── manual_product (manual function refresh)
     │   ├── manual_func_product (manual unlimited cascade)
     │   └── mv_product (traditional matview)

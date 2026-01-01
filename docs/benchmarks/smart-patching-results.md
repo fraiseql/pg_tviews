@@ -38,7 +38,7 @@ Smart JSONB patching achieves **2.03×** performance improvement over full docum
 - PostgreSQL `clock_timestamp()` for microsecond precision
 - Each benchmark run in transaction (rolled back for repeatability)
 - Timing includes all cascade updates
-- Stub implementation of jsonb_ivm functions used
+- Stub implementation of jsonb_delta functions used
 
 ---
 
@@ -159,7 +159,7 @@ Improvement Ratio = Baseline Time / Smart Patch Time
 ## Limitations and Caveats
 
 1. **Test Data:** Synthetic data may not reflect production patterns
-2. **jsonb_ivm Stubs:** Used stub implementations (not fully optimized)
+2. **jsonb_delta Stubs:** Used stub implementations (not fully optimized)
 3. **Hardware:** Results may vary on different hardware
 4. **Cache Effects:** PostgreSQL caching may affect results
 5. **Concurrency:** Single-threaded benchmark (no concurrent updates)
@@ -189,7 +189,7 @@ Improvement Ratio = Baseline Time / Smart Patch Time
 - Extremely simple JSONB (<100 bytes): Minimal absolute savings
 
 ### Performance Tuning
-- Ensure `jsonb_ivm` extension is installed
+- Ensure `jsonb_delta` extension is installed
 - Create GIN indexes on JSONB columns
 - Use FILLFACTOR < 100 on TVIEW tables for HOT updates
 - Monitor with `pg_stat_statements`
@@ -210,7 +210,7 @@ cargo pgrx run pg17
 
 # 3. In PostgreSQL shell:
 CREATE EXTENSION pg_tviews;
-\i test/sql/jsonb_ivm_stubs.sql
+\i test/sql/jsonb_delta_stubs.sql
 \i test/sql/benchmark_schema.sql
 \i test/sql/benchmark_data.sql
 
@@ -229,7 +229,7 @@ CREATE EXTENSION pg_tviews;
 - **OS:** Linux
 - **PostgreSQL:** 17.7 (pgrx)
 - **pg_tviews:** 0.1.0
-- **jsonb_ivm:** stub implementation
+- **jsonb_delta:** stub implementation
 
 ### Schema Metadata
 

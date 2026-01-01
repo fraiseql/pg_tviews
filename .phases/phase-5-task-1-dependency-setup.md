@@ -1,19 +1,19 @@
-# Phase 5 Task 1: jsonb_ivm Dependency Setup
+# Phase 5 Task 1: jsonb_delta Dependency Setup
 
 **Status:** Ready to implement
 **Duration:** 1 day
-**Parent:** Phase 5 - jsonb_ivm Integration
+**Parent:** Phase 5 - jsonb_delta Integration
 **TDD Phase:** RED → GREEN → REFACTOR
 
 ---
 
 ## Objective
 
-Set up jsonb_ivm as an optional dependency with runtime detection and graceful degradation.
+Set up jsonb_delta as an optional dependency with runtime detection and graceful degradation.
 
 **Success Criteria:**
-- ✅ Documentation explains jsonb_ivm installation
-- ✅ Runtime check detects if jsonb_ivm is installed
+- ✅ Documentation explains jsonb_delta installation
+- ✅ Runtime check detects if jsonb_delta is installed
 - ✅ Warning shown if not installed (but doesn't fail)
 - ✅ Info message shown if installed
 - ✅ Test verifies detection works
@@ -22,14 +22,14 @@ Set up jsonb_ivm as an optional dependency with runtime detection and graceful d
 
 ## Context
 
-jsonb_ivm v0.3.1 provides high-performance JSONB patching functions:
+jsonb_delta v0.3.1 provides high-performance JSONB patching functions:
 - `jsonb_smart_patch_scalar()` - 2× faster shallow merges
 - `jsonb_smart_patch_nested()` - 2× faster nested updates
 - `jsonb_smart_patch_array()` - 3× faster array element updates
 
-pg_tviews should work with OR without jsonb_ivm:
-- **With jsonb_ivm:** 1.5-2.2× faster cascades (optimal)
-- **Without jsonb_ivm:** Still functional, just slower (fallback to full document replacement)
+pg_tviews should work with OR without jsonb_delta:
+- **With jsonb_delta:** 1.5-2.2× faster cascades (optimal)
+- **Without jsonb_delta:** Still functional, just slower (fallback to full document replacement)
 
 ---
 
@@ -37,24 +37,24 @@ pg_tviews should work with OR without jsonb_ivm:
 
 ### Test 1: Extension Detection (SQL)
 
-**File:** `test/sql/50_jsonb_ivm_detection.sql`
+**File:** `test/sql/50_jsonb_delta_detection.sql`
 
 ```sql
--- Phase 5 Task 1 RED: Test jsonb_ivm detection
+-- Phase 5 Task 1 RED: Test jsonb_delta detection
 -- This test should FAIL initially because check function doesn't exist yet
 
 BEGIN;
     SET client_min_messages TO WARNING;
 
-    -- Test Case 1: Detection when jsonb_ivm NOT installed
-    DROP EXTENSION IF EXISTS jsonb_ivm CASCADE;
+    -- Test Case 1: Detection when jsonb_delta NOT installed
+    DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
     DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 
-    -- Create pg_tviews without jsonb_ivm
+    -- Create pg_tviews without jsonb_delta
     CREATE EXTENSION pg_tviews;
 
     -- Should see warning in logs:
-    -- "jsonb_ivm extension not found. pg_tviews will work but with reduced performance."
+    -- "jsonb_delta extension not found. pg_tviews will work but with reduced performance."
 
     -- Verify pg_tviews still works
     CREATE TABLE tb_test (pk_test INT PRIMARY KEY, id UUID, name TEXT);
@@ -74,23 +74,23 @@ BEGIN;
     SELECT data->>'name' AS name FROM tv_test WHERE pk_test = 1;
     -- Expected: 'Test'
 
-    -- Test Case 2: Detection when jsonb_ivm IS installed
-    CREATE EXTENSION jsonb_ivm;
+    -- Test Case 2: Detection when jsonb_delta IS installed
+    CREATE EXTENSION jsonb_delta;
 
     -- Reload pg_tviews (or check would happen on next _PG_init)
     -- In practice, this is checked once at extension load
     -- For testing, we can call the check function directly
-    SELECT pg_tviews_check_jsonb_ivm();
+    SELECT pg_tviews_check_jsonb_delta();
     -- Expected: t (true)
 
     -- Should see info in logs:
-    -- "jsonb_ivm extension detected - performance optimizations enabled"
+    -- "jsonb_delta extension detected - performance optimizations enabled"
 
 ROLLBACK;
 ```
 
 **Expected Result:** Test FAILS because:
-- `pg_tviews_check_jsonb_ivm()` function doesn't exist
+- `pg_tviews_check_jsonb_delta()` function doesn't exist
 - No warning/info messages in logs
 
 ### Test 2: Runtime Check Function (Rust)
@@ -103,46 +103,46 @@ mod tests {
     use super::*;
 
     #[pg_test]
-    fn test_jsonb_ivm_detection_when_present() {
-        // Setup: Ensure jsonb_ivm is installed
-        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_ivm").unwrap();
+    fn test_jsonb_delta_detection_when_present() {
+        // Setup: Ensure jsonb_delta is installed
+        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta").unwrap();
 
         // Test: Check should return true
-        let result = check_jsonb_ivm_available();
-        assert!(result, "jsonb_ivm should be detected when installed");
+        let result = check_jsonb_delta_available();
+        assert!(result, "jsonb_delta should be detected when installed");
     }
 
     #[pg_test]
-    fn test_jsonb_ivm_detection_when_absent() {
-        // Setup: Drop jsonb_ivm if present
-        Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE").ok();
+    fn test_jsonb_delta_detection_when_absent() {
+        // Setup: Drop jsonb_delta if present
+        Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").ok();
 
         // Test: Check should return false
-        let result = check_jsonb_ivm_available();
-        assert!(!result, "jsonb_ivm should not be detected when not installed");
+        let result = check_jsonb_delta_available();
+        assert!(!result, "jsonb_delta should not be detected when not installed");
     }
 
     #[pg_test]
-    fn test_pg_tviews_works_without_jsonb_ivm() {
-        // Setup: Ensure jsonb_ivm is NOT installed
-        Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE").ok();
+    fn test_pg_tviews_works_without_jsonb_delta() {
+        // Setup: Ensure jsonb_delta is NOT installed
+        Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").ok();
 
         // Test: pg_tviews should still function
         Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
 
-        // This should work even without jsonb_ivm
+        // This should work even without jsonb_delta
         let result = Spi::get_one::<bool>(
             "SELECT pg_tviews_create('demo', 'SELECT pk_demo, name FROM tb_demo') IS NOT NULL"
         );
 
-        assert!(result.unwrap_or(false), "pg_tviews should work without jsonb_ivm");
+        assert!(result.unwrap_or(false), "pg_tviews should work without jsonb_delta");
     }
 }
 ```
 
 **Expected Result:** Tests FAIL because:
-- `check_jsonb_ivm_available()` function doesn't exist
+- `check_jsonb_delta_available()` function doesn't exist
 - Tests won't compile
 
 ---
@@ -156,12 +156,12 @@ mod tests {
 **Location:** Add after existing functions, before `_PG_init()`
 
 ```rust
-/// Check if jsonb_ivm extension is available at runtime
+/// Check if jsonb_delta extension is available at runtime
 /// Returns true if extension is installed, false otherwise
-pub fn check_jsonb_ivm_available() -> bool {
+pub fn check_jsonb_delta_available() -> bool {
     let result = Spi::connect(|client| {
         let rows = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             None,
         )?;
@@ -179,8 +179,8 @@ pub fn check_jsonb_ivm_available() -> bool {
 
 /// Export as SQL function for testing
 #[pg_extern]
-fn pg_tviews_check_jsonb_ivm() -> bool {
-    check_jsonb_ivm_available()
+fn pg_tviews_check_jsonb_delta() -> bool {
+    check_jsonb_delta_available()
 }
 ```
 
@@ -195,16 +195,16 @@ fn pg_tviews_check_jsonb_ivm() -> bool {
 pub extern "C" fn _PG_init() {
     // ... existing ProcessUtility hook installation code ...
 
-    // Check for jsonb_ivm extension
-    if !check_jsonb_ivm_available() {
+    // Check for jsonb_delta extension
+    if !check_jsonb_delta_available() {
         warning!(
-            "jsonb_ivm extension not found. \
+            "jsonb_delta extension not found. \
              pg_tviews will work but with reduced performance. \
-             Install jsonb_ivm for 1.5-3× faster cascades: \
-             https://github.com/fraiseql/jsonb_ivm"
+             Install jsonb_delta for 1.5-3× faster cascades: \
+             https://github.com/fraiseql/jsonb_delta"
         );
     } else {
-        info!("jsonb_ivm extension detected - performance optimizations enabled");
+        info!("jsonb_delta extension detected - performance optimizations enabled");
     }
 }
 ```
@@ -218,16 +218,16 @@ pub extern "C" fn _PG_init() {
 ```markdown
 ## Dependencies
 
-### Optional: jsonb_ivm (Recommended for Production)
+### Optional: jsonb_delta (Recommended for Production)
 
-pg_tviews works standalone but achieves **1.5-3× faster cascade performance** with the jsonb_ivm extension.
+pg_tviews works standalone but achieves **1.5-3× faster cascade performance** with the jsonb_delta extension.
 
 #### Installation
 
 ```bash
-# Install jsonb_ivm first
-git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+# Install jsonb_delta first
+git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 cargo pgrx install --release
 
 # Then install pg_tviews
@@ -239,23 +239,23 @@ cargo pgrx install --release
 
 ```sql
 -- Install extensions (order matters)
-CREATE EXTENSION jsonb_ivm;  -- Optional but recommended
+CREATE EXTENSION jsonb_delta;  -- Optional but recommended
 CREATE EXTENSION pg_tviews;
 
--- Verify jsonb_ivm is detected
-SELECT pg_tviews_check_jsonb_ivm();
+-- Verify jsonb_delta is detected
+SELECT pg_tviews_check_jsonb_delta();
 -- Returns: true (optimizations enabled)
 ```
 
 #### Performance Impact
 
-| Scenario | Without jsonb_ivm | With jsonb_ivm | Speedup |
+| Scenario | Without jsonb_delta | With jsonb_delta | Speedup |
 |----------|------------------|----------------|---------|
 | Single nested update | 2.5ms | 1.2ms | **2.1×** |
 | 100-row cascade | 150ms | 85ms | **1.8×** |
 | Deep cascade (3 levels) | 220ms | 100ms | **2.2×** |
 
-**Recommendation:** Install jsonb_ivm for production use. Development/testing can use pg_tviews standalone.
+**Recommendation:** Install jsonb_delta for production use. Development/testing can use pg_tviews standalone.
 
 ### Core Dependencies (Required)
 
@@ -272,14 +272,14 @@ SELECT pg_tviews_check_jsonb_ivm();
 
 ```sql
 -- Runtime dependency check function
--- Returns true if jsonb_ivm extension is installed
-CREATE OR REPLACE FUNCTION pg_tviews_check_jsonb_ivm()
+-- Returns true if jsonb_delta extension is installed
+CREATE OR REPLACE FUNCTION pg_tviews_check_jsonb_delta()
 RETURNS boolean
-AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_ivm'
+AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_delta'
 LANGUAGE C STRICT;
 
-COMMENT ON FUNCTION pg_tviews_check_jsonb_ivm() IS
-'Check if jsonb_ivm extension is installed (enables performance optimizations)';
+COMMENT ON FUNCTION pg_tviews_check_jsonb_delta() IS
+'Check if jsonb_delta extension is installed (enables performance optimizations)';
 ```
 
 ---
@@ -301,21 +301,21 @@ psql -d postgres <<EOF
 DROP DATABASE IF EXISTS test_phase5_task1;
 CREATE DATABASE test_phase5_task1;
 \c test_phase5_task1
-\i test/sql/50_jsonb_ivm_detection.sql
+\i test/sql/50_jsonb_delta_detection.sql
 EOF
 
 # 4. Check logs for warning/info messages
 # Should see:
-# WARNING: jsonb_ivm extension not found...
-# (after installing jsonb_ivm)
-# INFO: jsonb_ivm extension detected...
+# WARNING: jsonb_delta extension not found...
+# (after installing jsonb_delta)
+# INFO: jsonb_delta extension detected...
 ```
 
 **Expected Output:**
 - ✅ All Rust tests pass (3 tests)
 - ✅ SQL test passes (2 test cases)
-- ✅ Warning appears when jsonb_ivm not installed
-- ✅ Info message appears when jsonb_ivm installed
+- ✅ Warning appears when jsonb_delta not installed
+- ✅ Info message appears when jsonb_delta installed
 - ✅ pg_tviews works in both cases
 
 ---
@@ -324,7 +324,7 @@ EOF
 
 ### Refactor 1: Cache Detection Result
 
-**Current:** `check_jsonb_ivm_available()` queries pg_extension every time
+**Current:** `check_jsonb_delta_available()` queries pg_extension every time
 
 **Better:** Cache result in static variable
 
@@ -333,12 +333,12 @@ EOF
 ```rust
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// Static cache for jsonb_ivm availability
+// Static cache for jsonb_delta availability
 static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 
-/// Check if jsonb_ivm extension is available (cached)
-pub fn check_jsonb_ivm_available() -> bool {
+/// Check if jsonb_delta extension is available (cached)
+pub fn check_jsonb_delta_available() -> bool {
     // Return cached result if already checked
     if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
         return JSONB_IVM_AVAILABLE.load(Ordering::Relaxed);
@@ -347,7 +347,7 @@ pub fn check_jsonb_ivm_available() -> bool {
     // First time: query database
     let result = Spi::connect(|client| {
         let rows = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             None,
         )?;
@@ -389,15 +389,15 @@ mod tests {
 **File:** `src/lib.rs` in `_PG_init()`
 
 ```rust
-if !check_jsonb_ivm_available() {
+if !check_jsonb_delta_available() {
     warning!(
-        "pg_tviews: jsonb_ivm extension not detected\n\
+        "pg_tviews: jsonb_delta extension not detected\n\
          → Performance: Basic (full document replacement)\n\
-         → To enable 1.5-3× faster cascades, install jsonb_ivm:\n\
-         → https://github.com/fraiseql/jsonb_ivm"
+         → To enable 1.5-3× faster cascades, install jsonb_delta:\n\
+         → https://github.com/fraiseql/jsonb_delta"
     );
 } else {
-    info!("pg_tviews: jsonb_ivm detected - surgical JSONB updates enabled (1.5-3× faster)");
+    info!("pg_tviews: jsonb_delta detected - surgical JSONB updates enabled (1.5-3× faster)");
 }
 ```
 
@@ -410,11 +410,11 @@ if !check_jsonb_ivm_available() {
 After REFACTOR phase, verify:
 
 - [ ] `cargo pgrx test pg17` passes (all 3 tests green)
-- [ ] `test/sql/50_jsonb_ivm_detection.sql` passes
-- [ ] Warning appears in logs when jsonb_ivm not installed
-- [ ] Info message appears when jsonb_ivm is installed
-- [ ] README documents jsonb_ivm dependency with installation steps
-- [ ] `pg_tviews_check_jsonb_ivm()` SQL function exported
+- [ ] `test/sql/50_jsonb_delta_detection.sql` passes
+- [ ] Warning appears in logs when jsonb_delta not installed
+- [ ] Info message appears when jsonb_delta is installed
+- [ ] README documents jsonb_delta dependency with installation steps
+- [ ] `pg_tviews_check_jsonb_delta()` SQL function exported
 - [ ] Detection result cached (no repeated queries)
 - [ ] No breaking changes to existing functionality
 
@@ -423,12 +423,12 @@ After REFACTOR phase, verify:
 ## Files Modified
 
 ### New Files:
-1. `test/sql/50_jsonb_ivm_detection.sql` - SQL integration test
+1. `test/sql/50_jsonb_delta_detection.sql` - SQL integration test
 
 ### Modified Files:
 1. `src/lib.rs` - Add check function, cache, _PG_init() check, tests
-2. `README.md` - Add dependencies section with jsonb_ivm docs
-3. `sql/pg_tviews--0.1.0.sql` - Export pg_tviews_check_jsonb_ivm()
+2. `README.md` - Add dependencies section with jsonb_delta docs
+3. `sql/pg_tviews--0.1.0.sql` - Export pg_tviews_check_jsonb_delta()
 
 ---
 
@@ -452,8 +452,8 @@ After Task 1 complete → **Task 2: Enhance Metadata Schema**
 
 ## DO NOT
 
-- ❌ Make jsonb_ivm a required dependency (must be optional)
-- ❌ Fail if jsonb_ivm not installed (warn only)
+- ❌ Make jsonb_delta a required dependency (must be optional)
+- ❌ Fail if jsonb_delta not installed (warn only)
 - ❌ Query pg_extension on every cascade (cache result)
 - ❌ Skip documentation (users need clear install instructions)
 
@@ -461,7 +461,7 @@ After Task 1 complete → **Task 2: Enhance Metadata Schema**
 
 ## Notes
 
-- **Testing jsonb_ivm presence:** Install/uninstall between test runs to verify both paths
+- **Testing jsonb_delta presence:** Install/uninstall between test runs to verify both paths
 - **Caching strategy:** Static atomic bool is sufficient (extension list doesn't change at runtime)
 - **Warning vs Error:** Use `warning!()` not `error!()` to ensure pg_tviews still loads
-- **Documentation:** Link to fraiseql/jsonb_ivm GitHub for install instructions
+- **Documentation:** Link to fraiseql/jsonb_delta GitHub for install instructions

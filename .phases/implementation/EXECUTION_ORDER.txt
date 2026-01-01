@@ -93,7 +93,7 @@
   
   Deliverables:
   ✓ Row-level refresh works
-  ✓ jsonb_ivm integration
+  ✓ jsonb_delta integration
   ✓ FK cascade works
   ✓ Concurrent refresh safe
 

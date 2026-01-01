@@ -75,8 +75,8 @@ SELECT * FROM tv_your_entity WHERE tv_your_entity.pk_your_entity = 1;
 **Diagnosis Steps**:
 
 ```sql
--- 1. Check if jsonb_ivm installed
-SELECT pg_tviews_check_jsonb_ivm();
+-- 1. Check if jsonb_delta installed
+SELECT pg_tviews_check_jsonb_delta();
 ```
 
 ```sql
@@ -110,9 +110,9 @@ WHERE tv_your_entity.pk_your_entity = 1;
 
 **Resolution**:
 
-1. **Install jsonb_ivm if missing** (1.5-3× speedup)
+1. **Install jsonb_delta if missing** (1.5-3× speedup)
    ```sql
-   CREATE EXTENSION jsonb_ivm;
+   CREATE EXTENSION jsonb_delta;
    ```
 
 2. **Create indexes on fk_* columns**

@@ -1,6 +1,6 @@
 -- E-Commerce Benchmark Tests - FOUR-WAY COMPARISON
 -- Tests various update patterns against four approaches:
---   1. pg_tviews with jsonb_ivm optimization (Approach 1)
+--   1. pg_tviews with jsonb_delta optimization (Approach 1)
 --   2. pg_tviews with native PostgreSQL (Approach 2)
 --   3. Manual function refresh with unlimited cascades (Approach 3)
 --   4. Traditional full REFRESH MATERIALIZED VIEW (Approach 4)
@@ -24,7 +24,7 @@
 \echo 'Test 1: Single Product Price Update'
 \echo '-----------------------------------'
 
--- 1a. Approach 1: pg_tviews with jsonb_ivm
+-- 1a. Approach 1: pg_tviews with jsonb_delta
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -51,14 +51,14 @@ BEGIN
         'ecommerce'::text,
         'price_update'::text,
         'small'::text,
-        'tviews_jsonb_ivm'::text,
+        'tviews_jsonb_delta'::text,
         1::integer,
         1::integer,
         v_duration_ms::numeric,
-        'Approach 1: pg_tviews with jsonb_ivm smart patching'::text
+        'Approach 1: pg_tviews with jsonb_delta smart patching'::text
     );
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms', v_duration_ms;
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms', v_duration_ms;
 END $$;
 
 -- Reset data for next test
@@ -202,7 +202,7 @@ END $$;
 \echo 'Test 2: Bulk Price Update - 100 products'
 \echo '----------------------------------------'
 
--- 2a. Approach 1: pg_tviews with jsonb_ivm
+-- 2a. Approach 1: pg_tviews with jsonb_delta
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -234,14 +234,14 @@ BEGIN
         'ecommerce',
         'bulk_price_update',
         'small',
-        'bulk_100_tviews_jsonb_ivm',
+        'bulk_100_tviews_jsonb_delta',
         100,
         1,
         v_duration_ms,
-        'Approach 1: Bulk 100 with pg_tviews + jsonb_ivm'
+        'Approach 1: Bulk 100 with pg_tviews + jsonb_delta'
     );
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm (100 rows): %.3f ms (%.3f ms/row)', v_duration_ms, v_duration_ms / 100;
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta (100 rows): %.3f ms (%.3f ms/row)', v_duration_ms, v_duration_ms / 100;
 
 END $$;
 
@@ -398,7 +398,7 @@ END $$;
 \echo 'E-Commerce benchmarks complete!'
 \echo ''
 \echo 'Summary of Approaches:'
-\echo '  [1] pg_tviews + jsonb_ivm: Automatic surgical JSONB patching (fastest)'
+\echo '  [1] pg_tviews + jsonb_delta: Automatic surgical JSONB patching (fastest)'
 \echo '  [2] pg_tviews + native PG: Automatic jsonb_set updates (optimized)'
 \echo '  [3] Manual function: Explicit refresh with unlimited cascades (flexible)'
 \echo '  [4] Full Refresh: Traditional REFRESH MATERIALIZED VIEW (baseline)'

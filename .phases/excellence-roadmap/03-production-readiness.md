@@ -42,7 +42,7 @@
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - jsonb_ivm availability
+/// - jsonb_delta availability
 /// - Metadata consistency
 /// - Orphaned triggers
 /// - Queue status
@@ -63,23 +63,23 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
         "info".to_string(),
     ));
 
-    // Check 2: jsonb_ivm availability
-    let has_jsonb_ivm = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_ivm'"
+    // Check 2: jsonb_delta availability
+    let has_jsonb_delta = Spi::get_one::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'"
     ).unwrap_or(Some(false)).unwrap_or(false);
 
-    if has_jsonb_ivm {
+    if has_jsonb_delta {
         results.push((
             "OK".to_string(),
-            "jsonb_ivm".to_string(),
-            "jsonb_ivm extension available (optimized mode)".to_string(),
+            "jsonb_delta".to_string(),
+            "jsonb_delta extension available (optimized mode)".to_string(),
             "info".to_string(),
         ));
     } else {
         results.push((
             "WARNING".to_string(),
-            "jsonb_ivm".to_string(),
-            "jsonb_ivm not installed (falling back to standard JSONB)".to_string(),
+            "jsonb_delta".to_string(),
+            "jsonb_delta not installed (falling back to standard JSONB)".to_string(),
             "warning".to_string(),
         ));
     }
@@ -242,8 +242,8 @@ SELECT * FROM tv_your_entity WHERE tv_your_entity.pk_your_entity = 1;
 
 **Diagnosis Steps**:
 ```sql
--- 1. Check if jsonb_ivm installed
-SELECT pg_tviews_check_jsonb_ivm();
+-- 1. Check if jsonb_delta installed
+SELECT pg_tviews_check_jsonb_delta();
 
 -- 2. Check dependency depth
 SELECT
@@ -270,7 +270,7 @@ WHERE tv_your_entity.pk_your_entity = 1;
 ```
 
 **Resolution**:
-- Install jsonb_ivm if missing (1.5-3× speedup)
+- Install jsonb_delta if missing (1.5-3× speedup)
 - Create indexes on fk_* columns
 - Enable statement-level triggers for bulk operations
 - Consider flattening deep dependency chains
@@ -462,7 +462,7 @@ SELECT pg_size_pretty(pg_total_relation_size('tv_your_entity'));
 
 ### Estimating Cascade Performance
 ```
-Single-row cascade time = 5-8ms (with jsonb_ivm)
+Single-row cascade time = 5-8ms (with jsonb_delta)
 Batch cascade (N rows) ≈ 5ms + (N × 0.5ms)
 Example: 1000 rows ≈ 505ms
 ```

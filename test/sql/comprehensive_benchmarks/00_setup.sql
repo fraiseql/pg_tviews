@@ -21,14 +21,14 @@ CREATE TABLE IF NOT EXISTS pg_tviews_metadata (
 \echo 'Setting up benchmark schema...'
 \i cleanup_schema.sql
 
--- Require REAL jsonb_ivm extension - fail if not available
+-- Require REAL jsonb_delta extension - fail if not available
 DO $$
 BEGIN
     -- Try to create extension
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
-    RAISE NOTICE '✓ Using REAL jsonb_ivm extension';
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+    RAISE NOTICE '✓ Using REAL jsonb_delta extension';
 EXCEPTION WHEN OTHERS THEN
-    RAISE EXCEPTION 'jsonb_ivm extension not available! Benchmarks require the real extension, not stubs.';
+    RAISE EXCEPTION 'jsonb_delta extension not available! Benchmarks require the real extension, not stubs.';
 END $$;
 
 -- Verify we have the real extension (not stubs)
@@ -36,11 +36,11 @@ DO $$
 DECLARE
     v_ext_exists BOOLEAN;
 BEGIN
-    SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm') INTO v_ext_exists;
+    SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta') INTO v_ext_exists;
     IF NOT v_ext_exists THEN
-        RAISE EXCEPTION 'jsonb_ivm extension not installed! Cannot proceed with benchmarks.';
+        RAISE EXCEPTION 'jsonb_delta extension not installed! Cannot proceed with benchmarks.';
     END IF;
-    RAISE NOTICE '✓ jsonb_ivm extension verified';
+    RAISE NOTICE '✓ jsonb_delta extension verified';
 END $$;
 
 -- Create results tracking table
@@ -50,7 +50,7 @@ CREATE TABLE benchmark_results (
     scenario TEXT NOT NULL,
     test_name TEXT NOT NULL,
     data_scale TEXT NOT NULL,  -- 'small', 'medium', 'large'
-    operation_type TEXT NOT NULL,  -- 'tviews_jsonb_ivm', 'tviews_native_pg', 'manual_func', 'full_refresh'
+    operation_type TEXT NOT NULL,  -- 'tviews_jsonb_delta', 'tviews_native_pg', 'manual_func', 'full_refresh'
     rows_affected INTEGER,
     cascade_depth INTEGER,
     execution_time_ms NUMERIC(10, 3),

@@ -56,7 +56,7 @@
       "p95_ms": 115,
       "n": 100
     },
-    "jsonb_ivm_speedup": {
+    "jsonb_delta_speedup": {
       "mean_speedup": 2.3,
       "stddev": 0.15,
       "p95_speedup": 2.5,

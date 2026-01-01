@@ -1,8 +1,8 @@
-//! Dependency type detection for `jsonb_ivm` optimization
+//! Dependency type detection for `jsonb_delta` optimization
 //!
 //! This module analyzes TVIEW SELECT statements to determine how foreign key
 //! relationships manifest in the JSONB structure. This information is used
-//! to choose the appropriate `jsonb_ivm` patch function for efficient updates.
+//! to choose the appropriate `jsonb_delta` patch function for efficient updates.
 //!
 //! # Detection Patterns
 //!

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run 4-way performance comparison benchmarks
-# Compares: pg_tviews+jsonb_ivm, pg_tviews+native, manual_func, full_refresh
+# Compares: pg_tviews+jsonb_delta, pg_tviews+native, manual_func, full_refresh
 
 set -e
 

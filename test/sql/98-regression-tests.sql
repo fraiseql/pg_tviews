@@ -7,14 +7,14 @@ SET log_min_messages TO WARNING;
 
 \set ECHO all
 
-\echo 'Regression Test Suite: jsonb_ivm enhancements'
+\echo 'Regression Test Suite: jsonb_delta enhancements'
 
 CREATE EXTENSION IF NOT EXISTS pg_tviews;  -- NO CASCADE for regression testing
 
 \echo ''
-\echo '### Regression 1: Fallback when jsonb_ivm not installed'
+\echo '### Regression 1: Fallback when jsonb_delta not installed'
 
--- Temporarily drop jsonb_ivm (if possible in test env)
+-- Temporarily drop jsonb_delta (if possible in test env)
 -- Test that pg_tviews still works
 
 CREATE TABLE test_fallback (
@@ -24,14 +24,14 @@ CREATE TABLE test_fallback (
 
 INSERT INTO test_fallback VALUES (1, '{"id": "test_123", "items": []}'::jsonb);
 
--- These should work even without jsonb_ivm (graceful degradation)
+-- These should work even without jsonb_delta (graceful degradation)
 -- (Actual implementation depends on your fallback logic)
 
 DROP TABLE test_fallback;
 
 DO $$
 BEGIN
-    RAISE NOTICE 'PASS: Fallback logic works when jsonb_ivm unavailable';
+    RAISE NOTICE 'PASS: Fallback logic works when jsonb_delta unavailable';
 END $$;
 
 \echo ''

@@ -177,7 +177,7 @@ COMMIT;
 
 ### JSONB Optimization
 
-Use `jsonb_ivm` extension for 2× performance boost:
+Use `jsonb_delta` extension for 2× performance boost:
 
 ```sql
 -- Surgical JSONB updates instead of full replacement
@@ -226,7 +226,7 @@ CREATE TABLE tv_post AS SELECT...;
 ### Performance
 
 1. **Enable statement triggers** for bulk operations
-2. **Consider jsonb_ivm** for large JSONB objects
+2. **Consider jsonb_delta** for large JSONB objects
 3. **Monitor cascade depth** to avoid performance issues
 4. **Use appropriate indexing** on TVIEW tables
 
@@ -317,7 +317,7 @@ SELECT count(*) FROM pg_tviews_queue_realtime;
 **JSONB too large:**
 ```sql
 -- Consider breaking into multiple TVIEWs
--- Or use jsonb_ivm for surgical updates
+-- Or use jsonb_delta for surgical updates
 ```
 
 ## Next Steps

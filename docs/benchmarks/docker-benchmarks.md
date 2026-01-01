@@ -18,10 +18,10 @@
 
 ### Repository Requirements
 - **pg_tviews**: Current repository
-- **jsonb_ivm**: Separate repository (https://github.com/fraiseql/jsonb_ivm)
+- **jsonb_delta**: Separate repository (https://github.com/fraiseql/jsonb_delta)
 
 ### When to Use Docker
-- You need real jsonb_ivm extension performance (not stubs)
+- You need real jsonb_delta extension performance (not stubs)
 - You want isolated testing environment
 - You have PostgreSQL 18+ on host system
 - You prefer containerized workflows
@@ -30,11 +30,11 @@
 
 The Docker setup solves several problems:
 
-1. **Extension Compatibility**: Uses PostgreSQL 18, which is fully supported by both pg_tviews and jsonb_ivm extensions
+1. **Extension Compatibility**: Uses PostgreSQL 18, which is fully supported by both pg_tviews and jsonb_delta extensions
 2. **Reproducibility**: Same environment for all benchmark runs
 3. **Isolation**: Doesn't interfere with your host PostgreSQL installation
 4. **Easy Setup**: One-command build and execution
-5. **Proper Architecture Testing**: Tests pg_tviews with real jsonb_ivm extension (not just stubs)
+5. **Proper Architecture Testing**: Tests pg_tviews with real jsonb_delta extension (not just stubs)
 
 ## Extension Architecture Clarification
 
@@ -45,7 +45,7 @@ The Docker setup solves several problems:
 **pg_tviews uses TWO custom extensions** (not pg_ivm):
 
 1. **pg_tviews** - Core incremental view maintenance system with Trinity pattern support (UUID + INTEGER pk + INTEGER fk)
-2. **jsonb_ivm** - Rust-based JSONB patching functions for high-performance partial JSONB updates (~2.66× faster than native PostgreSQL)
+2. **jsonb_delta** - Rust-based JSONB patching functions for high-performance partial JSONB updates (~2.66× faster than native PostgreSQL)
 
 ### What We're NOT Using
 
@@ -55,7 +55,7 @@ The Docker setup solves several problems:
 
 The benchmarks compare **4 approaches**:
 
-1. **pg_tviews + jsonb_ivm** (Approach 1) - Complete system with Rust-optimized JSONB patching
+1. **pg_tviews + jsonb_delta** (Approach 1) - Complete system with Rust-optimized JSONB patching
 2. **pg_tviews + native PostgreSQL** (Approach 2) - System using native `jsonb_set()` instead of Rust functions
 3. **Manual Refresh Functions** (Approach 3) - Explicit refresh calls with full cascade support
 4. **Full Materialized View Refresh** (Approach 4 / Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
@@ -94,13 +94,13 @@ The benchmarks compare **4 approaches**:
 
 The Docker benchmarks test **4 approaches**:
 
-1. **pg_tviews + jsonb_ivm** (Approach 1) - Surgical JSONB patching with Rust extension
+1. **pg_tviews + jsonb_delta** (Approach 1) - Surgical JSONB patching with Rust extension
 2. **pg_tviews + native PostgreSQL** (Approach 2) - Using native `jsonb_set()` instead of Rust functions
 3. **Manual Refresh Functions** (Approach 3) - Explicit refresh calls with full control
 4. **Full Materialized View Refresh** (Approach 4 / Baseline) - Traditional `REFRESH MATERIALIZED VIEW`
 
 This answers critical questions:
-- **How much does Rust-based jsonb_ivm improve performance over native PostgreSQL?**
+- **How much does Rust-based jsonb_delta improve performance over native PostgreSQL?**
 - **What's the trade-off between automatic triggers (approaches 1-2) and manual control (approach 3)?**
 - **How do all incremental approaches compare to traditional full refresh?**
 
@@ -117,13 +117,13 @@ Both repositories must be in the same parent directory:
 ```
 /path/to/code/
   ├── pg_tviews/       # This repository
-  └── jsonb_ivm/       # Clone from https://github.com/fraiseql/jsonb_ivm
+  └── jsonb_delta/       # Clone from https://github.com/fraiseql/jsonb_delta
 ```
 
-**Clone jsonb_ivm if you haven't already**:
+**Clone jsonb_delta if you haven't already**:
 ```bash
 cd /path/to/code  # Parent directory containing pg_tviews
-git clone https://github.com/fraiseql/jsonb_ivm.git
+git clone https://github.com/fraiseql/jsonb_delta.git
 ```
 
 ## Quick Start
@@ -147,7 +147,7 @@ This will:
 - Create PostgreSQL 18 container
 - Install Rust toolchain and pgrx
 - Build and install `pg_tviews` extension from source
-- Build and install `jsonb_ivm` extension from source
+- Build and install `jsonb_delta` extension from source
 - Set up Python environment for reporting
 - Copy all benchmark files
 - Configure PostgreSQL without shared_preload_libraries (to avoid segfaults)
@@ -254,11 +254,11 @@ docker exec -it pg_tviews_bench psql -U postgres -d pg_tviews_benchmark -c "
     CASE
       WHEN extname = 'pg_tviews' THEN 'Core incremental refresh engine'
       WHEN extname = 'pg_ivm' THEN 'PostgreSQL Incremental View Maintenance'
-      WHEN extname = 'jsonb_ivm' THEN 'JSONB surgical patching (Rust)'
+      WHEN extname = 'jsonb_delta' THEN 'JSONB surgical patching (Rust)'
       ELSE 'Standard extension'
     END as description
   FROM pg_extension
-  WHERE extname IN ('pg_tviews', 'pg_ivm', 'jsonb_ivm', 'uuid-ossp')
+  WHERE extname IN ('pg_tviews', 'pg_ivm', 'jsonb_delta', 'uuid-ossp')
   ORDER BY extname;
 "
 ```
@@ -298,14 +298,14 @@ Example output:
 ```
 Test: Single Product Price Update
 
-Approach 1 (pg_tviews + jsonb_ivm):  1.5 ms   [2,853× faster]
+Approach 1 (pg_tviews + jsonb_delta):  1.5 ms   [2,853× faster]
 Approach 2 (pg_tviews + native PG): 2.1 ms   [2,000× faster]
 Baseline (Full Refresh):             4,170 ms [baseline]
 ```
 
 **What this tells us**:
 - Both incremental approaches dramatically beat full refresh (2,000-2,853×)
-- pg_tviews + jsonb_ivm is fastest (surgical JSONB patching with Rust)
+- pg_tviews + jsonb_delta is fastest (surgical JSONB patching with Rust)
 - pg_tviews + native PostgreSQL is second fastest (same logic, native JSONB functions)
 - The Rust extension provides measurable performance improvement over native PostgreSQL
 
@@ -360,11 +360,11 @@ docker exec -it pg_tviews_bench /benchmarks/run_benchmarks.sh --scale small
 - This avoids segfaults during PostgreSQL initialization
 - Check that the extension was built correctly during Docker build
 
-**jsonb_ivm extension not available?**
+**jsonb_delta extension not available?**
 - The benchmarks will automatically fall back to PL/pgSQL stubs
-- You'll see: `⚠ jsonb_ivm extension not available (will use stubs)`
+- You'll see: `⚠ jsonb_delta extension not available (will use stubs)`
 - Approach 1 will still work but use native PostgreSQL functions instead of Rust
-- Real jsonb_ivm provides ~2.66× performance improvement for JSONB operations
+- Real jsonb_delta provides ~2.66× performance improvement for JSONB operations
 
 **shared_preload_libraries errors?**
 - pg_tviews does NOT use shared_preload_libraries (causes segfaults during initdb)
@@ -493,7 +493,7 @@ jobs:
 
 1. **Run Initial Benchmark**: Start with small scale to verify setup
 2. **Compare Results**: Run medium scale and compare with previous stub-based results
-3. **Analyze Differences**: Quantify the improvement from real jsonb_ivm extension
+3. **Analyze Differences**: Quantify the improvement from real jsonb_delta extension
 4. **Document Findings**: Update project documentation with real-world numbers
 5. **Share Results**: Export CSV and markdown reports for stakeholders
 

@@ -13,7 +13,7 @@
 ### Test 1: Single Product Price Update (100K Scale)
 | Approach | Time (ms) | Notes |
 |----------|-----------|-------|
-| [1] pg_tviews + jsonb_ivm | 2.105 | Incremental JSONB patching |
+| [1] pg_tviews + jsonb_delta | 2.105 | Incremental JSONB patching |
 | [2] Manual + native PG | 1.461 | Manual jsonb_set |
 | [3] Full Refresh | 4,169.995 (4.17 sec) | Full materialized view refresh (100K rows) |
 
@@ -22,7 +22,7 @@
 ### Test 2: Category Name Cascade (1 → 1,000 products)
 | Approach | Total Time (ms) | Time per Product (ms) | Notes |
 |----------|-----------------|----------------------|-------|
-| [1] pg_tviews + jsonb_ivm | 45.901 | 0.046 | Smart JSONB patching |
+| [1] pg_tviews + jsonb_delta | 45.901 | 0.046 | Smart JSONB patching |
 | [2] Manual + jsonb_set | 43.545 | 0.044 | Native PostgreSQL |
 | [3] Full Refresh | 4,040.112 (4.04 sec) | - | Entire catalog refreshed |
 
@@ -53,7 +53,7 @@
 
 ## Performance Characteristics at Scale
 
-### Approach 1: pg_tviews + jsonb_ivm (with stubs)
+### Approach 1: pg_tviews + jsonb_delta (with stubs)
 - ✅ **Constant time** for single row updates (~2ms regardless of dataset size)
 - ✅ **Linear with affected rows** for cascades (~0.045 ms/product)
 - ✅ 88-2853× faster than full refresh at 100K scale

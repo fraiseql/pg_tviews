@@ -16,7 +16,7 @@
 \echo 'Test 1: Single Product Price Update'
 \echo '-----------------------------------'
 
--- 1a. Approach 1: pg_tviews with jsonb_ivm
+-- 1a. Approach 1: pg_tviews with jsonb_delta
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -33,7 +33,7 @@ BEGIN
         updated_at = now()
     WHERE pk_product = v_product_pk;
 
-    -- Simulate pg_tviews incremental refresh with jsonb_ivm
+    -- Simulate pg_tviews incremental refresh with jsonb_delta
     UPDATE tv_product tp
     SET data = jsonb_smart_patch_nested(
             tp.data,
@@ -54,14 +54,14 @@ BEGIN
         'ecommerce',
         'price_update',
         'small',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         1,
         1,
         v_duration_ms,
-        'Approach 1: pg_tviews with jsonb_ivm smart patching'
+        'Approach 1: pg_tviews with jsonb_delta smart patching'
     );
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms', v_duration_ms;
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms', v_duration_ms;
     ROLLBACK;
 END $$;
 
@@ -172,7 +172,7 @@ ORDER BY execution_time_ms;
 
 \echo ''
 \echo 'Summary of Approaches:'
-\echo '  [1] pg_tviews + jsonb_ivm: Surgical JSONB patching (fastest)'
+\echo '  [1] pg_tviews + jsonb_delta: Surgical JSONB patching (fastest)'
 \echo '  [2] Manual + native PG: Manual jsonb_set updates (middle ground)'
 \echo '  [3] Full Refresh: Traditional REFRESH MATERIALIZED VIEW (baseline)'
 \echo ''

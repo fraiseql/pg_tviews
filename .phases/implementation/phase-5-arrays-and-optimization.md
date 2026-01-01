@@ -11,7 +11,7 @@
 
 Implement advanced features for production readiness:
 1. Array column support (JSONB arrays, UUID arrays)
-2. Array element INSERT/UPDATE/DELETE using jsonb_ivm
+2. Array element INSERT/UPDATE/DELETE using jsonb_delta
 3. Batch update optimization with `jsonb_array_update_multi_row`
 4. Performance tuning and benchmarking
 5. Production-ready error handling and monitoring
@@ -39,7 +39,7 @@ Implement advanced features for production readiness:
 ```sql
 -- test/sql/50_array_columns.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     CREATE TABLE tb_machine (
@@ -167,7 +167,7 @@ psql -d test_db -f test/sql/50_array_columns.sql
 ```sql
 -- test/sql/51_jsonb_array_update.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     CREATE TABLE tb_post (
@@ -228,7 +228,7 @@ ROLLBACK;
 **GREEN Phase - Implementation:**
 
 ```rust
-// src/refresh/jsonb_ivm.rs (update)
+// src/refresh/jsonb_delta.rs (update)
 
 pub fn apply_jsonb_patch(
     table_name: &str,
@@ -288,7 +288,7 @@ pub fn apply_jsonb_patch(
 Update dependency type detection:
 
 ```rust
-// src/refresh/jsonb_ivm.rs (update)
+// src/refresh/jsonb_delta.rs (update)
 
 pub fn detect_dependency_type(
     select_sql: &str,
@@ -335,7 +335,7 @@ psql -d test_db -f test/sql/51_jsonb_array_update.sql
 ```sql
 -- test/sql/52_array_insert_delete.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     -- Setup same as Test 2
@@ -504,7 +504,7 @@ psql -d test_db -f test/sql/52_array_insert_delete.sql
 ```sql
 -- test/sql/53_batch_optimization.sql
 BEGIN;
-    CREATE EXTENSION jsonb_ivm;
+    CREATE EXTENSION jsonb_delta;
     CREATE EXTENSION pg_tviews;
 
     -- Create 100 users in same company

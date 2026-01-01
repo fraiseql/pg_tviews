@@ -413,7 +413,7 @@ mod tests {
 - [ ] **FIXED:** Row-level refresh with dynamic PK extraction
 - [ ] **FIXED:** FK change detection on UPDATE
 - [ ] **NEW:** Advisory locks prevent concurrent refresh conflicts
-- [ ] jsonb_ivm integration
+- [ ] jsonb_delta integration
 - [ ] FK lineage cascade
 - [ ] **NEW:** Cascade depth limited to 10 levels
 - [ ] Array column support
@@ -437,7 +437,7 @@ mod tests {
 - [ ] Single row refresh < 5ms
 - [ ] 100-row cascade < 500ms
 - [ ] **NEW:** 1000-row cascade < 5s (with depth limit)
-- [ ] jsonb_ivm 2-3× faster vs native SQL
+- [ ] jsonb_delta 2-3× faster vs native SQL
 - [ ] Batch updates 4× faster (100+ rows)
 - [ ] Storage 88% smaller vs naive approach
 
@@ -483,9 +483,9 @@ sudo apt-get install postgresql-17 postgresql-server-dev-17
 # Initialize pgrx
 cargo pgrx init
 
-# Install jsonb_ivm extension
-git clone https://github.com/fraiseql/jsonb_ivm
-cd jsonb_ivm
+# Install jsonb_delta extension
+git clone https://github.com/fraiseql/jsonb_delta
+cd jsonb_delta
 make && sudo make install
 ```
 
@@ -654,7 +654,7 @@ Based on the review, watch out for:
 - **Original PRD:** `/home/lionel/code/pg_tviews/PRD_v2.md`
 - **PRD Addendum:** `/home/lionel/code/pg_tviews/PRD_ADDENDUM.md`
 - **Helper Optimization:** `/home/lionel/code/pg_tviews/HELPER_VIEW_OPTIMIZATION.md`
-- **jsonb_ivm:** https://github.com/fraiseql/jsonb_ivm
+- **jsonb_delta:** https://github.com/fraiseql/jsonb_delta
 - **pgrx:** https://github.com/pgcentralfoundation/pgrx
 - **PostgreSQL Docs:** https://www.postgresql.org/docs/17/
 
@@ -671,7 +671,7 @@ Before starting implementation:
 - [ ] Understand `TViewError` requirements
 - [ ] Understand SAFETY comment requirements
 - [ ] Have development environment set up
-- [ ] Have jsonb_ivm extension installed
+- [ ] Have jsonb_delta extension installed
 - [ ] Understand transaction isolation requirements
 - [ ] Have realistic timeline (45-65 days, not 26-38)
 

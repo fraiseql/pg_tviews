@@ -1,11 +1,11 @@
-# jsonb_ivm Installation and 4-Way Benchmark Plan
+# jsonb_delta Installation and 4-Way Benchmark Plan
 
 ## Current Limitation
 
-The jsonb_ivm extension (v0.3.1) **cannot be installed** on the current system:
+The jsonb_delta extension (v0.3.1) **cannot be installed** on the current system:
 
 - **PostgreSQL Version**: 18.1
-- **pgrx Version**: 0.12.8 (used by jsonb_ivm)
+- **pgrx Version**: 0.12.8 (used by jsonb_delta)
 - **Issue**: PostgreSQL 18 has API changes (`abi_extra` field in `Pg_magic_struct`) that pgrx 0.12.8 doesn't support
 
 ### Error Message
@@ -31,16 +31,16 @@ cd postgresql-17.2
 make && sudo make install
 ```
 
-Then install jsonb_ivm:
+Then install jsonb_delta:
 
 ```bash
-cd /tmp/jsonb_ivm
+cd /tmp/jsonb_delta
 PATH=/usr/local/pgsql17/bin:$PATH cargo pgrx install --release
 ```
 
 ### Option 2: Wait for pgrx 0.13+ (Future)
 
-The jsonb_ivm project needs to update dependencies:
+The jsonb_delta project needs to update dependencies:
 
 ```toml
 # Future Cargo.toml
@@ -59,14 +59,14 @@ docker run --name pg17-bench \
 
 # Install extension in container
 docker exec -it pg17-bench bash
-cd /tmp && git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+cd /tmp && git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 cargo pgrx install --release
 ```
 
 ## Proper 4-Way Comparison Plan
 
-Once jsonb_ivm is installed, run these benchmarks:
+Once jsonb_delta is installed, run these benchmarks:
 
 ### 1. Update Schema
 
@@ -122,7 +122,7 @@ BEGIN
     ROLLBACK;
 END $$;
 
--- Approach 2: Manual Native (No pg_tviews, no jsonb_ivm)
+-- Approach 2: Manual Native (No pg_tviews, no jsonb_delta)
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -181,7 +181,7 @@ BEGIN
     ROLLBACK;
 END $$;
 
--- Approach 4: pg_tviews with Real jsonb_ivm (Rust/C extension)
+-- Approach 4: pg_tviews with Real jsonb_delta (Rust/C extension)
 DO $$
 DECLARE
     v_start TIMESTAMPTZ;
@@ -231,13 +231,13 @@ From the results, we can calculate:
 - Overhead: (#3 / #2) - 1 = ~40% slower than manual
 - This is the cost of abstraction layer
 
-**jsonb_ivm Value:**
+**jsonb_delta Value:**
 - Improvement: (#3 / #4) = ~1.75× (75% faster)
 - This is the Rust/C extension benefit over PL/pgSQL stubs
 
 **Total Solution:**
 - Improvement: (#1 / #4) = ~3,333×
-- This is pg_tviews + jsonb_ivm combined
+- This is pg_tviews + jsonb_delta combined
 
 ## Current Status
 
@@ -247,12 +247,12 @@ From the results, we can calculate:
 - Results show incremental is 88-2,853× faster than full refresh
 
 ⚠️ **Blocked:**
-- Cannot install jsonb_ivm on PostgreSQL 18.1
+- Cannot install jsonb_delta on PostgreSQL 18.1
 - Need PostgreSQL 17 or wait for pgrx 0.13+
 
 📝 **Documented:**
 - Current 3-way comparison proves incremental architecture
-- jsonb_ivm comparison plan ready for when extension is available
+- jsonb_delta comparison plan ready for when extension is available
 - Results show even stubs provide 88-2,853× improvement
 
 ## Recommendation
@@ -265,4 +265,4 @@ From the results, we can calculate:
 **For complete validation:**
 - Install PostgreSQL 17 in parallel or Docker
 - Run 4-way comparison as documented above
-- Quantify exact jsonb_ivm contribution vs stubs
+- Quantify exact jsonb_delta contribution vs stubs

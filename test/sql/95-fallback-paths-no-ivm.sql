@@ -1,5 +1,5 @@
--- Test fallback path operations WITHOUT jsonb_ivm extension
--- This verifies graceful degradation when jsonb_ivm is not available
+-- Test fallback path operations WITHOUT jsonb_delta extension
+-- This verifies graceful degradation when jsonb_delta is not available
 \set ECHO none
 \set QUIET 1
 
@@ -75,7 +75,7 @@ BEGIN
     END IF;
 END $$;
 
-\echo '### Test 3: Verify warning messages about missing jsonb_ivm'
+\echo '### Test 3: Verify warning messages about missing jsonb_delta'
 
 -- This test would need to be run in the context of pg_tviews operations
 -- For now, just verify the extension detection works
@@ -178,5 +178,5 @@ END $$;
 -- Cleanup
 DROP TABLE test_fallback_updates;
 
-\echo '### All fallback tests without jsonb_ivm passed! ✓'
+\echo '### All fallback tests without jsonb_delta passed! ✓'
 \echo 'Note: Performance is slower but functionality works correctly'

@@ -24,7 +24,7 @@ UUID input → FraiseQL resolves to PK → writes to tb_*
 ```
 AFTER UPDATE trigger on tb_* 
     → recompute v_entity WHERE pk = X
-    → patch tv_entity via jsonb_ivm
+    → patch tv_entity via jsonb_delta
     → propagate to parent tv_* using FK columns
 ```
 
@@ -151,7 +151,7 @@ WHERE pk_post = $1;
 
 ```sql
 UPDATE tv_post
-SET data = jsonb_ivm_patch(data, $new.data),
+SET data = jsonb_delta_patch(data, $new.data),
     updated_at = now(),
     user_id = $new.user_id,
     fk_user = $new.fk_user
@@ -245,7 +245,7 @@ Because:
 
 * Lineage = FK columns
 * Dependencies = PostgreSQL dependency tree
-* JSONB patching = delegated to jsonb_ivm
+* JSONB patching = delegated to jsonb_delta
 * View logic = stored in PostgreSQL views
 
 TVIEW does not reinvent anything.
@@ -260,7 +260,7 @@ TVIEW does not reinvent anything.
 src/
  ├ catalog.rs       -- pg_tview_meta support
  ├ trigger.rs       -- sync update trigger for tb_*
- ├ refresh.rs       -- view recompute + jsonb_ivm patch
+ ├ refresh.rs       -- view recompute + jsonb_delta patch
  ├ propagate.rs     -- lineage propagation via FK columns
  ├ util.rs
  └ lib.rs           -- extension entrypoint
@@ -322,7 +322,7 @@ This keeps the extension small, reliable, and performant.
 
 ### ✔ A synchronous, PK-driven incremental materialization engine
 
-### ✔ A companion to FraiseQL and jsonb_ivm
+### ✔ A companion to FraiseQL and jsonb_delta
 
 ### ✔ An orchestrator that recomputes and patches `tv_*` tables
 

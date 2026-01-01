@@ -492,16 +492,16 @@ SELECT pg_reload_conf();
 ```markdown
 # Performance Best Practices
 
-## 1. Install jsonb_ivm Extension
+## 1. Install jsonb_delta Extension
 
 **Impact**: 1.5-3× faster cascade updates
 
 ```sql
-CREATE EXTENSION jsonb_ivm;
+CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 -- Verify
-SELECT pg_tviews_check_jsonb_ivm();  -- Should return true
+SELECT pg_tviews_check_jsonb_delta();  -- Should return true
 ```
 
 ## 2. Create Appropriate Indexes
@@ -683,7 +683,7 @@ LIMIT 10;
 ## Performance Checklist
 
 Before going to production:
-- [ ] jsonb_ivm extension installed
+- [ ] jsonb_delta extension installed
 - [ ] Indexes created on pk_*, fk_*, id columns
 - [ ] GIN indexes on data columns (for TVIEWs >10K rows)
 - [ ] Statement-level triggers enabled (for bulk operations)

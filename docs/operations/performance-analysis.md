@@ -355,7 +355,7 @@ WHERE pg_indexes.tablename LIKE 'tv_%'
 
 **Solutions**:
 1. Create indexes on fk_* columns
-2. Install jsonb_ivm extension (1.5-3× speedup)
+2. Install jsonb_delta extension (1.5-3× speedup)
 3. Use statement-level triggers for bulk ops
 
 ### Issue 2: High Memory Usage

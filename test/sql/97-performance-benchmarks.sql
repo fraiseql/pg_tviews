@@ -1,4 +1,4 @@
--- Performance benchmarks for jsonb_ivm enhancements
+-- Performance benchmarks for jsonb_delta enhancements
 \set ECHO none
 \set QUIET 1
 

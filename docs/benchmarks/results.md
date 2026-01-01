@@ -11,13 +11,13 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 ## Key Performance Results
 
 ### Small Scale (1K products, 5K reviews)
-- **pg_tviews + jsonb_ivm**: 0.364-0.591 ms per single product update
+- **pg_tviews + jsonb_delta**: 0.364-0.591 ms per single product update
 - **Manual Function Refresh**: 0.912-1.255 ms (99% of automatic performance)
 - **Traditional Full Refresh**: 78-101 ms per operation
 - **Improvement**: 100-200× faster for incremental approaches
 
 ### Medium Scale (100K products, 500K reviews)
-- **pg_tviews + jsonb_ivm**: 0.591 ms per single product update
+- **pg_tviews + jsonb_delta**: 0.591 ms per single product update
 - **Manual Function Refresh**: 1.255 ms per single product update
 - **Bulk Operations**: 10,000-10,500 ms for 100 product updates
 - **Traditional Full Refresh**: 7,050-7,974 ms per operation
@@ -30,9 +30,9 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 
 ## Detailed Results by Approach
 
-### Approach 1: pg_tviews + jsonb_ivm (Recommended)
+### Approach 1: pg_tviews + jsonb_delta (Recommended)
 
-**Architecture**: Automatic triggers with optimized JSONB patching using jsonb_ivm extension.
+**Architecture**: Automatic triggers with optimized JSONB patching using jsonb_delta extension.
 
 #### Small Scale Performance
 | Operation | Time (ms) | Improvement |
@@ -60,14 +60,14 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 **Architecture**: Automatic triggers with standard PostgreSQL jsonb_set operations.
 
 #### Performance Comparison
-| Scale | vs jsonb_ivm | Performance Ratio |
+| Scale | vs jsonb_delta | Performance Ratio |
 |-------|-------------|-------------------|
 | Small | 98% | 0.98x |
 | Medium | 97% | 0.97x |
 | Large (projected) | 95% | 0.95x |
 
 #### Use Cases
-- Environments without jsonb_ivm extension
+- Environments without jsonb_delta extension
 - Compatibility with existing PostgreSQL installations
 - Minimal dependency requirements
 
@@ -76,7 +76,7 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 **Architecture**: Explicit function calls with full cascade support and developer control.
 
 #### Performance Comparison
-| Scale | vs jsonb_ivm | Performance Ratio |
+| Scale | vs jsonb_delta | Performance Ratio |
 |-------|-------------|-------------------|
 | Small | 95% | 0.95x |
 | Medium | 94% | 0.94x |
@@ -117,7 +117,7 @@ UPDATE tv_product
 SET data = jsonb_set(data, '{price,current}', '29.99'::jsonb)
 WHERE pk_product = 123;
 
--- pg_tviews approach: Surgical patch with jsonb_ivm
+-- pg_tviews approach: Surgical patch with jsonb_delta
 -- Updates only the changed field, preserves all other data
 ```
 
@@ -161,7 +161,7 @@ WHERE pk_product = 123;
 
 ### Approaches Compared
 
-1. **pg_tviews + jsonb_ivm**: Automatic triggers with optimized JSONB patching
+1. **pg_tviews + jsonb_delta**: Automatic triggers with optimized JSONB patching
 2. **pg_tviews + Native**: Automatic triggers with standard jsonb_set operations
 3. **Manual Function Refresh**: Explicit function calls with full cascade support
 4. **Full Refresh**: Traditional REFRESH MATERIALIZED VIEW
@@ -260,7 +260,7 @@ WHERE pk_product = 123;
 
 ### Performance Optimizations
 
-- **Real jsonb_ivm**: Native Rust extension vs current PL/pgSQL stubs
+- **Real jsonb_delta**: Native Rust extension vs current PL/pgSQL stubs
 - **Parallel processing**: Multi-threaded bulk operations
 - **Advanced indexing**: Specialized indexes for refresh patterns
 - **Memory pooling**: Reuse allocated memory for repeated operations
@@ -282,7 +282,7 @@ The 4-way benchmark validation proves that pg_tviews provides a complete solutio
 - **PostgreSQL Version**: 17.7
 - **pg_tviews Version**: 0.1.0-beta.1
 - **Hardware**: Linux server with sufficient memory for dataset sizes
-- **jsonb_ivm Version**: Latest available (when used)
+- **jsonb_delta Version**: Latest available (when used)
 - **Test Isolation**: Each test in separate transaction, rolled back for repeatability
 
 ## See Also

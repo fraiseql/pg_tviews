@@ -159,7 +159,7 @@ Event Trigger → Retrieves cache → Creates TVIEW → Installs triggers
 - **Dependency Depth Limit**: 10 levels
 - **Catalog Tables**: 3 (pg_tview_meta, pg_tview_helpers, pg_tview_pending_refreshes)
 - **Trigger Types**: Row-level + Statement-level
-- **Cascade Strategy**: Smart JSONB patching (1.5-3× faster with jsonb_ivm)
+- **Cascade Strategy**: Smart JSONB patching (1.5-3× faster with jsonb_delta)
 
 ---
 
@@ -278,7 +278,7 @@ test/sql/
 - Medium scale: 1,000 rows
 - Large scale: 10,000+ rows
 - Cascade benchmarks
-- Three-way comparisons (pg_tviews vs. jsonb_ivm vs. manual)
+- Three-way comparisons (pg_tviews vs. jsonb_delta vs. manual)
 - Results documented in `test/sql/comprehensive_benchmarks/final_results/`
 
 **Test Organization** (Good):
@@ -331,17 +331,17 @@ cargo pgrx test pg17 --no-default-features
 - Small (100 rows), Medium (1,000 rows), Large (10,000+ rows)
 - Cascade depth testing (multi-level dependencies)
 - Smart patch vs. full replacement comparison
-- jsonb_ivm integration benchmarks
+- jsonb_delta integration benchmarks
 
 **Performance Results** (Documented):
 ```
-Single-row update: 5-8ms (with jsonb_ivm)
-100-row cascade: 400-600ms (with jsonb_ivm) vs. 870ms (without)
+Single-row update: 5-8ms (with jsonb_delta)
+100-row cascade: 400-600ms (with jsonb_delta) vs. 870ms (without)
 Speedup: 1.45× to 2.2× faster with smart patching
 ```
 
 **Optimization Strategies** (Implemented):
-- ✅ Smart JSONB patching (1.5-3× faster with jsonb_ivm extension)
+- ✅ Smart JSONB patching (1.5-3× faster with jsonb_delta extension)
 - ✅ Prepared statement caching
 - ✅ Batch refresh operations
 - ✅ Statement-level triggers for bulk operations
@@ -378,7 +378,7 @@ Speedup: 1.45× to 2.2× faster with smart patching
 #### 📊 Performance Metrics
 - **Single-row refresh**: 5-8ms
 - **100-row cascade**: 400-600ms (optimized)
-- **Speedup with jsonb_ivm**: 1.5-3× faster
+- **Speedup with jsonb_delta**: 1.5-3× faster
 - **Max dependency depth**: 10 levels
 - **Benchmark scale**: Up to 10,000 rows
 
@@ -391,7 +391,7 @@ Speedup: 1.45× to 2.2× faster with smart patching
 **Error Handling Robustness** (Very Good):
 - 20+ distinct error types with context
 - PostgreSQL SQLSTATE mapping
-- Graceful degradation (jsonb_ivm optional)
+- Graceful degradation (jsonb_delta optional)
 - Transaction rollback safety
 - Proper cleanup on error paths
 
@@ -608,7 +608,7 @@ Speedup: 1.45× to 2.2× faster with smart patching
 1. **Architecture Design** ⭐⭐⭐⭐⭐
    - Clean trinity pattern (tb → v → tv)
    - Proper separation of hooks vs. event triggers
-   - Smart JSONB patching with jsonb_ivm integration
+   - Smart JSONB patching with jsonb_delta integration
    - Transaction-safe operations
 
 2. **Error Handling** ⭐⭐⭐⭐⭐

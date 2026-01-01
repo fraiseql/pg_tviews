@@ -24,12 +24,12 @@ psql -U postgres -d pg_tviews_benchmark <<-EOSQL
     -- Create extensions
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS pg_tviews;
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
     -- Verify extensions
     SELECT extname, extversion FROM pg_extension ORDER BY extname;
 
-    -- Verify jsonb_ivm functions are available
+    -- Verify jsonb_delta functions are available
     SELECT
         proname,
         pg_get_functiondef(oid)::text LIKE '%Rust%' AS is_rust_implementation

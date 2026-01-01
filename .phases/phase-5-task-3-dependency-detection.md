@@ -2,7 +2,7 @@
 
 **Status:** Ready to implement
 **Duration:** 2-3 days
-**Parent:** Phase 5 - jsonb_ivm Integration
+**Parent:** Phase 5 - jsonb_delta Integration
 **TDD Phase:** RED → GREEN → REFACTOR → QA
 
 ---
@@ -707,11 +707,11 @@ cargo pgrx test pg17
 Add module-level documentation:
 
 ```rust
-//! Dependency type detection for jsonb_ivm optimization
+//! Dependency type detection for jsonb_delta optimization
 //!
 //! This module analyzes TVIEW SELECT statements to determine how foreign key
 //! relationships manifest in the JSONB structure. This information is used
-//! to choose the appropriate jsonb_ivm patch function for efficient updates.
+//! to choose the appropriate jsonb_delta patch function for efficient updates.
 //!
 //! # Detection Patterns
 //!
@@ -1218,7 +1218,7 @@ cargo pgrx test pg17
 
 ## Next Steps After Task 3
 
-**Task 4:** Update `apply_patch()` to use jsonb_ivm smart functions based on detected dependency types
+**Task 4:** Update `apply_patch()` to use jsonb_delta smart functions based on detected dependency types
 **Task 5:** Pass changed FK context to enable surgical updates
 **Task 6:** Performance benchmarking to verify 1.5-3× speedup
 

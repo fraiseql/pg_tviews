@@ -260,7 +260,7 @@ Scalability:              Linear performance scaling
 
 #### Features
 - Complete cascade propagation system
-- JSONB smart patching with jsonb_ivm integration
+- JSONB smart patching with jsonb_delta integration
 - Transaction isolation support
 - Concurrency-safe refresh operations
 

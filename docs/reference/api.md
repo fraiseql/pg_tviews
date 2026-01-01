@@ -45,31 +45,31 @@ SELECT pg_tviews_version();
 - Useful for verifying extension installation
 - Version follows semantic versioning
 
-### pg_tviews_check_jsonb_ivm()
+### pg_tviews_check_jsonb_delta()
 
 **Signature**:
 ```sql
-pg_tviews_check_jsonb_ivm() RETURNS BOOLEAN
+pg_tviews_check_jsonb_delta() RETURNS BOOLEAN
 ```
 
 **Description**:
-Checks if the optional `jsonb_ivm` extension is available at runtime. This extension provides performance optimizations for JSONB array operations.
+Checks if the optional `jsonb_delta` extension is available at runtime. This extension provides performance optimizations for JSONB array operations.
 
 **Parameters**:
 - None
 
 **Returns**:
-- `BOOLEAN`: `true` if `jsonb_ivm` is installed, `false` otherwise
+- `BOOLEAN`: `true` if `jsonb_delta` is installed, `false` otherwise
 
 **Example**:
 ```sql
-SELECT pg_tviews_check_jsonb_ivm();
--- Returns: true (if jsonb_ivm is installed)
+SELECT pg_tviews_check_jsonb_delta();
+-- Returns: true (if jsonb_delta is installed)
 ```
 
 **Notes**:
 - Result is cached after first check for performance
-- `jsonb_ivm` provides 1.5-3× faster JSONB updates when available
+- `jsonb_delta` provides 1.5-3× faster JSONB updates when available
 
 ## DDL Operations
 
@@ -628,7 +628,7 @@ FROM pg_tviews_cache_stats;
 SELECT pg_tviews_version();
 
 -- Check for optional performance extension
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 ```
 
 ### Monitor Queue Activity

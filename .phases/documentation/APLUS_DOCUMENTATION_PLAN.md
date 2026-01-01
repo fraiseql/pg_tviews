@@ -40,7 +40,7 @@ This plan transforms pg_tviews documentation from "good beta quality" to **A+ pr
 - Inconsistency: `CREATE TVIEW` syntax vs `pg_tviews_create()` function
 - Missing: Migration guide from traditional materialized views
 - Missing: Disaster recovery procedures
-- Missing: jsonb_ivm dependency clarity
+- Missing: jsonb_delta dependency clarity
 - Unclear: Production deployment checklist
 - Missing: Security model documentation
 
@@ -183,7 +183,7 @@ backward compatibility but will be removed in 2.0.0.
 
 ---
 
-### A3: Clarify jsonb_ivm Dependency (4 hours)
+### A3: Clarify jsonb_delta Dependency (4 hours)
 
 **Objective**: Make dependency status crystal clear in all documentation.
 
@@ -204,7 +204,7 @@ backward compatibility but will be removed in 2.0.0.
 - pgrx 0.12.8+ (build time only)
 
 ### Optional (Enhances Performance)
-- jsonb_ivm extension: 1.5-3× faster JSONB updates
+- jsonb_delta extension: 1.5-3× faster JSONB updates
   - Without: Uses native jsonb_set (slower)
   - With: Uses surgical patching (faster)
   - Performance impact: 2.03× improvement validated
@@ -212,21 +212,21 @@ backward compatibility but will be removed in 2.0.0.
 
 2. **Add Decision Guide**:
 ```markdown
-## Do I Need jsonb_ivm?
+## Do I Need jsonb_delta?
 
-**Use jsonb_ivm if**:
+**Use jsonb_delta if**:
 - ✅ You have large JSONB objects (>100 fields)
 - ✅ You update frequently (>100 ops/sec)
 - ✅ You can install additional extensions
 
-**Skip jsonb_ivm if**:
+**Skip jsonb_delta if**:
 - ❌ Your JSONB objects are small (<20 fields)
 - ❌ Updates are infrequent (<10 ops/sec)
 - ❌ You cannot install additional extensions
 - ❌ You prefer minimal dependencies
 
 **Performance Comparison**:
-| Workload | Without jsonb_ivm | With jsonb_ivm | Improvement |
+| Workload | Without jsonb_delta | With jsonb_delta | Improvement |
 |----------|------------------|----------------|-------------|
 | Small (1K rows) | 0.591 ms | 0.364 ms | 1.6× faster |
 | Medium (100K rows) | 1.255 ms | 0.591 ms | 2.1× faster |
@@ -243,10 +243,10 @@ backward compatibility but will be removed in 2.0.0.
 - Updated `docs/getting-started/installation.md`
 - Dependency matrix in README
 - Performance comparison table
-- FAQ entry: "Do I need jsonb_ivm?"
+- FAQ entry: "Do I need jsonb_delta?"
 
 **Acceptance Criteria**:
-- [ ] Every mention of jsonb_ivm is consistent
+- [ ] Every mention of jsonb_delta is consistent
 - [ ] Installation shows both paths (with/without)
 - [ ] Performance impact quantified
 - [ ] Decision guide clear
@@ -483,7 +483,7 @@ Brief one-paragraph description of what this document covers.
 
 ### Extension Management
 - [pg_tviews_version()](#pg_tviews_version) - Get version
-- [pg_tviews_check_jsonb_ivm()](#pg_tviews_check_jsonb_ivm) - Check dependencies
+- [pg_tviews_check_jsonb_delta()](#pg_tviews_check_jsonb_delta) - Check dependencies
 
 ### Queue Management
 - [pg_tviews_queue_stats()](#pg_tviews_queue_stats) - Queue statistics
@@ -514,7 +514,7 @@ Brief one-paragraph description of what this document covers.
 SELECT pg_tviews_version();
 
 -- Check optional features
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Full health check
 SELECT * FROM pg_tviews_health_check();
@@ -1571,7 +1571,7 @@ SELECT * FROM pg_extension WHERE extname = 'pg_tviews';
 SELECT pg_tviews_version();
 
 -- Check optional dependencies
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Check statement-level triggers status
 SELECT COUNT(*) AS stmt_triggers
@@ -2032,7 +2032,7 @@ No known issues.
 ### Compatible Extensions
 
 ✅ **Works well with**:
-- jsonb_ivm (optional, recommended)
+- jsonb_delta (optional, recommended)
 - pg_stat_statements (for monitoring)
 - pg_cron (for scheduled maintenance)
 - PostGIS (no conflicts)
@@ -2134,7 +2134,7 @@ Example: `fk_user`, `fk_category`
 ### Surgical Update
 **Precise modification** of specific JSONB paths instead of replacing entire object.
 
-**Tool**: jsonb_ivm extension
+**Tool**: jsonb_delta extension
 
 ### Cache Hit
 **Successful retrieval** from in-memory cache (graph cache, table cache, or plan cache).
@@ -2608,7 +2608,7 @@ CREATE MATERIALIZED VIEW ... AS SELECT ...;
 1. Enable statement-level triggers
 2. Add JSONB indexes
 3. Check cascade depth
-4. Verify jsonb_ivm is installed
+4. Verify jsonb_delta is installed
 
 ### Issue: Application Breaks
 
@@ -2675,7 +2675,7 @@ After migration, optimize:
 **Migration**:
 - 2 weeks effort
 - Converted to 50 TVIEWs
-- Added jsonb_ivm
+- Added jsonb_delta
 
 **After**:
 - Always-fresh data

@@ -61,8 +61,8 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark('ecommerce', 'price_update', 'medium', 'tviews_jsonb_ivm', 1, 1, v_duration_ms);
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms', v_duration_ms;
+    PERFORM public.record_benchmark('ecommerce', 'price_update', 'medium', 'tviews_jsonb_delta', 1, 1, v_duration_ms);
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms', v_duration_ms;
 
     ROLLBACK;
 END $$;
@@ -165,8 +165,8 @@ BEGIN
     v_end := clock_timestamp();
     v_duration_ms := EXTRACT(EPOCH FROM (v_end - v_start)) * 1000;
 
-    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'medium', 'tviews_jsonb_ivm', v_affected_count, 2, v_duration_ms);
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / v_affected_count;
+    PERFORM public.record_benchmark('ecommerce', 'category_cascade', 'medium', 'tviews_jsonb_delta', v_affected_count, 2, v_duration_ms);
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms (%.3f ms/product)', v_duration_ms, v_duration_ms / v_affected_count;
 
     ROLLBACK;
 END $$;

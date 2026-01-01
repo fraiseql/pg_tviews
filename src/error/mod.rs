@@ -61,7 +61,7 @@ pub enum TViewError {
     },
 
     // ============ Extension Dependency Errors (58xxx) ============
-    /// `jsonb_ivm` extension not installed
+    /// `jsonb_delta` extension not installed
     JsonbIvmNotInstalled,
 
     /// Extension version mismatch
@@ -231,7 +231,7 @@ impl fmt::Display for TViewError {
                 write!(f, "Failed to infer type for column '{column_name}': {reason}")
             }
             Self::JsonbIvmNotInstalled => {
-                write!(f, "Required extension 'jsonb_ivm' is not installed. Run: CREATE EXTENSION jsonb_ivm;")
+                write!(f, "Required extension 'jsonb_delta' is not installed. Run: CREATE EXTENSION jsonb_delta;")
             }
             Self::ExtensionVersionMismatch { extension, required, found } => {
                 write!(f, "Extension '{extension}' version mismatch: required {required}, found {found}")

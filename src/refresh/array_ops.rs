@@ -1,7 +1,7 @@
 //! Array Operations Module: INSERT/DELETE for JSONB Arrays
 //!
 //! This module provides functions to handle INSERT and DELETE operations
-//! on JSONB array elements using `jsonb_ivm` functions. These operations
+//! on JSONB array elements using `jsonb_delta` functions. These operations
 //! are triggered when source table rows are inserted or deleted.
 //!
 //! ## Architecture
@@ -155,10 +155,10 @@ pub fn delete_array_element(
     Ok(())
 }
 
-/// Check if `jsonb_ivm` array functions are available
+/// Check if `jsonb_delta` array functions are available
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
-/// The array operations require `jsonb_ivm` for proper functionality.
+/// The array operations require `jsonb_delta` for proper functionality.
 #[allow(dead_code)]
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r"
@@ -257,7 +257,7 @@ mod tests {
     #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_check_array_functions_available() {
-        // This will depend on whether jsonb_ivm is installed
+        // This will depend on whether jsonb_delta is installed
         let available = check_array_functions_available().unwrap();
         // We don't assert here since it depends on the test environment
         let _ = available;

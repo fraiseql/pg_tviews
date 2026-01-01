@@ -229,27 +229,27 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 ### JsonbIvmNotInstalled
 
 **SQLSTATE**: 58P01
-**Description**: Required jsonb_ivm extension is not installed.
+**Description**: Required jsonb_delta extension is not installed.
 
 **Common Causes**:
-- jsonb_ivm extension not installed
+- jsonb_delta extension not installed
 - Performance optimization disabled
 - Fresh PostgreSQL installation
 
 **Example**:
 ```sql
 -- During TVIEW creation or refresh
--- WARNING: jsonb_ivm extension not detected
+-- WARNING: jsonb_delta extension not detected
 -- → Performance: Basic (full document replacement)
--- → To enable 1.5-3× faster cascades, install jsonb_ivm
+-- → To enable 1.5-3× faster cascades, install jsonb_delta
 ```
 
 **Resolution**:
-1. Install jsonb_ivm: `CREATE EXTENSION jsonb_ivm;`
-2. Download from: https://github.com/fraiseql/jsonb_ivm
+1. Install jsonb_delta: `CREATE EXTENSION jsonb_delta;`
+2. Download from: https://github.com/fraiseql/jsonb_delta
 3. Restart pg_tviews extension if needed
 
-**Note**: This is a warning, not an error. pg_tviews works without jsonb_ivm but slower.
+**Note**: This is a warning, not an error. pg_tviews works without jsonb_delta but slower.
 
 ### ExtensionVersionMismatch
 

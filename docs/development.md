@@ -7,7 +7,7 @@ This guide covers setting up the development environment, running tests, and con
 - **Rust**: 1.70+ with rustup
 - **PostgreSQL**: 15, 16, or 17
 - **pgrx**: 0.12.8+ for PostgreSQL extension development
-- **jsonb_ivm**: Required extension for JSONB operations
+- **jsonb_delta**: Required extension for JSONB operations
 
 ## Environment Setup
 
@@ -52,12 +52,12 @@ cargo pgrx init
 cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
 ```
 
-### 5. Install jsonb_ivm
+### 5. Install jsonb_delta
 
 ```bash
-# Clone and build jsonb_ivm
-git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+# Clone and build jsonb_delta
+git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 make && sudo make install
 ```
 
@@ -234,7 +234,7 @@ cargo pgrx test pg17
 createdb pg_tviews_test
 
 # Enable required extensions
-psql -d pg_tviews_test -c "CREATE EXTENSION jsonb_ivm;"
+psql -d pg_tviews_test -c "CREATE EXTENSION jsonb_delta;"
 
 # Install pg_tviews
 cargo pgrx install --release
@@ -385,8 +385,8 @@ cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
 # Check PostgreSQL logs
 tail -f /var/log/postgresql/postgresql-17-main.log
 
-# Verify jsonb_ivm is installed
-psql -c "SELECT * FROM pg_extension WHERE extname = 'jsonb_ivm';"
+# Verify jsonb_delta is installed
+psql -c "SELECT * FROM pg_extension WHERE extname = 'jsonb_delta';"
 ```
 
 **Tests fail:**

@@ -6,7 +6,7 @@
 **Status:** Design Complete
 **Authors:** [You + ChatGPT]
 **Language:** Rust (`pgrx`)
-**Dependencies:** `jsonb_ivm` extension
+**Dependencies:** `jsonb_delta` extension
 **Target PostgreSQL Version:** 15+
 
 ---
@@ -131,7 +131,7 @@ tb_* change
 TVIEW engine
    |
    | recompute (1 PK row)
-   | patch JSON (via jsonb_ivm)
+   | patch JSON (via jsonb_delta)
    | propagate to parents
    v
 tv_* updated synchronously
@@ -274,11 +274,11 @@ Using SPI:
 SELECT * FROM v_post WHERE pk_post = $pk;
 ```
 
-### Step 2 — Patch TVIEW row using jsonb_ivm
+### Step 2 — Patch TVIEW row using jsonb_delta
 
 ```sql
 UPDATE tv_post
-SET data       = jsonb_ivm_patch(data, $new.data),
+SET data       = jsonb_delta_patch(data, $new.data),
     fk_user    = $new.fk_user,
     user_id    = $new.user_id,
     updated_at = now()
@@ -381,7 +381,7 @@ pub fn propagate(row: &ViewRow) -> spi::Result<()> {
 
 * PK/FK lineage → no row scanning
 * Single-row view recompute → cheap
-* JSONB patching (jsonb_ivm) → minimal diff writes
+* JSONB patching (jsonb_delta) → minimal diff writes
 * Synchronous updates → no lag
 * FraiseQL filtering uses UUID indexes → extremely fast
 
@@ -442,7 +442,7 @@ To ensure TVIEW correctness:
 
 | Milestone | Features                                                                                 |
 | --------- | ---------------------------------------------------------------------------------------- |
-| v1.0      | Synchronous updates, lineage propagation, view-based dependencies, jsonb_ivm integration |
+| v1.0      | Synchronous updates, lineage propagation, view-based dependencies, jsonb_delta integration |
 | v1.5      | Background worker for optional async mode                                                |
 | v2.0      | Automatic TVIEW table generation from view definition                                    |
 | v2.5      | Distributed graph support                                                                |
@@ -457,7 +457,7 @@ The **TVIEW extension** turns PostgreSQL into a fully reactive read-model engine
 * Developers only define `v_*` views
 * TVIEW materializes them into `tv_*` tables
 * Updates to `tb_*` propagate synchronously and incrementally
-* JSON patches are efficient thanks to `jsonb_ivm`
+* JSON patches are efficient thanks to `jsonb_delta`
 * Lineage uses PK/FK integers for speed
 * FraiseQL filters using UUID columns
 * Composition of read models uses `v_*` → `v_*` joins

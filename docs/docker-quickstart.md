@@ -28,7 +28,7 @@ The Docker container includes:
 - **PostgreSQL 17** (compatible with pg_ivm)
 - **pg_tviews extension** (built from source)
 - **pg_ivm extension** (Incremental View Maintenance)
-- **jsonb_ivm stubs** (PL/pgSQL fallback for JSONB operations)
+- **jsonb_delta stubs** (PL/pgSQL fallback for JSONB operations)
 - **Python 3 + psycopg** (for report generation)
 
 ## All Available Scales

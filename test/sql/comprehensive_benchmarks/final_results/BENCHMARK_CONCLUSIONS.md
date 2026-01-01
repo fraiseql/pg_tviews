@@ -7,13 +7,13 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 ## Key Performance Results
 
 ### Small Scale (1K products, 5K reviews)
-- **pg_tviews + jsonb_ivm**: 0.364-0.591 ms per single product update
+- **pg_tviews + jsonb_delta**: 0.364-0.591 ms per single product update
 - **Manual Function Refresh**: 0.912-1.255 ms (99% of automatic performance)
 - **Traditional Full Refresh**: 78-101 ms per operation
 - **Improvement**: 100-200× faster for incremental approaches
 
 ### Medium Scale (100K products, 500K reviews)
-- **pg_tviews + jsonb_ivm**: 0.591 ms per single product update
+- **pg_tviews + jsonb_delta**: 0.591 ms per single product update
 - **Manual Function Refresh**: 1.255 ms per single product update
 - **Bulk Operations**: 10,000-10,500 ms for 100 product updates
 - **Traditional Full Refresh**: 7,050-7,974 ms per operation
@@ -49,7 +49,7 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 ## Architecture Validation
 
 ### Approaches Compared
-1. **pg_tviews + jsonb_ivm**: Automatic triggers with optimized JSONB patching
+1. **pg_tviews + jsonb_delta**: Automatic triggers with optimized JSONB patching
 2. **pg_tviews + native PG**: Automatic triggers with standard jsonb_set operations
 3. **Manual Function Refresh**: Explicit function calls with full cascade support
 4. **Full Refresh**: Traditional REFRESH MATERIALIZED VIEW
@@ -125,7 +125,7 @@ The comprehensive 4-way benchmark comparison validates that pg_tviews delivers e
 - **Distributed support**: Multi-node refresh coordination
 
 ### Performance Optimizations
-- **Real jsonb_ivm**: Native Rust extension vs current PL/pgSQL stubs
+- **Real jsonb_delta**: Native Rust extension vs current PL/pgSQL stubs
 - **Parallel processing**: Multi-threaded bulk operations
 - **Advanced indexing**: Specialized indexes for refresh patterns
 - **Memory pooling**: Reuse allocated memory for repeated operations

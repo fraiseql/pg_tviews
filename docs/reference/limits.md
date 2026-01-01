@@ -73,7 +73,7 @@ SELECT pg_size_pretty(pg_total_relation_size('tv_your_entity'));
 ### Estimating Cascade Performance
 
 ```
-Single-row cascade time = 5-8ms (with jsonb_ivm)
+Single-row cascade time = 5-8ms (with jsonb_delta)
 Batch cascade (N rows) ≈ 5ms + (N × 0.5ms)
 Example: 1000 rows ≈ 505ms
 ```

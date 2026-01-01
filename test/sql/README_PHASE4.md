@@ -37,15 +37,15 @@ cargo pgrx test
 ## Prerequisites
 
 1. **PostgreSQL 15+** installed
-2. **jsonb_ivm extension** installed and available
+2. **jsonb_delta extension** installed and available
 3. **pg_tviews extension** compiled
 
-### Install jsonb_ivm
+### Install jsonb_delta
 
 ```bash
-# Clone and install jsonb_ivm
-git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+# Clone and install jsonb_delta
+git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 cargo pgrx install --release
 ```
 
@@ -101,11 +101,11 @@ FROM pg_tview_meta;
 
 ## Common Issues
 
-### jsonb_ivm Not Found
+### jsonb_delta Not Found
 ```
-ERROR: extension "jsonb_ivm" is not available
+ERROR: extension "jsonb_delta" is not available
 ```
-**Solution:** Install jsonb_ivm extension first
+**Solution:** Install jsonb_delta extension first
 
 ### Isolation Level Warning
 ```

@@ -5,7 +5,7 @@
 **Status:** Finalized Design
 **Language:** Rust (`pgrx`)
 **PostgreSQL:** 15+
-**Dependencies:** `jsonb_ivm` extension
+**Dependencies:** `jsonb_delta` extension
 **Author:** [You + ChatGPT]
 
 ---
@@ -56,7 +56,7 @@ All derived automatically from the SELECT definition.
 | FG5  | Detect all underlying source tables via PostgreSQL dependency analysis                   |
 | FG6  | Auto-install AFTER triggers on those tables                                              |
 | FG7  | On any mutation of a base table, recompute **only affected rows**                        |
-| FG8  | Patch `tv_name.data` using jsonb_ivm functions (`jsonb_merge_shallow`, `jsonb_merge_at_path`, `jsonb_array_update_where`) |
+| FG8  | Patch `tv_name.data` using jsonb_delta functions (`jsonb_merge_shallow`, `jsonb_merge_at_path`, `jsonb_array_update_where`) |
 | FG9  | Propagate updates upward through dependent TVIEWs                                        |
 | FG10 | Guarantee synchronous updates (same transaction)                                         |
 | FG11 | Allow arbitrarily deep recursive compositions through nested `v_*` views                 |
@@ -236,9 +236,9 @@ This is maintained in memory and/or pg_tview_meta.
    SELECT * FROM v_post WHERE pk_post = $1;
    ```
 
-   **Step B** — Merge data using jsonb_ivm:
+   **Step B** — Merge data using jsonb_delta:
 
-   TVIEW uses different jsonb_ivm functions based on the update type:
+   TVIEW uses different jsonb_delta functions based on the update type:
 
    **Case 1: Root-level merge (simple scalar updates)**
    ```sql
@@ -283,13 +283,13 @@ This is maintained in memory and/or pg_tview_meta.
 
 ---
 
-# 8a. jsonb_ivm Integration Strategy
+# 8a. jsonb_delta Integration Strategy
 
 ### Update Type Detection
 
-TVIEW must intelligently choose the correct jsonb_ivm function based on the dependency relationship:
+TVIEW must intelligently choose the correct jsonb_delta function based on the dependency relationship:
 
-| Scenario | Detection Logic | jsonb_ivm Function |
+| Scenario | Detection Logic | jsonb_delta Function |
 |----------|----------------|-------------------|
 | **Scalar field change** | No nested views in SELECT | `jsonb_merge_shallow(old_data, new_data)` |
 | **Embedded object update** | SELECT contains `v_other.data` in `jsonb_build_object()` | `jsonb_merge_at_path(data, new_nested, path)` |
@@ -385,18 +385,18 @@ pub fn apply_patch(tv: &TView, pk: i64, new_data: JsonB, changed_fk: &str) -> Re
 
 ### Performance Characteristics
 
-| Update Type | jsonb_ivm Function | Speedup vs Native SQL | Use Case |
+| Update Type | jsonb_delta Function | Speedup vs Native SQL | Use Case |
 |-------------|-------------------|----------------------|----------|
 | Scalar fields | `jsonb_merge_shallow` | 1.2-1.5× | Title, status, timestamps |
 | Nested objects | `jsonb_merge_at_path` | 1.5-2× | Embedded v_user, v_company |
 | Array elements | `jsonb_array_update_where` | **3.1×** | Posts in feed, DNS servers |
 | Multi-row batch | `jsonb_array_update_multi_row` | **4×** | Cascade affecting 100+ rows |
 
-**Expected overall TVIEW cascade speedup**: **1.6-2.6×** (validated by jsonb_ivm benchmarks)
+**Expected overall TVIEW cascade speedup**: **1.6-2.6×** (validated by jsonb_delta benchmarks)
 
 ---
 
-# 9. Example Propagation Tree with jsonb_ivm Integration
+# 9. Example Propagation Tree with jsonb_delta Integration
 
 ### Scenario: Company name change cascades through entire hierarchy
 
@@ -468,8 +468,8 @@ Step 4: Propagate to tv_feed (array update)
 ```
 
 **All inside the same transaction. Total cascade time**:
-- **Without jsonb_ivm**: ~45ms (re-aggregate everything)
-- **With jsonb_ivm**: ~18ms (surgical updates, **2.5× faster**)
+- **Without jsonb_delta**: ~45ms (re-aggregate everything)
+- **With jsonb_delta**: ~18ms (surgical updates, **2.5× faster**)
 
 **Performance breakdown**:
 | Step | Function | Speedup |
@@ -497,7 +497,7 @@ src/
  ├ table.rs         -- tv_entity table creation
  ├ depend.rs        -- pg_depend walker
  ├ trigger.rs       -- global trigger handler
- ├ refresh.rs       -- recompute logic + jsonb_ivm dispatch
+ ├ refresh.rs       -- recompute logic + jsonb_delta dispatch
  ├ propagate.rs     -- dependency propagation
  ├ util.rs
 ```
@@ -637,7 +637,7 @@ The extension stores the original SELECT in metadata.
 
 ### Multi-Row Cascades
 
-When a single mutation affects 100+ TVIEW rows, use jsonb_ivm's batch functions:
+When a single mutation affects 100+ TVIEW rows, use jsonb_delta's batch functions:
 
 ```rust
 // In propagate.rs
@@ -658,7 +658,7 @@ pub fn refresh_batch(tv: &TView, affected_pks: Vec<i64>) -> Result<()> {
                 .map(|pk| fetch_jsonb_data(tv.table_oid, *pk))
                 .collect();
 
-            // Batch update using jsonb_ivm
+            // Batch update using jsonb_delta
             let updated_docs = Spi::get_one::<Vec<JsonB>>(
                 "SELECT unnest(jsonb_array_update_multi_row($1, $2, $3, $4, $5))",
                 Some(&[docs, array_path, match_key, match_value, updates])
@@ -724,7 +724,7 @@ developers gain:
 * perfect consistency
 * zero maintenance
 * perfect alignment with FraiseQL
-* **high-performance updates via jsonb_ivm integration**
+* **high-performance updates via jsonb_delta integration**
 
 TVIEW becomes the SQL-native equivalent of:
 
@@ -738,19 +738,19 @@ TVIEW becomes the SQL-native equivalent of:
 
 ## Performance Summary
 
-**TVIEW + jsonb_ivm delivers**:
+**TVIEW + jsonb_delta delivers**:
 - **1.6-2.6× faster cascades** vs. traditional re-aggregation
 - **4× faster batch updates** for large cascades (100+ rows)
 - **Synchronous consistency** (same transaction)
 - **Zero manual trigger maintenance**
 
 **Built on**:
-- ✅ **jsonb_ivm v0.2.0+** (performance-validated Rust extension)
+- ✅ **jsonb_delta v0.2.0+** (performance-validated Rust extension)
 - ✅ **pgrx 0.12.8** (PostgreSQL Rust framework)
 - ✅ **PostgreSQL 15+** (tested on 17)
 
 **Dependencies**:
 ```sql
-CREATE EXTENSION jsonb_ivm;  -- Required
+CREATE EXTENSION jsonb_delta;  -- Required
 CREATE EXTENSION pg_tviews;  -- TVIEW extension
 ```

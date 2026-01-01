@@ -111,7 +111,7 @@ Follow these phases **in exact order**. Each phase must be 100% complete before 
 
 **Deliverables:**
 - Row-level refresh works
-- jsonb_ivm integration complete
+- jsonb_delta integration complete
 - FK lineage cascade works
 - Concurrent refresh safe
 - Transaction isolation enforced
@@ -182,7 +182,7 @@ Before starting Phase 0-A:
 - [ ] Rust toolchain installed
 - [ ] pgrx installed (`cargo install --locked cargo-pgrx`)
 - [ ] PostgreSQL 15+ installed
-- [ ] jsonb_ivm extension available
+- [ ] jsonb_delta extension available
 - [ ] Read README.md completely
 - [ ] Understand TDD methodology
 - [ ] Have realistic timeline (45-65 days)

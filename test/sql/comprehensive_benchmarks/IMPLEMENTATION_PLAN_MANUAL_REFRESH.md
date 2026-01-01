@@ -6,13 +6,13 @@ This plan outlines the implementation of **Approach 3**: Manual Function Refresh
 
 ## Current State (3 Approaches)
 
-1. **Approach 1**: `pg_tviews + jsonb_ivm` - Automatic triggers with optimized JSONB patching
+1. **Approach 1**: `pg_tviews + jsonb_delta` - Automatic triggers with optimized JSONB patching
 2. **Approach 2**: `pg_tviews + native PG` - Automatic triggers with `jsonb_set()`
 3. **Approach 3**: `mv_product` - Traditional `REFRESH MATERIALIZED VIEW`
 
 ## Target State (4 Approaches)
 
-1. **Approach 1**: `pg_tviews + jsonb_ivm` - Automatic triggers with optimized JSONB patching
+1. **Approach 1**: `pg_tviews + jsonb_delta` - Automatic triggers with optimized JSONB patching
 2. **Approach 2**: `pg_tviews + native PG` - Automatic triggers with `jsonb_set()`
 3. **Approach 3**: `manual_func_product` - **NEW**: Generic refresh function with full cascade support
 4. **Approach 4**: `mv_product` - Traditional `REFRESH MATERIALIZED VIEW`
@@ -227,7 +227,7 @@ RETURNS JSONB AS $$  -- Detailed statistics
 
 With full optimization, Approach 3 should achieve:
 
-| Operation | pg_tviews + jsonb_ivm | pg_tviews + native | Manual Function | Full Refresh |
+| Operation | pg_tviews + jsonb_delta | pg_tviews + native | Manual Function | Full Refresh |
 |-----------|----------------------|-------------------|----------------|--------------|
 | Single Product | 1.0x | 1.2-1.5x | 1.8-2.5x | 50-100x |
 | Bulk 100 | 1.0x | 1.3-1.8x | 2.0-3.0x | 200-500x |
@@ -291,7 +291,7 @@ With full optimization, Approach 3 should achieve:
 
 - PostgreSQL 15+ with JSONB support
 - Existing benchmark infrastructure
-- jsonb_ivm extension (for Approach 1 comparison)
+- jsonb_delta extension (for Approach 1 comparison)
 - pg_tviews extension (for Approaches 1 & 2)
 
 ## Validation Plan

@@ -4,10 +4,10 @@ This benchmark provides a comprehensive performance comparison of 4 different ap
 
 ## The 4 Approaches
 
-### 1. pg_tviews + jsonb_ivm
+### 1. pg_tviews + jsonb_delta
 **Transactional Views with JSONB Incremental View Maintenance**
 
-- Uses `pg_tviews` extension with `jsonb_ivm` backend
+- Uses `pg_tviews` extension with `jsonb_delta` backend
 - Automatically maintains denormalized JSONB data
 - Incremental updates using specialized JSONB operations
 - Best for: Complex nested JSONB structures with frequent updates
@@ -18,7 +18,7 @@ This benchmark provides a comprehensive performance comparison of 4 different ap
 - Uses `pg_tviews` extension with native PostgreSQL backend
 - Automatically maintains denormalized data using standard SQL
 - Incremental updates using traditional PostgreSQL aggregates
-- Best for: Simpler schemas or when jsonb_ivm is not available
+- Best for: Simpler schemas or when jsonb_delta is not available
 
 ### 3. Manual Functions
 **Hand-written Trigger Functions**
@@ -118,11 +118,11 @@ COMPARISON REPORT
 
  operation        | approach          | scale  | time_ms | rows_affected | ms_per_row
 ------------------+-------------------+--------+---------+---------------+------------
- initial_load     | tviews_jsonb_ivm  | small  |  245.32 |          1000 |      0.245
+ initial_load     | tviews_jsonb_delta  | small  |  245.32 |          1000 |      0.245
  initial_load     | tviews_native_pg  | small  |  312.45 |          1000 |      0.312
  initial_load     | manual_func       | small  |  523.12 |          1000 |      0.523
  initial_load     | full_refresh      | small  |  534.67 |          1000 |      0.535
- incremental_update | tviews_jsonb_ivm | small |   12.34 |           100 |      0.123
+ incremental_update | tviews_jsonb_delta | small |   12.34 |           100 |      0.123
  incremental_update | tviews_native_pg | small |   45.67 |           100 |      0.457
  incremental_update | manual_func      | small |  523.12 |           100 |      5.231
  incremental_update | full_refresh     | small |  534.67 |           100 |      5.347
@@ -141,7 +141,7 @@ COMPARISON REPORT
 1. **Initial Load Performance**: All approaches should be similar (data generation overhead dominates)
 
 2. **Incremental Update Performance**: This is where pg_tviews shines
-   - `tviews_jsonb_ivm` should be fastest for JSONB-heavy workloads
+   - `tviews_jsonb_delta` should be fastest for JSONB-heavy workloads
    - `tviews_native_pg` should be fast for simpler schemas
    - `manual_func` and `full_refresh` should be slowest (full table rebuild)
 
@@ -187,29 +187,29 @@ ORDER BY test_name, execution_time_ms;
 
 **Small Scale (1K products)**:
 - Initial load: All approaches ~200-500ms (similar)
-- Incremental update: tviews_jsonb_ivm ~10-50ms, full_refresh ~500ms (10-50x faster)
+- Incremental update: tviews_jsonb_delta ~10-50ms, full_refresh ~500ms (10-50x faster)
 - Query: All approaches ~1-5ms (similar)
 
 **Medium Scale (10K products)**:
 - Initial load: All approaches ~2-5s (similar)
-- Incremental update: tviews_jsonb_ivm ~50-200ms, full_refresh ~5s (25-100x faster)
+- Incremental update: tviews_jsonb_delta ~50-200ms, full_refresh ~5s (25-100x faster)
 - Query: All approaches ~10-50ms (similar)
 
 **Large Scale (100K products)**:
 - Initial load: All approaches ~20-50s (similar)
-- Incremental update: tviews_jsonb_ivm ~500-2000ms, full_refresh ~50s (25-100x faster)
+- Incremental update: tviews_jsonb_delta ~500-2000ms, full_refresh ~50s (25-100x faster)
 - Query: All approaches ~100-500ms (similar)
 
 **Note**: Actual results depend on hardware (CPU, RAM, disk speed).
 
 ## Troubleshooting
 
-### jsonb_ivm extension not found
+### jsonb_delta extension not found
 
-The benchmark requires the `jsonb_ivm` extension. Ensure it's installed:
+The benchmark requires the `jsonb_delta` extension. Ensure it's installed:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 ```
 
 If not available, you can still run scenarios 2, 3, and 4.

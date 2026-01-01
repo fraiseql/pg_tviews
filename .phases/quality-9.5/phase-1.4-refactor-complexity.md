@@ -141,7 +141,7 @@ pub fn refresh_tview(...) -> TViewResult<()> {
         )
         UPDATE {tview_table} t
         SET data = CASE
-            WHEN EXISTS(SELECT 1 FROM pg_tviews_jsonb_ivm_functions())
+            WHEN EXISTS(SELECT 1 FROM pg_tviews_jsonb_delta_functions())
             THEN pg_tviews_jsonb_patch(t.data, n.data)
             ELSE n.data
         END
@@ -159,7 +159,7 @@ pub fn refresh_tview(...) -> TViewResult<()> {
 pub fn refresh_tview(...) -> TViewResult<()> {
     let sql = RefreshSqlBuilder::new(metadata)
         .with_keys(&keys)
-        .with_jsonb_optimization(check_jsonb_ivm_available())
+        .with_jsonb_optimization(check_jsonb_delta_available())
         .build()?;
 
     execute_refresh_sql(&sql)
@@ -169,7 +169,7 @@ pub fn refresh_tview(...) -> TViewResult<()> {
 pub struct RefreshSqlBuilder<'a> {
     metadata: &'a TViewMetadata,
     keys: Option<&'a [i64]>,
-    use_jsonb_ivm: bool,
+    use_jsonb_delta: bool,
 }
 
 impl<'a> RefreshSqlBuilder<'a> {
@@ -181,7 +181,7 @@ impl<'a> RefreshSqlBuilder<'a> {
     }
 
     pub fn with_jsonb_optimization(mut self, enabled: bool) -> Self {
-        self.use_jsonb_ivm = enabled;
+        self.use_jsonb_delta = enabled;
         self
     }
 
@@ -211,7 +211,7 @@ impl<'a> RefreshSqlBuilder<'a> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_refresh_sql_with_jsonb_ivm() {
+    fn test_refresh_sql_with_jsonb_delta() {
         let metadata = create_test_metadata();
         let sql = RefreshSqlBuilder::new(&metadata)
             .with_jsonb_optimization(true)
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh_sql_without_jsonb_ivm() {
+    fn test_refresh_sql_without_jsonb_delta() {
         let metadata = create_test_metadata();
         let sql = RefreshSqlBuilder::new(&metadata)
             .with_jsonb_optimization(false)

@@ -14,7 +14,7 @@
 - "2,083× faster than traditional MV" (single row update)
 - "2,028× improvement" (medium cascade 50 rows)
 - "1,800× faster" (bulk 1K rows)
-- "1.5-3× speedup with jsonb_ivm"
+- "1.5-3× speedup with jsonb_delta"
 
 **Problem**: These claims are **unvalidated** without:
 - Sample size (n=?)
@@ -309,7 +309,7 @@ if __name__ == '__main__':
 - **OS**: Ubuntu 22.04 LTS (Linux 6.2.0)
 - **PostgreSQL**: 17.1
 - **pg_tviews**: 0.1.0-beta.1
-- **jsonb_ivm**: 0.1.0 (optional)
+- **jsonb_delta**: 0.1.0 (optional)
 
 ### PostgreSQL Configuration
 ```ini
@@ -371,7 +371,7 @@ max_connections = 100
    # Install pg_tviews
    cargo pgrx install --release --pg-config=/usr/lib/postgresql/17/bin/pg_config
 
-   # Install jsonb_ivm (optional)
+   # Install jsonb_delta (optional)
    # ... installation steps
    ```
 
@@ -379,7 +379,7 @@ max_connections = 100
    ```bash
    createdb benchmark_db
    psql benchmark_db -c "CREATE EXTENSION pg_tviews;"
-   psql benchmark_db -c "CREATE EXTENSION jsonb_ivm;"  # optional
+   psql benchmark_db -c "CREATE EXTENSION jsonb_delta;"  # optional
    ```
 
 ## Running Benchmarks

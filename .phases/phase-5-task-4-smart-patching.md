@@ -1,7 +1,7 @@
 # Phase 5 Task 4: Smart JSONB Patching Integration
 
 **Status:** Ready to implement
-**Phase:** Phase 5 Task 4 of 5 (jsonb_ivm integration)
+**Phase:** Phase 5 Task 4 of 5 (jsonb_delta integration)
 **Complexity:** MEDIUM (Integration with existing metadata)
 **Duration:** 2-3 hours
 **TDD Approach:** RED → GREEN → REFACTOR → QA
@@ -10,7 +10,7 @@
 
 ## Objective
 
-Integrate smart JSONB patching in `apply_patch()` using the dependency metadata from Task 3 to dispatch to the correct `jsonb_ivm` function, achieving **1.5-3× performance improvement** on cascade updates.
+Integrate smart JSONB patching in `apply_patch()` using the dependency metadata from Task 3 to dispatch to the correct `jsonb_delta` function, achieving **1.5-3× performance improvement** on cascade updates.
 
 **Current State (Phase 5 Task 3 Complete):**
 - ✅ Dependency metadata captured in `pg_tview_meta` table
@@ -35,13 +35,13 @@ Integrate smart JSONB patching in `apply_patch()` using the dependency metadata 
 **File:** `src/refresh.rs:124-147`
 
 ```rust
-/// Apply JSON patch to tv_entity for pk using jsonb_ivm_patch.
-/// For now, this stub replaces the JSON instead of calling jsonb_ivm_patch.
+/// Apply JSON patch to tv_entity for pk using jsonb_delta_patch.
+/// For now, this stub replaces the JSON instead of calling jsonb_delta_patch.
 fn apply_patch(row: &ViewRow) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
 
-    // TODO: call jsonb_ivm_patch(data, $1) instead of direct replacement
+    // TODO: call jsonb_delta_patch(data, $1) instead of direct replacement
     let sql = format!(
         "UPDATE {} \
          SET data = $1, updated_at = now() \
@@ -65,9 +65,9 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
 
 **Issue:** Full JSONB replacement (`data = $1`) instead of surgical patching.
 
-### Available jsonb_ivm Functions
+### Available jsonb_delta Functions
 
-From `jsonb_ivm` v0.3.1:
+From `jsonb_delta` v0.3.1:
 
 ```sql
 -- Scalar/Shallow merge (no nested objects)
@@ -431,9 +431,9 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
         }
     };
 
-    // Check if jsonb_ivm is available
-    if !check_jsonb_ivm_available()? {
-        warning!("jsonb_ivm extension not found, using full replacement (slower)");
+    // Check if jsonb_delta is available
+    if !check_jsonb_delta_available()? {
+        warning!("jsonb_delta extension not found, using full replacement (slower)");
         return apply_full_replacement(row);
     }
 
@@ -528,11 +528,11 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
     })
 }
 
-/// Check if jsonb_ivm extension is installed
-fn check_jsonb_ivm_available() -> spi::Result<bool> {
+/// Check if jsonb_delta extension is installed
+fn check_jsonb_delta_available() -> spi::Result<bool> {
     Spi::connect(|client| {
         let result = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_ivm')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
             None,
             None,
         )?;
@@ -621,7 +621,7 @@ Add comprehensive module docs at the top:
 //! # Refresh Module: Smart JSONB Patching for Cascade Updates
 //!
 //! This module handles refreshing transformed views (TVIEWs) when underlying source
-//! table rows change. It uses **smart JSONB patching** via the `jsonb_ivm` extension
+//! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
 //! for 1.5-3× performance improvement on cascade updates.
 //!
 //! ## Architecture
@@ -633,10 +633,10 @@ Add comprehensive module docs at the top:
 //!
 //! ## Smart Patching Strategy
 //!
-//! The `apply_patch()` function dispatches to different `jsonb_ivm` functions based
+//! The `apply_patch()` function dispatches to different `jsonb_delta` functions based
 //! on dependency type metadata:
 //!
-//! | Dependency Type | jsonb_ivm Function | Use Case |
+//! | Dependency Type | jsonb_delta Function | Use Case |
 //! |-----------------|-------------------|----------|
 //! | `nested_object` | `jsonb_smart_patch_nested(data, patch, path)` | Author/category objects |
 //! | `array` | `jsonb_smart_patch_array(data, patch, path, key)` | Comments/tags arrays |
@@ -644,13 +644,13 @@ Add comprehensive module docs at the top:
 //!
 //! ## Performance Impact
 //!
-//! - **Without jsonb_ivm**: Full document replacement (~870ms for 100-row cascade)
-//! - **With jsonb_ivm**: Surgical updates (~400-600ms for 100-row cascade)
+//! - **Without jsonb_delta**: Full document replacement (~870ms for 100-row cascade)
+//! - **With jsonb_delta**: Surgical updates (~400-600ms for 100-row cascade)
 //! - **Speedup**: 1.45× to 2.2× faster
 //!
 //! ## Fallback Behavior
 //!
-//! If `jsonb_ivm` is not installed, falls back to full replacement (slower but functional).
+//! If `jsonb_delta` is not installed, falls back to full replacement (slower but functional).
 //!
 //! ## Example
 //!
@@ -727,13 +727,13 @@ Add function-level docs:
 /// Apply JSON patch to tv_entity using smart JSONB patching.
 ///
 /// This function is the **core performance optimization** of pg_tviews. Instead of
-/// replacing the entire JSONB document, it uses `jsonb_ivm` functions to surgically
+/// replacing the entire JSONB document, it uses `jsonb_delta` functions to surgically
 /// update only the changed paths.
 ///
 /// # Strategy
 ///
 /// 1. Load TVIEW metadata to determine dependency types
-/// 2. Check if `jsonb_ivm` is available (fallback to full replacement if not)
+/// 2. Check if `jsonb_delta` is available (fallback to full replacement if not)
 /// 3. Build SQL with nested `jsonb_smart_patch_*()` calls
 /// 4. Execute update with new data
 ///
@@ -745,7 +745,7 @@ Add function-level docs:
 ///
 /// # Fallback
 ///
-/// If `jsonb_ivm` is not installed, uses `apply_full_replacement()` for compatibility.
+/// If `jsonb_delta` is not installed, uses `apply_full_replacement()` for compatibility.
 ///
 /// # Arguments
 ///
@@ -785,19 +785,19 @@ fn build_smart_patch_sql(...) -> spi::Result<String> {
     // ... existing code ...
 }
 
-/// Check if jsonb_ivm extension is installed in current database.
+/// Check if jsonb_delta extension is installed in current database.
 ///
 /// # Returns
 ///
 /// `Ok(true)` if extension exists, `Ok(false)` if not, `Err` on query failure.
-fn check_jsonb_ivm_available() -> spi::Result<bool> {
+fn check_jsonb_delta_available() -> spi::Result<bool> {
     // ... existing code ...
 }
 
 /// Fallback: Full JSONB replacement (legacy behavior).
 ///
 /// Used when:
-/// - `jsonb_ivm` is not installed
+/// - `jsonb_delta` is not installed
 /// - No metadata found (legacy TVIEW)
 /// - Explicit fallback requested
 ///
@@ -830,10 +830,10 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
         }
     };
 
-    if !check_jsonb_ivm_available()? {
+    if !check_jsonb_delta_available()? {
         warning!(
-            "jsonb_ivm extension not installed. Smart patching disabled. \
-             Install with: CREATE EXTENSION jsonb_ivm; \
+            "jsonb_delta extension not installed. Smart patching disabled. \
+             Install with: CREATE EXTENSION jsonb_delta; \
              Performance: Full replacement is ~2× slower for cascades."
         );
         return apply_full_replacement(row);
@@ -876,7 +876,7 @@ mod tests {
     #[pg_test]
     fn test_smart_patch_full_cascade() {
         // Setup: 3-level cascade (user → post → comment)
-        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_ivm").unwrap();
+        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta").unwrap();
 
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("CREATE TABLE tb_post (
@@ -943,9 +943,9 @@ mod tests {
     }
 
     #[pg_test]
-    fn test_smart_patch_without_jsonb_ivm() {
-        // Setup: Same as above but without jsonb_ivm
-        Spi::run("DROP EXTENSION IF EXISTS jsonb_ivm CASCADE").unwrap();
+    fn test_smart_patch_without_jsonb_delta() {
+        // Setup: Same as above but without jsonb_delta
+        Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").unwrap();
 
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("CREATE TABLE tb_post (
@@ -1002,7 +1002,7 @@ mod tests {
         use std::time::Instant;
 
         // Setup: 100 posts with nested author
-        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_ivm").unwrap();
+        Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta").unwrap();
 
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("CREATE TABLE tb_post (
@@ -1048,7 +1048,7 @@ mod tests {
 
         info!("Smart patch cascade: {:?} for 100 rows", smart_duration);
 
-        // Now test fallback (disable jsonb_ivm temporarily by dropping metadata)
+        // Now test fallback (disable jsonb_delta temporarily by dropping metadata)
         Spi::run("DELETE FROM pg_tview_meta").unwrap();
 
         let start = Instant::now();
@@ -1092,7 +1092,7 @@ bench_smart_patch_vs_full_replace ... ok
 
 ```sql
 -- Verify smart patch SQL is generated correctly
-CREATE EXTENSION jsonb_ivm;
+CREATE EXTENSION jsonb_delta;
 
 CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT);
 CREATE TABLE tb_post (
@@ -1163,7 +1163,7 @@ cargo pgrx run pg17 --pgcli
 - [x] Nested objects use `jsonb_smart_patch_nested(data, patch, path)`
 - [x] Arrays use `jsonb_smart_patch_array(data, patch, path, match_key)`
 - [x] Scalars use `jsonb_smart_patch_scalar(data, patch)` or full replace
-- [x] Falls back to full replacement if `jsonb_ivm` not installed
+- [x] Falls back to full replacement if `jsonb_delta` not installed
 - [x] Falls back to full replacement if metadata missing (legacy TVIEWs)
 
 ### Performance Requirements
@@ -1181,14 +1181,14 @@ cargo pgrx run pg17 --pgcli
 ### Backward Compatibility
 - [x] Existing TVIEWs continue to work (fallback to full replacement)
 - [x] No breaking changes to public API
-- [x] Graceful degradation if `jsonb_ivm` not installed
+- [x] Graceful degradation if `jsonb_delta` not installed
 
 ---
 
 ## DO NOT
 
 1. ❌ **Do NOT break existing TVIEWs** - Fallback must work
-2. ❌ **Do NOT assume jsonb_ivm is installed** - Check availability first
+2. ❌ **Do NOT assume jsonb_delta is installed** - Check availability first
 3. ❌ **Do NOT hardcode paths** - Read from metadata
 4. ❌ **Do NOT skip tests** - All 6 tests must pass
 5. ❌ **Do NOT ignore performance** - Benchmark must show ≥1.3× speedup
@@ -1227,7 +1227,7 @@ cargo pgrx run pg17 --pgcli
 ✅ All 6 tests pass (3 unit + 2 integration + 1 benchmark)
 ✅ Benchmark shows ≥1.3× speedup (target: 1.5-2.2×)
 ✅ Manual SQL test verifies smart patch behavior
-✅ Fallback works when jsonb_ivm not installed
+✅ Fallback works when jsonb_delta not installed
 ✅ cargo build --lib compiles without warnings
 ```
 
@@ -1247,7 +1247,7 @@ cargo pgrx run pg17 --pgcli
 
 ## Dependencies
 
-- **jsonb_ivm v0.3.1+** (optional, graceful fallback if missing)
+- **jsonb_delta v0.3.1+** (optional, graceful fallback if missing)
 - **Task 3 metadata** (dependency_types, dependency_paths, array_match_keys)
 
 ---
@@ -1256,7 +1256,7 @@ cargo pgrx run pg17 --pgcli
 
 Phase 5 Task 4 completes the performance optimization journey:
 
-1. ✅ **Task 1**: Set up jsonb_ivm dependency infrastructure
+1. ✅ **Task 1**: Set up jsonb_delta dependency infrastructure
 2. ✅ **Task 2**: Enhanced metadata schema with dependency columns
 3. ✅ **Task 3**: Implemented analyzer to detect dependency types
 4. ⏳ **Task 4**: Integrate smart patching in `apply_patch()` ← **YOU ARE HERE**
@@ -1277,7 +1277,7 @@ After Task 4 completes, pg_tviews will automatically use the optimal JSONB patch
 - `test_apply_patch_array()` - Verify array smart patch
 - `test_apply_patch_scalar()` - Verify scalar handling
 - `test_smart_patch_full_cascade()` - End-to-end integration
-- `test_smart_patch_without_jsonb_ivm()` - Fallback behavior
+- `test_smart_patch_without_jsonb_delta()` - Fallback behavior
 - `bench_smart_patch_vs_full_replace()` - Performance measurement
 
 ---

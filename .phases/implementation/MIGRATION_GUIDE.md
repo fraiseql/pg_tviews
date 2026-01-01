@@ -582,7 +582,7 @@ When updating an original phase plan:
 | "Invalid SQL" | `TViewError::InvalidSelectStatement { sql, reason }` |
 | "Column missing" | `TViewError::RequiredColumnMissing { column_name, context }` |
 | "Type inference failed" | `TViewError::TypeInferenceFailed { column_name, reason }` |
-| "jsonb_ivm not installed" | `TViewError::JsonbIvmNotInstalled` |
+| "jsonb_delta not installed" | `TViewError::JsonbIvmNotInstalled` |
 | "Too deep" | `TViewError::DependencyDepthExceeded { depth, max_depth }` |
 | "Lock timeout" | `TViewError::LockTimeout { resource, timeout_ms }` |
 | "Refresh failed" | `TViewError::RefreshFailed { entity, pk_value, reason }` |

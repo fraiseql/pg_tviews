@@ -525,7 +525,7 @@ cargo pgrx install --release
 psql -c "CREATE EXTENSION pg_tviews;"
 ```
 
-**Q: Do I need to install jsonb_ivm?**
+**Q: Do I need to install jsonb_delta?**
 
 A: It's optional but recommended. Without it, pg_tviews uses native PostgreSQL JSONB operations (slightly slower). With it, you get 1.5-3× performance improvement.
 

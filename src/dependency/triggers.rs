@@ -75,7 +75,7 @@ pub fn remove_triggers(
 }
 
 fn create_trigger_handler() -> TViewResult<()> {
-    // Note: jsonb_ivm dependency was removed - we don't use it anymore
+    // Note: jsonb_delta dependency was removed - we don't use it anymore
     // Triggers are installed directly without needing external extensions
 
     let handler_sql = r"

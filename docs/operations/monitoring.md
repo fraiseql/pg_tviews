@@ -38,15 +38,15 @@ BEGIN
         'pg_tviews extension loaded'::text,
         jsonb_build_object('version', ext_version);
 
-    -- Check jsonb_ivm availability
-    SELECT pg_tviews_check_jsonb_ivm() INTO ivm_available;
+    -- Check jsonb_delta availability
+    SELECT pg_tviews_check_jsonb_delta() INTO ivm_available;
 
     RETURN QUERY SELECT
-        'jsonb_ivm'::text,
+        'jsonb_delta'::text,
         CASE WHEN ivm_available THEN 'OK' ELSE 'WARNING' END,
         CASE WHEN ivm_available
-             THEN 'jsonb_ivm extension available'
-             ELSE 'jsonb_ivm extension not available - reduced performance'
+             THEN 'jsonb_delta extension available'
+             ELSE 'jsonb_delta extension not available - reduced performance'
         END,
         jsonb_build_object('available', ivm_available);
 

@@ -37,12 +37,12 @@ SELECT pg_tviews_create('tv_posts', 'SELECT ...');
 - **Option B**: One is deprecated, mark accordingly
 - **Option C**: One is internal, hide from users
 
-### Issue #2: jsonb_ivm Dependency Status Unclear (HIGH)
+### Issue #2: jsonb_delta Dependency Status Unclear (HIGH)
 
-**Description**: Documentation doesn't clearly state if jsonb_ivm is required or optional.
+**Description**: Documentation doesn't clearly state if jsonb_delta is required or optional.
 
 **Evidence**:
-- Code has feature detection: `check_jsonb_ivm_available()`
+- Code has feature detection: `check_jsonb_delta_available()`
 - Performance warning when not installed
 - Some docs imply it's required for basic functionality
 
@@ -52,12 +52,12 @@ SELECT pg_tviews_create('tv_posts', 'SELECT ...');
 - No performance comparison quantified
 
 **Impact**:
-- Users may avoid pg_tviews thinking jsonb_ivm is required
+- Users may avoid pg_tviews thinking jsonb_delta is required
 - Unclear performance expectations
 - Installation decisions made without data
 
 **Investigation Needed**:
-1. Test performance with/without jsonb_ivm
+1. Test performance with/without jsonb_delta
 2. Quantify performance impact
 3. Determine if it's truly optional
 
@@ -204,7 +204,7 @@ SELECT pg_tviews_create('tv_posts', 'SELECT ...');
 | Issue | Priority | Effort | Impact | Timeline |
 |-------|----------|--------|--------|----------|
 | DDL Syntax | Critical | High | High | Immediate |
-| jsonb_ivm Status | High | Medium | High | Week 1 |
+| jsonb_delta Status | High | Medium | High | Week 1 |
 | Error Reference | High | High | High | Week 1-2 |
 | SQL Functions | Medium | Medium | Medium | Week 2 |
 | Version Status | Medium | Low | Medium | Week 1 |
@@ -244,7 +244,7 @@ SELECT * FROM tv_test1;
 SELECT * FROM tv_test2;
 ```
 
-### jsonb_ivm Performance Testing (A3)
+### jsonb_delta Performance Testing (A3)
 
 **Benchmark Plan**:
 ```sql
@@ -252,15 +252,15 @@ SELECT * FROM tv_test2;
 CREATE TABLE tb_perf (pk_perf BIGSERIAL PRIMARY KEY, id UUID DEFAULT gen_random_uuid(), data JSONB);
 INSERT INTO tb_perf (data) SELECT jsonb_build_object('field_' || i, 'value_' || i) FROM generate_series(1,10000) i;
 
--- Test without jsonb_ivm
-DROP EXTENSION IF EXISTS jsonb_ivm;
+-- Test without jsonb_delta
+DROP EXTENSION IF EXISTS jsonb_delta;
 CREATE TABLE tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
 
 -- Measure update performance
 EXPLAIN ANALYZE UPDATE tb_perf SET data = jsonb_set(data, '{field_1}', '"new_value"') WHERE pk_perf = 1;
 
--- Install jsonb_ivm and retest
-CREATE EXTENSION jsonb_ivm;
+-- Install jsonb_delta and retest
+CREATE EXTENSION jsonb_delta;
 DROP TABLE tv_perf;
 CREATE TABLE tv_perf AS SELECT pk_perf, id, data FROM tb_perf;
 
@@ -281,7 +281,7 @@ EXPLAIN ANALYZE UPDATE tb_perf SET data = jsonb_set(data, '{field_1}', '"new_val
 ### Files to Update
 - `docs/reference/api.md` - Add missing SQL functions
 - `docs/reference/ddl.md` - Resolve syntax confusion
-- `README.md` - Clarify jsonb_ivm status, fix version messaging
+- `README.md` - Clarify jsonb_delta status, fix version messaging
 - `docs/getting-started/installation.md` - Update dependency guidance
 
 ---

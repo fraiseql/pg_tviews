@@ -40,7 +40,7 @@ This guide explains how to run the pg_tviews benchmark suite to validate functio
 ### Extension Dependencies
 
 - **pg_tviews**: Core extension (built from source) - **Required for approaches 1 & 2**
-- **jsonb_ivm**: Optional performance extension (built from source) - **Required for approach 1**
+- **jsonb_delta**: Optional performance extension (built from source) - **Required for approach 1**
 - **pg_ivm**: Alternative incremental view extension (optional)
 
 ### Check Your PostgreSQL Version
@@ -54,7 +54,7 @@ psql --version
 
 | Approach | Extensions Required | Performance | Setup Difficulty |
 |----------|-------------------|-------------|------------------|
-| **1: pg_tviews + jsonb_ivm** | pg_tviews + jsonb_ivm | Maximum (1.0x) | Hard (system install) |
+| **1: pg_tviews + jsonb_delta** | pg_tviews + jsonb_delta | Maximum (1.0x) | Hard (system install) |
 | **2: pg_tviews + native PG** | pg_tviews only | 98% of maximum | Hard (system install) |
 | **3: Manual functions** | None | 95% of maximum | Medium (manual setup) |
 | **4: Full refresh** | None | 0.01-0.02% of max | Easy (built-in PG) |
@@ -73,12 +73,12 @@ psql --version
   ```
   /path/to/code/
     ├── pg_tviews/
-    └── jsonb_ivm/    # Clone from https://github.com/fraiseql/jsonb_ivm
+    └── jsonb_delta/    # Clone from https://github.com/fraiseql/jsonb_delta
   ```
 
 ```bash
 # 1. Build benchmark container with extensions
-# Note: Build context is parent directory (must contain both pg_tviews and jsonb_ivm)
+# Note: Build context is parent directory (must contain both pg_tviews and jsonb_delta)
 cd /path/to/pg_tviews
 docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
 
@@ -288,7 +288,7 @@ cd /path/to/pg_tviews/docker
 docker-compose up -d --build
 ```
 
-**Note**: The build context is the parent directory, which must contain both `pg_tviews/` and `jsonb_ivm/` projects side-by-side.
+**Note**: The build context is the parent directory, which must contain both `pg_tviews/` and `jsonb_delta/` projects side-by-side.
 
 #### Run Container
 
@@ -561,7 +561,7 @@ Expected performance (will vary based on hardware):
 - ✅ `docker build` completes without errors
 - ✅ Container starts: `docker ps` shows running container
 - ✅ PostgreSQL accessible: `docker exec pg_tviews_benchmark psql -U postgres -c "SELECT 1;"`
-- ✅ Extensions loaded: `SELECT * FROM pg_extension;` shows pg_tviews and jsonb_ivm
+- ✅ Extensions loaded: `SELECT * FROM pg_extension;` shows pg_tviews and jsonb_delta
 
 #### Manual Setup Success (Approaches 3 & 4)
 - ✅ Database created: `psql -l` shows pg_tviews_benchmark
@@ -808,11 +808,11 @@ psql -d postgres -c "SELECT * FROM pg_available_extensions WHERE name = 'pg_tvie
 cargo clean && cargo pgrx install --release
 ```
 
-#### jsonb_ivm not found
+#### jsonb_delta not found
 ```bash
 # Benchmarks will automatically use stubs
 # Check if stubs are loaded
-psql -d pg_tviews_benchmark -c "SELECT jsonb_ivm_available();"
+psql -d pg_tviews_benchmark -c "SELECT jsonb_delta_available();"
 # Should return true
 ```
 

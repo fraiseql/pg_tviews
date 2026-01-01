@@ -32,7 +32,7 @@ SELECT * FROM pg_tviews_cache_stats;
 | Symptom | Likely Cause | Quick Fix |
 |---------|-------------|-----------|
 | TVIEW not refreshing | Missing triggers | `SELECT pg_tviews_install_stmt_triggers();` |
-| Slow performance | No jsonb_ivm | `CREATE EXTENSION jsonb_ivm;` |
+| Slow performance | No jsonb_delta | `CREATE EXTENSION jsonb_delta;` |
 | Queue buildup | Long transactions | Check `pg_stat_activity` |
 | Permission errors | Missing grants | Grant permissions on TVIEW tables |
 | Memory errors | Large datasets | Increase `work_mem` |
@@ -81,8 +81,8 @@ Start: Slow TVIEW operations
     ↓
 Check cache hit rates
 SELECT * FROM pg_tviews_cache_stats;
-    ├─ Low hit rates → Check jsonb_ivm: SELECT pg_tviews_check_jsonb_ivm();
-    │   ├─ FALSE → CREATE EXTENSION jsonb_ivm;
+    ├─ Low hit rates → Check jsonb_delta: SELECT pg_tviews_check_jsonb_delta();
+    │   ├─ FALSE → CREATE EXTENSION jsonb_delta;
     │   └─ TRUE → Continue
     └─ Good hit rates → Continue
         ↓
@@ -301,8 +301,8 @@ FROM stuck_items;
 
 **Common Solutions**:
 ```sql
--- Install jsonb_ivm for better performance
-CREATE EXTENSION jsonb_ivm;
+-- Install jsonb_delta for better performance
+CREATE EXTENSION jsonb_delta;
 
 -- Add indexes on JSONB fields
 CREATE INDEX idx_tv_post_title ON tv_post ((data->>'title'));

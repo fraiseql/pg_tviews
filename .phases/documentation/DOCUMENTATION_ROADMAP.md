@@ -37,7 +37,7 @@ This roadmap tracks the documentation work required to move from beta to product
 
 **Functions to Document**:
 1. pg_tviews_version()
-2. pg_tviews_check_jsonb_ivm()
+2. pg_tviews_check_jsonb_delta()
 3. pg_tviews_queue_stats()
 4. pg_tviews_debug_queue()
 5. pg_tviews_analyze_select()

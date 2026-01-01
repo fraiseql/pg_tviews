@@ -1,6 +1,6 @@
-# Migrating to jsonb_ivm v2 Integration
+# Migrating to jsonb_delta v2 Integration
 
-This guide helps you upgrade to pg_tviews with enhanced jsonb_ivm integration.
+This guide helps you upgrade to pg_tviews with enhanced jsonb_delta integration.
 
 ## What's New
 
@@ -19,11 +19,11 @@ This guide helps you upgrade to pg_tviews with enhanced jsonb_ivm integration.
 
 ## Migration Steps
 
-### Step 1: Update jsonb_ivm
+### Step 1: Update jsonb_delta
 
 ```bash
-# Ensure jsonb_ivm >= 0.2.0
-cd ../jsonb_ivm
+# Ensure jsonb_delta >= 0.2.0
+cd ../jsonb_delta
 cargo pgrx install --release
 ```
 
@@ -43,7 +43,7 @@ ALTER EXTENSION pg_tviews UPDATE;
 ### Step 4: Verify Installation
 
 ```sql
-SELECT * FROM pg_extension WHERE extname IN ('jsonb_ivm', 'pg_tviews');
+SELECT * FROM pg_extension WHERE extname IN ('jsonb_delta', 'pg_tviews');
 ```
 
 ## No Breaking Changes
@@ -70,7 +70,7 @@ SELECT pg_tviews_health_check();
 
 ```sql
 -- Verify new functions available
-SELECT pg_tviews_check_jsonb_ivm();
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Test performance improvements
 -- (Run your existing benchmarks)
@@ -82,7 +82,7 @@ If issues occur after migration:
 
 ```sql
 -- Downgrade pg_tviews (if needed)
--- Note: jsonb_ivm can remain at new version
+-- Note: jsonb_delta can remain at new version
 ALTER EXTENSION pg_tviews UPDATE TO '0.1.0';
 ```
 
@@ -120,8 +120,8 @@ CREATE EXTENSION pg_tviews;
 
 **Check**:
 ```sql
--- Verify jsonb_ivm is active
-SELECT pg_tviews_check_jsonb_ivm();
+-- Verify jsonb_delta is active
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Check for fallback warnings in logs
 -- Look for "Using fallback implementation" messages
@@ -139,4 +139,4 @@ For migration issues:
 1. Check logs for fallback warnings
 2. Run health checks: `SELECT * FROM pg_tviews_health_check()`
 3. Verify extension versions
-4. Test with jsonb_ivm disabled to isolate issues
+4. Test with jsonb_delta disabled to isolate issues

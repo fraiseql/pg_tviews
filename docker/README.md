@@ -6,7 +6,7 @@ This directory contains Docker configuration for running pg_tviews benchmarks in
 
 ```
 /home/lionel/code/
-├── jsonb_ivm/          ← Dependency (JSONB IVM extension)
+├── jsonb_delta/          ← Dependency (JSONB IVM extension)
 └── pg_tviews/          ← Main project
     └── docker/         ← Docker configuration (you are here)
         ├── docker-compose.yml
@@ -21,7 +21,7 @@ The Docker image (`pg_tviews_bench`) includes:
 
 1. **PostgreSQL 18** - Latest version
 2. **pg_tviews extension** - Built from source (this project)
-3. **jsonb_ivm extension** - Built from source (sibling project)
+3. **jsonb_delta extension** - Built from source (sibling project)
 4. **Rust toolchain** - For building extensions
 5. **cargo-pgrx 0.16.1** - PostgreSQL extension framework
 6. **Benchmark scripts** - Copied from `test/sql/comprehensive_benchmarks/`
@@ -152,7 +152,7 @@ lsof -i :5433
 ```bash
 # Verify extensions are installed
 docker exec pg_tviews_bench ls -la /usr/share/postgresql/18/extension/pg_tviews*
-docker exec pg_tviews_bench ls -la /usr/share/postgresql/18/extension/jsonb_ivm*
+docker exec pg_tviews_bench ls -la /usr/share/postgresql/18/extension/jsonb_delta*
 
 # Check extension in database
 docker exec pg_tviews_bench psql -U postgres -d pg_tviews_benchmark -c "\dx"
@@ -175,7 +175,7 @@ docker logs pg_tviews_bench 2>&1 | grep -i error
 
 ### Rebuilding After Code Changes
 
-When you modify pg_tviews or jsonb_ivm source code:
+When you modify pg_tviews or jsonb_delta source code:
 
 ```bash
 cd docker
@@ -218,7 +218,7 @@ EOF
 ```
 /build/
 ├── pg_tviews/          ← Source code (built here)
-└── jsonb_ivm/          ← Source code (built here)
+└── jsonb_delta/          ← Source code (built here)
 
 /benchmarks/            ← Benchmark scripts (runtime)
 ├── 00_setup.sql
@@ -231,12 +231,12 @@ EOF
 /usr/share/postgresql/18/extension/
 ├── pg_tviews.control
 ├── pg_tviews--0.1.0.sql
-├── jsonb_ivm.control
-└── jsonb_ivm--0.1.0.sql
+├── jsonb_delta.control
+└── jsonb_delta--0.1.0.sql
 
 /usr/lib/postgresql/18/lib/
 ├── pg_tviews.so
-└── jsonb_ivm.so
+└── jsonb_delta.so
 ```
 
 ## Performance Tuning
@@ -278,11 +278,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Also checkout jsonb_ivm sibling
-      - name: Checkout jsonb_ivm
+      # Also checkout jsonb_delta sibling
+      - name: Checkout jsonb_delta
         run: |
           cd ..
-          git clone https://github.com/your-org/jsonb_ivm.git
+          git clone https://github.com/your-org/jsonb_delta.git
 
       - name: Build benchmark environment
         run: |

@@ -39,10 +39,10 @@ BEGIN
     RAISE NOTICE '';
 
     -- =========================================================================
-    -- APPROACH 1: pg_tviews + jsonb_ivm (incremental with smart patching)
+    -- APPROACH 1: pg_tviews + jsonb_delta (incremental with smart patching)
     -- =========================================================================
 
-    RAISE NOTICE '[1] Approach 1: pg_tviews + jsonb_ivm';
+    RAISE NOTICE '[1] Approach 1: pg_tviews + jsonb_delta';
 
     v_start := clock_timestamp();
 
@@ -69,7 +69,7 @@ BEGIN
         'ecommerce',
         'category_cascade',
         'small',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_affected_count,
         2,  -- cascade depth: category → products
         v_duration_ms,
@@ -209,11 +209,11 @@ BEGIN
     RAISE NOTICE '';
 
     -- =========================================================================
-    -- APPROACH 1: pg_tviews + jsonb_ivm
+    -- APPROACH 1: pg_tviews + jsonb_delta
     -- =========================================================================
 
     SAVEPOINT sp1;
-    RAISE NOTICE '[1] Approach 1: pg_tviews + jsonb_ivm';
+    RAISE NOTICE '[1] Approach 1: pg_tviews + jsonb_delta';
 
     v_start := clock_timestamp();
 
@@ -243,7 +243,7 @@ BEGIN
         'ecommerce',
         'supplier_cascade',
         'small',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_affected_count,
         2,
         v_duration_ms,

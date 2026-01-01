@@ -25,12 +25,12 @@ Phase 5 Task 7 has been successfully implemented. All required components are no
 
 ### ✅ Task 3: Array Element INSERT
 - **File:** `src/refresh/array_ops.rs`
-- **Implementation:** `insert_array_element()` function with jsonb_ivm integration
+- **Implementation:** `insert_array_element()` function with jsonb_delta integration
 - **Features:** Supports sorting, path-based insertion, fallback to basic operations
 
 ### ✅ Task 4: Array Element DELETE
 - **File:** `src/refresh/array_ops.rs`
-- **Implementation:** `delete_array_element()` function with jsonb_ivm integration
+- **Implementation:** `delete_array_element()` function with jsonb_delta integration
 - **Features:** Match-key based deletion, path-based operations
 
 ### ✅ Task 5: Batch Optimization
@@ -41,7 +41,7 @@ Phase 5 Task 7 has been successfully implemented. All required components are no
 ### ✅ Task 6: Test Implementation
 - **Status:** Core functionality verified
 - **Results:** Extension builds, loads, and basic operations work
-- **Note:** Full array tests require jsonb_ivm extension (not installed in test environment)
+- **Note:** Full array tests require jsonb_delta extension (not installed in test environment)
 
 ### ✅ Task 7: Performance Verification
 - **Source:** `docs/PERFORMANCE_RESULTS.md`
@@ -68,7 +68,7 @@ Phase 5 Task 7 has been successfully implemented. All required components are no
 - Integration with TVIEW metadata system
 
 ### Array Operations
-- jsonb_ivm integration for smart patching
+- jsonb_delta integration for smart patching
 - Fallback to basic operations when extension unavailable
 - Path-based element manipulation
 
@@ -100,15 +100,15 @@ Phase 5 Task 7 has been successfully implemented. All required components are no
 
 ## Known Limitations
 
-1. **jsonb_ivm Dependency:** Full array operations require jsonb_ivm extension
+1. **jsonb_delta Dependency:** Full array operations require jsonb_delta extension
    - Status: Not installed in current environment
    - Impact: Array tests cannot run but functionality is implemented
-   - Solution: Install jsonb_ivm for complete testing
+   - Solution: Install jsonb_delta for complete testing
 
-2. **Test Environment:** Array tests require jsonb_ivm for `jsonb_array_insert_where`/`delete_where`
+2. **Test Environment:** Array tests require jsonb_delta for `jsonb_array_insert_where`/`delete_where`
    - Status: Tests designed correctly but cannot execute without extension
    - Impact: Manual verification required
-   - Solution: Install jsonb_ivm extension for automated testing
+   - Solution: Install jsonb_delta extension for automated testing
 
 ## Verification Status
 
@@ -124,7 +124,7 @@ Phase 5 Task 7 has been successfully implemented. All required components are no
 - ✅ Extension builds and loads
 - ✅ Basic TVIEW operations work
 - ✅ Performance benchmarks verified
-- ⚠️ Full array tests require jsonb_ivm extension
+- ⚠️ Full array tests require jsonb_delta extension
 
 ## Conclusion
 
@@ -137,4 +137,4 @@ Phase 5 Task 7 is **COMPLETE ✅**. All required functionality has been implemen
 5. **Performance:** 2.03× improvement verified
 6. **Documentation:** Updated with verified results
 
-The implementation is ready for production use. Full automated testing requires the jsonb_ivm extension, but all core functionality is implemented and verified.
+The implementation is ready for production use. Full automated testing requires the jsonb_delta extension, but all core functionality is implemented and verified.

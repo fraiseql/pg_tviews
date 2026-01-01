@@ -1,8 +1,8 @@
-# What the Benchmarks Tell Us About jsonb_ivm
+# What the Benchmarks Tell Us About jsonb_delta
 
 ## Current Test Configuration
 
-The benchmarks were run with **PL/pgSQL stub functions**, NOT the real `jsonb_ivm` C extension.
+The benchmarks were run with **PL/pgSQL stub functions**, NOT the real `jsonb_delta` C extension.
 
 ### What the Stubs Do
 
@@ -36,9 +36,9 @@ The benchmarks **definitively prove** that incremental updates work:
 2. **Scaling Validation**: Incremental time stays constant while full refresh scales linearly
 3. **Architecture Validation**: The pg_tviews pattern enables real-time materialized views
 
-### ⚠️ Not Validated: jsonb_ivm Performance Advantage
+### ⚠️ Not Validated: jsonb_delta Performance Advantage
 
-The benchmarks do **NOT** prove that `jsonb_ivm` is faster than native PostgreSQL because:
+The benchmarks do **NOT** prove that `jsonb_delta` is faster than native PostgreSQL because:
 
 1. **Stubs use native functions**: Just wrapping `jsonb_set()` in PL/pgSQL
 2. **Comparison is fair**: Both approaches use similar native JSONB operations
@@ -64,13 +64,13 @@ Looking at the results:
 - Both use `jsonb_set()` under the hood
 - Approach 2 is direct call (no function overhead)
 - Approach 1 has PL/pgSQL function call overhead
-- Real C-based `jsonb_ivm` would eliminate this overhead
+- Real C-based `jsonb_delta` would eliminate this overhead
 
-## What Real jsonb_ivm Would Provide
+## What Real jsonb_delta Would Provide
 
 ### Expected Performance Improvements
 
-Real `jsonb_ivm` C extension would likely provide:
+Real `jsonb_delta` C extension would likely provide:
 
 1. **Faster execution**: 20-50% faster than stubs (C vs PL/pgSQL)
 2. **Better memory**: No intermediate PL/pgSQL variables
@@ -97,19 +97,19 @@ Real `jsonb_ivm` C extension would likely provide:
 
 ### What We Didn't Prove ⚠️
 
-1. That `jsonb_ivm` C extension is faster than native `jsonb_set()`
+1. That `jsonb_delta` C extension is faster than native `jsonb_set()`
 2. Specific performance characteristics of the real extension
 3. Memory or CPU advantages of C implementation
 
 ## Recommendations
 
-### To Properly Validate jsonb_ivm Extension
+### To Properly Validate jsonb_delta Extension
 
 1. **Install real extension**:
    ```bash
-   cd jsonb_ivm
+   cd jsonb_delta
    make && sudo make install
-   CREATE EXTENSION jsonb_ivm;
+   CREATE EXTENSION jsonb_delta;
    ```
 
 2. **Re-run benchmarks** with real extension
@@ -122,7 +122,7 @@ Real `jsonb_ivm` C extension would likely provide:
 ### Expected Outcome
 
 Real extension benchmarks would show:
-- **Approach 1 (real jsonb_ivm)**: Fastest, 20-50% better than stubs
+- **Approach 1 (real jsonb_delta)**: Fastest, 20-50% better than stubs
 - **Approach 2 (manual)**: Baseline, same as now
 - **Approach 3 (full)**: Same as now (unchanged)
 
@@ -142,13 +142,13 @@ Even **without** the real extension:
 - ✅ Real-world performance is acceptable even with stubs
 
 **The benchmarks do NOT validate:**
-- ❌ jsonb_ivm C extension performance claims
+- ❌ jsonb_delta C extension performance claims
 - ❌ Specific advantages of C implementation
 
 **Bottom line:**
 - The **concept** is proven with conservative baseline
 - The **architecture** works at scale
-- Real `jsonb_ivm` extension would be "nice to have" optimization (20-50% faster)
+- Real `jsonb_delta` extension would be "nice to have" optimization (20-50% faster)
 - But the **real win** is incremental vs full refresh (88-2,853× improvement)
 
 **The benchmarks prove pg_tviews is production-ready even without the real extension!** 🎉

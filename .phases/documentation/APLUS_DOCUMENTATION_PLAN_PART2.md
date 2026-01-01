@@ -24,7 +24,7 @@
   ```bash
   cargo pgrx install --release --pg-version
   ```
-- [ ] jsonb_ivm extension installed (optional but recommended)
+- [ ] jsonb_delta extension installed (optional but recommended)
 - [ ] Sufficient disk space (estimate 2× data size)
 - [ ] Memory allocation adequate (check work_mem, shared_buffers)
 - [ ] Connection pooler configured (PgBouncer/pgpool-II)
@@ -325,8 +325,8 @@ CREATE INDEX idx_tv_post_id ON tv_post(id);
 SELECT MAX(depth) FROM pg_tviews_queue_realtime;
 -- Should be <5
 
--- 4. Verify jsonb_ivm installed
-SELECT pg_tviews_check_jsonb_ivm();
+-- 4. Verify jsonb_delta installed
+SELECT pg_tviews_check_jsonb_delta();
 ```
 
 ---
@@ -1065,7 +1065,7 @@ Is query slow?
       │     ├─ Large queue?
       │     │  └─ Enable statement triggers
       │     └─ Large JSONB?
-      │        └─ Install jsonb_ivm
+      │        └─ Install jsonb_delta
       └─ NO
          └─ Performance OK ✓
 ```

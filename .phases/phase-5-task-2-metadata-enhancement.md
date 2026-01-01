@@ -1,8 +1,8 @@
-# Phase 5 Task 2: Metadata Enhancement for jsonb_ivm
+# Phase 5 Task 2: Metadata Enhancement for jsonb_delta
 
 **Status:** Ready to implement
 **Duration:** 1-2 days
-**Parent:** Phase 5 - jsonb_ivm Integration
+**Parent:** Phase 5 - jsonb_delta Integration
 **TDD Phase:** RED → GREEN → REFACTOR
 
 ---
@@ -197,7 +197,7 @@ use pgrx::pg_sys::Oid;
 use pgrx::IntoDatum;
 use serde::{Deserialize, Serialize};
 
-/// Type of dependency relationship for jsonb_ivm optimization
+/// Type of dependency relationship for jsonb_delta optimization
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DependencyType {
     /// Direct column from base table (no nested JSONB)
@@ -247,7 +247,7 @@ pub struct TviewMeta {
     pub fk_columns: Vec<String>,
     pub uuid_fk_columns: Vec<String>,
 
-    // NEW: jsonb_ivm optimization metadata
+    // NEW: jsonb_delta optimization metadata
     pub dependency_types: Vec<DependencyType>,
     pub dependency_paths: Vec<Option<Vec<String>>>,  // NULL or array of path parts
     pub array_match_keys: Vec<Option<String>>,       // NULL or match key name
@@ -553,7 +553,7 @@ pub struct TviewMeta {
     /// or Array (jsonb_agg aggregation).
     ///
     /// Length matches `fk_columns` and `dependencies` arrays.
-    /// Used by jsonb_ivm to choose patch function (scalar/nested/array).
+    /// Used by jsonb_delta to choose patch function (scalar/nested/array).
     pub dependency_types: Vec<DependencyType>,
 
     /// JSONB path for each dependency, if nested.
@@ -655,7 +655,7 @@ After Task 2 complete → **Task 3: Dependency Type Detection**
 - ❌ Modify SQL schema (columns already exist!)
 - ❌ Break existing Phase 4 functionality
 - ❌ Add detection logic yet (that's Task 3)
-- ❌ Add jsonb_ivm function calls yet (that's Task 4)
+- ❌ Add jsonb_delta function calls yet (that's Task 4)
 - ❌ Change default values in database (use Rust defaults for empty fields)
 
 ---

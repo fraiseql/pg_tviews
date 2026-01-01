@@ -22,7 +22,7 @@ Generated: 2025-12-13
 
 ### Small Scale (1K products, 5K reviews)
 
-| Operation | Traditional MV | pg_tviews + jsonb_ivm | Improvement |
+| Operation | Traditional MV | pg_tviews + jsonb_delta | Improvement |
 |-----------|----------------|----------------------|-------------|
 | Single product update | 75.826ms | 1.539ms | 49× |
 | Category cascade (100 products) | 50.214ms | 6.840ms | 7× |
@@ -30,7 +30,7 @@ Generated: 2025-12-13
 
 ### Medium Scale (100K products, 500K reviews)
 
-| Operation | Traditional MV | pg_tviews + jsonb_ivm | Improvement |
+| Operation | Traditional MV | pg_tviews + jsonb_delta | Improvement |
 |-----------|----------------|----------------------|-------------|
 | Single product update | 4,169.995ms | 2.105ms | 1,979× |
 | Category cascade (1K products) | 4,040.112ms | 45.901ms | 88× |
@@ -60,7 +60,7 @@ Generated: 2025-12-13
 4. **Bulk Operations**: Multiple product updates in single transaction
 
 ### Approaches Compared
-1. **pg_tviews + jsonb_ivm**: Automatic triggers with optimized JSONB patching
+1. **pg_tviews + jsonb_delta**: Automatic triggers with optimized JSONB patching
 2. **Manual Function**: Explicit refresh with unlimited cascade support
 3. **Full Refresh**: Traditional `REFRESH MATERIALIZED VIEW`
 

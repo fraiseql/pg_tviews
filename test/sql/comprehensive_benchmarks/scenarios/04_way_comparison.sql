@@ -4,7 +4,7 @@
 --
 -- Compares 4 different approaches for maintaining denormalized product views:
 --
--- 1. pg_tviews + jsonb_ivm   (Transactional views with JSONB IVM)
+-- 1. pg_tviews + jsonb_delta   (Transactional views with JSONB IVM)
 -- 2. pg_tviews + native      (Transactional views with native PostgreSQL)
 -- 3. Manual functions        (Hand-written trigger functions)
 -- 4. Full refresh baseline   (Traditional REFRESH MATERIALIZED VIEW)
@@ -89,12 +89,12 @@ BEGIN
 END $$;
 
 -- ========================================
--- SCENARIO 1: pg_tviews + jsonb_ivm
+-- SCENARIO 1: pg_tviews + jsonb_delta
 -- ========================================
 
 \echo ''
 \echo '----------------------------------------'
-\echo 'SCENARIO 1: pg_tviews + jsonb_ivm'
+\echo 'SCENARIO 1: pg_tviews + jsonb_delta'
 \echo '----------------------------------------'
 
 -- Clean schema
@@ -105,7 +105,7 @@ SET search_path TO bench_tviews_jsonb, public;
 -- Source tables
 \i ../schemas/01_ecommerce_schema.sql
 
--- Create materialized view using jsonb_ivm
+-- Create materialized view using jsonb_delta
 CREATE MATERIALIZED VIEW mv_product_catalog AS
 SELECT
     p.pk_product,
@@ -162,10 +162,10 @@ LEFT JOIN (
 LEFT JOIN tb_inventory i ON p.pk_product = i.fk_product
 WHERE p.status = 'active';
 
--- Enable pg_tviews with jsonb_ivm
-SELECT pg_tviews.enable_tview('mv_product_catalog', jsonb_ivm := true);
+-- Enable pg_tviews with jsonb_delta
+SELECT pg_tviews.enable_tview('mv_product_catalog', jsonb_delta := true);
 
--- Benchmark: Initial data load with tviews+jsonb_ivm
+-- Benchmark: Initial data load with tviews+jsonb_delta
 \echo '  Loading initial data...'
 
 DO $$
@@ -242,7 +242,7 @@ BEGIN
         'ecommerce',
         'initial_load',
         :'current_scale',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_config.num_products,
         v_duration_ms,
         'Full data load with automatic view maintenance'
@@ -279,7 +279,7 @@ BEGIN
         'ecommerce',
         'incremental_update',
         :'current_scale',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_rows,
         v_duration_ms,
         '10% price reduction (0.9x multiplier)'
@@ -322,7 +322,7 @@ BEGIN
         'ecommerce',
         'incremental_insert',
         :'current_scale',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_rows,
         v_duration_ms,
         'Adding 100 new products'
@@ -358,7 +358,7 @@ BEGIN
         'ecommerce',
         'query_read',
         :'current_scale',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_count,
         v_duration_ms,
         'SELECT COUNT(*) from materialized view'
@@ -443,8 +443,8 @@ LEFT JOIN (
 LEFT JOIN tb_inventory i ON p.pk_product = i.fk_product
 WHERE p.status = 'active';
 
--- Enable pg_tviews WITHOUT jsonb_ivm
-SELECT pg_tviews.enable_tview('mv_product_catalog', jsonb_ivm := false);
+-- Enable pg_tviews WITHOUT jsonb_delta
+SELECT pg_tviews.enable_tview('mv_product_catalog', jsonb_delta := false);
 
 -- Benchmark: Initial data load with tviews+native
 \echo '  Loading initial data...'
@@ -1303,13 +1303,13 @@ WHERE r.operation_type != 'full_refresh'
 ORDER BY r.test_name, r.execution_time_ms;
 
 \echo ''
-\echo '--- Head-to-Head: pg_tviews+jsonb_ivm vs pg_tviews+native ---'
+\echo '--- Head-to-Head: pg_tviews+jsonb_delta vs pg_tviews+native ---'
 \echo ''
 
 WITH jsonb AS (
     SELECT test_name, execution_time_ms AS jsonb_ms
     FROM benchmark_results
-    WHERE operation_type = 'tviews_jsonb_ivm'
+    WHERE operation_type = 'tviews_jsonb_delta'
         AND scenario = 'ecommerce'
         AND data_scale = :'current_scale'
 ),
@@ -1322,10 +1322,10 @@ native AS (
 )
 SELECT
     j.test_name AS operation,
-    ROUND(j.jsonb_ms, 2) AS jsonb_ivm_ms,
+    ROUND(j.jsonb_ms, 2) AS jsonb_delta_ms,
     ROUND(n.native_ms, 2) AS native_pg_ms,
     CASE
-        WHEN j.jsonb_ms < n.native_ms THEN 'jsonb_ivm ' || ROUND(n.native_ms / j.jsonb_ms, 2) || 'x faster'
+        WHEN j.jsonb_ms < n.native_ms THEN 'jsonb_delta ' || ROUND(n.native_ms / j.jsonb_ms, 2) || 'x faster'
         WHEN n.native_ms < j.jsonb_ms THEN 'native_pg ' || ROUND(j.jsonb_ms / n.native_ms, 2) || 'x faster'
         ELSE 'tie'
     END AS winner,

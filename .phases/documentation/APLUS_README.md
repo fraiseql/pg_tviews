@@ -33,7 +33,7 @@ This is a **comprehensive plan to achieve A+ documentation quality** for pg_tvie
 
 - **Phase A**: Foundation & Consistency (16-24h)
   - Fix DDL syntax confusion (CREATE TVIEW vs pg_tviews_create)
-  - Clarify jsonb_ivm dependency (required or optional?)
+  - Clarify jsonb_delta dependency (required or optional?)
   - Establish documentation standards
 
 - **Phase B**: Comprehensive Reference (32-48h)
@@ -115,7 +115,7 @@ v1.0.0: Phases D & E (2 weeks) - Full A+ quality
 These 6 tasks are **MUST-HAVE** before v1.0.0:
 
 1. ✅ **A2**: Resolve CREATE TVIEW syntax confusion
-2. ✅ **A3**: Clarify jsonb_ivm dependency story
+2. ✅ **A3**: Clarify jsonb_delta dependency story
 3. ✅ **B1**: Complete API reference (all 12 functions)
 4. ✅ **B4**: Complete error reference (all 14 types)
 5. ✅ **C1**: Migration guide from traditional MVs
@@ -133,7 +133,7 @@ Everything else enhances quality but isn't blocking.
 - DDL syntax inconsistency (CREATE TVIEW vs function)
 - Missing migration guide
 - Missing disaster recovery
-- jsonb_ivm dependency confusion
+- jsonb_delta dependency confusion
 - No production deployment checklist
 - Security model undocumented
 
@@ -211,7 +211,7 @@ Everything else enhances quality but isn't blocking.
 |------|-------|--------|
 | A1: Documentation audit | 4h | Feature-to-doc mapping matrix |
 | A2: Fix DDL syntax confusion | 6h | Consistent CREATE TVIEW docs |
-| A3: Clarify jsonb_ivm | 4h | Dependency decision guide |
+| A3: Clarify jsonb_delta | 4h | Dependency decision guide |
 | A4: Version consistency | 2h | Roadmap to 1.0.0 |
 | A5: Documentation standards | 4h | Style guide + templates |
 

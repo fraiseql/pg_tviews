@@ -1,5 +1,5 @@
--- Test jsonb_ivm performance impact
--- Compare TVIEW update performance with and without jsonb_ivm
+-- Test jsonb_delta performance impact
+-- Compare TVIEW update performance with and without jsonb_delta
 
 -- Clean up
 DROP TABLE IF EXISTS tb_perf_test CASCADE;
@@ -35,9 +35,9 @@ SELECT
 FROM tb_perf_test
 ');
 
--- Check current jsonb_ivm status
-SELECT 'Current jsonb_ivm status:' as status;
-SELECT pg_tviews_check_jsonb_ivm();
+-- Check current jsonb_delta status
+SELECT 'Current jsonb_delta status:' as status;
+SELECT pg_tviews_check_jsonb_delta();
 
 -- Test update performance (measure time for 100 updates)
 SELECT 'Testing update performance...' as test;
@@ -55,7 +55,7 @@ BEGIN
     FOR i IN 1..iterations LOOP
         start_time := clock_timestamp();
         
-        -- Update a nested field (this should benefit from jsonb_ivm)
+        -- Update a nested field (this should benefit from jsonb_delta)
         UPDATE tb_perf_test 
         SET data = jsonb_set(data, '{field2,nested1}', '"updated_' || i || '"')
         WHERE pk_perf_test = i;
@@ -65,7 +65,7 @@ BEGIN
     END LOOP;
     
     RETURN QUERY SELECT 
-        'jsonb_ivm_' || CASE WHEN pg_tviews_check_jsonb_ivm() THEN 'enabled' ELSE 'disabled' END,
+        'jsonb_delta_' || CASE WHEN pg_tviews_check_jsonb_delta() THEN 'enabled' ELSE 'disabled' END,
         total_time / iterations,
         total_time;
 END;

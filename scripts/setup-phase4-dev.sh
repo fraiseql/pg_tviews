@@ -73,12 +73,12 @@ else
 fi
 echo ""
 
-echo -e "${YELLOW}Step 7: Checking for jsonb_ivm extension${NC}"
-echo -e "${YELLOW}Note: jsonb_ivm is a dependency for Phase 4${NC}"
+echo -e "${YELLOW}Step 7: Checking for jsonb_delta extension${NC}"
+echo -e "${YELLOW}Note: jsonb_delta is a dependency for Phase 4${NC}"
 echo ""
-echo "To install jsonb_ivm:"
-echo "  1. git clone https://github.com/fraiseql/jsonb_ivm.git"
-echo "  2. cd jsonb_ivm"
+echo "To install jsonb_delta:"
+echo "  1. git clone https://github.com/fraiseql/jsonb_delta.git"
+echo "  2. cd jsonb_delta"
 echo "  3. cargo pgrx install --release"
 echo ""
 
@@ -95,7 +95,7 @@ Environment checks passed:
 - pg_tviews builds: OK
 
 Next steps:
-1. Install jsonb_ivm extension (if not already installed)
+1. Install jsonb_delta extension (if not already installed)
 2. Review test files in test/sql/40-44
 3. Run: cargo pgrx test
 4. Start implementing Phase 4 tasks

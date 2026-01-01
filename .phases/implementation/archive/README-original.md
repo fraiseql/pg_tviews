@@ -144,20 +144,20 @@ Phase N: [Name]
 
 **File:** `phase-4-refresh-and-cascade.md`
 
-**Objective:** Core refresh and cascade logic with jsonb_ivm integration.
+**Objective:** Core refresh and cascade logic with jsonb_delta integration.
 
 **Key Deliverables:**
 - Row-level refresh (SELECT FROM v_*, UPDATE tv_*)
-- jsonb_ivm integration (jsonb_smart_patch_scalar, jsonb_smart_patch_nested)
+- jsonb_delta integration (jsonb_smart_patch_scalar, jsonb_smart_patch_nested)
 - FK lineage propagation
 - Cascade to dependent TVIEWs
 
 **Critical Tests:**
 1. Single row refresh (no cascade)
-2. jsonb_ivm integration (surgical updates)
+2. jsonb_delta integration (surgical updates)
 3. FK lineage cascade (multi-row)
 
-**Dependencies:** Phase 0-3 complete + jsonb_ivm extension installed
+**Dependencies:** Phase 0-3 complete + jsonb_delta extension installed
 
 **Architecture Decision:** Surgical JSONB updates for 2-3× performance improvement.
 
@@ -310,7 +310,7 @@ psql -d test_db -f test/sql/00_extension_loading.sql
 
 | Extension | Version | Purpose | Installation |
 |-----------|---------|---------|--------------|
-| **jsonb_ivm** | v0.3.0+ | Surgical JSONB updates | `CREATE EXTENSION jsonb_ivm` |
+| **jsonb_delta** | v0.3.0+ | Surgical JSONB updates | `CREATE EXTENSION jsonb_delta` |
 | **PostgreSQL** | 15-17 | Target database | Standard installation |
 
 ### Rust Crates
@@ -371,7 +371,7 @@ pub fn create_tview(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 - [ ] Dependency detection (transitive)
 - [ ] Trigger installation (all base tables)
 - [ ] Row-level refresh
-- [ ] jsonb_ivm integration
+- [ ] jsonb_delta integration
 - [ ] FK lineage cascade
 - [ ] Array column support
 - [ ] Batch optimization
@@ -389,7 +389,7 @@ pub fn create_tview(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 - [ ] Single row refresh < 5ms
 - [ ] 100-row cascade < 500ms
-- [ ] jsonb_ivm 2-3× faster vs native SQL
+- [ ] jsonb_delta 2-3× faster vs native SQL
 - [ ] Batch updates 4× faster (100+ rows)
 - [ ] Storage 88% smaller vs naive approach
 
@@ -405,7 +405,7 @@ pub fn create_tview(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 2. **Performance Targets**
    - **Risk:** May not achieve 2-3× improvement
-   - **Mitigation:** jsonb_ivm validated separately, benchmarks in each phase
+   - **Mitigation:** jsonb_delta validated separately, benchmarks in each phase
 
 3. **PostgreSQL Version Compatibility**
    - **Risk:** pgrx abstractions may differ across PG versions
@@ -474,7 +474,7 @@ pub fn create_tview(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 - **PRD v2.0:** `/home/lionel/code/pg_tviews/PRD_v2.md`
 - **PRD Addendum:** `/home/lionel/code/pg_tviews/PRD_ADDENDUM.md`
 - **Helper Optimization:** `/home/lionel/code/pg_tviews/HELPER_VIEW_OPTIMIZATION.md`
-- **jsonb_ivm:** `https://github.com/fraiseql/jsonb_ivm`
+- **jsonb_delta:** `https://github.com/fraiseql/jsonb_delta`
 - **pgrx:** `https://github.com/pgcentralfoundation/pgrx`
 
 ---

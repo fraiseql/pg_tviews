@@ -632,17 +632,17 @@ pub fn remove_triggers(
 }
 
 fn create_trigger_handler() -> TViewResult<()> {
-    // Check if extension jsonb_ivm is installed
-    let has_jsonb_ivm = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_ivm'"
+    // Check if extension jsonb_delta is installed
+    let has_jsonb_delta = Spi::get_one::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'"
     )
     .map_err(|e| TViewError::CatalogError {
-        operation: "Check jsonb_ivm extension".to_string(),
+        operation: "Check jsonb_delta extension".to_string(),
         pg_error: format!("{:?}", e),
     })?
     .unwrap_or(false);
 
-    if !has_jsonb_ivm {
+    if !has_jsonb_delta {
         return Err(TViewError::JsonbIvmNotInstalled);
     }
 
@@ -721,7 +721,7 @@ fn trigger_exists(table_name: &str, trigger_name: &str) -> TViewResult<bool> {
 - [x] Metadata includes dependencies array
 - [x] Helper metadata tracks used_by relationships
 - [x] DROP TABLE removes all triggers
-- [x] **NEW:** Check jsonb_ivm extension installed
+- [x] **NEW:** Check jsonb_delta extension installed
 
 ### Quality Requirements
 
@@ -769,7 +769,7 @@ touch src/dependency/triggers.rs
 1. Write test for trigger creation
 2. Implement install_triggers()
 3. Create trigger handler function
-4. **ADD** jsonb_ivm extension check
+4. **ADD** jsonb_delta extension check
 5. Test trigger fires
 6. Implement remove_triggers()
 
@@ -826,7 +826,7 @@ Once Phase 3 complete:
 - **Phase 4:** Refresh Logic & Cascade Propagation (CORRECTED)
 - Use dependency metadata for cascade
 - Implement row-level refresh
-- Integrate jsonb_ivm
+- Integrate jsonb_delta
 
 ---
 
@@ -866,7 +866,7 @@ SET pg_tviews.max_dependency_depth = 20;
 
 ### Added
 - Comprehensive error handling with TViewError
-- Validation that jsonb_ivm extension is installed
+- Validation that jsonb_delta extension is installed
 - Stress test for 100+ dependencies
 - Memory management for large dependency graphs
 

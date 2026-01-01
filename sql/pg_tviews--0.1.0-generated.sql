@@ -179,11 +179,11 @@ AS 'MODULE_PATHNAME', 'pg_tviews_cascade_wrapper';
 
 /* <begin connected objects> */
 -- src/lib.rs:129
--- pg_tviews::pg_tviews_check_jsonb_ivm
-CREATE  FUNCTION "pg_tviews_check_jsonb_ivm"() RETURNS bool /* bool */
+-- pg_tviews::pg_tviews_check_jsonb_delta
+CREATE  FUNCTION "pg_tviews_check_jsonb_delta"() RETURNS bool /* bool */
 STRICT
 LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_ivm_wrapper';
+AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_delta_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */

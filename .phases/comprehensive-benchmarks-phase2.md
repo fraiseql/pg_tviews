@@ -14,7 +14,7 @@ Create production-ready benchmarks that:
 - ✅ Three-way comparison framework created
 - ✅ Small scale (1K) benchmarks working
 - ✅ Trinity pattern schema implemented
-- ⚠️ Using jsonb_ivm **stubs** (not real extension)
+- ⚠️ Using jsonb_delta **stubs** (not real extension)
 - ⚠️ Only testing single row updates
 - ⚠️ Missing cascade scenarios (1→many)
 - ⚠️ Missing medium/large scale tests
@@ -35,8 +35,8 @@ Create production-ready benchmarks that:
 - `test/sql/comprehensive_benchmarks/scenarios/01_ecommerce_benchmarks_large.sql` (NEW)
 
 ### pg_ivm Integration
-- `test/sql/jsonb_ivm_stubs.sql` → Check if real pg_ivm available
-- `test/sql/comprehensive_benchmarks/00_setup.sql` → Try CREATE EXTENSION jsonb_ivm
+- `test/sql/jsonb_delta_stubs.sql` → Check if real pg_ivm available
+- `test/sql/comprehensive_benchmarks/00_setup.sql` → Try CREATE EXTENSION jsonb_delta
 
 ## Implementation Steps
 
@@ -48,10 +48,10 @@ Create production-ready benchmarks that:
 DO $$
 BEGIN
     -- Try to create extension
-    CREATE EXTENSION IF NOT EXISTS jsonb_ivm;
-    RAISE NOTICE 'Using REAL jsonb_ivm extension';
+    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+    RAISE NOTICE 'Using REAL jsonb_delta extension';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'jsonb_ivm not available, loading stubs';
+    RAISE NOTICE 'jsonb_delta not available, loading stubs';
     -- Load stubs if extension not found
 END $$;
 ```
@@ -125,7 +125,7 @@ BEGIN
 
     RAISE NOTICE 'Testing cascade: 1 category → % products', v_affected_products;
 
-    -- Approach 1: pg_tviews + jsonb_ivm
+    -- Approach 1: pg_tviews + jsonb_delta
     -- Time category update + all cascaded product updates
 
     -- Approach 2: Manual + native PG
@@ -350,7 +350,7 @@ BEGIN
 
     RAISE NOTICE 'Testing cascade: 1 category → % products', v_affected_count;
 
-    -- Approach 1: pg_tviews + jsonb_ivm
+    -- Approach 1: pg_tviews + jsonb_delta
     v_start := clock_timestamp();
 
     UPDATE tb_category
@@ -373,14 +373,14 @@ BEGIN
         'ecommerce',
         'category_cascade',
         'medium',
-        'tviews_jsonb_ivm',
+        'tviews_jsonb_delta',
         v_affected_count,
         2,  -- cascade depth
         v_duration_ms,
         format('1 category → %s products cascade', v_affected_count)
     );
 
-    RAISE NOTICE '[1] pg_tviews + jsonb_ivm: %.3f ms (%.3f ms/product)',
+    RAISE NOTICE '[1] pg_tviews + jsonb_delta: %.3f ms (%.3f ms/product)',
         v_duration_ms, v_duration_ms / v_affected_count;
 
     ROLLBACK;
@@ -417,7 +417,7 @@ END $$;
 
 ```bash
 # 1. Check pg_ivm availability
-psql -d pg_tviews_benchmark -c "SELECT * FROM pg_extension WHERE extname = 'jsonb_ivm';"
+psql -d pg_tviews_benchmark -c "SELECT * FROM pg_extension WHERE extname = 'jsonb_delta';"
 
 # 2. Verify medium scale data
 psql -d pg_tviews_benchmark -c "

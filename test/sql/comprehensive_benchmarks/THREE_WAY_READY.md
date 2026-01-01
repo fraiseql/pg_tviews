@@ -6,7 +6,7 @@
 
 The benchmark suite now tests **three approaches** instead of two:
 
-1. **pg_tviews + jsonb_ivm** (Approach 1)
+1. **pg_tviews + jsonb_delta** (Approach 1)
    - Surgical JSONB patching with `jsonb_smart_patch_nested()`
    - Fastest performance
    - Automatic dependency tracking
@@ -64,7 +64,7 @@ The benchmark suite now tests **three approaches** instead of two:
 ```
 Test 1: Single Product Price Update
 -----------------------------------
-[1] pg_tviews + jsonb_ivm: 1.5 ms
+[1] pg_tviews + jsonb_delta: 1.5 ms
 [2] Manual + native PG: 3.0 ms        ← 2× slower than [1]
 [3] Full Refresh: 150.0 ms            ← 100× slower than [1]
 
@@ -79,7 +79,7 @@ Performance Ratios:
 ```
 Test 1: Single Product Price Update
 -----------------------------------
-[1] pg_tviews + jsonb_ivm: 3 ms
+[1] pg_tviews + jsonb_delta: 3 ms
 [2] Manual + native PG: 6 ms          ← 2× slower than [1]
 [3] Full Refresh: 5000 ms             ← 1667× slower than [1]
 
@@ -212,7 +212,7 @@ The benchmark suite now provides a **complete performance picture**:
 
 ✅ **Baseline**: Full refresh (what most people use)
 ✅ **DIY Alternative**: Manual incremental (what you could build)
-✅ **Optimized Solution**: pg_tviews + jsonb_ivm (what you get)
+✅ **Optimized Solution**: pg_tviews + jsonb_delta (what you get)
 
 This three-way comparison:
 - Validates pg_tviews' value proposition

@@ -122,7 +122,7 @@ comment = 'Incremental JSONB view maintenance for PostgreSQL'
 default_version = '0.1.0'
 module_pathname = '$libdir/pg_tviews'
 relocatable = false
-requires = 'jsonb_ivm'
+requires = 'jsonb_delta'
 ```
 
 **Verify GREEN:**

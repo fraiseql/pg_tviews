@@ -20,7 +20,7 @@ Phase 1: Schema Inference
 Phase 2: DDL & Tables
 Phase 3: Dependency & Triggers
 Phase 4: Refresh & Cascade ✅ COMPLETE
-Phase 5: jsonb_ivm Integration ⏳ IN PROGRESS
+Phase 5: jsonb_delta Integration ⏳ IN PROGRESS
   ├─ Task 1: Dependency Setup ✅ Ready to implement
   ├─ Task 2: Metadata Enhancement (coming next)
   ├─ Task 3: Dependency Detection
@@ -106,12 +106,12 @@ opencode run .phases/phase-5-task-1-dependency-setup.md
 
 ```bash
 # Phase completion
-git commit -m "feat(phase5): complete Task 1 - jsonb_ivm dependency setup [Phase 5 Task 1]"
+git commit -m "feat(phase5): complete Task 1 - jsonb_delta dependency setup [Phase 5 Task 1]"
 
 # Individual steps
-git commit -m "test(phase5): add RED tests for jsonb_ivm detection [Phase 5 Task 1 RED]"
-git commit -m "feat(phase5): implement jsonb_ivm runtime check [Phase 5 Task 1 GREEN]"
-git commit -m "refactor(phase5): cache jsonb_ivm detection result [Phase 5 Task 1 REFACTOR]"
+git commit -m "test(phase5): add RED tests for jsonb_delta detection [Phase 5 Task 1 RED]"
+git commit -m "feat(phase5): implement jsonb_delta runtime check [Phase 5 Task 1 GREEN]"
+git commit -m "refactor(phase5): cache jsonb_delta detection result [Phase 5 Task 1 REFACTOR]"
 ```
 
 ## Phase Plan Template

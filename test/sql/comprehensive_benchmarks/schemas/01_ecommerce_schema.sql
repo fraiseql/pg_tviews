@@ -248,7 +248,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON TABLE tv_product IS 'Approach 1: pg_tviews with jsonb_ivm optimization';
+COMMENT ON TABLE tv_product IS 'Approach 1: pg_tviews with jsonb_delta optimization';
 COMMENT ON TABLE manual_product IS 'Approach 2: Manual incremental updates with native PostgreSQL';
 COMMENT ON TABLE manual_func_product IS 'Approach 3: Generic refresh function with unlimited cascade support';
 COMMENT ON MATERIALIZED VIEW mv_product IS 'Approach 4: Traditional full REFRESH MATERIALIZED VIEW';

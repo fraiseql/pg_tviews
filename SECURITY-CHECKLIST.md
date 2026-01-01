@@ -15,7 +15,7 @@
 - [ ] SQL injection tests for each function
 - [ ] Malformed input tests
 - [ ] Boundary value tests (empty, max length, special chars)
-- [ ] Fallback tests (without jsonb_ivm)
+- [ ] Fallback tests (without jsonb_delta)
 - [ ] Integration tests with malicious metadata
 - [ ] DoS tests (large inputs, deep recursion)
 

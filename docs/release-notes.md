@@ -17,7 +17,7 @@ pg_tviews provides automatic incremental maintenance of materialized views conta
 - **Dependency Tracking**: Intelligent dependency graph construction and management
 - **Incremental Refresh**: Row-level updates instead of full view rebuilds
 - **Array Support**: Full support for array operations with automatic type inference
-- **Smart Patching**: 2.03× performance improvement with jsonb_ivm integration
+- **Smart Patching**: 2.03× performance improvement with jsonb_delta integration
 
 ### ⚡ Performance Optimizations (Phases 6-9)
 - **Statement-Level Triggers**: 100-500× reduction in trigger overhead
@@ -68,15 +68,15 @@ cargo pgrx install --release
 psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 ```
 
-### Optional: jsonb_ivm (Recommended)
-For optimal performance, install the jsonb_ivm extension first:
+### Optional: jsonb_delta (Recommended)
+For optimal performance, install the jsonb_delta extension first:
 ```bash
-git clone https://github.com/fraiseql/jsonb_ivm.git
-cd jsonb_ivm
+git clone https://github.com/fraiseql/jsonb_delta.git
+cd jsonb_delta
 cargo pgrx install --release
 
 # Enable both extensions (order matters)
-psql -d your_database -c "CREATE EXTENSION jsonb_ivm;"
+psql -d your_database -c "CREATE EXTENSION jsonb_delta;"
 psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 ```
 
@@ -124,7 +124,7 @@ psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 
 - Some complex SQL constructs not yet supported
 - View definitions must be parseable by the inference engine
-- Best performance requires optional jsonb_ivm extension
+- Best performance requires optional jsonb_delta extension
 - Beta software - thorough testing recommended before production use
 
 ## Breaking Changes
@@ -177,7 +177,7 @@ MIT License - see LICENSE file for details.
 ## Acknowledgments
 
 - Built with [pgrx](https://github.com/pgcentralfoundation/pgrx) framework
-- Optional [jsonb_ivm](https://github.com/fraiseql/jsonb_ivm) integration
+- Optional [jsonb_delta](https://github.com/fraiseql/jsonb_delta) integration
 - Inspired by PostgreSQL's materialized view system
 
 ---

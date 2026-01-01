@@ -23,7 +23,7 @@ Complete benchmark for product catalog with:
 
 ### 3. **Test Coverage - Three-Way Comparison**
 Each scenario tests **three approaches**:
-- ✅ **Approach 1**: pg_tviews + jsonb_ivm (automatic surgical JSONB patching)
+- ✅ **Approach 1**: pg_tviews + jsonb_delta (automatic surgical JSONB patching)
 - ✅ **Approach 2**: pg_tviews + native PG (automatic `jsonb_set` updates)
 - ✅ **Approach 3**: Manual function refresh (explicit calls with unlimited cascades)
 - ✅ **Approach 4**: Traditional full `REFRESH MATERIALIZED VIEW`
@@ -52,7 +52,7 @@ cargo pgrx install --release
 ```
 /path/to/code/
   ├── pg_tviews/
-  └── jsonb_ivm/    # Clone from https://github.com/fraiseql/jsonb_ivm
+  └── jsonb_delta/    # Clone from https://github.com/fraiseql/jsonb_delta
 ```
 
 ```bash
@@ -195,7 +195,7 @@ Based on architecture:
 | Bulk 100 | 100K | 20-40ms | 30-60ms | 40-80ms | 2500-10000ms | 100-400× |
 
 **Key Insights**:
-- **Approach 1 vs 2**: 1.5-2× faster (jsonb_ivm optimization)
+- **Approach 1 vs 2**: 1.5-2× faster (jsonb_delta optimization)
 - **Approach 2 vs 3**: 1.3-1.8× faster (automatic vs manual triggers)
 - **Approach 3 vs 4**: 25-5000× faster (incremental vs full refresh)
 - **Approach 1 vs 4**: 50-10000× faster (best vs worst)
@@ -310,7 +310,7 @@ E-Commerce Benchmarks - small scale
 
 Test 1: Single Product Price Update
 -----------------------------------
-NOTICE:  [1] pg_tviews + jsonb_ivm: 0.8 ms
+NOTICE:  [1] pg_tviews + jsonb_delta: 0.8 ms
 NOTICE:  [2] pg_tviews + native PG: 1.2 ms
 NOTICE:  [3] Manual function: 2.3 ms
 NOTICE:  [4] Full Refresh: 76.7 ms (scanned 1000 rows)
@@ -319,7 +319,7 @@ Improvement: 96× to 32× faster
 
 Test 2: Bulk Price Update - 100 products
 -----------------------------------------
-NOTICE:  [1] pg_tviews + jsonb_ivm (100 rows): 8.5 ms (0.085 ms/row)
+NOTICE:  [1] pg_tviews + jsonb_delta (100 rows): 8.5 ms (0.085 ms/row)
 NOTICE:  [2] pg_tviews + native PG (100 rows): 12.1 ms (0.121 ms/row)
 NOTICE:  [3] Manual function cascade (100 rows): 6.7 ms
 NOTICE:  [4] Full Refresh: 76.1 ms (scanned 1000 rows)

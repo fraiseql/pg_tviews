@@ -56,17 +56,17 @@ CREATE EXTENSION pg_tviews;
 -- Verify installation
 SELECT pg_tviews_version();
 
--- Check jsonb_ivm status (optional performance enhancement)
-SELECT pg_tviews_check_jsonb_ivm();
+-- Check jsonb_delta status (optional performance enhancement)
+SELECT pg_tviews_check_jsonb_delta();
 ```
 
-## Optional: Install jsonb_ivm for Better Performance
+## Optional: Install jsonb_delta for Better Performance
 
-pg_tviews works without any additional extensions, but installing `jsonb_ivm` provides **1.5-3× faster** JSONB updates:
+pg_tviews works without any additional extensions, but installing `jsonb_delta` provides **1.5-3× faster** JSONB updates:
 
 ### Performance Impact
 
-| Operation | Without jsonb_ivm | With jsonb_ivm | Improvement |
+| Operation | Without jsonb_delta | With jsonb_delta | Improvement |
 |-----------|-------------------|----------------|-------------|
 | JSONB field updates | Full document replacement | Surgical patching | 1.5-3× faster |
 | Memory usage | Higher | Lower | 30-50% reduction |
@@ -75,14 +75,14 @@ pg_tviews works without any additional extensions, but installing `jsonb_ivm` pr
 ### Installation
 
 ```sql
--- Install jsonb_ivm extension
-CREATE EXTENSION jsonb_ivm;
+-- Install jsonb_delta extension
+CREATE EXTENSION jsonb_delta;
 
 -- Verify pg_tviews detects it
-SELECT pg_tviews_check_jsonb_ivm();  -- Should return true
+SELECT pg_tviews_check_jsonb_delta();  -- Should return true
 ```
 
-### When You Need jsonb_ivm
+### When You Need jsonb_delta
 
 **Required for**:
 - High-frequency JSONB updates (>100 ops/sec)
@@ -94,7 +94,7 @@ SELECT pg_tviews_check_jsonb_ivm();  -- Should return true
 - Small JSONB objects (<20 fields)
 - Infrequent updates (<10 ops/sec)
 
-### Without jsonb_ivm
+### Without jsonb_delta
 
 pg_tviews still works perfectly - it just uses PostgreSQL's standard `jsonb_set()` function for updates, which replaces the entire JSONB document. This is slower but functionally identical.
 
