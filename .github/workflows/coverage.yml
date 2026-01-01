@@ -58,7 +58,7 @@ jobs:
         echo "- Clippy strict linting (passes all pedantic checks)" >> coverage-report.md
 
     - name: Upload test report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: coverage-report
         path: coverage-report.md
