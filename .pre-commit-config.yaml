@@ -6,4 +6,4 @@ repos:
         entry: cargo clippy --lib -- -D warnings
         language: system
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]
