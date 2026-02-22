@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.3-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:
@@ -338,52 +338,52 @@ SELECT * FROM pg_tviews_queue_realtime;
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    PostgreSQL Core                              │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐   │
-│  │  tb_* Tables │────▶│   Triggers   │────▶│ Refresh Queue│   │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
+│  │  tb_* Tables │────▶│   Triggers   │────▶│ Refresh Queue│    │
 │  │  (command)   │     │  (per-row or │     │ (thread-local)│   │
-│  └──────────────┘     │  statement)  │     └──────┬────────┘   │
-│                       └──────────────┘            │            │
-│                       ┌──────────────┐            │            │
-│                       │  ProcessUtil │            │            │
-│                       │  Hook (DDL)  │            │            │
-│                       └──────────────┘            │            │
-│                                                  │            │
-│                       ┌──────────────────────────▼──────────┐  │
-│                       │    Transaction Callback Handler     │  │
-│                       │  (PRE_COMMIT, COMMIT, ABORT, 2PC)   │  │
-│                       └──────────┬───────────────────────────┘  │
-│                                  │                              │
-│                                  ▼                              │
-│               ┌──────────────────────────────────────────┐     │
-│               │      pg_tviews Refresh Engine          │     │
-│               │                                          │     │
-│               │  ┌────────────────────────────────────┐ │     │
-│               │  │  Dependency Graph Resolution      │ │     │
-│               │  │  (Topological Sort, Cycle Detect) │ │     │
-│               │  └───────────┬────────────────────────┘ │     │
-│               │              │                          │     │
-│               │              ▼                          │     │
-│               │  ┌────────────────────────────────────┐ │     │
-│               │  │   Bulk Refresh Processor          │ │     │
-│               │  │   (2 queries for N rows)          │ │     │
-│               │  └───────────┬────────────────────────┘ │     │
-│               │              │                          │     │
-│               │              ▼                          │     │
-│               │  ┌────────────────────────────────────┐ │     │
-│               │  │  Cache Layer (Graph, Table, Plan) │ │     │
-│               │  └───────────┬────────────────────────┘ │     │
-│               │              │                          │     │
-│               │              ▼                          │     │
-│               │  ┌────────────────────────────────────┐ │     │
-│               │  │    Metrics & Monitoring            │ │     │
-│               │  └────────────────────────────────────┘ │     │
-│               └──────────────────────────────────────────┘     │
-│                                  │                              │
-│                                  ▼                              │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐   │
-│  │  TVIEW Tables│◀────│  Backing     │◀────│   Metadata   │   │
-│  │  (tv_*)      │     │  Views (v_*) │     │  (pg_tview_*)│   │
-│  └──────────────┘     └──────────────┘     └──────────────┘   │
+│  └──────────────┘     │  statement)  │     └──────┬────────┘    │
+│                       └──────────────┘            │             │
+│                       ┌──────────────┐            │             │
+│                       │  ProcessUtil │            │             │
+│                       │  Hook (DDL)  │            │             │
+│                       └──────────────┘            │             │
+│                                                   │             │
+│                       ┌───────────────────────────▼──────────┐  │
+│                       │    Transaction Callback Handler      │  │
+│                       │  (PRE_COMMIT, COMMIT, ABORT, 2PC)    │  │
+│                       └──────────┬────────────────────────────┘  │
+│                                  │                               │
+│                                  ▼                               │
+│               ┌──────────────────────────────────────────┐      │
+│               │      pg_tviews Refresh Engine            │      │
+│               │                                           │      │
+│               │  ┌─────────────────────────────────────┐ │      │
+│               │  │  Dependency Graph Resolution        │ │      │
+│               │  │  (Topological Sort, Cycle Detect)   │ │      │
+│               │  └───────────┬──────────────────────────┘ │      │
+│               │              │                            │      │
+│               │              ▼                            │      │
+│               │  ┌─────────────────────────────────────┐ │      │
+│               │  │   Bulk Refresh Processor            │ │      │
+│               │  │   (2 queries for N rows)            │ │      │
+│               │  └───────────┬──────────────────────────┘ │      │
+│               │              │                            │      │
+│               │              ▼                            │      │
+│               │  ┌─────────────────────────────────────┐ │      │
+│               │  │  Cache Layer (Graph, Table, Plan)   │ │      │
+│               │  └───────────┬──────────────────────────┘ │      │
+│               │              │                            │      │
+│               │              ▼                            │      │
+│               │  ┌─────────────────────────────────────┐ │      │
+│               │  │    Metrics & Monitoring              │ │      │
+│               │  └─────────────────────────────────────┘ │      │
+│               └──────────────────────────────────────────┘      │
+│                                  │                               │
+│                                  ▼                               │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
+│  │  TVIEW Tables│◀────│  Backing     │◀────│   Metadata   │    │
+│  │  (tv_*)      │     │  Views (v_*) │     │  (pg_tview_*)│    │
+│  └──────────────┘     └──────────────┘     └──────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

@@ -103,9 +103,8 @@ impl TviewMeta {
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
-                // dependency_paths (TEXT[][]) - array of arrays
-                // TODO: pgrx doesn't support TEXT[][] extraction yet
-                // For now, use empty default (Task 3 will populate these)
+                // dependency_paths (TEXT[][]) - pgrx does not yet support TEXT[][] extraction,
+                // so paths are stored as a flat TEXT[] in from_spi_row via load_for_tview.
                 let dep_paths: Vec<Option<Vec<String>>> = vec![];
 
                 // array_match_keys (TEXT[]) with NULL values
@@ -165,9 +164,8 @@ impl TviewMeta {
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
-                // dependency_paths (TEXT[][]) - array of arrays
-                // TODO: pgrx doesn't support TEXT[][] extraction yet
-                // For now, use empty default (Task 3 will populate these)
+                // dependency_paths (TEXT[][]) - pgrx does not yet support TEXT[][] extraction,
+                // so paths are stored as a flat TEXT[] in from_spi_row via load_for_tview.
                 let dep_paths: Vec<Option<Vec<String>>> = vec![];
 
                 // array_match_keys (TEXT[]) with NULL values
@@ -410,14 +408,12 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     table_name.strip_prefix("tb_").map_or(Ok(None), |entity| Ok(Some(entity.to_string())))
 }
 
-// Phase 5 Task 2 RED: Tests for metadata enhancement
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_dependency_type_from_str() {
-        // Test will fail: DependencyType doesn't exist yet
         assert_eq!(DependencyType::from_str("scalar"), DependencyType::Scalar);
         assert_eq!(DependencyType::from_str("nested_object"), DependencyType::NestedObject);
         assert_eq!(DependencyType::from_str("array"), DependencyType::Array);
@@ -426,7 +422,6 @@ mod tests {
 
     #[test]
     fn test_dependency_type_to_str() {
-        // Test will fail: DependencyType doesn't exist yet
         assert_eq!(DependencyType::Scalar.as_str(), "scalar");
         assert_eq!(DependencyType::NestedObject.as_str(), "nested_object");
         assert_eq!(DependencyType::Array.as_str(), "array");
@@ -434,7 +429,6 @@ mod tests {
 
     #[test]
     fn test_tview_meta_has_new_fields() {
-        // Test will fail: TviewMeta doesn't have these fields yet
         let meta = TviewMeta {
             tview_oid: Oid::from(1234),
             view_oid: Oid::from(5678),

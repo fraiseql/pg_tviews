@@ -35,6 +35,13 @@ pub fn drop_tview(
         return Ok(());
     }
 
+    // Load metadata to get OIDs for schema-safe drops
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)
+        .map_err(|e| TViewError::SpiError {
+            query: "Load TviewMeta by entity".to_string(),
+            error: e.to_string(),
+        })?;
+
     // Step 2: Find and remove triggers from base tables
     match crate::dependency::find_base_tables(&view_name) {
         Ok(dep_graph) => {
@@ -49,11 +56,15 @@ pub fn drop_tview(
         }
     }
 
-    // Step 3: Drop the materialized table
-    drop_materialized_table(tview_name)?;
+    // Step 3: Drop the materialized table (schema-resolved via OID)
+    if let Some(ref m) = meta {
+        drop_by_oid(m.tview_oid, "TABLE")?;
+    }
 
-    // Step 4: Drop the backing view
-    drop_backing_view(&view_name)?;
+    // Step 4: Drop the backing view (schema-resolved via OID)
+    if let Some(ref m) = meta {
+        drop_by_oid(m.view_oid, "VIEW")?;
+    }
 
     // Step 5: Drop metadata record
     drop_metadata(entity_name)?;
@@ -71,6 +82,35 @@ pub fn drop_tview(
     Ok(())
 }
 
+/// Resolve a schema-qualified name from an object OID and drop it
+///
+/// Uses `pg_class JOIN pg_namespace` to find the object's schema at runtime,
+/// so drops work regardless of which schema the TVIEW was created in.
+fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
+    let qualified = Spi::get_one::<String>(&format!(
+        "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) \
+         FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.oid = {}",
+        oid.to_u32()
+    ))
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Resolve qualified name for OID {}", oid.to_u32()),
+        pg_error: e.to_string(),
+    })?;
+
+    if let Some(qname) = qualified {
+        let sql = format!("DROP {kind} IF EXISTS {qname}");
+        Spi::run(&sql).map_err(|e| TViewError::SpiError {
+            query: sql,
+            error: e.to_string(),
+        })?;
+        info!("Dropped {} {}", kind, qname);
+    }
+
+    Ok(())
+}
+
 /// Check if a TVIEW exists in metadata
 fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
     Spi::get_one::<bool>(&format!(
@@ -84,40 +124,10 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
     .map(|opt| opt.unwrap_or(false))
 }
 
-/// Drop the materialized table (tv_<entity>)
-fn drop_materialized_table(tview_name: &str) -> TViewResult<()> {
-    let drop_table_sql = format!(
-        "DROP TABLE IF EXISTS public.{tview_name}"
-    );
-
-    Spi::run(&drop_table_sql).map_err(|e| TViewError::SpiError {
-        query: drop_table_sql,
-        error: e.to_string(),
-    })?;
-
-    info!("Dropped materialized table: {}", tview_name);
-    Ok(())
-}
-
-/// Drop the backing view (v_<entity>)
-fn drop_backing_view(view_name: &str) -> TViewResult<()> {
-    let drop_view_sql = format!(
-        "DROP VIEW IF EXISTS public.{view_name}"
-    );
-
-    Spi::run(&drop_view_sql).map_err(|e| TViewError::SpiError {
-        query: drop_view_sql,
-        error: e.to_string(),
-    })?;
-
-    info!("Dropped backing view: {}", view_name);
-    Ok(())
-}
-
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     let delete_meta_sql = format!(
-        "DELETE FROM public.pg_tview_meta WHERE entity = '{}'",
+        "DELETE FROM pg_tview_meta WHERE entity = '{}'",
         entity_name.replace('\'', "''")
     );
 
@@ -130,12 +140,27 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(feature = "pg_test")]
+#[pg_schema]
 mod tests {
+    use pgrx::prelude::*;
 
-    #[test]
-    fn test_tview_exists_in_metadata_non_existent() {
-        // This test would require a database context
-        // For now, we just verify the function signature compiles
+    #[cfg(feature = "pg_test")]
+    use pgrx_tests::pg_test;
+
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_drop_tview_nonexistent_if_exists() {
+        // Dropping a non-existent TVIEW with IF EXISTS should not error
+        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', true)");
+        assert!(result.is_ok(), "IF EXISTS drop of non-existent TVIEW should succeed");
+    }
+
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_drop_tview_nonexistent_strict() {
+        // Dropping a non-existent TVIEW without IF EXISTS should error
+        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', false)");
+        assert!(result.is_err(), "Strict drop of non-existent TVIEW should fail");
     }
 }

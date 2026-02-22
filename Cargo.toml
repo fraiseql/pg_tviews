@@ -1,13 +1,13 @@
 [package]
 name = "pg_tviews"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 edition = "2021"
 authors = ["Lionel Hamayon <lionel.hamayon@evolution-digitale.fr>"]
 description = "Transactional materialized views with incremental refresh for PostgreSQL"
 license = "MIT"
-repository = "https://github.com/your-org/pg_tviews"
-homepage = "https://github.com/your-org/pg_tviews"
-documentation = "https://github.com/your-org/pg_tviews"
+repository = "https://github.com/fraiseql/pg_tviews"
+homepage = "https://github.com/fraiseql/pg_tviews"
+documentation = "https://github.com/fraiseql/pg_tviews"
 keywords = ["postgresql", "materialized-views", "incremental-refresh", "database", "pgrx"]
 categories = ["database"]
 
@@ -50,11 +50,7 @@ panic = "unwind"
  codegen-units = 1
 
  [lints.clippy]
- # Phase 10B: Enable pedantic lints gradually
- # For now, just ensure basic clippy compliance
  all = { level = "deny", priority = -1 }
- # pedantic = "warn"  # TODO: Enable after fixing warnings
- # nursery = "warn"   # TODO: Enable after fixing warnings
  # Disable specific lints that conflict with PostgreSQL FFI
  missing_errors_doc = "allow"  # FFI functions often can't document all Postgres errors
  module_name_repetitions = "allow"  # pg_tviews_ prefix is intentional

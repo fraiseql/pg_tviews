@@ -2,6 +2,22 @@ use pgrx::prelude::*;
 use crate::schema::{TViewSchema, inference::infer_schema, analyzer::analyze_dependencies};
 use crate::error::{TViewError, TViewResult};
 
+/// Resolve the target schema for creating TVIEW objects.
+///
+/// Uses `current_schema()` to respect the active `search_path`, matching
+/// standard PostgreSQL convention for unqualified DDL statements.
+fn current_schema() -> TViewResult<String> {
+    Spi::get_one::<String>("SELECT current_schema()")
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Get current schema".to_string(),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| TViewError::CatalogError {
+            operation: "Get current schema".to_string(),
+            pg_error: "current_schema() returned NULL (no schema in search_path?)".to_string(),
+        })
+}
+
 /// Create a TVIEW with atomic rollback on error
 ///
 /// This is the main entry point for CREATE TABLE tv_ AS SELECT .... `PostgreSQL`'s transaction
@@ -62,16 +78,20 @@ pub fn create_tview(
             reason: "Could not infer entity name from SELECT (missing pk_<entity> column?)".to_string(),
         })?;
 
+    // Resolve the target schema once, respecting the active search_path.
+    let schema_name = current_schema()?;
+    info!("Creating TVIEW objects in schema: {}", schema_name);
+
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{entity_name}");
-    create_backing_view(&view_name, &final_select_sql)?;
+    create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
     // Step 4: Create materialized table tv_<entity>
-    create_materialized_table(tview_name, &final_schema)?;
+    create_materialized_table(tview_name, &final_schema, &schema_name)?;
 
     // Step 5: Populate initial data
     info!("Step 5: Populating initial data");
-    populate_initial_data(tview_name, &view_name, &final_schema)?;
+    populate_initial_data(tview_name, &view_name, &final_schema, &schema_name)?;
     info!("Initial data populated");
 
     // Step 6: Find base table dependencies
@@ -88,6 +108,7 @@ pub fn create_tview(
         &final_select_sql,
         &final_schema,
         &dep_graph.base_tables,
+        &schema_name,
     )?;
     info!("Metadata registered");
 
@@ -130,9 +151,9 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 }
 
 /// Create the backing view that contains the user's SELECT definition
-fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
+fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> TViewResult<()> {
     let create_view_sql = format!(
-        "CREATE VIEW public.{view_name} AS {select_sql}"
+        "CREATE VIEW {schema_name}.{view_name} AS {select_sql}"
     );
 
     info!("Creating backing view with SQL: {}", create_view_sql);
@@ -141,8 +162,12 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
         error: e.to_string(),
     })?;
 
-    // Verify the view was created
-    let check_sql = format!("SELECT 1 FROM pg_class WHERE relname = '{view_name}' AND relkind = 'v'");
+    // Verify the view was created (schema-qualified to avoid false positives across schemas)
+    let check_sql = format!(
+        "SELECT 1 FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.relname = '{view_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'v'"
+    );
     let exists = Spi::get_one::<i32>(&check_sql).map_err(|e| TViewError::SpiError {
         query: check_sql,
         error: e.to_string(),
@@ -150,12 +175,12 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
 
     if !exists {
         return Err(TViewError::CatalogError {
-            operation: format!("Create view {view_name}"),
+            operation: format!("Create view {schema_name}.{view_name}"),
             pg_error: "View was not created".to_string(),
         });
     }
 
-    info!("Created backing view: {}", view_name);
+    info!("Created backing view: {}.{}", schema_name, view_name);
     Ok(())
 }
 
@@ -163,6 +188,7 @@ fn create_backing_view(view_name: &str, select_sql: &str) -> TViewResult<()> {
 fn create_materialized_table(
     tview_name: &str,
     schema: &TViewSchema,
+    schema_name: &str,
 ) -> TViewResult<()> {
     // Build column definitions based on inferred schema
     let mut columns = Vec::new();
@@ -209,7 +235,7 @@ fn create_materialized_table(
     let columns_sql = columns.join(",\n    ");
 
     let create_table_sql = format!(
-        "CREATE TABLE public.{tview_name} (\n    {columns_sql}\n)"
+        "CREATE TABLE {schema_name}.{tview_name} (\n    {columns_sql}\n)"
     );
 
     Spi::run(&create_table_sql).map_err(|e| TViewError::SpiError {
@@ -218,19 +244,19 @@ fn create_materialized_table(
     })?;
 
     // Create indexes for performance
-    create_tview_indexes(tview_name, schema)?;
+    create_tview_indexes(tview_name, schema, schema_name)?;
 
-    info!("Created materialized table: {}", tview_name);
+    info!("Created materialized table: {}.{}", schema_name, tview_name);
     Ok(())
 }
 
 /// Create indexes on the materialized table for optimal query performance
-fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<()> {
+fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &str) -> TViewResult<()> {
     // Index on ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
         let idx_name = format!("idx_{tview_name}_{id}");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON public.{tview_name} ({id})"
+            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({id})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -242,7 +268,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
     for uuid_fk in &schema.uuid_fk_columns {
         let idx_name = format!("idx_{tview_name}_{uuid_fk}");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON public.{tview_name} ({uuid_fk})"
+            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({uuid_fk})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -254,7 +280,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
     if let Some(data) = &schema.data_column {
         let idx_name = format!("idx_{tview_name}_{data}_gin");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON public.{tview_name} USING GIN ({data})"
+            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} USING GIN ({data})"
         );
         Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -266,7 +292,7 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema) -> TViewResult<(
 }
 
 /// Populate the materialized table with initial data from the backing view
-fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema) -> TViewResult<()> {
+fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema, schema_name: &str) -> TViewResult<()> {
     // Build column list from schema (excluding created_at/updated_at which have defaults)
     let mut select_columns = Vec::new();
     let mut insert_columns = Vec::new();
@@ -305,7 +331,8 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
     let select_column_list = select_columns.join(", ");
 
     let insert_sql = format!(
-        "INSERT INTO public.{tview_name} ({insert_column_list}) SELECT {select_column_list} FROM public.{view_name}"
+        "INSERT INTO {schema_name}.{tview_name} ({insert_column_list}) \
+         SELECT {select_column_list} FROM {schema_name}.{view_name}"
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
@@ -325,6 +352,7 @@ fn register_metadata(
     definition_sql: &str,
     schema: &TViewSchema,
     dependencies: &[pg_sys::Oid],
+    schema_name: &str,
 ) -> TViewResult<()> {
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
@@ -357,34 +385,39 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Get OIDs for the created objects
+    // Get OIDs for the created objects (schema-qualified to avoid false matches
+    // when identical names exist in multiple schemas)
     let view_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{view_name}' AND relkind = 'v'"
+        "SELECT c.oid FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.relname = '{view_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'v'"
     )).map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for view {view_name}"),
+        operation: format!("Get OID for view {schema_name}.{view_name}"),
         pg_error: e.to_string(),
     })?;
 
     let table_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{tview_name}' AND relkind = 'r'"
+        "SELECT c.oid FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.relname = '{tview_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'r'"
     )).map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for table {tview_name}"),
+        operation: format!("Get OID for table {schema_name}.{tview_name}"),
         pg_error: e.to_string(),
     })?;
 
     let view_oid = view_oid_result.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find view {view_name}"),
+        operation: format!("Find view {schema_name}.{view_name}"),
         pg_error: "View OID not found".to_string(),
     })?;
 
     let table_oid = table_oid_result.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find table {tview_name}"),
+        operation: format!("Find table {schema_name}.{tview_name}"),
         pg_error: "Table OID not found".to_string(),
     })?;
 
     // Insert metadata record
     let insert_meta_sql = format!(
-        "INSERT INTO public.pg_tview_meta (
+        "INSERT INTO pg_tview_meta (
             entity,
             view_oid,
             table_oid,
@@ -526,12 +559,77 @@ fn transform_raw_select_to_tview(
     Ok((transformed_select, schema))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "pg_test"))]
+#[pgrx::pg_schema]
 mod tests {
+    #[cfg(feature = "pg_test")]
+    use pgrx::prelude::*;
+    #[cfg(feature = "pg_test")]
+    use pgrx_tests::pg_test;
 
     #[test]
     fn test_tview_exists_non_existent() {
-        // This test would require a database context
-        // For now, we just verify the function signature compiles
+        // Compile-time check only — live DB tests use #[pg_test] below
+    }
+
+    /// TVIEW objects are created in the schema that is first in search_path,
+    /// not hardcoded to public.
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_create_tview_respects_search_path() {
+        Spi::run("CREATE SCHEMA tview_test_ns").unwrap();
+        Spi::run("SET search_path TO tview_test_ns, public").unwrap();
+        Spi::run("CREATE TABLE tb_item (pk_item BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_item VALUES (1, 'Widget')").unwrap();
+
+        Spi::run("SELECT pg_tviews_create('item', $$
+            SELECT pk_item, jsonb_build_object('name', name) AS data
+            FROM tb_item
+        $$)").unwrap();
+
+        // tv_item must be in the target schema
+        let in_target = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_item' AND n.nspname = 'tview_test_ns'"
+        ).unwrap().unwrap_or(false);
+        assert!(in_target, "tv_item should be in tview_test_ns, not public");
+
+        // tv_item must NOT leak into public
+        let in_public = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_item' AND n.nspname = 'public'"
+        ).unwrap().unwrap_or(false);
+        assert!(!in_public, "tv_item must not be created in public schema");
+
+        // The backing view v_item must be in the same schema
+        let view_in_target = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'v_item' AND n.nspname = 'tview_test_ns'"
+        ).unwrap().unwrap_or(false);
+        assert!(view_in_target, "v_item should be in tview_test_ns");
+    }
+
+    /// With the default search_path, objects still land in public (regression guard).
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_create_tview_defaults_to_public() {
+        Spi::run("SET search_path TO public").unwrap();
+        Spi::run("CREATE TABLE tb_gadget (pk_gadget BIGSERIAL PRIMARY KEY, label TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_gadget VALUES (1, 'Gizmo')").unwrap();
+
+        Spi::run("SELECT pg_tviews_create('gadget', $$
+            SELECT pk_gadget, jsonb_build_object('label', label) AS data
+            FROM tb_gadget
+        $$)").unwrap();
+
+        let in_public = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_gadget' AND n.nspname = 'public'"
+        ).unwrap().unwrap_or(false);
+        assert!(in_public, "tv_gadget should be in public with default search_path");
     }
 }
