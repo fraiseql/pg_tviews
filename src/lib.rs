@@ -77,8 +77,8 @@ static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Get the version of the `pg_tviews` extension
 #[pg_extern]
-const fn pg_tviews_version() -> &'static str {
-    "0.1.0-alpha"
+fn pg_tviews_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 /// Debug function to check if `ProcessUtility` hook is installed
@@ -351,9 +351,6 @@ fn pg_tviews_infer_types(
 #[pg_extern]
 fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 1: Load queue metadata BEFORE committing (verify it exists)
-#![allow(clippy::multiple_crate_versions)]
-
-use pgrx::datum::DatumWithOid;
     let args = vec![unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
         "SELECT refresh_queue FROM pg_tview_pending_refreshes WHERE gid = $1",
@@ -868,8 +865,63 @@ mod tests {
 
         assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_delta");
     }
+
+    /// pg_tviews_refresh() must not fail with a column-count mismatch even
+    /// though the tv_* table has extra created_at/updated_at columns that
+    /// the backing view does not expose.
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_pg_tviews_refresh_no_column_mismatch() {
+        Spi::run("CREATE TABLE tb_note (pk_note BIGSERIAL PRIMARY KEY, body TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_note VALUES (1, 'hello'), (2, 'world')").unwrap();
+
+        Spi::run("SELECT pg_tviews_create('note', $$
+            SELECT pk_note, jsonb_build_object('body', body) AS data
+            FROM tb_note
+        $$)").unwrap();
+
+        // tv_note now has created_at / updated_at; v_note does not.
+        // A naive INSERT … SELECT * would fail — pg_tviews_refresh must not.
+        let result = Spi::run("SELECT pg_tviews_refresh('note')");
+        assert!(result.is_ok(), "pg_tviews_refresh failed: {:?}", result.err());
+
+        // Row count must be preserved after the full refresh
+        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_note")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(count, 2, "all rows should survive the full refresh");
+    }
+
+    /// pg_tviews_refresh() re-populates the table from the backing view,
+    /// restoring data that was manually altered.
+    #[cfg(feature = "pg_test")]
+    #[pg_test]
+    fn test_pg_tviews_refresh_repopulates_data() {
+        Spi::run("CREATE TABLE tb_tag (pk_tag BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_tag VALUES (1, 'rust')").unwrap();
+
+        Spi::run("SELECT pg_tviews_create('tag', $$
+            SELECT pk_tag, jsonb_build_object('name', name) AS data
+            FROM tb_tag
+        $$)").unwrap();
+
+        // Simulate stale / corrupted data in the materialized table
+        Spi::run("UPDATE tv_tag SET data = '{}'::jsonb WHERE pk_tag = 1").unwrap();
+
+        let stale = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stale.0, serde_json::json!({}), "data should be corrupted before refresh");
+
+        // Refresh must restore the correct data from v_tag
+        Spi::run("SELECT pg_tviews_refresh('tag')").unwrap();
+
+        let restored = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.0["name"], "rust", "refresh should restore data from the backing view");
+    }
 }
-// */
 
 /// Show cascade dependency path for a given entity
 ///
@@ -930,6 +982,85 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
     }).unwrap_or_default();
 
     TableIterator::new(results)
+}
+
+/// Force a full refresh of all rows in a TVIEW from its backing view.
+///
+/// Rebuilds the materialized table by truncating and re-inserting from the
+/// backing view using an explicit column list. The explicit list is derived
+/// from the view's own columns via `pg_attribute`, which excludes the
+/// table-only `created_at`/`updated_at` columns (they carry `DEFAULT NOW()`
+/// and must not appear in the `SELECT *` projection of the view).
+///
+/// This avoids the column-count mismatch that a naive
+/// `INSERT INTO tv_entity SELECT * FROM v_entity` would produce when the
+/// materialized table has extra timestamp columns the view does not.
+///
+/// # Errors
+/// Returns error if the entity is not registered, the view/table OIDs cannot
+/// be resolved, or the truncate/insert operations fail.
+#[pg_extern]
+fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
+    use crate::catalog::TviewMeta;
+
+    let meta = TviewMeta::load_by_entity(entity)?
+        .ok_or_else(|| TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        })?;
+
+    let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
+    let view_name = crate::utils::lookup_view_for_source(meta.view_oid)?;
+
+    // Build the INSERT column list from the backing view's actual columns.
+    // Querying pg_attribute by OID is schema-agnostic and always returns the
+    // exact set of columns the view exposes — never the table-only columns.
+    let view_columns = get_view_columns_by_oid(meta.view_oid)?;
+
+    if view_columns.is_empty() {
+        return Err(TViewError::CatalogError {
+            operation: format!("Get columns for view {view_name}"),
+            pg_error: "View has no selectable columns".to_string(),
+        });
+    }
+
+    let col_list = view_columns.join(", ");
+
+    // Full refresh: truncate then re-insert with the explicit column list.
+    // TRUNCATE is transactional in PostgreSQL, so a failure in the INSERT
+    // will roll back the whole operation atomically.
+    Spi::run(&format!("TRUNCATE {tv_name}"))?;
+    Spi::run(&format!(
+        "INSERT INTO {tv_name} ({col_list}) SELECT {col_list} FROM {view_name}"
+    ))?;
+
+    info!("Full refresh complete for TVIEW entity '{}'", entity);
+    Ok(())
+}
+
+/// Return the column names of a relation identified by OID, in attribute order.
+///
+/// Only user-visible columns are returned (`attnum > 0`, `NOT attisdropped`).
+fn get_view_columns_by_oid(rel_oid: pg_sys::Oid) -> spi::Result<Vec<String>> {
+    Spi::connect(|client| {
+        let rows = client.select(
+            &format!(
+                "SELECT attname::text \
+                 FROM pg_attribute \
+                 WHERE attrelid = {rel_oid:?} AND attnum > 0 AND NOT attisdropped \
+                 ORDER BY attnum"
+            ),
+            None,
+            &[],
+        )?;
+
+        let mut cols = Vec::new();
+        for row in rows {
+            if let Some(col) = row[1].value::<String>()? {
+                cols.push(col);
+            }
+        }
+        Ok(cols)
+    })
 }
 
 /// Get performance statistics for all TVIEWs

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.3-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:

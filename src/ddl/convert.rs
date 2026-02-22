@@ -166,16 +166,12 @@ fn get_table_columns(table_name: &str) -> TViewResult<Vec<ColumnInfo>> {
 }
 
 fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
-    // For Phase 2, create a basic schema
-    // In Phase 3, we can make this more sophisticated
     let columns = get_table_columns(table_name)?;
 
     // Find the pk_* column
     let pk_col = columns.iter().find(|c| c.name.starts_with("pk_")).unwrap();
     let entity_name = pk_col.name.strip_prefix("pk_").unwrap();
 
-    // Create a simple schema - in practice this would be more complex
-    // For now, we'll assume a simple case
     Ok(TViewSchema {
         entity_name: Some(entity_name.to_string()),
         pk_column: Some(pk_col.name.clone()),
@@ -228,7 +224,6 @@ fn infer_base_tables(table_name: &str) -> TViewResult<Vec<String>> {
     }
 
     // Try to infer base tables from data patterns
-    // This is a basic implementation for Phase 4
     let inferred = infer_base_tables_from_data(table_name)?;
     if !inferred.is_empty() {
         info!("Inferred base tables for '{}': {:?}", table_name, inferred);

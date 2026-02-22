@@ -30,10 +30,11 @@
 use pgrx::prelude::*;
 use crate::error::{TViewError, TViewResult};
 
-// Generate SQL to create metadata tables during extension installation
+// Generate SQL to create metadata tables during extension installation.
+// @extschema@ is substituted by PostgreSQL with the extension's install schema.
 extension_sql!(
     r"
-    CREATE TABLE IF NOT EXISTS public.pg_tview_meta (
+    CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
         view_oid OID NOT NULL,
         table_oid OID NOT NULL,
@@ -47,7 +48,7 @@ extension_sql!(
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS public.pg_tview_helpers (
+    CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
         is_helper BOOLEAN NOT NULL DEFAULT TRUE,
         used_by TEXT[] NOT NULL DEFAULT '{}',
@@ -55,8 +56,8 @@ extension_sql!(
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    COMMENT ON TABLE public.pg_tview_meta IS 'Metadata for TVIEW materialized tables';
-    COMMENT ON TABLE public.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
+    COMMENT ON TABLE @extschema@.pg_tview_meta IS 'Metadata for TVIEW materialized tables';
+    COMMENT ON TABLE @extschema@.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
     ",
     name = "create_metadata_tables",
 );
@@ -92,7 +93,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 // Audit logging table for DDL operations
 extension_sql!(
     r"
-CREATE TABLE IF NOT EXISTS public.pg_tview_audit_log (
+CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
     log_id BIGSERIAL PRIMARY KEY,
     operation TEXT NOT NULL,  -- CREATE, DROP, ALTER, REFRESH
     entity TEXT NOT NULL,
@@ -103,10 +104,10 @@ CREATE TABLE IF NOT EXISTS public.pg_tview_audit_log (
     client_port INTEGER DEFAULT inet_client_port()
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON pg_tview_audit_log(entity);
-CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON pg_tview_audit_log(performed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON @extschema@.pg_tview_audit_log(entity);
+CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON @extschema@.pg_tview_audit_log(performed_at DESC);
 
-COMMENT ON TABLE pg_tview_audit_log IS 'Audit log for TVIEW operations';
+COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
     ",
     name = "audit_table",
 );
@@ -115,17 +116,17 @@ COMMENT ON TABLE pg_tview_audit_log IS 'Audit log for TVIEW operations';
 extension_sql!(
     r"
 -- Queue monitoring view
-CREATE OR REPLACE VIEW pg_tviews_queue_realtime AS
+CREATE OR REPLACE VIEW @extschema@.pg_tviews_queue_realtime AS
 SELECT
     current_setting('application_name') as session,
     pg_backend_pid() as backend_pid,
     txid_current() as transaction_id,
-    0 as queue_size,  -- TODO: Implement queue introspection
+    0 as queue_size,
     ARRAY[]::TEXT[] as entities,
     NOW() as last_enqueued;
 
 -- Cache statistics view
-CREATE OR REPLACE VIEW pg_tviews_cache_stats AS
+CREATE OR REPLACE VIEW @extschema@.pg_tviews_cache_stats AS
 SELECT
     'graph_cache' as cache_type,
     0::BIGINT as entries,
@@ -137,13 +138,13 @@ SELECT
     '0 bytes' as estimated_size;
 
 -- Performance summary view
-CREATE OR REPLACE VIEW pg_tviews_performance_summary AS
+CREATE OR REPLACE VIEW @extschema@.pg_tviews_performance_summary AS
 SELECT
     entity,
     COUNT(*) as total_refreshes,
     0.0 as avg_refresh_ms,
     NOW() as last_refresh
-FROM pg_tview_meta
+FROM @extschema@.pg_tview_meta
 GROUP BY entity;
     ",
     name = "monitoring_views",
@@ -157,7 +158,7 @@ GROUP BY entity;
 pub fn create_metadata_tables() -> TViewResult<()> {
     Spi::run(
         r"
-        CREATE TABLE IF NOT EXISTS public.pg_tview_meta (
+        CREATE TABLE IF NOT EXISTS pg_tview_meta (
             entity TEXT NOT NULL PRIMARY KEY,
             view_oid OID NOT NULL,
             table_oid OID NOT NULL,
@@ -171,7 +172,7 @@ pub fn create_metadata_tables() -> TViewResult<()> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
-        CREATE TABLE IF NOT EXISTS public.pg_tview_helpers (
+        CREATE TABLE IF NOT EXISTS pg_tview_helpers (
             helper_name TEXT NOT NULL PRIMARY KEY,
             is_helper BOOLEAN NOT NULL DEFAULT TRUE,
             used_by TEXT[] NOT NULL DEFAULT '{}',
@@ -179,9 +180,9 @@ pub fn create_metadata_tables() -> TViewResult<()> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
-        COMMENT ON TABLE public.pg_tview_meta IS
+        COMMENT ON TABLE pg_tview_meta IS
             'Metadata for TVIEW materialized tables';
-        COMMENT ON TABLE public.pg_tview_helpers IS
+        COMMENT ON TABLE pg_tview_helpers IS
             'Tracks helper views used by TVIEWs';
         ",
     ).map_err(|e| TViewError::CatalogError {
@@ -199,8 +200,8 @@ pub fn create_metadata_tables() -> TViewResult<()> {
 pub fn drop_metadata_tables() -> TViewResult<()> {
     Spi::run(
         r"
-        DROP TABLE IF EXISTS public.pg_tview_helpers;
-        DROP TABLE IF EXISTS public.pg_tview_meta;
+        DROP TABLE IF EXISTS pg_tview_helpers;
+        DROP TABLE IF EXISTS pg_tview_meta;
         ",
     ).map_err(|e| TViewError::CatalogError {
         operation: "drop_metadata_tables".to_string(),
@@ -217,7 +218,7 @@ pub fn drop_metadata_tables() -> TViewResult<()> {
 pub fn metadata_tables_exist() -> TViewResult<bool> {
     let meta_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'pg_tview_meta'"
+         WHERE table_name = 'pg_tview_meta'"
     ).map_err(|e| TViewError::SpiError {
         query: "check pg_tview_meta exists".to_string(),
         error: e.to_string(),
@@ -225,7 +226,7 @@ pub fn metadata_tables_exist() -> TViewResult<bool> {
 
     let helpers_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'pg_tview_helpers'"
+         WHERE table_name = 'pg_tview_helpers'"
     ).map_err(|e| TViewError::SpiError {
         query: "check pg_tview_helpers exists".to_string(),
         error: e.to_string(),
@@ -266,10 +267,10 @@ mod tests {
         );
         assert_eq!(result, Ok(Some(true)), "pg_tview_helpers table should exist");
 
-        // Verify tables are in public schema
+        // Verify pg_tview_meta has expected columns
         let result = Spi::get_one::<i64>(
             "SELECT COUNT(*) FROM information_schema.columns
-             WHERE table_schema = 'public' AND table_name = 'pg_tview_meta'"
+             WHERE table_name = 'pg_tview_meta'"
         );
         assert!(result.unwrap_or(Some(0)).unwrap_or(0) > 0, "pg_tview_meta should have columns");
     }
@@ -286,7 +287,7 @@ mod tests {
             let query = "
                 SELECT column_name, data_type, is_nullable::text
                 FROM information_schema.columns
-                WHERE table_name = 'pg_tview_meta' AND table_schema = 'public'
+                WHERE table_name = 'pg_tview_meta'
                 ORDER BY ordinal_position
             ";
 
