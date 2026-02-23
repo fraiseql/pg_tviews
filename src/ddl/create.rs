@@ -73,9 +73,10 @@ pub fn create_tview(
     };
 
     let entity_name = final_schema.entity_name.as_ref()
-        .ok_or_else(|| TViewError::InvalidSelectStatement {
-            sql: select_sql.to_string(),
-            reason: "Could not infer entity name from SELECT (missing pk_<entity> column?)".to_string(),
+        .ok_or_else(|| TViewError::RequiredColumnMissing {
+            column_name: format!("pk_{}", tview_name.strip_prefix("tv_").unwrap_or(tview_name)),
+            context: "pg_tviews requires a Trinity Pattern primary key column named \
+                      \"pk_<entity>\" (e.g., pk_user, pk_post)".to_string(),
         })?;
 
     // Resolve the target schema once, respecting the active search_path.

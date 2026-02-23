@@ -89,7 +89,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if query_lower.trim().starts_with("prepare transaction") {
             // Extract GID from query: PREPARE TRANSACTION 'gid'
             if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
-                *PREPARING_GID.lock().unwrap() = Some(gid);
+                *PREPARING_GID.lock().unwrap_or_else(|p| p.into_inner()) = Some(gid);
                 info!("  → Captured GID for PREPARE TRANSACTION");
             }
         }
@@ -507,7 +507,7 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
 /// This is called by the transaction callback during PREPARE TRANSACTION.
 pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
     PREPARING_GID.lock()
-        .expect("PREPARING_GID mutex poisoned - fatal error")
+        .unwrap_or_else(|p| p.into_inner())
         .take() // Take and clear the GID
         .ok_or_else(|| crate::internal_error!("Not in a prepared transaction (GID not captured)"))
 }

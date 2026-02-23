@@ -24,7 +24,7 @@ pub mod graph_cache {
             return crate::queue::graph::EntityDepGraph::load();
         }
 
-        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap_or_else(|p| p.into_inner());
 
         if let Some(graph) = cache.as_ref() {
             // Cache hit
@@ -43,7 +43,7 @@ pub mod graph_cache {
     /// Invalidate the `EntityDepGraph` cache
     /// Should be called when TVIEWs are created or dropped
     pub fn invalidate() {
-        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap();
+        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap_or_else(|p| p.into_inner());
         *cache = None;
     }
 }
@@ -62,7 +62,7 @@ pub mod table_cache {
 
         // Fast path: check cache
         {
-            let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+            let cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(entity) = cache.get(&table_oid) {
                 crate::metrics::metrics_api::record_table_cache_hit();
                 return Ok(Some(entity.clone()));
@@ -74,7 +74,7 @@ pub mod table_cache {
         let entity = crate::catalog::entity_for_table_uncached(table_oid)?;
 
         if let Some(ref e) = entity {
-            let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+            let mut cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
             cache.insert(table_oid, e.clone());
         }
 
@@ -84,7 +84,7 @@ pub mod table_cache {
     /// Invalidate the table entity cache
     /// Should be called when TVIEWs are created or dropped
     pub fn invalidate() {
-        let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
+        let mut cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(|p| p.into_inner());
         cache.clear();
     }
 }

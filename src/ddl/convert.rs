@@ -88,29 +88,22 @@ fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<
     // Check required columns exist
     let columns = get_table_columns(table_name)?;
 
-    let has_id = columns.iter().any(|c| c.name == "id");
-    let has_data = columns.iter().any(|c| c.name == "data");
-
-    // Only require id + data columns
-    // Optional optimization columns: pk_<entity>, fk_<entity>, path (LTREE), <entity>_id (UUID FKs)
-    if !has_id || !has_data {
-        return Err(TViewError::InvalidSelectStatement {
-            sql: table_name.to_string(),
-            reason: format!(
-                "Table must have TVIEW structure: id (UUID), data (JSONB). Found: {}",
-                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
-            ),
-        });
-    }
-
     // Log presence of optional optimization columns
     let has_pk = columns.iter().any(|c| c.name == pk_col);
     if has_pk {
         info!("TVIEW '{}' has pk_{} column for optimized queries", table_name, entity_name);
     }
 
-    // Validate types
-    let id_col = columns.iter().find(|c| c.name == "id").unwrap();
+    // Validate required columns exist and have correct types
+    let id_col = columns.iter().find(|c| c.name == "id")
+        .ok_or_else(|| TViewError::RequiredColumnMissing {
+            column_name: "id".to_string(),
+            context: format!(
+                "Table '{}' must have an 'id' column (UUID). Found: {}",
+                table_name,
+                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+            ),
+        })?;
     if id_col.data_type != "uuid" {
         return Err(TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
@@ -118,7 +111,15 @@ fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<
         });
     }
 
-    let data_col = columns.iter().find(|c| c.name == "data").unwrap();
+    let data_col = columns.iter().find(|c| c.name == "data")
+        .ok_or_else(|| TViewError::RequiredColumnMissing {
+            column_name: "data".to_string(),
+            context: format!(
+                "Table '{}' must have a 'data' column (JSONB). Found: {}",
+                table_name,
+                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+            ),
+        })?;
     if data_col.data_type != "jsonb" {
         return Err(TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
@@ -169,7 +170,17 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
     let columns = get_table_columns(table_name)?;
 
     // Find the pk_* column
-    let pk_col = columns.iter().find(|c| c.name.starts_with("pk_")).unwrap();
+    let pk_col = columns.iter().find(|c| c.name.starts_with("pk_"))
+        .ok_or_else(|| TViewError::RequiredColumnMissing {
+            column_name: "pk_<entity>".to_string(),
+            context: format!(
+                "Table '{}' must have a primary key column named 'pk_<entity>' \
+                 (e.g., pk_user, pk_post). Found: {}",
+                table_name,
+                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+            ),
+        })?;
+    // Safe: guaranteed by the starts_with("pk_") predicate above
     let entity_name = pk_col.name.strip_prefix("pk_").unwrap();
 
     Ok(TViewSchema {
