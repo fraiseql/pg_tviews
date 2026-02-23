@@ -68,22 +68,3 @@ fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> 
     }
 }
 
-/// SQL function: Refresh TVIEW data (for benchmarking/testing)
-///
-/// Usage: SELECT `pg_tviews_refresh`('`tv_product`');
-///
-/// This is primarily for benchmarking - in production, TVIEWs auto-refresh via triggers.
-/// This function forces a full refresh by truncating and repopulating from the base view.
-#[pg_extern]
-fn pg_tviews_refresh(tview_name: &str) -> Result<String, String> {
-    // For benchmarking, we can do a simple truncate + insert from view
-    let view_name = tview_name.replace("tv_", "v_");
-    let sql = format!(
-        "TRUNCATE {tview_name}; INSERT INTO {tview_name} SELECT * FROM {view_name}"
-    );
-
-    match Spi::run(&sql) {
-        Ok(()) => Ok(format!("TVIEW '{tview_name}' refreshed successfully")),
-        Err(e) => Err(format!("Failed to refresh TVIEW: {e}")),
-    }
-}

@@ -506,7 +506,7 @@ mod tests {
         ").unwrap();
 
         // Verify metadata captured nested dependency
-        let meta = Spi::get_one::<String>("
+        let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity_name = 'post'
         ").unwrap().unwrap();
@@ -595,7 +595,7 @@ mod tests {
         ").unwrap();
 
         // Verify metadata captured array dependency
-        let meta = Spi::get_one::<String>("
+        let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity_name = 'post'
         ").unwrap().unwrap();
@@ -672,7 +672,7 @@ mod tests {
         ").unwrap();
 
         // Verify metadata shows scalar dependency
-        let meta = Spi::get_one::<String>("
+        let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity_name = 'post'
         ").unwrap().unwrap();
@@ -864,7 +864,7 @@ mod tests {
         ").unwrap();
 
         // Verify metadata is still captured (even without jsonb_delta)
-        let meta = Spi::get_one::<String>("
+        let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta WHERE entity_name = 'post'
         ");
         // Metadata should exist regardless of jsonb_delta availability

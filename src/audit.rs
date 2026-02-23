@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 
 /// Log TVIEW creation
 pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
-    let current_user = Spi::get_one::<String>("SELECT current_user")?
+    let current_user = crate::utils::spi_get_string("SELECT current_user")?
         .unwrap_or_else(|| "unknown".to_string());
 
     Spi::run(&format!(
@@ -21,7 +21,7 @@ pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
 
 /// Log TVIEW drop
 pub fn log_drop(entity: &str) -> spi::Result<()> {
-    let current_user = Spi::get_one::<String>("SELECT current_user")?
+    let current_user = crate::utils::spi_get_string("SELECT current_user")?
         .unwrap_or_else(|| "unknown".to_string());
 
     Spi::run(&format!(
@@ -37,7 +37,7 @@ pub fn log_drop(entity: &str) -> spi::Result<()> {
 /// Log TVIEW refresh operation
 #[allow(dead_code)]
 pub fn log_refresh(entity: &str, rows_affected: i64) -> spi::Result<()> {
-    let current_user = Spi::get_one::<String>("SELECT current_user")?
+    let current_user = crate::utils::spi_get_string("SELECT current_user")?
         .unwrap_or_else(|| "unknown".to_string());
 
     Spi::run(&format!(

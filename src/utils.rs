@@ -1,5 +1,22 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
+
+/// Safe wrapper for `Spi::get_one::<String>()` that avoids SIGABRT in pgrx 0.16.1.
+///
+/// `Spi::get_one::<String>()` invokes `SPI_getvalue` which returns a `*const c_char`
+/// owned by the SPI memory context. The `String` conversion attempts to free that
+/// pointer after the SPI call returns, causing an abort. This helper keeps the SPI
+/// context alive during value extraction.
+pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
+    Spi::connect(|client| {
+        let mut rows = client.select(query, Some(1), &[])?;
+        match rows.next() {
+            Some(row) => Ok(row[1].value::<String>()?),
+            None => Ok(None),
+        }
+    })
+}
+
 /// Utilities: Common Helper Functions and `PostgreSQL` Integration
 ///
 /// This module provides utility functions used throughout `pg_tviews`:

@@ -744,7 +744,7 @@ fn find_affected_tview_rows(
     base_pk: i64,
 ) -> spi::Result<Vec<i64>> {
     // Get the base table name to figure out which FK column to check
-    let base_table_name = Spi::get_one::<String>(&format!(
+    let base_table_name = crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {base_table_oid:?}"
     ))?.ok_or(spi::Error::InvalidPosition)?;
 
@@ -812,7 +812,7 @@ mod tests {
     #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_version_callable_from_sql() {
-        let result = Spi::get_one::<String>(
+        let result = crate::utils::spi_get_string(
             "SELECT pg_tviews_version()"
         );
         assert!(result.is_ok());

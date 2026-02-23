@@ -143,7 +143,7 @@ pub fn quote_identifier(name: &str) -> String {
 
 /// Helper: Look up TVIEW table name given its OID
 fn relname_from_oid(oid: pg_sys::Oid) -> spi::Result<String> {
-    Spi::get_one::<String>(&format!(
+    crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
     ))?
     .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {

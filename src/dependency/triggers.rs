@@ -143,7 +143,7 @@ fn create_trigger_handler() -> TViewResult<()> {
 }
 
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
-    Spi::get_one::<String>(&format!(
+    crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {

@@ -241,7 +241,7 @@ fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, current: pg_sys::Oid) -> V
 
 #[allow(dead_code)]
 fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
-    Spi::get_one::<String>(&format!(
+    crate::utils::spi_get_string(&format!(
         "SELECT relkind::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {
@@ -255,7 +255,7 @@ fn get_relkind(oid: pg_sys::Oid) -> TViewResult<String> {
 }
 
 fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
-    Spi::get_one::<String>(&format!(
+    crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {

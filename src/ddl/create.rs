@@ -7,7 +7,7 @@ use crate::error::{TViewError, TViewResult};
 /// Uses `current_schema()` to respect the active `search_path`, matching
 /// standard PostgreSQL convention for unqualified DDL statements.
 fn current_schema() -> TViewResult<String> {
-    Spi::get_one::<String>("SELECT current_schema()")
+    crate::utils::spi_get_string("SELECT current_schema()")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
             pg_error: e.to_string(),
@@ -344,6 +344,18 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
     Ok(())
 }
 
+/// Quote a string for use in a PostgreSQL array literal.
+///
+/// Empty strings and strings containing special characters must be double-quoted
+/// to avoid producing invalid array literals like `'{,}'`.
+fn pg_array_elem(s: &str) -> String {
+    if s.is_empty() || s.contains([',', '"', '\\', '{', '}', ' ']) {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Register the TVIEW in metadata tables
 fn register_metadata(
     entity_name: &str,
@@ -357,25 +369,31 @@ fn register_metadata(
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
 
-    // Serialize schema information
-    let fk_columns = schema.fk_columns.join(",");
-    let uuid_fk_columns = schema.uuid_fk_columns.join(",");
+    // Serialize schema information (quoted for safe PostgreSQL array literals)
+    let fk_columns = schema.fk_columns.iter()
+        .map(|s| pg_array_elem(s))
+        .collect::<Vec<_>>()
+        .join(",");
+    let uuid_fk_columns = schema.uuid_fk_columns.iter()
+        .map(|s| pg_array_elem(s))
+        .collect::<Vec<_>>()
+        .join(",");
 
     // Serialize dependency types
     let dep_types = dep_infos.iter()
-        .map(|d| d.dep_type.as_str())
+        .map(|d| pg_array_elem(d.dep_type.as_str()))
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize dependency paths (TEXT[] format, NULL for None)
+    // Serialize dependency paths (TEXT[] format, empty string for None)
     let dep_paths = dep_infos.iter()
-        .map(|d| d.jsonb_path.as_ref().map_or_else(String::new, |path| path.join(".")))
+        .map(|d| pg_array_elem(&d.jsonb_path.as_ref().map_or_else(String::new, |path| path.join("."))))
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize array match keys (NULL for None)
+    // Serialize array match keys (empty string for None)
     let array_keys = dep_infos.iter()
-        .map(|d| d.array_match_key.clone().unwrap_or_default())
+        .map(|d| pg_array_elem(&d.array_match_key.clone().unwrap_or_default()))
         .collect::<Vec<_>>()
         .join(",");
 

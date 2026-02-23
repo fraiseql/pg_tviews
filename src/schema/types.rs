@@ -23,7 +23,7 @@ pub fn infer_column_types(
                AND NOT attisdropped"
         );
 
-        let col_type = Spi::get_one::<String>(&type_query)
+        let col_type = crate::utils::spi_get_string(&type_query)
             .map_err(|e| crate::error::TViewError::SpiError {
                 query: type_query.clone(),
                 error: e.to_string(),

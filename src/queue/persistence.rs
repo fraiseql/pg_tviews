@@ -3,7 +3,6 @@
 //! This module handles serialization and deserialization of refresh queues
 //! for prepared transactions. Supports both JSONB and binary formats.
 
-use pgrx::prelude::*;
 use pgrx::JsonB;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -133,7 +132,7 @@ impl SerializedQueue {
 /// Get current session ID for metadata
 fn get_session_id() -> String {
     // Try to get session ID from PostgreSQL
-    match Spi::get_one::<String>("SELECT session_user") {
+    match crate::utils::spi_get_string("SELECT session_user") {
         Ok(Some(user)) => user,
         Ok(None) | Err(_) => "unknown".to_string(),
     }

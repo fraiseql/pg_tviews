@@ -87,7 +87,7 @@ pub fn drop_tview(
 /// Uses `pg_class JOIN pg_namespace` to find the object's schema at runtime,
 /// so drops work regardless of which schema the TVIEW was created in.
 fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
-    let qualified = Spi::get_one::<String>(&format!(
+    let qualified = crate::utils::spi_get_string(&format!(
         "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) \
          FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
