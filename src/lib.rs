@@ -786,6 +786,15 @@ fn find_affected_tview_rows(
 }
 
 #[cfg(any(test, feature = "pg_test"))]
+pub mod pg_test {
+    pub fn setup(_options: Vec<&str>) {}
+
+    pub fn postgresql_conf_options() -> Vec<&'static str> {
+        vec![]
+    }
+}
+
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
