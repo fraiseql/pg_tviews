@@ -34,6 +34,12 @@ static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 /// Global storage for GID during PREPARE TRANSACTION
 static PREPARING_GID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
+/// Reentrancy guard: prevents the hook from processing DDL that the hook itself triggers.
+/// When `pg_tviews_create` calls `Spi::run("CREATE VIEW ...")` internally, PostgreSQL
+/// calls ProcessUtility again for that DDL. Without this guard, the hook re-enters and
+/// can corrupt state, causing a segfault in PostgreSQL 18.
+static mut HOOK_IN_PROGRESS: bool = false;
+
 /// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
 /// Install the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 pub unsafe fn install_hook() {
@@ -65,23 +71,27 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
-    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    // Reentrancy guard: if we're already inside the hook (e.g., processing DDL triggered
+    // internally by pg_tviews_create via Spi::run), skip interception and pass through.
+    if HOOK_IN_PROGRESS {
+        call_prev_hook_or_standard(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+        return;
+    }
+    HOOK_IN_PROGRESS = true;
+
+    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
     let result = std::panic::catch_unwind(|| -> bool {
-        // Log ALL hook invocations to debug why DROP isn't being caught
         let query_str = if query_string.is_null() {
             "[NULL]".to_string()
         } else {
             CStr::from_ptr(query_string).to_string_lossy().to_string()
         };
 
-
-        // Skip extension-related statements to avoid infinite recursion during installation
         let query_lower = query_str.to_lowercase();
 
-        // Skip extension-related statements
+        // Skip extension-related statements to avoid infinite recursion during installation
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
-            info!("  → Extension statement, passing through without interception");
             return false; // Pass through
         }
 
@@ -90,13 +100,11 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             // Extract GID from query: PREPARE TRANSACTION 'gid'
             if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
                 *PREPARING_GID.lock().unwrap_or_else(|p| p.into_inner()) = Some(gid);
-                info!("  → Captured GID for PREPARE TRANSACTION");
             }
         }
 
         // Safety check
         if pstmt.is_null() {
-            info!("  → pstmt is null, passing through");
             return false; // Pass through
         }
 
@@ -104,7 +112,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Check if this is a utility statement
         if pstmt_ref.utilityStmt.is_null() {
-            info!("  → utilityStmt is null, passing through");
             return false; // Pass through
         }
 
@@ -127,15 +134,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Check for DROP TABLE
         if node_tag == pg_sys::NodeTag::T_DropStmt {
-            info!("  ✓ Detected T_DropStmt!");
             #[allow(clippy::cast_ptr_alignment)]
             let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
             if handle_drop_table(drop_stmt, query_string) {
                 // We handled it - don't call standard utility
-                info!("  ✓ DROP was handled by hook, NOT calling standard utility");
                 return true; // Handled
             }
-            info!("  → DROP not handled, passing through to standard utility");
         }
 
         // Not a tv_* statement - pass through
@@ -172,6 +176,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             qc,
         );
     }
+
+    // Release the reentrancy guard
+    HOOK_IN_PROGRESS = false;
 }
 
 /// Handle CREATE TABLE tv_* AS SELECT ...
@@ -221,23 +228,19 @@ unsafe fn handle_create_table_as(
     let select_sql = if query_string.is_null() {
         error!("No query string provided");
     } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
-        info!("Full query string: {}", sql);
         // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
         // We need to find the AS that comes after the table name, not column aliases
         // Strategy: Find "CREATE TABLE <name> AS" pattern
         let sql_lower = sql.to_lowercase();
         // Find the table name position (we already know it's tv_<entity>)
         let table_pattern = format!("{} as", table_name.to_lowercase());
-        info!("Looking for pattern: '{}'", table_pattern);
 
         sql_lower.find(&table_pattern).map_or_else(|| {
             error!("Could not find '{}' in query", table_pattern);
         }, |table_pos| {
             // Found "tv_<entity> AS" - skip past it
             let select_start = table_pos + table_pattern.len();
-            info!("Found table+AS pattern at position {}, SELECT starts at {}", table_pos, select_start);
             let select_part = sql[select_start..].trim();
-            info!("Extracted SELECT part: {}", select_part);
             // Remove trailing semicolon if present
             select_part.trim_end_matches(';').trim().to_string()
         })
@@ -245,12 +248,10 @@ unsafe fn handle_create_table_as(
         error!("Failed to parse query string")
     };
 
-    info!("Validating TVIEW DDL syntax for '{}'", table_name);
 
     // Validate TVIEW SELECT statement structure
     match validate_tview_select(&select_sql) {
         Ok(()) => {
-            info!("TVIEW syntax valid, storing SELECT for event trigger");
 
             // Store SELECT in session-level temp table for event trigger to use
             // This is safe because:
@@ -262,14 +263,17 @@ unsafe fn handle_create_table_as(
                 // Continue anyway - event trigger will try to infer
             }
 
-            info!("Letting PostgreSQL create table, event trigger will convert to TVIEW");
             false // Pass through - let PostgreSQL create it
         }
         Err(e) => {
-            // Validation failed - log error but let table creation proceed
-            // Event trigger will detect invalid structure and log warnings
-            warning!("Invalid TVIEW syntax for '{}': {} - TVIEW must have: id (UUID), data (JSONB) columns. Optional: pk_<entity>, fk_<entity>, path, <entity>_id", table_name, e);
-            false // Still let PostgreSQL create it, event trigger will handle
+            // Validation failed — still store the SELECT so the event trigger can attempt
+            // conversion and produce a proper error if the structure is truly invalid.
+            // The event trigger's create_tview() call will validate thoroughly.
+            warning!("TVIEW syntax warning for '{}': {} — attempting conversion anyway", table_name, e);
+            if let Err(store_err) = store_pending_tview_select(table_name, &select_sql) {
+                warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
+            }
+            false // Let PostgreSQL create it, event trigger will convert
         }
     }
 }
@@ -283,29 +287,25 @@ fn validate_tview_select(select_sql: &str) -> Result<(), String> {
 
     let sql_lower = select_sql.to_lowercase();
 
-    // Check for id column (required)
-    if !sql_lower.contains(" as id") && !sql_lower.contains(" id,") && !sql_lower.contains(" id ") {
+    // Check for id column (required) — handle both bare `id,` and qualified `alias.id,`
+    let has_id = sql_lower.contains(" as id")
+        || sql_lower.contains(" id,")
+        || sql_lower.contains(" id ")
+        || sql_lower.contains(".id,")
+        || sql_lower.contains(".id ")
+        || sql_lower.contains(".id\n")
+        || sql_lower.contains(".id::"); // cast like l1.id::text
+    if !has_id {
         return Err("Missing required 'id' column (UUID)".to_string());
     }
 
-    // Check for data column - either jsonb_build_object or direct column (required)
-    if !sql_lower.contains("jsonb_build_object")
-        && !sql_lower.contains(" as data")
-        && !sql_lower.contains(" data,")
-        && !sql_lower.contains(" data ")
-    {
+    // Check for data column — jsonb_build_object or bare/qualified column
+    let has_data = sql_lower.contains("jsonb_build_object")
+        || sql_lower.contains(" as data")
+        || sql_lower.contains(" data,")
+        || sql_lower.contains(" data ");
+    if !has_data {
         return Err("Missing required 'data' column (JSONB)".to_string());
-    }
-
-    // Log helpful info about optimization columns
-    if sql_lower.contains(" as pk_") || sql_lower.contains(" pk_") {
-        info!("TVIEW SELECT includes pk_<entity> column for optimized queries");
-    }
-    if sql_lower.contains(" as fk_") || sql_lower.contains(" fk_") {
-        info!("TVIEW SELECT includes fk_<entity> column(s) for foreign key filtering");
-    }
-    if sql_lower.contains(" as path") || sql_lower.contains(" path,") || sql_lower.contains(" path ") {
-        info!("TVIEW SELECT includes path column (LTREE) for hierarchical queries");
     }
 
     Ok(())
@@ -323,7 +323,6 @@ fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), 
         .map_err(|e| format!("Failed to lock cache: {e}"))?
         .insert(table_name.to_string(), select_sql.to_string());
 
-    info!("Stored SELECT for '{}' in cache (event trigger will retrieve it)", table_name);
     Ok(())
 }
 
@@ -354,33 +353,26 @@ unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
     query_string: *const ::std::os::raw::c_char,
 ) -> bool {
-    info!("handle_drop_table called");
 
     if drop_stmt.is_null() {
-        info!("  drop_stmt is null, returning false");
         return false;
     }
 
     let drop_ref = &*drop_stmt;
 
     // Check if it's dropping a table (not view, index, etc.)
-    info!("  removeType = {:?}", drop_ref.removeType);
     if drop_ref.removeType != pg_sys::ObjectType::OBJECT_TABLE {
-        info!("  not a table drop, returning false");
         return false;
     }
 
     // Extract table names from query string
     if query_string.is_null() {
-        info!("  query_string is null, returning false");
         return false;
     }
 
     let sql = if let Ok(s) = CStr::from_ptr(query_string).to_str() {
-        info!("  query_string = '{}'", s);
         s
     } else {
-        info!("  failed to parse query_string, returning false");
         return false;
     };
 
@@ -390,7 +382,6 @@ unsafe fn handle_drop_table(
 
     // Check if this is a DROP TABLE statement
     if !sql_lower.contains("drop") || !sql_lower.contains("table") {
-        info!("  not a DROP TABLE statement, returning false");
         return false;
     }
 
@@ -407,24 +398,20 @@ unsafe fn handle_drop_table(
         if clean_word.starts_with("tv_") {
             table_name = clean_word.to_string();
             found_tv_table = true;
-            info!("  found tv_* table: {}", table_name);
             break;
         }
     }
 
     if !found_tv_table {
-        info!("  no tv_* table found in query, returning false");
         return false;
     }
 
-    info!("Intercepted DROP TABLE {} - cleaning up TVIEW", table_name);
 
     // Check if_exists flag
     let if_exists = drop_ref.missing_ok;
 
     match drop_tview(&table_name, if_exists) {
         Ok(()) => {
-            info!("TVIEW '{}' dropped successfully", table_name);
             true
         }
         Err(e) => {

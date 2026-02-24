@@ -31,7 +31,6 @@ pub fn drop_tview(
 
     if !exists {
         // IF EXISTS was specified and TVIEW doesn't exist - this is OK
-        info!("TVIEW {} does not exist, skipping DROP", tview_name);
         return Ok(());
     }
 
@@ -47,7 +46,6 @@ pub fn drop_tview(
         Ok(dep_graph) => {
             if !dep_graph.base_tables.is_empty() {
                 crate::dependency::remove_triggers(&dep_graph.base_tables, entity_name)?;
-                info!("Removed triggers from {} base tables", dep_graph.base_tables.len());
             }
         }
         Err(e) => {
@@ -77,7 +75,6 @@ pub fn drop_tview(
         warning!("Failed to log TVIEW drop: {}", e);
     }
 
-    info!("TVIEW {} dropped successfully", tview_name);
 
     Ok(())
 }
@@ -101,11 +98,10 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
 
     if let Some(qname) = qualified {
         let sql = format!("DROP {kind} IF EXISTS {qname}");
-        Spi::run(&sql).map_err(|e| TViewError::SpiError {
+        crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
             query: sql,
-            error: e.to_string(),
+            error: e,
         })?;
-        info!("Dropped {} {}", kind, qname);
     }
 
     Ok(())
@@ -136,7 +132,6 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
         error: e.to_string(),
     })?;
 
-    info!("Dropped TVIEW metadata for: {}", entity_name);
     Ok(())
 }
 

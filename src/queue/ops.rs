@@ -20,7 +20,7 @@ pub fn enqueue_refresh(entity: &str, pk: i64) {
     });
 }
 
-/// Bulk enqueue refresh requests for multiple PKs of the same entity (Phase 9A)
+/// Bulk enqueue refresh requests for multiple PKs of the same entity
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).

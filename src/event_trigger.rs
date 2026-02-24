@@ -26,7 +26,6 @@ AS 'MODULE_PATHNAME', 'pg_tviews_handle_ddl_event_wrapper'
 LANGUAGE c;
 "#)]
 fn pg_tviews_handle_ddl_event() {
-    info!("pg_tviews: Event trigger fired");
 
     // Get information about the DDL command that just executed
     let commands = match get_ddl_commands() {
@@ -38,26 +37,27 @@ fn pg_tviews_handle_ddl_event() {
     };
 
     for cmd in commands {
-        // Only process CREATE TABLE and SELECT INTO
-        if !matches!(cmd.command_tag.as_str(), "CREATE TABLE" | "SELECT INTO") {
+        // Only process CREATE TABLE, CREATE TABLE AS, and SELECT INTO
+        if !matches!(cmd.command_tag.as_str(), "CREATE TABLE" | "CREATE TABLE AS" | "SELECT INTO") {
             continue;
         }
 
         let table_name = cmd.object_identity;
-        info!("pg_tviews: Checking table '{}'", table_name);
+
+        // object_identity is schema-qualified: "public.tv_post" or "myschema.tv_post"
+        // Strip the schema prefix to get the bare table name for the tv_ check.
+        let bare_name = table_name.split('.').next_back().unwrap_or(&table_name);
 
         // Check if this is a tv_* table
-        if !table_name.starts_with("tv_") {
-            info!("pg_tviews: Not a TVIEW table, ignoring");
+        if !bare_name.starts_with("tv_") {
             continue;
         }
 
-        info!("pg_tviews: Converting '{}' to TVIEW", table_name);
 
-        // Convert the newly-created table to a TVIEW
-        match convert_table_to_tview(&table_name) {
+        // Convert the newly-created table to a TVIEW (use bare_name: the hook
+        // cache stores entries under the unqualified table name)
+        match convert_table_to_tview(bare_name) {
             Ok(()) => {
-                info!("pg_tviews: Successfully converted '{}' to TVIEW", table_name);
             }
             Err(e) => {
                 // Log error but don't fail the transaction
@@ -108,7 +108,6 @@ struct DdlCommand {
 #[pg_extern]
 #[allow(clippy::needless_pass_by_value)]
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
-    info!("pg_tviews_convert_table: Converting '{}' to TVIEW", table_name);
 
     // Retrieve the original SELECT from the hook cache
     let select_sql = crate::hooks::take_pending_tview_select(&table_name)
@@ -116,31 +115,56 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
             format!("No SELECT statement found for '{table_name}' - was the hook called?")
         })?;
 
-    info!("pg_tviews_convert_table: Retrieved SELECT for '{}'", table_name);
 
     // Drop the table that PostgreSQL created
     // We need to create our own structure with proper TVIEW semantics
     Spi::run(&format!("DROP TABLE IF EXISTS {table_name} CASCADE"))
         .map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
-    info!("pg_tviews_convert_table: Dropped PostgreSQL's table '{}'", table_name);
 
     // Create proper TVIEW using the original SELECT
     // This has all the TVIEW semantics: backing view, materialized table, triggers, etc.
     crate::ddl::create_tview(&table_name, &select_sql)
         .map_err(|e| format!("Failed to create TVIEW '{table_name}': {e}"))?;
 
-    info!("pg_tviews_convert_table: Successfully created TVIEW '{}'", table_name);
 
     Ok(())
 }
 
-/// Convert an existing table to a TVIEW
+/// Convert a table created by `CREATE TABLE tv_* AS SELECT` to a proper TVIEW.
 ///
-/// This function is called AFTER `PostgreSQL` has created the table.
-/// Delegates to the `ddl::convert` module for the actual conversion logic.
+/// Called by the event trigger after PostgreSQL creates the table.
+///
+/// There are two code paths that produce `tv_*` tables:
+///   1. `CREATE TABLE tv_post AS SELECT …` — the ProcessUtility hook stores the
+///      SELECT in the pending cache; this event trigger converts it using the
+///      original SELECT statement.
+///   2. `pg_tviews_create('post', '…')` — the function creates `tv_post` itself
+///      via `spi_run_ddl`; the event trigger fires but must NOT convert again.
+///
+/// Guard: if no pending SELECT is in the cache, the table was created by
+/// `pg_tviews_create` — skip silently.
 fn convert_table_to_tview(table_name: &str) -> TViewResult<()> {
-    info!("pg_tviews: convert_table_to_tview called for '{}'", table_name);
-    crate::ddl::convert_existing_table_to_tview(table_name)
+
+    // Retrieve (and consume) the pending SELECT.  If none exists, the table
+    // was created by pg_tviews_create — nothing to do here.
+    let select_sql = match crate::hooks::take_pending_tview_select(table_name) {
+        Some(sql) => sql,
+        None => {
+            return Ok(());
+        }
+    };
+
+
+    // Drop the regular table PostgreSQL just created.  DDL needs non-atomic SPI.
+    crate::utils::spi_run_ddl(&format!("DROP TABLE IF EXISTS {table_name} CASCADE"))
+        .map_err(|e| crate::TViewError::SpiError {
+            query: format!("DROP TABLE IF EXISTS {table_name} CASCADE"),
+            error: e,
+        })?;
+
+
+    // Create the proper TVIEW using the original SELECT.
+    crate::ddl::create_tview(table_name, &select_sql)
 }
 

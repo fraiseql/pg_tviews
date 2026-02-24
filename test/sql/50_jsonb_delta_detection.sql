@@ -1,4 +1,3 @@
--- Phase 5 Task 1 RED: Test jsonb_delta detection
 -- This test verifies runtime detection of jsonb_delta extension
 
 BEGIN;

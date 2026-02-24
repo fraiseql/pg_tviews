@@ -21,9 +21,7 @@ pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, S
 
 /// Simple regex-based column extraction from SELECT statement
 /// Limitations:
-/// - Doesn't handle nested commas in function calls
 /// - Doesn't handle complex expressions
-/// - Doesn't handle subqueries properly
 /// - Future: Replace with `PostgreSQL` parser API
 fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     let mut columns = Vec::new();
@@ -34,7 +32,8 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     // Find SELECT and FROM positions
     let select_start = sql_lower.find("select")
         .ok_or("No SELECT keyword found")?;
-    let from_start = sql_lower.find("from")
+    // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
+    let from_start = find_outer_from(&sql_lower, select_start)
         .ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
@@ -70,6 +69,46 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     Ok(columns)
 }
 
+/// Find the first occurrence of the `FROM` keyword at paren depth 0 (outermost level).
+///
+/// `sql_lower` must already be lowercased. Only looks after `after_pos`.
+/// Handles parentheses depth and single-quoted string literals.
+fn find_outer_from(sql_lower: &str, after_pos: usize) -> Option<usize> {
+    let bytes = sql_lower.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = after_pos;
+    let len = bytes.len();
+
+    while i < len {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b'\'' => {
+                // Skip single-quoted literal
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len { i += 1; } // skip closing quote
+            }
+            _ => {
+                // Check for "from" at word boundary, only at depth 0
+                if depth == 0 && i + 4 <= len && &bytes[i..i + 4] == b"from" {
+                    let before_ok = i == 0
+                        || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+                    let after_ok = i + 4 >= len
+                        || (!bytes[i + 4].is_ascii_alphanumeric() && bytes[i + 4] != b'_');
+                    if before_ok && after_ok {
+                        return Some(i);
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
 /// Extract columns with their full expressions from SELECT statement
 fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut columns = Vec::new();
@@ -80,7 +119,8 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
     // Find SELECT and FROM positions
     let select_start = sql_lower.find("select")
         .ok_or("No SELECT keyword found")?;
-    let from_start = sql_lower.find("from")
+    // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
+    let from_start = find_outer_from(&sql_lower, select_start)
         .ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
@@ -201,7 +241,11 @@ fn extract_column_name(part: &str) -> Result<String, String> {
         return Err("Could not extract column name".to_string());
     }
 
-    Ok(clean_name.to_string())
+    // Strip table alias prefix: "a.id" → "id", "schema.table.col" → "col"
+    // PostgreSQL uses the rightmost segment as the output column name when no AS alias.
+    let col = clean_name.split('.').next_back().unwrap_or(clean_name);
+
+    Ok(col.to_string())
 }
 
 /// Find the last `AS` keyword position, handling nested contexts

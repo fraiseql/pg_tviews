@@ -42,7 +42,6 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
         return Ok(());
     }
 
-    info!("Cascading from {} to {} parent entities", row.entity_name, parent_entities.len());
 
     // For each parent entity, find affected rows and refresh them
     for parent_entity in parent_entities {
@@ -52,7 +51,6 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
             continue;
         }
 
-        info!("  Cascading to {}: {} affected rows", parent_entity, affected_pks.len());
 
         // Load parent TVIEW metadata to get view_oid for refresh
         let Some(parent_meta) = TviewMeta::load_by_entity(&parent_entity)? else {
@@ -62,7 +60,6 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
 
         // Use batch refresh for large cascades, individual refresh for small ones
         if affected_pks.len() >= 10 {
-            info!("  Using batch refresh for {} rows", affected_pks.len());
             batch::refresh_batch(&parent_entity, &affected_pks)?;
         } else {
             // Refresh each affected row individually
@@ -77,7 +74,7 @@ pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
 
 /// Find parent keys that depend on the given entity+pk (without refreshing them)
 ///
-/// This is the Phase 6D version of propagation that returns keys instead of
+/// Propagation that returns keys instead of
 /// performing immediate recursive refreshes.
 ///
 /// # Example

@@ -16,7 +16,7 @@ BEGIN
             obj.command_tag, obj.object_type, obj.object_identity;
 
         -- Only process CREATE TABLE and SELECT INTO
-        IF obj.command_tag IN ('CREATE TABLE', 'SELECT INTO') THEN
+        IF obj.command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') THEN
             -- Check if table name starts with tv_
             IF obj.object_identity LIKE 'public.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
                 RAISE INFO 'pg_tviews: Detected TVIEW creation: %', obj.object_identity;
@@ -56,7 +56,7 @@ $$;
 DROP EVENT TRIGGER IF EXISTS pg_tviews_ddl_end;
 CREATE EVENT TRIGGER pg_tviews_ddl_end
     ON ddl_command_end
-    WHEN TAG IN ('CREATE TABLE', 'SELECT INTO')
+    WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
     EXECUTE FUNCTION pg_tviews_handle_ddl_event();
 
 -- Add comment

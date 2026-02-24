@@ -1,4 +1,4 @@
-//! Phase 9B: Bulk Refresh API
+//! Bulk Refresh API
 //!
 //! Provides efficient refresh of multiple rows in a single operation.
 //! Reduces query count from N queries to 2 queries for N rows.

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.7] - 2026-02-24
+
+### Fixed
+
+- **Cascade refresh for array aggregation TVIEWs**: Rewrote
+  `find_affected_tview_rows` in `src/lib.rs` to handle three cases: direct
+  column match, scalar FK column, and array aggregation (GROUP BY TVIEWs
+  where the child table's FK is not an output column of the backing view)
+- **UPSERT for new rows**: `apply_full_replacement` now uses
+  `INSERT ... ON CONFLICT DO UPDATE` so rows inserted after TVIEW creation
+  are handled correctly instead of being silently skipped
+- **Test SQL fixes**: Added `FILTER (WHERE ... IS NOT NULL)` to `jsonb_agg`
+  calls in tests 52 and 53 to prevent null-object elements from LEFT JOINs;
+  added missing extension loading to test 50
+
+### Changed
+
+- **Removed 118 diagnostic `info!()` calls** across 11 source files
+- **Removed dead code**: `pg_tviews_debug_ddl`, `pg_tviews_debug_sequence`,
+  `with_hook_bypassed`, `peek_pending_tview_select`
+- Removed empty `if let` blocks left over from logging removal
+- Removed all Phase N / TODO / FIXME markers from source and test files
+- Zero compiler warnings
+
 ## [0.1.0-beta.6] - 2026-02-24
 
 ### Fixed

@@ -34,13 +34,11 @@ pub fn install_triggers(
              EXECUTE FUNCTION tview_trigger_handler('{tview_entity}')"
         );
 
-        Spi::run(&trigger_sql)
-            .map_err(|e| TViewError::CatalogError {
-                operation: format!("Install trigger on {table_name}"),
-                pg_error: format!("{e:?}"),
-            })?;
+        crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
+            operation: format!("Install trigger on {table_name}"),
+            pg_error: e,
+        })?;
 
-        info!("Installed trigger {} on {}", trigger_name, table_name);
     }
 
     Ok(())
@@ -62,13 +60,11 @@ pub fn remove_triggers(
             "DROP TRIGGER IF EXISTS {trigger_name} ON {table_name}"
         );
 
-        Spi::run(&drop_sql)
-            .map_err(|e| TViewError::CatalogError {
-                operation: format!("Drop trigger from {table_name}"),
-                pg_error: format!("{e:?}"),
-            })?;
+        crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
+            operation: format!("Drop trigger from {table_name}"),
+            pg_error: e,
+        })?;
 
-        info!("Removed trigger {} from {}", trigger_name, table_name);
     }
 
     Ok(())
@@ -133,11 +129,10 @@ fn create_trigger_handler() -> TViewResult<()> {
         $$ LANGUAGE plpgsql;
     ";
 
-    Spi::run(handler_sql)
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Create trigger handler".to_string(),
-            pg_error: format!("{e:?}"),
-        })?;
+    crate::utils::spi_run_ddl(handler_sql).map_err(|e| TViewError::CatalogError {
+        operation: "Create trigger handler".to_string(),
+        pg_error: e,
+    })?;
 
     Ok(())
 }

@@ -50,8 +50,16 @@ pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
 // Helper functions for find_base_tables()
 
 fn get_view_oid(view_name: &str) -> TViewResult<pg_sys::Oid> {
+    // Use pg_class lookup rather than ::regclass cast: the cast raises a PostgreSQL
+    // ERROR (aborting the transaction) when the view doesn't exist, whereas a catalog
+    // query returns NULL which we can handle as a Rust error.
+    let safe_name = view_name.replace('\'', "''");
     Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT '{view_name}'::regclass::oid"
+        "SELECT c.oid FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.relname = '{safe_name}' \
+           AND n.nspname = current_schema() \
+           AND c.relkind IN ('v', 'm')"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for '{view_name}'"),
@@ -97,11 +105,6 @@ fn traverse_dependencies(
 
         visiting.insert(current_oid);
 
-        // Debug logging
-        if let Ok(name) = get_object_name(current_oid) {
-            info!("Checking dependencies for: {} (OID {:?}) at depth {}", name, current_oid, depth);
-        }
-
         // Query dependencies
         let deps = query_dependencies(view_oid, current_oid)?;
 
@@ -139,7 +142,6 @@ fn query_dependencies(view_oid: pg_sys::Oid, current_oid: pg_sys::Oid) -> TViewR
            AND c.oid != {current_oid:?}"
     );
 
-    info!("Executing query: {}", deps_query);
 
     let deps = Spi::connect(|client| {
         let rows = client.select(&deps_query, None, &[])?;
@@ -175,7 +177,6 @@ fn query_dependencies(view_oid: pg_sys::Oid, current_oid: pg_sys::Oid) -> TViewR
     })?
     .unwrap_or_default();
 
-    info!("Found {} dependency rows", deps.len());
     Ok(deps)
 }
 
@@ -184,46 +185,18 @@ fn filter_base_tables(dependencies: &[DependencyNode]) -> Vec<pg_sys::Oid> {
 
     for dep in dependencies {
         if let Some(relkind) = &dep.relkind {
-            if let Ok(dep_name) = get_object_name(dep.oid) {
-                info!("  Found dependency: {} (OID {:?}, relkind '{}')", dep_name, dep.oid, relkind);
-            }
-
             match relkind.as_str() {
-                "r" => {
-                    // Regular table
+                "r" | "m" | "p" => {
+                    // Regular table, materialized view, partitioned table — treat as base
                     base_tables.insert(dep.oid);
-                    if let Ok(name) = get_object_name(dep.oid) {
-                        info!("  -> Base table: {}", name);
-                    }
-                }
-                "m" => {
-                    // Materialized view - treat as base table
-                    base_tables.insert(dep.oid);
-                    if let Ok(name) = get_object_name(dep.oid) {
-                        info!("  -> Materialized view: {}", name);
-                    }
-                }
-                "p" => {
-                    // Partitioned table - treat as base table
-                    base_tables.insert(dep.oid);
-                    if let Ok(name) = get_object_name(dep.oid) {
-                        info!("  -> Partitioned table: {}", name);
-                    }
                 }
                 "v" => {
-                    // View - already handled in traversal
+                    // View — already handled in traversal
                 }
                 _ => {
-                    // Ignore other types
-                    if crate::config::DEBUG_DEPENDENCIES {
-                        if let Ok(name) = get_object_name(dep.oid) {
-                            info!("  -> Ignoring '{}' with relkind '{}'", name, relkind);
-                        }
-                    }
+                    // Ignore other object types
                 }
             }
-        } else {
-            info!("Skipping dependency OID {:?} (not in pg_class)", dep.oid);
         }
     }
 

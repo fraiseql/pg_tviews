@@ -63,7 +63,7 @@ SELECT
     p.pk_post,
     p.id,
     p.fk_user,
-    u.id AS user_id,
+    user_prepared.id AS user_id,
     jsonb_build_object(
         'id', p.id::text,
         'title', p.title,
@@ -90,9 +90,7 @@ SELECT
     COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Alice') = 3 as alice_has_3_posts,
     COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Bob') = 1 as bob_has_1_post
 FROM tv_post;
-WHERE fk_user = 1
-ORDER BY pk_post;
--- Expected: 3 posts with author 'Alice', 'alice@example.com'
+-- Expected: 3 posts with author 'Alice', 1 post with author 'Bob'
 
 \echo '✓ Test 1 passed: Initial population correct'
 
@@ -115,10 +113,8 @@ WHERE fk_user = 1;
 
 -- Verify Bob's posts NOT affected
 SELECT
-    COUNT(*) = 1 as bob_posts_unchanged,
-    (data->'author'->>'name') = 'Bob' as bob_name_correct
-FROM tv_post
-WHERE fk_user = 2;
+    (SELECT COUNT(*) FROM tv_post WHERE fk_user = 2) = 1 as bob_posts_unchanged,
+    (SELECT data->'author'->>'name' FROM tv_post WHERE fk_user = 2) = 'Bob' as bob_name_correct;
 
 \echo '✓ Test 2 passed: Parent update cascaded to children'
 

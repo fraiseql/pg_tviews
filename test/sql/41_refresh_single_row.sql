@@ -91,7 +91,6 @@ SELECT
     COUNT(*) = 2 as other_rows_unchanged,
     COUNT(*) FILTER (WHERE data->>'title' != 'First Article - Updated') = 2 as other_titles_unchanged
 FROM tv_article
-WHERE pk_article != 1;
 WHERE pk_article != 1
   AND updated_at <= :'before_update'::timestamptz;
 -- Expected: 2 (other rows should have old timestamp)

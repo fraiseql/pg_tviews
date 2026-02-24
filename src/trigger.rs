@@ -74,7 +74,7 @@ fn pg_tview_trigger_handler<'a>(
     Ok(None)
 }
 
-/// Statement-level trigger handler for bulk operations (Phase 9A)
+/// Statement-level trigger handler for bulk operations
 /// This is called once per statement instead of once per row
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)]

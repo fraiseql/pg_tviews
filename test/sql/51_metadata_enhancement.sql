@@ -1,4 +1,3 @@
--- Phase 5 Task 2 RED: Test metadata enhancement
 -- This test verifies that new metadata fields are populated
 
 BEGIN;
@@ -9,20 +8,22 @@ BEGIN;
     CREATE EXTENSION pg_tviews;
 
     -- Test Case 1: Create TVIEW and verify metadata includes new fields
-    CREATE TABLE tb_user (pk_user INT PRIMARY KEY, name TEXT);
-    INSERT INTO tb_user VALUES (1, 'Alice');
+    CREATE TABLE tb_user (pk_user INT PRIMARY KEY, id UUID NOT NULL DEFAULT gen_random_uuid(), name TEXT);
+    INSERT INTO tb_user VALUES (1, gen_random_uuid(), 'Alice');
 
     CREATE TABLE tb_post (
         pk_post INT PRIMARY KEY,
+        id UUID NOT NULL DEFAULT gen_random_uuid(),
         fk_user INT REFERENCES tb_user(pk_user),
         title TEXT
     );
-    INSERT INTO tb_post VALUES (1, 1, 'First Post');
+    INSERT INTO tb_post VALUES (1, gen_random_uuid(), 1, 'First Post');
 
     -- Create TVIEW with nested object (user data embedded in post)
     SELECT pg_tviews_create('post', $$
         SELECT
             p.pk_post,
+            p.id,
             p.fk_user,
             jsonb_build_object(
                 'title', p.title,
@@ -46,7 +47,7 @@ BEGIN;
     -- Expected: t, t, t
 
     -- Test Case 2: Verify columns can be queried
-    -- (values will be empty arrays until Task 3 implements detection logic)
+
     SELECT
         array_length(dependency_types, 1) AS dep_types_len,
         array_length(fk_columns, 1) AS fk_cols_len

@@ -447,17 +447,53 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
 
+    // Resolve backing view name for UPSERT
+    let view_name = TviewMeta::load_for_tview(row.tview_oid)?
+        .map(|m| lookup_view_for_source(m.view_oid))
+        .transpose()?
+        .unwrap_or_else(|| format!("v_{}", row.entity_name));
+
+    // Get view column names (authoritative list of data columns; excludes timestamps)
+    let col_names: Vec<String> = Spi::connect(|client| {
+        let q = format!(
+            "SELECT a.attname::text \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             WHERE c.relname = '{}' AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+            view_name.replace('\'', "''")
+        );
+        let rows = client.select(&q, None, &[])?;
+        let mut cols: Vec<String> = Vec::new();
+        for r in rows {
+            if let Some(name) = r["attname"].value::<String>()? {
+                cols.push(name);
+            }
+        }
+        Ok::<Vec<String>, spi::SpiError>(cols)
+    })?;
+
+    // Build DO UPDATE SET clause (update every non-pk column; timestamps use DEFAULT on INSERT)
+    let do_update: String = col_names.iter()
+        .filter(|c| c.as_str() != pk_col.as_str())
+        .map(|c| format!("{c} = EXCLUDED.{c}"))
+        .chain(std::iter::once("updated_at = NOW()".to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let col_list = col_names.join(", ");
+
+    // UPSERT: INSERT from view (timestamps use DEFAULT NOW()), or UPDATE on conflict.
+    // This handles both new rows (inserted into base table after TVIEW creation)
+    // and existing rows that need their data refreshed.
     let sql = format!(
-        "UPDATE {tv_name} SET data = $1, updated_at = now() WHERE {pk_col} = $2"
+        "INSERT INTO {tv_name} ({col_list}) \
+         SELECT {col_list} FROM {view_name} WHERE {pk_col} = {} \
+         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}",
+        row.pk
     );
 
-    Spi::run_with_args(
-        &sql,
-        &[
-            unsafe { DatumWithOid::new(JsonB(row.data.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
-            unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
-        ],
-    )?;
+    Spi::run(&sql)?;
     Ok(())
 }
 

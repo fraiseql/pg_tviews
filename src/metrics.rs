@@ -47,11 +47,11 @@ struct QueueMetrics {
     table_cache_hits: u64,
     /// Table cache misses
     table_cache_misses: u64,
-    /// Prepared statement cache hits (Phase 9C)
+    /// Prepared statement cache hits
     prepared_stmt_cache_hits: u64,
-    /// Prepared statement cache misses (Phase 9C)
+    /// Prepared statement cache misses
     prepared_stmt_cache_misses: u64,
-    /// Bulk refresh operations performed (Phase 9B)
+    /// Bulk refresh operations performed
     bulk_refresh_count: u64,
     /// Individual refresh operations performed
     individual_refresh_count: u64,
@@ -129,7 +129,7 @@ pub mod metrics_api {
         });
     }
 
-    /// Record prepared statement cache hit (Phase 9C)
+    /// Record prepared statement cache hit
     #[allow(dead_code)]
     pub fn record_prepared_stmt_cache_hit() {
         METRICS.with(|m| {
@@ -137,7 +137,7 @@ pub mod metrics_api {
         });
     }
 
-    /// Record prepared statement cache miss (Phase 9C)
+    /// Record prepared statement cache miss
     #[allow(dead_code)]
     pub fn record_prepared_stmt_cache_miss() {
         METRICS.with(|m| {
@@ -145,7 +145,7 @@ pub mod metrics_api {
         });
     }
 
-    /// Record bulk refresh operation (Phase 9B)
+    /// Record bulk refresh operation
     #[allow(dead_code)]
     pub fn record_bulk_refresh(count: usize) {
         METRICS.with(|m| {

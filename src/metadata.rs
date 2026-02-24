@@ -76,7 +76,7 @@ extension_sql!(
 DROP EVENT TRIGGER IF EXISTS pg_tviews_ddl_end;
 CREATE EVENT TRIGGER pg_tviews_ddl_end
     ON ddl_command_end
-    WHEN TAG IN ('CREATE TABLE', 'SELECT INTO')
+    WHEN TAG IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO')
     EXECUTE FUNCTION pg_tviews_handle_ddl_event();
 
 -- Add comment

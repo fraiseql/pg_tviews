@@ -1,11 +1,13 @@
--- Phase 5 Task 6: Array Handling Implementation
--- Test 1: Array Column Materialization (RED Phase)
+-- Array Column Materialization Tests
+
 -- This test verifies that TVIEWs can materialize array columns correctly
 
 BEGIN;
     SET client_min_messages TO WARNING;
 
-    -- Cleanup (extension is already loaded by pgrx)
+    -- Cleanup
+    DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+    CREATE EXTENSION pg_tviews;
 
     -- Test Case 1: Array column materialization with UUID arrays
     CREATE TABLE tb_machine (

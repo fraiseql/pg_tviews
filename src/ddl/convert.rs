@@ -20,11 +20,10 @@ use crate::schema::TViewSchema;
 /// 5. Install triggers on base tables
 /// 6. Populate metadata
 ///
-/// # Challenges
-///
-/// - We don't have the original SELECT statement
-/// - Must infer base tables from data
-/// - Must handle edge cases (empty tables, complex JOINs)
+/// # Note on SAVEPOINTs
+/// This function runs inside an event trigger, which executes within an SPI
+/// context where `SAVEPOINT` commands are not permitted (`SPI_ERROR_TRANSACTION`).
+/// Error handling relies on the outer transaction rolling back on failure.
 ///
 /// # Errors
 /// Returns error if table doesn't exist, conversion fails, or rollback is needed
@@ -33,23 +32,10 @@ pub fn convert_existing_table_to_tview(
 ) -> TViewResult<()> {
     let entity_name = extract_entity_name(table_name)?;
 
-    info!("Converting existing table '{}' to TVIEW", table_name);
 
-    // Create savepoint in case conversion fails
-    Spi::run("SAVEPOINT tview_conversion")?;
-    info!("Created savepoint for TVIEW conversion");
+    do_conversion(table_name, entity_name)?;
 
-    match do_conversion(table_name, entity_name) {
-        Ok(()) => {
-            Spi::run("RELEASE SAVEPOINT tview_conversion")?;
-            info!("Successfully converted '{}' to TVIEW", table_name);
-            Ok(())
-        }
-        Err(e) => {
-            Spi::run("ROLLBACK TO SAVEPOINT tview_conversion")?;
-            Err(e)
-        }
-    }
+    Ok(())
 }
 
 fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
@@ -65,9 +51,14 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
     // Step 4: Get base tables (infer from data or require user hint)
     let base_tables = infer_base_tables(table_name)?;
 
-    // Step 5: Drop the existing table
-    Spi::run(&format!("DROP TABLE {table_name} CASCADE"))?;
-    info!("Dropped existing table '{}'", table_name);
+    // Step 5: Drop the existing table.
+    // Must use spi_run_ddl (non-atomic SPI) because this runs inside an event trigger
+    // which provides an atomic SPI context where DDL is otherwise forbidden on PG18.
+    crate::utils::spi_run_ddl(&format!("DROP TABLE {table_name} CASCADE"))
+        .map_err(|e| TViewError::SpiError {
+            query: format!("DROP TABLE {table_name} CASCADE"),
+            error: e,
+        })?;
 
     // Step 6: Reconstruct as proper TVIEW
     reconstruct_as_tview(
@@ -82,17 +73,8 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
 }
 
 /// Validate that table has required TVIEW structure
-fn validate_tview_structure(table_name: &str, entity_name: &str) -> TViewResult<()> {
-    let pk_col = format!("pk_{entity_name}");
-
-    // Check required columns exist
+fn validate_tview_structure(table_name: &str, _entity_name: &str) -> TViewResult<()> {
     let columns = get_table_columns(table_name)?;
-
-    // Log presence of optional optimization columns
-    let has_pk = columns.iter().any(|c| c.name == pk_col);
-    if has_pk {
-        info!("TVIEW '{}' has pk_{} column for optimized queries", table_name, entity_name);
-    }
 
     // Validate required columns exist and have correct types
     let id_col = columns.iter().find(|c| c.name == "id")
@@ -205,7 +187,6 @@ fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec
 
         // Handle empty tables gracefully
         if results.is_empty() {
-            info!("Table '{}' is empty, no data to backup", table_name);
             return Ok::<_, spi::Error>(backup);
         }
 
@@ -223,26 +204,22 @@ fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec
         Ok::<_, spi::Error>(backup)
     })?;
 
-    info!("Backed up {} rows from table '{}'", backup.len(), table_name);
     Ok(backup)
 }
 
 fn infer_base_tables(table_name: &str) -> TViewResult<Vec<String>> {
     // First, check for user-provided hints in table comment
     if let Some(hinted_tables) = get_base_table_hints(table_name)? {
-        info!("Using user-provided base table hints for '{}': {:?}", table_name, hinted_tables);
         return Ok(hinted_tables);
     }
 
     // Try to infer base tables from data patterns
     let inferred = infer_base_tables_from_data(table_name)?;
     if !inferred.is_empty() {
-        info!("Inferred base tables for '{}': {:?}", table_name, inferred);
         return Ok(inferred);
     }
 
     // No hints or inference possible, skip trigger installation
-    info!("No base table hints or inference possible for '{}', skipping trigger installation", table_name);
     Ok(Vec::new())
 }
 
@@ -371,7 +348,6 @@ fn reconstruct_as_tview(
                 NULL::jsonb as data
              WHERE false"
         ))?;
-        info!("Created empty view {} for empty table", view_name);
     } else {
         // Non-empty table: reconstruct with actual data
         let mut values = Vec::new();
@@ -385,14 +361,12 @@ fn reconstruct_as_tview(
             "CREATE VIEW {} AS SELECT * FROM (VALUES {}) AS t(id, data)",
             view_name, values.join(", ")
         ))?;
-        info!("Created view {} with {} rows", view_name, data_backup.len());
     }
 
     // Step 2: Create the TVIEW wrapper
     Spi::run(&format!(
         "CREATE VIEW {table_name} AS SELECT * FROM {view_name}"
     ))?;
-    info!("Created wrapper view {}", table_name);
 
     // Step 3: Register metadata
     register_tview_metadata(entity_name, &view_name, table_name, schema)?;

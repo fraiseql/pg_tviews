@@ -94,7 +94,7 @@ SELECT
     l1.pk_level_1,
     l1.id,
     l1.fk_level_0,
-    l0.id AS level_0_id,
+    v_level_0.id AS level_0_id,
     jsonb_build_object(
         'id', l1.id::text,
         'value', l1.value,
@@ -108,7 +108,7 @@ SELECT
     l2.pk_level_2,
     l2.id,
     l2.fk_level_1,
-    l1.id AS level_1_id,
+    v_level_1.id AS level_1_id,
     jsonb_build_object(
         'id', l2.id::text,
         'value', l2.value,
@@ -122,7 +122,7 @@ SELECT
     l3.pk_level_3,
     l3.id,
     l3.fk_level_2,
-    l2.id AS level_2_id,
+    v_level_2.id AS level_2_id,
     jsonb_build_object(
         'id', l3.id::text,
         'value', l3.value,
@@ -136,7 +136,7 @@ SELECT
     l4.pk_level_4,
     l4.id,
     l4.fk_level_3,
-    l3.id AS level_3_id,
+    v_level_3.id AS level_3_id,
     jsonb_build_object(
         'id', l4.id::text,
         'value', l4.value,
@@ -150,7 +150,7 @@ SELECT
     l5.pk_level_5,
     l5.id,
     l5.fk_level_4,
-    l4.id AS level_4_id,
+    v_level_4.id AS level_4_id,
     jsonb_build_object(
         'id', l5.id::text,
         'value', l5.value,

@@ -1,5 +1,3 @@
--- Phase 5 Task 6: Array Handling Implementation
--- Test 2: JSONB Array Element Updates (RED Phase)
 -- This test verifies that JSONB array elements can be updated using jsonb_smart_patch_array
 
 BEGIN;

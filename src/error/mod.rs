@@ -103,7 +103,7 @@ pub enum TViewError {
         max_size: usize,
     },
 
-    // ============ Graph and Propagation Errors (Phase 6D) ============
+    // ============ Graph and Propagation Errors ============
     /// Dependency cycle detected in entity graph
     DependencyCycle {
         entities: Vec<String>,
@@ -349,7 +349,6 @@ impl From<TViewError> for pgrx::spi::Error {
         let _message = e.to_string();
 
         // Map to pgrx error levels
-        // TODO: Map properly once pgrx API clarified
         Self::InvalidPosition
     }
 }

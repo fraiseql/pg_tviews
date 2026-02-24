@@ -39,7 +39,7 @@ pub unsafe fn register_xact_callback() {
             std::ptr::null_mut(),
         );
 
-        // Phase 9D: Register start-of-transaction callback for connection pooling safety
+        // Register start-of-transaction callback for connection pooling safety
         pg_sys::RegisterXactCallback(
             Some(tview_xact_start_callback),
             std::ptr::null_mut(),
@@ -72,7 +72,7 @@ pub unsafe fn register_subxact_callback() {
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
-    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         // Determine event type (using PostgreSQL C API constants)
         let xact_event = match event {
@@ -133,7 +133,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     }
 }
 
-/// Start-of-transaction callback for connection pooling safety (Phase 9D)
+/// Start-of-transaction callback for connection pooling safety
 ///
 /// This ensures thread-local state is cleared at the start of each transaction,
 /// preventing queue leakage between transactions in connection poolers like `PgBouncer`.
@@ -143,14 +143,13 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// Must not panic or unwind.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
-    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         if event == 3 { // XACT_EVENT_START
             // Defensive: Clear any leftover state from previous transaction
             // This prevents queue leakage in connection poolers (PgBouncer, etc.)
             clear_queue();
             reset_scheduled_flag();
-            info!("TVIEW: Transaction started, cleared thread-local state for connection pooling safety");
         }
     });
 
@@ -174,7 +173,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
     _parent_subid: pg_sys::SubTransactionId,
     _arg: *mut c_void,
 ) {
-    // Phase 10C: Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
+    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     let result = std::panic::catch_unwind(|| {
         match event {
             pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
@@ -190,7 +189,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                     s.borrow_mut().push(snapshot);
                 });
 
-                info!("TVIEW: Savepoint created (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
@@ -203,7 +201,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
                     // Replace current queue with the snapshot
                     super::state::replace_queue(snapshot);
-                    info!("TVIEW: Savepoint rolled back (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
                 }
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
@@ -218,7 +215,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                     s.borrow_mut().pop();
                 });
 
-                info!("TVIEW: Savepoint released (depth: {})", SAVEPOINT_DEPTH.with(|d| *d.borrow()));
             }
             _ => {
                 // Ignore other subtransaction events
@@ -256,7 +252,6 @@ fn handle_pre_commit() -> TViewResult<()> {
         return Ok(());
     }
 
-    info!("TVIEW: Flushing {} initial refresh requests at commit", pending.len());
 
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
@@ -273,9 +268,8 @@ fn handle_pre_commit() -> TViewResult<()> {
         // Sort this batch by dependency order
         let sorted_keys = graph.sort_keys(pending.drain().collect());
 
-        info!("TVIEW: Processing iteration {}: {} refreshes", iteration, sorted_keys.len());
 
-        // Group keys by entity for bulk refresh (Phase 9B optimization)
+        // Group keys by entity for bulk refresh
         let mut keys_by_entity: std::collections::HashMap<String, Vec<super::key::RefreshKey>> =
             std::collections::HashMap::new();
 
@@ -301,10 +295,9 @@ fn handle_pre_commit() -> TViewResult<()> {
                     }
                 }
             } else {
-                // Multiple keys for same entity: use bulk refresh (Phase 9B)
+                // Multiple keys for same entity: use bulk refresh
                 let pks: Vec<i64> = entity_keys.iter().map(|k| k.pk).collect();
 
-                info!("TVIEW: Bulk refreshing entity '{}' with {} keys", entity, pks.len());
 
                 // Bulk refresh this entity
                 // FAIL-FAST: Propagate error immediately to abort transaction
@@ -336,7 +329,6 @@ fn handle_pre_commit() -> TViewResult<()> {
         }
     }
 
-    info!("TVIEW: Completed {} refresh operations in {} iterations", processed.len(), iteration - 1);
 
     // Record metrics
     crate::metrics::metrics_api::record_refresh_complete(
@@ -355,10 +347,10 @@ fn handle_pre_commit() -> TViewResult<()> {
 /// 2. Discovers parent entities that depend on this one
 /// 3. Returns parent keys WITHOUT refreshing them (defer to queue)
 ///
-/// # Difference from Phase 1-5
+/// # Design Note
 ///
-/// Phase 1-5: `propagate_from_row()` called `refresh_pk()` recursively ❌
-/// Phase 6D: Return parent keys for queue processing ✅
+/// This function returns parent keys for queue processing instead of
+/// calling `refresh_pk()` recursively.
 fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<super::key::RefreshKey>> {
     // Load metadata
     use crate::catalog::TviewMeta;
@@ -392,8 +384,6 @@ fn handle_prepare() -> TViewResult<()> {
         return Ok(());
     }
 
-    info!("TVIEW: Persisting {} refresh requests for prepared transaction '{}'",
-          queue.len(), gid);
 
     // Serialize queue using JSONB format (configurable in future)
     let serialized = super::persistence::SerializedQueue::from_queue(queue);

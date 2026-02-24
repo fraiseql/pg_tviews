@@ -47,10 +47,9 @@ FROM tb_post;
 
 -- Verify initial state
 SELECT
-    COUNT(*) = 1 as correct_row_count,
-    (data->>'title') = 'Original Post' as correct_title,
-    (data->>'content') = 'Original Content' as correct_content
-FROM tv_post;
+    (SELECT COUNT(*) FROM tv_post) = 1 as correct_row_count,
+    (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'Original Post' as correct_title,
+    (SELECT data->>'content' FROM tv_post WHERE pk_post = 1) = 'Original Content' as correct_content;
 
 -- Test: UPDATE should trigger refresh
 UPDATE tb_post
@@ -59,11 +58,9 @@ WHERE pk_post = 1;
 
 -- Verify refresh happened
 SELECT
-    COUNT(*) = 1 as row_exists,
-    (data->>'title') = 'Updated Post' as title_updated,
-    (data->>'content') = 'Updated Content' as content_updated
-FROM tv_post
-WHERE pk_post = 1;
+    (SELECT COUNT(*) FROM tv_post WHERE pk_post = 1) = 1 as row_exists,
+    (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'Updated Post' as title_updated,
+    (SELECT data->>'content' FROM tv_post WHERE pk_post = 1) = 'Updated Content' as content_updated;
 
 -- Verify metadata and triggers
 SELECT
@@ -104,10 +101,9 @@ FROM tb_user;
 
 -- Verify initial state
 SELECT
-    COUNT(*) = 1 as correct_row_count,
-    (data->>'name') = 'Alice' as correct_name,
-    (data->>'email') = 'alice@example.com' as correct_email
-FROM tv_user;
+    (SELECT COUNT(*) FROM tv_user) = 1 as correct_row_count,
+    (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) = 'Alice' as correct_name,
+    (SELECT data->>'email' FROM tv_user WHERE pk_user = 1) = 'alice@example.com' as correct_email;
 
 -- Test: UPDATE should trigger refresh (different PK column)
 UPDATE tb_user
@@ -116,11 +112,9 @@ WHERE pk_user = 1;
 
 -- Verify refresh happened
 SELECT
-    COUNT(*) = 1 as row_exists,
-    (data->>'name') = 'Alice Updated' as name_updated,
-    (data->>'email') = 'alice.updated@example.com' as email_updated
-FROM tv_user
-WHERE pk_user = 1;
+    (SELECT COUNT(*) FROM tv_user WHERE pk_user = 1) = 1 as row_exists,
+    (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) = 'Alice Updated' as name_updated,
+    (SELECT data->>'email' FROM tv_user WHERE pk_user = 1) = 'alice.updated@example.com' as email_updated;
 
 -- Verify metadata for user TVIEW
 SELECT
@@ -141,10 +135,8 @@ SELECT COUNT(*) = 2 as correct_post_count FROM tv_post;
 
 -- Verify new post was added
 SELECT
-    COUNT(*) = 1 as new_post_added,
-    (data->>'title') = 'New Post' as correct_title
-FROM tv_post
-WHERE data->>'title' = 'New Post';
+    (SELECT COUNT(*) FROM tv_post WHERE data->>'title' = 'New Post') = 1 as new_post_added,
+    (SELECT data->>'title' FROM tv_post WHERE data->>'title' = 'New Post') = 'New Post' as correct_title;
 
 \echo '✓ Test 3 passed: INSERT triggers refresh'
 

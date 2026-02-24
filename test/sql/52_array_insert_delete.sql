@@ -1,5 +1,3 @@
--- Phase 5 Task 6: Array Handling Implementation
--- Test 3: Array Element INSERT/DELETE Operations (RED Phase)
 -- This test verifies that array elements can be inserted and deleted properly
 
 BEGIN;
@@ -39,7 +37,7 @@ BEGIN;
                     jsonb_agg(
                         jsonb_build_object('id', c.id, 'author', c.author, 'text', c.text)
                         ORDER BY c.pk_comment
-                    ),
+                    ) FILTER (WHERE c.pk_comment IS NOT NULL),
                     '[]'::jsonb
                 )
             ) AS data

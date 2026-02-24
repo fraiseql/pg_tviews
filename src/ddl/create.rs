@@ -7,7 +7,7 @@ use crate::error::{TViewError, TViewResult};
 /// Uses `current_schema()` to respect the active `search_path`, matching
 /// standard PostgreSQL convention for unqualified DDL statements.
 fn current_schema() -> TViewResult<String> {
-    crate::utils::spi_get_string("SELECT current_schema()")
+    crate::utils::spi_get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
             pg_error: e.to_string(),
@@ -39,33 +39,26 @@ pub fn create_tview(
     tview_name: &str,
     select_sql: &str,
 ) -> TViewResult<()> {
-    info!("create_tview called: tview_name={}, select_sql={}", tview_name, select_sql);
 
     // Step 1: Check if TVIEW already exists
-    info!("Step 1: Checking if TVIEW already exists");
     let exists = tview_exists(tview_name)?;
     if exists {
         return Err(TViewError::TViewAlreadyExists {
             name: tview_name.to_string(),
         });
     }
-    info!("TVIEW does not exist, proceeding");
 
     // Step 1.5: Extract entity name from tview_name
     // Support both "tv_entity" and just "entity" formats
     let entity_name = tview_name.strip_prefix("tv_").map_or(tview_name, |stripped| stripped);
-    info!("Entity name: {}", entity_name);
 
     // Step 2: Infer schema from SELECT
     // If SELECT doesn't have TVIEW format (pk_<entity>, id, data), create a prepared view first
-    info!("Step 2: Inferring schema from SELECT");
     let schema = infer_schema(select_sql)?;
-    info!("Schema inferred successfully");
 
     // Check if we need to transform the SELECT to TVIEW format
     let (final_select_sql, final_schema) = if schema.entity_name.is_none() {
         // Raw SELECT - needs transformation to TVIEW format
-        info!("Transforming raw SELECT to TVIEW format for entity '{}'", entity_name);
         transform_raw_select_to_tview(entity_name, select_sql)?
     } else {
         // Already in TVIEW format
@@ -79,51 +72,47 @@ pub fn create_tview(
                       \"pk_<entity>\" (e.g., pk_user, pk_post)".to_string(),
         })?;
 
+    // Derive the canonical materialized-table name: always tv_<entity>.
+    // This normalises both calling conventions:
+    //   pg_tviews_create('post', ...)   → tv_post
+    //   pg_tviews_create('tv_post', ...) → tv_post
+    let tv_table_name = format!("tv_{entity_name}");
+
     // Resolve the target schema once, respecting the active search_path.
     let schema_name = current_schema()?;
-    info!("Creating TVIEW objects in schema: {}", schema_name);
 
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
     // Step 4: Create materialized table tv_<entity>
-    create_materialized_table(tview_name, &final_schema, &schema_name)?;
+    create_materialized_table(&tv_table_name, &final_schema, &schema_name)?;
 
     // Step 5: Populate initial data
-    info!("Step 5: Populating initial data");
-    populate_initial_data(tview_name, &view_name, &final_schema, &schema_name)?;
-    info!("Initial data populated");
+    populate_initial_data(&tv_table_name, &view_name, &final_schema, &schema_name)?;
 
     // Step 6: Find base table dependencies
-    info!("Step 6: Finding base table dependencies");
     let dep_graph = crate::dependency::find_base_tables(&view_name)?;
-    info!("Found {} base table dependencies for {}", dep_graph.base_tables.len(), tview_name);
 
     // Step 7: Register metadata (with dependencies)
-    info!("Step 7: Registering metadata");
     register_metadata(
         entity_name,
         &view_name,
-        tview_name,
+        &tv_table_name,
         &final_select_sql,
         &final_schema,
         &dep_graph.base_tables,
         &schema_name,
     )?;
-    info!("Metadata registered");
 
     // Step 8: Install triggers on base tables
-    info!("Step 8: Installing triggers");
     if dep_graph.base_tables.is_empty() {
-        warning!("No base table dependencies found for {}", tview_name);
+        warning!("No base table dependencies found for {}", tv_table_name);
     } else {
         crate::dependency::install_triggers(&dep_graph.base_tables, entity_name)?;
-        info!("Installed triggers on {} base tables", dep_graph.base_tables.len());
     }
 
     // Invalidate caches since new TVIEW was created
-    info!("Step 9: Invalidating caches");
     crate::queue::cache::invalidate_all_caches();
 
     // Log the creation for audit trail
@@ -131,7 +120,6 @@ pub fn create_tview(
         warning!("Failed to log TVIEW creation: {}", e);
     }
 
-    info!("TVIEW {} created successfully", tview_name);
 
     Ok(())
 }
@@ -157,10 +145,9 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
         "CREATE VIEW {schema_name}.{view_name} AS {select_sql}"
     );
 
-    info!("Creating backing view with SQL: {}", create_view_sql);
-    Spi::run(&create_view_sql).map_err(|e| TViewError::SpiError {
+    crate::utils::spi_run_ddl(&create_view_sql).map_err(|e| TViewError::SpiError {
         query: create_view_sql.clone(),
-        error: e.to_string(),
+        error: e,
     })?;
 
     // Verify the view was created (schema-qualified to avoid false positives across schemas)
@@ -181,7 +168,6 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
         });
     }
 
-    info!("Created backing view: {}.{}", schema_name, view_name);
     Ok(())
 }
 
@@ -239,15 +225,14 @@ fn create_materialized_table(
         "CREATE TABLE {schema_name}.{tview_name} (\n    {columns_sql}\n)"
     );
 
-    Spi::run(&create_table_sql).map_err(|e| TViewError::SpiError {
+    crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
-        error: e.to_string(),
+        error: e,
     })?;
 
     // Create indexes for performance
     create_tview_indexes(tview_name, schema, schema_name)?;
 
-    info!("Created materialized table: {}.{}", schema_name, tview_name);
     Ok(())
 }
 
@@ -259,9 +244,9 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &st
         let create_idx = format!(
             "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({id})"
         );
-        Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
+        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
-            error: e.to_string(),
+            error: e,
         })?;
     }
 
@@ -271,9 +256,9 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &st
         let create_idx = format!(
             "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({uuid_fk})"
         );
-        Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
+        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
-            error: e.to_string(),
+            error: e,
         })?;
     }
 
@@ -283,9 +268,9 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &st
         let create_idx = format!(
             "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} USING GIN ({data})"
         );
-        Spi::run(&create_idx).map_err(|e| TViewError::SpiError {
+        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
-            error: e.to_string(),
+            error: e,
         })?;
     }
 
@@ -341,7 +326,6 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
         error: e.to_string(),
     })?;
 
-    info!("Populated initial data for {}", tview_name);
     Ok(())
 }
 
@@ -466,7 +450,6 @@ fn register_metadata(
         error: e.to_string(),
     })?;
 
-    info!("Registered TVIEW metadata for {}", entity_name);
     Ok(())
 }
 
@@ -491,9 +474,9 @@ fn transform_raw_select_to_tview(
         "CREATE TEMP VIEW {temp_view_name} AS {select_sql}"
     );
 
-    Spi::run(&create_temp).map_err(|e| TViewError::SpiError {
+    crate::utils::spi_run_ddl(&create_temp).map_err(|e| TViewError::SpiError {
         query: create_temp.clone(),
-        error: e.to_string(),
+        error: e,
     })?;
 
     // Get columns from temp view
@@ -528,7 +511,7 @@ fn transform_raw_select_to_tview(
     })?;
 
     // Drop temp view
-    Spi::run(&format!("DROP VIEW {temp_view_name}")).ok();
+    crate::utils::spi_run_ddl(&format!("DROP VIEW {temp_view_name}")).ok();
 
     // Find primary key column (look for 'id' or first integer/bigint column)
     let pk_source_col = columns.iter()
@@ -570,7 +553,6 @@ fn transform_raw_select_to_tview(
         select_sql
     );
 
-    info!("Transformed SELECT to TVIEW format with pk column from '{}'", pk_source_col);
 
     // Infer schema from transformed SELECT
     let schema = infer_schema(&transformed_select)?;

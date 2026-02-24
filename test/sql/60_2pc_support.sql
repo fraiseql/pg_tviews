@@ -1,4 +1,3 @@
--- Phase 8: 2PC Support Integration Tests
 -- Tests for PREPARE TRANSACTION, COMMIT PREPARED, and recovery scenarios
 
 -- Test 1: Basic PREPARE + COMMIT PREPARED flow

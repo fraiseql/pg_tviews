@@ -1,4 +1,4 @@
-//! Phase 9C: Query Plan Caching
+//! Query Plan Caching
 //!
 //! Caches prepared statements for refresh operations to avoid query parsing overhead.
 //! Provides 10× performance improvement by eliminating query planning costs.
@@ -66,8 +66,6 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
                     query: String::new(),
                     error: "data column is NULL".to_string(),
                 }))?;
-            // TODO: Integrate with main refresh logic to apply patches
-            info!("TVIEW: Refreshed {}[{}] with cached plan", entity, pk);
         } else {
             warning!("TVIEW: No row found for {}[{}] during cached refresh", entity, pk);
         }
@@ -125,8 +123,6 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
 pub fn clear_prepared_statement_cache() {
     let mut cache = PREPARED_STATEMENTS.lock().unwrap_or_else(|p| p.into_inner());
     if !cache.is_empty() {
-        info!("TVIEW: Clearing prepared statement cache ({} entries) due to schema change",
-              cache.len());
         cache.clear();
     }
 }

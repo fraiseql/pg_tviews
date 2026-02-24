@@ -182,8 +182,13 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 extern "C-unwind" fn _PG_init() {
     // For shared_preload_libraries extensions, _PG_init is called during postmaster startup
     // This is the CORRECT time to install hooks (they apply to all backends)
+    // Use ensure_hook_installed() (not install_hook() directly) so that the
+    // HOOK_INSTALLED flag is set, preventing a double-install if pg_tviews_create
+    // is later called and also calls ensure_hook_installed().  Double-installing
+    // the hook sets PREV_PROCESS_UTILITY_HOOK to our own hook, which causes
+    // infinite recursion and SIGSEGV on the next CREATE/DROP DDL.
     unsafe {
-        hooks::install_hook();
+        hooks::ensure_hook_installed();
     }
 
     // Note: We cannot call functions that require SPI/database connection here
@@ -304,6 +309,10 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
 }
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
+///
+/// Returns a JSON object with schema details on success, or `{"error": "..."}` on
+/// failure. Never raises a PostgreSQL error so callers can use the result in
+/// expressions (e.g., `IS NOT NULL`, `->>'error'`).
 #[pg_extern]
 fn pg_tviews_analyze_select(sql: &str) -> JsonB {
     match schema::inference::infer_schema(sql) {
@@ -311,12 +320,12 @@ fn pg_tviews_analyze_select(sql: &str) -> JsonB {
             match schema.to_jsonb() {
                 Ok(jsonb) => jsonb,
                 Err(e) => {
-                    error!("Failed to serialize schema to JSONB: {}", e);
+                    JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
                 }
             }
         }
         Err(e) => {
-            error!("Schema inference failed: {}", e);
+            JsonB(serde_json::json!({"error": e.to_string()}))
         }
     }
 }
@@ -365,7 +374,6 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     // STEP 3: Now process the queue (transaction is committed, safe to refresh)
     let Some(jsonb) = queue_jsonb else {
         // No pending refreshes for this GID
-        info!("TVIEW: No pending refreshes for prepared transaction '{}'", gid);
         return Ok(());
     };
 
@@ -373,8 +381,6 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
     let queue = serialized.into_queue();
 
     if !queue.is_empty() {
-        info!("TVIEW: Processing {} deferred refreshes for committed transaction '{}'",
-              queue.len(), gid);
 
         // Process queue in a NEW transaction (prepared transaction already committed)
         Spi::run("BEGIN")?;
@@ -411,14 +417,10 @@ fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
     Spi::run(&rollback_sql)?;
 
     // STEP 2: Clean up pending queue (no refresh needed - transaction aborted)
-    let deleted_count = Spi::get_one_with_args::<i32>(
+    Spi::get_one_with_args::<i32>(
         "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1 RETURNING 1",
         &[unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
     )?;
-
-    if deleted_count.is_some() {
-        info!("TVIEW: Cleaned up pending queue for rolled back transaction '{}'", gid);
-    }
 
     Ok(())
 }
@@ -513,7 +515,6 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
         };
 
         if !lock_acquired {
-            info!("TVIEW: Another recovery process is running, skipping");
             return Ok(Vec::new());
         }
 
@@ -545,7 +546,6 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
 
             let status = match pg_tviews_commit_prepared(&gid) {
                 Ok(()) => {
-                    info!("TVIEW: Recovered prepared transaction '{}' ({} refreshes)", gid, queue_size);
                     "processed".to_string()
                 }
                 Err(e) => {
@@ -604,12 +604,9 @@ fn pg_tviews_cascade(
 
     if dependent_tviews.is_empty() {
         // No TVIEWs depend on this table
-        info!("No dependent TVIEWs found for base table OID {:?}", base_table_oid);
         return;
     }
 
-    info!("Base table OID {:?} changed (pk={}), refreshing {} dependent TVIEWs",
-          base_table_oid, pk_value, dependent_tviews.len());
 
     // Refresh each dependent TVIEW
     for tview_meta in dependent_tviews {
@@ -626,7 +623,6 @@ fn pg_tviews_cascade(
             continue;
         }
 
-        info!("  Refreshing {} rows in TVIEW {}", affected_rows.len(), tview_meta.entity_name);
 
         // Refresh each affected row (this will cascade via propagate_from_row)
         for affected_pk in affected_rows {
@@ -700,7 +696,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 .collect();
 
             // dependency_paths (TEXT[][]) - array of arrays
-            // TODO: pgrx doesn't support TEXT[][] extraction yet
+            // pgrx does not support TEXT[][] extraction
             // For now, use empty default (Task 3 will populate these)
             let dep_paths: Vec<Option<Vec<String>>> = vec![];
 
@@ -755,34 +751,58 @@ fn find_affected_tview_rows(
     let view_name = utils::lookup_view_for_source(tview_meta.view_oid)?;
     let tview_pk_col = format!("pk_{}", tview_meta.entity_name);
 
-    // Determine if this is a direct match (tview entity = base entity) or FK relationship
-    let where_clause = if tview_meta.entity_name == base_entity {
-        // Direct match: the TVIEW is for this entity (e.g., tv_user depends on tb_user)
-        // Match on the primary key column directly
-        format!("{tview_pk_col} = {base_pk}")
-    } else {
-        // FK relationship: the TVIEW depends on this entity via FK
-        // (e.g., tv_post depends on tb_user via fk_user)
-        let fk_col = format!("fk_{base_entity}");
-        format!("{fk_col} = {base_pk}")
+    // Helper closure to run a SELECT and collect i64 PKs
+    let collect_pks = |query: &str| -> spi::Result<Vec<i64>> {
+        let col = tview_pk_col.clone();
+        Spi::connect(|client| {
+            let rows = client.select(query, None, &[])?;
+            let mut pks = Vec::new();
+            for row in rows {
+                if let Some(pk) = row[col.as_str()].value::<i64>()? {
+                    pks.push(pk);
+                }
+            }
+            Ok(pks)
+        })
     };
 
-    let query = format!(
-        "SELECT {tview_pk_col} FROM {view_name} WHERE {where_clause}"
+    // Case 1: Direct match — TVIEW is for the changed entity (e.g., tv_user for tb_user)
+    if tview_meta.entity_name == base_entity {
+        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {tview_pk_col} = {base_pk}");
+        return collect_pks(&query);
+    }
+
+    // Case 2: Scalar FK — TVIEW SELECT exposes fk_{base_entity} as an output column
+    // (e.g., tv_post.fk_user when tv_post depends on tb_user)
+    let fk_col = format!("fk_{base_entity}");
+    if tview_meta.fk_columns.contains(&fk_col) {
+        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {fk_col} = {base_pk}");
+        return collect_pks(&query);
+    }
+
+    // Case 3: Array aggregation — the TVIEW aggregates rows from the base table via GROUP BY.
+    // The base table carries fk_{tview_entity} pointing back to the parent.
+    // e.g., tv_post aggregates tb_comment; tb_comment.fk_post -> tb_post.pk_post
+    let fk_in_base = format!("fk_{}", tview_meta.entity_name); // "fk_post"
+    let pk_in_base = format!("pk_{base_entity}");              // "pk_comment"
+
+    // Try to look up the parent PK via the base table row.  This succeeds for INSERT/UPDATE
+    // (the row still exists), but returns nothing for DELETE (row already gone).
+    let lookup_query = format!(
+        "SELECT DISTINCT {fk_in_base} AS {tview_pk_col} \
+         FROM {base_table_name} \
+         WHERE {pk_in_base} = {base_pk}"
     );
+    let pks = collect_pks(&lookup_query)?;
+    if !pks.is_empty() {
+        return Ok(pks);
+    }
 
-    Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
-        let mut pks = Vec::new();
-
-        for row in rows {
-            if let Some(pk) = row[tview_pk_col.as_str()].value::<i64>()? {
-                pks.push(pk);
-            }
-        }
-
-        Ok(pks)
-    })
+    // DELETE fallback: the row has been removed so we cannot identify the specific parent.
+    // Refresh all rows in the materialized TVIEW — correct but conservative.
+    let tv_table = format!("tv_{}", tview_meta.entity_name);
+    let fallback_query = format!("SELECT {tview_pk_col} FROM {tv_table}");
+    collect_pks(&fallback_query)
 }
 
 #[cfg(any(test, feature = "pg_test"))]
@@ -833,7 +853,7 @@ mod tests {
         }).unwrap();
     }
 
-    // Phase 5 Task 1 RED: Tests for jsonb_delta detection
+    // Tests for jsonb_delta detection
     #[pg_test]
     fn test_jsonb_delta_check_function_exists() {
         // This test will fail because pg_tviews_check_jsonb_delta doesn't exist yet
@@ -1030,7 +1050,6 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
         "INSERT INTO {tv_name} ({col_list}) SELECT {col_list} FROM {view_name}"
     ))?;
 
-    info!("Full refresh complete for TVIEW entity '{}'", entity);
     Ok(())
 }
 

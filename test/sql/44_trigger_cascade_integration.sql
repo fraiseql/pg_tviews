@@ -90,7 +90,7 @@ SELECT
     u.pk_user,
     u.id,
     u.fk_company,
-    c.id AS company_id,
+    v_company.id AS company_id,
     jsonb_build_object(
         'id', u.id::text,
         'name', u.name,
@@ -106,7 +106,7 @@ SELECT
     p.pk_post,
     p.id,
     p.fk_user,
-    u.id AS user_id,
+    v_user.id AS user_id,
     jsonb_build_object(
         'id', p.id::text,
         'title', p.title,
