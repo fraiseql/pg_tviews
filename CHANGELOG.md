@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.5] - 2026-02-24
+
+### Fixed
+
+- **`cargo pgrx test` compilation (#28, #29)**: Removed spurious
+  `use pgrx_tests::pg_test` import (gated behind `cfg(test)` in pgrx-tests
+  0.16.1, unavailable during cdylib builds). Applied the standard pgrx test
+  module pattern across all 9 source files: module gate changed to
+  `#[cfg(any(test, feature = "pg_test"))]`, `use pgrx::prelude::*` made
+  unconditional inside test modules so the `#[pg_test]` proc macro attribute
+  is always in scope, and redundant `#[cfg(feature = "pg_test")]` guards
+  removed from individual test functions. Contributors can now run
+  `cargo pgrx test` locally without E0432/E0433 errors.
+
 ## [0.1.0-beta.2] - 2025-12-16
 
 ### Code Quality & Refactoring
