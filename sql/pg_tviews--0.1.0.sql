@@ -90,7 +90,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
         fk_columns TEXT[] NOT NULL DEFAULT '{}',
         uuid_fk_columns TEXT[] NOT NULL DEFAULT '{}',
         dependency_types TEXT[] NOT NULL DEFAULT '{}',
-        dependency_paths TEXT[][] NOT NULL DEFAULT '{}',
+        dependency_paths TEXT[]  NOT NULL DEFAULT '{}',
         array_match_keys TEXT[] NOT NULL DEFAULT '{}',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );

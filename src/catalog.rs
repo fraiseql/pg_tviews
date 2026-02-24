@@ -80,6 +80,20 @@ impl TviewMeta {
             .collect()
     }
 
+    /// Convert flat `TEXT[]` of dot-separated path strings into structured paths.
+    ///
+    /// Each element is a dot-joined key sequence (e.g. `"book.author"`).
+    /// An empty string represents a `None` path (Scalar dependency).
+    pub(crate) fn parse_dep_paths(raw: Option<Vec<Option<String>>>) -> Vec<Option<Vec<String>>> {
+        raw.unwrap_or_default()
+            .into_iter()
+            .map(|opt| {
+                opt.filter(|s| !s.is_empty())
+                    .map(|s| s.split('.').map(str::to_string).collect())
+            })
+            .collect()
+    }
+
     /// Look up metadata by source table OID or view OID.
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
@@ -103,9 +117,8 @@ impl TviewMeta {
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
-                // dependency_paths (TEXT[][]) - pgrx does not yet support TEXT[][] extraction,
-                // so paths are stored as a flat TEXT[] in from_spi_row via load_for_tview.
-                let dep_paths: Vec<Option<Vec<String>>> = vec![];
+                let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
+                let dep_paths = Self::parse_dep_paths(dep_paths_raw);
 
                 // array_match_keys (TEXT[]) with NULL values
                 let array_keys: Option<Vec<Option<String>>> =
@@ -164,9 +177,8 @@ impl TviewMeta {
                 let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
                 let dep_types = Self::parse_dependency_types(dep_types_raw);
 
-                // dependency_paths (TEXT[][]) - pgrx does not yet support TEXT[][] extraction,
-                // so paths are stored as a flat TEXT[] in from_spi_row via load_for_tview.
-                let dep_paths: Vec<Option<Vec<String>>> = vec![];
+                let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
+                let dep_paths = Self::parse_dep_paths(dep_paths_raw);
 
                 // array_match_keys (TEXT[]) with NULL values
                 let array_keys: Option<Vec<Option<String>>> =
@@ -259,13 +271,8 @@ impl TviewMeta {
         let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
         let dep_types = Self::parse_dependency_types(dep_types_raw);
 
-        // dependency_paths (TEXT[]) - stored as flat array, parse as single-element paths
         let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
-        let dep_paths: Vec<Option<Vec<String>>> = dep_paths_raw
-            .unwrap_or_default()
-            .into_iter()
-            .map(|opt_path| opt_path.map(|p| vec![p]))
-            .collect();
+        let dep_paths = Self::parse_dep_paths(dep_paths_raw);
 
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;

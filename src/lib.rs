@@ -695,10 +695,8 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 .map(|s| catalog::DependencyType::from_str(&s))
                 .collect();
 
-            // dependency_paths (TEXT[][]) - array of arrays
-            // pgrx does not support TEXT[][] extraction
-            // For now, use empty default (Task 3 will populate these)
-            let dep_paths: Vec<Option<Vec<String>>> = vec![];
+            let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value().unwrap_or(None);
+            let dep_paths = catalog::TviewMeta::parse_dep_paths(dep_paths_raw);
 
             // array_match_keys (TEXT[]) with NULL values
             let array_keys: Option<Vec<Option<String>>> =

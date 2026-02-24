@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.8] - 2026-02-24
+
+### Fixed
+
+- **`dependency_paths` column type `TEXT[][]` → `TEXT[]` (#24)**: The column
+  declaration was aspirational `TEXT[][]` but the write path already stored
+  dot-separated strings in a flat `TEXT[]` (e.g. `{author}`,
+  `{book.author}`). pgrx 0.16.1 cannot extract multidimensional arrays from
+  SPI results, so all three SPI read paths returned empty paths, breaking
+  smart JSONB patching for `NestedObject` and `Array` dependency types. The
+  column type is now `TEXT[]` in both `pg_tview_meta` DDL and the test schema;
+  a new `parse_dep_paths()` helper splits each element on `'.'` to reconstruct
+  the key sequence, and all four read sites (`load_for_source`,
+  `load_by_entity`, `from_spi_row`, `find_dependent_tviews`) now call it.
+
 ## [0.1.0-beta.7] - 2026-02-24
 
 ### Fixed

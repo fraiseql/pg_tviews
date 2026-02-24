@@ -1,6 +1,6 @@
 [package]
 name = "pg_tviews"
-version = "0.1.0-beta.7"
+version = "0.1.0-beta.8"
 edition = "2021"
 authors = ["Lionel Hamayon <lionel.hamayon@evolution-digitale.fr>"]
 description = "Transactional materialized views with incremental refresh for PostgreSQL"
