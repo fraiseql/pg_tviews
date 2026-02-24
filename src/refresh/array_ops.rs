@@ -183,8 +183,6 @@ mod tests {
     use pgrx::prelude::*;
     use super::*;
 
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     /// Test insert_array_element function
     #[cfg(feature = "pg_test")]

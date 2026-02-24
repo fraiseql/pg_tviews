@@ -583,8 +583,6 @@ fn transform_raw_select_to_tview(
 mod tests {
     #[cfg(feature = "pg_test")]
     use pgrx::prelude::*;
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     #[test]
     fn test_tview_exists_non_existent() {

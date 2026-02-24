@@ -793,8 +793,6 @@ mod tests {
     #[cfg(feature = "pg_test")]
     use crate::error::TViewError;
 
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     #[cfg(feature = "pg_test")]
     #[pg_test]

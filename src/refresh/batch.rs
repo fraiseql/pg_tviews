@@ -229,8 +229,6 @@ mod tests {
     use pgrx::prelude::*;
     use super::*;
 
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     /// Test batch threshold detection
     #[cfg(feature = "pg_test")]

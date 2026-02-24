@@ -145,8 +145,6 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
 mod tests {
     use pgrx::prelude::*;
 
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     #[cfg(feature = "pg_test")]
     #[pg_test]

@@ -467,8 +467,6 @@ mod tests {
     use pgrx::prelude::*;
     use pgrx::JsonB;
 
-    #[cfg(feature = "pg_test")]
-    use pgrx_tests::pg_test;
 
     /// Test smart patching for nested object dependencies.
     ///
