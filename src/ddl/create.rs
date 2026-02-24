@@ -581,7 +581,6 @@ fn transform_raw_select_to_tview(
 #[cfg(any(test, feature = "pg_test"))]
 #[pgrx::pg_schema]
 mod tests {
-    #[cfg(feature = "pg_test")]
     use pgrx::prelude::*;
 
     #[test]
@@ -591,7 +590,6 @@ mod tests {
 
     /// TVIEW objects are created in the schema that is first in search_path,
     /// not hardcoded to public.
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_create_tview_respects_search_path() {
         Spi::run("CREATE SCHEMA tview_test_ns").unwrap();
@@ -630,7 +628,6 @@ mod tests {
     }
 
     /// With the default search_path, objects still land in public (regression guard).
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_create_tview_defaults_to_public() {
         Spi::run("SET search_path TO public").unwrap();

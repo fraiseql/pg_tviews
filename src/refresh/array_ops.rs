@@ -177,7 +177,7 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
@@ -185,7 +185,6 @@ mod tests {
 
 
     /// Test insert_array_element function
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_insert_array_element() {
         // Setup test table
@@ -219,7 +218,6 @@ mod tests {
     }
 
     /// Test delete_array_element function
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_delete_array_element() {
         // Setup test table with array element
@@ -252,7 +250,6 @@ mod tests {
     }
 
     /// Test array functions availability check
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_check_array_functions_available() {
         // This will depend on whether jsonb_delta is installed

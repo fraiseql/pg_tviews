@@ -270,14 +270,13 @@ fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
 
 
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_find_base_tables_single() {
         // Create base table
@@ -296,7 +295,6 @@ mod tests {
         assert_eq!(table_name, "tb_test");
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_find_base_tables_transitive() {
         // Create base tables
@@ -326,7 +324,6 @@ mod tests {
         assert!(names.contains(&"tb_post".to_string()));
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_circular_dependency_detected() {
         // Create view that references itself (PostgreSQL allows this!)
@@ -345,7 +342,6 @@ mod tests {
         assert!(graph.max_depth_reached < MAX_DEPENDENCY_DEPTH);
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_depth_limit_enforced() {
         // This test would require creating 11+ nested views

@@ -235,14 +235,13 @@ pub fn metadata_tables_exist() -> TViewResult<bool> {
     Ok(meta_exists.unwrap_or(false) && helpers_exists.unwrap_or(false))
 }
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_metadata_tables_creation() {
         // Clean up first
@@ -273,7 +272,6 @@ mod tests {
         assert!(result.unwrap_or(Some(0)).unwrap_or(0) > 0, "pg_tview_meta should have columns");
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_metadata_tables_schema() {
         // Ensure tables exist
@@ -324,7 +322,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_metadata_tables_exist_function() {
         // Clean up first

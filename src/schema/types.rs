@@ -57,14 +57,13 @@ pub fn table_exists(table_name: &str) -> TViewResult<bool> {
         .map(|opt| opt.unwrap_or(false))
 }
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
     use super::*;
 
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types() {
         // Create test table
@@ -99,7 +98,6 @@ mod tests {
         assert_eq!(types.get("data"), Some(&"jsonb".to_string()));
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types_missing_table() {
         let columns = vec!["id".to_string()];
@@ -107,7 +105,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_infer_column_types_missing_column() {
         // Create test table
@@ -118,7 +115,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_table_exists() {
         // Create test table

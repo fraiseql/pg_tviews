@@ -140,13 +140,12 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     Ok(())
 }
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
 
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_drop_tview_nonexistent_if_exists() {
         // Dropping a non-existent TVIEW with IF EXISTS should not error
@@ -154,7 +153,6 @@ mod tests {
         assert!(result.is_ok(), "IF EXISTS drop of non-existent TVIEW should succeed");
     }
 
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_drop_tview_nonexistent_strict() {
         // Dropping a non-existent TVIEW without IF EXISTS should error

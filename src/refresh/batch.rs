@@ -223,7 +223,7 @@ fn refresh_single_row(entity: &str, pk: i64) -> TViewResult<()> {
     Ok(())
 }
 
-#[cfg(feature = "pg_test")]
+#[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
@@ -231,7 +231,6 @@ mod tests {
 
 
     /// Test batch threshold detection
-    #[cfg(feature = "pg_test")]
     #[pg_test]
     fn test_batch_threshold() {
         // Small batch should use individual updates
