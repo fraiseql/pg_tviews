@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.9] - 2026-03-01
+
+### Fixed
+
+- **SIGABRT on UPDATE of tview-tracked base table (#31)**: Any `UPDATE` on a
+  base table tracked by a TVIEW caused a PostgreSQL backend crash (SIGABRT)
+  due to recursive SPI connections inside the trigger context.
+  `pg_tviews_cascade()` now enqueues `(entity, pk)` pairs into the
+  transaction-level refresh queue and lets the existing PRE_COMMIT handler
+  process them iteratively in a clean SPI context. `refresh_pk()` no longer
+  calls `propagate_from_row()` — parent discovery is handled exclusively by
+  `find_parents_for()` in the queue's commit callback.
+
+### Removed
+
+- **`propagate_from_row()`**: Recursive propagation function that caused the
+  nested SPI crash. Replaced by iterative queue processing.
+- **`src/refresh/batch.rs`**: Batch refresh module (only consumer was the
+  removed `propagate_from_row`; `src/refresh/bulk.rs` covers batch needs).
+- **`clear_queue_and_reset()`**: Unused queue helper.
+- **`extract_pk()` dead-code annotation**: Function is actively used by
+  `trigger.rs`; stale `#[allow(dead_code)]` removed.
+- **`get_relkind()`**: Unused dependency graph helper.
+- Stale `#[allow(dead_code)]` annotations on five queue functions now
+  actively called from the trigger path.
+
+### Fixed (tests)
+
+- All `refresh_pk()` tests now use correct TVIEW OIDs (`tv_user` instead of
+  `tb_user`) and create dependency TVIEWs before parent TVIEWs.
+- Fixed metadata query column name `entity_name` → `entity` in test
+  assertions.
+
 ## [0.1.0-beta.8] - 2026-02-24
 
 ### Fixed

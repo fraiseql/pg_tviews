@@ -57,7 +57,7 @@ use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 
 use crate::catalog::{TviewMeta, DependencyDetail, DependencyType};
-use crate::propagate::propagate_from_row;
+
 use crate::utils::{lookup_view_for_source, relname_from_oid};
 
 /// Default match key for array patching (assumes 'id' field)
@@ -73,20 +73,19 @@ pub struct ViewRow {
 
 /// Refresh a single TVIEW row when its source data changes.
 ///
-/// This is the main entry point for cascade updates. It coordinates the entire
-/// refresh workflow: recomputing data, applying smart patches, and propagating
-/// changes to dependent TVIEWs.
+/// Recomputes data from the backing view and applies smart JSONB patching
+/// to the materialized table. Does **not** propagate to parent TVIEWs;
+/// propagation is handled by the transaction-level queue (`src/queue/`).
 ///
 /// # Workflow
 ///
 /// 1. **Load Metadata**: Find TVIEW configuration via `source_oid`
 /// 2. **Recompute Row**: Query `v_entity` view for fresh JSONB data
 /// 3. **Apply Patch**: Use smart JSONB patching to update `tv_entity` table
-/// 4. **Propagate**: Cascade changes to parent TVIEWs via FK relationships
 ///
 /// # Arguments
 ///
-/// * `source_oid` - OID of the source table that changed (e.g., `tb_user`)
+/// * `source_oid` - OID of the TVIEW's view or table (e.g., `tv_user` or `v_user`)
 /// * `pk` - Primary key value of the changed row
 ///
 /// # Returns
@@ -98,16 +97,6 @@ pub struct ViewRow {
 /// - No TVIEW found for `source_oid` (metadata missing)
 /// - Row not found in `v_entity` view
 /// - Update to `tv_entity` table failed
-/// - Propagation to parent TVIEWs failed
-///
-/// # Example
-///
-/// ```rust
-/// // Called by trigger when tb_user changes
-/// let user_oid = Spi::get_one("SELECT 'tb_user'::regclass::oid")?;
-/// refresh_pk(user_oid, 1)?;
-/// // → Refreshes tv_post rows where fk_user = 1
-/// ```
 pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 1. Find TVIEW metadata (tview_oid, view_oid, entity_name, etc.)
     let meta = TviewMeta::load_for_source(source_oid)?;
@@ -120,9 +109,6 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 
     // 3. Patch tv_entity using jsonb_delta
     apply_patch(&view_row)?;
-
-    // 4. Propagate to parent entities
-    propagate_from_row(&view_row)?;
 
     Ok(())
 }
@@ -508,8 +494,6 @@ mod tests {
     ///
     /// This test verifies that when a nested object (like 'author') changes,
     /// only that specific path in the JSONB is updated, not the entire document.
-    ///
-    /// Expected to FAIL initially because apply_patch() does full replacement.
     #[pg_test]
     fn test_apply_patch_nested_object() {
         // Setup: Create tables with FK relationship
@@ -522,6 +506,14 @@ mod tests {
 
         Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice')").unwrap();
         Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Hello')").unwrap();
+
+        // Create user TVIEW first (so v_user exists for post TVIEW)
+        Spi::run("
+            SELECT pg_tviews_create('user', $$
+                SELECT pk_user, jsonb_build_object('name', name) AS data
+                FROM tb_user
+            $$)
+        ").unwrap();
 
         // Create TVIEW with nested author object
         Spi::run("
@@ -542,7 +534,7 @@ mod tests {
         // Verify metadata captured nested dependency
         let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
-            WHERE entity_name = 'post'
+            WHERE entity = 'post'
         ").unwrap().unwrap();
         assert!(meta.contains("nested_object"), "Expected nested_object dependency, got: {}", meta);
 
@@ -558,12 +550,17 @@ mod tests {
         // Update user name
         Spi::run("UPDATE tb_user SET name = 'Alice Updated' WHERE pk_user = 1").unwrap();
 
-        // Trigger cascade by calling refresh_pk directly
-        let source_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_user'::regclass::oid")
+        // Refresh tv_user first (using tv_user OID, not tb_user)
+        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap()
             .unwrap();
+        crate::refresh::refresh_pk(user_oid, 1).unwrap();
 
-        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
+            .unwrap()
+            .unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: author.name changed, title unchanged
         let updated_data = Spi::get_one::<JsonB>("
@@ -572,8 +569,6 @@ mod tests {
 
         let updated_json = &updated_data.0;
 
-        // These assertions will FAIL with current full-replacement code
-        // because full replacement may reorder keys or lose unchanged values
         assert_eq!(updated_json["title"], "Hello",
             "Title should NOT be touched by smart patch");
         assert_eq!(updated_json["author"]["name"], "Alice Updated",
@@ -584,8 +579,6 @@ mod tests {
     ///
     /// This test verifies that when an element in an array (like 'comments') changes,
     /// only that specific element is updated, not the entire array.
-    ///
-    /// Expected to FAIL initially because apply_patch() does full replacement.
     #[pg_test]
     fn test_apply_patch_array() {
         // Setup: Create tables with FK relationships
@@ -609,6 +602,22 @@ mod tests {
         Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
                   VALUES (2, 1, 1, 'Thanks!')").unwrap();
 
+        // Create dependency TVIEWs first
+        Spi::run("
+            SELECT pg_tviews_create('user', $$
+                SELECT pk_user, jsonb_build_object('name', name) AS data
+                FROM tb_user
+            $$)
+        ").unwrap();
+
+        Spi::run("
+            SELECT pg_tviews_create('comment', $$
+                SELECT pk_comment, fk_post, fk_user,
+                       jsonb_build_object('text', text) AS data
+                FROM tb_comment
+            $$)
+        ").unwrap();
+
         // Create TVIEW with array of comments
         Spi::run("
             SELECT pg_tviews_create(
@@ -631,7 +640,7 @@ mod tests {
         // Verify metadata captured array dependency
         let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
-            WHERE entity_name = 'post'
+            WHERE entity = 'post'
         ").unwrap().unwrap();
         assert!(meta.contains("array"), "Expected array dependency, got: {}", meta);
 
@@ -646,12 +655,17 @@ mod tests {
         // Update one comment
         Spi::run("UPDATE tb_comment SET text = 'Updated!' WHERE pk_comment = 1").unwrap();
 
-        // Trigger cascade
-        let source_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_comment'::regclass::oid")
+        // Refresh tv_comment first (using tv_comment OID)
+        let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_comment'::regclass::oid")
             .unwrap()
             .unwrap();
+        crate::refresh::refresh_pk(comment_oid, 1).unwrap();
 
-        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
+            .unwrap()
+            .unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: Only the updated comment changed
         let updated_data = Spi::get_one::<JsonB>("
@@ -670,7 +684,6 @@ mod tests {
             .find(|c| c["id"].as_i64() == Some(2))
             .expect("Should find comment with id=2");
 
-        // This will FAIL with current full-replacement code
         assert_eq!(comment_1["text"], "Updated!", "Comment 1 should be updated");
         assert_eq!(comment_2["text"], "Thanks!", "Comment 2 should be unchanged");
     }
@@ -708,7 +721,7 @@ mod tests {
         // Verify metadata shows scalar dependency
         let meta = crate::utils::spi_get_string("
             SELECT dependency_types::text FROM pg_tview_meta
-            WHERE entity_name = 'post'
+            WHERE entity ='post'
         ").unwrap().unwrap();
         assert!(meta.contains("scalar"), "Expected scalar dependency, got: {}", meta);
 
@@ -723,12 +736,12 @@ mod tests {
         // Update category (shouldn't affect tv_post.data since it's scalar)
         Spi::run("UPDATE tb_category SET name = 'Technology' WHERE pk_category = 1").unwrap();
 
-        // Trigger cascade
-        let source_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_category'::regclass::oid")
+        // Refresh tv_post directly (using tv_post OID)
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
 
-        crate::refresh::refresh_pk(source_oid, 1).unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: data unchanged (scalar has no path in JSONB)
         let updated_data = Spi::get_one::<JsonB>("
@@ -749,9 +762,6 @@ mod tests {
     /// This verifies that all components work together correctly.
     #[pg_test]
     fn test_smart_patch_full_integration() {
-        // Note: This test documents expected behavior but may not run due to
-        // test infrastructure issues. The implementation is complete and correct.
-
         // Setup: Create extension if available (graceful fallback if not)
         let _ = Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta");
 
@@ -779,6 +789,22 @@ mod tests {
                   VALUES (1, 1, 1, 'Great post!')").unwrap();
         Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
                   VALUES (2, 1, 2, 'Thanks for sharing!')").unwrap();
+
+        // Create dependency TVIEWs first
+        Spi::run("
+            SELECT pg_tviews_create('user', $$
+                SELECT pk_user, jsonb_build_object('name', name, 'email', email) AS data
+                FROM tb_user
+            $$)
+        ").unwrap();
+
+        Spi::run("
+            SELECT pg_tviews_create('comment', $$
+                SELECT pk_comment, fk_post, fk_user,
+                       jsonb_build_object('text', text) AS data
+                FROM tb_comment
+            $$)
+        ").unwrap();
 
         // Create TVIEW with multiple dependency types
         Spi::run("
@@ -815,9 +841,14 @@ mod tests {
         Spi::run("UPDATE tb_user SET name = 'Alice Updated', email = 'alice.new@example.com'
                   WHERE pk_user = 1").unwrap();
 
-        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_user'::regclass::oid")
+        // Refresh tv_user first, then tv_post explicitly
+        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap().unwrap();
         crate::refresh::refresh_pk(user_oid, 1).unwrap();
+
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
+            .unwrap().unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         let after_author_update = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
             .unwrap().unwrap();
@@ -834,9 +865,11 @@ mod tests {
         // Test 2: Update array element (should use smart patch)
         Spi::run("UPDATE tb_comment SET text = 'Updated comment!' WHERE pk_comment = 1").unwrap();
 
-        let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_comment'::regclass::oid")
+        // Refresh tv_comment first, then tv_post explicitly
+        let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_comment'::regclass::oid")
             .unwrap().unwrap();
         crate::refresh::refresh_pk(comment_oid, 1).unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         let after_comment_update = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
             .unwrap().unwrap();
@@ -863,9 +896,6 @@ mod tests {
     /// when the jsonb_delta extension is not installed.
     #[pg_test]
     fn test_fallback_without_jsonb_delta() {
-        // Note: This test documents fallback behavior but may not run due to
-        // test infrastructure issues. The implementation is complete and correct.
-
         // Explicitly ensure jsonb_delta is NOT available for this test
         let _ = Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE");
 
@@ -899,7 +929,7 @@ mod tests {
 
         // Verify metadata is still captured (even without jsonb_delta)
         let meta = crate::utils::spi_get_string("
-            SELECT dependency_types::text FROM pg_tview_meta WHERE entity_name = 'post'
+            SELECT dependency_types::text FROM pg_tview_meta WHERE entity = 'post'
         ");
         // Metadata should exist regardless of jsonb_delta availability
         assert!(meta.is_ok(), "Metadata should be captured even without jsonb_delta");
@@ -907,21 +937,24 @@ mod tests {
         // Update should still work via fallback
         Spi::run("UPDATE tb_user SET name = 'Alice Fallback' WHERE pk_user = 1").unwrap();
 
-        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_user'::regclass::oid")
+        // Refresh tv_user first (using tv_user OID, not tb_user)
+        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap().unwrap();
 
         // This should succeed using full replacement fallback
         let result = crate::refresh::refresh_pk(user_oid, 1);
         assert!(result.is_ok(), "Fallback should work without jsonb_delta");
 
+        // Explicitly refresh tv_post (propagation is now handled by queue)
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
+            .unwrap().unwrap();
+        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+
         // Verify data was updated (via fallback)
         let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
             .unwrap().unwrap();
         assert_eq!(updated.0["author"]["name"], "Alice Fallback");
         assert_eq!(updated.0["title"], "Hello");
-
-        // Note: A warning should be logged about jsonb_delta not being available
-        // (Check server logs manually if needed)
     }
 
     /// Test metadata handling for legacy TVIEWs without dependency info.
@@ -951,13 +984,13 @@ mod tests {
             SET dependency_types = NULL,
                 dependency_paths = NULL,
                 array_match_keys = NULL
-            WHERE entity_name = 'user'
+            WHERE entity ='user'
         ").unwrap();
 
         // Update should still work via fallback
         Spi::run("UPDATE tb_user SET name = 'Alice Legacy' WHERE pk_user = 1").unwrap();
 
-        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tb_user'::regclass::oid")
+        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap().unwrap();
 
         // Should succeed using full replacement fallback

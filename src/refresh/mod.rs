@@ -6,7 +6,7 @@
 
 pub mod main;
 pub mod array_ops;
-pub mod batch;
+
 pub mod bulk;
 pub mod cache;
 

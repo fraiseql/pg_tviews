@@ -624,12 +624,15 @@ fn pg_tviews_cascade(
         }
 
 
-        // Refresh each affected row (this will cascade via propagate_from_row)
+        // Enqueue affected rows for refresh at PRE_COMMIT
         for affected_pk in affected_rows {
-            if let Err(e) = refresh::refresh_pk(tview_meta.view_oid, affected_pk) {
-                warning!("Failed to refresh {}[{}]: {:?}", tview_meta.entity_name, affected_pk, e);
-            }
+            queue::enqueue_refresh(&tview_meta.entity_name, affected_pk);
         }
+    }
+
+    // Register the commit callback to process the queue
+    if let Err(e) = queue::register_commit_callback_once() {
+        error!("Failed to register TVIEW commit callback: {:?}", e);
     }
 }
 
@@ -816,7 +819,6 @@ pub mod pg_test {
 #[pg_schema]
 mod tests {
     use pgrx::prelude::*;
-    #[cfg(feature = "pg_test")]
     use crate::error::TViewError;
 
 

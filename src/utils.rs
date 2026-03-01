@@ -100,20 +100,12 @@ pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
 use pgrx::pg_sys::Oid;
 
 /// Extracts a `pk_*` integer from `NEW` or `OLD` tuple by convention.
-/// For MVP we assume the column name is literally `pk_*`.
-#[allow(dead_code)]
 pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
-    // For simplicity we assume there's a column named 'pk_*' and you know the entity.
-    // For real code:
-    //  - inspect relation attributes,
-    //  - find first "pk_" column,
-    //  - read value.
     let tuple = trigger
         .new()
         .or_else(|| trigger.old())
         .expect("Row must exist for AFTER trigger");
 
-    // This function is no longer used in the main code path
     let pk: i64 = tuple
         .get_by_name("pk_post")? // <-- placeholder: replace per entity
         .expect("pk_post must not be null");

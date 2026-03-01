@@ -1,76 +1,14 @@
 use pgrx::prelude::*;
 
-/// Propagation Engine: Cascade Refresh for Dependent Views
+/// Propagation Engine: Parent Discovery for Dependent Views
 ///
-/// This module handles cascading refreshes when TVIEW data changes:
+/// This module provides parent discovery for the transaction-level queue:
 /// - **Parent Discovery**: Finds views that depend on changed entities
 /// - **Affected Row Identification**: Locates rows impacted by changes
-/// - **Cascade Refresh**: Updates dependent views automatically
-/// - **Cycle Prevention**: Avoids infinite loops in dependency chains
 ///
-/// ## Propagation Flow
-///
-/// 1. **Change Detection**: Trigger identifies changed base table row
-/// 2. **Parent Analysis**: Find TVIEWs that reference this entity
-/// 3. **Impact Assessment**: Identify which parent rows are affected
-/// 4. **Cascade Refresh**: Update affected parent rows
-/// 5. **Recursive Propagation**: Handle multi-level dependencies
-///
-/// ## Performance Optimizations
-///
-/// - Batch operations for multiple affected rows
-/// - Early termination for unchanged data
-/// - Dependency graph caching
-/// - Configurable propagation depth limits
-use crate::refresh::main::{ViewRow, refresh_pk};
-use crate::refresh::batch;
-use crate::catalog::TviewMeta;
+/// Used by the PRE_COMMIT handler (`src/queue/`) to iteratively discover
+/// and enqueue parent TVIEWs for refresh.
 use crate::queue::RefreshKey;
-
-/// Discover parents (entities that depend on this entity) and refresh them.
-///
-/// Example: When `tv_user` row (pk=1) changes:
-/// 1. Find parent entities (e.g., `tv_post` depends on `tv_user`)
-/// 2. Find affected rows (all `tv_post` where `fk_user` = 1)
-/// 3. Refresh each affected row
-pub fn propagate_from_row(row: &ViewRow) -> spi::Result<()> {
-    // Find all parent entities that depend on this entity
-    let parent_entities = find_parent_entities(&row.entity_name)?;
-
-    if parent_entities.is_empty() {
-        // No parents to cascade to
-        return Ok(());
-    }
-
-
-    // For each parent entity, find affected rows and refresh them
-    for parent_entity in parent_entities {
-        let affected_pks = find_affected_pks(&parent_entity, &row.entity_name, row.pk)?;
-
-        if affected_pks.is_empty() {
-            continue;
-        }
-
-
-        // Load parent TVIEW metadata to get view_oid for refresh
-        let Some(parent_meta) = TviewMeta::load_by_entity(&parent_entity)? else {
-            warning!("No metadata found for parent entity {}", parent_entity);
-            continue;
-        };
-
-        // Use batch refresh for large cascades, individual refresh for small ones
-        if affected_pks.len() >= 10 {
-            batch::refresh_batch(&parent_entity, &affected_pks)?;
-        } else {
-            // Refresh each affected row individually
-            for pk in affected_pks {
-                refresh_pk(parent_meta.view_oid, pk)?;
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Find parent keys that depend on the given entity+pk (without refreshing them)
 ///
