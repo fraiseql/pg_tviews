@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Security
+
+- **SQL injection prevention**: Parameterized all user-controlled string inputs
+  that were previously embedded via `format!()` or quote-doubling:
+  - `pg_tviews_show_cascade_path()` entity parameter
+  - `entity_for_table_uncached()` catalog lookup
+  - All three audit log functions (`log_create`, `log_drop`, `log_refresh`)
+- **2PC GID validation**: Added `validate_gid()` that rejects empty, oversized
+  (>199 bytes), and injection-risk characters (`'`, `;`, `\0`) before
+  `pg_tviews_commit_prepared` and `pg_tviews_rollback_prepared` execute SQL
+- **Privilege escalation**: Removed unnecessary `SECURITY DEFINER` from the
+  `pg_tviews_debug_queue()` PL/pgSQL stub in `pg_tviews_monitoring.sql`
+
+### Added
+
+- `InvalidInput` error variant (SQLSTATE `22023`) for input validation errors
+
 ## [0.1.0-beta.9] - 2026-03-01
 
 ### Fixed
