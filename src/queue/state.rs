@@ -11,12 +11,6 @@ thread_local! {
     /// - Cleared on transaction abort
     pub static TX_REFRESH_QUEUE: RefCell<HashSet<RefreshKey>> = RefCell::new(HashSet::new());
 
-    /// Flag: has commit callback been registered for this transaction?
-    ///
-    /// - Set to true when first refresh is enqueued
-    /// - Prevents multiple callback registrations
-    /// - Reset to false after commit/abort
-    pub static TX_REFRESH_SCHEDULED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Replace the current queue with a new one (used for savepoint rollback)

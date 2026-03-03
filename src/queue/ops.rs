@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use super::key::RefreshKey;
-use super::state::{TX_REFRESH_QUEUE, TX_REFRESH_SCHEDULED};
-use crate::TViewResult;
+use super::state::TX_REFRESH_QUEUE;
 
 /// Enqueue a refresh request for the given entity and pk
 ///
@@ -53,33 +52,6 @@ pub fn take_queue_snapshot() -> HashSet<RefreshKey> {
 pub fn clear_queue() {
     TX_REFRESH_QUEUE.with(|q| {
         q.borrow_mut().clear();
-    });
-}
-
-/// Register transaction commit callback (once per transaction)
-pub fn register_commit_callback_once() -> TViewResult<()> {
-    TX_REFRESH_SCHEDULED.with(|flag| {
-        let mut scheduled = flag.borrow_mut();
-        if *scheduled {
-            // Already registered, skip
-            return Ok(());
-        }
-
-        // Register transaction and subtransaction callbacks
-        unsafe {
-            super::xact::register_xact_callback();
-            super::xact::register_subxact_callback();
-        }
-
-        *scheduled = true;
-        Ok(())
-    })
-}
-
-/// Reset the scheduled flag (called after commit/abort)
-pub fn reset_scheduled_flag() {
-    TX_REFRESH_SCHEDULED.with(|flag| {
-        *flag.borrow_mut() = false;
     });
 }
 

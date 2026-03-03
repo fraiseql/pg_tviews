@@ -164,8 +164,11 @@ fn topological_sort(
         }
     }
 
-    // Check for cycles
-    if result.len() != entities.len() {
+    // Check for cycles (only count entities in the original set;
+    // FK references to non-TVIEW entities like "user" are external and shouldn't
+    // cause cycle detection failures)
+    let result_in_set = result.iter().filter(|e| entities.contains(*e)).count();
+    if result_in_set != entities.len() {
         return Err(crate::TViewError::DependencyCycle {
             entities: entities.iter().cloned().collect(),
         });

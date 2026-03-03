@@ -9,19 +9,13 @@
 pub mod key;
 mod state;
 mod ops;
-mod xact;
+pub(crate) mod xact;
 mod graph;
 pub mod cache;
 pub mod persistence;
 mod integration_tests;
 
 pub use key::RefreshKey;
-pub use ops::{enqueue_refresh, enqueue_refresh_bulk, register_commit_callback_once};
+pub use ops::{enqueue_refresh, enqueue_refresh_bulk};
 pub use state::{get_queue_size, get_queue_contents};
-// pub use ops::{take_queue_snapshot, clear_queue}; // Internal use only
-// pub use graph::EntityDepGraph; // Internal use only
-// Internal use only (not exported):
-// - TX_REFRESH_QUEUE
-// - TX_REFRESH_SCHEDULED
-// - reset_scheduled_flag
-// - xact module
+pub use xact::flush_refresh_queue;

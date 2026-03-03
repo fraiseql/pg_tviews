@@ -23,6 +23,12 @@ pub enum TViewError {
         reason: String,
     },
 
+    /// Invalid function input parameter
+    InvalidInput {
+        parameter: String,
+        reason: String,
+    },
+
     // ============ Dependency Errors (55xxx) ============
     /// Circular dependency detected
     CircularDependency {
@@ -174,6 +180,7 @@ impl TViewError {
             Self::MetadataNotFound { .. } => "P0001", // Raise exception
             Self::TViewAlreadyExists { .. } => "42710", // Duplicate object
             Self::InvalidTViewName { .. } => "42602", // Invalid name
+            Self::InvalidInput { .. } => "22023",     // Invalid parameter value
 
             Self::CircularDependency { .. } | Self::DependencyCycle { .. } => "55P03", // Lock not available (cycle)
             Self::DependencyDepthExceeded { .. } | Self::CascadeDepthExceeded { .. } | Self::PropagationDepthExceeded { .. } => "54001", // Statement too complex
@@ -210,6 +217,9 @@ impl fmt::Display for TViewError {
             }
             Self::InvalidTViewName { name, reason } => {
                 write!(f, "Invalid TVIEW name '{name}': {reason}")
+            }
+            Self::InvalidInput { parameter, reason } => {
+                write!(f, "Invalid input for parameter '{parameter}': {reason}")
             }
             Self::CircularDependency { cycle } => {
                 write!(f, "Circular dependency detected: {}", cycle.join(" → "))
@@ -422,6 +432,7 @@ mod tests {
             TViewError::MetadataNotFound { entity: "test".to_string() },
             TViewError::TViewAlreadyExists { name: "test".to_string() },
             TViewError::InvalidTViewName { name: "test".to_string(), reason: "test".to_string() },
+            TViewError::InvalidInput { parameter: "test".to_string(), reason: "test".to_string() },
             TViewError::CircularDependency { cycle: vec![] },
             TViewError::DependencyDepthExceeded { depth: 1, max_depth: 1 },
             TViewError::DependencyResolutionFailed { view_name: "test".to_string(), reason: "test".to_string() },

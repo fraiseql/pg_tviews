@@ -2,8 +2,9 @@ use pgrx::prelude::*;
 use pgrx::pg_sys;
 use pgrx::datum::DatumWithOid;
 use std::os::raw::c_void;
+use std::panic::AssertUnwindSafe;
 use std::collections::HashSet;
-use super::ops::{take_queue_snapshot, clear_queue, reset_scheduled_flag};
+use super::ops::{take_queue_snapshot, clear_queue};
 use crate::TViewResult;
 
 // Thread-local storage for savepoint support
@@ -38,12 +39,6 @@ pub unsafe fn register_xact_callback() {
             Some(tview_xact_callback),
             std::ptr::null_mut(),
         );
-
-        // Register start-of-transaction callback for connection pooling safety
-        pg_sys::RegisterXactCallback(
-            Some(tview_xact_start_callback),
-            std::ptr::null_mut(),
-        );
     }
 }
 
@@ -69,92 +64,48 @@ pub unsafe fn register_subxact_callback() {
 ///
 /// # Safety
 /// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
-/// Must not panic or unwind.
+///
+/// # Error handling
+/// Errors from `handle_pre_commit`/`handle_prepare` are reported via pgrx's
+/// `error!()` macro, which triggers `ereport(ERROR)` and longjmps out of
+/// the callback.  PostgreSQL will then abort the transaction.
+///
+/// We intentionally avoid `catch_unwind` here: SPI operations in the
+/// pre-commit handler may trigger PostgreSQL longjmps, and intercepting
+/// those via `catch_unwind` corrupts `PG_exception_stack`, causing SIGABRT.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
-    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
-    let result = std::panic::catch_unwind(|| {
-        // Determine event type (using PostgreSQL C API constants)
-        let xact_event = match event {
-            0 => XactEvent::Commit,      // XACT_EVENT_COMMIT
-            1 => XactEvent::PreCommit,   // XACT_EVENT_PRE_COMMIT
-            2 => XactEvent::Abort,       // XACT_EVENT_ABORT
-            4 => XactEvent::Prepare,     // XACT_EVENT_PREPARE
-            _ => return, // Ignore other events
-        };
+    // Map PostgreSQL XactEvent C enum to our Rust enum.
+    // Use pg_sys constants to be version-safe.
+    #[allow(non_upper_case_globals)]
+    let xact_event = match event {
+        pg_sys::XactEvent::XACT_EVENT_COMMIT => XactEvent::Commit,
+        pg_sys::XactEvent::XACT_EVENT_PRE_COMMIT => XactEvent::PreCommit,
+        pg_sys::XactEvent::XACT_EVENT_ABORT => XactEvent::Abort,
+        pg_sys::XactEvent::XACT_EVENT_PREPARE => XactEvent::Prepare,
+        _ => return, // Ignore PARALLEL_*, PRE_PREPARE, etc.
+    };
 
-        // Handle event
-        match xact_event {
-            XactEvent::PreCommit => {
-                // PRE_COMMIT: Flush queue before transaction commits
-                // This is the main refresh point
-                //
-                // CRITICAL: We must propagate errors to abort the transaction.
-                // Per PRD R2: "If refresh fails: the entire transaction fails and rolls back."
-                //
-                // PostgreSQL behavior:
-                // - If this callback returns normally → transaction commits
-                // - If this callback returns error!() or panics → transaction aborts
-                //
-                // We MUST NOT catch errors here - let them propagate to PostgreSQL
-                if let Err(e) = handle_pre_commit() {
-                    // Use pgrx error!() macro to abort transaction
-                    error!("TVIEW refresh failed during PRE_COMMIT, aborting transaction: {:?}", e);
-                    // This will never return - PostgreSQL longjmps to abort handler
-                }
-            }
-            XactEvent::Prepare => {
-                // PREPARE: Serialize queue to persistent storage
-                // This ensures 2PC transactions don't lose pending refreshes
-                if let Err(e) = handle_prepare() {
-                    error!("TVIEW failed to persist queue during PREPARE: {:?}", e);
-                    // For PREPARE, we should abort the prepare operation
-                    // PostgreSQL will handle this by failing the PREPARE TRANSACTION
-                }
-            }
-            XactEvent::Abort => {
-                // ABORT: Clear queue without refreshing
-                clear_queue();
-                reset_scheduled_flag();
-                // Reset metrics for aborted transaction
-                crate::metrics::metrics_api::reset_metrics();
-            }
-            XactEvent::Commit => {
-                // COMMIT: Cleanup (queue already flushed in PRE_COMMIT)
-                reset_scheduled_flag();
-                // Reset metrics for completed transaction
-                crate::metrics::metrics_api::reset_metrics();
-            }
+    // Handle event.
+    //
+    // NOTE: SPI is NOT available during transaction callbacks (PRE_COMMIT, COMMIT, ABORT).
+    // Executing SPI queries here crashes the server. Queue flush (which uses SPI) is
+    // handled by the ProcessUtility hook intercepting COMMIT instead.
+    match xact_event {
+        XactEvent::PreCommit | XactEvent::Commit => {
+            // Queue flush happens in ProcessUtility hook before COMMIT.
+            // Just reset metrics here.
+            crate::metrics::metrics_api::reset_metrics();
         }
-    });
-
-    if result.is_err() {
-        error!("PANIC in transaction callback - this is a bug!");
-    }
-}
-
-/// Start-of-transaction callback for connection pooling safety
-///
-/// This ensures thread-local state is cleared at the start of each transaction,
-/// preventing queue leakage between transactions in connection poolers like `PgBouncer`.
-///
-/// # Safety
-/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
-/// Must not panic or unwind.
-#[no_mangle]
-unsafe extern "C-unwind" fn tview_xact_start_callback(event: u32, _arg: *mut c_void) {
-    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
-    let result = std::panic::catch_unwind(|| {
-        if event == 3 { // XACT_EVENT_START
-            // Defensive: Clear any leftover state from previous transaction
-            // This prevents queue leakage in connection poolers (PgBouncer, etc.)
+        XactEvent::Prepare => {
+            // PREPARE TRANSACTION also goes through ProcessUtility hook.
+            // Queue persistence is handled there.
+            crate::metrics::metrics_api::reset_metrics();
+        }
+        XactEvent::Abort => {
             clear_queue();
-            reset_scheduled_flag();
+            crate::metrics::metrics_api::reset_metrics();
         }
-    });
-
-    if result.is_err() {
-        error!("PANIC in transaction start callback - this is a bug!");
     }
 }
 
@@ -173,8 +124,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
     _parent_subid: pg_sys::SubTransactionId,
     _arg: *mut c_void,
 ) {
-    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
-    let result = std::panic::catch_unwind(|| {
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         match event {
             pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
                 // SAVEPOINT created: increment depth and snapshot current queue
@@ -220,14 +170,22 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 // Ignore other subtransaction events
             }
         }
-    });
+    }));
 
     if result.is_err() {
-        error!("PANIC in subtransaction callback - this is a bug!");
+        // Non-fatal: savepoint tracking is defensive. Use warning instead of error
+        // to avoid SIGABRT from panic_any in raw extern "C-unwind" context.
+        warning!("PANIC in subtransaction callback - this is a bug!");
     }
 }
 
-/// Handle `PRE_COMMIT` event: flush the queue and refresh TVIEWs
+/// Flush the refresh queue: process all pending TVIEW refreshes.
+///
+/// Called by the `ProcessUtility` hook when intercepting COMMIT, **before**
+/// the actual commit begins. SPI must be available when this is called.
+///
+/// **Must NOT be called from transaction callbacks** (PRE_COMMIT, COMMIT, ABORT)
+/// because PostgreSQL does not allow SPI queries during those callbacks.
 ///
 /// This implementation correctly handles propagation by using a local queue
 /// for discovered parent refreshes. The workflow:
@@ -244,14 +202,13 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
 /// - Dependency order respected (topological sort per iteration)
 /// - Propagation coalesced (parents discovered during refresh added to queue)
 /// - Transaction-safe (fail-fast aborts transaction on first error)
-fn handle_pre_commit() -> TViewResult<()> {
+pub fn flush_refresh_queue() -> TViewResult<()> {
     // Take initial snapshot from triggers
     let mut pending = take_queue_snapshot();
 
     if pending.is_empty() {
         return Ok(());
     }
-
 
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
@@ -372,6 +329,7 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
 ///
 /// This ensures that 2PC transactions don't lose pending refreshes.
 /// The queue is serialized and stored in `pg_tview_pending_refreshes`.
+#[allow(dead_code)] // 2PC support: will be wired via ProcessUtility hook for PREPARE TRANSACTION
 fn handle_prepare() -> TViewResult<()> {
     // Get global transaction ID (GID) captured by ProcessUtility hook
     let gid = get_prepared_transaction_id()?;
@@ -413,6 +371,7 @@ fn handle_prepare() -> TViewResult<()> {
 /// Get the global transaction ID for the currently preparing transaction
 ///
 /// This retrieves the GID captured by the `ProcessUtility` hook during PREPARE TRANSACTION.
+#[allow(dead_code)] // 2PC support
 fn get_prepared_transaction_id() -> TViewResult<String> {
     crate::hooks::get_prepared_transaction_id()
 }

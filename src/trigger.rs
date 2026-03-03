@@ -22,7 +22,7 @@ use pgrx::prelude::*;
 /// - Minimal database queries during trigger execution
 /// - Queue processing deferred to commit time
 use pgrx::spi;
-use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, register_commit_callback_once};
+use crate::queue::{enqueue_refresh, enqueue_refresh_bulk};
 use crate::catalog::entity_for_table;
 use crate::refresh::bulk::quote_identifier;
 
@@ -33,7 +33,7 @@ use crate::refresh::bulk::quote_identifier;
 fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
-    // Extract table OID and PK
+    // Extract table OID
     let table_oid = match trigger.relation() {
         Ok(rel) => rel.oid(),
         Err(e) => {
@@ -41,36 +41,98 @@ fn pg_tview_trigger_handler<'a>(
             return Ok(None);
         }
     };
-    let pk_value = match crate::utils::extract_pk(trigger) {
-        Ok(pk) => pk,
-        Err(e) => {
-            warning!("Failed to extract primary key from trigger: {:?}", e);
-            return Ok(None);
-        }
-    };
 
-    // Map table OID → entity name
-    let entity = match entity_for_table(table_oid) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            // Table not in pg_tview_meta, skip
+    // 1. Direct entity: this table IS a TVIEW source (e.g. tb_user → entity "user")
+    match entity_for_table(table_oid) {
+        Ok(Some(entity)) => {
+            // Extract PK only after confirming this is a direct TVIEW source
+            let pk_value = match crate::utils::extract_pk(trigger) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    warning!("Failed to extract primary key from trigger: {:?}", e);
+                    return Ok(None);
+                }
+            };
+            enqueue_refresh(&entity, pk_value);
             return Ok(None);
         }
+        Ok(None) => { /* fall through to indirect lookup */ }
         Err(e) => {
             warning!("Failed to resolve entity for table OID {:?}: {:?}", table_oid, e);
             return Ok(None);
         }
-    };
-
-    // Enqueue refresh request (deferred to commit)
-    enqueue_refresh(&entity, pk_value);
-
-    // Register commit callback (once per transaction)
-    if let Err(e) = register_commit_callback_once() {
-        warning!("Failed to register commit callback: {:?}", e);
-        return Ok(None);
     }
 
+    // 2. Indirect: this table is a dependency of one or more TVIEWs
+    //    (e.g. tb_comment is in tv_post's dependencies array)
+    //    PK extraction is handled inside — it reads FK values from the child row
+    enqueue_indirect_parents(trigger, table_oid);
+
+    Ok(None)
+}
+
+/// Look up parent entities for an indirect base table and enqueue their refreshes.
+///
+/// When a child table (e.g. `tb_comment`) changes, we find all parent TVIEWs whose
+/// `dependencies` array includes this table's OID. For each parent, we extract the
+/// FK value from the child row (e.g. `fk_post`) to determine which parent row to refresh.
+fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
+    let parent_entities = match crate::catalog::parent_entities_for_base_table(table_oid) {
+        Ok(entities) => entities,
+        Err(e) => {
+            warning!("Failed to find parent entities for table {:?}: {:?}", table_oid, e);
+            return;
+        }
+    };
+
+    if parent_entities.is_empty() {
+        return; // table not managed by pg_tviews at all
+    }
+
+    // Use NEW for INSERT/UPDATE, OLD for DELETE
+    let tuple = match trigger.new().or_else(|| trigger.old()) {
+        Some(t) => t,
+        None => {
+            warning!("No tuple available in trigger context");
+            return;
+        }
+    };
+
+    for parent_entity in parent_entities {
+        // Convention: child row has fk_{parent_entity} column
+        let fk_col = format!("fk_{parent_entity}");
+        match tuple.get_by_name::<i64>(&fk_col) {
+            Ok(Some(parent_pk)) => {
+                enqueue_refresh(&parent_entity, parent_pk);
+            }
+            Ok(None) => {
+                warning!("FK column {} is NULL, skipping refresh for {}", fk_col, parent_entity);
+            }
+            Err(_) => {
+                warning!("No FK column {} on child row, skipping refresh for {}", fk_col, parent_entity);
+            }
+        }
+    }
+}
+
+/// Statement-level AFTER trigger that flushes the refresh queue.
+///
+/// This fires once per statement (not per row) and processes all queued
+/// refresh requests. It ensures auto-commit (implicit) transactions get
+/// their TVIEWs refreshed, since the ProcessUtility hook only intercepts
+/// explicit COMMIT statements.
+///
+/// For explicit transactions (BEGIN...COMMIT), both this trigger and the
+/// ProcessUtility hook may run. The flush is idempotent — the second call
+/// finds an empty queue and returns immediately.
+#[pg_trigger]
+#[allow(clippy::unnecessary_wraps)]
+fn pg_tview_flush_trigger<'a>(
+    _trigger: &'a PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    if let Err(e) = crate::queue::flush_refresh_queue() {
+        warning!("TVIEW refresh failed in statement trigger: {:?}", e);
+    }
     Ok(None)
 }
 
@@ -119,12 +181,6 @@ fn pg_tview_stmt_trigger_handler<'a>(
 
     // Bulk enqueue all changed PKs
     enqueue_refresh_bulk(&entity, changed_pks);
-
-    // Register commit callback (once per transaction)
-    if let Err(e) = register_commit_callback_once() {
-        warning!("Failed to register commit callback: {:?}", e);
-        return Ok(None);
-    }
 
     Ok(None)
 }

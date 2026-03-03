@@ -79,6 +79,25 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     }
     HOOK_IN_PROGRESS = true;
 
+    // Check for COMMIT/END BEFORE the catch_unwind block.
+    // flush_refresh_queue() uses SPI which may trigger PostgreSQL ereport(ERROR)
+    // → longjmp → pgrx panic. This MUST NOT be caught by catch_unwind because
+    // that corrupts PG_exception_stack. The #[pg_guard] on this function handles
+    // error propagation correctly via C-unwind.
+    if !pstmt.is_null() && !(*pstmt).utilityStmt.is_null() {
+        let utility_stmt = (*pstmt).utilityStmt;
+        if (*utility_stmt).type_ == pg_sys::NodeTag::T_TransactionStmt {
+            #[allow(clippy::cast_ptr_alignment)]
+            let xact_stmt = utility_stmt.cast::<pg_sys::TransactionStmt>();
+            if !xact_stmt.is_null() && (*xact_stmt).kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
+                if let Err(e) = crate::queue::flush_refresh_queue() {
+                    HOOK_IN_PROGRESS = false;
+                    error!("TVIEW refresh failed before COMMIT: {e:?}");
+                }
+            }
+        }
+    }
+
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
     let result = std::panic::catch_unwind(|| -> bool {
@@ -117,7 +136,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         let utility_stmt = pstmt_ref.utilityStmt;
         let node_tag = (*utility_stmt).type_;
-
 
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
@@ -492,6 +510,7 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
 /// Get the prepared transaction GID captured by the `ProcessUtility` hook
 ///
 /// This is called by the transaction callback during PREPARE TRANSACTION.
+#[allow(dead_code)] // 2PC support
 pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
     PREPARING_GID.lock()
         .unwrap_or_else(|p| p.into_inner())

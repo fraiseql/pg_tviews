@@ -1,22 +1,25 @@
 //! Configuration: Compile-time and Runtime Settings
 //!
 //! This module centralizes all configuration for `pg_tviews`:
-//! - **Compile-time constants**: Fixed limits and defaults
-//! - **Runtime settings**: Planned GUC-based configuration
-//! - **Feature flags**: Enable/disable optional functionality
+//! - **Compile-time constants**: Fixed safety limits
+//! - **Runtime GUC settings**: Tunable via `SET pg_tviews.*` / `SHOW pg_tviews.*`
 //!
-//! ## Current Configuration
+//! ## GUC Parameters
 //!
-//! All settings are currently compile-time constants. Future versions
-//! will support `PostgreSQL` GUC (Grand Unified Configuration) variables
-//! for runtime configuration without recompilation.
+//! | Parameter | Type | Default | Description |
+//! |-----------|------|---------|-------------|
+//! | `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations |
+//! | `pg_tviews.graph_cache_enabled` | bool | true | Cache dependency graphs |
+//! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
+//! | `pg_tviews.metrics_enabled` | bool | false | Collect refresh metrics |
+//! | `pg_tviews.log_level` | string | "info" | Logging verbosity |
 //!
-//! ## Key Settings
+//! ## Compile-time Constants
 //!
 //! - `MAX_DEPENDENCY_DEPTH`: Prevents infinite recursion in view hierarchies
-//! - `max_propagation_depth()`: Limits cascade refresh iterations
-//! - Cache enable/disable flags for performance tuning
-//! - Debug and metrics collection controls
+//! - `DEBUG_DEPENDENCIES`: Enable verbose dependency logging
+
+use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 
 /// Maximum depth for `pg_depend` traversal
 /// Prevents infinite recursion and overly complex view hierarchies
@@ -25,38 +28,102 @@ pub const MAX_DEPENDENCY_DEPTH: usize = 10;
 /// Enable verbose dependency logging (for debugging)
 pub const DEBUG_DEPENDENCIES: bool = false;
 
+// ── GUC statics ──────────────────────────────────────────────────────────
+
+static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
+static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static METRICS_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
+    GucSetting::<Option<std::ffi::CString>>::new(Some(c"info"));
+
+// ── GUC registration (called from _PG_init) ─────────────────────────────
+
+/// Register all `pg_tviews.*` GUC parameters with PostgreSQL.
+///
+/// Must be called exactly once from `_PG_init()`, before any code reads
+/// the GUC values.
+pub fn register_gucs() {
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_propagation_depth",
+        c"Maximum cascade propagation iterations before aborting.",
+        c"Prevents infinite loops in circular dependency chains.",
+        &MAX_PROPAGATION_DEPTH_GUC,
+        1,      // min
+        10_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.graph_cache_enabled",
+        c"Enable in-memory caching of entity dependency graphs.",
+        c"When false, graphs are loaded from pg_tview_meta on every refresh.",
+        &GRAPH_CACHE_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.table_cache_enabled",
+        c"Enable in-memory caching of table OID to entity name mappings.",
+        c"When false, entity lookups query pg_tview_meta on every trigger.",
+        &TABLE_CACHE_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.metrics_enabled",
+        c"Enable collection of refresh metrics.",
+        c"When true, per-transaction refresh statistics are tracked.",
+        &METRICS_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_string_guc(
+        c"pg_tviews.log_level",
+        c"Logging verbosity for pg_tviews operations.",
+        c"Allowed values: debug, info, warning, error.",
+        &LOG_LEVEL_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+}
+
+// ── Public accessors (same signatures as the old const fns) ──────────────
+
 /// Maximum propagation iteration depth (default: 100)
 /// Prevents infinite loops in dependency chains
-/// Future: make this configurable via a GUC
 #[must_use]
-pub const fn max_propagation_depth() -> usize {
-    100
+pub fn max_propagation_depth() -> usize {
+    MAX_PROPAGATION_DEPTH_GUC.get() as usize
 }
 
 /// Check if graph caching is enabled
-/// Future: make this configurable via a GUC
 #[must_use]
-pub const fn graph_cache_enabled() -> bool {
-    true
+pub fn graph_cache_enabled() -> bool {
+    GRAPH_CACHE_ENABLED_GUC.get()
 }
 
 /// Check if table caching is enabled
-/// Future: make this configurable via a GUC
 #[must_use]
-pub const fn table_cache_enabled() -> bool {
-    true
+pub fn table_cache_enabled() -> bool {
+    TABLE_CACHE_ENABLED_GUC.get()
 }
 
 /// Get the current log level
-/// Future: make this configurable via a GUC
 #[must_use]
-pub const fn log_level() -> &'static str {
-    "info"
+pub fn log_level() -> String {
+    match LOG_LEVEL_GUC.get() {
+        Some(cstr) => cstr.to_str().unwrap_or("info").to_owned(),
+        None => "info".to_owned(),
+    }
 }
 
 /// Check if metrics collection is enabled
-/// Future: make this configurable via a GUC
 #[must_use]
-pub const fn metrics_enabled() -> bool {
-    false
+pub fn metrics_enabled() -> bool {
+    METRICS_ENABLED_GUC.get()
 }

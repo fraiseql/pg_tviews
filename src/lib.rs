@@ -187,8 +187,19 @@ extern "C-unwind" fn _PG_init() {
     // is later called and also calls ensure_hook_installed().  Double-installing
     // the hook sets PREV_PROCESS_UTILITY_HOOK to our own hook, which causes
     // infinite recursion and SIGSEGV on the next CREATE/DROP DDL.
+    // Register GUC parameters before anything reads them.
+    crate::config::register_gucs();
+
     unsafe {
         hooks::ensure_hook_installed();
+    }
+
+    // Register transaction callbacks once at startup.
+    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
+    // so registering per-transaction would accumulate N copies after N transactions.
+    unsafe {
+        queue::xact::register_xact_callback();
+        queue::xact::register_subxact_callback();
     }
 
     // Note: We cannot call functions that require SPI/database connection here
@@ -352,6 +363,26 @@ fn pg_tviews_infer_types(
     }
 }
 
+/// Validate a 2PC global transaction ID (GID) for safe use in SQL.
+///
+/// Rejects empty strings, overly long values (PostgreSQL limit is 200 bytes),
+/// and characters that could be used for SQL injection.
+fn validate_gid(gid: &str) -> TViewResult<()> {
+    if gid.is_empty() || gid.len() > 199 {
+        return Err(TViewError::InvalidInput {
+            parameter: "gid".to_string(),
+            reason: format!("GID must be 1\u{2013}199 bytes (got {})", gid.len()),
+        });
+    }
+    if gid.contains('\'') || gid.contains('\0') || gid.contains(';') {
+        return Err(TViewError::InvalidInput {
+            parameter: "gid".to_string(),
+            reason: "GID contains invalid characters (', ;, or null byte)".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Handle COMMIT PREPARED for 2PC transactions
 /// Processes pending refreshes for a committed prepared transaction
 ///
@@ -359,6 +390,8 @@ fn pg_tviews_infer_types(
 /// - `gid`: Global transaction ID of the prepared transaction
 #[pg_extern]
 fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
+    validate_gid(gid)?;
+
     // STEP 1: Load queue metadata BEFORE committing (verify it exists)
     let args = vec![unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
     let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
@@ -412,6 +445,8 @@ fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
 /// - `gid`: Global transaction ID of the prepared transaction
 #[pg_extern]
 fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
+    validate_gid(gid)?;
+
     // STEP 1: Rollback the prepared transaction first
     let rollback_sql = format!("ROLLBACK PREPARED '{gid}'");
     Spi::run(&rollback_sql)?;
@@ -480,7 +515,7 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
 }
 
 /// Get maximum propagation depth from config
-const fn get_max_propagation_depth() -> usize {
+fn get_max_propagation_depth() -> usize {
     crate::config::max_propagation_depth()
 }
 
@@ -630,10 +665,6 @@ fn pg_tviews_cascade(
         }
     }
 
-    // Register the commit callback to process the queue
-    if let Err(e) = queue::register_commit_callback_once() {
-        error!("Failed to register TVIEW commit callback: {:?}", e);
-    }
 }
 
 /// Handle INSERT operations on base tables
@@ -824,7 +855,8 @@ mod tests {
 
     #[pg_test]
     fn sanity_check() {
-        assert_eq!(2, 1 + 1);
+        let two: i32 = 2;
+        assert_eq!(two, 1 + 1);
     }
 
     #[pg_test]
@@ -848,9 +880,9 @@ mod tests {
     #[should_panic(expected = "TVIEW metadata not found")]
     fn test_error_propagates_to_postgres() {
         // This should raise a PostgreSQL error
-        Err::<(), _>(TViewError::MetadataNotFound {
+        panic!("{:?}", TViewError::MetadataNotFound {
             entity: "test".to_string(),
-        }).unwrap();
+        });
     }
 
     // Tests for jsonb_delta detection
@@ -940,6 +972,20 @@ mod tests {
     }
 }
 
+/// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
+/// Rust `pg_tview_trigger_handler()`.
+///
+/// Call this once after upgrading `pg_tviews` to convert triggers installed by
+/// prior versions. The operation is idempotent and safe to re-run.
+///
+/// Raises a `PostgreSQL` ERROR if any trigger cannot be migrated.
+#[pg_extern]
+fn pg_tviews_migrate_triggers() {
+    if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
+        error!("Failed to migrate triggers: {:?}", e);
+    }
+}
+
 /// Show cascade dependency path for a given entity
 ///
 /// Returns the dependency chain showing which TVIEWs depend on this entity
@@ -949,38 +995,38 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
     name!(entity_name, String),
     name!(depends_on, String),
 )> {
-    let query = format!(
-        "WITH RECURSIVE dep_tree AS (
-            -- Start with the requested entity
-            SELECT
-                pg_tview_meta.entity,
-                0 as depth,
-                ARRAY[pg_tview_meta.entity] as path,
-                pg_tview_meta.entity as depends_on
-            FROM pg_tview_meta
-            WHERE pg_tview_meta.entity = '{}'
-
-            UNION ALL
-
-            -- Find TVIEWs that depend on entities in our tree
-            SELECT
-                m.entity,
-                dt.depth + 1,
-                dt.path || m.entity,
-                dt.entity as depends_on
-            FROM dep_tree dt
-            JOIN pg_tview_meta m ON ('tv_' || dt.entity)::regclass::oid = ANY(m.dependencies)
-            WHERE NOT (m.entity = ANY(dt.path))  -- Prevent cycles
-              AND dt.depth < 10  -- Depth limit
-        )
-        SELECT depth, entity_name, depends_on
-        FROM dep_tree
-        ORDER BY depth, entity_name",
-        entity.replace('\'',"''")
-    );
-
     let results = Spi::connect(|client| {
-        match client.select(&query, None, &[]) {
+        let args = vec![unsafe {
+            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        match client.select(
+            "WITH RECURSIVE dep_tree AS (
+                SELECT
+                    pg_tview_meta.entity,
+                    0 as depth,
+                    ARRAY[pg_tview_meta.entity] as path,
+                    pg_tview_meta.entity as depends_on
+                FROM pg_tview_meta
+                WHERE pg_tview_meta.entity = $1
+
+                UNION ALL
+
+                SELECT
+                    m.entity,
+                    dt.depth + 1,
+                    dt.path || m.entity,
+                    dt.entity as depends_on
+                FROM dep_tree dt
+                JOIN pg_tview_meta m ON ('tv_' || dt.entity)::regclass::oid = ANY(m.dependencies)
+                WHERE NOT (m.entity = ANY(dt.path))
+                  AND dt.depth < 10
+            )
+            SELECT depth, entity AS entity_name, depends_on
+            FROM dep_tree
+            ORDER BY depth, entity_name",
+            None,
+            &args,
+        ) {
             Ok(rows) => {
                 let mut paths = Vec::new();
                 for row in rows {

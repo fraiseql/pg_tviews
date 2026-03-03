@@ -31,6 +31,7 @@ pub struct QueueMetadata {
     pub savepoint_depth: usize,
 }
 
+#[allow(dead_code)] // 2PC support: used by handle_prepare for PREPARE TRANSACTION
 impl SerializedQueue {
     /// Create a serialized queue from a `HashSet` of refresh keys
     pub fn from_queue(queue: HashSet<RefreshKey>) -> Self {
@@ -129,6 +130,7 @@ impl SerializedQueue {
     }
 }
 
+#[allow(dead_code)] // 2PC support
 /// Get current session ID for metadata
 fn get_session_id() -> String {
     // Try to get session ID from PostgreSQL
@@ -138,6 +140,7 @@ fn get_session_id() -> String {
     }
 }
 
+#[allow(dead_code)] // 2PC support
 /// Get current savepoint depth
 const fn get_savepoint_depth() -> usize {
     // This would need to be implemented to track savepoint depth

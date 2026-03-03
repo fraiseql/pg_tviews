@@ -122,7 +122,6 @@ RETURNS TABLE (
     enqueued_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
-SECURITY DEFINER
 AS $$
 BEGIN
     -- This function would need to be implemented in Rust to access thread-local state

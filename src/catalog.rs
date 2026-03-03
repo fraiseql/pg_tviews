@@ -331,9 +331,10 @@ impl TviewMeta {
     /// }
     /// ```
     pub fn parse_dependencies(&self) -> Vec<DependencyDetail> {
-        let mut details = Vec::new();
+        let len = self.dependency_types.len().max(self.fk_columns.len());
+        let mut details = Vec::with_capacity(len);
 
-        for (i, _fk_col) in self.fk_columns.iter().enumerate() {
+        for i in 0..len {
             let dep_type = self.dependency_types.get(i).cloned().unwrap_or(DependencyType::Scalar);
             let path = self.dependency_paths.get(i).cloned().flatten();
             let match_key = self.array_match_keys.get(i).cloned().flatten();
@@ -378,6 +379,37 @@ impl Default for TviewMeta {
     }
 }
 
+/// Find all TVIEW entities whose dependency list includes the given base table OID.
+///
+/// This is the reverse lookup for indirect dependencies: when `tb_comment` changes,
+/// this function finds that entity `"post"` depends on it (because `tb_comment`'s OID
+/// is in `tv_post`'s `dependencies` array).
+///
+/// Returns entity names (e.g. `["post"]`) for all TVIEWs that depend on this table.
+pub fn parent_entities_for_base_table(table_oid: Oid) -> crate::TViewResult<Vec<String>> {
+    let result: Result<Vec<String>, spi::Error> = Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }];
+        let rows = client.select(
+            "SELECT entity FROM pg_tview_meta WHERE $1 = ANY(dependencies)",
+            None,
+            &args,
+        )?;
+        let mut entities = Vec::new();
+        for row in rows {
+            if let Some(entity) = row["entity"].value::<String>()? {
+                entities.push(entity);
+            }
+        }
+        Ok(entities)
+    });
+    result.map_err(|e| crate::TViewError::CatalogError {
+        operation: "parent_entities_for_base_table".to_string(),
+        pg_error: format!("{e:?}"),
+    })
+}
+
 /// Map a base table OID to its entity name
 ///
 /// Example: OID of `tb_user` → Some("user")
@@ -412,7 +444,23 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     })?;
 
     // Check if table name matches "tb_<entity>" pattern
-    table_name.strip_prefix("tb_").map_or(Ok(None), |entity| Ok(Some(entity.to_string())))
+    let Some(entity) = table_name.strip_prefix("tb_") else {
+        return Ok(None);
+    };
+
+    // Verify this entity actually exists in pg_tview_meta.
+    // Without this check, tb_comment would return Some("comment") even though
+    // there's no TVIEW for "comment" — causing the trigger handler to take the
+    // direct path instead of the indirect (array dependency) path.
+    let args = vec![unsafe {
+        DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    let exists = Spi::get_one_with_args::<String>(
+        "SELECT entity FROM pg_tview_meta WHERE entity = $1",
+        &args,
+    )?;
+
+    Ok(exists)
 }
 
 #[cfg(test)]

@@ -34,6 +34,12 @@ const NESTED_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*{}.data";
 /// Also handles COALESCE wrapper: COALESCE(`jsonb_agg`(...), '[]'::`jsonb`)
 const ARRAY_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*{}.data";
 
+/// Regex pattern for inline array aggregation (no `v_entity.data` reference)
+/// Matches: '`array_name`', `jsonb_agg`(`jsonb_build_object`(...))
+/// Also handles COALESCE wrapper
+const INLINE_ARRAY_PATTERN: &str =
+    r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*jsonb_build_object\s*\(";
+
 /// Default match key for array dependencies
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
 
@@ -176,27 +182,34 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
 /// This finds arrays that aggregate data from other TVIEWs, even if no direct FK exists
 fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
     let mut deps = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
 
     // Normalize SQL for pattern matching
     let sql_normalized = select_sql
         .replace(['\n', '\t'], " ")
         .to_lowercase();
 
-    // Pattern to match: 'array_name', jsonb_agg(v_something.data ...)
-    // Captures: (1) array_name, (2) view_name
-    let array_pattern = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data";
-    let Ok(re) = Regex::new(array_pattern) else {
-        return deps; // Return empty if regex fails
-    };
+    // Pattern 1: 'array_name', jsonb_agg(v_something.data ...)
+    if let Ok(re) = Regex::new(r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data") {
+        for capture in re.captures_iter(&sql_normalized) {
+            if let Some(array_name) = capture.get(1) {
+                let key = array_name.as_str().to_string();
+                if seen_keys.insert(key.clone()) {
+                    deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
+                }
+            }
+        }
+    }
 
-    for capture in re.captures_iter(&sql_normalized) {
-        if let (Some(array_name), Some(view_entity)) = (capture.get(1), capture.get(2)) {
-            let array_name = array_name.as_str().to_string();
-            let _view_name = format!("v_{}", view_entity.as_str());
-
-            // Create array dependency info
-            let dep_info = DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());
-            deps.push(dep_info);
+    // Pattern 2: 'array_name', jsonb_agg(jsonb_build_object(...))  (inline, no v_entity.data)
+    if let Ok(re) = Regex::new(INLINE_ARRAY_PATTERN) {
+        for capture in re.captures_iter(&sql_normalized) {
+            if let Some(array_name) = capture.get(1) {
+                let key = array_name.as_str().to_string();
+                if seen_keys.insert(key.clone()) {
+                    deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
+                }
+            }
         }
     }
 
@@ -295,6 +308,27 @@ mod tests {
         assert_eq!(deps[2].dep_type, DependencyType::Array);
         assert_eq!(deps[2].jsonb_path, Some(vec!["comments".to_string()]));
         assert_eq!(deps[2].array_match_key, Some("id".to_string()));
+    }
+
+    #[test]
+    fn test_detect_inline_jsonb_agg() {
+        let sql = "SELECT pk_post, jsonb_build_object(
+            'title', p.title,
+            'comments', COALESCE(jsonb_agg(
+                jsonb_build_object('id', c.pk_comment, 'text', c.text)
+                ORDER BY c.pk_comment
+            ) FILTER (WHERE c.pk_comment IS NOT NULL), '[]'::jsonb)
+        ) AS data FROM tb_post p LEFT JOIN tb_comment c ON c.fk_post = p.pk_post";
+        let fk_cols = vec!["fk_user".to_string()];
+
+        let deps = analyze_dependencies(sql, &fk_cols);
+
+        // fk_user is scalar (no v_user.data reference) + 1 inline array dep
+        assert!(
+            deps.iter().any(|d| d.dep_type == DependencyType::Array
+                && d.jsonb_path == Some(vec!["comments".to_string()])),
+            "Should detect inline jsonb_agg array dependency for 'comments'"
+        );
     }
 
     #[test]
