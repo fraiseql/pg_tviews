@@ -57,9 +57,11 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{entity}");
 
-    // SAFE: Use ANY($1) with array parameter (prevents SQL injection)
+    let data_col = "data";
     let query = format!(
-        "SELECT * FROM {} WHERE {} = ANY($1)",
+        "SELECT {}, {} FROM {} WHERE {} = ANY($1)",
+        quote_identifier(&pk_col),
+        quote_identifier(data_col),
         quote_identifier(&view_name),
         quote_identifier(&pk_col)
     );
