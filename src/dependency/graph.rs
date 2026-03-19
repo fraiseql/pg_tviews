@@ -190,11 +190,8 @@ fn filter_base_tables(dependencies: &[DependencyNode]) -> Vec<pg_sys::Oid> {
                     // Regular table, materialized view, partitioned table — treat as base
                     base_tables.insert(dep.oid);
                 }
-                "v" => {
-                    // View — already handled in traversal
-                }
                 _ => {
-                    // Ignore other object types
+                    // Views and other object types: not base tables
                 }
             }
         }

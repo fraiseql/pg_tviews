@@ -23,7 +23,7 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::ffi::CStr;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::ddl::drop_tview;
 use crate::TViewError;
@@ -35,9 +35,9 @@ static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 static PREPARING_GID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Reentrancy guard: prevents the hook from processing DDL that the hook itself triggers.
-/// When `pg_tviews_create` calls `Spi::run("CREATE VIEW ...")` internally, PostgreSQL
-/// calls ProcessUtility again for that DDL. Without this guard, the hook re-enters and
-/// can corrupt state, causing a segfault in PostgreSQL 18.
+/// When `pg_tviews_create` calls `Spi::run("CREATE VIEW ...")` internally, `PostgreSQL`
+/// calls `ProcessUtility` again for that DDL. Without this guard, the hook re-enters and
+/// can corrupt state, causing a segfault in `PostgreSQL` 18.
 static mut HOOK_IN_PROGRESS: bool = false;
 
 /// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
@@ -118,7 +118,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if query_lower.trim().starts_with("prepare transaction") {
             // Extract GID from query: PREPARE TRANSACTION 'gid'
             if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
-                *PREPARING_GID.lock().unwrap_or_else(|p| p.into_inner()) = Some(gid);
+                *PREPARING_GID.lock().unwrap_or_else(PoisonError::into_inner) = Some(gid);
             }
         }
 
@@ -388,9 +388,7 @@ unsafe fn handle_drop_table(
         return false;
     }
 
-    let sql = if let Ok(s) = CStr::from_ptr(query_string).to_str() {
-        s
-    } else {
+    let Ok(sql) = CStr::from_ptr(query_string).to_str() else {
         return false;
     };
 
@@ -513,7 +511,7 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
 #[allow(dead_code)] // 2PC support
 pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
     PREPARING_GID.lock()
-        .unwrap_or_else(|p| p.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .take() // Take and clear the GID
         .ok_or_else(|| crate::internal_error!("Not in a prepared transaction (GID not captured)"))
 }

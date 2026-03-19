@@ -68,10 +68,10 @@ pub unsafe fn register_subxact_callback() {
 /// # Error handling
 /// Errors from `handle_pre_commit`/`handle_prepare` are reported via pgrx's
 /// `error!()` macro, which triggers `ereport(ERROR)` and longjmps out of
-/// the callback.  PostgreSQL will then abort the transaction.
+/// the callback.  `PostgreSQL` will then abort the transaction.
 ///
 /// We intentionally avoid `catch_unwind` here: SPI operations in the
-/// pre-commit handler may trigger PostgreSQL longjmps, and intercepting
+/// pre-commit handler may trigger `PostgreSQL` longjmps, and intercepting
 /// those via `catch_unwind` corrupts `PG_exception_stack`, causing SIGABRT.
 #[no_mangle]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
@@ -184,8 +184,8 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
 /// Called by the `ProcessUtility` hook when intercepting COMMIT, **before**
 /// the actual commit begins. SPI must be available when this is called.
 ///
-/// **Must NOT be called from transaction callbacks** (PRE_COMMIT, COMMIT, ABORT)
-/// because PostgreSQL does not allow SPI queries during those callbacks.
+/// **Must NOT be called from transaction callbacks** (`PRE_COMMIT`, `COMMIT`, `ABORT`)
+/// because `PostgreSQL` does not allow SPI queries during those callbacks.
 ///
 /// This implementation correctly handles propagation by using a local queue
 /// for discovered parent refreshes. The workflow:

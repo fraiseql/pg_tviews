@@ -90,12 +90,9 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
     }
 
     // Use NEW for INSERT/UPDATE, OLD for DELETE
-    let tuple = match trigger.new().or_else(|| trigger.old()) {
-        Some(t) => t,
-        None => {
-            warning!("No tuple available in trigger context");
-            return;
-        }
+    let Some(tuple) = trigger.new().or(trigger.old()) else {
+        warning!("No tuple available in trigger context");
+        return;
     };
 
     for parent_entity in parent_entities {
@@ -119,11 +116,11 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
 ///
 /// This fires once per statement (not per row) and processes all queued
 /// refresh requests. It ensures auto-commit (implicit) transactions get
-/// their TVIEWs refreshed, since the ProcessUtility hook only intercepts
+/// their TVIEWs refreshed, since the `ProcessUtility` hook only intercepts
 /// explicit COMMIT statements.
 ///
 /// For explicit transactions (BEGIN...COMMIT), both this trigger and the
-/// ProcessUtility hook may run. The flush is idempotent — the second call
+/// `ProcessUtility` hook may run. The flush is idempotent — the second call
 /// finds an empty queue and returns immediately.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)]

@@ -322,7 +322,7 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
 ///
 /// Returns a JSON object with schema details on success, or `{"error": "..."}` on
-/// failure. Never raises a PostgreSQL error so callers can use the result in
+/// failure. Never raises a `PostgreSQL` error so callers can use the result in
 /// expressions (e.g., `IS NOT NULL`, `->>'error'`).
 #[pg_extern]
 fn pg_tviews_analyze_select(sql: &str) -> JsonB {
@@ -365,7 +365,7 @@ fn pg_tviews_infer_types(
 
 /// Validate a 2PC global transaction ID (GID) for safe use in SQL.
 ///
-/// Rejects empty strings, overly long values (PostgreSQL limit is 200 bytes),
+/// Rejects empty strings, overly long values (`PostgreSQL` limit is 200 bytes),
 /// and characters that could be used for SQL injection.
 fn validate_gid(gid: &str) -> TViewResult<()> {
     if gid.is_empty() || gid.len() > 199 {

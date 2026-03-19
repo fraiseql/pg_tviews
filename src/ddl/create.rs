@@ -5,7 +5,7 @@ use crate::error::{TViewError, TViewResult};
 /// Resolve the target schema for creating TVIEW objects.
 ///
 /// Uses `current_schema()` to respect the active `search_path`, matching
-/// standard PostgreSQL convention for unqualified DDL statements.
+/// standard `PostgreSQL` convention for unqualified DDL statements.
 fn current_schema() -> TViewResult<String> {
     crate::utils::spi_get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
@@ -329,7 +329,7 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
     Ok(())
 }
 
-/// Quote a string for use in a PostgreSQL array literal.
+/// Quote a string for use in a `PostgreSQL` array literal.
 ///
 /// Empty strings and strings containing special characters must be double-quoted
 /// to avoid producing invalid array literals like `'{,}'`.

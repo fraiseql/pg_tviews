@@ -5,17 +5,17 @@
 **Transactional Materialized Views with Incremental Refresh for PostgreSQL**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-blue.svg)](https://www.postgresql.org/)
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.3-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.81%2B-orange.svg)](https://www.rust-lang.org/)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.9-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:
-[![CI](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml)
-[![Clippy Strict](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy-strict.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy-strict.yml)
-[![Code Coverage](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml)
-[![Security Audit](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml)
-[![Documentation](https://github.com/fraiseql/pg_tviews/actions/workflows/documentation.yml/badge.svg?branch=dev)](https://github.com/fraiseql/pg_tviews/actions/workflows/documentation.yml)
+[![CI](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/ci.yml)
+[![Clippy Strict](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/clippy.yml)
+[![Integration Test](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/coverage.yml)
+[![Security Audit](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml)
+[![Documentation](https://github.com/fraiseql/pg_tviews/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/docs.yml)
 
 *Core infrastructure for FraiseQL's GraphQL Cascade — automatic incremental refresh of JSONB read models with 5,000-12,000× performance gains.*
 
@@ -76,14 +76,14 @@ class Post: ...
 
 ## 📋 Version Status
 
-**Current Version**: `0.1.0-beta.1` (December 2025)
+**Current Version**: `0.1.0-beta.9` (March 2026)
 - **Status**: Public Beta - Feature-complete, API may change
 - **Production Use**: Suitable for evaluation, not mission-critical systems
 - **Support**: Community support via GitHub issues
 
-**Roadmap to 1.0.0** (Q1 2026):
+**Roadmap to 1.0.0**:
 - ✅ Core TVIEW functionality complete
-- ✅ Comprehensive documentation (in progress)
+- ✅ Comprehensive documentation
 - 🔄 Production hardening and testing
 - 🔄 Security audit
 - 🔄 Performance validation at scale
@@ -237,11 +237,11 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ```bash
 # Prerequisites
-# - PostgreSQL 13-18 installed
-# - Rust toolchain 1.70+
+# - PostgreSQL 16 installed
+# - Rust toolchain 1.81+
 
-# Install pgrx
-cargo install --locked cargo-pgrx
+# Install pgrx (must match project version)
+cargo install --locked cargo-pgrx --version 0.16.1
 
 # Initialize pgrx
 cargo pgrx init

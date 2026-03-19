@@ -1,4 +1,4 @@
-name: Code Coverage
+name: Integration Test
 
 on:
   push:
@@ -28,7 +28,7 @@ jobs:
         sudo systemctl enable postgresql
 
     - name: Install pgrx
-      run: cargo install --locked cargo-pgrx
+      run: cargo install --locked cargo-pgrx --version 0.16.1
 
     - name: Initialize pgrx
       run: cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config

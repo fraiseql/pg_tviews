@@ -7,9 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
       - name: Install PostgreSQL 16 (Ubuntu default)
         run: |
@@ -21,7 +20,7 @@ jobs:
           sudo systemctl enable postgresql
       - name: Install pgrx
         run: |
-          cargo install --locked cargo-pgrx
+          cargo install --locked cargo-pgrx --version 0.16.1
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
       - name: Run strict clippy with efficient jsonb_delta focus
         run: |

@@ -39,7 +39,7 @@ static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
-/// Register all `pg_tviews.*` GUC parameters with PostgreSQL.
+/// Register all `pg_tviews.*` GUC parameters with `PostgreSQL`.
 ///
 /// Must be called exactly once from `_PG_init()`, before any code reads
 /// the GUC values.
@@ -98,7 +98,7 @@ pub fn register_gucs() {
 /// Prevents infinite loops in dependency chains
 #[must_use]
 pub fn max_propagation_depth() -> usize {
-    MAX_PROPAGATION_DEPTH_GUC.get() as usize
+    MAX_PROPAGATION_DEPTH_GUC.get().unsigned_abs() as usize
 }
 
 /// Check if graph caching is enabled

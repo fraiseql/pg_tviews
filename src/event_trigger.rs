@@ -133,10 +133,10 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
 
 /// Convert a table created by `CREATE TABLE tv_* AS SELECT` to a proper TVIEW.
 ///
-/// Called by the event trigger after PostgreSQL creates the table.
+/// Called by the event trigger after `PostgreSQL` creates the table.
 ///
 /// There are two code paths that produce `tv_*` tables:
-///   1. `CREATE TABLE tv_post AS SELECT …` — the ProcessUtility hook stores the
+///   1. `CREATE TABLE tv_post AS SELECT …` — the `ProcessUtility` hook stores the
 ///      SELECT in the pending cache; this event trigger converts it using the
 ///      original SELECT statement.
 ///   2. `pg_tviews_create('post', '…')` — the function creates `tv_post` itself
@@ -148,11 +148,8 @@ fn convert_table_to_tview(table_name: &str) -> TViewResult<()> {
 
     // Retrieve (and consume) the pending SELECT.  If none exists, the table
     // was created by pg_tviews_create — nothing to do here.
-    let select_sql = match crate::hooks::take_pending_tview_select(table_name) {
-        Some(sql) => sql,
-        None => {
-            return Ok(());
-        }
+    let Some(select_sql) = crate::hooks::take_pending_tview_select(table_name) else {
+        return Ok(());
     };
 
 

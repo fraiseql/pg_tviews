@@ -13,15 +13,13 @@ jobs:
   build-and-sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx
+        run: cargo install --locked cargo-pgrx --version 0.16.1
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

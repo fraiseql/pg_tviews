@@ -6,7 +6,7 @@ use pgrx::prelude::*;
 /// - **Parent Discovery**: Finds views that depend on changed entities
 /// - **Affected Row Identification**: Locates rows impacted by changes
 ///
-/// Used by the PRE_COMMIT handler (`src/queue/`) to iteratively discover
+/// Used by the `PRE_COMMIT` handler (`src/queue/`) to iteratively discover
 /// and enqueue parent TVIEWs for refresh.
 use crate::queue::RefreshKey;
 

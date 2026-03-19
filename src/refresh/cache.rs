@@ -7,7 +7,7 @@ use pgrx::prelude::*;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, PoisonError};
 use crate::TViewResult;
 
 /// Cache prepared statement names per entity
@@ -80,7 +80,7 @@ pub fn refresh_pk_with_cached_plan(entity: &str, pk: i64) -> TViewResult<()> {
 /// Statement format: `SELECT * FROM v_entity WHERE pk_entity = $1`
 #[allow(dead_code)]
 fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
-    let mut cache = PREPARED_STATEMENTS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut cache = PREPARED_STATEMENTS.lock().unwrap_or_else(PoisonError::into_inner);
 
     if let Some(stmt_name) = cache.get(entity) {
         // Verify statement still exists (might have been deallocated)
@@ -121,7 +121,7 @@ fn get_or_prepare_statement(entity: &str) -> TViewResult<String> {
 /// Called during cache invalidation when schema changes occur.
 #[allow(dead_code)]
 pub fn clear_prepared_statement_cache() {
-    let mut cache = PREPARED_STATEMENTS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut cache = PREPARED_STATEMENTS.lock().unwrap_or_else(PoisonError::into_inner);
     if !cache.is_empty() {
         cache.clear();
     }
@@ -130,7 +130,7 @@ pub fn clear_prepared_statement_cache() {
 /// Get cache statistics for monitoring
 #[allow(dead_code)]
 pub fn get_cache_stats() -> (usize, Vec<String>) {
-    let cache = PREPARED_STATEMENTS.lock().unwrap_or_else(|p| p.into_inner());
+    let cache = PREPARED_STATEMENTS.lock().unwrap_or_else(PoisonError::into_inner);
     let size = cache.len();
     let entities: Vec<String> = cache.keys().cloned().collect();
     drop(cache);

@@ -4,13 +4,13 @@ use pgrx::pg_sys;
 
 /// Execute a DDL statement via SPI in non-atomic mode.
 ///
-/// In PostgreSQL 18.1 compiled with assertions enabled, calling `SPI_execute()` for DDL
+/// In `PostgreSQL` 18.1 compiled with assertions enabled, calling `SPI_execute()` for DDL
 /// (CREATE VIEW, CREATE TABLE, CREATE TRIGGER, etc.) from within an atomic SPI context
 /// triggers an assertion failure → SIGSEGV.  The fix is two-fold:
 ///
 /// 1. Connect via `SPI_connect_ext(SPI_OPT_NONATOMIC)` to open a non-atomic SPI context.
 /// 2. Execute via `SPI_execute_extended()` with `allow_nonatomic = true`, which suppresses
-///    PostgreSQL's internal assertion that DDL cannot run in an atomic transaction context.
+///    `PostgreSQL`'s internal assertion that DDL cannot run in an atomic transaction context.
 ///
 /// Using `SPI_execute()` even after `SPI_connect_ext(SPI_OPT_NONATOMIC)` still fires the
 /// assertion in PG18 assert builds; `SPI_execute_extended` with `allow_nonatomic` is the
@@ -23,7 +23,7 @@ use pgrx::pg_sys;
 /// Returns an error string if `SPI_connect_ext` or `SPI_execute` fails.
 ///
 /// # Safety
-/// Calls raw PostgreSQL SPI functions.  Must only be called from a PostgreSQL backend.
+/// Calls raw `PostgreSQL` SPI functions.  Must only be called from a `PostgreSQL` backend.
 pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     use std::ffi::CString;
 
@@ -33,7 +33,9 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     unsafe {
         // SPI_OPT_NONATOMIC allows DDL in SPI context without triggering the
         // "attempted to execute DDL in atomic SPI context" assertion in PG18.
+        #[allow(clippy::cast_possible_wrap)] // PostgreSQL SPI constants are u32, API takes i32
         let connect_result = pg_sys::SPI_connect_ext(pg_sys::SPI_OPT_NONATOMIC as i32);
+        #[allow(clippy::cast_possible_wrap)]
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
             return Err(format!("SPI_connect_ext failed: {connect_result}"));
         }
@@ -48,7 +50,7 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
             ..pg_sys::SPIExecuteOptions::default()
         };
 
-        let execute_result = pg_sys::SPI_execute_extended(c_sql.as_ptr(), &opts);
+        let execute_result = pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
 
         // Always finish even on error
         pg_sys::SPI_finish();
