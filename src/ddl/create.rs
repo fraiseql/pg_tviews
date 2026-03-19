@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 use crate::schema::{TViewSchema, inference::infer_schema, analyzer::analyze_dependencies};
 use crate::error::{TViewError, TViewResult};
 
@@ -127,11 +128,14 @@ pub fn create_tview(
 /// Check if a TVIEW already exists
 fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     let entity_name = tview_name.trim_start_matches("tv_");
+    let args = vec![unsafe {
+        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
 
-    Spi::get_one::<bool>(&format!(
-        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace('\'', "''")
-    ))
+    Spi::get_one_with_args::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = $1",
+        &args,
+    )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW exists: {tview_name}"),
         pg_error: format!("{e:?}"),
@@ -418,7 +422,7 @@ fn register_metadata(
         pg_error: "Table OID not found".to_string(),
     })?;
 
-    // Insert metadata record
+    // Insert metadata record (entity + definition parameterized; OIDs and array literals are safe internal values)
     let insert_meta_sql = format!(
         "INSERT INTO pg_tview_meta (
             entity,
@@ -431,12 +435,10 @@ fn register_metadata(
             dependency_types,
             dependency_paths,
             array_match_keys
-        ) VALUES ('{}', {}, {}, '{}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
+        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
-        entity_name.replace('\'', "''"),
         view_oid.to_u32(),
         table_oid.to_u32(),
-        definition_sql.replace('\'', "''"),
         deps_str,
         fk_columns,
         uuid_fk_columns,
@@ -445,7 +447,11 @@ fn register_metadata(
         array_keys
     );
 
-    Spi::run(&insert_meta_sql).map_err(|e| TViewError::SpiError {
+    let args = [
+        unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(definition_sql, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    Spi::run_with_args(&insert_meta_sql, &args).map_err(|e| TViewError::SpiError {
         query: insert_meta_sql,
         error: e.to_string(),
     })?;

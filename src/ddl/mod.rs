@@ -29,6 +29,9 @@ use pgrx::prelude::*;
 /// Usage: SELECT `pg_tviews_create`('`my_entity`', 'SELECT id, name FROM users WHERE active = true');
 #[pg_extern]
 fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
+    crate::validation::validate_sql_identifier(tview_name, "tview_name")
+        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
+
     // Ensure ProcessUtility hook is installed for DDL syntax support
     unsafe {
         crate::hooks::ensure_hook_installed();
@@ -45,6 +48,9 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
 /// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);  -- true = IF EXISTS
 #[pg_extern]
 fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<String, String> {
+    crate::validation::validate_sql_identifier(tview_name, "tview_name")
+        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
+
     match drop_tview(tview_name, if_exists) {
         Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
         Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
@@ -62,6 +68,9 @@ fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<
 /// by event triggers during CREATE TABLE interception.
 #[pg_extern]
 fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
+    crate::validation::validate_sql_identifier(table_name, "table_name")
+        .map_err(|e| format!("Invalid table name: {e}"))?;
+
     match convert_existing_table_to_tview(table_name) {
         Ok(()) => Ok(format!("Table '{table_name}' converted to TVIEW successfully")),
         Err(e) => Err(format!("Failed to convert table to TVIEW: {e}")),

@@ -441,15 +441,18 @@ fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names: Vec<String> = Spi::connect(|client| {
-        let q = format!(
+        let args = vec![unsafe {
+            DatumWithOid::new(view_name.as_str(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let rows = client.select(
             "SELECT a.attname::text \
              FROM pg_attribute a \
              JOIN pg_class c ON c.oid = a.attrelid \
-             WHERE c.relname = '{}' AND a.attnum > 0 AND NOT a.attisdropped \
+             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
              ORDER BY a.attnum",
-            view_name.replace('\'', "''")
-        );
-        let rows = client.select(&q, None, &[])?;
+            None,
+            &args,
+        )?;
         let mut cols: Vec<String> = Vec::new();
         for r in rows {
             if let Some(name) = r["attname"].value::<String>()? {

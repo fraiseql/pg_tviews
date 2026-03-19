@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 
 /// Propagation Engine: Parent Discovery for Dependent Views
 ///
@@ -96,12 +97,16 @@ fn find_affected_pks(
     let parent_table = format!("tv_{parent_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
+    // Table/column names are from pg_tview_meta (internal); child_pk is parameterized
     let query = format!(
-        "SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = {child_pk}"
+        "SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = $1"
     );
+    let args = vec![unsafe {
+        DatumWithOid::new(child_pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value())
+    }];
 
     Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
+        let rows = client.select(&query, None, &args)?;
         let mut pks = Vec::new();
 
         for row in rows {

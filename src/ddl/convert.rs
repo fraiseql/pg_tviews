@@ -4,6 +4,7 @@
 //! `PostgreSQL` DDL into a proper TVIEW structure.
 
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::TViewSchema;
 
@@ -124,15 +125,17 @@ fn get_table_columns(table_name: &str) -> TViewResult<Vec<ColumnInfo>> {
     let mut columns = Vec::new();
 
     Spi::connect(|client| {
-        let query = format!(
+        let args = vec![unsafe {
+            DatumWithOid::new(table_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let results = client.select(
             "SELECT column_name, data_type, is_nullable
              FROM information_schema.columns
-             WHERE table_name = '{}'
+             WHERE table_name = $1
              ORDER BY ordinal_position",
-            table_name.replace('\'', "''")
-        );
-
-        let results = client.select(&query, None, &[])?;
+            None,
+            &args,
+        )?;
 
         for row in results {
             columns.push(ColumnInfo {
@@ -288,23 +291,27 @@ fn extract_table_references(json: &serde_json::Value, tables: &mut Vec<String>) 
 
 /// Check if a table exists in the current database
 fn table_exists(table_name: &str) -> bool {
-    Spi::get_one::<bool>(&format!(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = '{}')",
-        table_name.replace('\'', "''")
-    )).unwrap_or(Some(false)).unwrap_or(false)
+    let args = vec![unsafe {
+        DatumWithOid::new(table_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+        &args,
+    ).unwrap_or(Some(false)).unwrap_or(false)
 }
 
 /// Check for user-provided base table hints in table comment
 /// Format: COMMENT ON TABLE `tv_entity` IS '`TVIEW_BASES`: `tb_table1`, `tb_table2`';
 fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
-    let query = format!(
+    let args = vec![unsafe {
+        DatumWithOid::new(table_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    let comment: Option<String> = Spi::get_one_with_args(
         "SELECT obj_description(oid, 'pg_class') as comment
          FROM pg_class
-         WHERE relname = '{}'",
-        table_name.replace('\'', "''")
-    );
-
-    let comment: Option<String> = Spi::get_one(&query)?;
+         WHERE relname = $1",
+        &args,
+    )?;
 
     if let Some(comment) = comment {
         // Look for TVIEW_BASES: pattern
@@ -397,20 +404,23 @@ fn register_tview_metadata(
 
     // Insert metadata
     let definition = format!("SELECT * FROM {view_name}");
-    Spi::run(&format!(
+    let insert_sql = format!(
         "INSERT INTO pg_tview_meta (entity, view_oid, table_oid, definition, fk_columns, uuid_fk_columns)
-         VALUES ('{}', {}, {}, '{}', '{{}}', '{{}}')
+         VALUES ($1, {}, {}, $2, '{{}}', '{{}}')
          ON CONFLICT (entity) DO UPDATE SET
             view_oid = EXCLUDED.view_oid,
             table_oid = EXCLUDED.table_oid,
             definition = EXCLUDED.definition,
             fk_columns = EXCLUDED.fk_columns,
             uuid_fk_columns = EXCLUDED.uuid_fk_columns",
-        entity_name.replace('\'', "''"),
         view_oid.to_u32(),
         table_oid.to_u32(),
-        definition.replace('\'', "''")
-    ))?;
+    );
+    let args = [
+        unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(definition.clone(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    Spi::run_with_args(&insert_sql, &args)?;
 
     Ok(())
 }

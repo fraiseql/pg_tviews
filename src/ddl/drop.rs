@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
 
 /// Drop a TVIEW and all its associated objects
@@ -109,10 +110,13 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
 
 /// Check if a TVIEW exists in metadata
 fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
-    Spi::get_one::<bool>(&format!(
-        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace('\'', "''")
-    ))
+    let args = vec![unsafe {
+        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    Spi::get_one_with_args::<bool>(
+        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = $1",
+        &args,
+    )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW metadata: {entity_name}"),
         pg_error: format!("{e:?}"),
@@ -122,13 +126,14 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
-    let delete_meta_sql = format!(
-        "DELETE FROM pg_tview_meta WHERE entity = '{}'",
-        entity_name.replace('\'', "''")
-    );
-
-    Spi::run(&delete_meta_sql).map_err(|e| TViewError::SpiError {
-        query: delete_meta_sql,
+    let args = [unsafe {
+        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    Spi::run_with_args(
+        "DELETE FROM pg_tview_meta WHERE entity = $1",
+        &args,
+    ).map_err(|e| TViewError::SpiError {
+        query: "DELETE FROM pg_tview_meta WHERE entity = $1".to_string(),
         error: e.to_string(),
     })?;
 

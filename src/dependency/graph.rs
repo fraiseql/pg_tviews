@@ -1,4 +1,5 @@
 use pgrx::prelude::*;
+use pgrx::datum::DatumWithOid;
 use std::collections::{HashSet, VecDeque};
 use crate::error::{TViewError, TViewResult};
 use crate::config::MAX_DEPENDENCY_DEPTH;
@@ -53,14 +54,17 @@ fn get_view_oid(view_name: &str) -> TViewResult<pg_sys::Oid> {
     // Use pg_class lookup rather than ::regclass cast: the cast raises a PostgreSQL
     // ERROR (aborting the transaction) when the view doesn't exist, whereas a catalog
     // query returns NULL which we can handle as a Rust error.
-    let safe_name = view_name.replace('\'', "''");
-    Spi::get_one::<pg_sys::Oid>(&format!(
+    let args = vec![unsafe {
+        DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = '{safe_name}' \
+         WHERE c.relname = $1 \
            AND n.nspname = current_schema() \
-           AND c.relkind IN ('v', 'm')"
-    ))
+           AND c.relkind IN ('v', 'm')",
+        &args,
+    )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for '{view_name}'"),
         pg_error: format!("{e:?}"),

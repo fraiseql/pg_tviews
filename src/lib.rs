@@ -64,6 +64,7 @@ pub mod parser;
 pub mod ddl;
 pub mod config;
 pub mod dependency;
+pub mod validation;
 
 pub use error::{TViewError, TViewResult};
 pub use queue::RefreshKey;
