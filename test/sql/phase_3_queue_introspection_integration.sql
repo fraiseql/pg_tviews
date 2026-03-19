@@ -1,4 +1,4 @@
--- Phase 3 Integration Tests: Queue Introspection
+-- Integration Tests: Queue Introspection
 -- Tests queue monitoring and introspection capabilities
 
 -- Test 1: Queue info function

@@ -1,4 +1,4 @@
--- Phase 6 Integration Tests: TEXT[][] Extraction Workaround
+-- Integration Tests: TEXT[][] Extraction Workaround
 -- Tests dependency_paths extraction and nested JSONB refresh functionality
 
 -- Test 1: Metadata with dependency paths

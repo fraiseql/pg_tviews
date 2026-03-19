@@ -1,5 +1,4 @@
--- Phase 9E: Production Monitoring
--- Enhanced monitoring views and functions for production deployments
+-- Production monitoring views and functions
 
 -- Real-time queue view
 CREATE OR REPLACE VIEW pg_tviews_queue_realtime AS

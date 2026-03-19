@@ -1,5 +1,5 @@
--- Phase 8A: Persistent Queue Table for 2PC Support
--- Creates pg_tview_pending_refreshes table to persist refresh queues for prepared transactions
+-- Persistent queue table for 2PC support
+-- Persists refresh queues for prepared transactions
 
 -- Table to persist queues for prepared transactions
 CREATE TABLE pg_tview_pending_refreshes (

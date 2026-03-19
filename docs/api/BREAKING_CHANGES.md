@@ -10,7 +10,7 @@ This is the initial beta release. No previous versions to break from.
 
 ## Planned Breaking Changes for v2.0+
 
-See [Phase 4.3: Breaking Changes Roadmap](../phases/phase-4.3-breaking-changes.md)
+See [BREAKING_CHANGES_V2.0](../BREAKING_CHANGES_V2.0.md) for the full v2.0 migration roadmap.
 
 ---
 

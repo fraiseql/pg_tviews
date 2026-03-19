@@ -78,7 +78,7 @@ impl QueueMetrics {
 
 /// Public interface for metrics tracking
 pub mod metrics_api {
-    #[allow(clippy::wildcard_imports)]
+    #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
     /// Record the start of a refresh operation

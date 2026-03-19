@@ -34,7 +34,7 @@ pg_tviews provides automatic incremental maintenance of materialized views conta
 - **Monitoring**: Comprehensive metrics, health checks, performance views
 - **DISCARD ALL**: Safe connection pooler reset handling
 
-### 🛡️ Code Quality (Phase 10)
+### 🛡️ Code Quality
 - **Clippy-Strict Compliance**: 100% clippy compliance with -D warnings
 - **FFI Safety**: All callbacks wrapped in panic guards
 - **Error Handling**: Complete unwrap() elimination, comprehensive NULL checks
@@ -92,30 +92,30 @@ psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 
 ## What's New in Beta 1
 
-### Phase 10: Code Quality & Safety
+### Code Quality & Safety
 - Complete unwrap() elimination for robust error handling
 - All FFI callbacks wrapped in panic guards
 - Comprehensive module documentation
 - CI/CD integration with automated quality checks
 
-### Phase 9: Production Readiness
+### Production Readiness
 - Statement-level triggers for bulk operations
 - Bulk refresh API (N→2 query optimization)
 - Query plan caching system
 - Connection pooling safety (DISCARD ALL handling)
 - Production monitoring infrastructure
 
-### Phase 8: Distributed Transactions
+### Distributed Transactions
 - Two-Phase Commit (2PC) support
 - Queue persistence for prepared transactions
 - Recovery API for prepared transaction cleanup
 
-### Phase 7: Performance & Monitoring
+### Performance & Monitoring
 - Graph and table caching with high hit rates
 - Comprehensive metrics tracking
 - Performance debugging tools
 
-### Phase 6: Queue Architecture
+### Queue Architecture
 - Thread-local refresh queue
 - Transaction callback integration
 - Savepoint support for proper rollback handling

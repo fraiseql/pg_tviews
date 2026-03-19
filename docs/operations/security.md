@@ -3,8 +3,6 @@
 **Version**: 0.1.0-beta.1
 **Last Updated**: December 11, 2025
 
-> **Trinity Pattern Reference**: All examples follow the pattern from [.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md](../../.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md)
-
 ## Overview
 
 pg_tviews provides powerful SQL generation capabilities that require careful security considerations. This guide covers SQL injection prevention, access control, and secure usage patterns.

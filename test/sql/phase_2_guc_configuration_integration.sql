@@ -1,4 +1,4 @@
--- Phase 2 Integration Tests: GUC Configuration System
+-- Integration Tests: GUC Configuration System
 -- Tests runtime configuration via GUC variables
 
 -- Test 1: GUC variable availability and defaults

@@ -303,11 +303,7 @@ test/
 
 ## Development Workflow
 
-### 1. Choose a Phase
-
-Follow the implementation plan in `.phases/implementation/`.
-
-### 2. Write Tests First (RED)
+### 1. Write Tests First (RED)
 
 ```bash
 # Create failing tests
@@ -402,6 +398,5 @@ psql -d pg_tviews_test -c "SELECT version();"
 ### Getting Help
 
 - Check existing issues on GitHub
-- Review the implementation plan in `.phases/implementation/`
 - Look at pgrx documentation: https://github.com/pgcentralfoundation/pgrx
 - PostgreSQL extension development: https://www.postgresql.org/docs/17/extend.html

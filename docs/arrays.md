@@ -183,7 +183,7 @@ SELECT pg_tviews_delete(TG_RELID, OLD.id);
 
 ## Testing
 
-### RED Phase Tests
+### Test Coverage
 
 The implementation includes comprehensive test coverage:
 

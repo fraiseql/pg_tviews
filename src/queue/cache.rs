@@ -14,7 +14,7 @@ static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, String>>> = LazyL
 
 /// Cache operations for `EntityDepGraph`
 pub mod graph_cache {
-    #[allow(clippy::wildcard_imports)]
+    #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
     /// Get cached `EntityDepGraph`, loading from database if not cached
@@ -50,7 +50,7 @@ pub mod graph_cache {
 
 /// Cache operations for table OID → entity mapping
 pub mod table_cache {
-    #[allow(clippy::wildcard_imports)]
+    #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
     /// Get cached entity name for table OID, loading from database if not cached
@@ -96,7 +96,7 @@ pub fn invalidate_all_caches() {
 }
 
 #[cfg(test)]
-#[allow(clippy::wildcard_imports)]
+#[allow(clippy::wildcard_imports)] // Reason: test module prelude import
 mod tests {
     use super::*;
 

@@ -162,7 +162,7 @@ fn query_dependencies(view_oid: pg_sys::Oid, current_oid: pg_sys::Oid) -> TViewR
                     pg_error: "NULL OID in pg_depend".to_string(),
                 })?;
 
-            #[allow(clippy::cast_sign_loss)]
+            #[allow(clippy::cast_sign_loss)] // Reason: pg_class.relkind is stored as i8, cast to u8 for char
             let relkind = row["relkind"].value::<i8>()
                 .map_err(|e| TViewError::CatalogError {
                     operation: "Extract relkind".to_string(),

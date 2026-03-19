@@ -1,4 +1,4 @@
--- Phase 5 Integration Tests: Cached Plan Refresh Integration
+-- Integration Tests: Cached Plan Refresh Integration
 -- Tests cached vs uncached refresh path selection and performance
 
 -- Test 1: Initial uncached refresh (cache cold)

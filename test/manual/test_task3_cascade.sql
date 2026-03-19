@@ -1,4 +1,4 @@
--- Test Phase 4 Task 3: FK Lineage Cascade
+-- Test FK Lineage Cascade
 -- Purpose: Verify cascade propagation through FK relationships using pg_tviews_create()
 
 \set ON_ERROR_STOP on

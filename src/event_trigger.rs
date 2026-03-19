@@ -107,7 +107,7 @@ struct DdlCommand {
 /// 2. Drop the table `PostgreSQL` created
 /// 3. Create proper TVIEW using standard `create_tview()` flow
 #[pg_extern]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires String by value
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
 
     // Retrieve the original SELECT from the hook cache

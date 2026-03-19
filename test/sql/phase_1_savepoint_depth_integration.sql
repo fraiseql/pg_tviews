@@ -1,4 +1,4 @@
--- Phase 1 Integration Tests: Savepoint Depth Tracking
+-- Integration Tests: Savepoint Depth Tracking
 -- Tests that savepoint depth is correctly tracked during transactions
 
 -- Test 1: Basic savepoint depth in nested transactions

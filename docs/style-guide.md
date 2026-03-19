@@ -399,7 +399,7 @@ find docs -name "*.md" -exec markdown-link-check {} \;
 
 ### Example Testing
 
-All code examples should be tested in CI. See `.phases/documentation/APLUS_DOCUMENTATION_PLAN_PART3.md` for automated testing setup.
+All code examples should be tested in CI.
 
 ---
 

@@ -1,4 +1,4 @@
--- Phase 4 Integration Tests: Dynamic Primary Key Detection
+-- Integration Tests: Dynamic Primary Key Detection
 -- Tests automatic PK column detection based on entity naming convention
 
 -- Test 1: Standard tb_<entity> naming convention

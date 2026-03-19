@@ -334,47 +334,16 @@ This keeps the extension small, reliable, and performant.
 
 ---
 
-# 🏗️ 12. Current Implementation Status
+# 🏗️ 12. Implementation Summary
 
-## Phase 0-A: Error Types & Safety Infrastructure ✅ COMPLETED
-
-- **TViewError enum**: 19 comprehensive error variants with SQLSTATE mapping
-- **Error handling**: `TViewResult<T>`, `internal_error!()`, `require!()` macros
-- **Safety infrastructure**: SAFETY comment template for unsafe blocks
-- **Test utilities**: `assert_error_sqlstate()`, `assert_error_contains()`
-
-## Phase 0: Foundation & Project Setup ✅ COMPLETED
-
-### Core Infrastructure
-- **Extension structure**: pgrx-based PostgreSQL extension
-- **Metadata tables**: `pg_tview_meta` and `pg_tview_helpers` with automatic creation
-- **Version function**: `pg_tviews_version()` for extension versioning
-- **Initialization**: `_PG_init()` creates metadata tables on extension load
-
-### Testing Infrastructure
-- **Rust unit tests**: Error type validation and utility testing
-- **pgrx integration tests**: PostgreSQL-specific functionality
-- **SQL integration tests**: Complete workflow validation
-- **CI/CD pipeline**: Multi-version PostgreSQL testing (15, 16, 17)
-
-### Project Structure
-```
-src/
-├── lib.rs              # Extension entry point
-├── error/              # Error types and testing
-├── metadata.rs         # Metadata table management
-├── catalog.rs          # PostgreSQL catalog queries (future)
-├── trigger.rs          # Trigger system (future)
-├── refresh.rs          # Refresh engine (future)
-├── propagate.rs        # Cascade propagation (future)
-└── utils.rs            # Utilities (future)
-
-test/sql/               # SQL integration tests
-.github/workflows/      # CI/CD configuration
-```
-
-### Ready for Next Phase
-- **Phase 1**: Schema Inference & Column Detection
-- All error handling infrastructure in place
-- Testing framework established
-- CI/CD pipeline configured
+- **Error types**: `TViewError` enum with 19 variants, SQLSTATE mapping, `TViewResult<T>`
+- **Metadata**: `pg_tview_meta` and `pg_tview_helpers` tables, auto-created on load
+- **Schema inference**: Column detection, type inference from PostgreSQL catalog
+- **DDL hooks**: `ProcessUtility` hook for CREATE/DROP TABLE `tv_*` interception
+- **Triggers**: Row-level change detection + statement-level flush triggers
+- **Dependency graph**: Topological sort, cycle detection, cascade propagation
+- **Queue system**: Transaction-scoped refresh queue with bulk optimization
+- **Refresh engine**: Incremental JSONB patching, array aggregation support
+- **2PC support**: Queue persistence for distributed transactions
+- **Monitoring**: Metrics, health checks, performance views
+- **Testing**: Rust unit tests, pgrx integration tests, SQL test suite, CI/CD pipeline

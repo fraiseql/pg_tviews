@@ -60,7 +60,7 @@ pub unsafe fn ensure_hook_installed() {
 
 /// `ProcessUtility` hook that intercepts CREATE TABLE `tv_*` and DROP TABLE `tv_*`
 #[pg_guard]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Reason: PostgreSQL ProcessUtility_hook C callback signature
 unsafe extern "C-unwind" fn tview_process_utility_hook(
     pstmt: *mut pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,
@@ -87,7 +87,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     if !pstmt.is_null() && !(*pstmt).utilityStmt.is_null() {
         let utility_stmt = (*pstmt).utilityStmt;
         if (*utility_stmt).type_ == pg_sys::NodeTag::T_TransactionStmt {
-            #[allow(clippy::cast_ptr_alignment)]
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → TransactionStmt* cast
             let xact_stmt = utility_stmt.cast::<pg_sys::TransactionStmt>();
             if !xact_stmt.is_null() && (*xact_stmt).kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
                 if let Err(e) = crate::queue::flush_refresh_queue() {
@@ -140,7 +140,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
 
-            #[allow(clippy::cast_ptr_alignment)]
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
             if handle_create_table_as(ctas, query_string) {
                 // We handled it - don't call standard utility
@@ -152,7 +152,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Check for DROP TABLE
         if node_tag == pg_sys::NodeTag::T_DropStmt {
-            #[allow(clippy::cast_ptr_alignment)]
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
             let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
             if handle_drop_table(drop_stmt, query_string) {
                 // We handled it - don't call standard utility
@@ -174,7 +174,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 .or_else(|| panic_info.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| format!("{panic_info:?}"));
             error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
-            #[allow(unreachable_code)]
+            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !, so compiler doesn't see it
             {
                 true // Pass through after panic (error! macro is marked cold but doesn't actually diverge)
             }
@@ -442,7 +442,7 @@ unsafe fn handle_drop_table(
 }
 
 /// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // Reason: PostgreSQL ProcessUtility_hook C callback signature
 unsafe fn call_prev_hook_or_standard(
     pstmt: *mut pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,

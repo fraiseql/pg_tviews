@@ -1,5 +1,5 @@
 -- Security Testing Helper Functions
--- Used across all phase integration tests
+-- Used across all integration tests
 
 -- Test that a function rejects SQL injection
 CREATE OR REPLACE FUNCTION assert_rejects_injection(

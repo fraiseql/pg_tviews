@@ -203,7 +203,7 @@
       "commitment": "Scheduled removal",
       "removal_version": "TBD",
       "deprecation_notice_months": 6,
-      "replacement_api": "Documented in phase-4.3"
+      "replacement_api": "See BREAKING_CHANGES_V2.0.md"
     }
   }
 }

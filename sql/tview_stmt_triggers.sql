@@ -1,5 +1,5 @@
--- Phase 9A: Statement-Level Triggers
--- Installs statement-level triggers that fire once per statement instead of once per row
+-- Statement-level triggers for TVIEW refresh
+-- Fire once per statement instead of once per row
 
 -- Function to install statement-level triggers for all TVIEW-managed tables
 CREATE OR REPLACE FUNCTION pg_tviews_install_stmt_triggers()

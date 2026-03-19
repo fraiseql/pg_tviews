@@ -253,4 +253,4 @@ SELECT * FROM pg_tview_meta WHERE tview_oid = 'tv_bench_comments'::regclass::oid
 
 ---
 
-**Conclusion:** Smart JSONB patching successfully achieves **2.03×** performance improvement on cascade updates, validating the Phase 5 Task 4 implementation and meeting the target of 1.5-3× faster updates.
+**Conclusion:** Smart JSONB patching successfully achieves **2.03×** performance improvement on cascade updates, meeting the target of 1.5-3× faster updates.

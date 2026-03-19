@@ -48,42 +48,42 @@ main() {
     # Pre-flight checks
     check_extension
 
-    echo -e "\n${YELLOW}Phase 1: Savepoint Depth Tracking${NC}"
+    echo -e "\n${YELLOW}Savepoint Depth Tracking${NC}"
     if run_test "Savepoint Depth Integration" "test/sql/phase_1_savepoint_depth_integration.sql"; then
         echo "Savepoint depth tracking works correctly"
     else
         ((failed_tests++))
     fi
 
-    echo -e "\n${YELLOW}Phase 2: GUC Configuration System${NC}"
+    echo -e "\n${YELLOW}GUC Configuration System${NC}"
     if run_test "GUC Configuration Integration" "test/sql/phase_2_guc_configuration_integration.sql"; then
         echo "GUC configuration system works correctly"
     else
         ((failed_tests++))
     fi
 
-    echo -e "\n${YELLOW}Phase 3: Queue Introspection${NC}"
+    echo -e "\n${YELLOW}Queue Introspection${NC}"
     if run_test "Queue Introspection Integration" "test/sql/phase_3_queue_introspection_integration.sql"; then
         echo "Queue introspection works correctly"
     else
         ((failed_tests++))
     fi
 
-    echo -e "\n${YELLOW}Phase 4: Dynamic Primary Key Detection${NC}"
+    echo -e "\n${YELLOW}Dynamic Primary Key Detection${NC}"
     if run_test "Dynamic PK Detection Integration" "test/sql/phase_4_dynamic_pk_detection_integration.sql"; then
         echo "Dynamic primary key detection works correctly"
     else
         ((failed_tests++))
     fi
 
-    echo -e "\n${YELLOW}Phase 5: Cached Plan Refresh Integration${NC}"
+    echo -e "\n${YELLOW}Cached Plan Refresh Integration${NC}"
     if run_test "Cached Plan Refresh Integration" "test/sql/phase_5_cached_plan_refresh_integration.sql"; then
         echo "Cached plan refresh integration works correctly"
     else
         ((failed_tests++))
     fi
 
-    echo -e "\n${YELLOW}Phase 6: TEXT[][] Extraction Workaround${NC}"
+    echo -e "\n${YELLOW}TEXT[][] Extraction Workaround${NC}"
     if run_test "TEXT[][] Extraction Integration" "test/sql/phase_6_text_array_extraction_integration.sql"; then
         echo "TEXT[][] extraction workaround works correctly"
     else

@@ -30,7 +30,7 @@ use crate::utils::tuple_get_i64;
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change
 #[pg_trigger]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -121,7 +121,7 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
 /// `ProcessUtility` hook may run. The flush is idempotent — the second call
 /// finds an empty queue and returns immediately.
 #[pg_trigger]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
     _trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -134,7 +134,7 @@ fn pg_tview_flush_trigger<'a>(
 /// Statement-level trigger handler for bulk operations
 /// This is called once per statement instead of once per row
 #[pg_trigger]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_stmt_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {

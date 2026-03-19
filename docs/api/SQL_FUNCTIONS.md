@@ -153,7 +153,7 @@ SELECT pg_tviews_convert_existing_table('public.sales');
 ### pg_tviews_legacy_refresh_all() [DEPRECATED in 0.2]
 **Status**: DEPRECATED (Remove in v1.0)
 **Replacement**: `pg_tviews_refresh_all(filter_pattern TEXT DEFAULT '%')`
-**Migration**: See PHASE_4.3 breaking changes guide
+**Migration**: See [BREAKING_CHANGES_V2.0](../BREAKING_CHANGES_V2.0.md)
 **Removal Date**: 2026-06-01
 
 ```sql

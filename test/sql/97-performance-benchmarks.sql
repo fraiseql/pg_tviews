@@ -46,7 +46,7 @@ SELECT
 FROM generate_series(1, 1000) i;
 
 \echo ''
-\echo '### Benchmark 1: ID Extraction (Phase 1)'
+\echo '### Benchmark 1: ID Extraction'
 \echo 'Comparing jsonb_extract_id vs ->>'
 
 \timing on
@@ -63,7 +63,7 @@ SELECT jsonb_extract_id(data, 'id') FROM bench_orders LIMIT 1000;
 \timing off
 
 \echo ''
-\echo '### Benchmark 2: Array Existence Check (Phase 1)'
+\echo '### Benchmark 2: Array Existence Check'
 
 \timing on
 
@@ -88,7 +88,7 @@ WHERE jsonb_array_contains_id(
 \timing off
 
 \echo ''
-\echo '### Benchmark 3: Nested Array Path Update (Phase 2)'
+\echo '### Benchmark 3: Nested Array Path Update'
 
 \timing on
 
@@ -130,7 +130,7 @@ BEGIN;
 \timing off
 
 \echo ''
-\echo '### Benchmark 4: Batch Array Updates (Phase 3)'
+\echo '### Benchmark 4: Batch Array Updates'
 
 \timing on
 
@@ -200,23 +200,23 @@ ROLLBACK;
 \echo '### Summary'
 
 SELECT
-    'Phase 1: jsonb_extract_id' as benchmark,
+    'jsonb_extract_id' as benchmark,
     '5× faster' as improvement,
     'ID extraction from JSONB' as use_case
 UNION ALL SELECT
-    'Phase 1: jsonb_array_contains_id',
+    'jsonb_array_contains_id',
     '10× faster',
     'Array element existence check'
 UNION ALL SELECT
-    'Phase 2: jsonb_delta_array_update_where_path',
+    'jsonb_delta_array_update_where_path',
     '2-3× faster',
     'Nested field updates in arrays'
 UNION ALL SELECT
-    'Phase 3: jsonb_array_update_where_batch',
+    'jsonb_array_update_where_batch',
     '3-5× faster',
     'Bulk array element updates'
 UNION ALL SELECT
-    'Phase 4: jsonb_delta_set_path',
+    'jsonb_delta_set_path',
     '2× faster',
     'Flexible path-based updates';
 

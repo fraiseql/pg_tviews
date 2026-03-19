@@ -1,7 +1,5 @@
 # TVIEW Creation Syntax Guide
 
-> **Trinity Pattern Reference**: See complete patterns in [.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md](../../.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md)
-
 pg_tviews supports three equivalent ways to create TVIEWs:
 
 ## 1. DDL Syntax (Recommended for Interactive Use)

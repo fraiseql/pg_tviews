@@ -1,7 +1,5 @@
 # Performance Analysis
 
-> **Trinity Pattern Reference**: All examples follow [00-TRINITY-PATTERN-REFERENCE.md](../../.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md)
-
 This guide covers tools and techniques for analyzing and optimizing pg_tviews performance.
 
 ---

@@ -77,7 +77,7 @@ pub unsafe fn register_subxact_callback() {
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // Map PostgreSQL XactEvent C enum to our Rust enum.
     // Use pg_sys constants to be version-safe.
-    #[allow(non_upper_case_globals)]
+    #[allow(non_upper_case_globals)] // Reason: pg_sys XactEvent constants use UPPER_CASE naming
     let xact_event = match event {
         pg_sys::XactEvent::XACT_EVENT_COMMIT => XactEvent::Commit,
         pg_sys::XactEvent::XACT_EVENT_PRE_COMMIT => XactEvent::PreCommit,

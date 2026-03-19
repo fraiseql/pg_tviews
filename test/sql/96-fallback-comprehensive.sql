@@ -91,7 +91,7 @@ LEFT JOIN tb_product p ON p.pk_product = oi.fk_product
 GROUP BY o.pk_order, o.id, o.status, o.created_at, u.id, u.name, u.email, u.profile;
 
 \echo ''
-\echo '### Test 1: Helper Functions (Phase 1)'
+\echo '### Test 1: Helper Functions'
 
 -- Insert test data
 INSERT INTO tb_user (name, email, profile) VALUES
@@ -160,7 +160,7 @@ BEGIN
 END $$;
 
 \echo ''
-\echo '### Test 2: Nested Path Updates (Phase 2)'
+\echo '### Test 2: Nested Path Updates'
 
 -- Test: Update nested field in array element (product name)
 DO $$
@@ -194,7 +194,7 @@ BEGIN
 END $$;
 
 \echo ''
-\echo '### Test 3: Batch Operations (Phase 3)'
+\echo '### Test 3: Batch Operations'
 
 -- Add more items
 INSERT INTO tb_order_item (fk_order, fk_product, quantity, price_at_order) VALUES
@@ -255,7 +255,7 @@ BEGIN
 END $$;
 
 \echo ''
-\echo '### Test 4: Fallback Path Operations (Phase 4)'
+\echo '### Test 4: Fallback Path Operations'
 
 -- Test: Direct path update
 UPDATE tv_order

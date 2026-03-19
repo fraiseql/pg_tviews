@@ -125,7 +125,7 @@ We welcome contributions! See our [contributing guide](development/contributing.
 
 **Legend**: ✅ Complete 🟡 In Progress 🟠 Planned 🔴 Missing
 
-**Current Focus**: A+ documentation quality improvement (see [APLUS_DOCUMENTATION_PLAN](../.phases/documentation/APLUS_DOCUMENTATION_PLAN.md))
+**Current Focus**: A+ documentation quality improvement
 
 ---
 

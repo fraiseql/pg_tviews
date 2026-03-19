@@ -44,7 +44,7 @@ By Lionel Hamayon • Part of the FraiseQL framework
 | **[pgGit](https://pggit.dev)** | Database version control | Stable | Git for databases |
 | **[confiture](https://github.com/fraiseql/confiture)** | PostgreSQL migrations | Stable | **300-600× faster** |
 | **[fraiseql](https://fraiseql.dev)** | GraphQL framework | Stable | **7-10× faster** |
-| **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Phase 6 | Auto-dependency resolution |
+| **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Planned | Auto-dependency resolution |
 
 ### **Client Libraries (TypeScript/JavaScript)**
 

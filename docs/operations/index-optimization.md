@@ -1,8 +1,6 @@
 # Index Optimization Guide
 
-> **Trinity Pattern Reference**: All examples follow the pattern from [00-TRINITY-PATTERN-REFERENCE.md](../../.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md)
->
-> **Quick Reminder**:
+> **Naming Convention**:
 > - pk_{entity} = INTEGER (SERIAL) - Internal database primary key
 > - id = UUID - External API identifier
 > - fk_{parent} = INTEGER - Foreign key references (always to pk_ columns)
@@ -467,4 +465,3 @@ ORDER BY COUNT(*) DESC;
 - [Resource Limits](../reference/limits.md) - Capacity planning and scaling
 - [Troubleshooting](troubleshooting.md) - Performance debugging
 - [Monitoring](../../MONITORING.md) - Track index performance
-- [Trinity Pattern Reference](../../.phases/excellence-roadmap/00-TRINITY-PATTERN-REFERENCE.md) - Database schema conventions

@@ -1,5 +1,5 @@
--- Phase 8E: Work Queue Table for Parallel Refresh
--- Creates pg_tview_work_queue table for distributing refresh tasks across workers
+-- Work queue table for parallel refresh
+-- Distributes refresh tasks across workers
 
 -- Table for parallel refresh work distribution
 CREATE TABLE pg_tview_work_queue (

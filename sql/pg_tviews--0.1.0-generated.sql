@@ -94,7 +94,7 @@ SELECT
     current_setting('application_name') as session,
     pg_backend_pid() as backend_pid,
     txid_current() as transaction_id,
-    0 as queue_size,  -- TODO: Implement queue introspection
+    0 as queue_size,  -- Placeholder: queue introspection requires SPI
     ARRAY[]::TEXT[] as entities,
     NOW() as last_enqueued;
 

@@ -37,7 +37,7 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         // "attempted to execute DDL in atomic SPI context" assertion in PG18.
         #[allow(clippy::cast_possible_wrap)] // PostgreSQL SPI constants are u32, API takes i32
         let connect_result = pg_sys::SPI_connect_ext(pg_sys::SPI_OPT_NONATOMIC as i32);
-        #[allow(clippy::cast_possible_wrap)]
+        #[allow(clippy::cast_possible_wrap)] // Reason: PostgreSQL SPI constants are u32, API takes i32
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
             return Err(format!("SPI_connect_ext failed: {connect_result}"));
         }

@@ -246,9 +246,9 @@ gpg --keyserver keys.openpgp.org --recv-keys 9E57E2899574FA24DB1F1651C8FCB4AB8FD
 - [ ] FIPS-compliant signing
 
 ### Roadmap
-- **Phase 3**: Dependency security scanning
-- **Phase 4**: Build provenance (SLSA)
-- **Phase 5**: Security policies and compliance
+- Dependency security scanning
+- Build provenance (SLSA)
+- Security policies and compliance
 
 ## References
 
