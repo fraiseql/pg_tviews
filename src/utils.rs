@@ -1,5 +1,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
+use pgrx::heap_tuple::PgHeapTuple;
+use pgrx::AllocatedByPostgres;
 use pgrx::pg_sys;
 
 /// Execute a DDL statement via SPI in non-atomic mode.
@@ -101,6 +103,26 @@ pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
 /// - Reusable across different modules
 use pgrx::pg_sys::Oid;
 
+/// Extract an integer column value as i64, supporting both INTEGER and BIGINT columns.
+///
+/// Tries BIGINT (i64) first, then falls back to INTEGER (i32) with promotion.
+/// This allows triggers to work regardless of whether the PK/FK column is
+/// `INTEGER`/`SERIAL` or `BIGINT`/`BIGSERIAL`.
+pub fn tuple_get_i64(
+    tuple: &PgHeapTuple<'_, AllocatedByPostgres>,
+    col: &str,
+) -> Option<i64> {
+    // Try BIGINT (i64) first — most common for pk_*/fk_* columns
+    if let Ok(Some(v)) = tuple.get_by_name::<i64>(col) {
+        return Some(v);
+    }
+    // Fall back to INTEGER (i32) and promote
+    if let Ok(Some(v)) = tuple.get_by_name::<i32>(col) {
+        return Some(i64::from(v));
+    }
+    None
+}
+
 /// Extracts a `pk_*` integer from `NEW` or `OLD` tuple by convention.
 ///
 /// Derives the PK column name dynamically from the triggering table OID.
@@ -127,14 +149,11 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
 
     let pk_column = format!("pk_{entity}");
 
-    let pk: i64 = tuple
-        .get_by_name(&pk_column)?
+    tuple_get_i64(&tuple, &pk_column)
         .ok_or_else(|| crate::TViewError::SpiError {
             query: pk_column.clone(),
             error: format!("{pk_column} must not be null"),
-        })?;
-
-    Ok(pk)
+        }.into())
 }
 
 /// Look up the view name from an OID

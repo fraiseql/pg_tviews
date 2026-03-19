@@ -25,6 +25,7 @@ use pgrx::spi;
 use crate::queue::{enqueue_refresh, enqueue_refresh_bulk};
 use crate::catalog::entity_for_table;
 use crate::refresh::bulk::quote_identifier;
+use crate::utils::tuple_get_i64;
 
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change
@@ -98,15 +99,12 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
     for parent_entity in parent_entities {
         // Convention: child row has fk_{parent_entity} column
         let fk_col = format!("fk_{parent_entity}");
-        match tuple.get_by_name::<i64>(&fk_col) {
-            Ok(Some(parent_pk)) => {
+        match tuple_get_i64(&tuple, &fk_col) {
+            Some(parent_pk) => {
                 enqueue_refresh(&parent_entity, parent_pk);
             }
-            Ok(None) => {
-                warning!("FK column {} is NULL, skipping refresh for {}", fk_col, parent_entity);
-            }
-            Err(_) => {
-                warning!("No FK column {} on child row, skipping refresh for {}", fk_col, parent_entity);
+            None => {
+                warning!("FK column {} is NULL or missing, skipping refresh for {}", fk_col, parent_entity);
             }
         }
     }
