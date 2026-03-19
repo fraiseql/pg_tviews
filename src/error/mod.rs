@@ -352,14 +352,14 @@ impl From<std::io::Error> for TViewError {
     }
 }
 
-/// Convert `TViewError` to pgrx error (for raising to `PostgreSQL`)
+/// Convert `TViewError` to pgrx `SpiError` for use in SPI closures.
+///
+/// Maps to the closest `SpiErrorCodes` variant. Most callers wrap the
+/// result back into `TViewError` via `map_err`, so the specific variant
+/// mainly affects error messages in SPI contexts.
 impl From<TViewError> for pgrx::spi::Error {
-    fn from(e: TViewError) -> Self {
-        let _sqlstate = e.sqlstate();
-        let _message = e.to_string();
-
-        // Map to pgrx error levels
-        Self::InvalidPosition
+    fn from(_e: TViewError) -> Self {
+        Self::SpiError(pgrx::spi::SpiErrorCodes::OpUnknown)
     }
 }
 

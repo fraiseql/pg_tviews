@@ -595,8 +595,8 @@ fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
 
         Ok::<_, spi::Error>(results)
     })
-    .unwrap_or_else(|_e| {
-        // Note: error! macro may panic, so just return empty vec on failure
+    .unwrap_or_else(|e| {
+        warning!("Failed to list pending 2PC refreshes: {e:?}");
         Vec::new()
     });
 

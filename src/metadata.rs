@@ -58,6 +58,10 @@ extension_sql!(
 
     COMMENT ON TABLE @extschema@.pg_tview_meta IS 'Metadata for TVIEW materialized tables';
     COMMENT ON TABLE @extschema@.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
+
+    -- Indexes for catalog lookup performance (entity PK already has a unique index)
+    CREATE INDEX IF NOT EXISTS idx_pg_tview_meta_table_oid
+        ON @extschema@.pg_tview_meta(table_oid);
     ",
     name = "create_metadata_tables",
 );
