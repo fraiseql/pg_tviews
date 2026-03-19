@@ -6,6 +6,7 @@
 
 use pgrx::prelude::*;
 use crate::error::TViewResult;
+use crate::refresh::bulk::quote_identifier;
 
 /// Event trigger function called after DDL command completes
 ///
@@ -118,7 +119,8 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
 
     // Drop the table that PostgreSQL created
     // We need to create our own structure with proper TVIEW semantics
-    Spi::run(&format!("DROP TABLE IF EXISTS {table_name} CASCADE"))
+    let qi_table = quote_identifier(&table_name);
+    Spi::run(&format!("DROP TABLE IF EXISTS {qi_table} CASCADE"))
         .map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
 
@@ -154,9 +156,10 @@ fn convert_table_to_tview(table_name: &str) -> TViewResult<()> {
 
 
     // Drop the regular table PostgreSQL just created.  DDL needs non-atomic SPI.
-    crate::utils::spi_run_ddl(&format!("DROP TABLE IF EXISTS {table_name} CASCADE"))
+    let qi_table = quote_identifier(table_name);
+    crate::utils::spi_run_ddl(&format!("DROP TABLE IF EXISTS {qi_table} CASCADE"))
         .map_err(|e| crate::TViewError::SpiError {
-            query: format!("DROP TABLE IF EXISTS {table_name} CASCADE"),
+            query: format!("DROP TABLE IF EXISTS {qi_table} CASCADE"),
             error: e,
         })?;
 

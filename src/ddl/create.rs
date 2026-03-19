@@ -2,6 +2,7 @@ use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use crate::schema::{TViewSchema, inference::infer_schema, analyzer::analyze_dependencies};
 use crate::error::{TViewError, TViewResult};
+use crate::refresh::bulk::quote_identifier;
 
 /// Resolve the target schema for creating TVIEW objects.
 ///
@@ -145,8 +146,10 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
 
 /// Create the backing view that contains the user's SELECT definition
 fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> TViewResult<()> {
+    let qi_schema = quote_identifier(schema_name);
+    let qi_view = quote_identifier(view_name);
     let create_view_sql = format!(
-        "CREATE VIEW {schema_name}.{view_name} AS {select_sql}"
+        "CREATE VIEW {qi_schema}.{qi_view} AS {select_sql}"
     );
 
     crate::utils::spi_run_ddl(&create_view_sql).map_err(|e| TViewError::SpiError {
@@ -155,13 +158,17 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     })?;
 
     // Verify the view was created (schema-qualified to avoid false positives across schemas)
-    let check_sql = format!(
+    let check_args = vec![
+        unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    let exists = Spi::get_one_with_args::<i32>(
         "SELECT 1 FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = '{view_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'v'"
-    );
-    let exists = Spi::get_one::<i32>(&check_sql).map_err(|e| TViewError::SpiError {
-        query: check_sql,
+         WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'v'",
+        &check_args,
+    ).map_err(|e| TViewError::SpiError {
+        query: format!("Check view {schema_name}.{view_name} exists"),
         error: e.to_string(),
     })?.is_some();
 
@@ -181,42 +188,45 @@ fn create_materialized_table(
     schema: &TViewSchema,
     schema_name: &str,
 ) -> TViewResult<()> {
+    let qi_schema = quote_identifier(schema_name);
+    let qi_tview = quote_identifier(tview_name);
+
     // Build column definitions based on inferred schema
     let mut columns = Vec::new();
 
     // Primary key column (if exists)
     if let Some(pk) = &schema.pk_column {
-        columns.push(format!("{pk} BIGINT PRIMARY KEY"));
+        columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
     }
 
     // ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
-        columns.push(format!("{id} UUID NOT NULL"));
+        columns.push(format!("{} UUID NOT NULL", quote_identifier(id)));
     }
 
     // Identifier column (optional Trinity identifier)
     if let Some(identifier) = &schema.identifier_column {
-        columns.push(format!("{identifier} TEXT"));
+        columns.push(format!("{} TEXT", quote_identifier(identifier)));
     }
 
     // Data column (JSONB read model)
     if let Some(data) = &schema.data_column {
-        columns.push(format!("{data} JSONB"));
+        columns.push(format!("{} JSONB", quote_identifier(data)));
     }
 
     // Foreign key columns (for lineage tracking)
     for fk in &schema.fk_columns {
-        columns.push(format!("{fk} BIGINT"));
+        columns.push(format!("{} BIGINT", quote_identifier(fk)));
     }
 
     // UUID foreign key columns (for filtering)
     for uuid_fk in &schema.uuid_fk_columns {
-        columns.push(format!("{uuid_fk} UUID"));
+        columns.push(format!("{} UUID", quote_identifier(uuid_fk)));
     }
 
     // Additional columns with inferred types
     for (col_name, col_type) in &schema.additional_columns_with_types {
-        columns.push(format!("{col_name} {col_type}"));
+        columns.push(format!("{} {col_type}", quote_identifier(col_name)));
     }
 
     // Add timestamps for tracking
@@ -226,7 +236,7 @@ fn create_materialized_table(
     let columns_sql = columns.join(",\n    ");
 
     let create_table_sql = format!(
-        "CREATE TABLE {schema_name}.{tview_name} (\n    {columns_sql}\n)"
+        "CREATE TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)"
     );
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
@@ -242,11 +252,16 @@ fn create_materialized_table(
 
 /// Create indexes on the materialized table for optimal query performance
 fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &str) -> TViewResult<()> {
+    let qi_schema = quote_identifier(schema_name);
+    let qi_tview = quote_identifier(tview_name);
+
     // Index on ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
         let idx_name = format!("idx_{tview_name}_{id}");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({id})"
+            "CREATE INDEX {} ON {qi_schema}.{qi_tview} ({})",
+            quote_identifier(&idx_name),
+            quote_identifier(id),
         );
         crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -258,7 +273,9 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &st
     for uuid_fk in &schema.uuid_fk_columns {
         let idx_name = format!("idx_{tview_name}_{uuid_fk}");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} ({uuid_fk})"
+            "CREATE INDEX {} ON {qi_schema}.{qi_tview} ({})",
+            quote_identifier(&idx_name),
+            quote_identifier(uuid_fk),
         );
         crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -270,7 +287,9 @@ fn create_tview_indexes(tview_name: &str, schema: &TViewSchema, schema_name: &st
     if let Some(data) = &schema.data_column {
         let idx_name = format!("idx_{tview_name}_{data}_gin");
         let create_idx = format!(
-            "CREATE INDEX {idx_name} ON {schema_name}.{tview_name} USING GIN ({data})"
+            "CREATE INDEX {} ON {qi_schema}.{qi_tview} USING GIN ({})",
+            quote_identifier(&idx_name),
+            quote_identifier(data),
         );
         crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -474,10 +493,11 @@ fn transform_raw_select_to_tview(
 ) -> TViewResult<(String, TViewSchema)> {
     // Create a temporary view to analyze the raw SELECT
     let temp_view_name = format!("_temp_raw_{entity_name}");
+    let qi_temp_view = quote_identifier(&temp_view_name);
 
     // First, create temp view to analyze columns
     let create_temp = format!(
-        "CREATE TEMP VIEW {temp_view_name} AS {select_sql}"
+        "CREATE TEMP VIEW {qi_temp_view} AS {select_sql}"
     );
 
     crate::utils::spi_run_ddl(&create_temp).map_err(|e| TViewError::SpiError {
@@ -485,27 +505,29 @@ fn transform_raw_select_to_tview(
         error: e,
     })?;
 
-    // Get columns from temp view
+    // Get columns from temp view (parameterized lookup)
     // Cast to text to avoid sql_identifier domain type issues
-    let get_columns_sql = format!(
+    let get_columns_sql =
         "SELECT column_name::text, data_type::text
          FROM information_schema.columns
-         WHERE table_name = '{temp_view_name}'
-         ORDER BY ordinal_position"
-    );
+         WHERE table_name = $1
+         ORDER BY ordinal_position";
 
+    let temp_view_args = vec![unsafe {
+        DatumWithOid::new(temp_view_name.as_str(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
     let columns: Vec<(String, String)> = Spi::connect(|client| {
-        let rows = client.select(&get_columns_sql, None, &[])?;
+        let rows = client.select(get_columns_sql, None, &temp_view_args)?;
         let mut result = Vec::new();
         for row in rows {
             let col_name: String = row[1].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: get_columns_sql.clone(),
+                    query: get_columns_sql.to_string(),
                     error: "column name is NULL".to_string(),
                 }))?;
             let data_type: String = row[2].value()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: get_columns_sql.clone(),
+                    query: get_columns_sql.to_string(),
                     error: "data type is NULL".to_string(),
                 }))?;
             result.push((col_name, data_type));
@@ -517,7 +539,7 @@ fn transform_raw_select_to_tview(
     })?;
 
     // Drop temp view
-    crate::utils::spi_run_ddl(&format!("DROP VIEW {temp_view_name}")).ok();
+    crate::utils::spi_run_ddl(&format!("DROP VIEW {qi_temp_view}")).ok();
 
     // Find primary key column (look for 'id' or first integer/bigint column)
     let pk_source_col = columns.iter()
