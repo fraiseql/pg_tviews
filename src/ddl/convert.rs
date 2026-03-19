@@ -434,7 +434,7 @@ fn register_tview_metadata(
     );
     let args = [
         unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(definition.clone(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(definition, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
     ];
     Spi::run_with_args(&insert_sql, &args)?;
 

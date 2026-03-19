@@ -184,7 +184,7 @@ mod tests {
     use super::*;
 
 
-    /// Test insert_array_element function
+    /// Test `insert_array_element` function
     #[pg_test]
     fn test_insert_array_element() {
         // Setup test table
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(items[0]["name"], "Test Item");
     }
 
-    /// Test delete_array_element function
+    /// Test `delete_array_element` function
     #[pg_test]
     fn test_delete_array_element() {
         // Setup test table with array element

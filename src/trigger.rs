@@ -90,7 +90,7 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
     }
 
     // Use NEW for INSERT/UPDATE, OLD for DELETE
-    let Some(tuple) = trigger.new().or(trigger.old()) else {
+    let Some(tuple) = trigger.new().or_else(|| trigger.old()) else {
         warning!("No tuple available in trigger context");
         return;
     };

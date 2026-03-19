@@ -116,10 +116,10 @@ pub fn table_cache_enabled() -> bool {
 /// Get the current log level
 #[must_use]
 pub fn log_level() -> String {
-    match LOG_LEVEL_GUC.get() {
-        Some(cstr) => cstr.to_str().unwrap_or("info").to_owned(),
-        None => "info".to_owned(),
-    }
+    LOG_LEVEL_GUC.get().map_or_else(
+        || "info".to_owned(),
+        |cstr| cstr.to_str().unwrap_or("info").to_owned(),
+    )
 }
 
 /// Check if metrics collection is enabled

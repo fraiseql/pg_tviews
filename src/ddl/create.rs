@@ -598,7 +598,7 @@ mod tests {
         // Compile-time check only — live DB tests use #[pg_test] below
     }
 
-    /// TVIEW objects are created in the schema that is first in search_path,
+    /// TVIEW objects are created in the schema that is first in `search_path`,
     /// not hardcoded to public.
     #[pg_test]
     fn test_create_tview_respects_search_path() {
@@ -637,7 +637,7 @@ mod tests {
         assert!(view_in_target, "v_item should be in tview_test_ns");
     }
 
-    /// With the default search_path, objects still land in public (regression guard).
+    /// With the default `search_path`, objects still land in public (regression guard).
     #[pg_test]
     fn test_create_tview_defaults_to_public() {
         Spi::run("SET search_path TO public").unwrap();

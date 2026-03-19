@@ -72,6 +72,8 @@ pg_module_magic!();
 pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {}
 
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // Vec allocation is not const-stable
     pub fn postgresql_conf_options() -> Vec<&'static str> {
         vec![]
     }

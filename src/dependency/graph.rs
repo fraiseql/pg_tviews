@@ -303,7 +303,9 @@ mod tests {
 
     #[pg_test]
     fn test_depth_limit_enforced() {
-        // This test would require creating 11+ nested views
-        // Left as integration test
+        // This test would require creating 11+ nested views.
+        // Left as integration test — verifying the limit matches expectations.
+        let limit = MAX_DEPENDENCY_DEPTH;
+        assert_eq!(limit, 10, "Expected depth limit of 10");
     }
 }

@@ -322,7 +322,7 @@ mod tests {
                 (data_type == expected_type || data_type.starts_with(expected_type)) &&
                 nullable == expected_nullable
             });
-            assert!(found, "Column {} with type {} nullable {} not found", expected_name, expected_type, expected_nullable);
+            assert!(found, "Column {expected_name} with type {expected_type} nullable {expected_nullable} not found");
         }
     }
 

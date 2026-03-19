@@ -539,7 +539,7 @@ mod tests {
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity = 'post'
         ").unwrap().unwrap();
-        assert!(meta.contains("nested_object"), "Expected nested_object dependency, got: {}", meta);
+        assert!(meta.contains("nested_object"), "Expected nested_object dependency, got: {meta}");
 
         // Initial state
         let initial_data = Spi::get_one::<JsonB>("
@@ -645,7 +645,7 @@ mod tests {
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity = 'post'
         ").unwrap().unwrap();
-        assert!(meta.contains("array"), "Expected array dependency, got: {}", meta);
+        assert!(meta.contains("array"), "Expected array dependency, got: {meta}");
 
         // Initial state: 2 comments
         let initial_data = Spi::get_one::<JsonB>("
@@ -726,7 +726,7 @@ mod tests {
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity ='post'
         ").unwrap().unwrap();
-        assert!(meta.contains("scalar"), "Expected scalar dependency, got: {}", meta);
+        assert!(meta.contains("scalar"), "Expected scalar dependency, got: {meta}");
 
         // Initial state
         let initial_data = Spi::get_one::<JsonB>("
@@ -893,10 +893,10 @@ mod tests {
         assert_eq!(comment_2["text"], "Thanks for sharing!");
     }
 
-    /// Test fallback behavior when jsonb_delta is not available.
+    /// Test fallback behavior when `jsonb_delta` is not available.
     ///
     /// Verifies that the system gracefully falls back to full replacement
-    /// when the jsonb_delta extension is not installed.
+    /// when the `jsonb_delta` extension is not installed.
     #[pg_test]
     fn test_fallback_without_jsonb_delta() {
         // Explicitly ensure jsonb_delta is NOT available for this test

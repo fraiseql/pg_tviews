@@ -9,6 +9,7 @@ static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
 
 /// Get the version of the `pg_tviews` extension
 #[pg_extern]
+#[allow(clippy::missing_const_for_fn)] // pgrx #[pg_extern] is incompatible with const fn
 fn pg_tviews_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
