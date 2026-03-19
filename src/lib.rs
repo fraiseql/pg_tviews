@@ -702,9 +702,6 @@ fn pg_tviews_delete(
 
 /// Find all TVIEWs that have the given base table as a dependency
 fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
-    // Query pg_tview_meta using the pre-computed dependencies array
-    // The dependencies column contains all base table OIDs that this TVIEW depends on
-
     let query = format!(
         "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, \
                 m.fk_columns, m.uuid_fk_columns, \
@@ -717,51 +714,9 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
     Spi::connect(|client| {
         let rows = client.select(&query, None, &[])?;
         let mut result = Vec::new();
-
         for row in rows {
-            let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value().unwrap_or(None);
-            let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value().unwrap_or(None);
-
-            // Extract NEW arrays - dependency_types (TEXT[])
-            let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value().unwrap_or(None);
-            let dep_types: Vec<catalog::DependencyType> = dep_types_raw
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| catalog::DependencyType::from_str(&s))
-                .collect();
-
-            let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value().unwrap_or(None);
-            let dep_paths = catalog::TviewMeta::parse_dep_paths(dep_paths_raw);
-
-            // array_match_keys (TEXT[]) with NULL values
-            let array_keys: Option<Vec<Option<String>>> =
-                row["array_match_keys"].value()?;
-
-            result.push(catalog::TviewMeta {
-                tview_oid: row["tview_oid"].value()?
-                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
-                        error: "tview_oid column is NULL".to_string(),
-                    }))?,
-                view_oid: row["view_oid"].value()?
-                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
-                        error: "view_oid column is NULL".to_string(),
-                    }))?,
-                entity_name: row["entity"].value()?
-                    .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                        query: "SELECT table_oid AS tview_oid, view_oid, entity, ...".to_string(),
-                        error: "entity column is NULL".to_string(),
-                    }))?,
-                sync_mode: 's',
-                fk_columns: fk_cols_val.unwrap_or_default(),
-                uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
-                dependency_types: dep_types,
-                dependency_paths: dep_paths,
-                array_match_keys: array_keys.unwrap_or_default(),
-            });
+            result.push(catalog::TviewMeta::from_spi_row(&row)?);
         }
-
         Ok(result)
     })
 }

@@ -84,7 +84,7 @@ impl TviewMeta {
     ///
     /// Each element is a dot-joined key sequence (e.g. `"book.author"`).
     /// An empty string represents a `None` path (Scalar dependency).
-    pub(crate) fn parse_dep_paths(raw: Option<Vec<Option<String>>>) -> Vec<Option<Vec<String>>> {
+    fn parse_dep_paths(raw: Option<Vec<Option<String>>>) -> Vec<Option<Vec<String>>> {
         raw.unwrap_or_default()
             .into_iter()
             .map(|opt| {
@@ -108,49 +108,10 @@ impl TviewMeta {
                 &args,
             )?;
 
-            let result = if let Some(row) = rows.next() {
-                // Extract existing arrays
-                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
-                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
-
-                // Extract NEW arrays - dependency_types (TEXT[])
-                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
-                let dep_types = Self::parse_dependency_types(dep_types_raw);
-
-                let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
-                let dep_paths = Self::parse_dep_paths(dep_paths_raw);
-
-                // array_match_keys (TEXT[]) with NULL values
-                let array_keys: Option<Vec<Option<String>>> =
-                    row["array_match_keys"].value()?;
-
-                Some(Self {
-                    tview_oid: row["tview_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "tview_oid column is NULL".to_string(),
-                        }))?,
-                    view_oid: row["view_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "view_oid column is NULL".to_string(),
-                        }))?,
-                    entity_name: row["entity"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "entity column is NULL".to_string(),
-                        }))?,
-                    sync_mode: 's', // Default to synchronous
-                    fk_columns: fk_cols_val.unwrap_or_default(),
-                    uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
-                    dependency_types: dep_types,
-                    dependency_paths: dep_paths,
-                    array_match_keys: array_keys.unwrap_or_default(),
-                })
-            } else {
-                None
-            };
-            Ok(result)
+            match rows.next() {
+                Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
+                None => Ok(None),
+            }
         })
     }
 
@@ -168,49 +129,10 @@ impl TviewMeta {
                 &args,
             )?;
 
-            let result = if let Some(row) = rows.next() {
-                // Extract existing arrays
-                let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
-                let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
-
-                // Extract NEW arrays - dependency_types (TEXT[])
-                let dep_types_raw: Option<Vec<String>> = row["dependency_types"].value()?;
-                let dep_types = Self::parse_dependency_types(dep_types_raw);
-
-                let dep_paths_raw: Option<Vec<Option<String>>> = row["dependency_paths"].value()?;
-                let dep_paths = Self::parse_dep_paths(dep_paths_raw);
-
-                // array_match_keys (TEXT[]) with NULL values
-                let array_keys: Option<Vec<Option<String>>> =
-                    row["array_match_keys"].value()?;
-
-                Some(Self {
-                    tview_oid: row["tview_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "tview_oid column is NULL".to_string(),
-                        }))?,
-                    view_oid: row["view_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "view_oid column is NULL".to_string(),
-                        }))?,
-                    entity_name: row["entity"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "entity column is NULL".to_string(),
-                        }))?,
-                    sync_mode: 's',
-                    fk_columns: fk_cols_val.unwrap_or_default(),
-                    uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
-                    dependency_types: dep_types,
-                    dependency_paths: dep_paths,
-                    array_match_keys: array_keys.unwrap_or_default(),
-                })
-            } else {
-                None
-            };
-            Ok(result)
+            match rows.next() {
+                Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
+                None => Ok(None),
+            }
         })
     }
 
@@ -261,8 +183,11 @@ impl TviewMeta {
         })
     }
 
-    /// Parse SPI row into `TviewMeta` struct
-    fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<Self> {
+    /// Parse SPI row into `TviewMeta` struct.
+    ///
+    /// Expects columns: `tview_oid`, `view_oid`, `entity`, `fk_columns`,
+    /// `uuid_fk_columns`, `dependency_types`, `dependency_paths`, `array_match_keys`.
+    pub fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<Self> {
         // Extract existing arrays
         let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
         let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
