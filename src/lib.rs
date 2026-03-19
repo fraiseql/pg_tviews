@@ -1,6 +1,4 @@
-use pgrx::prelude::*;
-use pgrx::datum::DatumWithOid;
-/**
+/*!
 # `pg_tviews` - `PostgreSQL` Transactional Views
 
 A `PostgreSQL` extension that provides transactional materialized views with
@@ -24,29 +22,16 @@ between base tables and derived views through trigger-based change tracking.
 - **`PostgreSQL` Native**: Written as a C extension using `pgrx` framework
 - **2PC Support**: Transaction queue persistence for prepared transactions
 
-## Usage
-
-```sql
--- Create a transactional view
-SELECT pg_tviews_create('user_posts',
-    'SELECT u.name, p.title FROM users u JOIN posts p ON u.id = p.user_id');
-
--- Insert data (view automatically refreshes)
-INSERT INTO users (name) VALUES ('Alice');
-INSERT INTO posts (user_id, title) VALUES (1, 'Hello World');
-```
-
 ## Safety
 
-This extension is designed with `PostgreSQL`'s safety requirements in mind:
 - No panics in FFI callbacks (all wrapped in `catch_unwind`)
-- Proper error handling with meaningful error messages
 - Transaction rollback on refresh failures
 - Memory safety through Rust's ownership system
 */
-use pgrx::JsonB;
-use std::sync::atomic::{AtomicBool, Ordering};
 
+use pgrx::prelude::*;
+
+// Core modules
 mod catalog;
 mod refresh;
 mod propagate;
@@ -57,6 +42,15 @@ mod queue;
 mod metrics;
 mod event_trigger;
 mod audit;
+
+// Feature modules
+mod lifecycle;
+mod health;
+mod twophase;
+mod cascade;
+mod admin;
+
+// Public API modules
 pub mod error;
 pub mod metadata;
 pub mod schema;
@@ -66,732 +60,13 @@ pub mod config;
 pub mod dependency;
 pub mod validation;
 
+// Public re-exports
 pub use error::{TViewError, TViewResult};
 pub use queue::RefreshKey;
 pub use catalog::entity_for_table;
+pub use lifecycle::check_jsonb_delta_available;
 
 pg_module_magic!();
-
-// Static cache for jsonb_delta availability (performance optimization)
-static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
-static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
-
-/// Get the version of the `pg_tviews` extension
-#[pg_extern]
-fn pg_tviews_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-/// Debug function to check if `ProcessUtility` hook is installed
-#[pg_extern]
-const fn pg_tviews_hook_status() -> &'static str {
-    // This is a simple way to check if the module loaded
-    // The hook installation happens in _PG_init
-    "Extension loaded - hook installation attempted in _PG_init"
-}
-
-/// Check if `jsonb_delta` extension is available at runtime (cached)
-/// Returns true if extension is installed, false otherwise
-///
-/// This function caches the result after the first check to avoid
-/// repeated queries to `pg_extension` on every cascade operation.
-pub fn check_jsonb_delta_available() -> bool {
-    // Return cached result if already checked
-    if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
-        return JSONB_IVM_AVAILABLE.load(Ordering::Relaxed);
-    }
-
-    // First time: query database
-    let result: Result<bool, spi::Error> = Spi::connect(|client| {
-        let rows = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
-            None,
-            &[],
-        )?;
-
-        for row in rows {
-            if let Some(exists) = row[1].value::<bool>()? {
-                return Ok(exists);
-            }
-        }
-        Ok(false)
-    });
-
-    let is_available = result.unwrap_or(false);
-
-    // Cache result
-    JSONB_IVM_AVAILABLE.store(is_available, Ordering::Relaxed);
-    JSONB_IVM_CHECKED.store(true, Ordering::Relaxed);
-
-    is_available
-}
-
-/// Export as SQL function for testing
-#[pg_extern]
-fn pg_tviews_check_jsonb_delta() -> bool {
-    check_jsonb_delta_available()
-}
-
-/// Get current queue statistics
-/// Returns metrics about the current transaction's refresh operations
-#[pg_extern]
-fn pg_tviews_queue_stats() -> pgrx::JsonB {
-    let stats = metrics::metrics_api::get_queue_stats();
-
-    let json_value = serde_json::json!({
-        "queue_size": stats.queue_size,
-        "total_refreshes": stats.total_refreshes,
-        "total_iterations": stats.total_iterations,
-        "max_iterations": stats.max_iterations,
-        "total_timing_ms": stats.total_timing_ms(),
-        "graph_cache_hit_rate": stats.graph_cache_hit_rate(),
-        "table_cache_hit_rate": stats.table_cache_hit_rate(),
-        "graph_cache_hits": stats.graph_cache_hits,
-        "graph_cache_misses": stats.graph_cache_misses,
-        "table_cache_hits": stats.table_cache_hits,
-        "table_cache_misses": stats.table_cache_misses
-    });
-
-    pgrx::JsonB(json_value)
-}
-
-/// Debug function: View current queue contents
-/// Returns the entities and PKs currently in the refresh queue
-#[pg_extern]
-fn pg_tviews_debug_queue() -> pgrx::JsonB {
-    let contents = metrics::metrics_api::get_queue_contents();
-
-    let json_contents: Vec<serde_json::Value> = contents
-        .into_iter()
-        .map(|key| {
-            serde_json::json!({
-                "entity": key.entity,
-                "pk": key.pk
-            })
-        })
-        .collect();
-
-    pgrx::JsonB(serde_json::json!(json_contents))
-}
-
-/// Initialize the extension
-/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
-///
-/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
-/// not during initdb or other bootstrap contexts.
-#[pg_guard]
-extern "C-unwind" fn _PG_init() {
-    // For shared_preload_libraries extensions, _PG_init is called during postmaster startup
-    // This is the CORRECT time to install hooks (they apply to all backends)
-    // Use ensure_hook_installed() (not install_hook() directly) so that the
-    // HOOK_INSTALLED flag is set, preventing a double-install if pg_tviews_create
-    // is later called and also calls ensure_hook_installed().  Double-installing
-    // the hook sets PREV_PROCESS_UTILITY_HOOK to our own hook, which causes
-    // infinite recursion and SIGSEGV on the next CREATE/DROP DDL.
-    // Register GUC parameters before anything reads them.
-    crate::config::register_gucs();
-
-    unsafe {
-        hooks::ensure_hook_installed();
-    }
-
-    // Register transaction callbacks once at startup.
-    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
-    // so registering per-transaction would accumulate N copies after N transactions.
-    unsafe {
-        queue::xact::register_xact_callback();
-        queue::xact::register_subxact_callback();
-    }
-
-    // Note: We cannot call functions that require SPI/database connection here
-    // (like `check_jsonb_delta_available` or `register_cache_invalidation_callbacks`)
-    // because no database connection exists during shared library preloading.
-    // These checks happen lazily on first use instead.
-}
-
-/// Health check function for production monitoring
-///
-/// Returns a comprehensive health status including:
-/// - Extension version
-/// - `jsonb_delta` availability
-/// - Metadata consistency
-/// - Orphaned triggers
-/// - Queue status
-#[pg_extern]
-fn pg_tviews_health_check() -> TableIterator<'static, (
-    name!(status, String),
-    name!(component, String),
-    name!(message, String),
-    name!(severity, String),
-)> {
-    let mut results = Vec::new();
-
-    // Check 1: Extension loaded
-    results.push((
-        "OK".to_string(),
-        "extension".to_string(),
-        format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
-        "info".to_string(),
-    ));
-
-    // Check 2: jsonb_delta availability
-    let has_jsonb_delta = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'"
-    ).unwrap_or(Some(false)).unwrap_or(false);
-
-    if has_jsonb_delta {
-        results.push((
-            "OK".to_string(),
-            "jsonb_delta".to_string(),
-            "jsonb_delta extension available (optimized mode)".to_string(),
-            "info".to_string(),
-        ));
-    } else {
-        results.push((
-            "WARNING".to_string(),
-            "jsonb_delta".to_string(),
-            "jsonb_delta not installed (falling back to standard JSONB)".to_string(),
-            "warning".to_string(),
-        ));
-    }
-
-    // Check 3: Metadata consistency
-    let orphaned_meta = Spi::get_one::<i64>(
-        "SELECT COUNT(*) FROM pg_tview_meta m
-         WHERE NOT EXISTS (
-           SELECT 1 FROM pg_class WHERE relname = 'tv_' || m.entity
-         )"
-    ).unwrap_or(Some(0)).unwrap_or(0);
-
-    if orphaned_meta > 0 {
-        results.push((
-            "ERROR".to_string(),
-            "metadata".to_string(),
-            format!("{orphaned_meta} orphaned metadata entries found"),
-            "error".to_string(),
-        ));
-    } else {
-        results.push((
-            "OK".to_string(),
-            "metadata".to_string(),
-            "All metadata entries valid".to_string(),
-            "info".to_string(),
-        ));
-    }
-
-    // Check 4: Orphaned triggers
-    let orphaned_triggers = Spi::get_one::<i64>(
-        "SELECT COUNT(*) FROM pg_trigger
-         WHERE tgname LIKE 'tview_%'
-           AND tgrelid NOT IN (
-             SELECT ('tb_' || entity)::regclass::oid
-             FROM pg_tview_meta
-           )"
-    ).unwrap_or(Some(0)).unwrap_or(0);
-
-    if orphaned_triggers > 0 {
-        results.push((
-            "WARNING".to_string(),
-            "triggers".to_string(),
-            format!("{orphaned_triggers} orphaned triggers found"),
-            "warning".to_string(),
-        ));
-    } else {
-        results.push((
-            "OK".to_string(),
-            "triggers".to_string(),
-            "All triggers properly linked".to_string(),
-            "info".to_string(),
-        ));
-    }
-
-    // Check 5: TVIEW count
-    let tview_count = Spi::get_one::<i64>(
-        "SELECT COUNT(*) FROM pg_tview_meta"
-    ).unwrap_or(Some(0)).unwrap_or(0);
-
-    results.push((
-        "OK".to_string(),
-        "tviews".to_string(),
-        format!("{tview_count} TVIEWs registered"),
-        "info".to_string(),
-    ));
-
-    TableIterator::new(results)
-}
-
-/// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
-///
-/// Returns a JSON object with schema details on success, or `{"error": "..."}` on
-/// failure. Never raises a `PostgreSQL` error so callers can use the result in
-/// expressions (e.g., `IS NOT NULL`, `->>'error'`).
-#[pg_extern]
-fn pg_tviews_analyze_select(sql: &str) -> JsonB {
-    match schema::inference::infer_schema(sql) {
-        Ok(schema) => {
-            match schema.to_jsonb() {
-                Ok(jsonb) => jsonb,
-                Err(e) => {
-                    JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
-                }
-            }
-        }
-        Err(e) => {
-            JsonB(serde_json::json!({"error": e.to_string()}))
-        }
-    }
-}
-
-/// Infer column types from `PostgreSQL` catalog
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)]
-fn pg_tviews_infer_types(
-    table_name: &str,
-    columns: Vec<String>,
-) -> JsonB {
-    match schema::types::infer_column_types(table_name, &columns) {
-        Ok(types) => {
-            match serde_json::to_value(&types) {
-                Ok(json_value) => JsonB(json_value),
-                Err(e) => {
-                    error!("Failed to serialize types to JSONB: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            error!("Type inference failed: {}", e);
-        }
-    }
-}
-
-/// Validate a 2PC global transaction ID (GID) for safe use in SQL.
-///
-/// Rejects empty strings, overly long values (`PostgreSQL` limit is 200 bytes),
-/// and characters that could be used for SQL injection.
-fn validate_gid(gid: &str) -> TViewResult<()> {
-    if gid.is_empty() || gid.len() > 199 {
-        return Err(TViewError::InvalidInput {
-            parameter: "gid".to_string(),
-            reason: format!("GID must be 1\u{2013}199 bytes (got {})", gid.len()),
-        });
-    }
-    if gid.contains('\'') || gid.contains('\0') || gid.contains(';') {
-        return Err(TViewError::InvalidInput {
-            parameter: "gid".to_string(),
-            reason: "GID contains invalid characters (', ;, or null byte)".to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Handle COMMIT PREPARED for 2PC transactions
-/// Processes pending refreshes for a committed prepared transaction
-///
-/// Arguments:
-/// - `gid`: Global transaction ID of the prepared transaction
-#[pg_extern]
-fn pg_tviews_commit_prepared(gid: &str) -> TViewResult<()> {
-    validate_gid(gid)?;
-
-    // STEP 1: Load queue metadata BEFORE committing (verify it exists)
-    let args = vec![unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    let queue_jsonb: Option<JsonB> = Spi::get_one_with_args(
-        "SELECT refresh_queue FROM pg_tview_pending_refreshes WHERE gid = $1",
-        &args,
-    )?;
-
-    // STEP 2: COMMIT THE PREPARED TRANSACTION FIRST
-    // This ensures TVIEWs never show uncommitted data
-    let commit_sql = format!("COMMIT PREPARED '{gid}'");
-    Spi::run(&commit_sql)?;
-
-    // STEP 3: Now process the queue (transaction is committed, safe to refresh)
-    let Some(jsonb) = queue_jsonb else {
-        // No pending refreshes for this GID
-        return Ok(());
-    };
-
-    let serialized = crate::queue::persistence::SerializedQueue::from_jsonb(jsonb)?;
-    let queue = serialized.into_queue();
-
-    if !queue.is_empty() {
-
-        // Process queue in a NEW transaction (prepared transaction already committed)
-        Spi::run("BEGIN")?;
-
-        match process_refresh_queue(queue) {
-            Ok(()) => {
-                Spi::run("COMMIT")?;
-            }
-            Err(e) => {
-                Spi::run("ROLLBACK")?;
-                return Err(e);
-            }
-        }
-    }
-
-    // STEP 4: Clean up persistent entry
-    Spi::run_with_args(
-        "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1",
-        &[unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
-    )?;
-
-    Ok(())
-}
-
-/// Handle ROLLBACK PREPARED for 2PC transactions
-/// Cleans up pending refreshes for a rolled back prepared transaction
-///
-/// Arguments:
-/// - `gid`: Global transaction ID of the prepared transaction
-#[pg_extern]
-fn pg_tviews_rollback_prepared(gid: &str) -> TViewResult<()> {
-    validate_gid(gid)?;
-
-    // STEP 1: Rollback the prepared transaction first
-    let rollback_sql = format!("ROLLBACK PREPARED '{gid}'");
-    Spi::run(&rollback_sql)?;
-
-    // STEP 2: Clean up pending queue (no refresh needed - transaction aborted)
-    Spi::get_one_with_args::<i32>(
-        "DELETE FROM pg_tview_pending_refreshes WHERE gid = $1 RETURNING 1",
-        &[unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
-    )?;
-
-    Ok(())
-}
-
-/// Process refresh queue (extracted from `handle_pre_commit` for reuse)
-fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshKey>) -> TViewResult<()> {
-    let mut pending = queue;
-    let mut processed = std::collections::HashSet::new();
-    let graph = crate::queue::cache::graph_cache::load_cached()?;
-
-    let mut iteration = 1;
-    while !pending.is_empty() {
-        let sorted_keys = graph.sort_keys(pending.drain().collect());
-
-        for key in sorted_keys {
-            if !processed.insert(key.clone()) {
-                continue;
-            }
-
-            let parents = refresh_and_get_parents(&key)?;
-
-            for parent_key in parents {
-                if !processed.contains(&parent_key) {
-                    pending.insert(parent_key);
-                }
-            }
-        }
-
-        iteration += 1;
-        if iteration > get_max_propagation_depth() {
-            return Err(crate::TViewError::PropagationDepthExceeded {
-                max_depth: get_max_propagation_depth(),
-                processed: processed.len(),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-/// Refresh a single entity+pk and return discovered parent keys
-fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<crate::queue::RefreshKey>> {
-    // Load metadata
-    use crate::catalog::TviewMeta;
-    let meta = TviewMeta::load_by_entity(&key.entity)?
-        .ok_or_else(|| crate::TViewError::MetadataNotFound {
-            entity: key.entity.clone(),
-        })?;
-
-    // Refresh this entity (existing logic)
-    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
-
-    // Find parent entities (returns keys instead of refreshing)
-    let parent_keys = crate::propagate::find_parents_for(key)?;
-
-    Ok(parent_keys)
-}
-
-/// Get maximum propagation depth from config
-fn get_max_propagation_depth() -> usize {
-    crate::config::max_propagation_depth()
-}
-
-/// Recover orphaned prepared transactions
-/// Processes pending refreshes for prepared transactions that may have been interrupted
-///
-/// Returns a table with recovery results: (gid, `queue_size`, status)
-#[pg_extern]
-fn pg_tviews_recover_prepared_transactions() -> pgrx::iter::TableIterator<
-    'static,
-    (
-        pgrx::name!(gid, String),
-        pgrx::name!(queue_size, i32),
-        pgrx::name!(status, String),
-    ),
-> {
-    let results: Vec<(String, i32, String)> = Spi::connect(|client| {
-        // Try to acquire advisory lock (non-blocking)
-        // Use a fixed hash for the lock key
-        const RECOVERY_LOCK_KEY: i64 = 0x7476_6965_7773_5F72; // "tviews_r" in hex
-
-        let mut lock_result = client.select(
-            &format!("SELECT pg_try_advisory_lock({RECOVERY_LOCK_KEY})"),
-            None,
-            &[],
-        )?;
-
-        let lock_acquired = if let Some(row) = lock_result.next() {
-            row[1].value::<bool>()?.unwrap_or(false)
-        } else {
-            false
-        };
-
-        if !lock_acquired {
-            return Ok(Vec::new());
-        }
-
-        // Ensure lock is released on exit (even if error occurs)
-        let _guard = AdvisoryLockGuard::new(RECOVERY_LOCK_KEY);
-
-        // Perform recovery
-        let rows = client.select(
-            "SELECT gid, queue_size FROM pg_tview_pending_refreshes
-             WHERE prepared_at < now() - interval '1 hour'
-             ORDER BY prepared_at",
-            None,
-            &[],
-        )?;
-
-        let mut results = Vec::new();
-
-        for row in rows {
-            let gid: String = row["gid"].value()?
-                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "SELECT gid, queue_size FROM pg_tview_pending_refreshes ...".to_string(),
-                    error: "gid column is NULL".to_string(),
-                }))?;
-            let queue_size: i32 = row["queue_size"].value()?
-                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "SELECT gid, queue_size FROM pg_tview_pending_refreshes ...".to_string(),
-                    error: "queue_size column is NULL".to_string(),
-                }))?;
-
-            let status = match pg_tviews_commit_prepared(&gid) {
-                Ok(()) => {
-                    "processed".to_string()
-                }
-                Err(e) => {
-                    warning!("TVIEW: Failed to recover prepared transaction '{}': {:?}", gid, e);
-                    "error".to_string()
-                }
-            };
-
-            results.push((gid, queue_size, status));
-        }
-
-        Ok::<_, spi::Error>(results)
-    })
-    .unwrap_or_else(|e| {
-        warning!("Failed to list pending 2PC refreshes: {e:?}");
-        Vec::new()
-    });
-
-    pgrx::iter::TableIterator::new(results)
-}
-
-/// RAII guard for advisory lock (ensures unlock on drop)
-struct AdvisoryLockGuard {
-    lock_key: i64,
-}
-
-impl AdvisoryLockGuard {
-    const fn new(lock_key: i64) -> Self {
-        Self { lock_key }
-    }
-}
-
-impl Drop for AdvisoryLockGuard {
-    fn drop(&mut self) {
-        // Release advisory lock
-        let _ = Spi::run(&format!("SELECT pg_advisory_unlock({})", self.lock_key));
-    }
-}
-
-/// Cascade refresh when a base table row changes
-/// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
-///
-/// Arguments:
-/// - `base_table_oid`: OID of the base table that changed
-/// - `pk_value`: Primary key value of the changed row
-#[pg_extern]
-fn pg_tviews_cascade(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
-    // Find all TVIEWs that depend on this base table
-    let dependent_tviews = match find_dependent_tviews(base_table_oid) {
-        Ok(tv) => tv,
-        Err(e) => error!("Failed to find dependent TVIEWs: {:?}", e),
-    };
-
-    if dependent_tviews.is_empty() {
-        // No TVIEWs depend on this table
-        return;
-    }
-
-
-    // Refresh each dependent TVIEW
-    for tview_meta in dependent_tviews {
-        // Find rows in this TVIEW that reference the changed base table row
-        let affected_rows = match find_affected_tview_rows(&tview_meta, base_table_oid, pk_value) {
-            Ok(rows) => rows,
-            Err(e) => {
-                warning!("Failed to find affected rows in {}: {:?}", tview_meta.entity_name, e);
-                continue;
-            }
-        };
-
-        if affected_rows.is_empty() {
-            continue;
-        }
-
-
-        // Enqueue affected rows for refresh at PRE_COMMIT
-        for affected_pk in affected_rows {
-            queue::enqueue_refresh(&tview_meta.entity_name, affected_pk);
-        }
-    }
-
-}
-
-/// Handle INSERT operations on base tables
-/// Called by trigger handler when rows are inserted
-///
-/// Arguments:
-/// - `base_table_oid`: OID of the base table that changed
-/// - `pk_value`: Primary key value of the inserted row
-#[pg_extern]
-fn pg_tviews_insert(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
-    // For INSERT operations, we need to check if this affects array relationships
-    // For now, delegate to the cascade function (which handles recomputation)
-    pg_tviews_cascade(base_table_oid, pk_value);
-}
-
-/// Handle DELETE operations on base tables
-/// Called by trigger handler when rows are deleted
-///
-/// Arguments:
-/// - `base_table_oid`: OID of the base table that changed
-/// - `pk_value`: Primary key value of the deleted row
-#[pg_extern]
-fn pg_tviews_delete(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
-    // For DELETE operations, we need to check if this affects array relationships
-    // For now, delegate to the cascade function (which handles recomputation)
-    pg_tviews_cascade(base_table_oid, pk_value);
-}
-
-/// Find all TVIEWs that have the given base table as a dependency
-fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
-    let query = format!(
-        "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, \
-                m.fk_columns, m.uuid_fk_columns, \
-                m.dependency_types, m.dependency_paths, m.array_match_keys \
-         FROM pg_tview_meta m \
-         WHERE {:?} = ANY(m.dependencies)",
-        base_table_oid.to_u32()
-    );
-
-    Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(catalog::TviewMeta::from_spi_row(&row)?);
-        }
-        Ok(result)
-    })
-}
-
-/// Find rows in a TVIEW that reference a specific base table row
-fn find_affected_tview_rows(
-    tview_meta: &catalog::TviewMeta,
-    base_table_oid: pg_sys::Oid,
-    base_pk: i64,
-) -> spi::Result<Vec<i64>> {
-    // Get the base table name to figure out which FK column to check
-    let base_table_name = crate::utils::spi_get_string(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {base_table_oid:?}"
-    ))?.ok_or(spi::Error::InvalidPosition)?;
-
-    // Extract entity name from table name (e.g., "tb_user" -> "user")
-    let base_entity = base_table_name.trim_start_matches("tb_");
-
-    // Query the TVIEW's backing view to find rows where the PK matches
-    let view_name = utils::lookup_view_for_source(tview_meta.view_oid)?;
-    let tview_pk_col = format!("pk_{}", tview_meta.entity_name);
-
-    // Helper closure to run a SELECT and collect i64 PKs
-    let collect_pks = |query: &str| -> spi::Result<Vec<i64>> {
-        let col = tview_pk_col.clone();
-        Spi::connect(|client| {
-            let rows = client.select(query, None, &[])?;
-            let mut pks = Vec::new();
-            for row in rows {
-                if let Some(pk) = row[col.as_str()].value::<i64>()? {
-                    pks.push(pk);
-                }
-            }
-            Ok(pks)
-        })
-    };
-
-    // Case 1: Direct match — TVIEW is for the changed entity (e.g., tv_user for tb_user)
-    if tview_meta.entity_name == base_entity {
-        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {tview_pk_col} = {base_pk}");
-        return collect_pks(&query);
-    }
-
-    // Case 2: Scalar FK — TVIEW SELECT exposes fk_{base_entity} as an output column
-    // (e.g., tv_post.fk_user when tv_post depends on tb_user)
-    let fk_col = format!("fk_{base_entity}");
-    if tview_meta.fk_columns.contains(&fk_col) {
-        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {fk_col} = {base_pk}");
-        return collect_pks(&query);
-    }
-
-    // Case 3: Array aggregation — the TVIEW aggregates rows from the base table via GROUP BY.
-    // The base table carries fk_{tview_entity} pointing back to the parent.
-    // e.g., tv_post aggregates tb_comment; tb_comment.fk_post -> tb_post.pk_post
-    let fk_in_base = format!("fk_{}", tview_meta.entity_name); // "fk_post"
-    let pk_in_base = format!("pk_{base_entity}");              // "pk_comment"
-
-    // Try to look up the parent PK via the base table row.  This succeeds for INSERT/UPDATE
-    // (the row still exists), but returns nothing for DELETE (row already gone).
-    let lookup_query = format!(
-        "SELECT DISTINCT {fk_in_base} AS {tview_pk_col} \
-         FROM {base_table_name} \
-         WHERE {pk_in_base} = {base_pk}"
-    );
-    let pks = collect_pks(&lookup_query)?;
-    if !pks.is_empty() {
-        return Ok(pks);
-    }
-
-    // DELETE fallback: the row has been removed so we cannot identify the specific parent.
-    // Refresh all rows in the materialized TVIEW — correct but conservative.
-    let tv_table = format!("tv_{}", tview_meta.entity_name);
-    let fallback_query = format!("SELECT {tview_pk_col} FROM {tv_table}");
-    collect_pks(&fallback_query)
-}
 
 #[cfg(any(test, feature = "pg_test"))]
 pub mod pg_test {
@@ -808,7 +83,6 @@ mod tests {
     use pgrx::prelude::*;
     use crate::error::TViewError;
 
-
     #[pg_test]
     fn sanity_check() {
         let two: i32 = 2;
@@ -817,7 +91,9 @@ mod tests {
 
     #[pg_test]
     fn test_version_function() {
-        let version = crate::pg_tviews_version();
+        let version = Spi::get_one::<String>("SELECT pg_tviews_version()")
+            .unwrap()
+            .unwrap();
         assert!(version.starts_with("0.1.0"));
     }
 
@@ -835,37 +111,29 @@ mod tests {
     #[pg_test]
     #[should_panic(expected = "TVIEW metadata not found")]
     fn test_error_propagates_to_postgres() {
-        // This should raise a PostgreSQL error
         panic!("{:?}", TViewError::MetadataNotFound {
             entity: "test".to_string(),
         });
     }
 
-    // Tests for jsonb_delta detection
     #[pg_test]
     fn test_jsonb_delta_check_function_exists() {
-        // This test will fail because pg_tviews_check_jsonb_delta doesn't exist yet
         let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_delta()");
         assert!(result.is_ok(), "pg_tviews_check_jsonb_delta() function should exist");
     }
 
     #[pg_test]
     fn test_check_jsonb_delta_available_function() {
-        // This test will fail because check_jsonb_delta_available() doesn't exist yet
         let _result = crate::check_jsonb_delta_available();
-        // Just calling it is enough - function must exist
     }
 
     #[pg_test]
     fn test_pg_tviews_works_without_jsonb_delta() {
-        // Setup: Ensure jsonb_delta is NOT installed
         Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").ok();
 
-        // Test: pg_tviews should still function
         Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
 
-        // This should work even without jsonb_delta
         let result = Spi::get_one::<bool>(
             "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL"
         );
@@ -873,9 +141,6 @@ mod tests {
         assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_delta");
     }
 
-    /// pg_tviews_refresh() must not fail with a column-count mismatch even
-    /// though the tv_* table has extra created_at/updated_at columns that
-    /// the backing view does not expose.
     #[pg_test]
     fn test_pg_tviews_refresh_no_column_mismatch() {
         Spi::run("CREATE TABLE tb_note (pk_note BIGSERIAL PRIMARY KEY, body TEXT)").unwrap();
@@ -886,20 +151,15 @@ mod tests {
             FROM tb_note
         $$)").unwrap();
 
-        // tv_note now has created_at / updated_at; v_note does not.
-        // A naive INSERT … SELECT * would fail — pg_tviews_refresh must not.
         let result = Spi::run("SELECT pg_tviews_refresh('note')");
         assert!(result.is_ok(), "pg_tviews_refresh failed: {:?}", result.err());
 
-        // Row count must be preserved after the full refresh
         let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_note")
             .unwrap()
             .unwrap_or(0);
         assert_eq!(count, 2, "all rows should survive the full refresh");
     }
 
-    /// pg_tviews_refresh() re-populates the table from the backing view,
-    /// restoring data that was manually altered.
     #[pg_test]
     fn test_pg_tviews_refresh_repopulates_data() {
         Spi::run("CREATE TABLE tb_tag (pk_tag BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
@@ -910,7 +170,6 @@ mod tests {
             FROM tb_tag
         $$)").unwrap();
 
-        // Simulate stale / corrupted data in the materialized table
         Spi::run("UPDATE tv_tag SET data = '{}'::jsonb WHERE pk_tag = 1").unwrap();
 
         let stale = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
@@ -918,7 +177,6 @@ mod tests {
             .unwrap();
         assert_eq!(stale.0, serde_json::json!({}), "data should be corrupted before refresh");
 
-        // Refresh must restore the correct data from v_tag
         Spi::run("SELECT pg_tviews_refresh('tag')").unwrap();
 
         let restored = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
@@ -927,203 +185,3 @@ mod tests {
         assert_eq!(restored.0["name"], "rust", "refresh should restore data from the backing view");
     }
 }
-
-/// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
-/// Rust `pg_tview_trigger_handler()`.
-///
-/// Call this once after upgrading `pg_tviews` to convert triggers installed by
-/// prior versions. The operation is idempotent and safe to re-run.
-///
-/// Raises a `PostgreSQL` ERROR if any trigger cannot be migrated.
-#[pg_extern]
-fn pg_tviews_migrate_triggers() {
-    if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
-        error!("Failed to migrate triggers: {:?}", e);
-    }
-}
-
-/// Show cascade dependency path for a given entity
-///
-/// Returns the dependency chain showing which TVIEWs depend on this entity
-#[pg_extern]
-fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
-    name!(depth, i32),
-    name!(entity_name, String),
-    name!(depends_on, String),
-)> {
-    let results = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
-        match client.select(
-            "WITH RECURSIVE dep_tree AS (
-                SELECT
-                    pg_tview_meta.entity,
-                    0 as depth,
-                    ARRAY[pg_tview_meta.entity] as path,
-                    pg_tview_meta.entity as depends_on
-                FROM pg_tview_meta
-                WHERE pg_tview_meta.entity = $1
-
-                UNION ALL
-
-                SELECT
-                    m.entity,
-                    dt.depth + 1,
-                    dt.path || m.entity,
-                    dt.entity as depends_on
-                FROM dep_tree dt
-                JOIN pg_tview_meta m ON ('tv_' || dt.entity)::regclass::oid = ANY(m.dependencies)
-                WHERE NOT (m.entity = ANY(dt.path))
-                  AND dt.depth < 10
-            )
-            SELECT depth, entity AS entity_name, depends_on
-            FROM dep_tree
-            ORDER BY depth, entity_name",
-            None,
-            &args,
-        ) {
-            Ok(rows) => {
-                let mut paths = Vec::new();
-                for row in rows {
-                    let depth = row["depth"].value::<i32>()?.unwrap_or(0);
-                    let entity_name = row["entity_name"].value::<String>()?.unwrap_or_default();
-                    let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
-                    paths.push((depth, entity_name, depends_on));
-                }
-                Ok::<_, spi::Error>(paths)
-            },
-            Err(e) => {
-                warning!("Failed to query cascade path: {}", e);
-                Ok(Vec::new())
-            }
-        }
-    }).unwrap_or_default();
-
-    TableIterator::new(results)
-}
-
-/// Force a full refresh of all rows in a TVIEW from its backing view.
-///
-/// Rebuilds the materialized table by truncating and re-inserting from the
-/// backing view using an explicit column list. The explicit list is derived
-/// from the view's own columns via `pg_attribute`, which excludes the
-/// table-only `created_at`/`updated_at` columns (they carry `DEFAULT NOW()`
-/// and must not appear in the `SELECT *` projection of the view).
-///
-/// This avoids the column-count mismatch that a naive
-/// `INSERT INTO tv_entity SELECT * FROM v_entity` would produce when the
-/// materialized table has extra timestamp columns the view does not.
-///
-/// # Errors
-/// Returns error if the entity is not registered, the view/table OIDs cannot
-/// be resolved, or the truncate/insert operations fail.
-#[pg_extern]
-fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
-    use crate::catalog::TviewMeta;
-
-    let meta = TviewMeta::load_by_entity(entity)?
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
-
-    let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
-    let view_name = crate::utils::lookup_view_for_source(meta.view_oid)?;
-
-    // Build the INSERT column list from the backing view's actual columns.
-    // Querying pg_attribute by OID is schema-agnostic and always returns the
-    // exact set of columns the view exposes — never the table-only columns.
-    let view_columns = get_view_columns_by_oid(meta.view_oid)?;
-
-    if view_columns.is_empty() {
-        return Err(TViewError::CatalogError {
-            operation: format!("Get columns for view {view_name}"),
-            pg_error: "View has no selectable columns".to_string(),
-        });
-    }
-
-    let col_list = view_columns.join(", ");
-
-    // Full refresh: truncate then re-insert with the explicit column list.
-    // TRUNCATE is transactional in PostgreSQL, so a failure in the INSERT
-    // will roll back the whole operation atomically.
-    Spi::run(&format!("TRUNCATE {tv_name}"))?;
-    Spi::run(&format!(
-        "INSERT INTO {tv_name} ({col_list}) SELECT {col_list} FROM {view_name}"
-    ))?;
-
-    Ok(())
-}
-
-/// Return the column names of a relation identified by OID, in attribute order.
-///
-/// Only user-visible columns are returned (`attnum > 0`, `NOT attisdropped`).
-fn get_view_columns_by_oid(rel_oid: pg_sys::Oid) -> spi::Result<Vec<String>> {
-    Spi::connect(|client| {
-        let rows = client.select(
-            &format!(
-                "SELECT attname::text \
-                 FROM pg_attribute \
-                 WHERE attrelid = {rel_oid:?} AND attnum > 0 AND NOT attisdropped \
-                 ORDER BY attnum"
-            ),
-            None,
-            &[],
-        )?;
-
-        let mut cols = Vec::new();
-        for row in rows {
-            if let Some(col) = row[1].value::<String>()? {
-                cols.push(col);
-            }
-        }
-        Ok(cols)
-    })
-}
-
-/// Get performance statistics for all TVIEWs
-///
-/// Returns size, row count, and index information for each TVIEW
-#[pg_extern]
-fn pg_tviews_performance_stats() -> TableIterator<'static, (
-    name!(entity, String),
-    name!(table_size, String),
-    name!(total_size, String),
-    name!(row_count, i64),
-    name!(index_count, i32),
-)> {
-    let query = "
-        SELECT
-            pg_tview_meta.entity,
-            pg_size_pretty(pg_relation_size('tv_' || pg_tview_meta.entity)) as table_size,
-            pg_size_pretty(pg_total_relation_size('tv_' || pg_tview_meta.entity)) as total_size,
-            (SELECT COUNT(*) FROM ('tv_' || pg_tview_meta.entity)::regclass) as row_count,
-            (SELECT COUNT(*)::int FROM pg_indexes WHERE tablename = 'tv_' || pg_tview_meta.entity) as index_count
-        FROM pg_tview_meta
-        ORDER BY pg_relation_size('tv_' || pg_tview_meta.entity) DESC
-    ";
-
-    let results = Spi::connect(|client| {
-        match client.select(query, None, &[]) {
-            Ok(rows) => {
-                let mut stats = Vec::new();
-                for row in rows {
-                    let entity = row["entity"].value::<String>()?.unwrap_or_default();
-                    let table_size = row["table_size"].value::<String>()?.unwrap_or_default();
-                    let total_size = row["total_size"].value::<String>()?.unwrap_or_default();
-                    let row_count = row["row_count"].value::<i64>()?.unwrap_or(0);
-                    let index_count = row["index_count"].value::<i32>()?.unwrap_or(0);
-                    stats.push((entity, table_size, total_size, row_count, index_count));
-                }
-                Ok::<_, spi::Error>(stats)
-            },
-            Err(e) => {
-                warning!("Failed to query performance stats: {}", e);
-                Ok(Vec::new())
-            }
-        }
-    }).unwrap_or_default();
-
-    TableIterator::new(results)
-}
-
