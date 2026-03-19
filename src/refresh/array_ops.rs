@@ -49,7 +49,7 @@ use crate::error::{TViewError, TViewResult};
 ///     'created_at'
 /// );
 /// ```
-#[allow(dead_code)]
+#[allow(dead_code)] // Reason: will be wired when jsonb_delta array support is enabled
 pub fn insert_array_element(
     table_name: &str,
     pk_column: &str,
@@ -119,7 +119,7 @@ pub fn insert_array_element(
 ///     ARRAY['comments'], 'id', '"123"'::jsonb
 /// );
 /// ```
-#[allow(dead_code)]
+#[allow(dead_code)] // Reason: will be wired when jsonb_delta array support is enabled
 pub fn delete_array_element(
     table_name: &str,
     pk_column: &str,
@@ -159,7 +159,7 @@ pub fn delete_array_element(
 ///
 /// This is used to gracefully fall back if the extension isn't installed.
 /// The array operations require `jsonb_delta` for proper functionality.
-#[allow(dead_code)]
+#[allow(dead_code)] // Reason: will be wired when jsonb_delta array support is enabled
 pub fn check_array_functions_available() -> TViewResult<bool> {
     let sql = r"
         SELECT EXISTS(

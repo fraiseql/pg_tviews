@@ -130,7 +130,7 @@ pub mod metrics_api {
     }
 
     /// Record prepared statement cache hit
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: metrics for prepared stmt cache — not yet wired
     pub fn record_prepared_stmt_cache_hit() {
         METRICS.with(|m| {
             m.borrow_mut().prepared_stmt_cache_hits += 1;
@@ -138,7 +138,7 @@ pub mod metrics_api {
     }
 
     /// Record prepared statement cache miss
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: metrics for prepared stmt cache — not yet wired
     pub fn record_prepared_stmt_cache_miss() {
         METRICS.with(|m| {
             m.borrow_mut().prepared_stmt_cache_misses += 1;
@@ -146,7 +146,7 @@ pub mod metrics_api {
     }
 
     /// Record bulk refresh operation
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: metrics for bulk refresh — not yet wired
     pub fn record_bulk_refresh(count: usize) {
         METRICS.with(|m| {
             let mut metrics = m.borrow_mut();
@@ -156,7 +156,7 @@ pub mod metrics_api {
     }
 
     /// Record individual refresh operation
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: metrics for individual refresh — not yet wired
     pub fn record_individual_refresh() {
         METRICS.with(|m| {
             let mut metrics = m.borrow_mut();
@@ -222,7 +222,7 @@ impl RefreshTimer {
 
 /// Statistics returned by metrics functions
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Reason: fields read via get_queue_stats() SQL function
 pub struct QueueStats {
     pub queue_size: usize,
     pub total_refreshes: u64,

@@ -117,7 +117,7 @@ fn validate_tview_structure(table_name: &str, _entity_name: &str) -> TViewResult
 struct ColumnInfo {
     name: String,
     data_type: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: parsed from catalog but not yet used in DDL generation
     is_nullable: bool,
 }
 

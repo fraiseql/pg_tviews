@@ -8,7 +8,8 @@ pub mod main;
 pub mod array_ops;
 
 pub mod bulk;
-pub mod cache;
+#[allow(dead_code)] // Reason: prepared statement caching — planned optimization, not yet wired
+mod cache;
 
 // Re-export main functions for backward compatibility
 pub use main::refresh_pk;

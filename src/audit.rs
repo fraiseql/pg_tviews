@@ -42,7 +42,7 @@ pub fn log_drop(entity: &str) -> spi::Result<()> {
 }
 
 /// Log TVIEW refresh operation
-#[allow(dead_code)]
+#[allow(dead_code)] // Reason: audit logging — will be wired to refresh paths
 pub fn log_refresh(entity: &str, rows_affected: i64) -> spi::Result<()> {
     let current_user = crate::utils::spi_get_string("SELECT current_user")?
         .unwrap_or_else(|| "unknown".to_string());

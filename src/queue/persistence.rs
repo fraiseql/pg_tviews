@@ -69,7 +69,7 @@ impl SerializedQueue {
     }
 
     /// Serialize to binary format (compact, faster for large queues)
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: alternative serialization format for future config option
     pub fn to_binary(&self) -> TViewResult<Vec<u8>> {
         bincode::serialize(self)
             .map_err(|e| crate::TViewError::SerializationError {
@@ -78,7 +78,7 @@ impl SerializedQueue {
     }
 
     /// Deserialize from binary format
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: alternative serialization format for future config option
     pub fn from_binary(data: &[u8]) -> TViewResult<Self> {
         bincode::deserialize(data)
             .map_err(|e| crate::TViewError::SerializationError {
@@ -87,7 +87,7 @@ impl SerializedQueue {
     }
 
     /// Serialize to compressed JSONB format (balance of readability and size)
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: alternative serialization format for future config option
     pub fn to_compressed_jsonb(&self) -> TViewResult<Vec<u8>> {
         use flate2::write::GzEncoder;
         use flate2::Compression;
@@ -111,7 +111,7 @@ impl SerializedQueue {
     }
 
     /// Deserialize from compressed JSONB format
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: alternative serialization format for future config option
     pub fn from_compressed_jsonb(data: &[u8]) -> TViewResult<Self> {
         use flate2::read::GzDecoder;
         use std::io::Read;

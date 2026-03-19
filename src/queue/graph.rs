@@ -15,12 +15,12 @@ use crate::TViewResult;
 pub struct EntityDepGraph {
     /// Parent relationships: entity -> list of entities that depend on it
     /// Example: "user" -> `["post", "feed"]`
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: public API for graph introspection; populated during load()
     pub parents: HashMap<String, Vec<String>>,
 
     /// Child relationships: entity -> list of entities it depends on
     /// Example: "post" -> `["user"]`
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Reason: public API for graph introspection; populated during load()
     pub children: HashMap<String, Vec<String>>,
 
     /// Topological order (refresh from low to high dependency)

@@ -1,10 +1,8 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys::Oid;
 use pgrx::datum::DatumWithOid;
-use serde::{Deserialize, Serialize};
-
 /// Type of dependency relationship for `jsonb_delta` optimization
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyType {
     /// Direct column from base table (no nested JSONB)
     Scalar,
@@ -35,14 +33,13 @@ impl DependencyType {
 }
 
 /// Represents a row in `pg_tview_meta` (your own catalog table).
-#[allow(clippy::unsafe_derive_deserialize)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TviewMeta {
     pub tview_oid: Oid,
     pub view_oid: Oid,
     pub entity_name: String,
-    pub sync_mode: char, // 's' = sync (default), 'a' = async (future)
     pub fk_columns: Vec<String>,
+    #[allow(dead_code)] // Reason: loaded from pg_tview_meta for future UUID FK handling
     pub uuid_fk_columns: Vec<String>,
 
     /// Type of each dependency: Scalar (direct column), `NestedObject` (embedded JSONB),
@@ -218,7 +215,7 @@ impl TviewMeta {
                             query: String::new(),
                             error: "entity column is NULL".to_string(),
                         }))?,
-            sync_mode: 's', // Default to synchronous
+
             fk_columns: fk_cols_val.unwrap_or_default(),
             uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
             dependency_types: dep_types,
@@ -294,7 +291,7 @@ impl Default for TviewMeta {
             tview_oid: pg_sys::Oid::INVALID,
             view_oid: pg_sys::Oid::INVALID,
             entity_name: String::new(),
-            sync_mode: 's',
+
             fk_columns: vec![],
             uuid_fk_columns: vec![],
             dependency_types: vec![],
@@ -413,7 +410,7 @@ mod tests {
             tview_oid: Oid::from(1234),
             view_oid: Oid::from(5678),
             entity_name: "test".to_string(),
-            sync_mode: 's',
+
             fk_columns: vec![],
             uuid_fk_columns: vec![],
             dependency_types: vec![DependencyType::Scalar],
