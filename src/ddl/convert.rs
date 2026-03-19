@@ -6,6 +6,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
+use crate::refresh::bulk::quote_identifier;
 use crate::schema::TViewSchema;
 
 /// Convert an existing table to a TVIEW
@@ -55,9 +56,10 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
     // Step 5: Drop the existing table.
     // Must use spi_run_ddl (non-atomic SPI) because this runs inside an event trigger
     // which provides an atomic SPI context where DDL is otherwise forbidden on PG18.
-    crate::utils::spi_run_ddl(&format!("DROP TABLE {table_name} CASCADE"))
+    let qi_table = quote_identifier(table_name);
+    crate::utils::spi_run_ddl(&format!("DROP TABLE {qi_table} CASCADE"))
         .map_err(|e| TViewError::SpiError {
-            query: format!("DROP TABLE {table_name} CASCADE"),
+            query: format!("DROP TABLE {qi_table} CASCADE"),
             error: e,
         })?;
 
@@ -183,7 +185,8 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
 
 fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec<BackupRow>> {
     let backup = Spi::connect(|client| {
-        let query = format!("SELECT * FROM {table_name}");
+        let qi_table = quote_identifier(table_name);
+        let query = format!("SELECT * FROM {qi_table}");
         let results = client.select(&query, None, &[])?;
 
         let mut backup = Vec::new();
@@ -233,7 +236,8 @@ fn infer_base_tables_from_data(table_name: &str) -> TViewResult<Vec<String>> {
 
     Spi::connect(|client| {
         // Sample a few rows to analyze data patterns
-        let query = format!("SELECT data FROM {table_name} LIMIT 5");
+        let qi_table = quote_identifier(table_name);
+        let query = format!("SELECT data FROM {qi_table} LIMIT 5");
         let results = client.select(&query, None, &[])?;
 
         for row in results {
@@ -345,34 +349,38 @@ fn reconstruct_as_tview(
 ) -> TViewResult<()> {
     // Step 1: Create the backing view
     let view_name = format!("v_{entity_name}");
+    let qi_view = quote_identifier(&view_name);
+    let qi_table = quote_identifier(table_name);
 
     // Create view that preserves the backed up data
     if data_backup.is_empty() {
         // Empty table: create view with proper structure but no rows
         Spi::run(&format!(
-            "CREATE VIEW {view_name} AS SELECT
+            "CREATE VIEW {qi_view} AS SELECT
                 NULL::uuid as id,
                 NULL::jsonb as data
              WHERE false"
         ))?;
     } else {
-        // Non-empty table: reconstruct with actual data
+        // Non-empty table: reconstruct with actual data using quote_literal for safety
         let mut values = Vec::new();
         for row in data_backup {
             if let (Some(id), Some(data)) = (&row.id, &row.data) {
-                values.push(format!("('{id}'::uuid, '{data}')"));
+                // Escape single quotes in data to prevent SQL injection
+                let escaped_data = data.replace('\'', "''");
+                values.push(format!("('{id}'::uuid, '{escaped_data}'::jsonb)"));
             }
         }
 
         Spi::run(&format!(
-            "CREATE VIEW {} AS SELECT * FROM (VALUES {}) AS t(id, data)",
-            view_name, values.join(", ")
+            "CREATE VIEW {qi_view} AS SELECT * FROM (VALUES {}) AS t(id, data)",
+            values.join(", ")
         ))?;
     }
 
     // Step 2: Create the TVIEW wrapper
     Spi::run(&format!(
-        "CREATE VIEW {table_name} AS SELECT * FROM {view_name}"
+        "CREATE VIEW {qi_table} AS SELECT * FROM {qi_view}"
     ))?;
 
     // Step 3: Register metadata
@@ -387,23 +395,31 @@ fn register_tview_metadata(
     tview_name: &str,
     _schema: &TViewSchema,
 ) -> TViewResult<()> {
-    // Get OIDs
-    let view_oid = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{view_name}'"
-    ))?.ok_or_else(|| TViewError::CatalogError {
+    // Get OIDs (parameterized to prevent injection)
+    let view_args = vec![unsafe {
+        DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    let view_oid = Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT oid FROM pg_class WHERE relname = $1",
+        &view_args,
+    )?.ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for view {view_name}"),
         pg_error: "View not found".to_string(),
     })?;
 
-    let table_oid = Spi::get_one::<pg_sys::Oid>(&format!(
-        "SELECT oid FROM pg_class WHERE relname = '{tview_name}'"
-    ))?.ok_or_else(|| TViewError::CatalogError {
+    let table_args = vec![unsafe {
+        DatumWithOid::new(tview_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    let table_oid = Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT oid FROM pg_class WHERE relname = $1",
+        &table_args,
+    )?.ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for table {tview_name}"),
         pg_error: "Table not found".to_string(),
     })?;
 
     // Insert metadata
-    let definition = format!("SELECT * FROM {view_name}");
+    let definition = format!("SELECT * FROM {}", quote_identifier(view_name));
     let insert_sql = format!(
         "INSERT INTO pg_tview_meta (entity, view_oid, table_oid, definition, fk_columns, uuid_fk_columns)
          VALUES ($1, {}, {}, $2, '{{}}', '{{}}')

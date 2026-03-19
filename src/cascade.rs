@@ -4,6 +4,7 @@ use pgrx::prelude::*;
 use crate::catalog;
 use crate::utils;
 use crate::queue;
+use crate::refresh::bulk::quote_identifier;
 
 /// Cascade refresh when a base table row changes
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
@@ -114,16 +115,20 @@ fn find_affected_tview_rows(
         })
     };
 
+    let qi_pk_col = quote_identifier(&tview_pk_col);
+    let qi_view = quote_identifier(&view_name);
+
     // Case 1: Direct match
     if tview_meta.entity_name == base_entity {
-        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {tview_pk_col} = {base_pk}");
+        let query = format!("SELECT {qi_pk_col} FROM {qi_view} WHERE {qi_pk_col} = {base_pk}");
         return collect_pks(&query);
     }
 
     // Case 2: Scalar FK
     let fk_col = format!("fk_{base_entity}");
     if tview_meta.fk_columns.contains(&fk_col) {
-        let query = format!("SELECT {tview_pk_col} FROM {view_name} WHERE {fk_col} = {base_pk}");
+        let qi_fk = quote_identifier(&fk_col);
+        let query = format!("SELECT {qi_pk_col} FROM {qi_view} WHERE {qi_fk} = {base_pk}");
         return collect_pks(&query);
     }
 
@@ -132,9 +137,12 @@ fn find_affected_tview_rows(
     let pk_in_base = format!("pk_{base_entity}");
 
     let lookup_query = format!(
-        "SELECT DISTINCT {fk_in_base} AS {tview_pk_col} \
-         FROM {base_table_name} \
-         WHERE {pk_in_base} = {base_pk}"
+        "SELECT DISTINCT {} AS {qi_pk_col} \
+         FROM {} \
+         WHERE {} = {base_pk}",
+        quote_identifier(&fk_in_base),
+        quote_identifier(&base_table_name),
+        quote_identifier(&pk_in_base),
     );
     let pks = collect_pks(&lookup_query)?;
     if !pks.is_empty() {
@@ -143,6 +151,6 @@ fn find_affected_tview_rows(
 
     // DELETE fallback: refresh all rows in the materialized TVIEW
     let tv_table = format!("tv_{}", tview_meta.entity_name);
-    let fallback_query = format!("SELECT {tview_pk_col} FROM {tv_table}");
+    let fallback_query = format!("SELECT {qi_pk_col} FROM {}", quote_identifier(&tv_table));
     collect_pks(&fallback_query)
 }
