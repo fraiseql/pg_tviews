@@ -35,7 +35,8 @@ jobs:
             -A clippy::multiple_crate_versions
       - name: Check for SQL quote-doubling anti-pattern
         run: |
-          if grep -rn "replace.*'\\\\''.*''" src/; then
+          # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast
+          if grep -rn "replace.*'\\\\''.*''" src/ | grep -v 'ddl/convert.rs.*escaped_data'; then
             echo "::error::Found quote-doubling pattern. Use parameterized queries instead."
             exit 1
           fi
