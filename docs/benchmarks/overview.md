@@ -176,7 +176,7 @@ SELECT
             ) FILTER (WHERE r.id IS NOT NULL),
             '[]'::jsonb
         ),
-        'avgRating', COALESCE(AVG(r.rating) FILTER (WHERE r.rating IS NOT NULL), 0)
+        'avg_rating', COALESCE(AVG(r.rating) FILTER (WHERE r.rating IS NOT NULL), 0)
     ) as data
 FROM tb_product p
 LEFT JOIN tb_category c ON p.fk_category = c.pk_category
@@ -206,7 +206,7 @@ SELECT
                 jsonb_build_object('id', pc.id, 'name', pc.name)
             ELSE NULL
         END,
-        'productCount', COUNT(p.pk_product),
+        'product_count', COUNT(p.pk_product),
         'subcategories', COALESCE(
             jsonb_agg(
                 jsonb_build_object('id', sc.id, 'name', sc.name)

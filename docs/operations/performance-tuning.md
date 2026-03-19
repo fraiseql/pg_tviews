@@ -190,12 +190,12 @@ CREATE UNIQUE INDEX CONCURRENTLY idx_tv_post_id ON tv_post(id);
 CREATE INDEX CONCURRENTLY idx_tv_post_user_id ON tv_post(user_id);
 
 -- JSONB field indexes for common queries
-CREATE INDEX CONCURRENTLY idx_tv_post_created_at ON tv_post USING gin((data->'createdAt'));
+CREATE INDEX CONCURRENTLY idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
 CREATE INDEX CONCURRENTLY idx_tv_post_title ON tv_post USING gin((data->'title'));
 CREATE INDEX CONCURRENTLY idx_tv_post_tags ON tv_post USING gin((data->'tags'));
 
 -- Composite indexes for complex queries
-CREATE INDEX CONCURRENTLY idx_tv_post_user_created ON tv_post(user_id, (data->>'createdAt'));
+CREATE INDEX CONCURRENTLY idx_tv_post_user_created ON tv_post(user_id, (data->>'created_at'));
 CREATE INDEX CONCURRENTLY idx_tv_post_category_status ON tv_post((data->'category'->>'id'), (data->>'status'));
 
 -- Partial indexes for active data
@@ -255,8 +255,8 @@ SELECT
         'id', p.id,
         'title', p.title,
         'author', jsonb_build_object('id', u.id, 'name', u.name),
-        'commentCount', COALESCE(comment_counts.count, 0),
-        'avgRating', COALESCE(rating_stats.avg_rating, 0)
+        'comment_count', COALESCE(comment_counts.count, 0),
+        'avg_rating', COALESCE(rating_stats.avg_rating, 0)
     ) as data
 FROM tb_post p
 JOIN tb_user u ON p.fk_user = u.pk_user
@@ -279,7 +279,7 @@ SELECT
     jsonb_build_object(
         'id', p.id,
         'title', p.title,
-        'expensiveField', (SELECT expensive_function(p.pk_post))  -- Slow!
+        'expensive_field', (SELECT expensive_function(p.pk_post))  -- Slow!
     ) as data
 FROM tb_post p;
 ```
@@ -362,8 +362,8 @@ BEGIN
     -- Warm up frequently accessed posts
     FOR rec IN
         SELECT id FROM tv_post
-        WHERE (data->>'viewCount')::int > 1000
-        ORDER BY (data->>'lastViewed')::timestamptz DESC
+        WHERE (data->>'view_count')::int > 1000
+        ORDER BY (data->>'last_viewed')::timestamptz DESC
         LIMIT 1000
     LOOP
         -- Touch each record to warm caches
@@ -610,7 +610,7 @@ Diagnose slow TVIEW queries:
 ```sql
 -- Analyze query performance
 EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
-SELECT data FROM tv_post WHERE user_id = 'uuid-here' ORDER BY data->>'createdAt' DESC LIMIT 10;
+SELECT data FROM tv_post WHERE user_id = 'uuid-here' ORDER BY data->>'created_at' DESC LIMIT 10;
 
 -- Check index usage
 SELECT * FROM pg_stat_user_indexes WHERE tablename = 'tv_post' ORDER BY idx_scan DESC;

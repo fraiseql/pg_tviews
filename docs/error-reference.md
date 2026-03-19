@@ -102,8 +102,8 @@ SELECT pg_tviews_create('posts', 'SELECT ...');  -- Missing tv_ prefix
 **Example**:
 ```sql
 -- tv_post depends on users, tv_user depends on posts
-CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'userName', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
-CREATE TABLE tv_user AS SELECT tb_user.pk_user, tb_user.id, jsonb_build_object('id', tb_user.id, 'postTitle', tb_post.title) as data FROM tb_user JOIN tb_post ON tb_user.pk_user = tb_post.fk_user;
+CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'user_name', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
+CREATE TABLE tv_user AS SELECT tb_user.pk_user, tb_user.id, jsonb_build_object('id', tb_user.id, 'post_title', tb_post.title) as data FROM tb_user JOIN tb_post ON tb_user.pk_user = tb_post.fk_user;
 -- ERROR: Circular dependency detected: posts → users → posts
 ```
 
@@ -147,7 +147,7 @@ CREATE TABLE tv_user AS SELECT tb_user.pk_user, tb_user.id, jsonb_build_object('
 
 **Example**:
 ```sql
-CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'userName', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
+CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'user_name', tb_user.name) as data FROM tb_post JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
 -- Later: DROP TABLE users;
 -- Then refresh: ERROR: Failed to resolve dependencies for 'tv_post': table 'users' does not exist
 ```

@@ -167,7 +167,7 @@ SELECT
         'identifier', u.identifier,
         'name', u.name,
         'email', u.email,
-        'createdAt', u.created_at
+        'created_at', u.created_at
     ) as data
 FROM tb_user u;
 ```
@@ -187,7 +187,7 @@ SELECT
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'createdAt', p.created_at,
+        'created_at', p.created_at,
         'author', jsonb_build_object(
             'id', u.id,
             'identifier', u.identifier,

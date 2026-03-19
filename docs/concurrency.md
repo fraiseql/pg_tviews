@@ -400,7 +400,7 @@ CREATE INDEX idx_post_fk_user ON tb_post(fk_user);
 CREATE INDEX idx_user_fk_company ON tb_user(fk_company);
 
 -- Index UUID columns for FraiseQL queries
-CREATE INDEX idx_post_user_id ON tv_post((data->>'userId'));
+CREATE INDEX idx_post_user_id ON tv_post((data->>'user_id'));
 ```
 
 ---

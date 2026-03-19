@@ -31,7 +31,7 @@ SELECT
         'id', id,
         'name', name,
         'email', email,
-        'createdAt', created_at
+        'created_at', created_at
     ) as data
 FROM tb_test_user;
 
@@ -45,7 +45,7 @@ SELECT
         ''id'', id,
         ''name'', name,
         ''email'', email,
-        ''createdAt'', created_at
+        ''created_at'', created_at
     ) as data
 FROM tb_test_user
 ');

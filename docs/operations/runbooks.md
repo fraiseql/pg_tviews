@@ -317,10 +317,10 @@ WHERE tv_your_table.pk_your_table IS NULL;
 SELECT
   tb_your_table.pk_your_table,
   tb_your_table.last_updated,
-  tv_your_table.data->>'lastUpdated' as tview_updated
+  tv_your_table.data->>'last_updated' as tview_updated
 FROM tb_your_table
 JOIN tv_your_table ON tb_your_table.pk_your_table = tv_your_table.pk_your_table
-WHERE tb_your_table.last_updated > (tv_your_table.data->>'lastUpdated')::timestamptz;
+WHERE tb_your_table.last_updated > (tv_your_table.data->>'last_updated')::timestamptz;
 ```
 
 **Resolution**:

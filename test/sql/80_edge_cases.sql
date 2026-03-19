@@ -76,16 +76,16 @@ SELECT
         'id', tb_null.id,
         'field', tb_null.nullable_field,
         'number', tb_null.optional_number,
-        'hasField', tb_null.nullable_field IS NOT NULL,
-        'hasNumber', tb_null.optional_number IS NOT NULL
+        'has_field', tb_null.nullable_field IS NOT NULL,
+        'has_number', tb_null.optional_number IS NOT NULL
     ) as data
 FROM tb_null;
 
 -- Verify NULL handling
 SELECT
     COUNT(*) = 4 as all_rows_present,
-    SUM((data->>'hasField')::boolean::integer) = 2 as null_fields_handled,
-    SUM((data->>'hasNumber')::boolean::integer) = 2 as null_numbers_handled
+    SUM((data->>'has_field')::boolean::integer) = 2 as null_fields_handled,
+    SUM((data->>'has_number')::boolean::integer) = 2 as null_numbers_handled
 FROM tv_null;
 
 -- Check specific NULL values
@@ -209,15 +209,15 @@ SELECT
         'id', tb_tree.id,
         'name', tb_tree.name,
         'depth', tb_tree.depth,
-        'parentId', tb_tree.fk_parent,
-        'hasChildren', EXISTS(SELECT 1 FROM tb_tree c WHERE c.fk_parent = tb_tree.pk_tree)
+        'parent_id', tb_tree.fk_parent,
+        'has_children', EXISTS(SELECT 1 FROM tb_tree c WHERE c.fk_parent = tb_tree.pk_tree)
     ) as data
 FROM tb_tree;
 
 -- Verify self-referential structure
 SELECT
     COUNT(*) = 5 as tree_nodes_created,
-    SUM((data->>'hasChildren')::boolean::integer) = 2 as parents_identified,
+    SUM((data->>'has_children')::boolean::integer) = 2 as parents_identified,
     jsonb_array_length(
         (SELECT jsonb_agg(data->>'name')
          FROM tv_tree

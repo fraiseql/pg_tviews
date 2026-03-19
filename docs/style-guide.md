@@ -219,7 +219,7 @@ Brief one-paragraph description of what this document covers.
 - ✅ **Qualified columns**: `tb_post.id` (NOT just `id`)
 - ✅ **pk_*/fk_* are INTEGER**: Internal database operations
 - ✅ **id is UUID**: External API/GraphQL identifiers
-- ✅ **JSONB uses camelCase**: `'userId'` (NOT `'user_id'`)
+- ✅ **JSONB keys use snake_case**: `'user_id'` (FraiseQL auto-converts to camelCase)
 
 **Correct example**:
 ```sql
@@ -228,9 +228,9 @@ SELECT
     tb_post.id,               -- UUID for GraphQL
     tb_post.fk_user,          -- INTEGER foreign key
     jsonb_build_object(
-        'id', tb_post.id,     -- camelCase keys
+        'id', tb_post.id,     -- snake_case keys (auto-converted to camelCase by FraiseQL)
         'title', tb_post.title,
-        'userId', tb_user.id  -- Related UUID from JOIN
+        'user_id', tb_user.id  -- Related UUID from JOIN
     ) as data
 FROM tb_post
 INNER JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
@@ -244,8 +244,8 @@ SELECT id as pk_post, jsonb_build_object('id', id) as data FROM tb_post;
 -- ❌ Plural table names
 SELECT tb_post.pk_post, jsonb_build_object('id', tb_post.id) as data FROM tb_post;
 
--- ❌ snake_case in JSONB
-SELECT tb_post.pk_post, jsonb_build_object('user_id', tb_user.id) as data FROM tb_post;
+-- ❌ camelCase in JSONB (FraiseQL auto-converts snake_case to camelCase)
+SELECT tb_post.pk_post, jsonb_build_object('userId', tb_user.id) as data FROM tb_post;
 ```
 
 ### Good Examples

@@ -243,7 +243,7 @@ SELECT
     jsonb_build_object(
         'id', p.id,
         'title', p.title,
-        'wordCount', array_length(string_to_array(p.content, ' '), 1),
+        'word_count', array_length(string_to_array(p.content, ' '), 1),
         'author', jsonb_build_object('id', u.id, 'name', u.name)
     ) as data
 FROM tb_post p

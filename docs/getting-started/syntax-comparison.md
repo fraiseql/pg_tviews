@@ -11,9 +11,9 @@ SELECT
   tb_post.id,               -- UUID for GraphQL
   tb_post.fk_user,          -- INTEGER foreign key
   jsonb_build_object(
-    'id', tb_post.id,       -- UUID in camelCase
+    'id', tb_post.id,
     'title', tb_post.title,
-    'userId', tb_user.id    -- Related UUID (from JOIN)
+    'user_id', tb_user.id    -- Related UUID (from JOIN)
   ) as data
 FROM tb_post
 INNER JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
@@ -40,7 +40,7 @@ SELECT pg_tviews_create('tv_post', $$
     jsonb_build_object(
       'id', tb_post.id,
       'title', tb_post.title,
-      'userId', tb_user.id
+      'user_id', tb_user.id
     ) as data
   FROM tb_post
   INNER JOIN tb_user ON tb_post.fk_user = tb_user.pk_user
@@ -56,6 +56,6 @@ $$);
 - `pk_post` and `fk_user` are integers (SERIAL/INTEGER)
 - `id` is UUID (for external API)
 - All columns qualified with table name
-- JSONB keys use camelCase
+- JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
 
 All three methods produce identical results.

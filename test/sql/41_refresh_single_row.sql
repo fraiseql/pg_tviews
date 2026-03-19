@@ -45,7 +45,7 @@ SELECT
         'title', title,
         'body', body,
         'status', status,
-        'viewCount', view_count
+        'view_count', view_count
     ) AS data
 FROM tb_article;
 
@@ -62,7 +62,7 @@ SELECT
     COUNT(*) = 3 as all_articles_present,
     COUNT(*) FILTER (WHERE data->>'title' = 'First Article') = 1 as first_article_correct,
     COUNT(*) FILTER (WHERE data->>'status' = 'published') = 2 as published_count_correct,
-    SUM((data->>'viewCount')::int) = 155 as total_view_count_correct
+    SUM((data->>'view_count')::int) = 155 as total_view_count_correct
 FROM tv_article;
 
 \echo '✓ Test 1 passed: Initial population correct'
@@ -107,7 +107,7 @@ WHERE pk_article = 2;
 SELECT
     pk_article,
     data->>'status' AS status,
-    (data->>'viewCount')::int AS view_count
+    (data->>'view_count')::int AS view_count
 FROM tv_article
 WHERE pk_article = 2;
 -- Expected: 'archived', 999
@@ -128,7 +128,7 @@ SELECT
     data->>'title' AS title,
     data->>'body' AS body,
     data->>'status' AS status,
-    (data->>'viewCount')::int AS view_count
+    (data->>'view_count')::int AS view_count
 FROM tv_article
 WHERE pk_article = 3;
 -- Expected: all new values

@@ -81,7 +81,7 @@ SELECT
         'id', id::text,
         'name', name,
         'industry', industry,
-        'employeeCount', employee_count
+        'employee_count', employee_count
     ) AS data
 FROM tb_company;
 
@@ -112,8 +112,8 @@ SELECT
         'title', p.title,
         'content', p.content,
         'status', p.status,
-        'viewCount', p.view_count,
-        'createdAt', p.created_at,
+        'view_count', p.view_count,
+        'created_at', p.created_at,
         'author', v_user.data
     ) AS data
 FROM tb_post p
@@ -225,7 +225,7 @@ UPDATE tb_post SET title = 'Updated Welcome', view_count = 999 WHERE pk_post = 1
 -- Verify post updated
 SELECT
     data->>'title' AS title,
-    (data->>'viewCount')::int AS views
+    (data->>'view_count')::int AS views
 FROM tv_post
 WHERE pk_post = 1;
 -- Expected: 'Updated Welcome', 999
@@ -327,7 +327,7 @@ WHERE pk_company = 1;
 
 -- Verify cascade completed
 SELECT
-    (data->>'employeeCount')::int AS employee_count,
+    (data->>'employee_count')::int AS employee_count,
     data->>'industry' AS industry
 FROM tv_company
 WHERE pk_company = 1;

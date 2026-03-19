@@ -94,7 +94,7 @@ SELECT
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'createdAt', p.created_at,
+        'created_at', p.created_at,
         'author', jsonb_build_object(
             'id', u.id,
             'identifier', u.identifier,
@@ -139,7 +139,7 @@ const resolvers = {
       const result = await db.query(`
         SELECT data FROM tv_post
         WHERE user_id = $1
-        ORDER BY data->>'createdAt' DESC
+        ORDER BY data->>'created_at' DESC
         LIMIT $2
       `, [authorId, limit]);
       return result.rows.map(row => row.data);
@@ -193,15 +193,15 @@ Implement GraphQL connections with efficient pagination:
 -- Forward pagination
 SELECT data FROM tv_post
 WHERE user_id = $1
-  AND data->>'createdAt' > $2  -- cursor
-ORDER BY data->>'createdAt' ASC
+  AND data->>'created_at' > $2  -- cursor
+ORDER BY data->>'created_at' ASC
 LIMIT $3;
 
 -- Backward pagination
 SELECT data FROM tv_post
 WHERE user_id = $1
-  AND data->>'createdAt' < $2  -- cursor
-ORDER BY data->>'createdAt' DESC
+  AND data->>'created_at' < $2  -- cursor
+ORDER BY data->>'created_at' DESC
 LIMIT $3;
 ```
 
@@ -230,13 +230,13 @@ CREATE INDEX idx_tv_post_user_id ON tv_post(user_id);
 
 -- Index for JSONB field queries
 CREATE INDEX idx_tv_post_title ON tv_post USING gin((data->'title'));
-CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'createdAt'));
+CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
 
 -- Index for nested author queries
 CREATE INDEX idx_tv_post_author_name ON tv_post USING gin((data->'author'->'name'));
 
 -- Composite indexes for common filters
-CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'createdAt'));
+CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'created_at'));
 ```
 
 ### Query Optimization
@@ -248,7 +248,7 @@ Structure queries for optimal performance:
 SELECT data FROM tv_post WHERE id = $1;
 
 -- ✅ Efficient: Indexed filtering
-SELECT data FROM tv_post WHERE user_id = $1 AND data->>'createdAt' > $2;
+SELECT data FROM tv_post WHERE user_id = $1 AND data->>'created_at' > $2;
 
 -- ❌ Inefficient: Non-indexed JSONB queries
 SELECT data FROM tv_post WHERE data->'author'->>'name' ILIKE '%john%';

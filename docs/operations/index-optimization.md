@@ -47,7 +47,7 @@ CREATE INDEX idx_tv_order_fk_customer ON tv_order(fk_customer);
 CREATE INDEX idx_tv_post_data_gin ON tv_post USING GIN(data);
 
 -- Specific JSONB path index (PostgreSQL 14+)
--- Trinity pattern: JSONB keys use camelCase
+-- Trinity pattern: JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
 CREATE INDEX idx_tv_post_data_title
 ON tv_post USING GIN((data -> 'title'));
 
@@ -113,7 +113,7 @@ ON tv_post(fk_user, (data->>'status'));
 
 -- For queries filtering by foreign key and date range
 CREATE INDEX idx_tv_order_customer_date
-ON tv_order(fk_customer, (data->>'createdAt'));
+ON tv_order(fk_customer, (data->>'created_at'));
 ```
 
 **When to Create**: Based on actual query patterns (use EXPLAIN ANALYZE)
@@ -173,12 +173,12 @@ CREATE INDEX idx_tv_order_id ON tv_order(id);
 CREATE INDEX idx_tv_order_data_gin ON tv_order USING GIN(data);
 
 -- Specific path indexes for hot queries
--- Trinity pattern: JSONB uses camelCase
+-- Trinity pattern: JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
 CREATE INDEX idx_tv_order_data_status
 ON tv_order USING GIN((data -> 'status'));
 
 CREATE INDEX idx_tv_order_data_created
-ON tv_order((data->>'createdAt'));
+ON tv_order((data->>'created_at'));
 ```
 
 ---

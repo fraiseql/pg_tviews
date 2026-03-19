@@ -72,7 +72,7 @@ SELECT
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'createdAt', p.created_at,
+        'created_at', p.created_at,
         'author', jsonb_build_object(
             'id', u.id,
             'name', u.name
@@ -113,7 +113,7 @@ SELECT
         'reviews', COALESCE(jsonb_agg(
             jsonb_build_object('id', r.id, 'rating', r.rating)
         ) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb),
-        'avgRating', COALESCE(AVG(r.rating), 0)
+        'avg_rating', COALESCE(AVG(r.rating), 0)
     ) as data
 FROM tb_product p
 LEFT JOIN tb_category c ON p.fk_category = c.pk_category
@@ -166,7 +166,7 @@ SELECT data FROM tv_post WHERE id = ?;
 -- Optimized: Direct UUID lookup, pre-joined author data
 
 -- Query Pattern: User's posts
-SELECT data FROM tv_post WHERE user_id = ? ORDER BY data->>'createdAt' DESC;
+SELECT data FROM tv_post WHERE user_id = ? ORDER BY data->>'created_at' DESC;
 -- Optimized: UUID FK index, JSONB ordering
 
 -- Query Pattern: Posts by category
@@ -184,12 +184,12 @@ CREATE UNIQUE INDEX idx_tv_post_id ON tv_post(id);
 CREATE INDEX idx_tv_post_user_id ON tv_post(user_id);
 
 -- JSONB field queries
-CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'createdAt'));
+CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
 CREATE INDEX idx_tv_post_title ON tv_post USING gin((data->'title'));
 
 -- Composite patterns
-CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'createdAt'));
-CREATE INDEX idx_tv_post_category_created ON tv_post((data->'category'->>'id'), (data->>'createdAt'));
+CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'created_at'));
+CREATE INDEX idx_tv_post_category_created ON tv_post((data->'category'->>'id'), (data->>'created_at'));
 
 -- Full-text search
 CREATE INDEX idx_tv_post_content_fts ON tv_post USING gin(to_tsvector('english', data->>'content'));

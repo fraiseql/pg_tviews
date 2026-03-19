@@ -184,7 +184,7 @@ FROM tb_post;
        jsonb_build_object(
            'id', p.id,
            'title', p.title,
-           'commentCount', (SELECT COUNT(*) FROM tb_comment c WHERE c.fk_post = p.pk_post)
+           'comment_count', (SELECT COUNT(*) FROM tb_comment c WHERE c.fk_post = p.pk_post)
        ) as data
    FROM tb_post p;
    -- No direct reference to tv_comment
@@ -529,7 +529,7 @@ SELECT * FROM pg_indexes WHERE tablename = 'tv_post';
    ```sql
    CREATE INDEX idx_tv_post_id ON tv_post(id);
    CREATE INDEX idx_tv_post_user_id ON tv_post(user_id);
-   CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'createdAt'));
+   CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
    ```
 
 2. **Optimize query patterns**:

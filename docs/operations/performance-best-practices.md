@@ -29,7 +29,7 @@ SELECT
         'id', tb_post.id,
         'title', tb_post.title,
         'excerpt', LEFT(tb_post.content, 200),  -- Not full content
-        'authorId', tb_user.id
+        'author_id', tb_user.id
     ) as data
 FROM tb_post
 JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
@@ -42,9 +42,9 @@ SELECT
     jsonb_build_object(
         'id', tb_post.id,
         'title', tb_post.title,
-        'fullContent', tb_post.content,  -- Could be multi-MB
-        'fullHtml', tb_post.rendered_html,  -- Even larger
-        'allComments', (SELECT jsonb_agg(...) FROM tb_comment ...)  -- Nested data
+        'full_content', tb_post.content,  -- Could be multi-MB
+        'full_html', tb_post.rendered_html,  -- Even larger
+        'all_comments', (SELECT jsonb_agg(...) FROM tb_comment ...)  -- Nested data
     ) as data
 FROM tb_post;
 ```
@@ -142,7 +142,7 @@ CREATE INDEX idx_tv_tag_fk_category ON tv_tag(fk_category);
 CREATE INDEX idx_tv_tag_id ON tv_tag(id);
 CREATE INDEX idx_tv_tag_data_gin ON tv_tag USING GIN(data);
 CREATE INDEX idx_tv_tag_name ON tv_tag((data->>'name'));
-CREATE INDEX idx_tv_tag_created ON tv_tag((data->>'createdAt'));
+CREATE INDEX idx_tv_tag_created ON tv_tag((data->>'created_at'));
 
 -- ✅ GOOD: Minimal indexes for small table
 CREATE INDEX idx_tv_tag_fk_category ON tv_tag(fk_category);  -- For cascades
@@ -326,7 +326,7 @@ jsonb_build_object(
 
 -- ✅ GOOD: Reference to external storage
 jsonb_build_object(
-    'imageUrl', '/api/images/' || tb_post.id
+    'image_url', '/api/images/' || tb_post.id
 )
 ```
 

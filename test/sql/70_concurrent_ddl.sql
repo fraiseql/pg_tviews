@@ -81,7 +81,7 @@ SELECT
         'id', tb_post_concurrent.id,
         'title', tb_post_concurrent.title,
         'content', tb_post_concurrent.content,
-        'authorId', tb_user_concurrent.id
+        'author_id', tb_user_concurrent.id
     ) as data
 FROM tb_post_concurrent
 JOIN tb_user_concurrent ON tb_post_concurrent.fk_user = tb_user_concurrent.pk_user;
@@ -100,7 +100,7 @@ SELECT
     jsonb_build_object(
         'id', tb_user_concurrent.id,
         'name', tb_user_concurrent.name,
-        'postCount', COUNT(tb_post_concurrent.pk_post)
+        'post_count', COUNT(tb_post_concurrent.pk_post)
     ) as data
 FROM tb_user_concurrent
 LEFT JOIN tb_post_concurrent ON tb_user_concurrent.pk_user = tb_post_concurrent.fk_user
@@ -197,7 +197,7 @@ SELECT
         )
     ) as data
 FROM tv_post_concurrent
-JOIN tv_user_concurrent ON tv_post_concurrent.data->>'authorId' = tv_user_concurrent.id::text;
+JOIN tv_user_concurrent ON tv_post_concurrent.data->>'author_id' = tv_user_concurrent.id::text;
 
 SELECT COUNT(*) = 4 as dependent_tview_created FROM tv_post_with_author;
 

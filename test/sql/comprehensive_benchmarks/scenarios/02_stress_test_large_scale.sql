@@ -64,7 +64,7 @@ SELECT
     tb_stress_item.id,
     jsonb_build_object(
         'id', tb_stress_item.id,
-        'categoryId', tb_stress_item.fk_category,
+        'category_id', tb_stress_item.fk_category,
         'value', tb_stress_item.value
     ) as data
 FROM tb_stress_item;

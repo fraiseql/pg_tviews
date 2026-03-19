@@ -104,7 +104,7 @@ SELECT
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'createdAt', p.created_at,
+        'created_at', p.created_at,
         'author', jsonb_build_object(
             'id', u.id,
             'identifier', u.identifier,

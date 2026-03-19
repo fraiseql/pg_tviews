@@ -379,7 +379,7 @@ ORDER BY idx_scan DESC;
 
 -- Rebuild unused indexes
 DROP INDEX CONCURRENTLY unused_index;
-CREATE INDEX CONCURRENTLY new_index ON tv_post(user_id, (data->>'createdAt'));
+CREATE INDEX CONCURRENTLY new_index ON tv_post(user_id, (data->>'created_at'));
 
 -- Update query plans
 SELECT pg_stat_statements_reset();  -- If extension available
