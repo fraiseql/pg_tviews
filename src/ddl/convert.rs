@@ -362,13 +362,29 @@ fn reconstruct_as_tview(
              WHERE false"
         ))?;
     } else {
-        // Non-empty table: reconstruct with actual data using quote_literal for safety
+        // Non-empty table: reconstruct with actual data.
+        // Use PostgreSQL's quote_literal() for safe escaping of JSONB values
+        // in the VALUES clause (parameterized queries can't be used inside
+        // CREATE VIEW definitions).
         let mut values = Vec::new();
         for row in data_backup {
             if let (Some(id), Some(data)) = (&row.id, &row.data) {
-                // Escape single quotes in data to prevent SQL injection
-                let escaped_data = data.replace('\'', "''");
-                values.push(format!("('{id}'::uuid, '{escaped_data}'::jsonb)"));
+                let id_ref: &str = id;
+                let data_ref: &str = data;
+                let escaped = Spi::get_one_with_args::<String>(
+                    "SELECT quote_literal($1)::text || '::uuid, ' || quote_literal($2)::text || '::jsonb'",
+                    &[
+                        unsafe { DatumWithOid::new(id_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+                        unsafe { DatumWithOid::new(data_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+                    ],
+                ).map_err(|e| TViewError::SpiError {
+                    query: "quote_literal for backup row".to_string(),
+                    error: e.to_string(),
+                })?.ok_or_else(|| TViewError::SpiError {
+                    query: "quote_literal for backup row".to_string(),
+                    error: "NULL result from quote_literal".to_string(),
+                })?;
+                values.push(format!("({escaped})"));
             }
         }
 
