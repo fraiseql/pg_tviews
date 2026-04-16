@@ -23,7 +23,7 @@ use pgrx::prelude::*;
 /// - Queue processing deferred to commit time
 use pgrx::spi;
 use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
-use crate::catalog::{entity_for_table, TviewMeta};
+use crate::catalog::entity_for_table;
 use crate::utils::{tuple_get_i64, quote_identifier};
 
 /// Trigger handler function for TVIEW cascades
@@ -43,43 +43,40 @@ fn pg_tview_trigger_handler<'a>(
     };
 
     // 1. Direct entity: this table IS a TVIEW source (e.g. tb_user → entity "user")
-    match entity_for_table(table_oid) {
-        Ok(Some(entity)) => {
-            // Check if this is a DISTINCT ON TVIEW
-            match TviewMeta::load_by_entity(&entity) {
-                Ok(Some(meta)) if meta.is_distinct_on() => {
-                    // DISTINCT ON TVIEW: enqueue dedup key value instead of base PK
-                    let key_col = &meta.distinct_on_keys[0];
-                    let tuple = match trigger.new().or_else(|| trigger.old()) {
-                        Some(t) => t,
-                        None => {
-                            warning!("No tuple in trigger context for DISTINCT ON TVIEW '{entity}'");
-                            return Ok(None);
-                        }
-                    };
-                    match tuple.get_by_name::<String>(key_col) {
-                        Ok(Some(key_val)) => {
-                            enqueue_refresh_dedup(&entity, &key_val);
-                        }
-                        Ok(None) => {
-                            warning!("DISTINCT ON key '{key_col}' is NULL for entity '{entity}'");
-                        }
-                        Err(e) => {
-                            warning!("Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}");
-                        }
+    match crate::queue::cache::table_cache::entity_info_cached(table_oid) {
+        Ok(Some(entity_info)) => {
+            let entity = &entity_info.name;
+            // Check if this is a DISTINCT ON TVIEW using cached distinct_on_key
+            if let Some(key_col) = &entity_info.distinct_on_key {
+                // DISTINCT ON TVIEW: enqueue dedup key value instead of base PK
+                let tuple = match trigger.new().or_else(|| trigger.old()) {
+                    Some(t) => t,
+                    None => {
+                        warning!("No tuple in trigger context for DISTINCT ON TVIEW '{entity}'");
+                        return Ok(None);
+                    }
+                };
+                match tuple.get_by_name::<String>(key_col) {
+                    Ok(Some(key_val)) => {
+                        enqueue_refresh_dedup(entity, &key_val);
+                    }
+                    Ok(None) => {
+                        warning!("DISTINCT ON key '{key_col}' is NULL for entity '{entity}'");
+                    }
+                    Err(e) => {
+                        warning!("Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}");
                     }
                 }
-                _ => {
-                    // Standard PK-based TVIEW: extract pk_<entity>
-                    let pk_value = match crate::utils::extract_pk(trigger) {
-                        Ok(pk) => pk,
-                        Err(e) => {
-                            warning!("Failed to extract primary key from trigger: {:?}", e);
-                            return Ok(None);
-                        }
-                    };
-                    enqueue_refresh(&entity, pk_value);
-                }
+            } else {
+                // Standard PK-based TVIEW: extract pk_<entity>
+                let pk_value = match crate::utils::extract_pk(trigger) {
+                    Ok(pk) => pk,
+                    Err(e) => {
+                        warning!("Failed to extract primary key from trigger: {:?}", e);
+                        return Ok(None);
+                    }
+                };
+                enqueue_refresh(entity, pk_value);
             }
             return Ok(None);
         }

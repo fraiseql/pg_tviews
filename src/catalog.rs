@@ -255,6 +255,7 @@ impl TviewMeta {
     }
 
     /// Returns `true` if this TVIEW uses DISTINCT ON deduplication-based refresh.
+    #[allow(dead_code)] // Reason: Kept for API completeness; trigger handler uses cached distinct_on_key
     pub fn is_distinct_on(&self) -> bool {
         !self.distinct_on_keys.is_empty()
     }

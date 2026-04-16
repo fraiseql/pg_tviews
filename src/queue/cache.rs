@@ -7,7 +7,6 @@ use pgrx::prelude::*;
 pub struct CachedEntityInfo {
     pub name: String,
     /// First DISTINCT ON key if this is a DISTINCT ON TVIEW, None otherwise
-    #[allow(dead_code)] // Reason: Will be used by trigger handler in REFACTOR phase
     pub distinct_on_key: Option<String>,
 }
 
@@ -102,11 +101,34 @@ pub mod table_cache {
 
         match entity_name {
             Some(name) => {
-                // TODO: P-01 REFACTOR - enhance to query distinct_on_keys[1] from pg_tview_meta
-                // For now, trigger handler will call load_by_entity once per session
+                // Query distinct_on_keys from pg_tview_meta
+                let distinct_on_key = pgrx::spi::Spi::connect(|client| {
+                    let args = vec![unsafe {
+                        pgrx::datum::DatumWithOid::new(
+                            &name,
+                            pgrx::pg_sys::PgOid::BuiltIn(pgrx::pg_sys::PgBuiltInOids::TEXTOID).value(),
+                        )
+                    }];
+                    let mut rows = client.select(
+                        "SELECT distinct_on_keys FROM pg_tview_meta WHERE entity = $1",
+                        None,
+                        &args,
+                    )?;
+
+                    let result: Result<Option<String>, pgrx::spi::Error> = match rows.next() {
+                        Some(row) => {
+                            // Extract first element from distinct_on_keys TEXT[] array
+                            let keys: Option<Vec<String>> = row["distinct_on_keys"].value()?;
+                            Ok(keys.and_then(|k| k.first().cloned()))
+                        }
+                        None => Ok(None),
+                    };
+                    result
+                })?;
+
                 Ok(Some(CachedEntityInfo {
                     name,
-                    distinct_on_key: None,
+                    distinct_on_key,
                 }))
             }
             None => Ok(None),
