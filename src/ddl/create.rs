@@ -74,6 +74,12 @@ pub fn create_tview(
                       \"pk_<entity>\" (e.g., pk_user, pk_post)".to_string(),
         })?;
 
+    // Validate entity_name inferred from the SELECT to prevent SQL injection
+    // (tview_name is validated at the pg_extern boundary, but entity_name comes
+    // from infer_schema and could contain metacharacters if the user crafts a
+    // malicious column alias like pk_evil'injection).
+    crate::validation::validate_sql_identifier(entity_name, "entity_name")?;
+
     // Derive the canonical materialized-table name: always tv_<entity>.
     // This normalises both calling conventions:
     //   pg_tviews_create('post', ...)   → tv_post
@@ -363,12 +369,18 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema: &TViewSchema
         select_columns.push(col.clone());
     }
 
-    let insert_column_list = insert_columns.join(", ");
+    let qi_schema = quote_identifier(schema_name);
+    let qi_tview = quote_identifier(tview_name);
+    let qi_view = quote_identifier(view_name);
+    let insert_column_list = insert_columns.iter()
+        .map(|c| quote_identifier(c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let select_column_list = select_columns.join(", ");
 
     let insert_sql = format!(
-        "INSERT INTO {schema_name}.{tview_name} ({insert_column_list}) \
-         SELECT {select_column_list} FROM {schema_name}.{view_name}"
+        "INSERT INTO {qi_schema}.{qi_tview} ({insert_column_list}) \
+         SELECT {select_column_list} FROM {qi_schema}.{qi_view}"
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
@@ -447,22 +459,31 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Get OIDs for the created objects (schema-qualified to avoid false matches
-    // when identical names exist in multiple schemas)
-    let view_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
+    // Get OIDs for the created objects (schema-qualified, parameterized to prevent injection)
+    let view_oid_args = vec![
+        unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    let view_oid_result = Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = '{view_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'v'"
-    )).map_err(|e| TViewError::CatalogError {
+         WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'v'",
+        &view_oid_args,
+    ).map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for view {schema_name}.{view_name}"),
         pg_error: e.to_string(),
     })?;
 
-    let table_oid_result = Spi::get_one::<pg_sys::Oid>(&format!(
+    let table_oid_args = vec![
+        unsafe { DatumWithOid::new(tview_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    let table_oid_result = Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = '{tview_name}' AND n.nspname = '{schema_name}' AND c.relkind = 'r'"
-    )).map_err(|e| TViewError::CatalogError {
+         WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'r'",
+        &table_oid_args,
+    ).map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for table {schema_name}.{tview_name}"),
         pg_error: e.to_string(),
     })?;
