@@ -108,8 +108,8 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 2. Recompute row from v_entity
     let view_row = recompute_view_row(&meta, pk)?;
 
-    // 3. Patch tv_entity using jsonb_delta
-    apply_patch(&view_row)?;
+    // 3. Patch tv_entity using jsonb_delta (pass metadata to avoid duplicate load)
+    apply_patch(&view_row, &meta)?;
 
     Ok(())
 }
@@ -360,21 +360,11 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
 /// // SET data = jsonb_smart_patch_nested(data, $1, '{author}'),
 /// //     updated_at = now()
 /// // WHERE pk_post = $2
-/// apply_patch(&view_row)?;
+/// apply_patch(&view_row, &meta)?;
 /// ```
-fn apply_patch(row: &ViewRow) -> spi::Result<()> {
+fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
-
-    // Load metadata to determine patch strategy
-    let meta = TviewMeta::load_for_tview(row.tview_oid)?;
-    let Some(meta) = meta else {
-        warning!(
-            "No metadata found for TVIEW OID {:?}, entity '{}'. Using full replacement.",
-            row.tview_oid, row.entity_name
-        );
-        return apply_full_replacement(row);
-    };
 
     // Check if jsonb_delta is available (cached after first session query)
     if !check_jsonb_delta_available() {
@@ -383,7 +373,7 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
              Install with: CREATE EXTENSION jsonb_delta; \
              Performance: Full replacement is ~2× slower for cascades."
         );
-        return apply_full_replacement(row);
+        return apply_full_replacement(row, meta);
     }
 
     // Parse dependencies
@@ -391,7 +381,7 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
 
     // If no dependencies, use full replacement
     if deps.is_empty() {
-        return apply_full_replacement(row);
+        return apply_full_replacement(row, meta);
     }
 
     // Build SQL UPDATE with smart patch calls for each dependency
@@ -542,15 +532,12 @@ fn build_smart_patch_sql(
 /// SET data = $1, updated_at = now()
 /// WHERE pk_entity = $2
 /// ```
-fn apply_full_replacement(row: &ViewRow) -> spi::Result<()> {
+fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
 
-    // Resolve backing view name for UPSERT
-    let view_name = TviewMeta::load_for_tview(row.tview_oid)?
-        .map(|m| lookup_view_for_source(m.view_oid))
-        .transpose()?
-        .unwrap_or_else(|| format!("v_{}", row.entity_name));
+    // Resolve backing view name (use metadata instead of re-loading)
+    let view_name = lookup_view_for_source(meta.view_oid)?;
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names: Vec<String> = Spi::connect(|client| {

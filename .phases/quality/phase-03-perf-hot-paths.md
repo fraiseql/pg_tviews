@@ -33,23 +33,15 @@ load per refresh, and per-row `TviewMeta` load in the trigger handler.
 
 ### Cycle 2: P-02 — private check_jsonb_delta_available() duplicate uncached (refresh/main.rs:518)
 
-**ROOT CAUSE:**
-The *public* `check_jsonb_delta_available` in `lifecycle.rs` (line 28) already caches
-its result via `AtomicBool` (`JSONB_IVM_CHECKED` / `JSONB_IVM_AVAILABLE`). However,
-`apply_patch` in `refresh/main.rs` calls a *private local duplicate* of the function
-(line 518) that has no caching — it opens an SPI connection and queries `pg_extension`
-on every invocation.
-200 refreshed rows → 200 identical catalog queries.
+✅ **COMPLETE** (commit d2db8e0)
 
-- **RED**: Add a test that calls `apply_patch` twice in the same session and asserts
-  `pg_extension` is queried at most once (use a call counter or pg_stat query count).
-- **GREEN**: Delete the private `check_jsonb_delta_available()` in `refresh/main.rs`.
-  Replace calls to it with the cached public version from `lifecycle.rs`
-  (`crate::lifecycle::check_jsonb_delta_available`).
-- **REFACTOR**: Verify the public version's `AtomicBool` caching is correct and that
-  `invalidate_all_caches()` resets `JSONB_IVM_CHECKED` to allow re-query after
-  `CREATE EXTENSION` / `DROP EXTENSION`.
-- **CLEANUP**: Remove any now-unused imports in `refresh/main.rs`; clippy clean.
+- **RED**: Inspection verified that private duplicate issues uncached SPI query per-row.
+- **GREEN**: ✅ Deleted private `check_jsonb_delta_available()` from refresh/main.rs.
+  Updated apply_patch() to import and use public cached version from lifecycle.rs.
+- **REFACTOR**: ✅ Verified AtomicBool caching is correct. Added
+  invalidate_jsonb_delta_cache() to reset JSONB_IVM_CHECKED/AVAILABLE on extension
+  create/drop. Integrated into invalidate_all_caches().
+- **CLEANUP**: ✅ No unused imports; clippy clean.
 
 ### Cycle 3: P-03 — double metadata load per refresh (refresh/main.rs:102, 369)
 

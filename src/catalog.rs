@@ -176,6 +176,7 @@ impl TviewMeta {
     ///     // Use deps for smart patching
     /// }
     /// ```
+    #[allow(dead_code)] // Reason: May be useful in future optimization phases or external code
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
             let args = vec![unsafe { DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
