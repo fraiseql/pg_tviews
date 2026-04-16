@@ -389,14 +389,19 @@ pub fn take_pending_tview_select(table_name: &str) -> Option<String> {
 
 /// Handle DROP TABLE tv_*
 ///
-/// Uses a simpler approach: parse the query string instead of traversing
-/// complex `PostgreSQL` List structures which are prone to segfaults.
+/// Iterates over the parsed `DropStmt.objects` list to correctly handle
+/// multi-table statements like `DROP TABLE tv_a, tv_b` and mixed statements
+/// like `DROP TABLE regular_table, tv_foo`.
 ///
-/// Returns `Ok(true)` if handled, `Ok(false)` if pass-through.
+/// Returns `Ok(true)` if ALL tables were tv_* and handled, `Ok(false)` if
+/// no tv_* tables found (pass-through entirely). For mixed statements
+/// containing both tv_* and non-tv_* tables, drops the tv_* ones and returns
+/// `Ok(false)` to let the standard handler process the remaining tables.
+///
 /// Returns `Err` on failures — caller resets `HOOK_IN_PROGRESS` before raising.
 unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
-    query_string: *const ::std::os::raw::c_char,
+    _query_string: *const ::std::os::raw::c_char,
 ) -> Result<bool, TViewError> {
     // Safety: all pointer dereferences are guarded by null checks.
     unsafe {
@@ -412,60 +417,88 @@ unsafe fn handle_drop_table(
         return Ok(false);
     }
 
-    // Extract table names from query string
-    if query_string.is_null() {
+    let objects = drop_ref.objects;
+    if objects.is_null() {
         return Ok(false);
     }
 
-    let Ok(sql) = CStr::from_ptr(query_string).to_str() else {
-        return Ok(false);
-    };
+    let if_exists = drop_ref.missing_ok;
 
-    // Parse DROP TABLE statement to find tv_* tables
-    // Handles: DROP TABLE tv_foo, DROP TABLE IF EXISTS tv_foo, DROP TABLE tv_foo CASCADE
-    let sql_lower = sql.to_lowercase();
+    // Collect table names and indices from DropStmt.objects.
+    // Each element in objects is a List* of String* (name parts: [schema, table] or [table]).
+    let num_tables = pg_sys::list_length(objects);
+    let mut tv_entries: Vec<(i32, String)> = Vec::new(); // (index, name)
+    let mut has_non_tv = false;
 
-    // Check if this is a DROP TABLE statement
-    if !sql_lower.contains("drop") || !sql_lower.contains("table") {
-        return Ok(false);
-    }
+    for i in 0..num_tables {
+        let name_list = pg_sys::list_nth(objects, i) as *mut pg_sys::List;
+        if name_list.is_null() {
+            has_non_tv = true;
+            continue;
+        }
 
-    // Find table names in the statement
-    // Simple regex-like parsing: look for tv_<word> pattern
-    let words: Vec<&str> = sql.split_whitespace().collect();
-    let mut found_tv_table = false;
-    let mut table_name = String::new();
+        // The last element in the name list is the table name (unqualified)
+        let name_parts = pg_sys::list_length(name_list);
+        if name_parts == 0 {
+            has_non_tv = true;
+            continue;
+        }
 
-    for word in &words {
-        // Remove trailing punctuation (comma, semicolon)
-        let clean_word = word.trim_end_matches([',', ';']);
+        // Get the last name part (table name, ignoring schema qualification)
+        let last_part = pg_sys::list_nth(name_list, name_parts - 1) as *mut pg_sys::String;
+        if last_part.is_null() {
+            has_non_tv = true;
+            continue;
+        }
 
-        if clean_word.starts_with("tv_") {
-            table_name = clean_word.to_string();
-            found_tv_table = true;
-            break;
+        let sval = (*last_part).sval;
+        if sval.is_null() {
+            has_non_tv = true;
+            continue;
+        }
+
+        let Ok(table_name) = CStr::from_ptr(sval).to_str() else {
+            has_non_tv = true;
+            continue;
+        };
+
+        if table_name.starts_with("tv_") {
+            tv_entries.push((i, table_name.to_string()));
+        } else {
+            has_non_tv = true;
         }
     }
 
-    if !found_tv_table {
+    if tv_entries.is_empty() {
         return Ok(false);
     }
 
-
-    // Check if_exists flag
-    let if_exists = drop_ref.missing_ok;
-
-    match drop_tview(&table_name, if_exists) {
-        Ok(()) => Ok(true),
-        Err(e) => {
-            if if_exists {
-                notice!("TVIEW '{}' does not exist, skipping", table_name);
-                Ok(true)
-            } else {
-                Err(e)
+    // Drop each tv_* table via drop_tview
+    for (_, name) in &tv_entries {
+        match drop_tview(name, if_exists) {
+            Ok(()) => {}
+            Err(e) => {
+                if if_exists {
+                    notice!("TVIEW '{}' does not exist, skipping", name);
+                } else {
+                    return Err(e);
+                }
             }
         }
     }
+
+    // If there were non-tv_* tables, remove tv_* entries from the objects list
+    // so the standard handler only processes the remaining non-tv_* tables.
+    if has_non_tv {
+        // Remove in reverse index order to preserve indices
+        for (idx, _) in tv_entries.iter().rev() {
+            pg_sys::list_delete_nth_cell(objects, *idx);
+        }
+        return Ok(false);
+    }
+
+    // All tables were tv_* — we handled everything
+    Ok(true)
 
     } // unsafe
 }
