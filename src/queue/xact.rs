@@ -272,14 +272,15 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     // FAIL-FAST: Propagate error immediately to abort transaction
                     crate::refresh::refresh_bulk(&entity, &pks)?;
 
-                    // Discover parents for all keys in this entity group
-                    for key in &entity_keys {
-                        let parents = crate::propagate::find_parents_for(key, &graph)?;
+                    // Discover parents for all keys in this entity group (P-07: batched)
+                    // Instead of N × M separate queries, issue M batched queries (one per parent entity)
+                    let parent_map = crate::propagate::find_parents_batch(&entity_keys, &graph)?;
 
-                        // Add discovered parents to pending queue
-                        for parent_key in parents {
-                            if !processed.contains(&parent_key) {
-                                pending.insert(parent_key);
+                    // Add discovered parents to pending queue
+                    for parent_keys in parent_map.values() {
+                        for parent_key in parent_keys {
+                            if !processed.contains(parent_key) {
+                                pending.insert(parent_key.clone());
                             }
                         }
                     }
