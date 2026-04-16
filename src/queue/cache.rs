@@ -150,6 +150,7 @@ pub fn invalidate_all_caches() {
     crate::lifecycle::invalidate_jsonb_delta_cache();
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();
+    crate::utils::invalidate_dedup_dml_cache();
 }
 
 #[cfg(test)]

@@ -189,6 +189,22 @@ pub fn invalidate_view_columns_cache() {
     cache.clear();
 }
 
+/// DML components for dedup key refresh: (col_list, do_update_clause)
+/// Precomputed once per TVIEW to avoid repeated string building
+pub type DedupDmlCache = HashMap<String, (String, String)>;
+
+/// Global cache for dedup key DML strings (view_name → (col_list, do_update))
+/// DML strings are stable within a session (only change on DDL)
+pub static DEDUP_DML_CACHE: LazyLock<Mutex<DedupDmlCache>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Invalidate the dedup key DML cache
+/// Called when DDL creates/drops/alters tables with columns
+pub fn invalidate_dedup_dml_cache() {
+    let mut cache = DEDUP_DML_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.clear();
+}
+
 /// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
 /// Results are cached per session to avoid repeated pg_class queries.
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
