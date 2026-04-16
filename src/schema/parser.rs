@@ -227,10 +227,10 @@ fn skip_distinct_clause(sql_lower: &str, after_select: usize) -> usize {
             }
 
             // Skip the parenthesized expression list
-            if i < len && bytes[i] == b'(' {
-                if let Ok(end) = skip_paren_block(bytes, i) {
-                    i = end;
-                }
+            if i < len && bytes[i] == b'('
+                && let Ok(end) = skip_paren_block(bytes, i)
+            {
+                i = end;
             }
         }
         // If "on" is not a keyword boundary, it's a plain DISTINCT — already advanced past "distinct"

@@ -150,13 +150,12 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Look for: 'key_name', v_something.data
     // Example: 'author', v_user.data
     let nested_pattern = NESTED_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
-    if let Ok(re) = Regex::new(&nested_pattern) {
-        if let Some(captures) = re.captures(&sql_normalized) {
-            if let Some(key_match) = captures.get(1) {
-                let key_name = key_match.as_str().to_string();
-                return DependencyInfo::nested_object(key_name);
-            }
-        }
+    if let Ok(re) = Regex::new(&nested_pattern)
+        && let Some(captures) = re.captures(&sql_normalized)
+        && let Some(key_match) = captures.get(1)
+    {
+        let key_name = key_match.as_str().to_string();
+        return DependencyInfo::nested_object(key_name);
     }
 
     // Pattern 2: Array Aggregation
@@ -164,14 +163,13 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Example: 'comments', jsonb_agg(v_comment.data ORDER BY ...)
     // Also handles COALESCE wrapper
     let array_pattern = ARRAY_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
-    if let Ok(re) = Regex::new(&array_pattern) {
-        if let Some(captures) = re.captures(&sql_normalized) {
-            if let Some(key_match) = captures.get(1) {
-                let array_name = key_match.as_str().to_string();
-                // Convention: arrays use "id" as match key
-                return DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());
-            }
-        }
+    if let Ok(re) = Regex::new(&array_pattern)
+        && let Some(captures) = re.captures(&sql_normalized)
+        && let Some(key_match) = captures.get(1)
+    {
+        let array_name = key_match.as_str().to_string();
+        // Convention: arrays use "id" as match key
+        return DependencyInfo::array(array_name, DEFAULT_ARRAY_MATCH_KEY.to_string());
     }
 
     // Default: Scalar (FK exists but not used in JSONB composition)

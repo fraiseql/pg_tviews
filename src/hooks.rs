@@ -43,18 +43,22 @@ static mut HOOK_IN_PROGRESS: bool = false;
 /// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
 /// Install the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 pub unsafe fn install_hook() {
-    PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
-    pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
+    unsafe {
+        PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
+        pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
+    }
 }
 
 /// Check if hook is installed, install it if not
 /// This is called lazily to avoid issues during postmaster startup
 pub unsafe fn ensure_hook_installed() {
-    static mut HOOK_INSTALLED: bool = false;
+    unsafe {
+        static mut HOOK_INSTALLED: bool = false;
 
-    if !HOOK_INSTALLED {
-        install_hook();
-        HOOK_INSTALLED = true;
+        if !HOOK_INSTALLED {
+            install_hook();
+            HOOK_INSTALLED = true;
+        }
     }
 }
 
@@ -71,29 +75,34 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
+    // Safety: This entire function is an extern "C-unwind" callback invoked by
+    // PostgreSQL internals — all pointer dereferences and static accesses are
+    // inherently unsafe FFI operations.
+
     // Reentrancy guard: if we're already inside the hook (e.g., processing DDL triggered
     // internally by pg_tviews_create via Spi::run), skip interception and pass through.
-    if HOOK_IN_PROGRESS {
-        call_prev_hook_or_standard(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+    if unsafe { HOOK_IN_PROGRESS } {
+        unsafe { call_prev_hook_or_standard(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc) };
         return;
     }
-    HOOK_IN_PROGRESS = true;
+    unsafe { HOOK_IN_PROGRESS = true };
 
     // Check for COMMIT/END BEFORE the catch_unwind block.
     // flush_refresh_queue() uses SPI which may trigger PostgreSQL ereport(ERROR)
     // → longjmp → pgrx panic. This MUST NOT be caught by catch_unwind because
     // that corrupts PG_exception_stack. The #[pg_guard] on this function handles
     // error propagation correctly via C-unwind.
-    if !pstmt.is_null() && !(*pstmt).utilityStmt.is_null() {
-        let utility_stmt = (*pstmt).utilityStmt;
-        if (*utility_stmt).type_ == pg_sys::NodeTag::T_TransactionStmt {
+    if !pstmt.is_null() && unsafe { !(*pstmt).utilityStmt.is_null() } {
+        let utility_stmt = unsafe { (*pstmt).utilityStmt };
+        if unsafe { (*utility_stmt).type_ } == pg_sys::NodeTag::T_TransactionStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → TransactionStmt* cast
             let xact_stmt = utility_stmt.cast::<pg_sys::TransactionStmt>();
-            if !xact_stmt.is_null() && (*xact_stmt).kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
-                if let Err(e) = crate::queue::flush_refresh_queue() {
-                    HOOK_IN_PROGRESS = false;
-                    error!("TVIEW refresh failed before COMMIT: {e:?}");
-                }
+            if !xact_stmt.is_null()
+                && unsafe { (*xact_stmt).kind } == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT
+                && let Err(e) = crate::queue::flush_refresh_queue()
+            {
+                unsafe { HOOK_IN_PROGRESS = false };
+                error!("TVIEW refresh failed before COMMIT: {e:?}");
             }
         }
     }
@@ -104,7 +113,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let query_str = if query_string.is_null() {
             "[NULL]".to_string()
         } else {
-            CStr::from_ptr(query_string).to_string_lossy().to_string()
+            unsafe { CStr::from_ptr(query_string) }.to_string_lossy().to_string()
         };
 
         let query_lower = query_str.to_lowercase();
@@ -127,7 +136,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             return false; // Pass through
         }
 
-        let pstmt_ref = &*pstmt;
+        let pstmt_ref = unsafe { &*pstmt };
 
         // Check if this is a utility statement
         if pstmt_ref.utilityStmt.is_null() {
@@ -135,27 +144,22 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         }
 
         let utility_stmt = pstmt_ref.utilityStmt;
-        let node_tag = (*utility_stmt).type_;
+        let node_tag = unsafe { (*utility_stmt).type_ };
 
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
-
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
-            if handle_create_table_as(ctas, query_string) {
-                // We handled it - don't call standard utility
-
+            if unsafe { handle_create_table_as(ctas, query_string) } {
                 return true; // Handled
             }
-
         }
 
         // Check for DROP TABLE
         if node_tag == pg_sys::NodeTag::T_DropStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
             let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
-            if handle_drop_table(drop_stmt, query_string) {
-                // We handled it - don't call standard utility
+            if unsafe { handle_drop_table(drop_stmt, query_string) } {
                 return true; // Handled
             }
         }
@@ -183,20 +187,22 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     // Execute the statement if hook didn't handle it or if it panicked
     if should_pass_through {
-        call_prev_hook_or_standard(
-            pstmt,
-            query_string,
-            read_only_tree,
-            context,
-            params,
-            query_env,
-            dest,
-            qc,
-        );
+        unsafe {
+            call_prev_hook_or_standard(
+                pstmt,
+                query_string,
+                read_only_tree,
+                context,
+                params,
+                query_env,
+                dest,
+                qc,
+            );
+        }
     }
 
     // Release the reentrancy guard
-    HOOK_IN_PROGRESS = false;
+    unsafe { HOOK_IN_PROGRESS = false };
 }
 
 /// Handle CREATE TABLE tv_* AS SELECT ...
@@ -204,94 +210,89 @@ unsafe fn handle_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
     query_string: *const ::std::os::raw::c_char,
 ) -> bool {
-    if ctas.is_null() {
-        return false;
-    }
-
-    let ctas_ref = &*ctas;
-
-    // Get the INTO clause which contains the table name
-    if ctas_ref.into.is_null() {
-        return false;
-    }
-
-    let into = &*ctas_ref.into;
-    if into.rel.is_null() {
-        return false;
-    }
-
-    let rel = &*into.rel;
-    if rel.relname.is_null() {
-        return false;
-    }
-
-    // Get table name
-    let Ok(table_name) = CStr::from_ptr(rel.relname).to_str() else {
-        return false;
-    };
-
-    // Check if it starts with tv_
-    if !table_name.starts_with("tv_") {
-        return false;
-    }
-
-    // Extract entity name
-    let entity_name = &table_name[3..]; // Remove "tv_" prefix
-
-    if entity_name.is_empty() {
-        error!("Invalid TVIEW name '{}': must be tv_<entity>", table_name);
-    }
-
-    // Get the SELECT query
-    let select_sql = if query_string.is_null() {
-        error!("No query string provided");
-    } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
-        // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
-        // We need to find the AS that comes after the table name, not column aliases
-        // Strategy: Find "CREATE TABLE <name> AS" pattern
-        let sql_lower = sql.to_lowercase();
-        // Find the table name position (we already know it's tv_<entity>)
-        let table_pattern = format!("{} as", table_name.to_lowercase());
-
-        sql_lower.find(&table_pattern).map_or_else(|| {
-            error!("Could not find '{}' in query", table_pattern);
-        }, |table_pos| {
-            // Found "tv_<entity> AS" - skip past it
-            let select_start = table_pos + table_pattern.len();
-            let select_part = sql[select_start..].trim();
-            // Remove trailing semicolon if present
-            select_part.trim_end_matches(';').trim().to_string()
-        })
-    } else {
-        error!("Failed to parse query string")
-    };
-
-
-    // Validate TVIEW SELECT statement structure
-    match validate_tview_select(&select_sql) {
-        Ok(()) => {
-
-            // Store SELECT in session-level temp table for event trigger to use
-            // This is safe because:
-            // 1. No SPI calls yet (just storing for later)
-            // 2. Temp table is transaction-safe (auto-cleanup on rollback)
-            // 3. Event trigger will retrieve and use this SELECT
-            if let Err(e) = store_pending_tview_select(table_name, &select_sql) {
-                error!("Failed to store SELECT for '{}': {}", table_name, e);
-                // Continue anyway - event trigger will try to infer
-            }
-
-            false // Pass through - let PostgreSQL create it
+    // Safety: all pointer dereferences are guarded by null checks above each use.
+    unsafe {
+        if ctas.is_null() {
+            return false;
         }
-        Err(e) => {
-            // Validation failed — still store the SELECT so the event trigger can attempt
-            // conversion and produce a proper error if the structure is truly invalid.
-            // The event trigger's create_tview() call will validate thoroughly.
-            warning!("TVIEW syntax warning for '{}': {} — attempting conversion anyway", table_name, e);
-            if let Err(store_err) = store_pending_tview_select(table_name, &select_sql) {
-                warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
+
+        let ctas_ref = &*ctas;
+
+        // Get the INTO clause which contains the table name
+        if ctas_ref.into.is_null() {
+            return false;
+        }
+
+        let into = &*ctas_ref.into;
+        if into.rel.is_null() {
+            return false;
+        }
+
+        let rel = &*into.rel;
+        if rel.relname.is_null() {
+            return false;
+        }
+
+        // Get table name
+        let Ok(table_name) = CStr::from_ptr(rel.relname).to_str() else {
+            return false;
+        };
+
+        // Check if it starts with tv_
+        if !table_name.starts_with("tv_") {
+            return false;
+        }
+
+        // Extract entity name
+        let entity_name = &table_name[3..]; // Remove "tv_" prefix
+
+        if entity_name.is_empty() {
+            error!("Invalid TVIEW name '{}': must be tv_<entity>", table_name);
+        }
+
+        // Get the SELECT query
+        let select_sql = if query_string.is_null() {
+            error!("No query string provided");
+        } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
+            // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
+            // We need to find the AS that comes after the table name, not column aliases
+            // Strategy: Find "CREATE TABLE <name> AS" pattern
+            let sql_lower = sql.to_lowercase();
+            // Find the table name position (we already know it's tv_<entity>)
+            let table_pattern = format!("{} as", table_name.to_lowercase());
+
+            sql_lower.find(&table_pattern).map_or_else(|| {
+                error!("Could not find '{}' in query", table_pattern);
+            }, |table_pos| {
+                // Found "tv_<entity> AS" - skip past it
+                let select_start = table_pos + table_pattern.len();
+                let select_part = sql[select_start..].trim();
+                // Remove trailing semicolon if present
+                select_part.trim_end_matches(';').trim().to_string()
+            })
+        } else {
+            error!("Failed to parse query string")
+        };
+
+        // Validate TVIEW SELECT statement structure
+        match validate_tview_select(&select_sql) {
+            Ok(()) => {
+                // Store SELECT in session-level temp table for event trigger to use
+                if let Err(e) = store_pending_tview_select(table_name, &select_sql) {
+                    error!("Failed to store SELECT for '{}': {}", table_name, e);
+                }
+
+                false // Pass through - let PostgreSQL create it
             }
-            false // Let PostgreSQL create it, event trigger will convert
+            Err(e) => {
+                // Validation failed — still store the SELECT so the event trigger can attempt
+                // conversion and produce a proper error if the structure is truly invalid.
+                warning!("TVIEW syntax warning for '{}': {} — attempting conversion anyway", table_name, e);
+                if let Err(store_err) = store_pending_tview_select(table_name, &select_sql) {
+                    warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
+                }
+                false // Let PostgreSQL create it, event trigger will convert
+            }
         }
     }
 }
@@ -371,6 +372,8 @@ unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
     query_string: *const ::std::os::raw::c_char,
 ) -> bool {
+    // Safety: all pointer dereferences are guarded by null checks.
+    unsafe {
 
     if drop_stmt.is_null() {
         return false;
@@ -439,6 +442,8 @@ unsafe fn handle_drop_table(
             }
         }
     }
+
+    } // unsafe
 }
 
 /// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`
@@ -453,30 +458,32 @@ unsafe fn call_prev_hook_or_standard(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
-    match PREV_PROCESS_UTILITY_HOOK {
-        Some(prev_hook) => {
-            prev_hook(
-                pstmt,
-                query_string,
-                read_only_tree,
-                context,
-                params,
-                query_env,
-                dest,
-                qc,
-            );
-        }
-        None => {
-            pg_sys::standard_ProcessUtility(
-                pstmt,
-                query_string,
-                read_only_tree,
-                context,
-                params,
-                query_env,
-                dest,
-                qc,
-            );
+    unsafe {
+        match PREV_PROCESS_UTILITY_HOOK {
+            Some(prev_hook) => {
+                prev_hook(
+                    pstmt,
+                    query_string,
+                    read_only_tree,
+                    context,
+                    params,
+                    query_env,
+                    dest,
+                    qc,
+                );
+            }
+            None => {
+                pg_sys::standard_ProcessUtility(
+                    pstmt,
+                    query_string,
+                    read_only_tree,
+                    context,
+                    params,
+                    query_env,
+                    dest,
+                    qc,
+                );
+            }
         }
     }
 }
@@ -493,12 +500,11 @@ fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
     ];
 
     for pattern in &patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if let Some(caps) = re.captures(query) {
-                if let Some(m) = caps.get(1) {
-                    return Some(m.as_str().to_string());
-                }
-            }
+        if let Ok(re) = regex::Regex::new(pattern)
+            && let Some(caps) = re.captures(query)
+            && let Some(m) = caps.get(1)
+        {
+            return Some(m.as_str().to_string());
         }
     }
 

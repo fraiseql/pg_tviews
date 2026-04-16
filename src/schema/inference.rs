@@ -243,40 +243,40 @@ fn validate_schema(schema: &TViewSchema) -> TViewResult<()> {
     // Error: Duplicate column names in different categories
     let mut all_categorized = std::collections::HashSet::new();
 
-    if let Some(ref pk) = schema.pk_column {
-        if !all_categorized.insert(pk) {
-            return Err(crate::error::TViewError::InvalidSelectStatement {
-                sql: "N/A".to_string(),
-                reason: format!("Column '{pk}' appears in multiple categories"),
-            });
-        }
+    if let Some(ref pk) = schema.pk_column
+        && !all_categorized.insert(pk)
+    {
+        return Err(crate::error::TViewError::InvalidSelectStatement {
+            sql: "N/A".to_string(),
+            reason: format!("Column '{pk}' appears in multiple categories"),
+        });
     }
 
-    if let Some(ref id) = schema.id_column {
-        if !all_categorized.insert(id) {
-            return Err(crate::error::TViewError::InvalidSelectStatement {
-                sql: "N/A".to_string(),
-                reason: format!("Column '{id}' appears in multiple categories"),
-            });
-        }
+    if let Some(ref id) = schema.id_column
+        && !all_categorized.insert(id)
+    {
+        return Err(crate::error::TViewError::InvalidSelectStatement {
+            sql: "N/A".to_string(),
+            reason: format!("Column '{id}' appears in multiple categories"),
+        });
     }
 
-    if let Some(ref identifier) = schema.identifier_column {
-        if !all_categorized.insert(identifier) {
-            return Err(crate::error::TViewError::InvalidSelectStatement {
-                sql: "N/A".to_string(),
-                reason: format!("Column '{identifier}' appears in multiple categories"),
-            });
-        }
+    if let Some(ref identifier) = schema.identifier_column
+        && !all_categorized.insert(identifier)
+    {
+        return Err(crate::error::TViewError::InvalidSelectStatement {
+            sql: "N/A".to_string(),
+            reason: format!("Column '{identifier}' appears in multiple categories"),
+        });
     }
 
-    if let Some(ref data) = schema.data_column {
-        if !all_categorized.insert(data) {
-            return Err(crate::error::TViewError::InvalidSelectStatement {
-                sql: "N/A".to_string(),
-                reason: format!("Column '{data}' appears in multiple categories"),
-            });
-        }
+    if let Some(ref data) = schema.data_column
+        && !all_categorized.insert(data)
+    {
+        return Err(crate::error::TViewError::InvalidSelectStatement {
+            sql: "N/A".to_string(),
+            reason: format!("Column '{data}' appears in multiple categories"),
+        });
     }
 
     for fk in &schema.fk_columns {

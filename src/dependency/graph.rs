@@ -37,7 +37,8 @@ pub struct DependencyGraph {
 pub fn find_base_tables(view_name: &str) -> TViewResult<DependencyGraph> {
     let view_oid = get_view_oid(view_name)?;
     let dependencies = traverse_dependencies(view_oid, view_name, 0)?;
-    let base_tables = filter_base_tables(&dependencies);
+    let tview_oids = load_tview_table_oids()?;
+    let base_tables = filter_base_tables(&dependencies, &tview_oids);
     let max_depth = dependencies.iter().map(|d| d.depth).max().unwrap_or(0);
 
     Ok(DependencyGraph {
@@ -184,14 +185,47 @@ fn query_dependencies(view_oid: pg_sys::Oid, current_oid: pg_sys::Oid) -> TViewR
     Ok(deps)
 }
 
-fn filter_base_tables(dependencies: &[DependencyNode]) -> Vec<pg_sys::Oid> {
+/// Load OIDs of all TVIEW-managed tables from `pg_tview_meta`.
+///
+/// These are the `tv_*` tables that pg_tviews owns. They must NOT be treated
+/// as base tables for trigger installation — cascade is metadata-driven via
+/// `find_parents_for()`, not trigger-driven.
+fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
+    Spi::connect(|client| {
+        let rows = client.select(
+            "SELECT table_oid FROM pg_tview_meta",
+            None,
+            &[],
+        )?;
+        let mut oids = HashSet::new();
+        for row in rows {
+            if let Some(oid) = row["table_oid"].value::<pg_sys::Oid>()
+                .map_err(|e| TViewError::CatalogError {
+                    operation: "load_tview_table_oids".to_string(),
+                    pg_error: format!("{e:?}"),
+                })? {
+                oids.insert(oid);
+            }
+        }
+        Ok(oids)
+    })
+    .map_err(|e: pgrx::spi::Error| TViewError::CatalogError {
+        operation: "load_tview_table_oids".to_string(),
+        pg_error: format!("{e:?}"),
+    })
+}
+
+fn filter_base_tables(dependencies: &[DependencyNode], tview_oids: &HashSet<pg_sys::Oid>) -> Vec<pg_sys::Oid> {
     let mut base_tables = HashSet::new();
 
     for dep in dependencies {
         if let Some(relkind) = &dep.relkind {
             match relkind.as_str() {
                 "r" | "m" | "p" => {
-                    // Regular table, materialized view, partitioned table — treat as base
+                    // Skip TVIEW-managed tables — cascade is metadata-driven
+                    if tview_oids.contains(&dep.oid) {
+                        continue;
+                    }
                     base_tables.insert(dep.oid);
                 }
                 _ => {

@@ -73,7 +73,7 @@ pub unsafe fn register_subxact_callback() {
 /// We intentionally avoid `catch_unwind` here: SPI operations in the
 /// pre-commit handler may trigger `PostgreSQL` longjmps, and intercepting
 /// those via `catch_unwind` corrupts `PG_exception_stack`, causing SIGABRT.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // Map PostgreSQL XactEvent C enum to our Rust enum.
     // Use pg_sys constants to be version-safe.
@@ -117,7 +117,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// # Safety
 /// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
 /// Must not panic or unwind.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn tview_subxact_callback(
     event: u32,
     _subxid: pg_sys::SubTransactionId,
@@ -219,52 +219,35 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     // Track processed keys to avoid duplicates
     let mut processed: std::collections::HashSet<super::key::RefreshKey> = std::collections::HashSet::new();
 
-    // Process queue until empty (handles propagation)
+    // Outer drain loop: after the inner loop empties `pending`, check for
+    // late-enqueued items from triggers that fired during refresh (e.g.,
+    // pg_treekey cascading child rows in tb_location).  The `processed` set
+    // carries across drain passes so already-refreshed keys are not repeated.
     let mut iteration = 1;
-    while !pending.is_empty() {
-        // Sort this batch by dependency order
-        let sorted_keys = graph.sort_keys(pending.drain().collect());
+    loop {
+        // Inner loop: process pending until empty (propagation via parents)
+        while !pending.is_empty() {
+            // Sort this batch by dependency order
+            let sorted_keys = graph.sort_keys(pending.drain().collect());
 
+            // Group keys by entity for bulk refresh
+            let mut keys_by_entity: std::collections::HashMap<String, Vec<super::key::RefreshKey>> =
+                std::collections::HashMap::new();
 
-        // Group keys by entity for bulk refresh
-        let mut keys_by_entity: std::collections::HashMap<String, Vec<super::key::RefreshKey>> =
-            std::collections::HashMap::new();
-
-        for key in sorted_keys {
-            // Skip if already processed (deduplication)
-            if !processed.insert(key.clone()) {
-                continue;
-            }
-            keys_by_entity.entry(key.entity.clone()).or_default().push(key);
-        }
-
-        // Process each entity group
-        for (entity, entity_keys) in keys_by_entity {
-            if entity_keys.len() == 1 {
-                // Single key: use existing individual refresh
-                let key = &entity_keys[0];
-                let parents = refresh_and_get_parents(key)?;
-
-                // Add discovered parents to pending queue
-                for parent_key in parents {
-                    if !processed.contains(&parent_key) {
-                        pending.insert(parent_key);
-                    }
+            for key in sorted_keys {
+                // Skip if already processed (deduplication)
+                if !processed.insert(key.clone()) {
+                    continue;
                 }
-            } else {
-                // Multiple keys for same entity: use bulk refresh (PK-only path)
-                let pks: Vec<i64> = entity_keys.iter().filter_map(|k| {
-                    if k.is_dedup() { None } else { Some(k.pk) }
-                }).collect();
+                keys_by_entity.entry(key.entity.clone()).or_default().push(key);
+            }
 
-
-                // Bulk refresh this entity
-                // FAIL-FAST: Propagate error immediately to abort transaction
-                crate::refresh::refresh_bulk(&entity, &pks)?;
-
-                // Discover parents for all keys in this entity group
-                for key in &entity_keys {
-                    let parents = crate::propagate::find_parents_for(key)?;
+            // Process each entity group
+            for (entity, entity_keys) in keys_by_entity {
+                if entity_keys.len() == 1 {
+                    // Single key: use existing individual refresh
+                    let key = &entity_keys[0];
+                    let parents = refresh_and_get_parents(key)?;
 
                     // Add discovered parents to pending queue
                     for parent_key in parents {
@@ -272,20 +255,48 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                             pending.insert(parent_key);
                         }
                     }
+                } else {
+                    // Multiple keys for same entity: use bulk refresh (PK-only path)
+                    let pks: Vec<i64> = entity_keys.iter().filter_map(|k| {
+                        if k.is_dedup() { None } else { Some(k.pk) }
+                    }).collect();
+
+                    // Bulk refresh this entity
+                    // FAIL-FAST: Propagate error immediately to abort transaction
+                    crate::refresh::refresh_bulk(&entity, &pks)?;
+
+                    // Discover parents for all keys in this entity group
+                    for key in &entity_keys {
+                        let parents = crate::propagate::find_parents_for(key)?;
+
+                        // Add discovered parents to pending queue
+                        for parent_key in parents {
+                            if !processed.contains(&parent_key) {
+                                pending.insert(parent_key);
+                            }
+                        }
+                    }
                 }
+            }
+
+            iteration += 1;
+
+            // Safety check: prevent infinite loops
+            let max_depth = crate::config::max_propagation_depth();
+            if iteration > max_depth {
+                return Err(crate::TViewError::PropagationDepthExceeded {
+                    max_depth,
+                    processed: processed.len(),
+                });
             }
         }
 
-        iteration += 1;
-
-        // Safety check: prevent infinite loops
-        let max_depth = crate::config::max_propagation_depth();
-        if iteration > max_depth {
-            return Err(crate::TViewError::PropagationDepthExceeded {
-                max_depth,
-                processed: processed.len(),
-            });
+        // Drain any items enqueued by triggers that fired during refresh
+        let late = take_queue_snapshot();
+        if late.is_empty() {
+            break;
         }
+        pending = late;
     }
 
 
