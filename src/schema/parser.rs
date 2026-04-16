@@ -29,9 +29,15 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
     // Normalize whitespace and case
     let sql_lower = sql.to_lowercase();
 
-    // Find SELECT and FROM positions
-    let select_start = sql_lower.find("select")
+    // Skip CTE preamble (WITH ... AS (...)) if present
+    let cte_offset = skip_cte_preamble(&sql_lower)?;
+
+    // Find SELECT keyword starting from after any CTE preamble
+    let select_start = sql_lower[cte_offset..]
+        .find("select")
+        .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
+
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
     let from_start = find_outer_from(&sql_lower, select_start)
         .ok_or("No FROM keyword found")?;
@@ -40,11 +46,11 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         return Err("FROM appears before SELECT".to_string());
     }
 
-    // Extract SELECT clause
+    // Extract SELECT clause (skip the "select" keyword itself: 6 bytes)
     let select_clause = &sql[select_start + 6..from_start].trim();
 
     if select_clause.is_empty() {
-        return Err("Empty SELECT clause".to_string());
+        return Err("No columns found in SELECT statement".to_string());
     }
 
     // Split by commas, respecting parentheses and quotes
@@ -109,6 +115,202 @@ fn find_outer_from(sql_lower: &str, after_pos: usize) -> Option<usize> {
     None
 }
 
+/// Skip a leading `WITH` clause (CTE preamble) and return the byte offset into
+/// `sql_lower` where the main SELECT starts.
+///
+/// Returns `Ok(0)` when the SQL does not begin with a `WITH` keyword.
+/// Returns `Err(msg)` if `WITH RECURSIVE` is detected or the preamble is malformed.
+///
+/// `sql_lower` must already be lowercased.
+fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
+    let bytes = sql_lower.as_bytes();
+    let len = bytes.len();
+
+    // Skip leading whitespace
+    let mut i = 0;
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Check for "with" keyword (requires word boundary after it)
+    if i + 4 > len || &bytes[i..i + 4] != b"with" {
+        return Ok(0);
+    }
+    let after_with = i + 4;
+    if after_with < len && (bytes[after_with].is_ascii_alphanumeric() || bytes[after_with] == b'_') {
+        return Ok(0); // e.g. "without", "within" — not a WITH keyword
+    }
+
+    i += 4; // skip "with"
+
+    // Skip whitespace before first CTE name (or RECURSIVE keyword)
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Reject WITH RECURSIVE
+    if i + 9 <= len && &bytes[i..i + 9] == b"recursive" {
+        let after_rec = i + 9;
+        if after_rec >= len
+            || (!bytes[after_rec].is_ascii_alphanumeric() && bytes[after_rec] != b'_')
+        {
+            return Err(
+                "WITH RECURSIVE is not supported in TVIEWs. \
+                 Consider using a non-recursive CTE or a subquery."
+                    .to_string(),
+            );
+        }
+    }
+
+    // Walk the CTE list: name [column_list] AS (body) [, ...]
+    loop {
+        // Skip whitespace before CTE name
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        if i >= len {
+            return Err("Unexpected end of SQL while parsing CTE preamble".to_string());
+        }
+
+        // Skip CTE name: quoted or unquoted identifier
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len && bytes[i] != b'"' {
+                i += 1;
+            }
+            if i >= len {
+                return Err("Unterminated quoted identifier in CTE name".to_string());
+            }
+            i += 1; // skip closing "
+        } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+        } else {
+            // Not an identifier — the main SELECT starts here
+            return Ok(i);
+        }
+
+        // Skip whitespace
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // Optional explicit column list: cte_name(col1, col2)
+        if i < len && bytes[i] == b'(' {
+            i = skip_paren_block(bytes, i)?;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+
+        // Expect "as" keyword
+        if i + 2 > len || &bytes[i..i + 2] != b"as" {
+            return Err(format!(
+                "Expected AS keyword in CTE definition at byte offset {i}"
+            ));
+        }
+        let after_as = i + 2;
+        if after_as < len
+            && (bytes[after_as].is_ascii_alphanumeric() || bytes[after_as] == b'_')
+        {
+            return Err(format!(
+                "Expected AS keyword in CTE definition at byte offset {i}"
+            ));
+        }
+        i += 2; // skip "as"
+
+        // Skip whitespace before opening paren
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // Expect "(" opening the CTE body
+        if i >= len || bytes[i] != b'(' {
+            return Err(format!(
+                "Expected '(' for CTE body at byte offset {i}"
+            ));
+        }
+
+        i = skip_paren_block(bytes, i)?;
+
+        // Skip whitespace after CTE body
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        if i >= len {
+            return Err("SQL ends after CTE body with no main SELECT".to_string());
+        }
+
+        if bytes[i] == b',' {
+            i += 1; // another CTE follows
+        } else {
+            // Main SELECT starts here
+            return Ok(i);
+        }
+    }
+}
+
+/// Walk `bytes` starting at `start` (which must be `(`) to the matching `)`.
+/// Handles nested parens, single-quoted strings (`''` escape), and double-quoted identifiers.
+/// Returns the byte position **after** the closing `)`.
+fn skip_paren_block(bytes: &[u8], start: usize) -> Result<usize, String> {
+    let len = bytes.len();
+    let mut i = start;
+    let mut depth: i32 = 0;
+
+    while i < len {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Ok(i);
+                }
+            }
+            b'\'' => {
+                // Single-quoted string; handle '' escape sequence
+                i += 1;
+                loop {
+                    if i >= len {
+                        break;
+                    }
+                    if bytes[i] == b'\'' {
+                        i += 1;
+                        if i < len && bytes[i] == b'\'' {
+                            i += 1; // escaped quote — continue
+                        } else {
+                            break; // end of string literal
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                // Double-quoted identifier
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1; // skip closing "
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    Err("Unbalanced parentheses in SQL".to_string())
+}
+
 /// Extract columns with their full expressions from SELECT statement
 fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut columns = Vec::new();
@@ -116,9 +318,15 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
     // Normalize whitespace and case
     let sql_lower = sql.to_lowercase();
 
-    // Find SELECT and FROM positions
-    let select_start = sql_lower.find("select")
+    // Skip CTE preamble (WITH ... AS (...)) if present
+    let cte_offset = skip_cte_preamble(&sql_lower)?;
+
+    // Find SELECT keyword starting from after any CTE preamble
+    let select_start = sql_lower[cte_offset..]
+        .find("select")
+        .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
+
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
     let from_start = find_outer_from(&sql_lower, select_start)
         .ok_or("No FROM keyword found")?;
@@ -127,11 +335,11 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
         return Err("FROM appears before SELECT".to_string());
     }
 
-    // Extract SELECT clause
+    // Extract SELECT clause (skip the "select" keyword itself: 6 bytes)
     let select_clause = &sql[select_start + 6..from_start].trim();
 
     if select_clause.is_empty() {
-        return Err("Empty SELECT clause".to_string());
+        return Err("No columns found in SELECT statement".to_string());
     }
 
     // Split by commas, respecting parentheses and quotes
@@ -276,6 +484,8 @@ fn find_last_as(sql_lower: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    // ── existing tests ────────────────────────────────────────────────────────
+
     #[test]
     fn test_extract_columns_simple() {
         let sql = "SELECT id, name, data FROM users";
@@ -314,10 +524,11 @@ mod tests {
 
     #[test]
     fn test_extract_columns_no_select() {
+        // "FROM" before "SELECT" — find_outer_from starts after "select", finds nothing
         let sql = "FROM users SELECT id";
         let result = parse_select_columns(sql);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("FROM appears before SELECT"));
+        assert!(result.unwrap_err().contains("No FROM keyword found"));
     }
 
     #[test]
@@ -335,15 +546,138 @@ mod tests {
 
     #[test]
     fn test_find_last_as() {
-        assert_eq!(find_last_as("id AS user_id"), Some(3));
-        assert_eq!(find_last_as("jsonb_build_object('id', id) AS data"), Some(32));
+        // find_last_as operates on already-lowercased strings
+        assert_eq!(find_last_as("id as user_id"), Some(3));
+        assert_eq!(find_last_as("jsonb_build_object('id', id) as data"), Some(29));
         assert_eq!(find_last_as("id"), None);
     }
 
     #[test]
     fn test_find_last_as_nested() {
-        // AS inside function call should be ignored
-        let sql = "jsonb_build_object('id', id) AS data, name AS full_name";
-        assert_eq!(find_last_as(sql), Some(40)); // Position of "AS full_name"
+        // "as" inside function call (depth > 0) should be ignored;
+        // the last top-level "as" is the one we want
+        let sql = "jsonb_build_object('id', id) as data, name as full_name";
+        assert_eq!(find_last_as(sql), Some(43)); // Position of "as full_name"
+    }
+
+    // ── Phase 1, Cycle 1: CTE detection — main SELECT columns ────────────────
+
+    #[test]
+    fn test_parse_cte_columns() {
+        let sql = "WITH labels AS (SELECT item_id, label FROM tb_i18n) \
+                   SELECT i.pk_item, i.id, i.name, l.label AS data \
+                   FROM tb_item i LEFT JOIN labels l ON l.item_id = i.pk_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert!(cols.contains(&"pk_item".to_string()), "expected pk_item, got {cols:?}");
+        assert!(cols.contains(&"id".to_string()), "expected id, got {cols:?}");
+        assert!(cols.contains(&"name".to_string()), "expected name, got {cols:?}");
+        assert!(cols.contains(&"data".to_string()), "expected data, got {cols:?}");
+        assert!(!cols.contains(&"item_id".to_string()), "CTE-only column item_id leaked: {cols:?}");
+        assert!(!cols.contains(&"label".to_string()), "CTE-only column label leaked: {cols:?}");
+    }
+
+    #[test]
+    fn test_parse_cte_columns_with_expressions() {
+        let sql = "WITH labels AS (SELECT item_id, label FROM tb_i18n) \
+                   SELECT i.pk_item, i.id, i.name, l.label AS data \
+                   FROM tb_item i LEFT JOIN labels l ON l.item_id = i.pk_item";
+        let cols = parse_select_columns_with_expressions(sql).unwrap();
+        let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"pk_item"), "expected pk_item, got {names:?}");
+        assert!(names.contains(&"data"), "expected data, got {names:?}");
+        assert!(!names.contains(&"item_id"), "CTE-only column item_id leaked: {names:?}");
+    }
+
+    // ── Phase 1, Cycle 2: multi-CTE and edge cases ───────────────────────────
+
+    #[test]
+    fn test_parse_multiple_ctes() {
+        let sql = "WITH a AS (SELECT x FROM t1), b AS (SELECT y FROM a) \
+                   SELECT pk_item, id, b.y AS data FROM tb_item JOIN b ON b.y = tb_item.pk_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
+    }
+
+    #[test]
+    fn test_parse_cte_with_explicit_column_list() {
+        // WITH cte(col1, col2) AS (...)
+        let sql = "WITH labeled(item_id, label) AS (SELECT item_id, label FROM tb_i18n) \
+                   SELECT pk_item, id, label AS data FROM tb_item \
+                   JOIN labeled ON labeled.item_id = tb_item.pk_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert!(cols.contains(&"pk_item".to_string()));
+        assert!(cols.contains(&"data".to_string()));
+        assert!(!cols.contains(&"item_id".to_string()));
+    }
+
+    #[test]
+    fn test_parse_cte_with_paren_in_string_literal() {
+        // CTE body contains a string with ')' inside — must not confuse paren counter
+        let sql = "WITH filtered AS (SELECT id FROM t WHERE name = 'a)b') \
+                   SELECT pk_item, id, name AS data FROM tb_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
+    }
+
+    #[test]
+    fn test_parse_cte_with_nested_subquery() {
+        // CTE body contains a nested subquery
+        let sql = "WITH top AS (SELECT id FROM t WHERE id IN (SELECT id FROM s)) \
+                   SELECT pk_item, id, name AS data FROM tb_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
+    }
+
+    // ── Phase 1, Cycle 3: WITH RECURSIVE rejection ───────────────────────────
+
+    #[test]
+    fn test_recursive_cte_rejected() {
+        let sql = "WITH RECURSIVE tree AS (SELECT 1) SELECT pk_item, id, name AS data FROM tb_item";
+        let result = parse_select_columns(sql);
+        assert!(result.is_err(), "expected error for WITH RECURSIVE");
+        assert!(
+            result.unwrap_err().contains("RECURSIVE"),
+            "error should mention RECURSIVE"
+        );
+    }
+
+    #[test]
+    fn test_recursive_cte_rejected_lowercase() {
+        let sql = "with recursive tree as (select 1) select pk_item, id, name as data from tb_item";
+        let result = parse_select_columns(sql);
+        assert!(result.is_err(), "expected error for with recursive");
+        assert!(result.unwrap_err().contains("RECURSIVE"));
+    }
+
+    // ── Phase 1: skip_paren_block unit tests ─────────────────────────────────
+
+    #[test]
+    fn test_skip_paren_block_simple() {
+        let s = "(hello world) rest";
+        let end = skip_paren_block(s.as_bytes(), 0).unwrap();
+        assert_eq!(end, 13); // position after ')'
+    }
+
+    #[test]
+    fn test_skip_paren_block_nested() {
+        let s = "((a) (b)) rest";
+        let end = skip_paren_block(s.as_bytes(), 0).unwrap();
+        assert_eq!(end, 9);
+    }
+
+    #[test]
+    fn test_skip_paren_block_string_with_paren() {
+        let s = "(WHERE name = 'a)b') rest";
+        let end = skip_paren_block(s.as_bytes(), 0).unwrap();
+        assert_eq!(end, 20);
+    }
+
+    // ── Phase 1: regression — non-CTE SQL unaffected ─────────────────────────
+
+    #[test]
+    fn test_non_cte_sql_unchanged() {
+        let sql = "SELECT pk_post, id, jsonb_build_object('id', id) AS data FROM tb_post";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
 }
