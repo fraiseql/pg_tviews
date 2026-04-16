@@ -4,11 +4,11 @@
 Eliminate redundant SPI queries and optimize hot paths through caching and batching.
 
 ## Success Criteria
-- [ ] P-05: OID→relname caching (session-level) ✅
-- [ ] P-06: EntityDepGraph caching in propagation ✅
-- [ ] P-07: Batch affected-PK queries (multi-key propagation) ✅
-- [ ] P-08: Cache view column names in DISTINCT ON refresh ✅
-- [ ] P-10: Pre-allocate collections for bulk operations
+- [x] P-05: OID→relname caching (session-level) ✅
+- [x] P-06: EntityDepGraph caching in propagation ✅
+- [x] P-07: Batch affected-PK queries (multi-key propagation) ✅
+- [x] P-08: Cache view column names in DISTINCT ON refresh ✅
+- [x] P-10: Pre-allocate collections for bulk operations ✅
 - [ ] P-11: Optimize dedup key refresh DML generation
 
 ## TDD Cycles
@@ -84,10 +84,20 @@ for key in &entity_keys {
 - Added comprehensive test for cache invalidation
 - **Commit**: b756548
 
-### Cycle 5: Pre-allocate Collections (P-10)
+### Cycle 5: Pre-allocate Collections (P-10) ✅
 - **Objective**: Reduce allocations in hot refresh paths
 - **Target**: `Vec::with_capacity()` for known sizes
 - **Examples**: `parent_keys.reserve()`, `affected_pks.reserve()`
+
+#### Implementation
+- Pre-allocated `parent_keys` Vec in `find_parents_for()` (8 × parent entity count)
+- Pre-allocated result HashMap in `find_parents_batch()` (input key count)
+- Pre-allocated `groups` HashMap in `build_batch_groups()` (4 default)
+- Pre-allocated child_pk result HashMap in `find_affected_pks_batch()`
+- Pre-allocated collections in queue flush (processed set, keys_by_entity map, pks vec)
+- Pre-allocated column name vectors in refresh/main.rs (both UPSERT and full replacement)
+- Added tests for batched parent discovery with various entity counts
+- **Commit**: f15b5e9
 
 ### Cycle 6: Optimize Dedup Key DML (P-11)
 - **Objective**: Reduce query string construction overhead
@@ -99,4 +109,4 @@ for key in &entity_keys {
 - Blocks: None
 
 ## Status
-[~] In Progress (Cycle 4 complete, Cycle 5 ready)
+[~] In Progress (Cycle 5 complete, Cycle 6 ready)
