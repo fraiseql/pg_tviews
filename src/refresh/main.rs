@@ -59,6 +59,7 @@ use pgrx::datum::DatumWithOid;
 use crate::catalog::{TviewMeta, DependencyDetail, DependencyType};
 
 use crate::utils::{lookup_view_for_source, relname_from_oid};
+use crate::lifecycle::check_jsonb_delta_available;
 
 /// Default match key for array patching (assumes 'id' field)
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
@@ -375,8 +376,8 @@ fn apply_patch(row: &ViewRow) -> spi::Result<()> {
         return apply_full_replacement(row);
     };
 
-    // Check if jsonb_delta is available
-    if !check_jsonb_delta_available()? {
+    // Check if jsonb_delta is available (cached after first session query)
+    if !check_jsonb_delta_available() {
         warning!(
             "jsonb_delta extension not installed. Smart patching disabled. \
              Install with: CREATE EXTENSION jsonb_delta; \
@@ -512,27 +513,6 @@ fn build_smart_patch_sql(
 /// # Example
 ///
 /// ```sql
-/// -- Checks for:
-/// SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')
-/// ```
-fn check_jsonb_delta_available() -> spi::Result<bool> {
-    Spi::connect(|client| {
-        let result = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
-            None,
-            &[],
-        )?;
-
-        for row in result {
-            if let Ok(Some(exists)) = row["exists"].value::<bool>() {
-                return Ok(exists);
-            }
-        }
-
-        Ok(false)
-    })
-}
-
 /// Fallback: Full JSONB replacement (legacy behavior).
 ///
 /// Performs a complete document replacement instead of surgical patching.

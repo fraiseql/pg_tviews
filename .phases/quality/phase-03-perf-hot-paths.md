@@ -21,32 +21,15 @@ load per refresh, and per-row `TviewMeta` load in the trigger handler.
 
 ### Cycle 1: P-04 — quote_identifier issues SPI on every call (refresh/bulk.rs:134, refresh/cache.rs:115)
 
-**ROOT CAUSE:**
-`quote_identifier` is defined identically in two places. Both call
-`SELECT quote_ident($1)` via SPI. The pure-Rust fallback on SPI error is semantically
-correct for all identifiers used in this codebase (entity/column/table names, all
-`\w+`-constrained). The SPI call adds overhead for zero benefit.
+✅ **COMPLETE** (commit 1a40d95)
 
-Called in: every bulk refresh (4×), every statement trigger (1×), every prepared-statement
-cache miss (2×).
-
-- **RED**: Write a unit test for `quote_identifier` that verifies: normal identifier
-  → unchanged; identifier with uppercase → double-quoted; reserved word → double-quoted;
-  identifier already safe → no wrapping. Assert no SPI is called (test runs outside pgrx
-  context without a live DB).
-- **GREEN**:
-  1. Delete both existing `quote_identifier` definitions.
-  2. Add one canonical definition in `src/utils.rs`:
-     ```rust
-     pub fn quote_identifier(name: &str) -> String {
-         format!("\"{}\"", name.replace('"', "\"\""))
-     }
-     ```
-  3. Update all call sites to import from `utils`.
-- **REFACTOR**: Run `grep -r quote_identifier src/` — confirm single definition, all
-  callers import from `utils`.
-- **CLEANUP**: Remove the now-unused `DatumWithOid` import in any file that previously
-  built the SPI args for `quote_ident`.
+- **RED**: ✅ Added unit tests in `src/utils.rs` covering: normal identifiers, uppercase,
+  underscores, and internal quote escaping.
+- **GREEN**: ✅ Created canonical `pub fn quote_identifier` in `src/utils.rs`.
+  Deleted duplicate definitions from `src/refresh/bulk.rs` and `src/refresh/cache.rs`.
+  Updated 8 files to import from `crate::utils`.
+- **REFACTOR**: ✅ Verified single definition in utils.rs; all callers import from utils.
+- **CLEANUP**: ✅ Removed duplicate tests; `cargo clippy --no-default-features --features pg18 -- -D warnings` passes.
 
 ### Cycle 2: P-02 — private check_jsonb_delta_available() duplicate uncached (refresh/main.rs:518)
 
