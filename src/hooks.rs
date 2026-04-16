@@ -109,7 +109,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
-    let result = std::panic::catch_unwind(|| -> bool {
+    let result = std::panic::catch_unwind(|| -> Result<bool, TViewError> {
         let query_str = if query_string.is_null() {
             "[NULL]".to_string()
         } else {
@@ -120,7 +120,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Skip extension-related statements to avoid infinite recursion during installation
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
-            return false; // Pass through
+            return Ok(false); // Pass through
         }
 
         // Check if this is PREPARE TRANSACTION
@@ -133,14 +133,14 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Safety check
         if pstmt.is_null() {
-            return false; // Pass through
+            return Ok(false); // Pass through
         }
 
         let pstmt_ref = unsafe { &*pstmt };
 
         // Check if this is a utility statement
         if pstmt_ref.utilityStmt.is_null() {
-            return false; // Pass through
+            return Ok(false); // Pass through
         }
 
         let utility_stmt = pstmt_ref.utilityStmt;
@@ -150,8 +150,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
-            if unsafe { handle_create_table_as(ctas, query_string) } {
-                return true; // Handled
+            match unsafe { handle_create_table_as(ctas, query_string) } {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(e) => return Err(e),
             }
         }
 
@@ -159,29 +161,38 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if node_tag == pg_sys::NodeTag::T_DropStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
             let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
-            if unsafe { handle_drop_table(drop_stmt, query_string) } {
-                return true; // Handled
+            match unsafe { handle_drop_table(drop_stmt, query_string) } {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(e) => return Err(e),
             }
         }
 
         // Not a tv_* statement - pass through
-        false
+        Ok(false)
     });
 
     // Check if hook handled the statement or if we need to pass through
     let should_pass_through = match result {
-        Ok(handled) => !handled, // Pass through if hook didn't handle it
+        Ok(Ok(handled)) => !handled, // Pass through if hook didn't handle it
+        Ok(Err(handler_err)) => {
+            // Handler returned an error — reset guard BEFORE raising error!()
+            // so that subsequent statements in this session are still intercepted.
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("{handler_err}");
+            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
+            { true }
+        }
         Err(panic_info) => {
-            // PANIC in ProcessUtility hook - log it and pass through to standard utility!
+            // PANIC in ProcessUtility hook - reset guard BEFORE raising error!()
+            unsafe { HOOK_IN_PROGRESS = false };
             let panic_msg = panic_info.downcast_ref::<&str>()
                 .map(|s| (*s).to_string())
                 .or_else(|| panic_info.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| format!("{panic_info:?}"));
             error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
-            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !, so compiler doesn't see it
-            {
-                true // Pass through after panic (error! macro is marked cold but doesn't actually diverge)
-            }
+            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
+            { true }
         }
     };
 
@@ -206,53 +217,60 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 }
 
 /// Handle CREATE TABLE tv_* AS SELECT ...
+///
+/// Returns `Ok(true)` if the hook handled the statement, `Ok(false)` if it should
+/// pass through. Returns `Err` on failures that should abort with `error!()` —
+/// the caller is responsible for resetting `HOOK_IN_PROGRESS` before raising.
 unsafe fn handle_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
     query_string: *const ::std::os::raw::c_char,
-) -> bool {
+) -> Result<bool, TViewError> {
     // Safety: all pointer dereferences are guarded by null checks above each use.
     unsafe {
         if ctas.is_null() {
-            return false;
+            return Ok(false);
         }
 
         let ctas_ref = &*ctas;
 
         // Get the INTO clause which contains the table name
         if ctas_ref.into.is_null() {
-            return false;
+            return Ok(false);
         }
 
         let into = &*ctas_ref.into;
         if into.rel.is_null() {
-            return false;
+            return Ok(false);
         }
 
         let rel = &*into.rel;
         if rel.relname.is_null() {
-            return false;
+            return Ok(false);
         }
 
         // Get table name
         let Ok(table_name) = CStr::from_ptr(rel.relname).to_str() else {
-            return false;
+            return Ok(false);
         };
 
         // Check if it starts with tv_
         if !table_name.starts_with("tv_") {
-            return false;
+            return Ok(false);
         }
 
         // Extract entity name
         let entity_name = &table_name[3..]; // Remove "tv_" prefix
 
         if entity_name.is_empty() {
-            error!("Invalid TVIEW name '{}': must be tv_<entity>", table_name);
+            return Err(TViewError::InvalidTViewName {
+                name: table_name.to_string(),
+                reason: "must be tv_<entity>".to_string(),
+            });
         }
 
         // Get the SELECT query
         let select_sql = if query_string.is_null() {
-            error!("No query string provided");
+            return Err(crate::internal_error!("No query string provided for CREATE TABLE AS"));
         } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
             // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
             // We need to find the AS that comes after the table name, not column aliases
@@ -261,17 +279,20 @@ unsafe fn handle_create_table_as(
             // Find the table name position (we already know it's tv_<entity>)
             let table_pattern = format!("{} as", table_name.to_lowercase());
 
-            sql_lower.find(&table_pattern).map_or_else(|| {
-                error!("Could not find '{}' in query", table_pattern);
-            }, |table_pos| {
+            if let Some(table_pos) = sql_lower.find(&table_pattern) {
                 // Found "tv_<entity> AS" - skip past it
                 let select_start = table_pos + table_pattern.len();
                 let select_part = sql[select_start..].trim();
                 // Remove trailing semicolon if present
                 select_part.trim_end_matches(';').trim().to_string()
-            })
+            } else {
+                return Err(TViewError::InvalidSelectStatement {
+                    sql: sql.to_string(),
+                    reason: format!("Could not find '{table_pattern}' in query"),
+                });
+            }
         } else {
-            error!("Failed to parse query string")
+            return Err(crate::internal_error!("Failed to parse query string"));
         };
 
         // Validate TVIEW SELECT statement structure
@@ -279,10 +300,12 @@ unsafe fn handle_create_table_as(
             Ok(()) => {
                 // Store SELECT in session-level temp table for event trigger to use
                 if let Err(e) = store_pending_tview_select(table_name, &select_sql) {
-                    error!("Failed to store SELECT for '{}': {}", table_name, e);
+                    return Err(crate::internal_error!(
+                        "Failed to store SELECT for '{}': {}", table_name, e
+                    ));
                 }
 
-                false // Pass through - let PostgreSQL create it
+                Ok(false) // Pass through - let PostgreSQL create it
             }
             Err(e) => {
                 // Validation failed — still store the SELECT so the event trigger can attempt
@@ -291,7 +314,7 @@ unsafe fn handle_create_table_as(
                 if let Err(store_err) = store_pending_tview_select(table_name, &select_sql) {
                     warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
                 }
-                false // Let PostgreSQL create it, event trigger will convert
+                Ok(false) // Let PostgreSQL create it, event trigger will convert
             }
         }
     }
@@ -368,31 +391,34 @@ pub fn take_pending_tview_select(table_name: &str) -> Option<String> {
 ///
 /// Uses a simpler approach: parse the query string instead of traversing
 /// complex `PostgreSQL` List structures which are prone to segfaults.
+///
+/// Returns `Ok(true)` if handled, `Ok(false)` if pass-through.
+/// Returns `Err` on failures — caller resets `HOOK_IN_PROGRESS` before raising.
 unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
     query_string: *const ::std::os::raw::c_char,
-) -> bool {
+) -> Result<bool, TViewError> {
     // Safety: all pointer dereferences are guarded by null checks.
     unsafe {
 
     if drop_stmt.is_null() {
-        return false;
+        return Ok(false);
     }
 
     let drop_ref = &*drop_stmt;
 
     // Check if it's dropping a table (not view, index, etc.)
     if drop_ref.removeType != pg_sys::ObjectType::OBJECT_TABLE {
-        return false;
+        return Ok(false);
     }
 
     // Extract table names from query string
     if query_string.is_null() {
-        return false;
+        return Ok(false);
     }
 
     let Ok(sql) = CStr::from_ptr(query_string).to_str() else {
-        return false;
+        return Ok(false);
     };
 
     // Parse DROP TABLE statement to find tv_* tables
@@ -401,7 +427,7 @@ unsafe fn handle_drop_table(
 
     // Check if this is a DROP TABLE statement
     if !sql_lower.contains("drop") || !sql_lower.contains("table") {
-        return false;
+        return Ok(false);
     }
 
     // Find table names in the statement
@@ -422,7 +448,7 @@ unsafe fn handle_drop_table(
     }
 
     if !found_tv_table {
-        return false;
+        return Ok(false);
     }
 
 
@@ -430,15 +456,13 @@ unsafe fn handle_drop_table(
     let if_exists = drop_ref.missing_ok;
 
     match drop_tview(&table_name, if_exists) {
-        Ok(()) => {
-            true
-        }
+        Ok(()) => Ok(true),
         Err(e) => {
             if if_exists {
                 notice!("TVIEW '{}' does not exist, skipping", table_name);
-                true
+                Ok(true)
             } else {
-                error!("Failed to drop TVIEW '{}': {}", table_name, e);
+                Err(e)
             }
         }
     }
