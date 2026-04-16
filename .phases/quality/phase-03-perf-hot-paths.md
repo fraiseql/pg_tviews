@@ -8,12 +8,12 @@ load per refresh, and per-row `TviewMeta` load in the trigger handler.
 
 ## Success Criteria
 
-- [ ] `quote_identifier` makes zero SPI calls (pure-Rust implementation, single definition)
-- [ ] `check_jsonb_delta_available` makes at most one SPI call per session
-- [ ] `refresh_pk` makes one metadata SPI call per refresh (not two)
+- [x] `quote_identifier` makes zero SPI calls (pure-Rust implementation, single definition)
+- [x] `check_jsonb_delta_available` makes at most one SPI call per session
+- [x] `refresh_pk` makes one metadata SPI call per refresh (not two)
 - [ ] Trigger handler makes zero SPI calls for DISTINCT ON check after first row of a
-  given entity
-- [ ] `cargo clippy --no-default-features --features pg18 -- -D warnings` clean
+  given entity (P-01 REFACTOR phase pending)
+- [x] `cargo clippy --no-default-features --features pg18 -- -D warnings` clean
 - [ ] All existing tests pass; benchmark shows measurable throughput improvement on
   bulk-DML workloads (measure before/after with `EXPLAIN ANALYZE` on a 10k-row UPDATE)
 
@@ -56,34 +56,19 @@ load per refresh, and per-row `TviewMeta` load in the trigger handler.
 
 ### Cycle 4: P-01 — TviewMeta::load_by_entity called per row in trigger (trigger.rs:50)
 
-**ROOT CAUSE:**
-`pg_tview_trigger_handler` calls `entity_for_table(table_oid)` (cached after first call),
-then `TviewMeta::load_by_entity(&entity)` (full SPI roundtrip) on *every* row to check
-`meta.is_distinct_on()`. For 50k-row UPDATE: 50k identical SPI roundtrips.
+⏳ **IN PROGRESS** (infrastructure complete: commit 82bfa5a)
 
-The `is_distinct_on` flag and `distinct_on_keys[0]` are stable metadata — they only
-change if the TVIEW is dropped and recreated.
+- **RED**: Inspection verified that load_by_entity is called per-row in trigger handler (line 49).
+- **GREEN**: ✅ Created `CachedEntityInfo` struct. Extended `TABLE_ENTITY_CACHE` from 
+  `HashMap<Oid, String>` to `HashMap<Oid, CachedEntityInfo>`. Added `entity_info_cached()` 
+  alongside backward-compatible `entity_for_table_cached()`.
+- **REFACTOR**: PENDING - Update trigger.rs to use `entity_info_cached()` to get 
+  `distinct_on_key` directly from cache instead of calling `TviewMeta::load_by_entity()`.
+- **CLEANUP**: PENDING - Verify `TviewMeta::load_by_entity` call removed from trigger hot path.
 
-- **RED**: Write a test that fires the trigger 10 times for the same table_oid and
-  asserts `TviewMeta::load_by_entity` is called at most once (on cache miss).
-- **GREEN**: Extend `TABLE_ENTITY_CACHE` entries from bare `String` (entity name) to a
-  small struct:
-  ```rust
-  struct CachedEntityInfo {
-      name: String,
-      distinct_on_key: Option<String>, // None → standard PK-based refresh
-  }
-  ```
-  On cache miss, load both fields in a single query:
-  ```sql
-  SELECT entity, distinct_on_keys[1]
-  FROM pg_tview_meta WHERE entity = $1
-  ```
-  The trigger hot path then reads `cached_info.distinct_on_key` directly — zero extra SPI.
-- **REFACTOR**: Update `entity_for_table` (and `entity_for_table_uncached`) to return
-  `CachedEntityInfo`; update all callers that previously accessed only `.name`.
-- **CLEANUP**: Delete the `TviewMeta::load_by_entity` call from the trigger hot path;
-  confirm `invalidate_all_caches()` also clears `TABLE_ENTITY_CACHE`.
+**Note**: Distinct_on_key is currently cached as `None` (TODO to query from pg_tview_meta).
+Trigger handler will use cache hit for entity name and fallback to load_by_entity for
+metadata until full P-01 REFACTOR is complete.
 
 ## Dependencies
 
@@ -93,4 +78,4 @@ change if the TVIEW is dropped and recreated.
 
 ## Status
 
-[ ] Not Started
+[~] In Progress (Cycles 1-3 complete, Cycle 4 infrastructure in place, REFACTOR pending)
