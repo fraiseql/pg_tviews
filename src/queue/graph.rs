@@ -94,23 +94,20 @@ impl EntityDepGraph {
     /// Sort refresh keys by dependency order
     ///
     /// Keys are grouped by entity, then sorted by `topo_order`.
-    /// Within each entity group, PK order is preserved.
+    /// Within each entity group, insertion order is preserved.
+    /// Both PK and dedup keys are retained as-is.
     pub fn sort_keys(&self, keys: Vec<super::key::RefreshKey>) -> Vec<super::key::RefreshKey> {
-        // Group by entity
-        let mut groups: HashMap<String, Vec<i64>> = HashMap::new();
+        // Group by entity, preserving full RefreshKey values
+        let mut groups: HashMap<String, Vec<super::key::RefreshKey>> = HashMap::new();
         for key in keys {
-            groups.entry(key.entity.clone())
-                .or_default()
-                .push(key.pk);
+            groups.entry(key.entity.clone()).or_default().push(key);
         }
 
-        // Sort entities by topo_order
+        // Emit groups in topological order
         let mut sorted_keys = Vec::new();
         for entity in &self.topo_order {
-            if let Some(pks) = groups.get(entity) {
-                for pk in pks {
-                    sorted_keys.push(super::key::RefreshKey::pk(entity, *pk));
-                }
+            if let Some(ks) = groups.remove(entity) {
+                sorted_keys.extend(ks);
             }
         }
 
@@ -179,6 +176,44 @@ fn topological_sort(
     #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sort_keys_preserves_dedup_keys() {
+        // Build a simple graph: company -> user -> post
+        let graph = EntityDepGraph {
+            parents: HashMap::new(),
+            children: HashMap::new(),
+            topo_order: vec!["company".into(), "user".into(), "post".into()],
+        };
+
+        let keys = vec![
+            super::super::key::RefreshKey::pk("post", 10),
+            super::super::key::RefreshKey::dedup("user", "some-uuid"),
+            super::super::key::RefreshKey::pk("company", 1),
+            super::super::key::RefreshKey::pk("user", 42),
+            super::super::key::RefreshKey::dedup("post", "dedup-val"),
+        ];
+
+        let sorted = graph.sort_keys(keys);
+
+        // All 5 keys must be present
+        assert_eq!(sorted.len(), 5);
+
+        // Dedup keys must survive with their dedup_key field intact
+        let dedup_keys: Vec<_> = sorted.iter().filter(|k| k.is_dedup()).collect();
+        assert_eq!(dedup_keys.len(), 2);
+
+        // Verify specific dedup keys are present with correct fields
+        assert!(sorted.contains(&super::super::key::RefreshKey::dedup("user", "some-uuid")));
+        assert!(sorted.contains(&super::super::key::RefreshKey::dedup("post", "dedup-val")));
+
+        // Verify topological order: company entities before user, user before post
+        let first_company = sorted.iter().position(|k| k.entity == "company").unwrap();
+        let first_user = sorted.iter().position(|k| k.entity == "user").unwrap();
+        let first_post = sorted.iter().position(|k| k.entity == "post").unwrap();
+        assert!(first_company < first_user);
+        assert!(first_user < first_post);
+    }
 
     #[test]
     fn test_topological_sort() {
