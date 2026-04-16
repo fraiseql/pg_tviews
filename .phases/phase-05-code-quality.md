@@ -54,17 +54,17 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Dynamic patterns in detect_dependency_type still compile per FK (unavoidable)
 - **Commit**: 4766309 (feat: cache regex patterns with LazyLock)
 
-### Cycle 4: Wire Up log_refresh() (F-12a)
+### Cycle 4: Wire Up log_refresh() (F-12a) ✅
 - **Objective**: Use log_refresh() in refresh_pk or remove if dead code
 - **Target**: `src/audit.rs:46` and `src/refresh/main.rs`
 - **Strategy**: Call log_refresh() after refresh operations or delete function
 
 #### Implementation
-- Review log_refresh() function and understand its purpose
-- Integrate into refresh_pk() if needed
-- Add tests for refresh logging
-- Or remove function if genuinely unused
-- **Commit**: TBD
+- Review log_refresh() function and understand its purpose ✅
+- Integrate into refresh_pk() and refresh_by_dedup_key() ✅
+- Add tests for refresh logging ✅
+- Removed #[allow(dead_code)] attribute (function now actively used)
+- **Commit**: 3d1ed27 (feat: wire up log_refresh in refresh operations)
 
 ### Cycle 5: Delete Dead 2PC Infrastructure (F-12b + P-12)
 - **Objective**: Remove persistence.rs and refresh/cache.rs (2PC dead code)
@@ -95,4 +95,4 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 3 complete, Cycle 4 ready)
+[~] In Progress (Cycle 4 complete, Cycle 5 ready)
