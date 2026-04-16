@@ -8,25 +8,16 @@ use pgrx::prelude::*;
 use crate::error::TViewResult;
 use crate::refresh::bulk::quote_identifier;
 
-/// Event trigger function called after DDL command completes
+/// Internal handler for DDL events — mirrors the PL/pgSQL event trigger body.
 ///
-/// This is registered as an event trigger in SQL:
-/// ```sql
-/// CREATE EVENT TRIGGER pg_tviews_ddl_end
-/// ON ddl_command_end
-/// WHEN TAG IN ('CREATE TABLE', 'SELECT INTO')
-/// EXECUTE FUNCTION pg_tviews_handle_ddl_event();
-/// ```
+/// The active event trigger is the PL/pgSQL `pg_tviews_handle_ddl_event()` defined
+/// in `src/metadata.rs` (extension_sql! block). It calls `pg_tviews_convert_table()`
+/// which is a `#[pg_extern]` C function that does the real work.
 ///
-/// # Safety Context
-/// Event triggers fire AFTER the DDL completes, providing a safe context
-/// for SPI operations. The table already exists at this point.
-#[pg_extern(sql = r#"
-CREATE OR REPLACE FUNCTION pg_tviews_handle_ddl_event() RETURNS event_trigger
-AS 'MODULE_PATHNAME', 'pg_tviews_handle_ddl_event_wrapper'
-LANGUAGE c;
-"#)]
-fn pg_tviews_handle_ddl_event() {
+/// This Rust function is kept for reference / future migration to a pure-C handler
+/// once pgrx properly supports `RETURNS event_trigger` in `#[pg_extern]`.
+#[allow(dead_code)]
+fn handle_ddl_event_internal() {
 
     // Get information about the DDL command that just executed
     let commands = match get_ddl_commands() {
