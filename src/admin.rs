@@ -85,11 +85,16 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
         });
     }
 
-    let col_list = view_columns.join(", ");
+    let col_list = view_columns.iter()
+        .map(|c| crate::refresh::bulk::quote_identifier(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let qi_tv = crate::refresh::bulk::quote_identifier(&tv_name);
+    let qi_view = crate::refresh::bulk::quote_identifier(&view_name);
 
-    Spi::run(&format!("TRUNCATE {tv_name}"))?;
+    Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&format!(
-        "INSERT INTO {tv_name} ({col_list}) SELECT {col_list} FROM {view_name}"
+        "INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}"
     ))?;
 
     Ok(())
