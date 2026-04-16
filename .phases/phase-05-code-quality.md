@@ -26,17 +26,18 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Maintained identical semantics: returns Some(entity) if exists in pg_tview_meta, None otherwise
 - **Commit**: 53b12b2 (refactor: simplify pgrx 0.17.0 entity_for_table lookup)
 
-### Cycle 2: Add Queue Size GUC (F-09)
+### Cycle 2: Add Queue Size GUC (F-09) ✅
 - **Objective**: Implement pg_tviews.max_queue_size GUC with backpressure
 - **Target**: `src/config/mod.rs` and `src/queue/ops.rs`
 - **Strategy**: Add GUC parameter, enforce limit before queue_add()
 
 #### Implementation
-- Create GUC: `pg_tviews.max_queue_size` (default: 10000)
-- Update `queue_add()` to check size before insertion
-- Raise ERROR if exceeded
-- Add tests for backpressure behavior
-- **Commit**: TBD
+- Created GUC: `pg_tviews.max_queue_size` (default: 10000, range: 1-1000000)
+- Implemented `check_queue_backpressure()` helper with clear error messages
+- Updated `enqueue_refresh()`, `enqueue_refresh_dedup()`, `enqueue_refresh_bulk()` to check limit
+- Added `enqueue_refresh_with_limit()` internal API for testing with custom limits
+- Added unit test: `test_enqueue_respects_max_queue_size` verifies 2-item limit enforcement
+- **Commit**: ac5c5ad (feat: add max_queue_size GUC with backpressure enforcement)
 
 ### Cycle 3: Cache Regex Patterns (F-10)
 - **Objective**: Compile regex patterns once, reuse across calls
@@ -91,4 +92,4 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 1 complete, Cycle 2 ready)
+[~] In Progress (Cycle 2 complete, Cycle 3 ready)
