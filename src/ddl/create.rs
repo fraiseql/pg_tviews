@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use crate::schema::{TViewSchema, inference::infer_schema, analyzer::analyze_dependencies};
 use crate::error::{TViewError, TViewResult};
-use crate::refresh::bulk::quote_identifier;
+use crate::utils::quote_identifier;
 
 /// Resolve the target schema for creating TVIEW objects.
 ///

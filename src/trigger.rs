@@ -24,8 +24,7 @@ use pgrx::prelude::*;
 use pgrx::spi;
 use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
 use crate::catalog::{entity_for_table, TviewMeta};
-use crate::refresh::bulk::quote_identifier;
-use crate::utils::tuple_get_i64;
+use crate::utils::{tuple_get_i64, quote_identifier};
 
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change

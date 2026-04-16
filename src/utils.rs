@@ -188,3 +188,47 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     })
 }
 
+/// Quote a SQL identifier for safe use in queries.
+///
+/// Doubles any internal double-quotes and wraps the identifier in double-quotes.
+/// This is safe for identifiers that are already constrained by PostgreSQL
+/// (entity names, column names, etc. which match `\w+`).
+///
+/// # Examples
+///
+/// ```
+/// # use crate::utils::quote_identifier;
+/// assert_eq!(quote_identifier("post"), "\"post\"");
+/// assert_eq!(quote_identifier("Post"), "\"Post\"");
+/// assert_eq!(quote_identifier("pk_user"), "\"pk_user\"");
+/// assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+/// ```
+#[must_use]
+pub fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quote_identifier_normal() {
+        assert_eq!(quote_identifier("post"), "\"post\"");
+    }
+
+    #[test]
+    fn test_quote_identifier_uppercase() {
+        assert_eq!(quote_identifier("Post"), "\"Post\"");
+    }
+
+    #[test]
+    fn test_quote_identifier_with_underscore() {
+        assert_eq!(quote_identifier("pk_user"), "\"pk_user\"");
+    }
+
+    #[test]
+    fn test_quote_identifier_with_internal_quotes() {
+        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+    }
+}

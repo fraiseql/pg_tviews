@@ -6,7 +6,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
-use crate::refresh::bulk::quote_identifier;
+use crate::utils::quote_identifier;
 use crate::schema::TViewSchema;
 
 /// Convert an existing table to a TVIEW

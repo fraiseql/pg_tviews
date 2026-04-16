@@ -8,7 +8,7 @@ use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use std::collections::HashMap;
 use std::sync::{LazyLock, PoisonError};
-use crate::TViewResult;
+use crate::{TViewResult, utils::quote_identifier};
 
 /// Cache prepared statement names per entity
 /// Key: entity name (e.g., `post`, `user`)
@@ -111,32 +111,12 @@ pub fn get_cache_stats() -> (usize, Vec<String>) {
     (size, entities)
 }
 
-/// Helper: Quote identifier safely
-fn quote_identifier(name: &str) -> String {
-    let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    match Spi::get_one_with_args::<String>(
-        "SELECT quote_ident($1)",
-        &quote_args,
-    ) {
-        Ok(Some(quoted)) => quoted,
-        _ => format!("\"{}\"", name.replace('"', "\"\"")),
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_quote_identifier() {
-        let result = quote_identifier("test_entity");
-        assert_eq!(result, "\"test_entity\"");
-
-        let result = quote_identifier("test-entity");
-        assert_eq!(result, "\"test-entity\"");
-    }
-
-    #[test]
+#[test]
     fn test_clear_cache() {
         {
             let mut cache = PREPARED_STATEMENTS.lock().unwrap();

@@ -1,7 +1,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
-use crate::refresh::bulk::quote_identifier;
+use crate::utils::quote_identifier;
 
 /// Install cascade triggers on all base tables for a TVIEW.
 ///

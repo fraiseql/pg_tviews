@@ -3,7 +3,7 @@
 use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
 use pgrx::JsonB;
-use crate::{TViewError, TViewResult};
+use crate::{TViewError, TViewResult, utils::quote_identifier};
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
 ///
@@ -86,11 +86,11 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     }
 
     let col_list = view_columns.iter()
-        .map(|c| crate::refresh::bulk::quote_identifier(c))
+        .map(|c| quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ");
-    let qi_tv = crate::refresh::bulk::quote_identifier(&tv_name);
-    let qi_view = crate::refresh::bulk::quote_identifier(&view_name);
+    let qi_tv = quote_identifier(&tv_name);
+    let qi_view = quote_identifier(&view_name);
 
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&format!(

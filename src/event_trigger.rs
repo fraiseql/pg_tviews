@@ -11,7 +11,7 @@
 //! function for the actual conversion logic.
 
 use pgrx::prelude::*;
-use crate::refresh::bulk::quote_identifier;
+use crate::utils::quote_identifier;
 
 /// Convert a `tv_*` table (just created by `CREATE TABLE tv_* AS SELECT …`) to a TVIEW.
 ///

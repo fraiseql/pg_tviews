@@ -2,9 +2,8 @@
 
 use pgrx::prelude::*;
 use crate::catalog;
-use crate::utils;
+use crate::utils::{self, quote_identifier};
 use crate::queue;
-use crate::refresh::bulk::quote_identifier;
 
 /// Cascade refresh when a base table row changes
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables

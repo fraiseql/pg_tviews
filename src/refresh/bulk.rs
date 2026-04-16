@@ -8,7 +8,7 @@ use pgrx::spi;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use crate::catalog::TviewMeta;
-use crate::utils::lookup_view_for_source;
+use crate::utils::{lookup_view_for_source, quote_identifier};
 use crate::TViewResult;
 
 /// Refresh multiple rows of the same entity in a single operation
@@ -130,19 +130,6 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     })
 }
 
-/// Helper: Quote identifier safely
-pub fn quote_identifier(name: &str) -> String {
-    // Use PostgreSQL's `quote_ident()` for safety
-    let quote_args = vec![unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    match Spi::get_one_with_args::<String>(
-        "SELECT quote_ident($1)",
-        &quote_args,
-    ) {
-        Ok(Some(quoted)) => quoted,
-        _ => format!("\"{}\"", name.replace('"', "\"\"")),
-    }
-}
-
 /// Helper: Look up TVIEW table name given its OID
 fn relname_from_oid(oid: pg_sys::Oid) -> spi::Result<String> {
     crate::utils::spi_get_string(&format!(
@@ -164,14 +151,4 @@ mod tests {
         assert!(refresh_bulk("test", &[]).is_ok());
     }
 
-    #[test]
-    fn test_quote_identifier() {
-        // Test basic identifier quoting
-        let result = quote_identifier("test_table");
-        assert_eq!(result, "\"test_table\"");
-
-        // Test identifier with special characters
-        let result = quote_identifier("test-table");
-        assert_eq!(result, "\"test-table\"");
-    }
 }
