@@ -8,11 +8,11 @@ SAVEPOINT_DEPTH can underflow to usize::MAX in release mode.
 
 ## Success Criteria
 
-- [ ] `CREATE TABLE tv_;` no longer permanently disables hook processing for the session
-- [ ] DISTINCT ON TVIEWs refresh correctly after a flush (dedup keys survive sort_keys)
-- [ ] `SAVEPOINT_DEPTH` decrement is saturating; warning emitted when pre-decrement is 0
-- [ ] `cargo clippy --no-default-features --features pg18 -- -D warnings` passes clean
-- [ ] `cargo pgrx install && psql` smoke tests pass for all three fixed paths
+- [x] `CREATE TABLE tv_;` no longer permanently disables hook processing for the session
+- [x] DISTINCT ON TVIEWs refresh correctly after a flush (dedup keys survive sort_keys)
+- [x] `SAVEPOINT_DEPTH` decrement is saturating; warning emitted when pre-decrement is 0
+- [x] `cargo clippy --no-default-features --features pg18 -- -D warnings` passes clean
+- [x] `cargo pgrx install && psql` smoke tests pass for all three fixed paths
 
 ## TDD Cycles
 
@@ -113,4 +113,4 @@ Release builds: silent wraparound to `usize::MAX`, permanently corrupting the co
 
 ## Status
 
-[~] In Progress
+[x] Complete
