@@ -141,7 +141,11 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
             entity: key.entity.clone(),
         })?;
 
-    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    if let Some(dedup) = &key.dedup_key {
+        crate::refresh::refresh_by_dedup_key(meta.view_oid, dedup)?;
+    } else {
+        crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    }
 
     crate::propagate::find_parents_for(key)
 }

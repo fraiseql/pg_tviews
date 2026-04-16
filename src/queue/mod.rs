@@ -16,6 +16,6 @@ pub mod persistence;
 mod integration_tests;
 
 pub use key::RefreshKey;
-pub use ops::{enqueue_refresh, enqueue_refresh_bulk};
+pub use ops::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
 pub use state::{get_queue_size, get_queue_contents};
 pub use xact::flush_refresh_queue;

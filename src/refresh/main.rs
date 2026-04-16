@@ -113,6 +113,120 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     Ok(())
 }
 
+/// Refresh a DISTINCT ON TVIEW row when a base-table row in its dedup group changes.
+///
+/// Re-evaluates the full DISTINCT ON group for the given `dedup_key` value and
+/// UPSERTs the winning row into the TVIEW.  If no rows remain in the backing view
+/// for that key (all base-table rows deleted), the TVIEW row is deleted.
+///
+/// # Arguments
+///
+/// * `source_oid` - OID of the TVIEW's view or table
+/// * `dedup_key` - TEXT representation of the DISTINCT ON key value (e.g. UUID as string)
+///
+/// # Errors
+///
+/// Returns `Err` if the TVIEW has no metadata, is not a DISTINCT ON TVIEW, or if
+/// the database operation fails.
+pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()> {
+    let meta = TviewMeta::load_for_source(source_oid)?;
+    let Some(meta) = meta else {
+        error!("No TVIEW metadata for source_oid: {:?}", source_oid);
+    };
+
+    if meta.distinct_on_keys.is_empty() {
+        error!(
+            "refresh_by_dedup_key called on non-DISTINCT-ON TVIEW '{}'",
+            meta.entity_name
+        );
+    }
+
+    // Use the first key column for WHERE lookup (the view handles full DISTINCT ON logic)
+    let key_col = &meta.distinct_on_keys[0];
+    let view_name = lookup_view_for_source(meta.view_oid)?;
+    let tv_name = relname_from_oid(meta.tview_oid)?;
+
+    // Check whether any winning row exists for this dedup key
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM {view_name} WHERE {key_col}::text = $1"
+    );
+    let row_count: i64 = Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let mut rows = client.select(&count_sql, None, &args)?;
+        let count = rows
+            .next()
+            .and_then(|r| r["count"].value::<i64>().ok().flatten())
+            .unwrap_or(0);
+        Ok::<i64, spi::SpiError>(count)
+    })?;
+
+    if row_count == 0 {
+        // No winning row — remove the TVIEW row for this dedup key
+        let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col}::text = $1");
+        Spi::run_with_args(
+            &delete_sql,
+            &[unsafe {
+                DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            }],
+        )?;
+    } else {
+        // Winning row exists — UPSERT from the backing view
+        let col_names = get_view_columns(&view_name)?;
+        if col_names.is_empty() {
+            return Ok(());
+        }
+
+        let do_update: String = col_names.iter()
+            .filter(|c| c.as_str() != key_col.as_str())
+            .map(|c| format!("{c} = EXCLUDED.{c}"))
+            .chain(std::iter::once("updated_at = NOW()".to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let col_list = col_names.join(", ");
+        let upsert_sql = format!(
+            "INSERT INTO {tv_name} ({col_list}) \
+             SELECT {col_list} FROM {view_name} WHERE {key_col}::text = $1 LIMIT 1 \
+             ON CONFLICT ({key_col}) DO UPDATE SET {do_update}"
+        );
+        Spi::run_with_args(
+            &upsert_sql,
+            &[unsafe {
+                DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            }],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Get the list of column names for a view (used for UPSERT column lists).
+fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
+    Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let rows = client.select(
+            "SELECT a.attname::text \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+            None,
+            &args,
+        )?;
+        let mut cols = Vec::new();
+        for r in rows {
+            if let Some(name) = r["attname"].value::<String>()? {
+                cols.push(name);
+            }
+        }
+        Ok(cols)
+    })
+}
+
 /// Recompute a single row from the `v_entity` view.
 ///
 /// Queries the view definition to get the latest JSONB `data` column and FK values

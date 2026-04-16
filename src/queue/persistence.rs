@@ -156,8 +156,8 @@ mod tests {
     #[test]
     fn test_queue_serialization_jsonb() {
         let mut queue = HashSet::new();
-        queue.insert(RefreshKey { entity: "user".to_string(), pk: 1 });
-        queue.insert(RefreshKey { entity: "post".to_string(), pk: 2 });
+        queue.insert(RefreshKey::pk("user", 1));
+        queue.insert(RefreshKey::pk("post", 2));
 
         let serialized = SerializedQueue::from_queue(queue);
         let jsonb = serialized.into_jsonb().unwrap();
@@ -165,15 +165,15 @@ mod tests {
         let restored_queue = deserialized.into_queue();
 
         assert_eq!(restored_queue.len(), 2);
-        assert!(restored_queue.contains(&RefreshKey { entity: "user".to_string(), pk: 1 }));
-        assert!(restored_queue.contains(&RefreshKey { entity: "post".to_string(), pk: 2 }));
+        assert!(restored_queue.contains(&RefreshKey::pk("user", 1)));
+        assert!(restored_queue.contains(&RefreshKey::pk("post", 2)));
     }
 
     #[test]
     fn test_queue_serialization_binary() {
         let mut queue = HashSet::new();
-        queue.insert(RefreshKey { entity: "user".to_string(), pk: 1 });
-        queue.insert(RefreshKey { entity: "post".to_string(), pk: 2 });
+        queue.insert(RefreshKey::pk("user", 1));
+        queue.insert(RefreshKey::pk("post", 2));
 
         let serialized = SerializedQueue::from_queue(queue);
         let binary = serialized.to_binary().unwrap();
@@ -181,15 +181,15 @@ mod tests {
         let restored_queue = deserialized.into_queue();
 
         assert_eq!(restored_queue.len(), 2);
-        assert!(restored_queue.contains(&RefreshKey { entity: "user".to_string(), pk: 1 }));
-        assert!(restored_queue.contains(&RefreshKey { entity: "post".to_string(), pk: 2 }));
+        assert!(restored_queue.contains(&RefreshKey::pk("user", 1)));
+        assert!(restored_queue.contains(&RefreshKey::pk("post", 2)));
     }
 
     #[test]
     fn test_queue_serialization_compressed() {
         let mut queue = HashSet::new();
-        queue.insert(RefreshKey { entity: "user".to_string(), pk: 1 });
-        queue.insert(RefreshKey { entity: "post".to_string(), pk: 2 });
+        queue.insert(RefreshKey::pk("user", 1));
+        queue.insert(RefreshKey::pk("post", 2));
 
         let serialized = SerializedQueue::from_queue(queue);
         let compressed = serialized.to_compressed_jsonb().unwrap();
@@ -197,7 +197,7 @@ mod tests {
         let restored_queue = deserialized.into_queue();
 
         assert_eq!(restored_queue.len(), 2);
-        assert!(restored_queue.contains(&RefreshKey { entity: "user".to_string(), pk: 1 }));
-        assert!(restored_queue.contains(&RefreshKey { entity: "post".to_string(), pk: 2 }));
+        assert!(restored_queue.contains(&RefreshKey::pk("user", 1)));
+        assert!(restored_queue.contains(&RefreshKey::pk("post", 2)));
     }
 }

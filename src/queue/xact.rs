@@ -252,8 +252,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     }
                 }
             } else {
-                // Multiple keys for same entity: use bulk refresh
-                let pks: Vec<i64> = entity_keys.iter().map(|k| k.pk).collect();
+                // Multiple keys for same entity: use bulk refresh (PK-only path)
+                let pks: Vec<i64> = entity_keys.iter().filter_map(|k| {
+                    if k.is_dedup() { None } else { Some(k.pk) }
+                }).collect();
 
 
                 // Bulk refresh this entity
@@ -316,8 +318,12 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
             entity: key.entity.clone(),
         })?;
 
-    // Refresh this entity (existing logic)
-    crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    // Refresh this entity — dispatch on key type
+    if let Some(dedup) = &key.dedup_key {
+        crate::refresh::refresh_by_dedup_key(meta.view_oid, dedup)?;
+    } else {
+        crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    }
 
     // Find parent entities (NEW: returns keys instead of refreshing)
     let parent_keys = crate::propagate::find_parents_for(key)?;

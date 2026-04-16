@@ -19,12 +19,12 @@ use crate::queue::RefreshKey;
 /// # Example
 ///
 /// ```rust
-/// let key = RefreshKey { entity: "user".into(), pk: 1 };
+/// let key = RefreshKey::pk("user", 1);
 /// let parents = find_parents_for(&key)?;
 /// // Returns: [
-/// //   RefreshKey { entity: "post", pk: 10 },
-/// //   RefreshKey { entity: "post", pk: 20 },
-/// //   RefreshKey { entity: "comment", pk: 5 },
+/// //   RefreshKey::pk("post", 10),
+/// //   RefreshKey::pk("post", 20),
+/// //   RefreshKey::pk("comment", 5),
 /// // ]
 /// // These are all the tv_post and tv_comment rows where fk_user = 1
 /// ```
@@ -39,16 +39,19 @@ pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>>
 
     let mut parent_keys = Vec::new();
 
+    // Propagation only applies to PK-based keys; DISTINCT ON dedup keys
+    // do not carry a FK value that parent TVIEWs can use for lookup.
+    if key.is_dedup() {
+        return Ok(Vec::new());
+    }
+
     // For each parent entity, find affected rows
     for parent_entity in parent_entities {
         let affected_pks = find_affected_pks(&parent_entity, &key.entity, key.pk)?;
 
         // Convert to RefreshKeys
         for pk in affected_pks {
-            parent_keys.push(RefreshKey {
-                entity: parent_entity.clone(),
-                pk,
-            });
+            parent_keys.push(RefreshKey::pk(&parent_entity, pk));
         }
     }
 

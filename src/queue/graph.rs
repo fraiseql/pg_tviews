@@ -109,10 +109,7 @@ impl EntityDepGraph {
         for entity in &self.topo_order {
             if let Some(pks) = groups.get(entity) {
                 for pk in pks {
-                    sorted_keys.push(super::key::RefreshKey {
-                        entity: entity.clone(),
-                        pk: *pk,
-                    });
+                    sorted_keys.push(super::key::RefreshKey::pk(entity, *pk));
                 }
             }
         }

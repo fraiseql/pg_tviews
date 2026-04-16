@@ -65,6 +65,15 @@ pub struct TviewMeta {
     ///
     /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
+
+    /// DISTINCT ON key column names for DISTINCT ON TVIEWs (e.g. `["id"]`).
+    ///
+    /// When non-empty, this TVIEW uses deduplication-based refresh: the trigger
+    /// enqueues the DISTINCT ON key value instead of the base-table PK, and the
+    /// refresh re-evaluates the full DISTINCT ON group to find the winning row.
+    ///
+    /// Empty for standard (PK-based) TVIEWs.
+    pub distinct_on_keys: Vec<String>,
 }
 
 impl TviewMeta {
@@ -98,7 +107,8 @@ impl TviewMeta {
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys \
+                        dependency_types, dependency_paths, array_match_keys, \
+                        distinct_on_keys \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -119,7 +129,8 @@ impl TviewMeta {
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys \
+                        dependency_types, dependency_paths, array_match_keys, \
+                        distinct_on_keys \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -164,7 +175,8 @@ impl TviewMeta {
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys \
+                        dependency_types, dependency_paths, array_match_keys, \
+                        distinct_on_keys \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
@@ -199,6 +211,11 @@ impl TviewMeta {
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
+        // distinct_on_keys (TEXT[]) — present in pg_tview_meta for DISTINCT ON TVIEWs
+        let distinct_on_keys: Vec<String> = row["distinct_on_keys"]
+            .value::<Vec<String>>()?
+            .unwrap_or_default();
+
         Ok(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
@@ -221,7 +238,13 @@ impl TviewMeta {
             dependency_types: dep_types,
             dependency_paths: dep_paths,
             array_match_keys: array_keys.unwrap_or_default(),
+            distinct_on_keys,
         })
+    }
+
+    /// Returns `true` if this TVIEW uses DISTINCT ON deduplication-based refresh.
+    pub fn is_distinct_on(&self) -> bool {
+        !self.distinct_on_keys.is_empty()
     }
 
     /// Parse dependency metadata into structured form for smart patching.
@@ -297,6 +320,7 @@ impl Default for TviewMeta {
             dependency_types: vec![],
             dependency_paths: vec![],
             array_match_keys: vec![],
+            distinct_on_keys: vec![],
         }
     }
 }
@@ -425,6 +449,7 @@ mod tests {
             dependency_types: vec![DependencyType::Scalar],
             dependency_paths: vec![None],
             array_match_keys: vec![None],
+            distinct_on_keys: vec![],
         };
 
         assert_eq!(meta.dependency_types.len(), 1);

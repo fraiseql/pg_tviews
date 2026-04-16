@@ -39,7 +39,7 @@ mod tests {
         // Each thread gets its own queue
         TX_REFRESH_QUEUE.with(|q| {
             let mut queue = q.borrow_mut();
-            queue.insert(RefreshKey { entity: "user".to_string(), pk: 1 });
+            queue.insert(RefreshKey::pk("user", 1));
             assert_eq!(queue.len(), 1);
         });
 

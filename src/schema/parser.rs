@@ -46,8 +46,11 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         return Err("FROM appears before SELECT".to_string());
     }
 
-    // Extract SELECT clause (skip the "select" keyword itself: 6 bytes)
-    let select_clause = &sql[select_start + 6..from_start].trim();
+    // Skip DISTINCT ON (...) or plain DISTINCT if present after SELECT
+    let col_start = skip_distinct_clause(&sql_lower, select_start + 6);
+
+    // Extract SELECT clause (columns only, after any DISTINCT ON)
+    let select_clause = &sql[col_start..from_start].trim();
 
     if select_clause.is_empty() {
         return Err("No columns found in SELECT statement".to_string());
@@ -113,6 +116,158 @@ fn find_outer_from(sql_lower: &str, after_pos: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Skip a `DISTINCT ON (...)` or plain `DISTINCT` clause immediately following the
+/// `SELECT` keyword and return the byte offset of the first column.
+///
+/// `sql_lower` must already be lowercased.
+/// `after_select` is the byte offset just past the `SELECT` keyword (i.e. `select_start + 6`).
+///
+/// - `SELECT DISTINCT ON (c.id, c.ver) pk, id ...` → returns offset of `pk`
+/// - `SELECT DISTINCT pk, id ...` → returns offset of `pk`
+/// - `SELECT pk, id ...` → returns `after_select` unchanged (no-op)
+fn skip_distinct_clause(sql_lower: &str, after_select: usize) -> usize {
+    let bytes = sql_lower.as_bytes();
+    let len = bytes.len();
+    let mut i = after_select;
+
+    // Skip whitespace
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Check for "distinct" keyword
+    if i + 8 > len || &bytes[i..i + 8] != b"distinct" {
+        return after_select; // no DISTINCT clause
+    }
+    let after_distinct = i + 8;
+    if after_distinct < len
+        && (bytes[after_distinct].is_ascii_alphanumeric() || bytes[after_distinct] == b'_')
+    {
+        return after_select; // not a keyword boundary
+    }
+    i += 8; // skip "distinct"
+
+    // Skip whitespace after DISTINCT
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Check for "on" keyword (DISTINCT ON vs plain DISTINCT)
+    if i + 2 <= len && &bytes[i..i + 2] == b"on" {
+        let after_on = i + 2;
+        if after_on >= len
+            || (!bytes[after_on].is_ascii_alphanumeric() && bytes[after_on] != b'_')
+        {
+            i += 2; // skip "on"
+
+            // Skip whitespace before "("
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+
+            // Skip the parenthesized expression list
+            if i < len && bytes[i] == b'(' {
+                if let Ok(end) = skip_paren_block(bytes, i) {
+                    i = end;
+                }
+            }
+        }
+        // If "on" is not a keyword boundary, it's a plain DISTINCT — already advanced past "distinct"
+    }
+    // else: plain DISTINCT (no ON) — already skipped "distinct"
+
+    i
+}
+
+/// Extract the DISTINCT ON key expressions from a SELECT statement.
+///
+/// Returns the column/expression names listed inside `DISTINCT ON (...)`.
+/// Strips table qualifiers (e.g. `c.id` → `"id"`).
+/// Returns an empty `Vec` if the SQL does not use `DISTINCT ON`.
+///
+/// # Errors
+///
+/// Returns `Err` if the SQL cannot be parsed (passed through from `skip_cte_preamble`).
+pub fn extract_distinct_on_keys(sql: &str) -> Result<Vec<String>, String> {
+    let sql_lower = sql.to_lowercase();
+    let cte_offset = skip_cte_preamble(&sql_lower)?;
+
+    let select_start = sql_lower[cte_offset..]
+        .find("select")
+        .map(|p| p + cte_offset)
+        .ok_or("No SELECT keyword found")?;
+
+    let bytes = sql_lower.as_bytes();
+    let len = bytes.len();
+    let mut i = select_start + 6;
+
+    // Skip whitespace
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Must see "distinct"
+    if i + 8 > len || &bytes[i..i + 8] != b"distinct" {
+        return Ok(vec![]);
+    }
+    let after_distinct = i + 8;
+    if after_distinct < len
+        && (bytes[after_distinct].is_ascii_alphanumeric() || bytes[after_distinct] == b'_')
+    {
+        return Ok(vec![]);
+    }
+    i += 8;
+
+    // Skip whitespace
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    // Must see "on"
+    if i + 2 > len || &bytes[i..i + 2] != b"on" {
+        return Ok(vec![]); // plain DISTINCT, no dedup keys
+    }
+    let after_on = i + 2;
+    if after_on < len
+        && (bytes[after_on].is_ascii_alphanumeric() || bytes[after_on] == b'_')
+    {
+        return Ok(vec![]); // "on" is part of an identifier
+    }
+    i += 2;
+
+    // Skip whitespace
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    if i >= len || bytes[i] != b'(' {
+        return Ok(vec![]);
+    }
+
+    // Find closing paren position
+    let close = skip_paren_block(bytes, i)?;
+    // Extract content between ( and )
+    let inner = &sql[i + 1..close - 1].trim();
+
+    // Split by top-level commas and strip table qualifiers
+    let keys = split_by_top_level_comma(inner)
+        .into_iter()
+        .map(|k| {
+            let trimmed = k.trim().to_string();
+            // Strip table qualifier: "c.id" → "id"
+            trimmed
+                .split('.')
+                .next_back()
+                .unwrap_or(&trimmed)
+                .trim()
+                .to_string()
+        })
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    Ok(keys)
 }
 
 /// Skip a leading `WITH` clause (CTE preamble) and return the byte offset into
@@ -335,8 +490,11 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
         return Err("FROM appears before SELECT".to_string());
     }
 
-    // Extract SELECT clause (skip the "select" keyword itself: 6 bytes)
-    let select_clause = &sql[select_start + 6..from_start].trim();
+    // Skip DISTINCT ON (...) or plain DISTINCT if present after SELECT
+    let col_start = skip_distinct_clause(&sql_lower, select_start + 6);
+
+    // Extract SELECT clause (columns only, after any DISTINCT ON)
+    let select_clause = &sql[col_start..from_start].trim();
 
     if select_clause.is_empty() {
         return Err("No columns found in SELECT statement".to_string());
@@ -677,6 +835,92 @@ mod tests {
     #[test]
     fn test_non_cte_sql_unchanged() {
         let sql = "SELECT pk_post, id, jsonb_build_object('id', id) AS data FROM tb_post";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_post", "id", "data"]);
+    }
+
+    // ── Phase 2, Cycle 1: DISTINCT ON parser ─────────────────────────────────
+
+    #[test]
+    fn test_parse_distinct_on_columns() {
+        let sql = "SELECT DISTINCT ON (c.id) c.pk_contract, c.id, c.name, \
+                   jsonb_build_object('id', c.id, 'name', c.name) AS data \
+                   FROM tenant.tb_contract c ORDER BY c.id, c.version DESC";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_contract", "id", "name", "data"],
+            "got: {cols:?}");
+    }
+
+    #[test]
+    fn test_parse_distinct_on_columns_with_expressions() {
+        let sql = "SELECT DISTINCT ON (c.id) c.pk_contract, c.id, c.name, \
+                   jsonb_build_object('id', c.id) AS data \
+                   FROM tenant.tb_contract c ORDER BY c.id, c.version DESC";
+        let cols = parse_select_columns_with_expressions(sql).unwrap();
+        let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"pk_contract"), "got: {names:?}");
+        assert!(names.contains(&"data"), "got: {names:?}");
+    }
+
+    #[test]
+    fn test_parse_plain_distinct_columns() {
+        // SELECT DISTINCT (no ON) — should also work
+        let sql = "SELECT DISTINCT pk_item, id, name AS data FROM tb_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
+    }
+
+    #[test]
+    fn test_parse_composite_distinct_on() {
+        let sql = "SELECT DISTINCT ON (c.tenant_id, c.id) c.pk_contract, c.id, c.name AS data \
+                   FROM tb_contract c ORDER BY c.tenant_id, c.id, c.version DESC";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_contract", "id", "data"]);
+    }
+
+    // ── Phase 2, Cycle 2: extract_distinct_on_keys ───────────────────────────
+
+    #[test]
+    fn test_extract_distinct_on_keys_single() {
+        let sql = "SELECT DISTINCT ON (c.id) c.pk_contract, c.id FROM tb_contract c";
+        let keys = extract_distinct_on_keys(sql).unwrap();
+        assert_eq!(keys, vec!["id"]);
+    }
+
+    #[test]
+    fn test_extract_distinct_on_keys_composite() {
+        let sql = "SELECT DISTINCT ON (c.tenant_id, c.id) c.pk_contract, c.id FROM tb_contract c";
+        let keys = extract_distinct_on_keys(sql).unwrap();
+        assert_eq!(keys, vec!["tenant_id", "id"]);
+    }
+
+    #[test]
+    fn test_extract_distinct_on_keys_none() {
+        let sql = "SELECT pk_post, id, name FROM tb_post";
+        let keys = extract_distinct_on_keys(sql).unwrap();
+        assert!(keys.is_empty(), "expected no keys, got {keys:?}");
+    }
+
+    #[test]
+    fn test_extract_distinct_on_keys_plain_distinct() {
+        // SELECT DISTINCT (no ON) → no distinct_on_keys
+        let sql = "SELECT DISTINCT pk_post, id FROM tb_post";
+        let keys = extract_distinct_on_keys(sql).unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_extract_distinct_on_keys_with_cte() {
+        let sql = "WITH cte AS (SELECT 1) SELECT DISTINCT ON (c.id) c.pk_contract, c.id FROM tb_contract c";
+        let keys = extract_distinct_on_keys(sql).unwrap();
+        assert_eq!(keys, vec!["id"]);
+    }
+
+    // ── Phase 2: regressions — non-DISTINCT SQL unaffected ───────────────────
+
+    #[test]
+    fn test_non_distinct_sql_unchanged() {
+        let sql = "SELECT pk_post, id, data FROM tb_post JOIN tb_other ON TRUE";
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }

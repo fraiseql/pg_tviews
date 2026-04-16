@@ -20,7 +20,7 @@ mod tests {
         assert_eq!(snapshot.len(), 4);
 
         // Verify specific keys exist
-        assert!(snapshot.contains(&RefreshKey { entity: "user".to_string(), pk: 1 }));
-        assert!(snapshot.contains(&RefreshKey { entity: "post".to_string(), pk: 10 }));
+        assert!(snapshot.contains(&RefreshKey::pk("user", 1)));
+        assert!(snapshot.contains(&RefreshKey::pk("post", 10)));
     }
 }

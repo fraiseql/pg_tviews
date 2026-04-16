@@ -2,37 +2,36 @@ use std::collections::HashSet;
 use super::key::RefreshKey;
 use super::state::TX_REFRESH_QUEUE;
 
-/// Enqueue a refresh request for the given entity and pk
+/// Enqueue a standard PK-based refresh request.
 ///
-/// This is the main entry point from triggers.
+/// This is the main entry point from triggers for normal TVIEWs.
 /// Deduplication is automatic (`HashSet`).
 pub fn enqueue_refresh(entity: &str, pk: i64) {
-    let key = RefreshKey {
-        entity: entity.to_string(),
-        pk,
-    };
-
     TX_REFRESH_QUEUE.with(|q| {
-        let mut queue = q.borrow_mut();
-        queue.insert(key);
+        q.borrow_mut().insert(RefreshKey::pk(entity, pk));
     });
 }
 
-/// Bulk enqueue refresh requests for multiple PKs of the same entity
+/// Enqueue a DISTINCT ON dedup-key refresh request.
+///
+/// Used by triggers on DISTINCT ON TVIEWs.  The `dedup_key` is the value
+/// of the DISTINCT ON column (cast to TEXT) identifying the group to re-evaluate.
+/// Deduplication is automatic (`HashSet`).
+pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
+    TX_REFRESH_QUEUE.with(|q| {
+        q.borrow_mut().insert(RefreshKey::dedup(entity, dedup_key));
+    });
+}
+
+/// Bulk enqueue PK-based refresh requests for multiple PKs of the same entity.
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
 pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) {
     TX_REFRESH_QUEUE.with(|q| {
         let mut queue = q.borrow_mut();
-
-        // Insert all keys at once (HashSet deduplicates automatically)
         for pk in pks {
-            let key = RefreshKey {
-                entity: entity.to_string(),
-                pk,
-            };
-            queue.insert(key);
+            queue.insert(RefreshKey::pk(entity, pk));
         }
     });
 }

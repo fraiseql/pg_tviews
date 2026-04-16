@@ -87,8 +87,12 @@ pub fn create_tview(
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
+    // Extract DISTINCT ON keys for Phase 2 support
+    let distinct_on_keys = crate::schema::parser::extract_distinct_on_keys(&final_select_sql)
+        .unwrap_or_default();
+
     // Step 4: Create materialized table tv_<entity>
-    create_materialized_table(&tv_table_name, &final_schema, &schema_name)?;
+    create_materialized_table(&tv_table_name, &final_schema, &schema_name, &distinct_on_keys)?;
 
     // Step 5: Populate initial data
     populate_initial_data(&tv_table_name, &view_name, &final_schema, &schema_name)?;
@@ -105,6 +109,7 @@ pub fn create_tview(
         &final_schema,
         &dep_graph.base_tables,
         &schema_name,
+        &distinct_on_keys,
     )?;
 
     // Step 8: Install triggers on base tables
@@ -187,21 +192,39 @@ fn create_materialized_table(
     tview_name: &str,
     schema: &TViewSchema,
     schema_name: &str,
+    distinct_on_keys: &[String],
 ) -> TViewResult<()> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
 
+    // For DISTINCT ON TVIEWs the dedup key is the table PK; pk_<entity> becomes a plain column.
+    let first_dedup = distinct_on_keys.first().map(String::as_str);
+    let is_distinct_on = first_dedup.is_some();
+
     // Build column definitions based on inferred schema
     let mut columns = Vec::new();
 
-    // Primary key column (if exists)
+    // Primary key column
     if let Some(pk) = &schema.pk_column {
-        columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
+        if is_distinct_on && first_dedup != Some(pk.as_str()) {
+            // DISTINCT ON TVIEW: pk_<entity> is a plain column, not the table PK
+            columns.push(format!("{} BIGINT", quote_identifier(pk)));
+        } else if is_distinct_on {
+            // pk_<entity> is itself the dedup key — make it the PK
+            columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
+        } else {
+            columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
+        }
     }
 
     // ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
-        columns.push(format!("{} UUID NOT NULL", quote_identifier(id)));
+        if first_dedup == Some(id.as_str()) {
+            // Dedup key on `id` — make it the table PK with a UNIQUE constraint
+            columns.push(format!("{} UUID PRIMARY KEY", quote_identifier(id)));
+        } else {
+            columns.push(format!("{} UUID NOT NULL", quote_identifier(id)));
+        }
     }
 
     // Identifier column (optional Trinity identifier)
@@ -226,7 +249,11 @@ fn create_materialized_table(
 
     // Additional columns with inferred types
     for (col_name, col_type) in &schema.additional_columns_with_types {
-        columns.push(format!("{} {col_type}", quote_identifier(col_name)));
+        if first_dedup == Some(col_name.as_str()) {
+            columns.push(format!("{} {col_type} PRIMARY KEY", quote_identifier(col_name)));
+        } else {
+            columns.push(format!("{} {col_type}", quote_identifier(col_name)));
+        }
     }
 
     // Add timestamps for tracking
@@ -365,6 +392,7 @@ fn pg_array_elem(s: &str) -> String {
 }
 
 /// Register the TVIEW in metadata tables
+#[allow(clippy::too_many_arguments)] // Reason: all args are distinct registration fields with no natural grouping
 fn register_metadata(
     entity_name: &str,
     view_name: &str,
@@ -373,6 +401,7 @@ fn register_metadata(
     schema: &TViewSchema,
     dependencies: &[pg_sys::Oid],
     schema_name: &str,
+    distinct_on_keys: &[String],
 ) -> TViewResult<()> {
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
@@ -441,6 +470,12 @@ fn register_metadata(
         pg_error: "Table OID not found".to_string(),
     })?;
 
+    // Serialize distinct_on_keys as a PostgreSQL array literal
+    let distinct_on_str = distinct_on_keys.iter()
+        .map(|s| pg_array_elem(s))
+        .collect::<Vec<_>>()
+        .join(",");
+
     // Insert metadata record (entity + definition parameterized; OIDs and array literals are safe internal values)
     let insert_meta_sql = format!(
         "INSERT INTO pg_tview_meta (
@@ -453,8 +488,9 @@ fn register_metadata(
             uuid_fk_columns,
             dependency_types,
             dependency_paths,
-            array_match_keys
-        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
+            array_match_keys,
+            distinct_on_keys
+        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -463,7 +499,8 @@ fn register_metadata(
         uuid_fk_columns,
         dep_types,
         dep_paths,
-        array_keys
+        array_keys,
+        distinct_on_str
     );
 
     let args = [

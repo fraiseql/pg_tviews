@@ -22,8 +22,8 @@ use pgrx::prelude::*;
 /// - Minimal database queries during trigger execution
 /// - Queue processing deferred to commit time
 use pgrx::spi;
-use crate::queue::{enqueue_refresh, enqueue_refresh_bulk};
-use crate::catalog::entity_for_table;
+use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
+use crate::catalog::{entity_for_table, TviewMeta};
 use crate::refresh::bulk::quote_identifier;
 use crate::utils::tuple_get_i64;
 
@@ -46,15 +46,42 @@ fn pg_tview_trigger_handler<'a>(
     // 1. Direct entity: this table IS a TVIEW source (e.g. tb_user → entity "user")
     match entity_for_table(table_oid) {
         Ok(Some(entity)) => {
-            // Extract PK only after confirming this is a direct TVIEW source
-            let pk_value = match crate::utils::extract_pk(trigger) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    warning!("Failed to extract primary key from trigger: {:?}", e);
-                    return Ok(None);
+            // Check if this is a DISTINCT ON TVIEW
+            match TviewMeta::load_by_entity(&entity) {
+                Ok(Some(meta)) if meta.is_distinct_on() => {
+                    // DISTINCT ON TVIEW: enqueue dedup key value instead of base PK
+                    let key_col = &meta.distinct_on_keys[0];
+                    let tuple = match trigger.new().or_else(|| trigger.old()) {
+                        Some(t) => t,
+                        None => {
+                            warning!("No tuple in trigger context for DISTINCT ON TVIEW '{entity}'");
+                            return Ok(None);
+                        }
+                    };
+                    match tuple.get_by_name::<String>(key_col) {
+                        Ok(Some(key_val)) => {
+                            enqueue_refresh_dedup(&entity, &key_val);
+                        }
+                        Ok(None) => {
+                            warning!("DISTINCT ON key '{key_col}' is NULL for entity '{entity}'");
+                        }
+                        Err(e) => {
+                            warning!("Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}");
+                        }
+                    }
                 }
-            };
-            enqueue_refresh(&entity, pk_value);
+                _ => {
+                    // Standard PK-based TVIEW: extract pk_<entity>
+                    let pk_value = match crate::utils::extract_pk(trigger) {
+                        Ok(pk) => pk,
+                        Err(e) => {
+                            warning!("Failed to extract primary key from trigger: {:?}", e);
+                            return Ok(None);
+                        }
+                    };
+                    enqueue_refresh(&entity, pk_value);
+                }
+            }
             return Ok(None);
         }
         Ok(None) => { /* fall through to indirect lookup */ }
