@@ -28,10 +28,10 @@ use crate::queue::RefreshKey;
 /// // ]
 /// // These are all the tv_post and tv_comment rows where fk_user = 1
 /// ```
-pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>> {
+pub fn find_parents_for(key: &RefreshKey, graph: &crate::queue::EntityDepGraph) -> crate::TViewResult<Vec<RefreshKey>> {
 
-    // Find all parent entities that depend on this entity
-    let parent_entities = find_parent_entities(&key.entity)?;
+    // Find all parent entities that depend on this entity (from cached graph)
+    let parent_entities = find_parent_entities(&key.entity, graph)?;
 
     if parent_entities.is_empty() {
         return Ok(Vec::new());
@@ -58,33 +58,13 @@ pub fn find_parents_for(key: &RefreshKey) -> crate::TViewResult<Vec<RefreshKey>>
     Ok(parent_keys)
 }
 
-/// Find all parent entities that depend on the given entity.
+/// Find all parent entities that depend on the given entity (from cached graph).
 ///
 /// Example: `find_parent_entities`("user") -> `["post", "comment"]`
 /// This means `tv_post` and `tv_comment` both have FK references to `tv_user`
-fn find_parent_entities(child_entity: &str) -> spi::Result<Vec<String>> {
-    // Query pg_tview_meta to find entities whose fk_columns reference this entity
-    // e.g., if child_entity = "user", look for entities with "fk_user" in fk_columns
-
-    let fk_col = format!("fk_{child_entity}");
-
-    let query = format!(
-        "SELECT entity FROM public.pg_tview_meta
-         WHERE '{fk_col}' = ANY(fk_columns)"
-    );
-
-    Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
-        let mut parents = Vec::new();
-
-        for row in rows {
-            if let Some(entity) = row["entity"].value::<String>()? {
-                parents.push(entity);
-            }
-        }
-
-        Ok(parents)
-    })
+fn find_parent_entities(child_entity: &str, graph: &crate::queue::EntityDepGraph) -> spi::Result<Vec<String>> {
+    // Look up parent entities from cached graph (no SPI query)
+    Ok(graph.parents.get(child_entity).cloned().unwrap_or_default())
 }
 
 /// Find all PKs in the parent TVIEW that reference the given child PK.

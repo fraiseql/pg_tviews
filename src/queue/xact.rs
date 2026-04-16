@@ -254,7 +254,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 if entity_keys.len() == 1 {
                     // Single key: use existing individual refresh
                     let key = &entity_keys[0];
-                    let parents = refresh_and_get_parents(key)?;
+                    let parents = refresh_and_get_parents(key, &graph)?;
 
                     // Add discovered parents to pending queue
                     for parent_key in parents {
@@ -274,7 +274,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 
                     // Discover parents for all keys in this entity group
                     for key in &entity_keys {
-                        let parents = crate::propagate::find_parents_for(key)?;
+                        let parents = crate::propagate::find_parents_for(key, &graph)?;
 
                         // Add discovered parents to pending queue
                         for parent_key in parents {
@@ -328,7 +328,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 ///
 /// This function returns parent keys for queue processing instead of
 /// calling `refresh_pk()` recursively.
-fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<super::key::RefreshKey>> {
+fn refresh_and_get_parents(key: &super::key::RefreshKey, graph: &super::EntityDepGraph) -> TViewResult<Vec<super::key::RefreshKey>> {
     // Load metadata
     use crate::catalog::TviewMeta;
     let meta = TviewMeta::load_by_entity(&key.entity)?
@@ -344,7 +344,7 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
     }
 
     // Find parent entities (NEW: returns keys instead of refreshing)
-    let parent_keys = crate::propagate::find_parents_for(key)?;
+    let parent_keys = crate::propagate::find_parents_for(key, graph)?;
 
     Ok(parent_keys)
 }

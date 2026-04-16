@@ -112,7 +112,7 @@ fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshK
                 continue;
             }
 
-            let parents = refresh_and_get_parents(&key)?;
+            let parents = refresh_and_get_parents(&key, &graph)?;
 
             for parent_key in parents {
                 if !processed.contains(&parent_key) {
@@ -134,7 +134,7 @@ fn process_refresh_queue(queue: std::collections::HashSet<crate::queue::RefreshK
 }
 
 /// Refresh a single entity+pk and return discovered parent keys
-fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<crate::queue::RefreshKey>> {
+fn refresh_and_get_parents(key: &crate::queue::RefreshKey, graph: &crate::queue::EntityDepGraph) -> TViewResult<Vec<crate::queue::RefreshKey>> {
     use crate::catalog::TviewMeta;
     let meta = TviewMeta::load_by_entity(&key.entity)?
         .ok_or_else(|| crate::TViewError::MetadataNotFound {
@@ -147,7 +147,7 @@ fn refresh_and_get_parents(key: &crate::queue::RefreshKey) -> TViewResult<Vec<cr
         crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
     }
 
-    crate::propagate::find_parents_for(key)
+    crate::propagate::find_parents_for(key, graph)
 }
 
 /// Get maximum propagation depth from config
