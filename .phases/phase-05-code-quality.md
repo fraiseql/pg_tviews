@@ -39,17 +39,20 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Added unit test: `test_enqueue_respects_max_queue_size` verifies 2-item limit enforcement
 - **Commit**: ac5c5ad (feat: add max_queue_size GUC with backpressure enforcement)
 
-### Cycle 3: Cache Regex Patterns (F-10)
+### Cycle 3: Cache Regex Patterns (F-10) ✅
 - **Objective**: Compile regex patterns once, reuse across calls
-- **Target**: `src/hooks.rs:497-508` (regex usage in ProcessUtility hook)
+- **Target**: `src/parser/mod.rs` and `src/schema/analyzer.rs` (regex usage in parsing & analysis)
 - **Strategy**: Use LazyLock<Regex> like other static caches
 
 #### Implementation
-- Identify all regex patterns in hooks.rs
-- Create static LazyLock<Regex> for each pattern
-- Update hook code to use cached regex
-- Add tests for regex matching
-- **Commit**: TBD
+- Added LazyLock<Regex> static CREATE_TVIEW_REGEX in parser/mod.rs for CREATE TABLE parsing
+- Added LazyLock<Regex> static patterns in analyzer.rs:
+  - ARRAY_PATTERN_REGEX: 'array_name', jsonb_agg(v_*.data)
+  - INLINE_ARRAY_PATTERN_REGEX: 'array_name', jsonb_agg(build_object)
+- Replaced Regex::new() calls with cached static references
+- Added test: test_create_tview_regex_cached verifies caching
+- Dynamic patterns in detect_dependency_type still compile per FK (unavoidable)
+- **Commit**: 4766309 (feat: cache regex patterns with LazyLock)
 
 ### Cycle 4: Wire Up log_refresh() (F-12a)
 - **Objective**: Use log_refresh() in refresh_pk or remove if dead code
@@ -92,4 +95,4 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 2 complete, Cycle 3 ready)
+[~] In Progress (Cycle 3 complete, Cycle 4 ready)
