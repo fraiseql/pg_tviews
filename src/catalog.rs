@@ -412,22 +412,13 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     // Without this check, tb_comment would return Some("comment") even though
     // there's no TVIEW for "comment" — causing the trigger handler to take the
     // direct path instead of the indirect (array dependency) path.
-    //
-    // NOTE: Uses Spi::connect + client.select instead of Spi::get_one_with_args
-    // because pgrx 0.16.1's get_one_with_args errors (SpiTupleTable position)
-    // when the query returns zero rows.
-    let entity_owned = entity.to_string();
-    let exists = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity_owned.as_str(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
-        let mut rows = client.select(
-            "SELECT entity FROM pg_tview_meta WHERE entity = $1",
-            Some(1),
-            &args,
-        )?;
-        rows.next().map_or(Ok(None), |row| row["entity"].value::<String>())
-    })?;
+    let args = vec![unsafe {
+        DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
+    let exists: Option<String> = Spi::get_one_with_args(
+        "SELECT entity FROM pg_tview_meta WHERE entity = $1",
+        &args,
+    )?;
 
     Ok(exists)
 }
