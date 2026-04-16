@@ -26,7 +26,7 @@ use crate::refresh::bulk::quote_identifier;
 ///    the event trigger fires but the cache is empty → skip silently.
 #[pg_extern]
 #[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires String by value
-pub fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
+fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
     // Retrieve (and consume) the pending SELECT.  Empty cache = created by pg_tviews_create.
     let Some(select_sql) = crate::hooks::take_pending_tview_select(&table_name) else {
         return Ok(());
