@@ -47,6 +47,11 @@ pub fn take_queue_snapshot() -> HashSet<RefreshKey> {
     })
 }
 
+/// Check whether the refresh queue has any pending items (non-destructive).
+pub fn is_queue_empty() -> bool {
+    TX_REFRESH_QUEUE.with(|q| q.borrow().is_empty())
+}
+
 /// Clear the queue (used on transaction abort)
 pub fn clear_queue() {
     TX_REFRESH_QUEUE.with(|q| {

@@ -23,7 +23,7 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::ffi::CStr;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 
 use crate::ddl::drop_tview;
 use crate::TViewError;
@@ -31,8 +31,6 @@ use crate::TViewError;
 /// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 
-/// Global storage for GID during PREPARE TRANSACTION
-static PREPARING_GID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Reentrancy guard: prevents the hook from processing DDL that the hook itself triggers.
 /// When `pg_tviews_create` calls `Spi::run("CREATE VIEW ...")` internally, `PostgreSQL`
@@ -97,12 +95,26 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if unsafe { (*utility_stmt).type_ } == pg_sys::NodeTag::T_TransactionStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → TransactionStmt* cast
             let xact_stmt = utility_stmt.cast::<pg_sys::TransactionStmt>();
-            if !xact_stmt.is_null()
-                && unsafe { (*xact_stmt).kind } == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT
-                && let Err(e) = crate::queue::flush_refresh_queue()
-            {
-                unsafe { HOOK_IN_PROGRESS = false };
-                error!("TVIEW refresh failed before COMMIT: {e:?}");
+            if !xact_stmt.is_null() {
+                let kind = unsafe { (*xact_stmt).kind };
+
+                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT
+                    && let Err(e) = crate::queue::flush_refresh_queue()
+                {
+                    unsafe { HOOK_IN_PROGRESS = false };
+                    error!("TVIEW refresh failed before COMMIT: {e:?}");
+                }
+
+                // Reject PREPARE TRANSACTION when TVIEW refreshes are pending.
+                // Full 2PC support is not implemented in 0.1.0 — the queue would
+                // be silently discarded, leaving TVIEWs stale.
+                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_PREPARE
+                    && !crate::queue::is_queue_empty()
+                {
+                    unsafe { HOOK_IN_PROGRESS = false };
+                    error!("pg_tviews: PREPARE TRANSACTION is not supported when \
+                            TVIEW refreshes are pending; commit or rollback first");
+                }
             }
         }
     }
@@ -121,14 +133,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // Skip extension-related statements to avoid infinite recursion during installation
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
             return Ok(false); // Pass through
-        }
-
-        // Check if this is PREPARE TRANSACTION
-        if query_lower.trim().starts_with("prepare transaction") {
-            // Extract GID from query: PREPARE TRANSACTION 'gid'
-            if let Some(gid) = extract_gid_from_prepare_query(&query_str) {
-                *PREPARING_GID.lock().unwrap_or_else(PoisonError::into_inner) = Some(gid);
-            }
         }
 
         // Safety check
@@ -545,36 +549,3 @@ unsafe fn call_prev_hook_or_standard(
     }
 }
 
-/// Extract GID from PREPARE TRANSACTION query
-///
-/// Parses queries like: PREPARE TRANSACTION 'gid' or PREPARE TRANSACTION "gid"
-fn extract_gid_from_prepare_query(query: &str) -> Option<String> {
-    // Parse: PREPARE TRANSACTION 'gid' or PREPARE TRANSACTION "gid"
-    // Use two separate patterns for single and double quotes
-    let patterns = [
-        "PREPARE\\s+TRANSACTION\\s+'([^']+)'",
-        "PREPARE\\s+TRANSACTION\\s+\"([^\"]+)\"",
-    ];
-
-    for pattern in &patterns {
-        if let Ok(re) = regex::Regex::new(pattern)
-            && let Some(caps) = re.captures(query)
-            && let Some(m) = caps.get(1)
-        {
-            return Some(m.as_str().to_string());
-        }
-    }
-
-    None
-}
-
-/// Get the prepared transaction GID captured by the `ProcessUtility` hook
-///
-/// This is called by the transaction callback during PREPARE TRANSACTION.
-#[allow(dead_code)] // 2PC support
-pub fn get_prepared_transaction_id() -> crate::TViewResult<String> {
-    PREPARING_GID.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take() // Take and clear the GID
-        .ok_or_else(|| crate::internal_error!("Not in a prepared transaction (GID not captured)"))
-}

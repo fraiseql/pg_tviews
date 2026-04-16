@@ -1,6 +1,5 @@
 use pgrx::prelude::*;
 use pgrx::pg_sys;
-use pgrx::datum::DatumWithOid;
 use std::os::raw::c_void;
 use std::panic::AssertUnwindSafe;
 use std::collections::HashSet;
@@ -350,53 +349,6 @@ fn refresh_and_get_parents(key: &super::key::RefreshKey) -> TViewResult<Vec<supe
     Ok(parent_keys)
 }
 
-/// Handle PREPARE TRANSACTION event: persist queue to database
-///
-/// This ensures that 2PC transactions don't lose pending refreshes.
-/// The queue is serialized and stored in `pg_tview_pending_refreshes`.
-#[allow(dead_code)] // 2PC support: will be wired via ProcessUtility hook for PREPARE TRANSACTION
-fn handle_prepare() -> TViewResult<()> {
-    // Get global transaction ID (GID) captured by ProcessUtility hook
-    let gid = get_prepared_transaction_id()?;
-
-    // Take snapshot of current queue
-    let queue = take_queue_snapshot();
-
-    if queue.is_empty() {
-        // No refreshes pending, nothing to persist
-        return Ok(());
-    }
-
-
-    // Serialize queue using JSONB format (configurable in future)
-    let serialized = super::persistence::SerializedQueue::from_queue(queue);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let queue_size = serialized.keys.len() as i32; // Safe: Queue size is bounded by GUC max_prepared_transactions (typically < 1000)
-    let queue_jsonb = serialized.into_jsonb()?;
-
-    // Store in persistent table
-    let insert_args = vec![
-        unsafe { DatumWithOid::new(gid, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(queue_jsonb, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
-        unsafe { DatumWithOid::new(queue_size, PgOid::BuiltIn(PgBuiltInOids::INT4OID).value()) },
-    ];
-    Spi::run_with_args(
-        "INSERT INTO pg_tview_pending_refreshes
-         (gid, refresh_queue, queue_size, expires_at)
-         VALUES ($1, $2, $3, now() + interval '24 hours')",
-        &insert_args,
-    )?;
-
-    // Clear in-memory queue (transaction is prepared, not committed)
-    clear_queue();
-
-    Ok(())
-}
-
-/// Get the global transaction ID for the currently preparing transaction
-///
-/// This retrieves the GID captured by the `ProcessUtility` hook during PREPARE TRANSACTION.
-#[allow(dead_code)] // 2PC support
-fn get_prepared_transaction_id() -> TViewResult<String> {
-    crate::hooks::get_prepared_transaction_id()
-}
+// NOTE: Full 2PC support (PREPARE TRANSACTION with queue persistence) is not
+// implemented in 0.1.0. The ProcessUtility hook rejects PREPARE TRANSACTION
+// when TVIEW refreshes are pending. See hooks.rs for the guard.
