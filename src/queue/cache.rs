@@ -2,13 +2,22 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use pgrx::prelude::*;
 
+/// Cached information for a table managed by pg_tviews
+#[derive(Clone, Debug)]
+pub struct CachedEntityInfo {
+    pub name: String,
+    /// First DISTINCT ON key if this is a DISTINCT ON TVIEW, None otherwise
+    #[allow(dead_code)] // Reason: Will be used by trigger handler in REFACTOR phase
+    pub distinct_on_key: Option<String>,
+}
+
 /// Global cache for `EntityDepGraph` to avoid repeated `pg_tview_meta` queries
 static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> = LazyLock::new(|| {
     Mutex::new(None)
 });
 
-/// Global cache for table OID → entity name mapping
-static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, String>>> = LazyLock::new(|| {
+/// Global cache for table OID → entity info (name + distinct_on_key)
+static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, CachedEntityInfo>>> = LazyLock::new(|| {
     Mutex::new(HashMap::new())
 });
 
@@ -53,32 +62,55 @@ pub mod table_cache {
     #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
-    /// Get cached entity name for table OID, loading from database if not cached
-    pub fn entity_for_table_cached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<String>> {
+    /// Get cached entity info (name + distinct_on_key) for table OID
+    /// Loads from database on first miss per session
+    pub fn entity_info_cached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<CachedEntityInfo>> {
         // Check if caching is enabled
         if !crate::config::table_cache_enabled() {
-            return crate::catalog::entity_for_table_uncached(table_oid);
+            return load_entity_info_uncached(table_oid);
         }
 
         // Fast path: check cache
         {
             let cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(entity) = cache.get(&table_oid) {
+            if let Some(info) = cache.get(&table_oid) {
                 crate::metrics::metrics_api::record_table_cache_hit();
-                return Ok(Some(entity.clone()));
+                return Ok(Some(info.clone()));
             }
         }
 
         // Slow path: query and cache
         crate::metrics::metrics_api::record_table_cache_miss();
-        let entity = crate::catalog::entity_for_table_uncached(table_oid)?;
+        let info = load_entity_info_uncached(table_oid)?;
 
-        if let Some(ref e) = entity {
+        if let Some(ref i) = info {
             let mut cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-            cache.insert(table_oid, e.clone());
+            cache.insert(table_oid, i.clone());
         }
 
-        Ok(entity)
+        Ok(info)
+    }
+
+    /// Get cached entity name (backward compatibility)
+    pub fn entity_for_table_cached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<String>> {
+        entity_info_cached(table_oid).map(|info| info.map(|i| i.name))
+    }
+
+    /// Load entity info from database (name + distinct_on_key)
+    fn load_entity_info_uncached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<CachedEntityInfo>> {
+        let entity_name = crate::catalog::entity_for_table_uncached(table_oid)?;
+
+        match entity_name {
+            Some(name) => {
+                // TODO: P-01 REFACTOR - enhance to query distinct_on_keys[1] from pg_tview_meta
+                // For now, trigger handler will call load_by_entity once per session
+                Ok(Some(CachedEntityInfo {
+                    name,
+                    distinct_on_key: None,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Invalidate the table entity cache
@@ -114,11 +146,17 @@ mod tests {
         // Add something to cache
         {
             let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
-            cache.insert(pg_sys::Oid::from(123), "test".to_string());
+            cache.insert(
+                pg_sys::Oid::from(123),
+                CachedEntityInfo {
+                    name: "test".to_string(),
+                    distinct_on_key: None,
+                },
+            );
         }
 
         // Verify it's there
-        assert_eq!(TABLE_ENTITY_CACHE.lock().unwrap().get(&pg_sys::Oid::from(123)), Some(&"test".to_string()));
+        assert!(TABLE_ENTITY_CACHE.lock().unwrap().get(&pg_sys::Oid::from(123)).is_some());
 
         // Invalidate
         table_cache::invalidate();

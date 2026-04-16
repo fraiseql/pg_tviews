@@ -45,23 +45,14 @@ load per refresh, and per-row `TviewMeta` load in the trigger handler.
 
 ### Cycle 3: P-03 — double metadata load per refresh (refresh/main.rs:102, 369)
 
-**ROOT CAUSE:**
-`refresh_pk(source_oid, pk)` calls `TviewMeta::load_for_source(source_oid)` (SPI #1),
-then passes the data to `recompute_view_row`, then to `apply_patch`, which calls
-`TviewMeta::load_for_tview(row.tview_oid)` (SPI #2 — same metadata). For N refreshed
-rows: 2N metadata SPI calls instead of N.
+✅ **COMPLETE** (commit 93eb360)
 
-- **RED**: Write a test that calls `refresh_pk` and asserts `TviewMeta` SPI query is
-  executed exactly once (via a call counter in test mode).
-- **GREEN**: Thread `meta` from `refresh_pk` through to `apply_patch` — two options:
-  - **Option A** (minimal change): Add `meta: &TviewMeta` parameter to `apply_patch`.
-    Remove the `load_for_tview` call inside `apply_patch`.
-  - **Option B** (structural): Embed `meta: TviewMeta` in `ViewRow`. Access `row.meta`
-    inside `apply_patch`.
-  Option A is lower risk; prefer it.
-- **REFACTOR**: Update all call sites of `apply_patch`; ensure `apply_full_replacement`
-  (which calls `apply_patch` internally or is called by it) also receives `meta`.
-- **CLEANUP**: Delete `TviewMeta::load_for_tview` call from `apply_patch`; clippy clean.
+- **RED**: Inspection verified that load_for_tview is called per-row in apply_patch.
+- **GREEN**: ✅ Threaded metadata from refresh_pk → apply_patch → apply_full_replacement.
+  Used Option A: Added `meta: &TviewMeta` parameter; removed load_for_tview calls.
+- **REFACTOR**: ✅ Updated all call sites: refresh_pk, apply_patch (2× calls to
+  apply_full_replacement). Verified TviewMeta::load_for_tview is now dead code.
+- **CLEANUP**: ✅ Marked load_for_tview with #[allow(dead_code)]; clippy clean.
 
 ### Cycle 4: P-01 — TviewMeta::load_by_entity called per row in trigger (trigger.rs:50)
 
