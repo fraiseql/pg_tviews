@@ -38,6 +38,7 @@ static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"info"));
 static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"error"));
+static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -101,6 +102,17 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_queue_size",
+        c"Maximum number of refresh items allowed in the transaction queue.",
+        c"When exceeded, new refresh enqueues raise an error to prevent unbounded queue growth.",
+        &MAX_QUEUE_SIZE_GUC,
+        1,       // min
+        1_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -149,4 +161,11 @@ pub fn union_duplicate_policy() -> String {
         || "error".to_owned(),
         |cstr| cstr.to_str().unwrap_or("error").to_owned(),
     )
+}
+
+/// Maximum queue size before backpressure enforcement (default: 10000)
+/// Prevents unbounded queue growth during high-load scenarios
+#[must_use]
+pub fn max_queue_size() -> usize {
+    MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
 }
