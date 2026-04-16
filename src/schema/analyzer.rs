@@ -24,6 +24,7 @@
 
 use crate::catalog::DependencyType;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Regex pattern template for nested object detection
 /// Matches: '`key_name`', `v_something`.data
@@ -34,11 +35,19 @@ const NESTED_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*{}.data";
 /// Also handles COALESCE wrapper: COALESCE(`jsonb_agg`(...), '[]'::`jsonb`)
 const ARRAY_PATTERN_TEMPLATE: &str = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*{}.data";
 
-/// Regex pattern for inline array aggregation (no `v_entity.data` reference)
+/// Cached regex for inline array aggregation (no `v_entity.data` reference)
 /// Matches: '`array_name`', `jsonb_agg`(`jsonb_build_object`(...))
 /// Also handles COALESCE wrapper
-const INLINE_ARRAY_PATTERN: &str =
-    r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*jsonb_build_object\s*\(";
+static INLINE_ARRAY_PATTERN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*jsonb_build_object\s*\(")
+        .expect("INLINE_ARRAY_PATTERN_REGEX is valid")
+});
+
+/// Cached regex for detecting 'array_name', jsonb_agg(v_something.data ...)
+static ARRAY_PATTERN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data")
+        .expect("ARRAY_PATTERN_REGEX is valid")
+});
 
 /// Default match key for array dependencies
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
@@ -187,26 +196,22 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
         .replace(['\n', '\t'], " ")
         .to_lowercase();
 
-    // Pattern 1: 'array_name', jsonb_agg(v_something.data ...)
-    if let Ok(re) = Regex::new(r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data") {
-        for capture in re.captures_iter(&sql_normalized) {
-            if let Some(array_name) = capture.get(1) {
-                let key = array_name.as_str().to_string();
-                if seen_keys.insert(key.clone()) {
-                    deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
-                }
+    // Pattern 1: 'array_name', jsonb_agg(v_something.data ...) — uses cached regex
+    for capture in ARRAY_PATTERN_REGEX.captures_iter(&sql_normalized) {
+        if let Some(array_name) = capture.get(1) {
+            let key = array_name.as_str().to_string();
+            if seen_keys.insert(key.clone()) {
+                deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
             }
         }
     }
 
-    // Pattern 2: 'array_name', jsonb_agg(jsonb_build_object(...))  (inline, no v_entity.data)
-    if let Ok(re) = Regex::new(INLINE_ARRAY_PATTERN) {
-        for capture in re.captures_iter(&sql_normalized) {
-            if let Some(array_name) = capture.get(1) {
-                let key = array_name.as_str().to_string();
-                if seen_keys.insert(key.clone()) {
-                    deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
-                }
+    // Pattern 2: 'array_name', jsonb_agg(jsonb_build_object(...)) — uses cached regex
+    for capture in INLINE_ARRAY_PATTERN_REGEX.captures_iter(&sql_normalized) {
+        if let Some(array_name) = capture.get(1) {
+            let key = array_name.as_str().to_string();
+            if seen_keys.insert(key.clone()) {
+                deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
             }
         }
     }

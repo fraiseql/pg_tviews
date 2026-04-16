@@ -32,6 +32,25 @@
 
 use crate::error::{TViewError, TViewResult};
 use regex::Regex;
+use std::sync::LazyLock;
+
+/// Cached regex for parsing CREATE TABLE tv_* AS SELECT statements
+static CREATE_TVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?ix)                          # Case-insensitive, verbose
+        CREATE\s+TABLE\s+                # CREATE TABLE keyword
+        (?:(\w+)\.)?                     # Optional schema name
+        (\w+)                            # Table name (required)
+        \s+AS\s+                         # AS keyword
+        (.+)                             # SELECT statement (rest of query)
+        "
+    ).expect("CREATE_TVIEW_REGEX pattern is valid")
+});
+
+/// Get the cached CREATE TABLE regex pattern (compiled once at first use)
+fn get_create_tview_regex() -> &'static Regex {
+    &CREATE_TVIEW_REGEX
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateTViewStmt {
@@ -53,21 +72,9 @@ pub struct CreateTViewStmt {
 /// - String literals containing `AS` may confuse parser
 ///
 /// # Errors
-/// Returns error if SQL doesn't match CREATE TABLE AS pattern or regex compilation fails
+/// Returns error if SQL doesn't match CREATE TABLE AS pattern
 pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
-    let re = Regex::new(
-        r"(?ix)                          # Case-insensitive, verbose
-        CREATE\s+TABLE\s+                # CREATE TABLE keyword
-        (?:(\w+)\.)?                     # Optional schema name
-        (\w+)                            # Table name (required)
-        \s+AS\s+                         # AS keyword
-        (.+)                             # SELECT statement (rest of query)
-        "
-    ).map_err(|e| TViewError::InternalError {
-        message: format!("Regex compilation failed: {e}"),
-        file: file!(),
-        line: line!(),
-    })?;
+    let re = get_create_tview_regex();
 
     let caps = re.captures(sql.trim())
         .ok_or_else(|| TViewError::InvalidSelectStatement {
@@ -177,5 +184,21 @@ mod tests {
             }
             _ => panic!("Wrong error type"),
         }
+    }
+
+    #[test]
+    fn test_create_tview_regex_cached() {
+        // Verify that the CREATE TABLE regex is cached and reusable
+        let re = get_create_tview_regex();
+
+        // Test that the cached regex works
+        let sql = "CREATE TABLE tv_user AS SELECT id, data FROM tb_user";
+        assert!(re.is_match(sql), "Cached regex should match CREATE TABLE statement");
+
+        // Verify captures work
+        let caps = re.captures(sql);
+        assert!(caps.is_some(), "Should capture groups from CREATE TABLE");
+        let caps = caps.unwrap();
+        assert_eq!(caps.get(2).map(|m| m.as_str()), Some("tv_user"), "Should capture table name");
     }
 }
