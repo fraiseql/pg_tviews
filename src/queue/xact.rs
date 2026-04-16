@@ -142,10 +142,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
-                SAVEPOINT_DEPTH.with(|d| {
-                    let mut depth = d.borrow_mut();
-                    *depth -= 1;
-                });
+                decrement_savepoint_depth();
 
                 // Restore queue from snapshot
                 if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
@@ -155,10 +152,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
                 // RELEASE SAVEPOINT: just decrement depth and discard snapshot
-                SAVEPOINT_DEPTH.with(|d| {
-                    let mut depth = d.borrow_mut();
-                    *depth -= 1;
-                });
+                decrement_savepoint_depth();
 
                 // Discard the snapshot (savepoint committed)
                 QUEUE_SNAPSHOTS.with(|s| {
@@ -177,6 +171,20 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
         // to avoid SIGABRT from panic_any in raw extern "C-unwind" context.
         warning!("PANIC in subtransaction callback - this is a bug!");
     }
+}
+
+/// Decrement `SAVEPOINT_DEPTH` with saturating subtraction.
+///
+/// Emits a warning if the depth is already 0, which indicates unexpected
+/// event ordering (e.g., extension loaded mid-transaction).
+fn decrement_savepoint_depth() {
+    SAVEPOINT_DEPTH.with(|d| {
+        let mut depth = d.borrow_mut();
+        if *depth == 0 {
+            warning!("pg_tviews: subxact depth underflow — event ordering unexpected");
+        }
+        *depth = depth.saturating_sub(1);
+    });
 }
 
 /// Flush the refresh queue: process all pending TVIEW refreshes.
