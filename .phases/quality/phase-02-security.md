@@ -187,4 +187,4 @@ Column names from `pg_attribute.attname` are joined raw — reserved words fail 
 
 ## Status
 
-[ ] Not Started
+[x] Complete

@@ -21,7 +21,7 @@ Based on two independent audits run at commit `709d517`:
 ## Status
 
 - [x] Phase 1: Critical Safety
-- [ ] Phase 2: Security Hardening
+- [x] Phase 2: Security Hardening
 - [ ] Phase 3: Performance — Hot Paths
 - [ ] Phase 4: Performance — Caching
 - [ ] Phase 5: Code Quality & Cleanup
