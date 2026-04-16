@@ -224,7 +224,9 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let graph = super::cache::graph_cache::load_cached()?;
 
     // Track processed keys to avoid duplicates
-    let mut processed: std::collections::HashSet<super::key::RefreshKey> = std::collections::HashSet::new();
+    // Pre-allocate with capacity based on initial pending size
+    let mut processed: std::collections::HashSet<super::key::RefreshKey> =
+        std::collections::HashSet::with_capacity(pending.len().max(16));
 
     // Outer drain loop: after the inner loop empties `pending`, check for
     // late-enqueued items from triggers that fired during refresh (e.g.,
@@ -238,15 +240,19 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
             let sorted_keys = graph.sort_keys(pending.drain().collect());
 
             // Group keys by entity for bulk refresh
+            // Pre-allocate with estimated entity count (typically 3-10 entities)
             let mut keys_by_entity: std::collections::HashMap<String, Vec<super::key::RefreshKey>> =
-                std::collections::HashMap::new();
+                std::collections::HashMap::with_capacity(8);
 
             for key in sorted_keys {
                 // Skip if already processed (deduplication)
                 if !processed.insert(key.clone()) {
                     continue;
                 }
-                keys_by_entity.entry(key.entity.clone()).or_default().push(key);
+                keys_by_entity
+                    .entry(key.entity.clone())
+                    .or_default()
+                    .push(key);
             }
 
             // Process each entity group
@@ -264,9 +270,15 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     }
                 } else {
                     // Multiple keys for same entity: use bulk refresh (PK-only path)
-                    let pks: Vec<i64> = entity_keys.iter().filter_map(|k| {
-                        if k.is_dedup() { None } else { Some(k.pk) }
-                    }).collect();
+                    // Pre-allocate Vec based on PK-only keys (exclude dedup keys)
+                    let mut pks = Vec::with_capacity(
+                        entity_keys.iter().filter(|k| !k.is_dedup()).count()
+                    );
+                    for key in &entity_keys {
+                        if !key.is_dedup() {
+                            pks.push(key.pk);
+                        }
+                    }
 
                     // Bulk refresh this entity
                     // FAIL-FAST: Propagate error immediately to abort transaction

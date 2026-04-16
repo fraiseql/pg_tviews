@@ -179,12 +179,16 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
             return Ok(());
         }
 
-        let do_update: String = col_names.iter()
-            .filter(|c| c.as_str() != key_col.as_str())
-            .map(|c| format!("{c} = EXCLUDED.{c}"))
-            .chain(std::iter::once("updated_at = NOW()".to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let do_update: String = {
+            let mut update_parts = Vec::with_capacity(col_names.len());
+            for c in &col_names {
+                if c.as_str() != key_col.as_str() {
+                    update_parts.push(format!("{c} = EXCLUDED.{c}"));
+                }
+            }
+            update_parts.push("updated_at = NOW()".to_string());
+            update_parts.join(", ")
+        };
 
         let col_list = col_names.join(", ");
         let upsert_sql = format!(
@@ -228,7 +232,8 @@ fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
             None,
             &args,
         )?;
-        let mut result = Vec::new();
+        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
+        let mut result = Vec::with_capacity(10);
         for r in rows {
             if let Some(name) = r["attname"].value::<String>()? {
                 result.push(name);
@@ -567,7 +572,8 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
             None,
             &args,
         )?;
-        let mut cols: Vec<String> = Vec::new();
+        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
+        let mut cols: Vec<String> = Vec::with_capacity(10);
         for r in rows {
             if let Some(name) = r["attname"].value::<String>()? {
                 cols.push(name);
@@ -577,12 +583,16 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     })?;
 
     // Build DO UPDATE SET clause (update every non-pk column; timestamps use DEFAULT on INSERT)
-    let do_update: String = col_names.iter()
-        .filter(|c| c.as_str() != pk_col.as_str())
-        .map(|c| format!("{c} = EXCLUDED.{c}"))
-        .chain(std::iter::once("updated_at = NOW()".to_string()))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let do_update: String = {
+        let mut update_parts = Vec::with_capacity(col_names.len());
+        for c in &col_names {
+            if c.as_str() != pk_col.as_str() {
+                update_parts.push(format!("{c} = EXCLUDED.{c}"));
+            }
+        }
+        update_parts.push("updated_at = NOW()".to_string());
+        update_parts.join(", ")
+    };
 
     let col_list = col_names.join(", ");
 

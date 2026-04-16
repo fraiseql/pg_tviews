@@ -82,7 +82,7 @@ for key in &entity_keys {
 - Updated `get_view_columns()` to check cache first (fast path), then query and cache (slow path)
 - Integrated cache invalidation into `invalidate_all_caches()` in `src/queue/cache.rs`
 - Added comprehensive test for cache invalidation
-- **Commit**: TBD
+- **Commit**: b756548
 
 ### Cycle 5: Pre-allocate Collections (P-10)
 - **Objective**: Reduce allocations in hot refresh paths
