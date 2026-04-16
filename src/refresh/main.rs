@@ -111,6 +111,9 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 3. Patch tv_entity using jsonb_delta (pass metadata to avoid duplicate load)
     apply_patch(&view_row, &meta)?;
 
+    // 4. Log the refresh operation
+    crate::audit::log_refresh(&meta.entity_name, 1)?;
+
     Ok(())
 }
 
@@ -163,7 +166,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         Ok::<i64, spi::SpiError>(count)
     })?;
 
-    if row_count == 0 {
+    let rows_affected: i64 = if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
         let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col}::text = $1");
         Spi::run_with_args(
@@ -172,6 +175,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
         )?;
+        1
     } else {
         // Winning row exists — UPSERT from the backing view
         // Get (col_list, do_update) from cache or compute once
@@ -212,7 +216,11 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
         )?;
-    }
+        1
+    };
+
+    // Log the refresh operation
+    crate::audit::log_refresh(&meta.entity_name, rows_affected)?;
 
     Ok(())
 }
@@ -1313,6 +1321,49 @@ mod tests {
             SELECT data->>'title' FROM tv_item_by_cat WHERE fk_category = 1
         ").unwrap().unwrap();
         assert_eq!(cat1_final_title, "Item 1C", "Category 1 should now show Item 1C");
+    }
+
+    /// Test that refresh operations are logged to the audit table.
+    ///
+    /// Verifies that calling refresh_pk() creates audit log entries with
+    /// correct entity name and rows_affected count.
+    #[pg_test]
+    fn test_refresh_logging() {
+        // Create base tables
+        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+
+        // Create TVIEW
+        Spi::run("
+            SELECT pg_tviews_create('user', $$
+                SELECT pk_user, jsonb_build_object('name', name) AS data
+                FROM tb_user
+            $$)
+        ").unwrap();
+
+        // Verify audit log is empty initially
+        let initial_count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user'"
+        ).unwrap().unwrap_or(0);
+        assert_eq!(initial_count, 0, "Audit log should be empty initially");
+
+        // Perform refresh
+        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
+            .unwrap()
+            .unwrap();
+        crate::refresh::refresh_pk(user_oid, 1).unwrap();
+
+        // Verify audit log entry was created
+        let refresh_count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user'"
+        ).unwrap().unwrap_or(0);
+        assert!(refresh_count > 0, "Refresh operation should be logged");
+
+        // Verify the logged details include rows_affected
+        let logged_details = Spi::get_one::<String>(
+            "SELECT details::text FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user' LIMIT 1"
+        ).unwrap().unwrap_or_default();
+        assert!(logged_details.contains("rows_affected"), "Details should contain rows_affected");
     }
 
     /// Test DML cache invalidation when column metadata changes.
