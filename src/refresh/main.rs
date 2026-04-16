@@ -204,8 +204,18 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 }
 
 /// Get the list of column names for a view (used for UPSERT column lists).
+/// Results are cached per session to avoid repeated pg_attribute queries.
 fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
-    Spi::connect(|client| {
+    // Fast path: check cache
+    {
+        let cache = crate::utils::VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cols) = cache.get(view_name) {
+            return Ok(cols.clone());
+        }
+    }
+
+    // Slow path: query and cache
+    let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
         let args = vec![unsafe {
             DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }];
@@ -218,14 +228,18 @@ fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
             None,
             &args,
         )?;
-        let mut cols = Vec::new();
+        let mut result = Vec::new();
         for r in rows {
             if let Some(name) = r["attname"].value::<String>()? {
-                cols.push(name);
+                result.push(name);
             }
         }
-        Ok(cols)
-    })
+        Ok(result)
+    })?;
+
+    // Cache the result
+    crate::utils::VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(view_name.to_string(), cols.clone());
+    Ok(cols)
 }
 
 /// Recompute a single row from the `v_entity` view.

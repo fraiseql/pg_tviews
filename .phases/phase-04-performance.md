@@ -6,8 +6,8 @@ Eliminate redundant SPI queries and optimize hot paths through caching and batch
 ## Success Criteria
 - [ ] P-05: OID→relname caching (session-level) ✅
 - [ ] P-06: EntityDepGraph caching in propagation ✅
-- [ ] P-07: Batch affected-PK queries (multi-key propagation)
-- [ ] P-08: Cache view column names in DISTINCT ON refresh
+- [ ] P-07: Batch affected-PK queries (multi-key propagation) ✅
+- [ ] P-08: Cache view column names in DISTINCT ON refresh ✅
 - [ ] P-10: Pre-allocate collections for bulk operations
 - [ ] P-11: Optimize dedup key refresh DML generation
 
@@ -70,11 +70,19 @@ for key in &entity_keys {
 - No commented code
 - Commit with clear message
 
-### Cycle 4: Cache View Column Names (P-08)
+### Cycle 4: Cache View Column Names (P-08) ✅
 - **Objective**: Avoid repeated `pg_attribute` queries in DISTINCT ON refresh
 - **Target**: `get_view_columns()` in `src/refresh/main.rs` (line 207)
 - **Strategy**: Session-level cache like OID_RELNAME_CACHE
 - **Metric**: DISTINCT ON TVIEWs with many dedup keys (currently query per key)
+
+#### Implementation
+- Created `VIEW_COLUMNS_CACHE` static in `src/utils.rs` (HashMap<String, Vec<String>>)
+- Created `invalidate_view_columns_cache()` function
+- Updated `get_view_columns()` to check cache first (fast path), then query and cache (slow path)
+- Integrated cache invalidation into `invalidate_all_caches()` in `src/queue/cache.rs`
+- Added comprehensive test for cache invalidation
+- **Commit**: TBD
 
 ### Cycle 5: Pre-allocate Collections (P-10)
 - **Objective**: Reduce allocations in hot refresh paths
@@ -91,4 +99,4 @@ for key in &entity_keys {
 - Blocks: None
 
 ## Status
-[~] In Progress (Cycle 3)
+[~] In Progress (Cycle 4 complete, Cycle 5 ready)

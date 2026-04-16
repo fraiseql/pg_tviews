@@ -149,6 +149,7 @@ pub fn invalidate_all_caches() {
     table_cache::invalidate();
     crate::lifecycle::invalidate_jsonb_delta_cache();
     crate::utils::invalidate_oid_relname_cache();
+    crate::utils::invalidate_view_columns_cache();
 }
 
 #[cfg(test)]

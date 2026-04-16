@@ -177,6 +177,18 @@ pub fn invalidate_oid_relname_cache() {
     cache.clear();
 }
 
+/// Global cache for view column names (view_name → column names)
+/// View column lists are stable within a session (only change on DDL)
+pub static VIEW_COLUMNS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Invalidate the view columns cache
+/// Called when DDL creates/drops/alters tables with columns
+pub fn invalidate_view_columns_cache() {
+    let mut cache = VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.clear();
+}
+
 /// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
 /// Results are cached per session to avoid repeated pg_class queries.
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
@@ -285,6 +297,42 @@ mod tests {
         // Verify it's gone
         {
             let cache = OID_RELNAME_CACHE.lock().unwrap();
+            assert!(cache.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_view_columns_cache_invalidation() {
+        // Clear cache first
+        invalidate_view_columns_cache();
+
+        // Populate cache with test entries
+        {
+            let mut cache = VIEW_COLUMNS_CACHE.lock().unwrap();
+            cache.insert(
+                "v_user".to_string(),
+                vec!["id".to_string(), "name".to_string()],
+            );
+            cache.insert(
+                "v_post".to_string(),
+                vec!["id".to_string(), "title".to_string(), "user_id".to_string()],
+            );
+        }
+
+        // Verify entries are there
+        {
+            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
+            assert_eq!(cache.len(), 2);
+            assert!(cache.contains_key("v_user"));
+            assert!(cache.contains_key("v_post"));
+        }
+
+        // Invalidate cache
+        invalidate_view_columns_cache();
+
+        // Verify it's gone
+        {
+            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
             assert!(cache.is_empty());
         }
     }
