@@ -18,14 +18,14 @@ rustflags = [
   # "-C", "lto=fat",
   # "-C", "codegen-units=1",
 
-  # Strip debug symbols in release
-  "-C", "strip=symbols",
 ]
 
 [profile.release]
 # Release profile optimizations (CI-compatible)
+# panic = "unwind" is required for pgrx: with "abort", any SPI error (e.g. duplicate
+# key during populate_initial_data) calls abort() instead of unwinding cleanly to an
+# SQL error. The Cargo.toml already sets panic = "unwind"; do not override it here.
 strip = true
-panic = "abort"
 # lto = true  # Disabled for CI compatibility
 # codegen-units = 1  # Disabled for CI compatibility
 
