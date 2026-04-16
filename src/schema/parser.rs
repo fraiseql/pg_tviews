@@ -38,8 +38,12 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
 
+    // Bound the FROM search to the first branch of any UNION ALL / UNION
+    let union_bound = find_outer_union(&sql_lower, select_start)
+        .unwrap_or(sql_lower.len());
+
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
-    let from_start = find_outer_from(&sql_lower, select_start)
+    let from_start = find_outer_from(&sql_lower, select_start, union_bound)
         .ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
@@ -80,13 +84,13 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
 
 /// Find the first occurrence of the `FROM` keyword at paren depth 0 (outermost level).
 ///
-/// `sql_lower` must already be lowercased. Only looks after `after_pos`.
+/// `sql_lower` must already be lowercased. Only looks in `after_pos..end_bound`.
 /// Handles parentheses depth and single-quoted string literals.
-fn find_outer_from(sql_lower: &str, after_pos: usize) -> Option<usize> {
+fn find_outer_from(sql_lower: &str, after_pos: usize, end_bound: usize) -> Option<usize> {
     let bytes = sql_lower.as_bytes();
     let mut depth: i32 = 0;
     let mut i = after_pos;
-    let len = bytes.len();
+    let len = bytes.len().min(end_bound);
 
     while i < len {
         match bytes[i] {
@@ -107,6 +111,61 @@ fn find_outer_from(sql_lower: &str, after_pos: usize) -> Option<usize> {
                         || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
                     let after_ok = i + 4 >= len
                         || (!bytes[i + 4].is_ascii_alphanumeric() && bytes[i + 4] != b'_');
+                    if before_ok && after_ok {
+                        return Some(i);
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Find the first occurrence of the `UNION` keyword at paren depth 0.
+///
+/// Returns the byte position of the `u` in `union` (lowercased), or `None` if
+/// no outer UNION is found.  Both `UNION ALL` and `UNION` (deduplicated) are
+/// detected; the caller uses the returned position as an upper bound for FROM
+/// scanning so only the first branch's `FROM` is returned.
+///
+/// Public so callers outside this module (e.g. `ddl/create.rs`) can detect
+/// whether a SQL statement is a UNION query for metadata purposes.
+///
+/// `sql_lower` must already be lowercased. Scans from `start`.
+pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
+    let bytes = sql_lower.as_bytes();
+    let len = bytes.len();
+    let mut depth: i32 = 0;
+    let mut i = start;
+
+    while i < len {
+        match bytes[i] {
+            b'(' => { depth += 1; i += 1; }
+            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b'\'' => {
+                // Skip single-quoted literal
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len { i += 1; }
+            }
+            b'"' => {
+                // Skip double-quoted identifier
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    i += 1;
+                }
+                if i < len { i += 1; }
+            }
+            _ => {
+                // Check for "union" at word boundary, only at depth 0
+                if depth == 0 && i + 5 <= len && &bytes[i..i + 5] == b"union" {
+                    let before_ok = i == 0
+                        || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+                    let after_ok = i + 5 >= len
+                        || (!bytes[i + 5].is_ascii_alphanumeric() && bytes[i + 5] != b'_');
                     if before_ok && after_ok {
                         return Some(i);
                     }
@@ -482,8 +541,12 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
         .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
 
+    // Bound the FROM search to the first branch of any UNION ALL / UNION
+    let union_bound = find_outer_union(&sql_lower, select_start)
+        .unwrap_or(sql_lower.len());
+
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
-    let from_start = find_outer_from(&sql_lower, select_start)
+    let from_start = find_outer_from(&sql_lower, select_start, union_bound)
         .ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
@@ -923,5 +986,80 @@ mod tests {
         let sql = "SELECT pk_post, id, data FROM tb_post JOIN tb_other ON TRUE";
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
+    }
+
+    // ── Phase 3, Cycle 1: UNION ALL / UNION column extraction ────────────────
+
+    #[test]
+    fn test_parse_union_all_columns() {
+        let sql = "SELECT i.pk_item, i.id, l.label AS name, \
+                   jsonb_build_object('id', i.id, 'name', l.label) AS data \
+                   FROM catalog.tb_item i \
+                   JOIN catalog.tb_item_i18n l ON l.item_id = i.pk_item \
+                   WHERE l.locale = 'en' \
+                   UNION ALL \
+                   SELECT i.pk_item, i.id, i.name, \
+                   jsonb_build_object('id', i.id, 'name', i.name) AS data \
+                   FROM catalog.tb_item i \
+                   WHERE NOT EXISTS (SELECT 1 FROM catalog.tb_item_i18n l \
+                   WHERE l.item_id = i.pk_item AND l.locale = 'en')";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "name", "data"]);
+    }
+
+    #[test]
+    fn test_parse_union_deduplicated_columns() {
+        let sql = "SELECT pk_post, id, title AS name FROM tb_post \
+                   UNION \
+                   SELECT pk_post, id, slug AS name FROM tb_post_draft";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_post", "id", "name"]);
+    }
+
+    #[test]
+    fn test_union_in_string_literal_not_matched() {
+        // 'UNION ALL' inside a string literal must NOT trigger UNION detection
+        let sql = "SELECT pk_post, id, 'UNION ALL rocks' AS label FROM tb_post";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_post", "id", "label"]);
+    }
+
+    #[test]
+    fn test_union_inside_subquery_not_matched() {
+        // UNION inside a subquery (depth > 0) must NOT trigger outer-UNION detection
+        let sql = "SELECT pk_post, id, (SELECT MAX(v) FROM (SELECT 1 AS v UNION SELECT 2 AS v) s) AS top \
+                   FROM tb_post";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_post", "id", "top"]);
+    }
+
+    // ── Phase 3, Cycle 2: CTE + UNION ALL combination ────────────────────────
+
+    #[test]
+    fn test_parse_cte_with_union_all() {
+        let sql = "WITH fallback AS (SELECT pk_item, id, name FROM tb_item) \
+                   SELECT pk_item, id, name AS label FROM tb_item \
+                   UNION ALL \
+                   SELECT pk_item, id, name AS label FROM fallback";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "label"]);
+    }
+
+    // ── Phase 3, Cycle 3: DISTINCT ON + UNION ALL combination ────────────────
+
+    #[test]
+    fn test_parse_distinct_on_union_all() {
+        let sql = "SELECT DISTINCT ON (c.id) c.pk_contract, c.id, c.name, \
+                   jsonb_build_object('id', c.id) AS data \
+                   FROM tb_contract c ORDER BY c.id, c.version DESC \
+                   UNION ALL \
+                   SELECT pk_draft, id, name, \
+                   jsonb_build_object('id', id) AS data \
+                   FROM tb_contract_draft";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols[0], "pk_contract");
+        assert_eq!(cols[1], "id");
+        assert_eq!(cols[2], "name");
+        assert_eq!(cols[3], "data");
     }
 }

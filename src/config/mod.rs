@@ -36,6 +36,8 @@ static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true)
 static METRICS_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"info"));
+static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
+    GucSetting::<Option<std::ffi::CString>>::new(Some(c"error"));
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -90,6 +92,15 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_string_guc(
+        c"pg_tviews.union_duplicate_policy",
+        c"Policy when a UNION ALL backing view returns multiple rows for the same key.",
+        c"Allowed values: 'first' (silently take first row), 'error' (abort transaction).",
+        &UNION_DUPLICATE_POLICY_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -126,4 +137,16 @@ pub fn log_level() -> String {
 #[must_use]
 pub fn metrics_enabled() -> bool {
     METRICS_ENABLED_GUC.get()
+}
+
+/// Policy for UNION ALL backing views that return duplicate rows for the same key.
+///
+/// - `"error"` (default): abort the transaction with a clear error message.
+/// - `"first"`: silently take the first row returned.
+#[must_use]
+pub fn union_duplicate_policy() -> String {
+    UNION_DUPLICATE_POLICY_GUC.get().map_or_else(
+        || "error".to_owned(),
+        |cstr| cstr.to_str().unwrap_or("error").to_owned(),
+    )
 }

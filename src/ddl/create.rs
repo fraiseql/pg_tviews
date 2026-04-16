@@ -403,6 +403,13 @@ fn register_metadata(
     schema_name: &str,
     distinct_on_keys: &[String],
 ) -> TViewResult<()> {
+    // Detect whether the definition is a UNION / UNION ALL query.
+    // CTE bodies are inside (...) so their UNION is at depth > 0 and not matched.
+    let is_union = {
+        let sql_lower = definition_sql.to_lowercase();
+        crate::schema::parser::find_outer_union(&sql_lower, 0).is_some()
+    };
+
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
 
@@ -489,8 +496,9 @@ fn register_metadata(
             dependency_types,
             dependency_paths,
             array_match_keys,
-            distinct_on_keys
-        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}')
+            distinct_on_keys,
+            is_union
+        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -500,7 +508,8 @@ fn register_metadata(
         dep_types,
         dep_paths,
         array_keys,
-        distinct_on_str
+        distinct_on_str,
+        is_union
     );
 
     let args = [

@@ -270,15 +270,34 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
                 error: format!("No row in v_* for given pk: {pk}"),
             }))?;
 
+        // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
+        if meta.is_union && rows.next().is_some() {
+            let policy = crate::config::union_duplicate_policy();
+            if policy == "first" {
+                warning!(
+                    "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}; \
+                     taking first row (union_duplicate_policy=first)",
+                    meta.entity_name, pk
+                );
+            } else {
+                return Err(spi::Error::from(crate::TViewError::SpiError {
+                    query: sql.clone(),
+                    error: format!(
+                        "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}. \
+                         Ensure UNION ALL branches are mutually exclusive, or set \
+                         pg_tviews.union_duplicate_policy='first' to suppress this error.",
+                        meta.entity_name, pk
+                    ),
+                }));
+            }
+        }
+
         // Extract data column
         let data: JsonB = row_data["data"].value()?
             .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
                 query: String::new(),
                 error: "data column is NULL".to_string(),
             }))?;
-
-        // Extract FK columns
-
 
         Ok(ViewRow {
             entity_name: meta.entity_name.clone(),

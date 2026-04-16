@@ -93,6 +93,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
         dependency_paths TEXT[]  NOT NULL DEFAULT '{}',
         array_match_keys TEXT[] NOT NULL DEFAULT '{}',
         distinct_on_keys TEXT[] NOT NULL DEFAULT '{}',
+        is_union BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 

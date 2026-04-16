@@ -74,6 +74,13 @@ pub struct TviewMeta {
     ///
     /// Empty for standard (PK-based) TVIEWs.
     pub distinct_on_keys: Vec<String>,
+
+    /// `true` when this TVIEW's backing view is a `UNION ALL` or `UNION` query.
+    ///
+    /// Used to apply the duplicate-row policy when multiple rows are returned
+    /// for the same PK during refresh (which can occur with non-mutually-exclusive
+    /// UNION ALL branches).
+    pub is_union: bool,
 }
 
 impl TviewMeta {
@@ -108,7 +115,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys \
+                        distinct_on_keys, is_union \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -130,7 +137,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys \
+                        distinct_on_keys, is_union \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -176,7 +183,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys \
+                        distinct_on_keys, is_union \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
@@ -216,6 +223,9 @@ impl TviewMeta {
             .value::<Vec<String>>()?
             .unwrap_or_default();
 
+        // is_union (BOOLEAN) — true when backing view is a UNION ALL / UNION query
+        let is_union: bool = row["is_union"].value::<bool>()?.unwrap_or(false);
+
         Ok(Self {
                     tview_oid: row["tview_oid"].value()?
                         .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
@@ -239,6 +249,7 @@ impl TviewMeta {
             dependency_paths: dep_paths,
             array_match_keys: array_keys.unwrap_or_default(),
             distinct_on_keys,
+            is_union,
         })
     }
 
@@ -321,6 +332,7 @@ impl Default for TviewMeta {
             dependency_paths: vec![],
             array_match_keys: vec![],
             distinct_on_keys: vec![],
+            is_union: false,
         }
     }
 }
@@ -450,6 +462,7 @@ mod tests {
             dependency_paths: vec![None],
             array_match_keys: vec![None],
             distinct_on_keys: vec![],
+            is_union: false,
         };
 
         assert_eq!(meta.dependency_types.len(), 1);
