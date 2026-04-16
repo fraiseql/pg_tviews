@@ -99,14 +99,23 @@ for key in &entity_keys {
 - Added tests for batched parent discovery with various entity counts
 - **Commit**: f15b5e9
 
-### Cycle 6: Optimize Dedup Key DML (P-11)
+### Cycle 6: Optimize Dedup Key DML (P-11) ✅
 - **Objective**: Reduce query string construction overhead
 - **Target**: `refresh_by_dedup_key()` builds same columns list repeatedly
-- **Strategy**: Precompute or cache column list
+- **Strategy**: Cache (col_list, do_update) pairs per TVIEW
+
+#### Implementation
+- Created `DEDUP_DML_CACHE` static in `src/utils.rs` (HashMap<String, (String, String)>)
+- Created `build_dedup_dml_components()` helper to extract DML building logic
+- Modified `refresh_by_dedup_key()` to check cache first, build and cache on miss
+- Integrated cache invalidation into `invalidate_all_caches()` in `src/queue/cache.rs`
+- Added comprehensive tests for multiple dedup key refresh scenarios
+- Fixed clippy needless-borrow warning
+- **Commit**: 13699d0
 
 ## Dependencies
 - Requires: Phase 3 complete
 - Blocks: None
 
 ## Status
-[~] In Progress (Cycle 5 complete, Cycle 6 ready)
+[x] Complete (All 6 performance optimization cycles done)
