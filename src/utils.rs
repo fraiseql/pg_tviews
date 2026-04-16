@@ -3,6 +3,8 @@ use pgrx::datum::DatumWithOid;
 use pgrx::heap_tuple::PgHeapTuple;
 use pgrx::AllocatedByPostgres;
 use pgrx::pg_sys;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 /// Execute a DDL statement via SPI in non-atomic mode.
 ///
@@ -163,9 +165,31 @@ pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
     relname_from_oid(view_oid)
 }
 
+/// Global cache for OID → relname mappings
+/// OID→relname mappings are stable within a session (only change on DDL)
+static OID_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Invalidate the OID→relname cache
+/// Called when DDL creates/drops tables
+pub fn invalidate_oid_relname_cache() {
+    let mut cache = OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.clear();
+}
+
 /// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
+/// Results are cached per session to avoid repeated pg_class queries.
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
-    Spi::connect(|client| {
+    // Fast path: check cache
+    {
+        let cache = OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(name) = cache.get(&oid) {
+            return Ok(name.clone());
+        }
+    }
+
+    // Slow path: query and cache
+    let name: String = Spi::connect(|client| {
         let args = vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         let mut rows = client.select(
             "SELECT relname::text AS relname FROM pg_class WHERE oid = $1",
@@ -174,7 +198,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         )?;
 
         if let Some(row) = rows.next() {
-            row["relname"].value()?
+            row["relname"].value::<String>()?
                 .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
                     query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
                     error: "relname column is NULL".to_string(),
@@ -185,7 +209,11 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
                 error: format!("No pg_class entry for oid: {oid:?}"),
             }))
         }
-    })
+    })?;
+
+    // Cache the result
+    OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(oid, name.clone());
+    Ok(name)
 }
 
 /// Quote a SQL identifier for safe use in queries.
@@ -230,5 +258,34 @@ mod tests {
     #[test]
     fn test_quote_identifier_with_internal_quotes() {
         assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+    }
+
+    #[test]
+    fn test_oid_relname_cache_invalidation() {
+        use pg_sys::Oid;
+
+        // Clear cache first
+        invalidate_oid_relname_cache();
+
+        // Populate cache with a test entry
+        {
+            let mut cache = OID_RELNAME_CACHE.lock().unwrap();
+            cache.insert(Oid::from(123), "test_table".to_string());
+        }
+
+        // Verify it's there
+        {
+            let cache = OID_RELNAME_CACHE.lock().unwrap();
+            assert!(cache.get(&Oid::from(123)).is_some());
+        }
+
+        // Invalidate cache
+        invalidate_oid_relname_cache();
+
+        // Verify it's gone
+        {
+            let cache = OID_RELNAME_CACHE.lock().unwrap();
+            assert!(cache.is_empty());
+        }
     }
 }

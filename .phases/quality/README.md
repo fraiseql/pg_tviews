@@ -22,7 +22,7 @@ Based on two independent audits run at commit `709d517`:
 
 - [x] Phase 1: Critical Safety
 - [x] Phase 2: Security Hardening
-- [ ] Phase 3: Performance — Hot Paths
-- [ ] Phase 4: Performance — Caching
+- [x] Phase 3: Performance — Hot Paths
+- [~] Phase 4: Performance — Caching (Cycle 1 starting)
 - [ ] Phase 5: Code Quality & Cleanup
 - [ ] Phase 6: Finalize
