@@ -128,8 +128,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
     finalize
 );
 
-// Note: pg_tviews_convert_table is now auto-registered via #[pg_extern] in src/ddl/mod.rs
-// No manual registration needed - pgrx handles it automatically
+// pg_tviews_convert_table is auto-registered via #[pg_extern] in src/event_trigger.rs
 
 // Audit logging table for DDL operations
 extension_sql!(
