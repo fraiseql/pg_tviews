@@ -15,7 +15,8 @@ static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>>
     LazyLock::new(|| Mutex::new(None));
 
 /// Global cache for table OID → entity info (name + distinct_on_key)
-static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, CachedEntityInfo>>> =
+/// Stores Option<CachedEntityInfo> to cache negative lookups (None results)
+static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, Option<CachedEntityInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Cache operations for `EntityDepGraph`
@@ -64,7 +65,7 @@ pub mod table_cache {
     use super::*;
 
     /// Get cached entity info (name + distinct_on_key) for table OID
-    /// Loads from database on first miss per session
+    /// Loads from database on first miss per session, caches negative results
     pub fn entity_info_cached(
         table_oid: pg_sys::Oid,
     ) -> crate::TViewResult<Option<CachedEntityInfo>> {
@@ -73,26 +74,26 @@ pub mod table_cache {
             return load_entity_info_uncached(table_oid);
         }
 
-        // Fast path: check cache
+        // Fast path: check cache (distinguishes cached None from not-in-cache)
         {
             let cache = TABLE_ENTITY_CACHE
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(info) = cache.get(&table_oid) {
+            if let Some(cached_value) = cache.get(&table_oid) {
                 crate::metrics::metrics_api::record_table_cache_hit();
-                return Ok(Some(info.clone()));
+                return Ok(cached_value.clone());
             }
         }
 
-        // Slow path: query and cache
+        // Slow path: query and cache (including None)
         crate::metrics::metrics_api::record_table_cache_miss();
         let info = load_entity_info_uncached(table_oid)?;
 
-        if let Some(ref i) = info {
+        {
             let mut cache = TABLE_ENTITY_CACHE
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            cache.insert(table_oid, i.clone());
+            cache.insert(table_oid, info.clone());
         }
 
         Ok(info)
@@ -186,26 +187,38 @@ mod tests {
             let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
             cache.insert(
                 pg_sys::Oid::from(123),
-                CachedEntityInfo {
+                Some(CachedEntityInfo {
                     name: "test".to_string(),
                     distinct_on_key: None,
-                },
+                }),
             );
         }
 
         // Verify it's there
-        assert!(
-            TABLE_ENTITY_CACHE
-                .lock()
-                .unwrap()
-                .get(&pg_sys::Oid::from(123))
-                .is_some()
-        );
+        assert!(TABLE_ENTITY_CACHE
+            .lock()
+            .unwrap()
+            .get(&pg_sys::Oid::from(123))
+            .is_some());
 
         // Invalidate
         table_cache::invalidate();
 
         // Verify it's gone
         assert!(TABLE_ENTITY_CACHE.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_negative_cache_entry() {
+        table_cache::invalidate();
+        // Insert a None entry
+        TABLE_ENTITY_CACHE
+            .lock()
+            .unwrap()
+            .insert(pg_sys::Oid::from(999), None);
+        // Verify it's cached as None (not a cache miss)
+        let cache = TABLE_ENTITY_CACHE.lock().unwrap();
+        assert!(cache.get(&pg_sys::Oid::from(999)).is_some()); // key exists
+        assert!(cache.get(&pg_sys::Oid::from(999)).unwrap().is_none()); // value is None
     }
 }

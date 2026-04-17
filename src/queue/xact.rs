@@ -310,6 +310,20 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         pending = late;
     }
 
+    // Batched audit: one log entry per entity instead of per-row
+    if crate::config::audit_enabled() {
+        let mut entity_counts: std::collections::HashMap<&str, i64> =
+            std::collections::HashMap::new();
+        for key in &processed {
+            *entity_counts.entry(&key.entity).or_insert(0) += 1;
+        }
+        for (entity, count) in entity_counts {
+            if let Err(e) = crate::audit::log_refresh(entity, count) {
+                warning!("Failed to log refresh audit for '{}': {}", entity, e);
+            }
+        }
+    }
+
     // Record metrics
     crate::metrics::metrics_api::record_refresh_complete(
         processed.len(),

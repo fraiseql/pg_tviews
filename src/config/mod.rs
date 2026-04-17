@@ -39,6 +39,7 @@ static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
 static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"error"));
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -113,6 +114,15 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.audit_enabled",
+        c"Enable audit logging of TVIEW operations to pg_tview_audit_log.",
+        c"When false, refresh/create/drop operations are not logged.",
+        &AUDIT_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -168,4 +178,21 @@ pub fn union_duplicate_policy() -> String {
 #[must_use]
 pub fn max_queue_size() -> usize {
     MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
+}
+
+/// Check if audit logging is enabled (default: true)
+#[must_use]
+pub fn audit_enabled() -> bool {
+    AUDIT_ENABLED_GUC.get()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audit_enabled_default() {
+        // Default should be true
+        assert!(audit_enabled());
+    }
 }

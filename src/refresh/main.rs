@@ -111,9 +111,6 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
     // 3. Patch tv_entity using jsonb_delta (pass metadata to avoid duplicate load)
     apply_patch(&view_row, &meta)?;
 
-    // 4. Log the refresh operation
-    crate::audit::log_refresh(&meta.entity_name, 1)?;
-
     Ok(())
 }
 
@@ -164,7 +161,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         Ok::<i64, spi::SpiError>(count)
     })?;
 
-    let rows_affected: i64 = if row_count == 0 {
+    if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
         let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col}::text = $1");
         Spi::run_with_args(
@@ -173,7 +170,6 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
         )?;
-        1
     } else {
         // Winning row exists — UPSERT from the backing view
         // Get (col_list, do_update) from cache or compute once
@@ -218,11 +214,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
         )?;
-        1
-    };
-
-    // Log the refresh operation
-    crate::audit::log_refresh(&meta.entity_name, rows_affected)?;
+    }
 
     Ok(())
 }

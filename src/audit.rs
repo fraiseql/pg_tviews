@@ -9,6 +9,9 @@ fn session_user() -> spi::Result<String> {
 
 /// Log TVIEW creation
 pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
     let user = session_user()?;
 
     let json_str = serde_json::json!({
@@ -34,6 +37,9 @@ pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
 
 /// Log TVIEW drop
 pub fn log_drop(entity: &str) -> spi::Result<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
     let user = session_user()?;
 
     let user_ref: &str = &user;
@@ -50,7 +56,11 @@ pub fn log_drop(entity: &str) -> spi::Result<()> {
 }
 
 /// Log TVIEW refresh operation
+#[allow(dead_code)] // Used in batched audit in queue flush
 pub fn log_refresh(entity: &str, rows_affected: i64) -> spi::Result<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
     let user = session_user()?;
 
     let json_str = serde_json::json!({ "rows_affected": rows_affected }).to_string();
