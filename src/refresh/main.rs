@@ -333,8 +333,14 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
 
         let row_data = rows.next()
             .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                query: String::new(),
-                error: format!("No row in v_* for given pk: {pk}"),
+                query: sql.clone(),
+                error: format!(
+                    "TVIEW '{}': No row found in backing view '{view_name}' for {pk_col} = {pk}. \
+                     Possible causes: (1) row deleted from base table, \
+                     (2) row violates UNION ALL branch conditions, \
+                     (3) row filtered by view WHERE clause",
+                    meta.entity_name
+                ),
             }))?;
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
@@ -362,8 +368,12 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
         // Extract data column
         let data: JsonB = row_data["data"].value()?
             .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                query: String::new(),
-                error: "data column is NULL".to_string(),
+                query: sql.clone(),
+                error: format!(
+                    "TVIEW '{}': data column is NULL for {pk_col} = {pk} in view '{view_name}'. \
+                     Ensure TVIEW definition includes a non-NULL data column.",
+                    meta.entity_name
+                ),
             }))?;
 
         Ok(ViewRow {
@@ -1364,6 +1374,102 @@ mod tests {
             "SELECT details::text FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user' LIMIT 1"
         ).unwrap().unwrap_or_default();
         assert!(logged_details.contains("rows_affected"), "Details should contain rows_affected");
+    }
+
+    /// Test missing-row error handling when backing view returns no rows.
+    ///
+    /// Verifies that refresh_pk() handles the case where a row has been deleted
+    /// from the backing view (due to cascading deletes or view condition changes)
+    /// with a clear, actionable error message.
+    #[pg_test]
+    fn test_missing_row_error_handling() {
+        // Create base tables
+        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("CREATE TABLE tb_post (
+            pk_post BIGSERIAL PRIMARY KEY,
+            fk_user BIGINT REFERENCES tb_user(pk_user),
+            title TEXT
+        )").unwrap();
+
+        // Insert test data
+        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
+        Spi::run("INSERT INTO tb_post VALUES (1, 1, 'Hello')").unwrap();
+
+        // Create TVIEW
+        Spi::run("
+            SELECT pg_tviews_create('post', $$
+                SELECT pk_post, fk_user,
+                       jsonb_build_object('title', title) AS data
+                FROM tb_post
+            $$)
+        ").unwrap();
+
+        // Delete the underlying post
+        Spi::run("DELETE FROM tb_post WHERE pk_post = 1").unwrap();
+
+        // Attempt to refresh should fail with helpful error message
+        let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
+            .unwrap()
+            .unwrap();
+
+        let result = crate::refresh::refresh_pk(post_oid, 1);
+
+        // Error should occur (row no longer exists)
+        assert!(result.is_err(), "Refresh should fail when backing row is missing");
+
+        // Error message should be descriptive
+        let error_msg = format!("{:?}", result.unwrap_err());
+        // Should mention either entity name, view name, or the specific pk that's missing
+        assert!(
+            error_msg.contains("post") || error_msg.contains("v_post") || error_msg.contains("pk=1"),
+            "Error message should provide context about missing row"
+        );
+    }
+
+    /// Test error handling when NULL data column is encountered.
+    ///
+    /// Verifies that refresh_pk() gracefully handles the edge case where
+    /// the backing view returns a row but the data column is NULL.
+    #[pg_test]
+    fn test_null_data_column_error_handling() {
+        // Create base table without data column in view
+        Spi::run("CREATE TABLE tb_item (pk_item BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_item VALUES (1, 'Widget')").unwrap();
+
+        // Create TVIEW (note: data column will be NULL if name is manipulated)
+        Spi::run("
+            SELECT pg_tviews_create('item', $$
+                SELECT pk_item,
+                       CASE WHEN name = 'Widget' THEN jsonb_build_object('name', name)
+                            ELSE NULL
+                       END AS data
+                FROM tb_item
+            $$)
+        ").unwrap();
+
+        // Verify initial state
+        let initial_data: Option<String> = Spi::get_one(
+            "SELECT data::text FROM tv_item WHERE pk_item = 1"
+        ).unwrap();
+        assert!(initial_data.is_some(), "Should have valid data initially");
+
+        // Update to trigger NULL data column
+        Spi::run("UPDATE tb_item SET name = 'Widget-Modified' WHERE pk_item = 1").unwrap();
+
+        // Attempt to refresh
+        let item_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_item'::regclass::oid")
+            .unwrap()
+            .unwrap();
+
+        let result = crate::refresh::refresh_pk(item_oid, 1);
+
+        // Should fail with clear error about NULL data
+        assert!(result.is_err(), "Refresh should fail when data column is NULL");
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            error_msg.to_lowercase().contains("null") || error_msg.contains("data"),
+            "Error should mention NULL or data column issue"
+        );
     }
 
     /// Test DML cache invalidation when column metadata changes.
