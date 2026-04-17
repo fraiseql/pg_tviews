@@ -1,6 +1,9 @@
 /target/
 Cargo.lock
 
+# Development phases (not shipped)
+.phases/
+
 # Benchmark results
 test/sql/comprehensive_benchmarks/results/
 *.log
