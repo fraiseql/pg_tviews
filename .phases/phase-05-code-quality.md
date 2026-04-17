@@ -66,17 +66,21 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Removed #[allow(dead_code)] attribute (function now actively used)
 - **Commit**: 3d1ed27 (feat: wire up log_refresh in refresh operations)
 
-### Cycle 5: Delete Dead 2PC Infrastructure (F-12b + P-12)
+### Cycle 5: Delete Dead 2PC Infrastructure (F-12b + P-12) ✅
 - **Objective**: Remove persistence.rs and refresh/cache.rs (2PC dead code)
 - **Target**: Remove `src/persistence.rs` and `src/refresh/cache.rs`
 - **Strategy**: Delete files and update module references
 
 #### Implementation
-- Verify no remaining references to persistence/cache modules
-- Delete files
-- Clean up mod.rs imports
-- Verify tests still pass
-- **Commit**: TBD
+- Deleted src/twophase.rs (2PC SQL functions never called)
+- Deleted src/queue/persistence.rs (only used by non-existent PREPARE support)
+- Deleted src/refresh/cache.rs (planned optimization, never integrated)
+- Updated src/lib.rs: removed twophase module, removed 2PC from feature list
+- Updated src/queue/mod.rs: removed persistence module declaration
+- Updated src/refresh/mod.rs: removed cache module declaration
+- Verified no internal references to deleted modules
+- Code compiles cleanly with zero clippy warnings
+- **Commit**: d11c5e5 (refactor: remove dead 2PC infrastructure)
 
 ### Cycle 6: Harden Missing-Row Handling (F-13)
 - **Objective**: Improve error handling for missing rows in refresh_pk
@@ -95,4 +99,4 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 4 complete, Cycle 5 ready)
+[~] In Progress (Cycle 5 complete, Cycle 6 ready)
