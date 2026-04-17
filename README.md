@@ -187,7 +187,6 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ### Production-Ready
 
-- **🔐 Two-Phase Commit (2PC)**: Distributed transaction support with queue persistence
 - **🏊 Connection Pooling**: Full PgBouncer/pgpool-II compatibility with DISCARD ALL handling
 - **📈 Comprehensive Monitoring**: Real-time metrics, health checks, performance views
 - **🛡️ Enterprise-Grade Code**: 100% clippy-strict compliance, panic-safe FFI, zero unwraps

@@ -15,8 +15,6 @@
 | pg_tviews_create | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Testing | ⚠️ Use DDL instead |
 | pg_tviews_drop | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Testing | ⚠️ Use DDL instead |
 | pg_tviews_refresh | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Testing | ⚠️ Benchmarking only |
-| pg_tviews_commit_prepared | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Advanced | ❌ 2PC experts only |
-| pg_tviews_rollback_prepared | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Advanced | ❌ 2PC experts only |
 | refresh_pk | Rust | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | refresh_batch | Rust | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | find_base_tables | Rust | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |

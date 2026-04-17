@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Removed
+
+- **Two-Phase Commit (2PC) infrastructure**: Removed unimplemented 2PC support:
+  - `pg_tviews_commit_prepared()` and `pg_tviews_rollback_prepared()` SQL functions (never called)
+  - `src/twophase.rs` module (2PC transaction handlers)
+  - `src/queue/persistence.rs` module (queue serialization for 2PC)
+  - `src/refresh/cache.rs` module (prepared statement caching, planned optimization)
+  - Architectural decision: Use implicit transaction commit via statement-level trigger flushing instead
+- **2PC GID validation**: Removed `validate_gid()` function (2PC functions deleted)
+
 ### Security
 
 - **SQL injection prevention**: Parameterized all user-controlled string inputs
@@ -14,14 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   - `pg_tviews_show_cascade_path()` entity parameter
   - `entity_for_table_uncached()` catalog lookup
   - All three audit log functions (`log_create`, `log_drop`, `log_refresh`)
-- **2PC GID validation**: Added `validate_gid()` that rejects empty, oversized
-  (>199 bytes), and injection-risk characters (`'`, `;`, `\0`) before
-  `pg_tviews_commit_prepared` and `pg_tviews_rollback_prepared` execute SQL
 - **Privilege escalation**: Removed unnecessary `SECURITY DEFINER` from the
   `pg_tviews_debug_queue()` PL/pgSQL stub in `pg_tviews_monitoring.sql`
 
 ### Added
 
+- **Error message improvements**: Enhanced error messages for missing rows during refresh with:
+  - Entity name and view name context
+  - Actual SQL query being executed
+  - Possible causes guidance (cascading delete, UNION ALL conditions, view filters)
+- **Audit logging integration**: `log_refresh()` now called after successful refresh operations
+- **GUC parameter**: `pg_tviews.max_queue_size` for queue backpressure enforcement
+- **Regex caching**: LazyLock static patterns for parser and analyzer regexes
 - `InvalidInput` error variant (SQLSTATE `22023`) for input validation errors
 
 ## [0.1.0-beta.9] - 2026-03-01
