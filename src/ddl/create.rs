@@ -20,6 +20,157 @@ fn current_schema() -> TViewResult<String> {
         })
 }
 
+/// Expand `SELECT * FROM [schema.]source` to an explicit column list.
+///
+/// When the SELECT is just `SELECT * FROM …`, pg_tviews cannot infer the
+/// Trinity schema (pk_*, id, data columns) from the wildcard at parse time.
+/// This function detects that pattern and expands it by querying
+/// `information_schema.columns` for the source view/table's actual columns,
+/// preserving their declaration order.
+///
+/// Returns the original SQL unchanged if it is not a simple `SELECT *`.
+///
+/// # Errors
+/// Returns error only if the `information_schema` query itself fails.
+/// A missing source or empty column list silently returns the original SQL
+/// so the caller can fall through to the normal error path.
+fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
+    let trimmed = select_sql.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Must start with SELECT
+    let after_kw = lower.strip_prefix("select").unwrap_or("").trim_start();
+
+    // Must have * immediately after SELECT (not SELECT DISTINCT * or SELECT t.*)
+    let after_star = match after_kw.strip_prefix('*') {
+        Some(rest) => rest.trim_start(),
+        None => return Ok(select_sql.to_string()),
+    };
+
+    // The token after * must be FROM (no other clauses like WHERE before FROM)
+    let after_from = match after_star.strip_prefix("from") {
+        Some(rest)
+            if rest
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_whitespace())
+                .unwrap_or(true) =>
+        {
+            rest.trim_start()
+        }
+        _ => return Ok(select_sql.to_string()),
+    };
+
+    // Extract the source name: everything after FROM up to whitespace/semicolon
+    let source_qualified = after_from
+        .trim_end_matches(';')
+        .trim()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or("");
+
+    if source_qualified.is_empty() {
+        return Ok(select_sql.to_string());
+    }
+
+    // Parse optional schema qualifier: "schema.table" or just "table"
+    let (schema_name, table_name) = match source_qualified.split_once('.') {
+        Some((s, t)) => (
+            Some(s.trim_matches('"').to_string()),
+            t.trim_matches('"').to_string(),
+        ),
+        None => (None, source_qualified.trim_matches('"').to_string()),
+    };
+
+    // Query information_schema.columns for the column names in order
+    let columns: Vec<String> = if let Some(ref schema) = schema_name {
+        let args = vec![
+            unsafe {
+                pgrx::datum::DatumWithOid::new(
+                    table_name.as_str(),
+                    pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                pgrx::datum::DatumWithOid::new(
+                    schema.as_str(),
+                    pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ];
+        pgrx::prelude::Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT column_name::text \
+                 FROM information_schema.columns \
+                 WHERE table_name = $1 AND table_schema = $2 \
+                 ORDER BY ordinal_position",
+                None,
+                &args,
+            )?;
+            let mut result = Vec::new();
+            for row in rows {
+                if let Some(col) = row[1]
+                    .value::<String>()
+                    .map_err(|e| TViewError::CatalogError {
+                        operation: "expand_select_star: read column_name".to_string(),
+                        pg_error: format!("{e:?}"),
+                    })?
+                {
+                    result.push(col);
+                }
+            }
+            Ok(result)
+        })
+        .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
+            query: "expand_select_star: information_schema query".to_string(),
+            error: e.to_string(),
+        })?
+    } else {
+        let args = vec![unsafe {
+            pgrx::datum::DatumWithOid::new(
+                table_name.as_str(),
+                pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
+            )
+        }];
+        pgrx::prelude::Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT column_name::text \
+                 FROM information_schema.columns \
+                 WHERE table_name = $1 \
+                 ORDER BY ordinal_position",
+                None,
+                &args,
+            )?;
+            let mut result = Vec::new();
+            for row in rows {
+                if let Some(col) = row[1]
+                    .value::<String>()
+                    .map_err(|e| TViewError::CatalogError {
+                        operation: "expand_select_star: read column_name".to_string(),
+                        pg_error: format!("{e:?}"),
+                    })?
+                {
+                    result.push(col);
+                }
+            }
+            Ok(result)
+        })
+        .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
+            query: "expand_select_star: information_schema query".to_string(),
+            error: e.to_string(),
+        })?
+    };
+
+    if columns.is_empty() {
+        // Source not found or no columns — fall through to normal path
+        return Ok(select_sql.to_string());
+    }
+
+    // Build explicit SELECT preserving original source reference (with schema prefix)
+    let col_list = columns.join(", ");
+    Ok(format!("SELECT {col_list} FROM {source_qualified}"))
+}
+
 /// Create a TVIEW with atomic rollback on error
 ///
 /// This is the main entry point for CREATE TABLE tv_ AS SELECT .... `PostgreSQL`'s transaction
@@ -35,7 +186,7 @@ fn current_schema() -> TViewResult<String> {
 ///
 /// Steps:
 /// 1. Check if TVIEW already exists
-/// 2. Infer schema from SELECT statement
+/// 2. Expand SELECT * if needed, then infer schema from SELECT statement
 /// 3. Create backing view v_<entity>
 /// 4. Create materialized table tv_<entity>
 /// 5. Populate initial data
@@ -62,6 +213,12 @@ pub fn create_tview(
     let entity_name = tview_name
         .strip_prefix("tv_")
         .map_or(tview_name, |stripped| stripped);
+
+    // Step 1.6: Expand SELECT * → explicit column list so infer_schema can
+    // recognise the Trinity Pattern (pk_*, id, data) even when the DDL uses
+    // `CREATE TABLE tv_foo AS SELECT * FROM v_foo_base`.
+    let select_sql = expand_select_star_if_needed(select_sql)?;
+    let select_sql = select_sql.as_str();
 
     // Step 2: Infer schema from SELECT
     // If SELECT doesn't have TVIEW format (pk_<entity>, id, data), create a prepared view first
