@@ -314,9 +314,10 @@ pub fn create_tview(
     // Invalidate caches since new TVIEW was created
     crate::queue::cache::invalidate_all_caches();
 
-    // Log the creation for audit trail
-    if let Err(e) = crate::audit::log_create(entity_name, select_sql) {
-        warning!("Failed to log TVIEW creation: {}", e);
+    // Buffer and flush audit entry immediately (we're in SPI context)
+    crate::audit::log_create(entity_name, select_sql);
+    if let Err(e) = crate::audit::flush_audit_buffer() {
+        warning!("Failed to flush audit after CREATE: {}", e);
     }
 
     Ok(())

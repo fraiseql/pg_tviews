@@ -1506,53 +1506,104 @@ mod tests {
         );
     }
 
-    /// Test that refresh operations are logged to the audit table.
+    /// Test that audit entries are buffered and flushed via flush_audit_buffer().
     ///
-    /// Verifies that calling refresh_pk() creates audit log entries with
-    /// correct entity name and rows_affected count.
+    /// Verifies that:
+    /// 1. log_refresh() buffers entries without writing to the DB
+    /// 2. flush_audit_buffer() writes all buffered entries in one go
+    /// 3. The buffer is empty after flush
     #[pg_test]
-    fn test_refresh_logging() {
-        // Create base tables
-        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+    fn test_audit_buffer_and_flush() {
+        // Enable audit for this test
+        Spi::run("SET pg_tviews.audit_enabled = true").unwrap();
 
-        // Create TVIEW
-        Spi::run(
-            "
-            SELECT pg_tviews_create('user', $$
-                SELECT pk_user, jsonb_build_object('name', name) AS data
-                FROM tb_user
-            $$)
-        ",
+        // Buffer some audit entries (no SPI, no DB writes)
+        crate::audit::log_refresh("user", 5);
+        crate::audit::log_refresh("post", 3);
+        crate::audit::log_create("comment", "SELECT ...");
+
+        // Verify nothing written to DB yet
+        let count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log",
         )
-        .unwrap();
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(count, 0, "Buffer should not write to DB before flush");
 
-        // Verify audit log is empty initially
-        let initial_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user'"
-        ).unwrap().unwrap_or(0);
-        assert_eq!(initial_count, 0, "Audit log should be empty initially");
+        // Flush
+        crate::audit::flush_audit_buffer().unwrap();
 
-        // Perform refresh
-        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
-            .unwrap()
-            .unwrap();
-        crate::refresh::refresh_pk(user_oid, 1).unwrap();
+        // Verify all 3 entries written
+        let count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(count, 3, "Flush should write all buffered entries");
 
-        // Verify audit log entry was created
+        // Verify operations are correct
         let refresh_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user'"
-        ).unwrap().unwrap_or(0);
-        assert!(refresh_count > 0, "Refresh operation should be logged");
+            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH'",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(refresh_count, 2, "Should have 2 REFRESH entries");
 
-        // Verify the logged details include rows_affected
-        let logged_details = Spi::get_one::<String>(
-            "SELECT details::text FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user' LIMIT 1"
-        ).unwrap().unwrap_or_default();
-        assert!(
-            logged_details.contains("rows_affected"),
-            "Details should contain rows_affected"
-        );
+        let create_count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'CREATE'",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(create_count, 1, "Should have 1 CREATE entry");
+
+        // Verify buffer is empty after flush (second flush is no-op)
+        crate::audit::flush_audit_buffer().unwrap();
+        let count_after: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(count_after, 3, "Second flush should be no-op");
+    }
+
+    /// Test that clear_audit_buffer() discards entries without writing.
+    #[pg_test]
+    fn test_audit_buffer_clear() {
+        Spi::run("SET pg_tviews.audit_enabled = true").unwrap();
+
+        crate::audit::log_refresh("user", 10);
+        crate::audit::log_drop("post");
+
+        // Clear without flushing
+        crate::audit::clear_audit_buffer();
+
+        // Flush should be no-op
+        crate::audit::flush_audit_buffer().unwrap();
+
+        let count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(count, 0, "Cleared buffer should not produce any rows");
+    }
+
+    /// Test that flush_audit_buffer() is a no-op when audit is disabled.
+    #[pg_test]
+    fn test_audit_disabled_skips_flush() {
+        Spi::run("SET pg_tviews.audit_enabled = false").unwrap();
+
+        crate::audit::log_refresh("user", 5);
+
+        // Flush should skip writing because audit is disabled
+        crate::audit::flush_audit_buffer().unwrap();
+
+        let count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM pg_tview_audit_log",
+        )
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(count, 0, "Disabled audit should not write any rows");
     }
 
     /// Test missing-row error handling when backing view returns no rows.

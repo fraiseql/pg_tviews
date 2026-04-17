@@ -135,17 +135,18 @@ extension_sql!(
     r"
 CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
     log_id BIGSERIAL PRIMARY KEY,
-    operation TEXT NOT NULL,  -- CREATE, DROP, ALTER, REFRESH
+    operation TEXT NOT NULL,  -- CREATE, DROP, REFRESH
     entity TEXT NOT NULL,
     performed_by TEXT NOT NULL DEFAULT current_user,
     performed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    transaction_id BIGINT DEFAULT pg_current_xact_id()::text::bigint,
+    rows_affected BIGINT,
     details JSONB,
     client_addr INET DEFAULT inet_client_addr(),
     client_port INTEGER DEFAULT inet_client_port()
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON public.pg_tview_audit_log(entity);
-CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON public.pg_tview_audit_log(performed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity_time ON public.pg_tview_audit_log(entity, performed_at);
 
 COMMENT ON TABLE public.pg_tview_audit_log IS 'Audit log for TVIEW operations';
     ",

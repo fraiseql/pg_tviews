@@ -165,6 +165,9 @@ fn pg_tview_flush_trigger<'a>(
     if let Err(e) = crate::queue::flush_refresh_queue() {
         warning!("TVIEW refresh failed in statement trigger: {:?}", e);
     }
+    if let Err(e) = crate::audit::flush_audit_buffer() {
+        warning!("Audit flush failed in statement trigger: {:?}", e);
+    }
     Ok(None)
 }
 

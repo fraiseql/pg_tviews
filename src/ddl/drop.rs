@@ -72,9 +72,10 @@ pub fn drop_tview(tview_name: &str, if_exists: bool) -> TViewResult<()> {
     // Invalidate caches since TVIEW was dropped
     crate::queue::cache::invalidate_all_caches();
 
-    // Log the drop for audit trail
-    if let Err(e) = crate::audit::log_drop(entity_name) {
-        warning!("Failed to log TVIEW drop: {}", e);
+    // Buffer and flush audit entry immediately (we're in SPI context)
+    crate::audit::log_drop(entity_name);
+    if let Err(e) = crate::audit::flush_audit_buffer() {
+        warning!("Failed to flush audit after DROP: {}", e);
     }
 
     Ok(())

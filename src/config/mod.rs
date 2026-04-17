@@ -12,6 +12,7 @@
 //! | `pg_tviews.graph_cache_enabled` | bool | true | Cache dependency graphs |
 //! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
 //! | `pg_tviews.metrics_enabled` | bool | false | Collect refresh metrics |
+//! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | Logging verbosity |
 //!
 //! ## Compile-time Constants
@@ -39,7 +40,7 @@ static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
 static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"error"));
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
-static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -180,19 +181,8 @@ pub fn max_queue_size() -> usize {
     MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
 }
 
-/// Check if audit logging is enabled (default: true)
+/// Check if audit logging is enabled (default: false, opt-in)
 #[must_use]
 pub fn audit_enabled() -> bool {
     AUDIT_ENABLED_GUC.get()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_audit_enabled_default() {
-        // Default should be true
-        assert!(audit_enabled());
-    }
 }

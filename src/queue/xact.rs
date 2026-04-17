@@ -86,17 +86,19 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // handled by the ProcessUtility hook intercepting COMMIT instead.
     match xact_event {
         XactEvent::PreCommit | XactEvent::Commit => {
-            // Queue flush happens in ProcessUtility hook before COMMIT.
-            // Just reset metrics here.
+            // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
+            // Clear audit buffer as safety net (should already be empty after flush).
+            crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }
         XactEvent::Prepare => {
             // PREPARE TRANSACTION also goes through ProcessUtility hook.
-            // Queue persistence is handled there.
+            crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }
         XactEvent::Abort => {
             clear_queue();
+            crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }
     }
@@ -310,17 +312,16 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         pending = late;
     }
 
-    // Batched audit: one log entry per entity instead of per-row
-    if crate::config::audit_enabled() {
+    // Buffer batched audit entries: one per entity with aggregated row count.
+    // Actual INSERT happens in flush_audit_buffer() called from the COMMIT hook.
+    {
         let mut entity_counts: std::collections::HashMap<&str, i64> =
             std::collections::HashMap::new();
         for key in &processed {
             *entity_counts.entry(&key.entity).or_insert(0) += 1;
         }
         for (entity, count) in entity_counts {
-            if let Err(e) = crate::audit::log_refresh(entity, count) {
-                warning!("Failed to log refresh audit for '{}': {}", entity, e);
-            }
+            crate::audit::log_refresh(entity, count);
         }
     }
 

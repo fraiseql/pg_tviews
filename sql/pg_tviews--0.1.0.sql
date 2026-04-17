@@ -7,6 +7,27 @@ The ordering of items is not stable, it is driven by a dependency graph.
 /* </end connected objects> */
 
 /* <begin connected objects> */
+-- src/metadata.rs:134
+
+CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
+    log_id BIGSERIAL PRIMARY KEY,
+    operation TEXT NOT NULL,  -- CREATE, DROP, REFRESH
+    entity TEXT NOT NULL,
+    performed_by TEXT NOT NULL DEFAULT current_user,
+    performed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    transaction_id BIGINT DEFAULT pg_current_xact_id()::text::bigint,
+    rows_affected BIGINT,
+    details JSONB,
+    client_addr INET DEFAULT inet_client_addr(),
+    client_port INTEGER DEFAULT inet_client_port()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity_time ON public.pg_tview_audit_log(entity, performed_at);
+
+COMMENT ON TABLE public.pg_tview_audit_log IS 'Audit log for TVIEW operations';
+/* </end connected objects> */
+
+/* <begin connected objects> */
 -- src/metadata.rs:35
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
@@ -85,26 +106,6 @@ GROUP BY entity;
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/metadata.rs:135
-
-CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
-    log_id BIGSERIAL PRIMARY KEY,
-    operation TEXT NOT NULL,  -- CREATE, DROP, ALTER, REFRESH
-    entity TEXT NOT NULL,
-    performed_by TEXT NOT NULL DEFAULT current_user,
-    performed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    details JSONB,
-    client_addr INET DEFAULT inet_client_addr(),
-    client_port INTEGER DEFAULT inet_client_port()
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON public.pg_tview_audit_log(entity);
-CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON public.pg_tview_audit_log(performed_at DESC);
-
-COMMENT ON TABLE public.pg_tview_audit_log IS 'Audit log for TVIEW operations';
-/* </end connected objects> */
-
-/* <begin connected objects> */
 -- src/schema/mod.rs:38
 -- pg_tviews::schema::TViewSchema
 CREATE TYPE TViewSchema;
@@ -149,7 +150,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_analyze_select_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/cascade.rs:15
+-- src/cascade.rs:14
 -- pg_tviews::cascade::pg_tviews_cascade
 CREATE  FUNCTION "pg_tviews_cascade"(
 	"base_table_oid" oid, /* pgrx_pg_sys::submodules::oids::Oid */
@@ -170,17 +171,6 @@ AS 'MODULE_PATHNAME', 'pg_tviews_check_jsonb_delta_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/twophase.rs:33
--- pg_tviews::twophase::pg_tviews_commit_prepared
-CREATE  FUNCTION "pg_tviews_commit_prepared"(
-	"gid" TEXT /* &str */
-) RETURNS VOID /* core::result::Result<(), pg_tviews::error::TViewError> */
-STRICT
-LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_commit_prepared_wrapper';
-/* </end connected objects> */
-
-/* <begin connected objects> */
 -- src/ddl/mod.rs:69
 -- pg_tviews::ddl::pg_tviews_convert_existing_table
 CREATE  FUNCTION "pg_tviews_convert_existing_table"(
@@ -192,7 +182,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_convert_existing_table_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/event_trigger.rs:100
+-- src/event_trigger.rs:27
 -- pg_tviews::event_trigger::pg_tviews_convert_table
 CREATE  FUNCTION "pg_tviews_convert_table"(
 	"table_name" TEXT /* alloc::string::String */
@@ -215,7 +205,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_create_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/health.rs:141
+-- src/health.rs:149
 -- pg_tviews::health::pg_tviews_debug_queue
 CREATE  FUNCTION "pg_tviews_debug_queue"() RETURNS jsonb /* pgrx::datum::json::JsonB */
 STRICT
@@ -224,7 +214,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_debug_queue_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/cascade.rs:60
+-- src/cascade.rs:57
 -- pg_tviews::cascade::pg_tviews_delete
 CREATE  FUNCTION "pg_tviews_delete"(
 	"base_table_oid" oid, /* pgrx_pg_sys::submodules::oids::Oid */
@@ -271,7 +261,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_hook_status_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/admin.rs:31
+-- src/admin.rs:27
 -- pg_tviews::admin::pg_tviews_infer_types
 CREATE  FUNCTION "pg_tviews_infer_types"(
 	"table_name" TEXT, /* &str */
@@ -295,7 +285,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_insert_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/admin.rs:131
+-- src/admin.rs:101
 -- pg_tviews::admin::pg_tviews_migrate_triggers
 CREATE  FUNCTION "pg_tviews_migrate_triggers"() RETURNS void
 STRICT
@@ -304,7 +294,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_migrate_triggers_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/health.rs:161
+-- src/health.rs:169
 -- pg_tviews::health::pg_tviews_performance_stats
 CREATE  FUNCTION "pg_tviews_performance_stats"() RETURNS TABLE (
 	"entity" TEXT,  /* alloc::string::String */
@@ -319,7 +309,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_performance_stats_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/health.rs:118
+-- src/health.rs:126
 -- pg_tviews::health::pg_tviews_queue_stats
 CREATE  FUNCTION "pg_tviews_queue_stats"() RETURNS jsonb /* pgrx::datum::json::JsonB */
 STRICT
@@ -328,20 +318,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_queue_stats_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/twophase.rs:162
--- pg_tviews::twophase::pg_tviews_recover_prepared_transactions
-CREATE  FUNCTION "pg_tviews_recover_prepared_transactions"() RETURNS TABLE (
-	"gid" TEXT,  /* alloc::string::String */
-	"queue_size" INT,  /* i32 */
-	"status" TEXT  /* alloc::string::String */
-)
-STRICT
-LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_recover_prepared_transactions_wrapper';
-/* </end connected objects> */
-
-/* <begin connected objects> */
--- src/admin.rs:67
+-- src/admin.rs:58
 -- pg_tviews::admin::pg_tviews_refresh
 CREATE  FUNCTION "pg_tviews_refresh"(
 	"entity" TEXT /* &str */
@@ -352,18 +329,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_refresh_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/twophase.rs:85
--- pg_tviews::twophase::pg_tviews_rollback_prepared
-CREATE  FUNCTION "pg_tviews_rollback_prepared"(
-	"gid" TEXT /* &str */
-) RETURNS VOID /* core::result::Result<(), pg_tviews::error::TViewError> */
-STRICT
-LANGUAGE c /* Rust */
-AS 'MODULE_PATHNAME', 'pg_tviews_rollback_prepared_wrapper';
-/* </end connected objects> */
-
-/* <begin connected objects> */
--- src/admin.rs:141
+-- src/admin.rs:111
 -- pg_tviews::admin::pg_tviews_show_cascade_path
 CREATE  FUNCTION "pg_tviews_show_cascade_path"(
 	"entity" TEXT /* &str */
@@ -387,7 +353,7 @@ AS 'MODULE_PATHNAME', 'pg_tviews_version_wrapper';
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/trigger.rs:150
+-- src/trigger.rs:160
 -- pg_tviews::trigger::pg_tview_flush_trigger
 CREATE FUNCTION "pg_tview_flush_trigger"()
 	RETURNS TRIGGER
@@ -396,7 +362,7 @@ CREATE FUNCTION "pg_tview_flush_trigger"()
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/trigger.rs:163
+-- src/trigger.rs:176
 -- pg_tviews::trigger::pg_tview_stmt_trigger_handler
 CREATE FUNCTION "pg_tview_stmt_trigger_handler"()
 	RETURNS TRIGGER
@@ -405,7 +371,7 @@ CREATE FUNCTION "pg_tview_stmt_trigger_handler"()
 /* </end connected objects> */
 
 /* <begin connected objects> */
--- src/trigger.rs:32
+-- src/trigger.rs:31
 -- pg_tviews::trigger::pg_tview_trigger_handler
 CREATE FUNCTION "pg_tview_trigger_handler"()
 	RETURNS TRIGGER

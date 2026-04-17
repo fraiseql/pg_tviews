@@ -108,11 +108,15 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if !xact_stmt.is_null() {
                 let kind = unsafe { (*xact_stmt).kind };
 
-                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT
-                    && let Err(e) = crate::queue::flush_refresh_queue()
-                {
-                    unsafe { HOOK_IN_PROGRESS = false };
-                    error!("TVIEW refresh failed before COMMIT: {e:?}");
+                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
+                    if let Err(e) = crate::queue::flush_refresh_queue() {
+                        unsafe { HOOK_IN_PROGRESS = false };
+                        error!("TVIEW refresh failed before COMMIT: {e:?}");
+                    }
+                    if let Err(e) = crate::audit::flush_audit_buffer() {
+                        unsafe { HOOK_IN_PROGRESS = false };
+                        error!("Audit flush failed before COMMIT: {e:?}");
+                    }
                 }
 
                 // Reject PREPARE TRANSACTION when TVIEW refreshes are pending.
