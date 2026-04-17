@@ -1,3 +1,6 @@
+use crate::catalog::entity_for_table;
+use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
+use crate::utils::{quote_identifier, tuple_get_i64};
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
 ///
@@ -22,9 +25,6 @@ use pgrx::prelude::*;
 /// - Minimal database queries during trigger execution
 /// - Queue processing deferred to commit time
 use pgrx::spi;
-use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
-use crate::catalog::entity_for_table;
-use crate::utils::{tuple_get_i64, quote_identifier};
 
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change
@@ -64,7 +64,9 @@ fn pg_tview_trigger_handler<'a>(
                         warning!("DISTINCT ON key '{key_col}' is NULL for entity '{entity}'");
                     }
                     Err(e) => {
-                        warning!("Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}");
+                        warning!(
+                            "Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}"
+                        );
                     }
                 }
             } else {
@@ -82,7 +84,11 @@ fn pg_tview_trigger_handler<'a>(
         }
         Ok(None) => { /* fall through to indirect lookup */ }
         Err(e) => {
-            warning!("Failed to resolve entity for table OID {:?}: {:?}", table_oid, e);
+            warning!(
+                "Failed to resolve entity for table OID {:?}: {:?}",
+                table_oid,
+                e
+            );
             return Ok(None);
         }
     }
@@ -104,7 +110,11 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
     let parent_entities = match crate::catalog::parent_entities_for_base_table(table_oid) {
         Ok(entities) => entities,
         Err(e) => {
-            warning!("Failed to find parent entities for table {:?}: {:?}", table_oid, e);
+            warning!(
+                "Failed to find parent entities for table {:?}: {:?}",
+                table_oid,
+                e
+            );
             return;
         }
     };
@@ -127,7 +137,11 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
                 enqueue_refresh(&parent_entity, parent_pk);
             }
             None => {
-                warning!("FK column {} is NULL or missing, skipping refresh for {}", fk_col, parent_entity);
+                warning!(
+                    "FK column {} is NULL or missing, skipping refresh for {}",
+                    fk_col,
+                    parent_entity
+                );
             }
         }
     }
@@ -178,7 +192,11 @@ fn pg_tview_stmt_trigger_handler<'a>(
             return Ok(None);
         }
         Err(e) => {
-            warning!("Failed to resolve entity for table OID {:?}: {:?}", table_oid, e);
+            warning!(
+                "Failed to resolve entity for table OID {:?}: {:?}",
+                table_oid,
+                e
+            );
             return Ok(None);
         }
     };
@@ -219,10 +237,15 @@ fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64
     };
 
     // Get PK column name (convention: pk_<entity>)
-    let pk_column = get_pk_column_name(trigger.relation().map_err(|_| crate::TViewError::SpiError {
-        query: "get relation".to_string(),
-        error: "Failed to get trigger relation".to_string(),
-    })?.oid())?;
+    let pk_column = get_pk_column_name(
+        trigger
+            .relation()
+            .map_err(|_| crate::TViewError::SpiError {
+                query: "get relation".to_string(),
+                error: "Failed to get trigger relation".to_string(),
+            })?
+            .oid(),
+    )?;
 
     // Query transition table for all PKs
     // IMPORTANT: Transition table references don't need quote_ident()
@@ -230,7 +253,7 @@ fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64
     let query = format!(
         "SELECT DISTINCT {} FROM {}",
         quote_identifier(&pk_column),
-        transition_table_name  // No quoting - it's a special reference
+        transition_table_name // No quoting - it's a special reference
     );
 
     Spi::connect(|client| {
@@ -253,14 +276,20 @@ fn get_pk_column_name(table_oid: pg_sys::Oid) -> spi::Result<String> {
     // Get entity name from table OID
     let entity = match entity_for_table(table_oid) {
         Ok(Some(e)) => e,
-        Ok(None) => return Err(crate::TViewError::SpiError {
-            query: "entity_for_table".to_string(),
-            error: "Table not managed by pg_tviews".to_string(),
-        }.into()),
-        Err(e) => return Err(crate::TViewError::SpiError {
-            query: "entity_for_table".to_string(),
-            error: format!("Failed to get entity: {e:?}"),
-        }.into()),
+        Ok(None) => {
+            return Err(crate::TViewError::SpiError {
+                query: "entity_for_table".to_string(),
+                error: "Table not managed by pg_tviews".to_string(),
+            }
+            .into());
+        }
+        Err(e) => {
+            return Err(crate::TViewError::SpiError {
+                query: "entity_for_table".to_string(),
+                error: format!("Failed to get entity: {e:?}"),
+            }
+            .into());
+        }
     };
 
     // Convention: pk_<entity>

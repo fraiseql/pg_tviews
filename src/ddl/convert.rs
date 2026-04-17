@@ -3,11 +3,11 @@
 //! This module handles converting a table that was created by standard
 //! `PostgreSQL` DDL into a proper TVIEW structure.
 
-use pgrx::prelude::*;
-use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
 use crate::schema::TViewSchema;
+use crate::utils::quote_identifier;
+use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 
 /// Convert an existing table to a TVIEW
 ///
@@ -29,11 +29,8 @@ use crate::schema::TViewSchema;
 ///
 /// # Errors
 /// Returns error if table doesn't exist, conversion fails, or rollback is needed
-pub fn convert_existing_table_to_tview(
-    table_name: &str,
-) -> TViewResult<()> {
+pub fn convert_existing_table_to_tview(table_name: &str) -> TViewResult<()> {
     let entity_name = extract_entity_name(table_name)?;
-
 
     do_conversion(table_name, entity_name)?;
 
@@ -57,20 +54,15 @@ fn do_conversion(table_name: &str, entity_name: &str) -> TViewResult<()> {
     // Must use spi_run_ddl (non-atomic SPI) because this runs inside an event trigger
     // which provides an atomic SPI context where DDL is otherwise forbidden on PG18.
     let qi_table = quote_identifier(table_name);
-    crate::utils::spi_run_ddl(&format!("DROP TABLE {qi_table} CASCADE"))
-        .map_err(|e| TViewError::SpiError {
+    crate::utils::spi_run_ddl(&format!("DROP TABLE {qi_table} CASCADE")).map_err(|e| {
+        TViewError::SpiError {
             query: format!("DROP TABLE {qi_table} CASCADE"),
             error: e,
-        })?;
+        }
+    })?;
 
     // Step 6: Reconstruct as proper TVIEW
-    reconstruct_as_tview(
-        table_name,
-        entity_name,
-        &schema,
-        &base_tables,
-        &data_backup,
-    )?;
+    reconstruct_as_tview(table_name, entity_name, &schema, &base_tables, &data_backup)?;
 
     Ok(())
 }
@@ -80,15 +72,20 @@ fn validate_tview_structure(table_name: &str, _entity_name: &str) -> TViewResult
     let columns = get_table_columns(table_name)?;
 
     // Validate required columns exist and have correct types
-    let id_col = columns.iter().find(|c| c.name == "id")
-        .ok_or_else(|| TViewError::RequiredColumnMissing {
+    let id_col = columns.iter().find(|c| c.name == "id").ok_or_else(|| {
+        TViewError::RequiredColumnMissing {
             column_name: "id".to_string(),
             context: format!(
                 "Table '{}' must have an 'id' column (UUID). Found: {}",
                 table_name,
-                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+                columns
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-        })?;
+        }
+    })?;
     if id_col.data_type != "uuid" {
         return Err(TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
@@ -96,15 +93,20 @@ fn validate_tview_structure(table_name: &str, _entity_name: &str) -> TViewResult
         });
     }
 
-    let data_col = columns.iter().find(|c| c.name == "data")
-        .ok_or_else(|| TViewError::RequiredColumnMissing {
+    let data_col = columns.iter().find(|c| c.name == "data").ok_or_else(|| {
+        TViewError::RequiredColumnMissing {
             column_name: "data".to_string(),
             context: format!(
                 "Table '{}' must have a 'data' column (JSONB). Found: {}",
                 table_name,
-                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+                columns
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-        })?;
+        }
+    })?;
     if data_col.data_type != "jsonb" {
         return Err(TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
@@ -157,14 +159,20 @@ fn infer_schema_from_table(table_name: &str) -> TViewResult<TViewSchema> {
     let columns = get_table_columns(table_name)?;
 
     // Find the pk_* column
-    let pk_col = columns.iter().find(|c| c.name.starts_with("pk_"))
+    let pk_col = columns
+        .iter()
+        .find(|c| c.name.starts_with("pk_"))
         .ok_or_else(|| TViewError::RequiredColumnMissing {
             column_name: "pk_<entity>".to_string(),
             context: format!(
                 "Table '{}' must have a primary key column named 'pk_<entity>' \
                  (e.g., pk_user, pk_post). Found: {}",
                 table_name,
-                columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+                columns
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         })?;
     // Safe: guaranteed by the starts_with("pk_") predicate above
@@ -201,10 +209,7 @@ fn backup_table_data(table_name: &str, _schema: &TViewSchema) -> TViewResult<Vec
             let id = row["id"].value()?; // UUID can be NULL in some cases
             let data = row["data"].value()?; // JSONB should not be NULL but handle gracefully
 
-            backup.push(BackupRow {
-                id,
-                data,
-            });
+            backup.push(BackupRow { id, data });
         }
 
         Ok::<_, spi::Error>(backup)
@@ -301,7 +306,9 @@ fn table_exists(table_name: &str) -> bool {
     Spi::get_one_with_args::<bool>(
         "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
         &args,
-    ).unwrap_or(Some(false)).unwrap_or(false)
+    )
+    .unwrap_or(Some(false))
+    .unwrap_or(false)
 }
 
 /// Check for user-provided base table hints in table comment
@@ -319,11 +326,7 @@ fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
 
     if let Some(comment) = comment {
         // Look for TVIEW_BASES: pattern
-        if let Some(bases_part) = comment
-            .split("TVIEW_BASES:")
-            .nth(1)
-            .map(str::trim)
-        {
+        if let Some(bases_part) = comment.split("TVIEW_BASES:").nth(1).map(str::trim) {
             // Parse comma-separated list
             let tables: Vec<String> = bases_part
                 .split(',')
@@ -418,7 +421,8 @@ fn register_tview_metadata(
     let view_oid = Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT oid FROM pg_class WHERE relname = $1",
         &view_args,
-    )?.ok_or_else(|| TViewError::CatalogError {
+    )?
+    .ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for view {view_name}"),
         pg_error: "View not found".to_string(),
     })?;
@@ -429,7 +433,8 @@ fn register_tview_metadata(
     let table_oid = Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT oid FROM pg_class WHERE relname = $1",
         &table_args,
-    )?.ok_or_else(|| TViewError::CatalogError {
+    )?
+    .ok_or_else(|| TViewError::CatalogError {
         operation: format!("Get OID for table {tview_name}"),
         pg_error: "Table not found".to_string(),
     })?;
@@ -464,7 +469,8 @@ struct BackupRow {
 }
 
 fn extract_entity_name(table_name: &str) -> TViewResult<&str> {
-    table_name.strip_prefix("tv_")
+    table_name
+        .strip_prefix("tv_")
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: table_name.to_string(),
             reason: "Table name must start with tv_".to_string(),

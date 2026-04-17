@@ -31,38 +31,38 @@ between base tables and derived views through trigger-based change tracking.
 use pgrx::prelude::*;
 
 // Core modules
-mod catalog;
-mod refresh;
-mod propagate;
-mod utils;
-mod hooks;
-mod trigger;
-mod queue;
-mod metrics;
-mod event_trigger;
 mod audit;
+mod catalog;
+mod event_trigger;
+mod hooks;
+mod metrics;
+mod propagate;
+mod queue;
+mod refresh;
+mod trigger;
+mod utils;
 
 // Feature modules
-mod lifecycle;
-mod health;
-mod cascade;
 mod admin;
+mod cascade;
+mod health;
+mod lifecycle;
 
 // Public API modules
+pub mod config;
+pub mod ddl;
+pub mod dependency;
 pub mod error;
 pub mod metadata;
-pub mod schema;
 pub mod parser;
-pub mod ddl;
-pub mod config;
-pub mod dependency;
+pub mod schema;
 pub mod validation;
 
 // Public re-exports
-pub use error::{TViewError, TViewResult};
-pub use queue::RefreshKey;
 pub use catalog::entity_for_table;
+pub use error::{TViewError, TViewResult};
 pub use lifecycle::check_jsonb_delta_available;
+pub use queue::RefreshKey;
 
 pg_module_magic!();
 
@@ -80,8 +80,8 @@ pub mod pg_test {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use crate::error::TViewError;
+    use pgrx::prelude::*;
 
     #[pg_test]
     fn sanity_check() {
@@ -99,9 +99,7 @@ mod tests {
 
     #[pg_test]
     fn test_version_callable_from_sql() {
-        let result = crate::utils::spi_get_string(
-            "SELECT pg_tviews_version()"
-        );
+        let result = crate::utils::spi_get_string("SELECT pg_tviews_version()");
         assert!(result.is_ok());
         let version = result.unwrap();
         assert!(version.is_some());
@@ -111,15 +109,21 @@ mod tests {
     #[pg_test]
     #[should_panic(expected = "TVIEW metadata not found")]
     fn test_error_propagates_to_postgres() {
-        panic!("{:?}", TViewError::MetadataNotFound {
-            entity: "test".to_string(),
-        });
+        panic!(
+            "{:?}",
+            TViewError::MetadataNotFound {
+                entity: "test".to_string(),
+            }
+        );
     }
 
     #[pg_test]
     fn test_jsonb_delta_check_function_exists() {
         let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_delta()");
-        assert!(result.is_ok(), "pg_tviews_check_jsonb_delta() function should exist");
+        assert!(
+            result.is_ok(),
+            "pg_tviews_check_jsonb_delta() function should exist"
+        );
     }
 
     #[pg_test]
@@ -135,10 +139,13 @@ mod tests {
         Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
 
         let result = Spi::get_one::<bool>(
-            "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL"
+            "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL",
         );
 
-        assert!(result.unwrap().unwrap_or(false), "pg_tviews should work without jsonb_delta");
+        assert!(
+            result.unwrap().unwrap_or(false),
+            "pg_tviews should work without jsonb_delta"
+        );
     }
 
     #[pg_test]
@@ -146,13 +153,20 @@ mod tests {
         Spi::run("CREATE TABLE tb_note (pk_note BIGSERIAL PRIMARY KEY, body TEXT)").unwrap();
         Spi::run("INSERT INTO tb_note VALUES (1, 'hello'), (2, 'world')").unwrap();
 
-        Spi::run("SELECT pg_tviews_create('note', $$
+        Spi::run(
+            "SELECT pg_tviews_create('note', $$
             SELECT pk_note, jsonb_build_object('body', body) AS data
             FROM tb_note
-        $$)").unwrap();
+        $$)",
+        )
+        .unwrap();
 
         let result = Spi::run("SELECT pg_tviews_refresh('note')");
-        assert!(result.is_ok(), "pg_tviews_refresh failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "pg_tviews_refresh failed: {:?}",
+            result.err()
+        );
 
         let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_note")
             .unwrap()
@@ -165,23 +179,33 @@ mod tests {
         Spi::run("CREATE TABLE tb_tag (pk_tag BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run("INSERT INTO tb_tag VALUES (1, 'rust')").unwrap();
 
-        Spi::run("SELECT pg_tviews_create('tag', $$
+        Spi::run(
+            "SELECT pg_tviews_create('tag', $$
             SELECT pk_tag, jsonb_build_object('name', name) AS data
             FROM tb_tag
-        $$)").unwrap();
+        $$)",
+        )
+        .unwrap();
 
         Spi::run("UPDATE tv_tag SET data = '{}'::jsonb WHERE pk_tag = 1").unwrap();
 
         let stale = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
             .unwrap()
             .unwrap();
-        assert_eq!(stale.0, serde_json::json!({}), "data should be corrupted before refresh");
+        assert_eq!(
+            stale.0,
+            serde_json::json!({}),
+            "data should be corrupted before refresh"
+        );
 
         Spi::run("SELECT pg_tviews_refresh('tag')").unwrap();
 
         let restored = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
             .unwrap()
             .unwrap();
-        assert_eq!(restored.0["name"], "rust", "refresh should restore data from the backing view");
+        assert_eq!(
+            restored.0["name"], "rust",
+            "refresh should restore data from the backing view"
+        );
     }
 }

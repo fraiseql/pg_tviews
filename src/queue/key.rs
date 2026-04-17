@@ -24,12 +24,20 @@ pub struct RefreshKey {
 impl RefreshKey {
     /// Construct a standard PK-based key.
     pub fn pk(entity: impl Into<String>, pk: i64) -> Self {
-        Self { entity: entity.into(), pk, dedup_key: None }
+        Self {
+            entity: entity.into(),
+            pk,
+            dedup_key: None,
+        }
     }
 
     /// Construct a DISTINCT ON dedup key.
     pub fn dedup(entity: impl Into<String>, key: impl Into<String>) -> Self {
-        Self { entity: entity.into(), pk: 0, dedup_key: Some(key.into()) }
+        Self {
+            entity: entity.into(),
+            pk: 0,
+            dedup_key: Some(key.into()),
+        }
     }
 
     /// Returns `true` if this is a DISTINCT ON dedup key.
@@ -40,9 +48,7 @@ impl RefreshKey {
 
 impl PartialEq for RefreshKey {
     fn eq(&self, other: &Self) -> bool {
-        self.entity == other.entity
-            && self.pk == other.pk
-            && self.dedup_key == other.dedup_key
+        self.entity == other.entity && self.pk == other.pk && self.dedup_key == other.dedup_key
     }
 }
 

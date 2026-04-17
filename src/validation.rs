@@ -68,7 +68,10 @@ pub fn validate_jsonb_path(path: &str, param_name: &str) -> TViewResult<()> {
     }
 
     // Validate allowed characters
-    if !path.chars().all(|c| c.is_alphanumeric() || matches!(c, '.' | '[' | ']' | '_')) {
+    if !path
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '.' | '[' | ']' | '_'))
+    {
         return Err(TViewError::InvalidInput {
             parameter: param_name.to_string(),
             reason: format!(
@@ -135,9 +138,7 @@ fn validate_array_indices(path: &str, param_name: &str) -> TViewResult<()> {
                 current_index.clear();
             }
             ']' => {
-                if in_brackets
-                    && !current_index.is_empty()
-                    && current_index.parse::<u32>().is_err()
+                if in_brackets && !current_index.is_empty() && current_index.parse::<u32>().is_err()
                 {
                     return Err(TViewError::InvalidInput {
                         parameter: param_name.to_string(),

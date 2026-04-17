@@ -1,6 +1,6 @@
-use pgrx::prelude::*;
-use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
+use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 
 /// Drop a TVIEW and all its associated objects
 ///
@@ -14,10 +14,7 @@ use crate::error::{TViewError, TViewResult};
 ///
 /// # Errors
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
-pub fn drop_tview(
-    tview_name: &str,
-    if_exists: bool,
-) -> TViewResult<()> {
+pub fn drop_tview(tview_name: &str, if_exists: bool) -> TViewResult<()> {
     let entity_name = tview_name.trim_start_matches("tv_");
     let view_name = format!("v_{entity_name}");
 
@@ -36,14 +33,18 @@ pub fn drop_tview(
     }
 
     // Load metadata to get OIDs for schema-safe drops
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)
-        .map_err(|e| TViewError::SpiError {
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name).map_err(|e| {
+        TViewError::SpiError {
             query: "Load TviewMeta by entity".to_string(),
             error: e.to_string(),
-        })?;
+        }
+    })?;
 
-    // Step 2: Find and remove triggers from base tables
-    match crate::dependency::find_base_tables(&view_name) {
+    // Step 2: Find and remove triggers from base tables.
+    // Pass None for schema — the view OID is already stored in metadata and triggers
+    // are removed by OID elsewhere; this best-effort search doesn't need to be
+    // schema-exact (failure is handled with a warning, not an error).
+    match crate::dependency::find_base_tables(&view_name, None) {
         Ok(dep_graph) => {
             if !dep_graph.base_tables.is_empty() {
                 crate::dependency::remove_triggers(&dep_graph.base_tables, entity_name)?;
@@ -75,7 +76,6 @@ pub fn drop_tview(
     if let Err(e) = crate::audit::log_drop(entity_name) {
         warning!("Failed to log TVIEW drop: {}", e);
     }
-
 
     Ok(())
 }
@@ -126,15 +126,17 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
-    let args = [unsafe {
-        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-    }];
-    Spi::run_with_args(
-        "DELETE FROM pg_tview_meta WHERE entity = $1",
-        &args,
-    ).map_err(|e| TViewError::SpiError {
-        query: "DELETE FROM pg_tview_meta WHERE entity = $1".to_string(),
-        error: e.to_string(),
+    let args =
+        [
+            unsafe {
+                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            },
+        ];
+    Spi::run_with_args("DELETE FROM pg_tview_meta WHERE entity = $1", &args).map_err(|e| {
+        TViewError::SpiError {
+            query: "DELETE FROM pg_tview_meta WHERE entity = $1".to_string(),
+            error: e.to_string(),
+        }
     })?;
 
     Ok(())
@@ -145,18 +147,23 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
 mod tests {
     use pgrx::prelude::*;
 
-
     #[pg_test]
     fn test_drop_tview_nonexistent_if_exists() {
         // Dropping a non-existent TVIEW with IF EXISTS should not error
         let result = Spi::run("SELECT pg_tviews_drop('nonexistent', true)");
-        assert!(result.is_ok(), "IF EXISTS drop of non-existent TVIEW should succeed");
+        assert!(
+            result.is_ok(),
+            "IF EXISTS drop of non-existent TVIEW should succeed"
+        );
     }
 
     #[pg_test]
     fn test_drop_tview_nonexistent_strict() {
         // Dropping a non-existent TVIEW without IF EXISTS should error
         let result = Spi::run("SELECT pg_tviews_drop('nonexistent', false)");
-        assert!(result.is_err(), "Strict drop of non-existent TVIEW should fail");
+        assert!(
+            result.is_err(),
+            "Strict drop of non-existent TVIEW should fail"
+        );
     }
 }

@@ -71,7 +71,10 @@ fn infer_element_type_from_subquery(subquery: &str) -> Option<String> {
     }
 
     // Extract the SELECT clause
-    let select_part = query.to_uppercase().find(" FROM ").map_or_else(|| &query[7..], |from_pos| &query[7..from_pos]);
+    let select_part = query
+        .to_uppercase()
+        .find(" FROM ")
+        .map_or_else(|| &query[7..], |from_pos| &query[7..from_pos]);
 
     // Parse the selected expression
     let selected_expr = select_part.trim();
@@ -102,26 +105,42 @@ fn infer_type_from_column_name(col_name: &str) -> String {
     }
 
     // Common TEXT column names
-    if name.contains("name") || name.contains("title") || name.contains("text")
-        || name.contains("description") || name.contains("email") {
+    if name.contains("name")
+        || name.contains("title")
+        || name.contains("text")
+        || name.contains("description")
+        || name.contains("email")
+    {
         return "TEXT".to_string();
     }
 
     // Common INTEGER column names
-    if name.starts_with("pk_") || name.starts_with("fk_") || name.contains("count")
-        || name.contains("number") || name.contains("size") {
+    if name.starts_with("pk_")
+        || name.starts_with("fk_")
+        || name.contains("count")
+        || name.contains("number")
+        || name.contains("size")
+    {
         return "INTEGER".to_string();
     }
 
     // Common TIMESTAMP column names
-    if name.contains("date") || name.contains("time") || name.contains("created")
-        || name.contains("updated") || name.contains("timestamp") {
+    if name.contains("date")
+        || name.contains("time")
+        || name.contains("created")
+        || name.contains("updated")
+        || name.contains("timestamp")
+    {
         return "TIMESTAMP".to_string();
     }
 
     // Common BOOLEAN column names
-    if name.starts_with("is_") || name.starts_with("has_") || name.contains("active")
-        || name.contains("enabled") || name.contains("deleted") {
+    if name.starts_with("is_")
+        || name.starts_with("has_")
+        || name.contains("active")
+        || name.contains("enabled")
+        || name.contains("deleted")
+    {
         return "BOOLEAN".to_string();
     }
 
@@ -134,14 +153,17 @@ fn infer_type_from_column_name(col_name: &str) -> String {
 /// # Errors
 /// Returns error if SQL parsing fails or no columns found in SELECT statement
 pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
-    let columns_with_expressions = parser::parse_select_columns_with_expressions(sql)
-        .map_err(|e| crate::error::TViewError::InvalidSelectStatement {
-            sql: sql.to_string(),
-            reason: e,
+    let columns_with_expressions =
+        parser::parse_select_columns_with_expressions(sql).map_err(|e| {
+            crate::error::TViewError::InvalidSelectStatement {
+                sql: sql.to_string(),
+                reason: e,
+            }
         })?;
 
     // Extract just column names for backward compatibility
-    let columns: Vec<String> = columns_with_expressions.iter()
+    let columns: Vec<String> = columns_with_expressions
+        .iter()
         .map(|(name, _)| name.clone())
         .collect();
 
@@ -199,7 +221,10 @@ pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
         schema.id_column.as_deref().unwrap_or(""),
         schema.identifier_column.as_deref().unwrap_or(""),
         schema.data_column.as_deref().unwrap_or(""),
-    ].into_iter().filter(|s| !s.is_empty()).collect();
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect();
 
     for (col_name, col_expression) in &columns_with_expressions {
         if !reserved_columns.contains(col_name.as_str())
@@ -209,7 +234,9 @@ pub fn infer_schema(sql: &str) -> TViewResult<TViewSchema> {
             // Infer type for additional columns based on expression
             let inferred_type = infer_column_type(col_expression);
             schema.additional_columns.push(col_name.clone());
-            schema.additional_columns_with_types.push((col_name.clone(), inferred_type));
+            schema
+                .additional_columns_with_types
+                .push((col_name.clone(), inferred_type));
         }
     }
 
@@ -328,7 +355,10 @@ mod tests {
         assert_eq!(schema.data_column, Some("data".to_string()));
         assert_eq!(schema.entity_name, Some("allocation".to_string()));
         assert_eq!(schema.fk_columns, vec!["fk_machine", "fk_location"]);
-        assert_eq!(schema.uuid_fk_columns, vec!["machine_id", "location_id", "tenant_id"]);
+        assert_eq!(
+            schema.uuid_fk_columns,
+            vec!["machine_id", "location_id", "tenant_id"]
+        );
         assert_eq!(schema.additional_columns, vec!["is_current"]);
     }
 
@@ -359,7 +389,9 @@ mod tests {
         let result = infer_schema(sql);
 
         assert!(result.is_err());
-        if let crate::error::TViewError::RequiredColumnMissing { column_name, .. } = result.unwrap_err() {
+        if let crate::error::TViewError::RequiredColumnMissing { column_name, .. } =
+            result.unwrap_err()
+        {
             assert_eq!(column_name, "id");
         } else {
             panic!("Expected RequiredColumnMissing error");
@@ -404,7 +436,10 @@ mod tests {
         assert_eq!(schema.id_column, Some("id".to_string()));
         assert_eq!(schema.data_column, Some("data".to_string()));
         assert_eq!(schema.additional_columns, vec!["machine_item_ids"]);
-        assert_eq!(schema.additional_columns_with_types, vec![("machine_item_ids".to_string(), "UUID[]".to_string())]);
+        assert_eq!(
+            schema.additional_columns_with_types,
+            vec![("machine_item_ids".to_string(), "UUID[]".to_string())]
+        );
     }
 
     #[test]
@@ -412,7 +447,10 @@ mod tests {
         let sql = "SELECT pk_post, id, ARRAY(SELECT c.name FROM tb_comment c WHERE c.fk_post = p.pk_post) AS comment_names, data FROM tb_post p";
         let schema = infer_schema(sql).unwrap();
 
-        assert_eq!(schema.additional_columns_with_types, vec![("comment_names".to_string(), "TEXT[]".to_string())]);
+        assert_eq!(
+            schema.additional_columns_with_types,
+            vec![("comment_names".to_string(), "TEXT[]".to_string())]
+        );
     }
 
     #[test]
@@ -420,27 +458,42 @@ mod tests {
         let sql = "SELECT pk_order, id, ARRAY(SELECT oi.pk_order_item FROM tb_order_item oi WHERE oi.fk_order = o.pk_order) AS item_ids, data FROM tb_order o";
         let schema = infer_schema(sql).unwrap();
 
-        assert_eq!(schema.additional_columns_with_types, vec![("item_ids".to_string(), "INTEGER[]".to_string())]);
+        assert_eq!(
+            schema.additional_columns_with_types,
+            vec![("item_ids".to_string(), "INTEGER[]".to_string())]
+        );
     }
 
     #[test]
     fn test_infer_column_type_array_uuid() {
-        assert_eq!(infer_column_type("ARRAY(SELECT mi.id FROM tb_machine_item mi)"), "UUID[]");
+        assert_eq!(
+            infer_column_type("ARRAY(SELECT mi.id FROM tb_machine_item mi)"),
+            "UUID[]"
+        );
     }
 
     #[test]
     fn test_infer_column_type_array_text() {
-        assert_eq!(infer_column_type("ARRAY(SELECT c.name FROM tb_comment c)"), "TEXT[]");
+        assert_eq!(
+            infer_column_type("ARRAY(SELECT c.name FROM tb_comment c)"),
+            "TEXT[]"
+        );
     }
 
     #[test]
     fn test_infer_column_type_array_integer() {
-        assert_eq!(infer_column_type("ARRAY(SELECT oi.pk_order_item FROM tb_order_item oi)"), "INTEGER[]");
+        assert_eq!(
+            infer_column_type("ARRAY(SELECT oi.pk_order_item FROM tb_order_item oi)"),
+            "INTEGER[]"
+        );
     }
 
     #[test]
     fn test_infer_column_type_jsonb_agg() {
-        assert_eq!(infer_column_type("jsonb_agg(jsonb_build_object('id', c.id))"), "JSONB");
+        assert_eq!(
+            infer_column_type("jsonb_agg(jsonb_build_object('id', c.id))"),
+            "JSONB"
+        );
     }
 
     #[test]

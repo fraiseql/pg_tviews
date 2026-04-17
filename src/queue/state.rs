@@ -1,6 +1,6 @@
+use super::key::RefreshKey;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use super::key::RefreshKey;
 
 thread_local! {
     /// Transaction-local queue of refresh requests

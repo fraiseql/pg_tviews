@@ -20,17 +20,16 @@
 //! - Proper error handling to avoid corrupting transactions
 //! - Thread-safe global state management
 
-use pgrx::prelude::*;
 use pgrx::pg_sys;
+use pgrx::prelude::*;
 use std::ffi::CStr;
 use std::sync::{LazyLock, Mutex};
 
-use crate::ddl::drop_tview;
 use crate::TViewError;
+use crate::ddl::drop_tview;
 
 /// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
-
 
 /// Reentrancy guard: prevents the hook from processing DDL that the hook itself triggers.
 /// When `pg_tviews_create` calls `Spi::run("CREATE VIEW ...")` internally, `PostgreSQL`
@@ -80,7 +79,18 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // Reentrancy guard: if we're already inside the hook (e.g., processing DDL triggered
     // internally by pg_tviews_create via Spi::run), skip interception and pass through.
     if unsafe { HOOK_IN_PROGRESS } {
-        unsafe { call_prev_hook_or_standard(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc) };
+        unsafe {
+            call_prev_hook_or_standard(
+                pstmt,
+                query_string,
+                read_only_tree,
+                context,
+                params,
+                query_env,
+                dest,
+                qc,
+            )
+        };
         return;
     }
     unsafe { HOOK_IN_PROGRESS = true };
@@ -112,8 +122,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                     && !crate::queue::is_queue_empty()
                 {
                     unsafe { HOOK_IN_PROGRESS = false };
-                    error!("pg_tviews: PREPARE TRANSACTION is not supported when \
-                            TVIEW refreshes are pending; commit or rollback first");
+                    error!(
+                        "pg_tviews: PREPARE TRANSACTION is not supported when \
+                            TVIEW refreshes are pending; commit or rollback first"
+                    );
                 }
             }
         }
@@ -125,7 +137,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let query_str = if query_string.is_null() {
             "[NULL]".to_string()
         } else {
-            unsafe { CStr::from_ptr(query_string) }.to_string_lossy().to_string()
+            unsafe { CStr::from_ptr(query_string) }
+                .to_string_lossy()
+                .to_string()
         };
 
         let query_lower = query_str.to_lowercase();
@@ -152,7 +166,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
-            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
+            #[allow(clippy::cast_ptr_alignment)]
+            // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
             match unsafe { handle_create_table_as(ctas, query_string) } {
                 Ok(true) => return Ok(true),
@@ -185,18 +200,26 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             unsafe { HOOK_IN_PROGRESS = false };
             error!("{handler_err}");
             #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
-            { true }
+            {
+                true
+            }
         }
         Err(panic_info) => {
             // PANIC in ProcessUtility hook - reset guard BEFORE raising error!()
             unsafe { HOOK_IN_PROGRESS = false };
-            let panic_msg = panic_info.downcast_ref::<&str>()
+            let panic_msg = panic_info
+                .downcast_ref::<&str>()
                 .map(|s| (*s).to_string())
                 .or_else(|| panic_info.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| format!("{panic_info:?}"));
-            error!("PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!", panic_msg);
+            error!(
+                "PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!",
+                panic_msg
+            );
             #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
-            { true }
+            {
+                true
+            }
         }
     };
 
@@ -262,6 +285,19 @@ unsafe fn handle_create_table_as(
             return Ok(false);
         }
 
+        // Get the explicit schema from `CREATE TABLE [schema.]tv_* AS SELECT …`.
+        // NULL means the schema was omitted — the event trigger will resolve it at
+        // runtime via `current_schema()`.  Non-NULL overrides `current_schema()` so
+        // the TVIEW lands in the schema the user actually specified.
+        let schema_name = if rel.schemaname.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(rel.schemaname)
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+        };
+
         // Extract entity name
         let entity_name = &table_name[3..]; // Remove "tv_" prefix
 
@@ -274,7 +310,9 @@ unsafe fn handle_create_table_as(
 
         // Get the SELECT query
         let select_sql = if query_string.is_null() {
-            return Err(crate::internal_error!("No query string provided for CREATE TABLE AS"));
+            return Err(crate::internal_error!(
+                "No query string provided for CREATE TABLE AS"
+            ));
         } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
             // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
             // We need to find the AS that comes after the table name, not column aliases
@@ -302,10 +340,12 @@ unsafe fn handle_create_table_as(
         // Validate TVIEW SELECT statement structure
         match validate_tview_select(&select_sql) {
             Ok(()) => {
-                // Store SELECT in session-level temp table for event trigger to use
-                if let Err(e) = store_pending_tview_select(table_name, &select_sql) {
+                // Store SELECT + schema in cache for event trigger to use
+                if let Err(e) = store_pending_tview_select(table_name, &schema_name, &select_sql) {
                     return Err(crate::internal_error!(
-                        "Failed to store SELECT for '{}': {}", table_name, e
+                        "Failed to store SELECT for '{}': {}",
+                        table_name,
+                        e
                     ));
                 }
 
@@ -314,8 +354,14 @@ unsafe fn handle_create_table_as(
             Err(e) => {
                 // Validation failed — still store the SELECT so the event trigger can attempt
                 // conversion and produce a proper error if the structure is truly invalid.
-                warning!("TVIEW syntax warning for '{}': {} — attempting conversion anyway", table_name, e);
-                if let Err(store_err) = store_pending_tview_select(table_name, &select_sql) {
+                warning!(
+                    "TVIEW syntax warning for '{}': {} — attempting conversion anyway",
+                    table_name,
+                    e
+                );
+                if let Err(store_err) =
+                    store_pending_tview_select(table_name, &schema_name, &select_sql)
+                {
                     warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
                 }
                 Ok(false) // Let PostgreSQL create it, event trigger will convert
@@ -357,38 +403,47 @@ fn validate_tview_select(select_sql: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Store pending TVIEW SELECT statement for event trigger to retrieve
+/// Store pending TVIEW SELECT statement and target schema for event trigger to retrieve.
 ///
-/// Uses a session-level temp table that auto-cleanup on transaction end.
-/// This is safe because we're NOT using SPI here - we're just preparing
-/// the data for the event trigger to use (which HAS safe SPI context).
-fn store_pending_tview_select(table_name: &str, select_sql: &str) -> Result<(), String> {
-    // We can't use SPI here (we're in a hook), but we can use a global cache
-    // The event trigger will pick it up when it fires (safe SPI context)
-    PENDING_TVIEW_SELECTS.lock()
+/// Uses a session-level in-memory cache. The event trigger reads it when it fires
+/// (safe SPI context). `schema_name` is the explicit schema from the CREATE TABLE
+/// statement (e.g. "public" for `CREATE TABLE public.tv_org AS SELECT …`), or an
+/// empty string when the schema was not specified (caller should fall back to
+/// `current_schema()` at event-trigger time).
+fn store_pending_tview_select(
+    table_name: &str,
+    schema_name: &str,
+    select_sql: &str,
+) -> Result<(), String> {
+    PENDING_TVIEW_SELECTS
+        .lock()
         .map_err(|e| format!("Failed to lock cache: {e}"))?
-        .insert(table_name.to_string(), select_sql.to_string());
+        .insert(
+            table_name.to_string(),
+            (schema_name.to_string(), select_sql.to_string()),
+        );
 
     Ok(())
 }
 
-/// Global cache for pending TVIEW SELECT statements
+/// Global cache for pending TVIEW SELECT statements.
 ///
-/// Maps: `table_name` -> original SELECT statement
+/// Maps: `table_name` → `(schema_name, select_sql)`.
+/// `schema_name` is the explicit schema from `CREATE TABLE [schema.]tv_* AS SELECT …`,
+/// or an empty string when the schema was omitted.
 /// Written by: `ProcessUtility` hook (before table creation)
 /// Read by: Event trigger (after table creation, safe SPI context)
 /// Cleared by: Event trigger after successful conversion
-static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, (String, String)>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// Retrieve and remove a pending TVIEW SELECT statement
+/// Retrieve and remove a pending TVIEW `(schema_name, SELECT)` pair.
 ///
-/// Called by event trigger to get the original SELECT for TVIEW conversion.
-/// Returns None if no SELECT was stored for this table.
-pub fn take_pending_tview_select(table_name: &str) -> Option<String> {
-    PENDING_TVIEW_SELECTS.lock()
-        .ok()?
-        .remove(table_name)
+/// Called by event trigger to get the original SELECT and target schema for TVIEW
+/// conversion.  Returns `None` if no entry was stored for this table (which means the
+/// table was created by `pg_tviews_create()` directly, not via DDL interception).
+pub fn take_pending_tview_select(table_name: &str) -> Option<(String, String)> {
+    PENDING_TVIEW_SELECTS.lock().ok()?.remove(table_name)
 }
 
 /// Handle DROP TABLE tv_*
@@ -409,101 +464,99 @@ unsafe fn handle_drop_table(
 ) -> Result<bool, TViewError> {
     // Safety: all pointer dereferences are guarded by null checks.
     unsafe {
-
-    if drop_stmt.is_null() {
-        return Ok(false);
-    }
-
-    let drop_ref = &*drop_stmt;
-
-    // Check if it's dropping a table (not view, index, etc.)
-    if drop_ref.removeType != pg_sys::ObjectType::OBJECT_TABLE {
-        return Ok(false);
-    }
-
-    let objects = drop_ref.objects;
-    if objects.is_null() {
-        return Ok(false);
-    }
-
-    let if_exists = drop_ref.missing_ok;
-
-    // Collect table names and indices from DropStmt.objects.
-    // Each element in objects is a List* of String* (name parts: [schema, table] or [table]).
-    let num_tables = pg_sys::list_length(objects);
-    let mut tv_entries: Vec<(i32, String)> = Vec::new(); // (index, name)
-    let mut has_non_tv = false;
-
-    for i in 0..num_tables {
-        let name_list = pg_sys::list_nth(objects, i) as *mut pg_sys::List;
-        if name_list.is_null() {
-            has_non_tv = true;
-            continue;
+        if drop_stmt.is_null() {
+            return Ok(false);
         }
 
-        // The last element in the name list is the table name (unqualified)
-        let name_parts = pg_sys::list_length(name_list);
-        if name_parts == 0 {
-            has_non_tv = true;
-            continue;
+        let drop_ref = &*drop_stmt;
+
+        // Check if it's dropping a table (not view, index, etc.)
+        if drop_ref.removeType != pg_sys::ObjectType::OBJECT_TABLE {
+            return Ok(false);
         }
 
-        // Get the last name part (table name, ignoring schema qualification)
-        let last_part = pg_sys::list_nth(name_list, name_parts - 1) as *mut pg_sys::String;
-        if last_part.is_null() {
-            has_non_tv = true;
-            continue;
+        let objects = drop_ref.objects;
+        if objects.is_null() {
+            return Ok(false);
         }
 
-        let sval = (*last_part).sval;
-        if sval.is_null() {
-            has_non_tv = true;
-            continue;
+        let if_exists = drop_ref.missing_ok;
+
+        // Collect table names and indices from DropStmt.objects.
+        // Each element in objects is a List* of String* (name parts: [schema, table] or [table]).
+        let num_tables = pg_sys::list_length(objects);
+        let mut tv_entries: Vec<(i32, String)> = Vec::new(); // (index, name)
+        let mut has_non_tv = false;
+
+        for i in 0..num_tables {
+            let name_list = pg_sys::list_nth(objects, i) as *mut pg_sys::List;
+            if name_list.is_null() {
+                has_non_tv = true;
+                continue;
+            }
+
+            // The last element in the name list is the table name (unqualified)
+            let name_parts = pg_sys::list_length(name_list);
+            if name_parts == 0 {
+                has_non_tv = true;
+                continue;
+            }
+
+            // Get the last name part (table name, ignoring schema qualification)
+            let last_part = pg_sys::list_nth(name_list, name_parts - 1) as *mut pg_sys::String;
+            if last_part.is_null() {
+                has_non_tv = true;
+                continue;
+            }
+
+            let sval = (*last_part).sval;
+            if sval.is_null() {
+                has_non_tv = true;
+                continue;
+            }
+
+            let Ok(table_name) = CStr::from_ptr(sval).to_str() else {
+                has_non_tv = true;
+                continue;
+            };
+
+            if table_name.starts_with("tv_") {
+                tv_entries.push((i, table_name.to_string()));
+            } else {
+                has_non_tv = true;
+            }
         }
 
-        let Ok(table_name) = CStr::from_ptr(sval).to_str() else {
-            has_non_tv = true;
-            continue;
-        };
-
-        if table_name.starts_with("tv_") {
-            tv_entries.push((i, table_name.to_string()));
-        } else {
-            has_non_tv = true;
+        if tv_entries.is_empty() {
+            return Ok(false);
         }
-    }
 
-    if tv_entries.is_empty() {
-        return Ok(false);
-    }
-
-    // Drop each tv_* table via drop_tview
-    for (_, name) in &tv_entries {
-        match drop_tview(name, if_exists) {
-            Ok(()) => {}
-            Err(e) => {
-                if if_exists {
-                    notice!("TVIEW '{}' does not exist, skipping", name);
-                } else {
-                    return Err(e);
+        // Drop each tv_* table via drop_tview
+        for (_, name) in &tv_entries {
+            match drop_tview(name, if_exists) {
+                Ok(()) => {}
+                Err(e) => {
+                    if if_exists {
+                        notice!("TVIEW '{}' does not exist, skipping", name);
+                    } else {
+                        return Err(e);
+                    }
                 }
             }
         }
-    }
 
-    // If there were non-tv_* tables, remove tv_* entries from the objects list
-    // so the standard handler only processes the remaining non-tv_* tables.
-    if has_non_tv {
-        // Remove in reverse index order to preserve indices
-        for (idx, _) in tv_entries.iter().rev() {
-            pg_sys::list_delete_nth_cell(objects, *idx);
+        // If there were non-tv_* tables, remove tv_* entries from the objects list
+        // so the standard handler only processes the remaining non-tv_* tables.
+        if has_non_tv {
+            // Remove in reverse index order to preserve indices
+            for (idx, _) in tv_entries.iter().rev() {
+                pg_sys::list_delete_nth_cell(objects, *idx);
+            }
+            return Ok(false);
         }
-        return Ok(false);
-    }
 
-    // All tables were tv_* — we handled everything
-    Ok(true)
-
+        // All tables were tv_* — we handled everything
+        Ok(true)
     } // unsafe
 }
 
@@ -548,4 +601,3 @@ unsafe fn call_prev_hook_or_standard(
         }
     }
 }
-

@@ -1,8 +1,8 @@
-use pgrx::prelude::*;
+use pgrx::AllocatedByPostgres;
 use pgrx::datum::DatumWithOid;
 use pgrx::heap_tuple::PgHeapTuple;
-use pgrx::AllocatedByPostgres;
 use pgrx::pg_sys;
+use pgrx::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -31,15 +31,15 @@ use std::sync::{LazyLock, Mutex};
 pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     use std::ffi::CString;
 
-    let c_sql = CString::new(sql)
-        .map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
+    let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
 
     unsafe {
         // SPI_OPT_NONATOMIC allows DDL in SPI context without triggering the
         // "attempted to execute DDL in atomic SPI context" assertion in PG18.
         #[allow(clippy::cast_possible_wrap)] // PostgreSQL SPI constants are u32, API takes i32
         let connect_result = pg_sys::SPI_connect_ext(pg_sys::SPI_OPT_NONATOMIC as i32);
-        #[allow(clippy::cast_possible_wrap)] // Reason: PostgreSQL SPI constants are u32, API takes i32
+        #[allow(clippy::cast_possible_wrap)]
+        // Reason: PostgreSQL SPI constants are u32, API takes i32
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
             return Err(format!("SPI_connect_ext failed: {connect_result}"));
         }
@@ -54,13 +54,16 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
             ..pg_sys::SPIExecuteOptions::default()
         };
 
-        let execute_result = pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
+        let execute_result =
+            pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
 
         // Always finish even on error
         pg_sys::SPI_finish();
 
         if execute_result < 0 {
-            return Err(format!("SPI_execute_extended returned error code {execute_result} for DDL: {sql}"));
+            return Err(format!(
+                "SPI_execute_extended returned error code {execute_result} for DDL: {sql}"
+            ));
         }
     }
 
@@ -110,10 +113,7 @@ use pgrx::pg_sys::Oid;
 /// Tries BIGINT (i64) first, then falls back to INTEGER (i32) with promotion.
 /// This allows triggers to work regardless of whether the PK/FK column is
 /// `INTEGER`/`SERIAL` or `BIGINT`/`BIGSERIAL`.
-pub fn tuple_get_i64(
-    tuple: &PgHeapTuple<'_, AllocatedByPostgres>,
-    col: &str,
-) -> Option<i64> {
+pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) -> Option<i64> {
     // Try BIGINT (i64) first — most common for pk_*/fk_* columns
     if let Ok(Some(v)) = tuple.get_by_name::<i64>(col) {
         return Some(v);
@@ -143,19 +143,22 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
         })?
         .oid();
 
-    let entity = crate::catalog::entity_for_table(table_oid)?
-        .ok_or_else(|| crate::TViewError::SpiError {
+    let entity = crate::catalog::entity_for_table(table_oid)?.ok_or_else(|| {
+        crate::TViewError::SpiError {
             query: "entity_for_table".to_string(),
             error: format!("Table OID {table_oid:?} not managed by pg_tviews"),
-        })?;
+        }
+    })?;
 
     let pk_column = format!("pk_{entity}");
 
-    tuple_get_i64(&tuple, &pk_column)
-        .ok_or_else(|| crate::TViewError::SpiError {
+    tuple_get_i64(&tuple, &pk_column).ok_or_else(|| {
+        crate::TViewError::SpiError {
             query: pk_column.clone(),
             error: format!("{pk_column} must not be null"),
-        }.into())
+        }
+        .into()
+    })
 }
 
 /// Look up the view name from an OID
@@ -218,7 +221,8 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
 
     // Slow path: query and cache
     let name: String = Spi::connect(|client| {
-        let args = vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let args =
+            vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         let mut rows = client.select(
             "SELECT relname::text AS relname FROM pg_class WHERE oid = $1",
             None,
@@ -226,11 +230,13 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         )?;
 
         if let Some(row) = rows.next() {
-            row["relname"].value::<String>()?
-                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                    query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
+            row["relname"].value::<String>()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
+                    query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1"
+                        .to_string(),
                     error: "relname column is NULL".to_string(),
-                }))
+                })
+            })
         } else {
             Err(spi::Error::from(crate::TViewError::SpiError {
                 query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
@@ -240,7 +246,10 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     })?;
 
     // Cache the result
-    OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(oid, name.clone());
+    OID_RELNAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(oid, name.clone());
     Ok(name)
 }
 

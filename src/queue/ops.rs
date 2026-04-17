@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use super::key::RefreshKey;
 use super::state::TX_REFRESH_QUEUE;
+use std::collections::HashSet;
 
 /// Check queue size against a limit and raise ERROR if exceeded.
 /// Returns Ok(()) if the queue size is still below the limit.
@@ -142,7 +142,10 @@ mod tests {
         enqueue_refresh_with_limit("post", 2, limit).expect("second insert should succeed");
 
         // Should fail: queue size is 2, adding 1 (total 3) exceeds limit
-        assert!(enqueue_refresh_with_limit("user", 3, limit).is_err(), "third insert should fail");
+        assert!(
+            enqueue_refresh_with_limit("user", 3, limit).is_err(),
+            "third insert should fail"
+        );
 
         // Verify queue only has 2 items (backpressure prevented the 3rd)
         let snapshot = take_queue_snapshot();

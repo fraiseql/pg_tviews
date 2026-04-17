@@ -1,9 +1,9 @@
 //! Cascade refresh: propagating base-table changes to dependent TVIEWs.
 
-use pgrx::prelude::*;
 use crate::catalog;
-use crate::utils::{self, quote_identifier};
 use crate::queue;
+use crate::utils::{self, quote_identifier};
+use pgrx::prelude::*;
 
 /// Cascade refresh when a base table row changes
 /// Called by trigger handler when INSERT/UPDATE/DELETE occurs on base tables
@@ -12,10 +12,7 @@ use crate::queue;
 /// - `base_table_oid`: OID of the base table that changed
 /// - `pk_value`: Primary key value of the changed row
 #[pg_extern]
-fn pg_tviews_cascade(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
+fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
     let dependent_tviews = match find_dependent_tviews(base_table_oid) {
         Ok(tv) => tv,
         Err(e) => error!("Failed to find dependent TVIEWs: {:?}", e),
@@ -29,7 +26,11 @@ fn pg_tviews_cascade(
         let affected_rows = match find_affected_tview_rows(&tview_meta, base_table_oid, pk_value) {
             Ok(rows) => rows,
             Err(e) => {
-                warning!("Failed to find affected rows in {}: {:?}", tview_meta.entity_name, e);
+                warning!(
+                    "Failed to find affected rows in {}: {:?}",
+                    tview_meta.entity_name,
+                    e
+                );
                 continue;
             }
         };
@@ -47,20 +48,14 @@ fn pg_tviews_cascade(
 /// Handle INSERT operations on base tables
 /// Called by trigger handler when rows are inserted
 #[pg_extern]
-fn pg_tviews_insert(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
+fn pg_tviews_insert(base_table_oid: pg_sys::Oid, pk_value: i64) {
     pg_tviews_cascade(base_table_oid, pk_value);
 }
 
 /// Handle DELETE operations on base tables
 /// Called by trigger handler when rows are deleted
 #[pg_extern]
-fn pg_tviews_delete(
-    base_table_oid: pg_sys::Oid,
-    pk_value: i64,
-) {
+fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
     pg_tviews_cascade(base_table_oid, pk_value);
 }
 
@@ -93,7 +88,8 @@ fn find_affected_tview_rows(
 ) -> spi::Result<Vec<i64>> {
     let base_table_name = crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {base_table_oid:?}"
-    ))?.ok_or(spi::Error::InvalidPosition)?;
+    ))?
+    .ok_or(spi::Error::InvalidPosition)?;
 
     let base_entity = base_table_name.trim_start_matches("tb_");
 

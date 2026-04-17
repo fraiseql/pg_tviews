@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::queue::{enqueue_refresh, RefreshKey};
-    use crate::queue::ops::{take_queue_snapshot, clear_queue};
+    use crate::queue::ops::{clear_queue, take_queue_snapshot};
+    use crate::queue::{RefreshKey, enqueue_refresh};
 
     #[test]
     fn test_multi_entity_queue() {

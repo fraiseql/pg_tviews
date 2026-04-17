@@ -51,15 +51,15 @@
 //! -- Optimized: UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1, '{author}')
 //! ```
 
-use pgrx::prelude::*;
-use pgrx::pg_sys::Oid;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::Oid;
+use pgrx::prelude::*;
 
-use crate::catalog::{TviewMeta, DependencyDetail, DependencyType};
+use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
-use crate::utils::{lookup_view_for_source, relname_from_oid};
 use crate::lifecycle::check_jsonb_delta_available;
+use crate::utils::{lookup_view_for_source, relname_from_oid};
 
 /// Default match key for array patching (assumes 'id' field)
 const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
@@ -151,9 +151,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
     let tv_name = relname_from_oid(meta.tview_oid)?;
 
     // Check whether any winning row exists for this dedup key
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM {view_name} WHERE {key_col}::text = $1"
-    );
+    let count_sql = format!("SELECT COUNT(*) FROM {view_name} WHERE {key_col}::text = $1");
     let row_count: i64 = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -182,7 +180,9 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
         // Fast path: check cache
         let cached_dml: Option<(String, String)> = {
-            let cache = crate::utils::DEDUP_DML_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = crate::utils::DEDUP_DML_CACHE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cache.get(&view_name).cloned()
         };
 
@@ -198,7 +198,9 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 let dml = build_dedup_dml_components(&col_names, key_col.as_str());
 
                 // Cache the DML strings
-                crate::utils::DEDUP_DML_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+                crate::utils::DEDUP_DML_CACHE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(view_name.clone(), dml.clone());
 
                 dml
@@ -230,7 +232,9 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
     // Fast path: check cache
     {
-        let cache = crate::utils::VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = crate::utils::VIEW_COLUMNS_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(cols) = cache.get(view_name) {
             return Ok(cols.clone());
         }
@@ -261,7 +265,10 @@ fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
     })?;
 
     // Cache the result
-    crate::utils::VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(view_name.to_string(), cols.clone());
+    crate::utils::VIEW_COLUMNS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(view_name.to_string(), cols.clone());
     Ok(cols)
 }
 
@@ -319,20 +326,15 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
-    let sql = format!(
-        "SELECT * FROM {view_name} WHERE {pk_col} = $1"
-    );
+    let sql = format!("SELECT * FROM {view_name} WHERE {pk_col} = $1");
 
     Spi::connect(|client| {
-        let args = vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
-        let mut rows = client.select(
-            &sql,
-            None,
-            &args,
-        )?;
+        let args =
+            vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
+        let mut rows = client.select(&sql, None, &args)?;
 
-        let row_data = rows.next()
-            .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+        let row_data = rows.next().ok_or_else(|| {
+            spi::Error::from(crate::TViewError::SpiError {
                 query: sql.clone(),
                 error: format!(
                     "TVIEW '{}': No row found in backing view '{view_name}' for {pk_col} = {pk}. \
@@ -341,7 +343,8 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
                      (3) row filtered by view WHERE clause",
                     meta.entity_name
                 ),
-            }))?;
+            })
+        })?;
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
         if meta.is_union && rows.next().is_some() {
@@ -350,7 +353,8 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
                 warning!(
                     "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}; \
                      taking first row (union_duplicate_policy=first)",
-                    meta.entity_name, pk
+                    meta.entity_name,
+                    pk
                 );
             } else {
                 return Err(spi::Error::from(crate::TViewError::SpiError {
@@ -366,15 +370,16 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
         }
 
         // Extract data column
-        let data: JsonB = row_data["data"].value()?
-            .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+        let data: JsonB = row_data["data"].value()?.ok_or_else(|| {
+            spi::Error::from(crate::TViewError::SpiError {
                 query: sql.clone(),
                 error: format!(
                     "TVIEW '{}': data column is NULL for {pk_col} = {pk} in view '{view_name}'. \
                      Ensure TVIEW definition includes a non-NULL data column.",
                     meta.entity_name
                 ),
-            }))?;
+            })
+        })?;
 
         Ok(ViewRow {
             entity_name: meta.entity_name.clone(),
@@ -384,8 +389,6 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
         })
     })
 }
-
-
 
 /// Apply JSON patch to `tv_entity` using smart JSONB patching.
 ///
@@ -467,7 +470,12 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     Spi::run_with_args(
         &sql,
         &[
-            unsafe { DatumWithOid::new(JsonB(row.data.0.clone()), PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
+            unsafe {
+                DatumWithOid::new(
+                    JsonB(row.data.0.clone()),
+                    PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+                )
+            },
             unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
         ],
     )?;
@@ -511,11 +519,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 /// # Returns
 ///
 /// SQL UPDATE statement as a `String`, or error if construction fails.
-fn build_smart_patch_sql(
-    tv_name: &str,
-    pk_col: &str,
-    deps: &[DependencyDetail],
-) -> String {
+fn build_smart_patch_sql(tv_name: &str, pk_col: &str, deps: &[DependencyDetail]) -> String {
     if deps.is_empty() {
         // No dependencies = full replacement
         return format!(
@@ -559,9 +563,7 @@ fn build_smart_patch_sql(
         };
     }
 
-    format!(
-        "UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() WHERE {pk_col} = $2"
-    )
+    format!("UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() WHERE {pk_col} = $2")
 }
 
 /// Check if `jsonb_delta` extension is installed in the current database.
@@ -618,7 +620,10 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names: Vec<String> = Spi::connect(|client| {
         let args = vec![unsafe {
-            DatumWithOid::new(view_name.as_str(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            DatumWithOid::new(
+                view_name.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
         }];
         let rows = client.select(
             "SELECT a.attname::text \
@@ -670,9 +675,8 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use pgrx::JsonB;
-
+    use pgrx::prelude::*;
 
     /// Test smart patching for nested object dependencies.
     ///
@@ -682,25 +686,32 @@ mod tests {
     fn test_apply_patch_nested_object() {
         // Setup: Create tables with FK relationship
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice')").unwrap();
         Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Hello')").unwrap();
 
         // Create user TVIEW first (so v_user exists for post TVIEW)
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Create TVIEW with nested author object
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create(
                 'post',
                 $$
@@ -713,19 +724,32 @@ mod tests {
                 LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
                 $$
             )
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify metadata captured nested dependency
-        let meta = crate::utils::spi_get_string("
+        let meta = crate::utils::spi_get_string(
+            "
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity = 'post'
-        ").unwrap().unwrap();
-        assert!(meta.contains("nested_object"), "Expected nested_object dependency, got: {meta}");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            meta.contains("nested_object"),
+            "Expected nested_object dependency, got: {meta}"
+        );
 
         // Initial state
-        let initial_data = Spi::get_one::<JsonB>("
+        let initial_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
         let initial_json = &initial_data.0;
         assert_eq!(initial_json["title"], "Hello");
@@ -747,16 +771,24 @@ mod tests {
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: author.name changed, title unchanged
-        let updated_data = Spi::get_one::<JsonB>("
+        let updated_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
         let updated_json = &updated_data.0;
 
-        assert_eq!(updated_json["title"], "Hello",
-            "Title should NOT be touched by smart patch");
-        assert_eq!(updated_json["author"]["name"], "Alice Updated",
-            "Author name should be updated via smart patch");
+        assert_eq!(
+            updated_json["title"], "Hello",
+            "Title should NOT be touched by smart patch"
+        );
+        assert_eq!(
+            updated_json["author"]["name"], "Alice Updated",
+            "Author name should be updated via smart patch"
+        );
     }
 
     /// Test smart patching for array dependencies.
@@ -767,40 +799,58 @@ mod tests {
     fn test_apply_patch_array() {
         // Setup: Create tables with FK relationships
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT
-        )").unwrap();
-        Spi::run("CREATE TABLE tb_comment (
+        )",
+        )
+        .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_comment (
             pk_comment BIGSERIAL PRIMARY KEY,
             fk_post BIGINT REFERENCES tb_post(pk_post),
             fk_user BIGINT REFERENCES tb_user(pk_user),
             text TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice')").unwrap();
         Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Hello')").unwrap();
-        Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
-                  VALUES (1, 1, 1, 'Great post!')").unwrap();
-        Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
-                  VALUES (2, 1, 1, 'Thanks!')").unwrap();
+        Spi::run(
+            "INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
+                  VALUES (1, 1, 1, 'Great post!')",
+        )
+        .unwrap();
+        Spi::run(
+            "INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
+                  VALUES (2, 1, 1, 'Thanks!')",
+        )
+        .unwrap();
 
         // Create dependency TVIEWs first
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('comment', $$
                 SELECT pk_comment, fk_post, fk_user,
                        jsonb_build_object('text', text) AS data
                 FROM tb_comment
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Create TVIEW with array of comments
         Spi::run("
@@ -822,19 +872,34 @@ mod tests {
         ").unwrap();
 
         // Verify metadata captured array dependency
-        let meta = crate::utils::spi_get_string("
+        let meta = crate::utils::spi_get_string(
+            "
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity = 'post'
-        ").unwrap().unwrap();
-        assert!(meta.contains("array"), "Expected array dependency, got: {meta}");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            meta.contains("array"),
+            "Expected array dependency, got: {meta}"
+        );
 
         // Initial state: 2 comments
-        let initial_data = Spi::get_one::<JsonB>("
+        let initial_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
         let initial_comments = initial_data.0["comments"].as_array().unwrap();
-        assert_eq!(initial_comments.len(), 2, "Should have 2 comments initially");
+        assert_eq!(
+            initial_comments.len(),
+            2,
+            "Should have 2 comments initially"
+        );
 
         // Update one comment
         Spi::run("UPDATE tb_comment SET text = 'Updated!' WHERE pk_comment = 1").unwrap();
@@ -852,24 +917,33 @@ mod tests {
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: Only the updated comment changed
-        let updated_data = Spi::get_one::<JsonB>("
+        let updated_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
         let comments = updated_data.0["comments"].as_array().unwrap();
         assert_eq!(comments.len(), 2, "Should still have 2 comments");
 
         // Find comments by their id field
-        let comment_1 = comments.iter()
+        let comment_1 = comments
+            .iter()
             .find(|c| c["id"].as_i64() == Some(1))
             .expect("Should find comment with id=1");
 
-        let comment_2 = comments.iter()
+        let comment_2 = comments
+            .iter()
             .find(|c| c["id"].as_i64() == Some(2))
             .expect("Should find comment with id=2");
 
         assert_eq!(comment_1["text"], "Updated!", "Comment 1 should be updated");
-        assert_eq!(comment_2["text"], "Thanks!", "Comment 2 should be unchanged");
+        assert_eq!(
+            comment_2["text"], "Thanks!",
+            "Comment 2 should be unchanged"
+        );
     }
 
     /// Test smart patching for scalar dependencies.
@@ -880,18 +954,24 @@ mod tests {
     #[pg_test]
     fn test_apply_patch_scalar() {
         // Setup: Create tables with FK but FK not used in SELECT
-        Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)")
+            .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_category BIGINT REFERENCES tb_category(pk_category),
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         Spi::run("INSERT INTO tb_category (pk_category, name) VALUES (1, 'Tech')").unwrap();
-        Spi::run("INSERT INTO tb_post (pk_post, fk_category, title) VALUES (1, 1, 'Hello')").unwrap();
+        Spi::run("INSERT INTO tb_post (pk_post, fk_category, title) VALUES (1, 1, 'Hello')")
+            .unwrap();
 
         // Create TVIEW where FK exists but not used in data
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create(
                 'post',
                 $$
@@ -900,22 +980,38 @@ mod tests {
                 FROM tb_post
                 $$
             )
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify metadata shows scalar dependency
-        let meta = crate::utils::spi_get_string("
+        let meta = crate::utils::spi_get_string(
+            "
             SELECT dependency_types::text FROM pg_tview_meta
             WHERE entity ='post'
-        ").unwrap().unwrap();
-        assert!(meta.contains("scalar"), "Expected scalar dependency, got: {meta}");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            meta.contains("scalar"),
+            "Expected scalar dependency, got: {meta}"
+        );
 
         // Initial state
-        let initial_data = Spi::get_one::<JsonB>("
+        let initial_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(initial_data.0["title"], "Hello");
-        assert!(initial_data.0.get("category").is_none(), "Should not have category in data");
+        assert!(
+            initial_data.0.get("category").is_none(),
+            "Should not have category in data"
+        );
 
         // Update category (shouldn't affect tv_post.data since it's scalar)
         Spi::run("UPDATE tb_category SET name = 'Technology' WHERE pk_category = 1").unwrap();
@@ -928,12 +1024,22 @@ mod tests {
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify: data unchanged (scalar has no path in JSONB)
-        let updated_data = Spi::get_one::<JsonB>("
+        let updated_data = Spi::get_one::<JsonB>(
+            "
             SELECT data FROM tv_post WHERE pk_post = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
 
-        assert_eq!(updated_data.0["title"], "Hello", "Title should be unchanged");
-        assert!(updated_data.0.get("category").is_none(), "Still no category in data");
+        assert_eq!(
+            updated_data.0["title"], "Hello",
+            "Title should be unchanged"
+        );
+        assert!(
+            updated_data.0.get("category").is_none(),
+            "Still no category in data"
+        );
     }
 
     /// Integration test: Full cascade with multiple dependency types.
@@ -950,48 +1056,75 @@ mod tests {
         let _ = Spi::run("CREATE EXTENSION IF NOT EXISTS jsonb_delta");
 
         // Create tables
-        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT, email TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT, email TEXT)")
+            .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT,
             content TEXT
-        )").unwrap();
-        Spi::run("CREATE TABLE tb_comment (
+        )",
+        )
+        .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_comment (
             pk_comment BIGSERIAL PRIMARY KEY,
             fk_post BIGINT REFERENCES tb_post(pk_post),
             fk_user BIGINT REFERENCES tb_user(pk_user),
             text TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data
-        Spi::run("INSERT INTO tb_user (pk_user, name, email) VALUES (1, 'Alice', 'alice@example.com')").unwrap();
-        Spi::run("INSERT INTO tb_user (pk_user, name, email) VALUES (2, 'Bob', 'bob@example.com')").unwrap();
-        Spi::run("INSERT INTO tb_post (pk_post, fk_user, title, content)
-                  VALUES (1, 1, 'First Post', 'Hello World')").unwrap();
-        Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
-                  VALUES (1, 1, 1, 'Great post!')").unwrap();
-        Spi::run("INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
-                  VALUES (2, 1, 2, 'Thanks for sharing!')").unwrap();
+        Spi::run(
+            "INSERT INTO tb_user (pk_user, name, email) VALUES (1, 'Alice', 'alice@example.com')",
+        )
+        .unwrap();
+        Spi::run("INSERT INTO tb_user (pk_user, name, email) VALUES (2, 'Bob', 'bob@example.com')")
+            .unwrap();
+        Spi::run(
+            "INSERT INTO tb_post (pk_post, fk_user, title, content)
+                  VALUES (1, 1, 'First Post', 'Hello World')",
+        )
+        .unwrap();
+        Spi::run(
+            "INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
+                  VALUES (1, 1, 1, 'Great post!')",
+        )
+        .unwrap();
+        Spi::run(
+            "INSERT INTO tb_comment (pk_comment, fk_post, fk_user, text)
+                  VALUES (2, 1, 2, 'Thanks for sharing!')",
+        )
+        .unwrap();
 
         // Create dependency TVIEWs first
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name, 'email', email) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('comment', $$
                 SELECT pk_comment, fk_post, fk_user,
                        jsonb_build_object('text', text) AS data
                 FROM tb_comment
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Create TVIEW with multiple dependency types
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post', $$
                 SELECT pk_post, fk_user,
                        jsonb_build_object(
@@ -1011,64 +1144,85 @@ mod tests {
                 LEFT JOIN v_comment ON v_comment.fk_post = tb_post.pk_post
                 GROUP BY pk_post, fk_user, title, content, v_user.data
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify initial state
         let initial = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         assert_eq!(initial.0["title"], "First Post");
         assert_eq!(initial.0["author"]["name"], "Alice");
         assert_eq!(initial.0["comments"].as_array().unwrap().len(), 2);
 
         // Test 1: Update nested author (should use smart patch)
-        Spi::run("UPDATE tb_user SET name = 'Alice Updated', email = 'alice.new@example.com'
-                  WHERE pk_user = 1").unwrap();
+        Spi::run(
+            "UPDATE tb_user SET name = 'Alice Updated', email = 'alice.new@example.com'
+                  WHERE pk_user = 1",
+        )
+        .unwrap();
 
         // Refresh tv_user first, then tv_post explicitly
         let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         crate::refresh::refresh_pk(user_oid, 1).unwrap();
 
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
-        let after_author_update = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
-            .unwrap().unwrap();
+        let after_author_update =
+            Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
+                .unwrap()
+                .unwrap();
 
         // Author should be updated
         assert_eq!(after_author_update.0["author"]["name"], "Alice Updated");
-        assert_eq!(after_author_update.0["author"]["email"], "alice.new@example.com");
+        assert_eq!(
+            after_author_update.0["author"]["email"],
+            "alice.new@example.com"
+        );
 
         // Other fields should be preserved
         assert_eq!(after_author_update.0["title"], "First Post");
         assert_eq!(after_author_update.0["content"], "Hello World");
-        assert_eq!(after_author_update.0["comments"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            after_author_update.0["comments"].as_array().unwrap().len(),
+            2
+        );
 
         // Test 2: Update array element (should use smart patch)
         Spi::run("UPDATE tb_comment SET text = 'Updated comment!' WHERE pk_comment = 1").unwrap();
 
         // Refresh tv_comment first, then tv_post explicitly
         let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_comment'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         crate::refresh::refresh_pk(comment_oid, 1).unwrap();
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
-        let after_comment_update = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
-            .unwrap().unwrap();
+        let after_comment_update =
+            Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
+                .unwrap()
+                .unwrap();
 
         let comments = after_comment_update.0["comments"].as_array().unwrap();
         assert_eq!(comments.len(), 2, "Should still have 2 comments");
 
         // Find updated comment
-        let comment_1 = comments.iter()
+        let comment_1 = comments
+            .iter()
             .find(|c| c["id"].as_i64() == Some(1))
             .expect("Should find comment 1");
         assert_eq!(comment_1["text"], "Updated comment!");
 
         // Other comment should be unchanged
-        let comment_2 = comments.iter()
+        let comment_2 = comments
+            .iter()
             .find(|c| c["id"].as_i64() == Some(2))
             .expect("Should find comment 2");
         assert_eq!(comment_2["text"], "Thanks for sharing!");
@@ -1085,45 +1239,60 @@ mod tests {
 
         // Create simple test case
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
         Spi::run("INSERT INTO tb_post VALUES (1, 1, 'Hello')").unwrap();
 
         // Create TVIEWs
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post', $$
                 SELECT pk_post, fk_user,
                        jsonb_build_object('title', title, 'author', v_user.data) AS data
                 FROM tb_post
                 LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify metadata is still captured (even without jsonb_delta)
-        let meta = crate::utils::spi_get_string("
+        let meta = crate::utils::spi_get_string(
+            "
             SELECT dependency_types::text FROM pg_tview_meta WHERE entity = 'post'
-        ");
+        ",
+        );
         // Metadata should exist regardless of jsonb_delta availability
-        assert!(meta.is_ok(), "Metadata should be captured even without jsonb_delta");
+        assert!(
+            meta.is_ok(),
+            "Metadata should be captured even without jsonb_delta"
+        );
 
         // Update should still work via fallback
         Spi::run("UPDATE tb_user SET name = 'Alice Fallback' WHERE pk_user = 1").unwrap();
 
         // Refresh tv_user first (using tv_user OID, not tb_user)
         let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         // This should succeed using full replacement fallback
         let result = crate::refresh::refresh_pk(user_oid, 1);
@@ -1131,12 +1300,14 @@ mod tests {
 
         // Explicitly refresh tv_post (propagation is now handled by queue)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         crate::refresh::refresh_pk(post_oid, 1).unwrap();
 
         // Verify data was updated (via fallback)
         let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.0["author"]["name"], "Alice Fallback");
         assert_eq!(updated.0["title"], "Hello");
     }
@@ -1155,27 +1326,34 @@ mod tests {
         Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
 
         // Create TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Simulate legacy TVIEW by removing dependency metadata
-        Spi::run("
+        Spi::run(
+            "
             UPDATE pg_tview_meta
             SET dependency_types = NULL,
                 dependency_paths = NULL,
                 array_match_keys = NULL
             WHERE entity ='user'
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Update should still work via fallback
         Spi::run("UPDATE tb_user SET name = 'Alice Legacy' WHERE pk_user = 1").unwrap();
 
         let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         // Should succeed using full replacement fallback
         let result = crate::refresh::refresh_pk(user_oid, 1);
@@ -1183,7 +1361,8 @@ mod tests {
 
         // Verify data was updated
         let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_user WHERE pk_user = 1")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.0["name"], "Alice Legacy");
     }
 
@@ -1195,30 +1374,40 @@ mod tests {
     fn test_refresh_by_dedup_key_basic() {
         // Create base tables
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT,
             created_at TIMESTAMP DEFAULT NOW()
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data with duplicate user references
         Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
-        Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES
+        Spi::run(
+            "INSERT INTO tb_post (pk_post, fk_user, title) VALUES
             (1, 1, 'First Post'),
             (2, 1, 'Second Post'),
-            (3, 1, 'Third Post')").unwrap();
+            (3, 1, 'Third Post')",
+        )
+        .unwrap();
 
         // Create user TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Create DISTINCT ON TVIEW (dedup by user, keep first post)
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post_by_user', $$
                 SELECT DISTINCT ON (fk_user)
                        pk_post, fk_user,
@@ -1226,25 +1415,45 @@ mod tests {
                 FROM tb_post
                 ORDER BY fk_user, pk_post
             $$, 'fk_user')
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify TVIEW was created with DISTINCT ON metadata
-        let distinct_keys = crate::utils::spi_get_string("
+        let distinct_keys = crate::utils::spi_get_string(
+            "
             SELECT distinct_on_keys::text FROM pg_tview_meta
             WHERE entity = 'post_by_user'
-        ").unwrap().unwrap();
-        assert!(distinct_keys.contains("fk_user"), "Should capture distinct_on_keys");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            distinct_keys.contains("fk_user"),
+            "Should capture distinct_on_keys"
+        );
 
         // Verify initial state (only one row for user 1, fk_user=1)
-        let initial_count: i64 = Spi::get_one("
+        let initial_count: i64 = Spi::get_one(
+            "
             SELECT COUNT(*) FROM tv_post_by_user WHERE fk_user = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(initial_count, 1, "Should have exactly 1 row for fk_user=1");
 
-        let initial_title: String = Spi::get_one("
+        let initial_title: String = Spi::get_one(
+            "
             SELECT data->>'title' FROM tv_post_by_user WHERE fk_user = 1
-        ").unwrap().unwrap();
-        assert_eq!(initial_title, "First Post", "Should be first post initially");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            initial_title, "First Post",
+            "Should be first post initially"
+        );
     }
 
     /// Test multiple dedup key refreshes for DISTINCT ON TVIEW.
@@ -1254,32 +1463,43 @@ mod tests {
     #[pg_test]
     fn test_refresh_by_dedup_key_multiple_keys() {
         // Create base tables
-        Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_item (
+        Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)")
+            .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_item (
             pk_item BIGSERIAL PRIMARY KEY,
             fk_category BIGINT REFERENCES tb_category(pk_category),
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data with duplicate categories
         Spi::run("INSERT INTO tb_category VALUES (1, 'Tech'), (2, 'News')").unwrap();
-        Spi::run("INSERT INTO tb_item (pk_item, fk_category, title) VALUES
+        Spi::run(
+            "INSERT INTO tb_item (pk_item, fk_category, title) VALUES
             (1, 1, 'Item 1A'),
             (2, 1, 'Item 1B'),
             (3, 1, 'Item 1C'),
             (4, 2, 'Item 2A'),
-            (5, 2, 'Item 2B')").unwrap();
+            (5, 2, 'Item 2B')",
+        )
+        .unwrap();
 
         // Create category TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('category', $$
                 SELECT pk_category, jsonb_build_object('name', name) AS data
                 FROM tb_category
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Create DISTINCT ON TVIEW (dedup by category)
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('item_by_cat', $$
                 SELECT DISTINCT ON (fk_category)
                        pk_item, fk_category,
@@ -1287,17 +1507,27 @@ mod tests {
                 FROM tb_item
                 ORDER BY fk_category, pk_item
             $$, 'fk_category')
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify initial state: one row per category
-        let cat1_count: i64 = Spi::get_one("
+        let cat1_count: i64 = Spi::get_one(
+            "
             SELECT COUNT(*) FROM tv_item_by_cat WHERE fk_category = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(cat1_count, 1, "Should have 1 row for category 1");
 
-        let cat1_title: String = Spi::get_one("
+        let cat1_title: String = Spi::get_one(
+            "
             SELECT data->>'title' FROM tv_item_by_cat WHERE fk_category = 1
-        ").unwrap().unwrap();
+        ",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(cat1_title, "Item 1A", "Category 1 should show Item 1A");
 
         // Now delete Item 1A (the current winner) and refresh dedup key
@@ -1308,29 +1538,47 @@ mod tests {
         // Simulate calling refresh_by_dedup_key by directly calling it
         // (The actual invocation would be through queue mechanism)
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_item_by_cat'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         // This should reuse cached DML strings
         let result = crate::refresh::refresh_by_dedup_key(view_oid, "1");
         assert!(result.is_ok(), "First dedup key refresh should succeed");
 
         // Verify winner changed to Item 1B
-        let cat1_new_title: String = Spi::get_one("
+        let cat1_new_title: String = Spi::get_one(
+            "
             SELECT data->>'title' FROM tv_item_by_cat WHERE fk_category = 1
-        ").unwrap().unwrap();
-        assert_eq!(cat1_new_title, "Item 1B", "Category 1 should now show Item 1B");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            cat1_new_title, "Item 1B",
+            "Category 1 should now show Item 1B"
+        );
 
         // Delete Item 1B and refresh again - this tests cache reuse
         Spi::run("DELETE FROM tb_item WHERE pk_item = 2").unwrap();
 
         let result2 = crate::refresh::refresh_by_dedup_key(view_oid, "1");
-        assert!(result2.is_ok(), "Second dedup key refresh should succeed and reuse cache");
+        assert!(
+            result2.is_ok(),
+            "Second dedup key refresh should succeed and reuse cache"
+        );
 
         // Verify winner changed to Item 1C
-        let cat1_final_title: String = Spi::get_one("
+        let cat1_final_title: String = Spi::get_one(
+            "
             SELECT data->>'title' FROM tv_item_by_cat WHERE fk_category = 1
-        ").unwrap().unwrap();
-        assert_eq!(cat1_final_title, "Item 1C", "Category 1 should now show Item 1C");
+        ",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            cat1_final_title, "Item 1C",
+            "Category 1 should now show Item 1C"
+        );
     }
 
     /// Test that refresh operations are logged to the audit table.
@@ -1344,12 +1592,15 @@ mod tests {
         Spi::run("INSERT INTO tb_user VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
 
         // Create TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify audit log is empty initially
         let initial_count: i64 = Spi::get_one(
@@ -1373,7 +1624,10 @@ mod tests {
         let logged_details = Spi::get_one::<String>(
             "SELECT details::text FROM pg_tview_audit_log WHERE operation = 'REFRESH' AND entity = 'user' LIMIT 1"
         ).unwrap().unwrap_or_default();
-        assert!(logged_details.contains("rows_affected"), "Details should contain rows_affected");
+        assert!(
+            logged_details.contains("rows_affected"),
+            "Details should contain rows_affected"
+        );
     }
 
     /// Test missing-row error handling when backing view returns no rows.
@@ -1385,24 +1639,30 @@ mod tests {
     fn test_missing_row_error_handling() {
         // Create base tables
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data
         Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
         Spi::run("INSERT INTO tb_post VALUES (1, 1, 'Hello')").unwrap();
 
         // Create TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post', $$
                 SELECT pk_post, fk_user,
                        jsonb_build_object('title', title) AS data
                 FROM tb_post
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Delete the underlying post
         Spi::run("DELETE FROM tb_post WHERE pk_post = 1").unwrap();
@@ -1415,13 +1675,18 @@ mod tests {
         let result = crate::refresh::refresh_pk(post_oid, 1);
 
         // Error should occur (row no longer exists)
-        assert!(result.is_err(), "Refresh should fail when backing row is missing");
+        assert!(
+            result.is_err(),
+            "Refresh should fail when backing row is missing"
+        );
 
         // Error message should be descriptive
         let error_msg = format!("{:?}", result.unwrap_err());
         // Should mention either entity name, view name, or the specific pk that's missing
         assert!(
-            error_msg.contains("post") || error_msg.contains("v_post") || error_msg.contains("pk=1"),
+            error_msg.contains("post")
+                || error_msg.contains("v_post")
+                || error_msg.contains("pk=1"),
             "Error message should provide context about missing row"
         );
     }
@@ -1437,7 +1702,8 @@ mod tests {
         Spi::run("INSERT INTO tb_item VALUES (1, 'Widget')").unwrap();
 
         // Create TVIEW (note: data column will be NULL if name is manipulated)
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('item', $$
                 SELECT pk_item,
                        CASE WHEN name = 'Widget' THEN jsonb_build_object('name', name)
@@ -1445,12 +1711,13 @@ mod tests {
                        END AS data
                 FROM tb_item
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Verify initial state
-        let initial_data: Option<String> = Spi::get_one(
-            "SELECT data::text FROM tv_item WHERE pk_item = 1"
-        ).unwrap();
+        let initial_data: Option<String> =
+            Spi::get_one("SELECT data::text FROM tv_item WHERE pk_item = 1").unwrap();
         assert!(initial_data.is_some(), "Should have valid data initially");
 
         // Update to trigger NULL data column
@@ -1464,7 +1731,10 @@ mod tests {
         let result = crate::refresh::refresh_pk(item_oid, 1);
 
         // Should fail with clear error about NULL data
-        assert!(result.is_err(), "Refresh should fail when data column is NULL");
+        assert!(
+            result.is_err(),
+            "Refresh should fail when data column is NULL"
+        );
         let error_msg = format!("{:?}", result.unwrap_err());
         assert!(
             error_msg.to_lowercase().contains("null") || error_msg.contains("data"),
@@ -1479,18 +1749,25 @@ mod tests {
     #[pg_test]
     fn test_refresh_by_dedup_key_cache_invalidation() {
         // Create base tables
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             title TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data
-        Spi::run("INSERT INTO tb_post (pk_post, title) VALUES
+        Spi::run(
+            "INSERT INTO tb_post (pk_post, title) VALUES
             (1, 'Post 1'),
-            (2, 'Post 2')").unwrap();
+            (2, 'Post 2')",
+        )
+        .unwrap();
 
         // Create DISTINCT ON TVIEW (dedup by title as simple example)
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post_by_title', $$
                 SELECT DISTINCT ON (title)
                        pk_post,
@@ -1498,11 +1775,14 @@ mod tests {
                 FROM tb_post
                 ORDER BY title, pk_post
             $$, 'title')
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Get initial cache state
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_post_by_title'::regclass::oid")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         // First refresh to populate cache
         let result1 = crate::refresh::refresh_by_dedup_key(view_oid, "Post 1");
@@ -1517,4 +1797,3 @@ mod tests {
         assert!(result2.is_ok(), "Second refresh should succeed");
     }
 }
-

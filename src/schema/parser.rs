@@ -1,5 +1,3 @@
-
-
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
 /// Future versions will use `PostgreSQL`'s native parser API
@@ -39,12 +37,11 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         .ok_or("No SELECT keyword found")?;
 
     // Bound the FROM search to the first branch of any UNION ALL / UNION
-    let union_bound = find_outer_union(&sql_lower, select_start)
-        .unwrap_or(sql_lower.len());
+    let union_bound = find_outer_union(&sql_lower, select_start).unwrap_or(sql_lower.len());
 
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
-    let from_start = find_outer_from(&sql_lower, select_start, union_bound)
-        .ok_or("No FROM keyword found")?;
+    let from_start =
+        find_outer_from(&sql_lower, select_start, union_bound).ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
         return Err("FROM appears before SELECT".to_string());
@@ -94,21 +91,29 @@ fn find_outer_from(sql_lower: &str, after_pos: usize, end_bound: usize) -> Optio
 
     while i < len {
         match bytes[i] {
-            b'(' => { depth += 1; i += 1; }
-            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
             b'\'' => {
                 // Skip single-quoted literal
                 i += 1;
                 while i < len && bytes[i] != b'\'' {
                     i += 1;
                 }
-                if i < len { i += 1; } // skip closing quote
+                if i < len {
+                    i += 1;
+                } // skip closing quote
             }
             _ => {
                 // Check for "from" at word boundary, only at depth 0
                 if depth == 0 && i + 4 <= len && &bytes[i..i + 4] == b"from" {
-                    let before_ok = i == 0
-                        || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+                    let before_ok =
+                        i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
                     let after_ok = i + 4 >= len
                         || (!bytes[i + 4].is_ascii_alphanumeric() && bytes[i + 4] != b'_');
                     if before_ok && after_ok {
@@ -141,15 +146,23 @@ pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
 
     while i < len {
         match bytes[i] {
-            b'(' => { depth += 1; i += 1; }
-            b')' => { depth = depth.saturating_sub(1); i += 1; }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
             b'\'' => {
                 // Skip single-quoted literal
                 i += 1;
                 while i < len && bytes[i] != b'\'' {
                     i += 1;
                 }
-                if i < len { i += 1; }
+                if i < len {
+                    i += 1;
+                }
             }
             b'"' => {
                 // Skip double-quoted identifier
@@ -157,13 +170,15 @@ pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
                 while i < len && bytes[i] != b'"' {
                     i += 1;
                 }
-                if i < len { i += 1; }
+                if i < len {
+                    i += 1;
+                }
             }
             _ => {
                 // Check for "union" at word boundary, only at depth 0
                 if depth == 0 && i + 5 <= len && &bytes[i..i + 5] == b"union" {
-                    let before_ok = i == 0
-                        || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+                    let before_ok =
+                        i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
                     let after_ok = i + 5 >= len
                         || (!bytes[i + 5].is_ascii_alphanumeric() && bytes[i + 5] != b'_');
                     if before_ok && after_ok {
@@ -216,8 +231,7 @@ fn skip_distinct_clause(sql_lower: &str, after_select: usize) -> usize {
     // Check for "on" keyword (DISTINCT ON vs plain DISTINCT)
     if i + 2 <= len && &bytes[i..i + 2] == b"on" {
         let after_on = i + 2;
-        if after_on >= len
-            || (!bytes[after_on].is_ascii_alphanumeric() && bytes[after_on] != b'_')
+        if after_on >= len || (!bytes[after_on].is_ascii_alphanumeric() && bytes[after_on] != b'_')
         {
             i += 2; // skip "on"
 
@@ -227,7 +241,8 @@ fn skip_distinct_clause(sql_lower: &str, after_select: usize) -> usize {
             }
 
             // Skip the parenthesized expression list
-            if i < len && bytes[i] == b'('
+            if i < len
+                && bytes[i] == b'('
                 && let Ok(end) = skip_paren_block(bytes, i)
             {
                 i = end;
@@ -289,9 +304,7 @@ pub fn extract_distinct_on_keys(sql: &str) -> Result<Vec<String>, String> {
         return Ok(vec![]); // plain DISTINCT, no dedup keys
     }
     let after_on = i + 2;
-    if after_on < len
-        && (bytes[after_on].is_ascii_alphanumeric() || bytes[after_on] == b'_')
-    {
+    if after_on < len && (bytes[after_on].is_ascii_alphanumeric() || bytes[after_on] == b'_') {
         return Ok(vec![]); // "on" is part of an identifier
     }
     i += 2;
@@ -351,7 +364,8 @@ fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
         return Ok(0);
     }
     let after_with = i + 4;
-    if after_with < len && (bytes[after_with].is_ascii_alphanumeric() || bytes[after_with] == b'_') {
+    if after_with < len && (bytes[after_with].is_ascii_alphanumeric() || bytes[after_with] == b'_')
+    {
         return Ok(0); // e.g. "without", "within" — not a WITH keyword
     }
 
@@ -368,11 +382,9 @@ fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
         if after_rec >= len
             || (!bytes[after_rec].is_ascii_alphanumeric() && bytes[after_rec] != b'_')
         {
-            return Err(
-                "WITH RECURSIVE is not supported in TVIEWs. \
+            return Err("WITH RECURSIVE is not supported in TVIEWs. \
                  Consider using a non-recursive CTE or a subquery."
-                    .to_string(),
-            );
+                .to_string());
         }
     }
 
@@ -426,9 +438,7 @@ fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
             ));
         }
         let after_as = i + 2;
-        if after_as < len
-            && (bytes[after_as].is_ascii_alphanumeric() || bytes[after_as] == b'_')
-        {
+        if after_as < len && (bytes[after_as].is_ascii_alphanumeric() || bytes[after_as] == b'_') {
             return Err(format!(
                 "Expected AS keyword in CTE definition at byte offset {i}"
             ));
@@ -442,9 +452,7 @@ fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
 
         // Expect "(" opening the CTE body
         if i >= len || bytes[i] != b'(' {
-            return Err(format!(
-                "Expected '(' for CTE body at byte offset {i}"
-            ));
+            return Err(format!("Expected '(' for CTE body at byte offset {i}"));
         }
 
         i = skip_paren_block(bytes, i)?;
@@ -542,12 +550,11 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
         .ok_or("No SELECT keyword found")?;
 
     // Bound the FROM search to the first branch of any UNION ALL / UNION
-    let union_bound = find_outer_union(&sql_lower, select_start)
-        .unwrap_or(sql_lower.len());
+    let union_bound = find_outer_union(&sql_lower, select_start).unwrap_or(sql_lower.len());
 
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
-    let from_start = find_outer_from(&sql_lower, select_start, union_bound)
-        .ok_or("No FROM keyword found")?;
+    let from_start =
+        find_outer_from(&sql_lower, select_start, union_bound).ok_or("No FROM keyword found")?;
 
     if from_start <= select_start {
         return Err("FROM appears before SELECT".to_string());
@@ -660,7 +667,8 @@ fn extract_column_name(part: &str) -> Result<String, String> {
     }
 
     // Take the last word (should be the column name)
-    let last_word = words.last()
+    let last_word = words
+        .last()
         .ok_or_else(|| "Unexpected empty words vector".to_string())?;
 
     // Remove trailing punctuation
@@ -684,12 +692,10 @@ fn find_last_as(sql_lower: &str) -> Option<usize> {
     for (i, _) in sql_lower.match_indices("as") {
         // Count parentheses to handle nested expressions
         let before = &sql_lower[..i];
-        let paren_depth = before.chars().fold(0i32, |depth, c| {
-            match c {
-                '(' => depth + 1,
-                ')' => depth.saturating_sub(1),
-                _ => depth,
-            }
+        let paren_depth = before.chars().fold(0i32, |depth, c| match c {
+            '(' => depth + 1,
+            ')' => depth.saturating_sub(1),
+            _ => depth,
         });
 
         // Only consider AS at top level (not inside parentheses)
@@ -730,7 +736,8 @@ mod tests {
 
     #[test]
     fn test_extract_columns_complex_expression() {
-        let sql = "SELECT pk_post, id, jsonb_build_object('id', id, 'title', title) AS data FROM posts";
+        let sql =
+            "SELECT pk_post, id, jsonb_build_object('id', id, 'title', title) AS data FROM posts";
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
@@ -762,14 +769,20 @@ mod tests {
     #[test]
     fn test_extract_column_name_with_alias() {
         assert_eq!(extract_column_name("u.id AS user_id").unwrap(), "user_id");
-        assert_eq!(extract_column_name("jsonb_build_object('key', 'value') AS data").unwrap(), "data");
+        assert_eq!(
+            extract_column_name("jsonb_build_object('key', 'value') AS data").unwrap(),
+            "data"
+        );
     }
 
     #[test]
     fn test_find_last_as() {
         // find_last_as operates on already-lowercased strings
         assert_eq!(find_last_as("id as user_id"), Some(3));
-        assert_eq!(find_last_as("jsonb_build_object('id', id) as data"), Some(29));
+        assert_eq!(
+            find_last_as("jsonb_build_object('id', id) as data"),
+            Some(29)
+        );
         assert_eq!(find_last_as("id"), None);
     }
 
@@ -781,19 +794,36 @@ mod tests {
         assert_eq!(find_last_as(sql), Some(43)); // Position of "as full_name"
     }
 
-
     #[test]
     fn test_parse_cte_columns() {
         let sql = "WITH labels AS (SELECT item_id, label FROM tb_i18n) \
                    SELECT i.pk_item, i.id, i.name, l.label AS data \
                    FROM tb_item i LEFT JOIN labels l ON l.item_id = i.pk_item";
         let cols = parse_select_columns(sql).unwrap();
-        assert!(cols.contains(&"pk_item".to_string()), "expected pk_item, got {cols:?}");
-        assert!(cols.contains(&"id".to_string()), "expected id, got {cols:?}");
-        assert!(cols.contains(&"name".to_string()), "expected name, got {cols:?}");
-        assert!(cols.contains(&"data".to_string()), "expected data, got {cols:?}");
-        assert!(!cols.contains(&"item_id".to_string()), "CTE-only column item_id leaked: {cols:?}");
-        assert!(!cols.contains(&"label".to_string()), "CTE-only column label leaked: {cols:?}");
+        assert!(
+            cols.contains(&"pk_item".to_string()),
+            "expected pk_item, got {cols:?}"
+        );
+        assert!(
+            cols.contains(&"id".to_string()),
+            "expected id, got {cols:?}"
+        );
+        assert!(
+            cols.contains(&"name".to_string()),
+            "expected name, got {cols:?}"
+        );
+        assert!(
+            cols.contains(&"data".to_string()),
+            "expected data, got {cols:?}"
+        );
+        assert!(
+            !cols.contains(&"item_id".to_string()),
+            "CTE-only column item_id leaked: {cols:?}"
+        );
+        assert!(
+            !cols.contains(&"label".to_string()),
+            "CTE-only column label leaked: {cols:?}"
+        );
     }
 
     #[test]
@@ -803,11 +833,16 @@ mod tests {
                    FROM tb_item i LEFT JOIN labels l ON l.item_id = i.pk_item";
         let cols = parse_select_columns_with_expressions(sql).unwrap();
         let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"pk_item"), "expected pk_item, got {names:?}");
+        assert!(
+            names.contains(&"pk_item"),
+            "expected pk_item, got {names:?}"
+        );
         assert!(names.contains(&"data"), "expected data, got {names:?}");
-        assert!(!names.contains(&"item_id"), "CTE-only column item_id leaked: {names:?}");
+        assert!(
+            !names.contains(&"item_id"),
+            "CTE-only column item_id leaked: {names:?}"
+        );
     }
-
 
     #[test]
     fn test_parse_multiple_ctes() {
@@ -847,7 +882,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_item", "id", "data"]);
     }
 
-
     #[test]
     fn test_recursive_cte_rejected() {
         let sql = "WITH RECURSIVE tree AS (SELECT 1) SELECT pk_item, id, name AS data FROM tb_item";
@@ -866,7 +900,6 @@ mod tests {
         assert!(result.is_err(), "expected error for with recursive");
         assert!(result.unwrap_err().contains("RECURSIVE"));
     }
-
 
     #[test]
     fn test_skip_paren_block_simple() {
@@ -889,7 +922,6 @@ mod tests {
         assert_eq!(end, 20);
     }
 
-
     #[test]
     fn test_non_cte_sql_unchanged() {
         let sql = "SELECT pk_post, id, jsonb_build_object('id', id) AS data FROM tb_post";
@@ -897,15 +929,17 @@ mod tests {
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
 
-
     #[test]
     fn test_parse_distinct_on_columns() {
         let sql = "SELECT DISTINCT ON (c.id) c.pk_contract, c.id, c.name, \
                    jsonb_build_object('id', c.id, 'name', c.name) AS data \
                    FROM tenant.tb_contract c ORDER BY c.id, c.version DESC";
         let cols = parse_select_columns(sql).unwrap();
-        assert_eq!(cols, vec!["pk_contract", "id", "name", "data"],
-            "got: {cols:?}");
+        assert_eq!(
+            cols,
+            vec!["pk_contract", "id", "name", "data"],
+            "got: {cols:?}"
+        );
     }
 
     #[test]
@@ -934,7 +968,6 @@ mod tests {
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_contract", "id", "data"]);
     }
-
 
     #[test]
     fn test_extract_distinct_on_keys_single() {
@@ -972,14 +1005,12 @@ mod tests {
         assert_eq!(keys, vec!["id"]);
     }
 
-
     #[test]
     fn test_non_distinct_sql_unchanged() {
         let sql = "SELECT pk_post, id, data FROM tb_post JOIN tb_other ON TRUE";
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
-
 
     #[test]
     fn test_parse_union_all_columns() {
@@ -1024,7 +1055,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_post", "id", "top"]);
     }
 
-
     #[test]
     fn test_parse_cte_with_union_all() {
         let sql = "WITH fallback AS (SELECT pk_item, id, name FROM tb_item) \
@@ -1034,7 +1064,6 @@ mod tests {
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_item", "id", "label"]);
     }
-
 
     #[test]
     fn test_parse_distinct_on_union_all() {

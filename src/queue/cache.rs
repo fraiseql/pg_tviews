@@ -1,6 +1,6 @@
+use pgrx::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
-use pgrx::prelude::*;
 
 /// Cached information for a table managed by pg_tviews
 #[derive(Clone, Debug)]
@@ -11,14 +11,12 @@ pub struct CachedEntityInfo {
 }
 
 /// Global cache for `EntityDepGraph` to avoid repeated `pg_tview_meta` queries
-static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> = LazyLock::new(|| {
-    Mutex::new(None)
-});
+static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 /// Global cache for table OID → entity info (name + distinct_on_key)
-static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, CachedEntityInfo>>> = LazyLock::new(|| {
-    Mutex::new(HashMap::new())
-});
+static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, CachedEntityInfo>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Cache operations for `EntityDepGraph`
 pub mod graph_cache {
@@ -32,7 +30,9 @@ pub mod graph_cache {
             return crate::queue::graph::EntityDepGraph::load();
         }
 
-        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cache = ENTITY_GRAPH_CACHE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
 
         if let Some(graph) = cache.as_ref() {
             // Cache hit
@@ -51,7 +51,9 @@ pub mod graph_cache {
     /// Invalidate the `EntityDepGraph` cache
     /// Should be called when TVIEWs are created or dropped
     pub fn invalidate() {
-        let mut cache = ENTITY_GRAPH_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cache = ENTITY_GRAPH_CACHE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         *cache = None;
     }
 }
@@ -63,7 +65,9 @@ pub mod table_cache {
 
     /// Get cached entity info (name + distinct_on_key) for table OID
     /// Loads from database on first miss per session
-    pub fn entity_info_cached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<CachedEntityInfo>> {
+    pub fn entity_info_cached(
+        table_oid: pg_sys::Oid,
+    ) -> crate::TViewResult<Option<CachedEntityInfo>> {
         // Check if caching is enabled
         if !crate::config::table_cache_enabled() {
             return load_entity_info_uncached(table_oid);
@@ -71,7 +75,9 @@ pub mod table_cache {
 
         // Fast path: check cache
         {
-            let cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+            let cache = TABLE_ENTITY_CACHE
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             if let Some(info) = cache.get(&table_oid) {
                 crate::metrics::metrics_api::record_table_cache_hit();
                 return Ok(Some(info.clone()));
@@ -83,7 +89,9 @@ pub mod table_cache {
         let info = load_entity_info_uncached(table_oid)?;
 
         if let Some(ref i) = info {
-            let mut cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut cache = TABLE_ENTITY_CACHE
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             cache.insert(table_oid, i.clone());
         }
 
@@ -96,7 +104,9 @@ pub mod table_cache {
     }
 
     /// Load entity info from database (name + distinct_on_key)
-    fn load_entity_info_uncached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<CachedEntityInfo>> {
+    fn load_entity_info_uncached(
+        table_oid: pg_sys::Oid,
+    ) -> crate::TViewResult<Option<CachedEntityInfo>> {
         let entity_name = crate::catalog::entity_for_table_uncached(table_oid)?;
 
         match entity_name {
@@ -106,7 +116,8 @@ pub mod table_cache {
                     let args = vec![unsafe {
                         pgrx::datum::DatumWithOid::new(
                             &name,
-                            pgrx::pg_sys::PgOid::BuiltIn(pgrx::pg_sys::PgBuiltInOids::TEXTOID).value(),
+                            pgrx::pg_sys::PgOid::BuiltIn(pgrx::pg_sys::PgBuiltInOids::TEXTOID)
+                                .value(),
                         )
                     }];
                     let mut rows = client.select(
@@ -138,7 +149,9 @@ pub mod table_cache {
     /// Invalidate the table entity cache
     /// Should be called when TVIEWs are created or dropped
     pub fn invalidate() {
-        let mut cache = TABLE_ENTITY_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cache = TABLE_ENTITY_CACHE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         cache.clear();
     }
 }
@@ -181,7 +194,13 @@ mod tests {
         }
 
         // Verify it's there
-        assert!(TABLE_ENTITY_CACHE.lock().unwrap().get(&pg_sys::Oid::from(123)).is_some());
+        assert!(
+            TABLE_ENTITY_CACHE
+                .lock()
+                .unwrap()
+                .get(&pg_sys::Oid::from(123))
+                .is_some()
+        );
 
         // Invalidate
         table_cache::invalidate();

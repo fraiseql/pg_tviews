@@ -25,14 +25,14 @@
 //! assert_eq!(schema.additional_columns, vec!["name".to_string(), "data".to_string()]);
 //! ```
 
-pub mod parser;
-pub mod inference;
-pub mod types;
 pub mod analyzer;
+pub mod inference;
+pub mod parser;
+pub mod types;
 
-use serde::{Serialize, Deserialize};
-use pgrx::prelude::*;
 use pgrx::JsonB;
+use pgrx::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// Schema information inferred from a TVIEW SELECT statement
 #[derive(Debug, Clone, Serialize, Deserialize, PostgresType, Default)]
@@ -61,8 +61,6 @@ impl TViewSchema {
         Ok(JsonB(json_value))
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

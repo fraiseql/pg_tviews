@@ -108,7 +108,7 @@ pub fn register_gucs() {
         c"Maximum number of refresh items allowed in the transaction queue.",
         c"When exceeded, new refresh enqueues raise an error to prevent unbounded queue growth.",
         &MAX_QUEUE_SIZE_GUC,
-        1,       // min
+        1,         // min
         1_000_000, // max
         GucContext::Userset,
         GucFlags::default(),

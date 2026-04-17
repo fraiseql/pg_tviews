@@ -1,10 +1,10 @@
-use pgrx::prelude::*;
+use super::ops::{clear_queue, take_queue_snapshot};
+use crate::TViewResult;
 use pgrx::pg_sys;
+use pgrx::prelude::*;
+use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::panic::AssertUnwindSafe;
-use std::collections::HashSet;
-use super::ops::{take_queue_snapshot, clear_queue};
-use crate::TViewResult;
 
 // Thread-local storage for savepoint support
 thread_local! {
@@ -22,7 +22,7 @@ enum XactEvent {
     Commit,
     Abort,
     PreCommit,
-    Prepare,  // XACT_EVENT_PREPARE
+    Prepare, // XACT_EVENT_PREPARE
 }
 
 /// Register the transaction callback (called from enqueue logic)
@@ -34,10 +34,7 @@ pub unsafe fn register_xact_callback() {
     // The callback function must be extern "C" and #[no_mangle]
 
     unsafe {
-        pg_sys::RegisterXactCallback(
-            Some(tview_xact_callback),
-            std::ptr::null_mut(),
-        );
+        pg_sys::RegisterXactCallback(Some(tview_xact_callback), std::ptr::null_mut());
     }
 }
 
@@ -50,10 +47,7 @@ pub unsafe fn register_subxact_callback() {
     // The callback function must be extern "C" and #[no_mangle]
 
     unsafe {
-        pg_sys::RegisterSubXactCallback(
-            Some(tview_subxact_callback),
-            std::ptr::null_mut(),
-        );
+        pg_sys::RegisterSubXactCallback(Some(tview_subxact_callback), std::ptr::null_mut());
     }
 }
 
@@ -137,7 +131,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(snapshot);
                 });
-
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
@@ -157,7 +150,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
-
             }
             _ => {
                 // Ignore other subtransaction events
@@ -271,9 +263,8 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 } else {
                     // Multiple keys for same entity: use bulk refresh (PK-only path)
                     // Pre-allocate Vec based on PK-only keys (exclude dedup keys)
-                    let mut pks = Vec::with_capacity(
-                        entity_keys.iter().filter(|k| !k.is_dedup()).count()
-                    );
+                    let mut pks =
+                        Vec::with_capacity(entity_keys.iter().filter(|k| !k.is_dedup()).count());
                     for key in &entity_keys {
                         if !key.is_dedup() {
                             pks.push(key.pk);
@@ -319,7 +310,6 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         pending = late;
     }
 
-
     // Record metrics
     crate::metrics::metrics_api::record_refresh_complete(
         processed.len(),
@@ -341,13 +331,17 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 ///
 /// This function returns parent keys for queue processing instead of
 /// calling `refresh_pk()` recursively.
-fn refresh_and_get_parents(key: &super::key::RefreshKey, graph: &super::EntityDepGraph) -> TViewResult<Vec<super::key::RefreshKey>> {
+fn refresh_and_get_parents(
+    key: &super::key::RefreshKey,
+    graph: &super::EntityDepGraph,
+) -> TViewResult<Vec<super::key::RefreshKey>> {
     // Load metadata
     use crate::catalog::TviewMeta;
-    let meta = TviewMeta::load_by_entity(&key.entity)?
-        .ok_or_else(|| crate::TViewError::MetadataNotFound {
+    let meta = TviewMeta::load_by_entity(&key.entity)?.ok_or_else(|| {
+        crate::TViewError::MetadataNotFound {
             entity: key.entity.clone(),
-        })?;
+        }
+    })?;
 
     // Refresh this entity — dispatch on key type
     if let Some(dedup) = &key.dedup_key {

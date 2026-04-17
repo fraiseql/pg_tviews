@@ -1,10 +1,7 @@
 #[cfg(any(test, feature = "pg_test"))]
 /// # Panics
 /// Panics if the result is `Ok` (operation succeeded when error was expected).
-pub fn assert_error_sqlstate<T>(
-    result: crate::TViewResult<T>,
-    expected_sqlstate: &str,
-) {
+pub fn assert_error_sqlstate<T>(result: crate::TViewResult<T>, expected_sqlstate: &str) {
     match result {
         Err(e) => {
             assert_eq!(
@@ -23,10 +20,7 @@ pub fn assert_error_sqlstate<T>(
 #[cfg(any(test, feature = "pg_test"))]
 /// # Panics
 /// Panics if the result is `Ok` (operation succeeded when error was expected).
-pub fn assert_error_contains<T>(
-    result: crate::TViewResult<T>,
-    expected_substring: &str,
-) {
+pub fn assert_error_contains<T>(result: crate::TViewResult<T>, expected_substring: &str) {
     match result {
         Err(e) => {
             let message = e.to_string();

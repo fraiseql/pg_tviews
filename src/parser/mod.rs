@@ -43,8 +43,9 @@ static CREATE_TVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         (\w+)                            # Table name (required)
         \s+AS\s+                         # AS keyword
         (.+)                             # SELECT statement (rest of query)
-        "
-    ).expect("CREATE_TVIEW_REGEX pattern is valid")
+        ",
+    )
+    .expect("CREATE_TVIEW_REGEX pattern is valid")
 });
 
 /// Get the cached CREATE TABLE regex pattern (compiled once at first use)
@@ -76,23 +77,27 @@ pub struct CreateTViewStmt {
 pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
     let re = get_create_tview_regex();
 
-    let caps = re.captures(sql.trim())
+    let caps = re
+        .captures(sql.trim())
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: sql.to_string(),
             reason: "Could not parse CREATE TABLE tv_ AS SELECT statement. \
                      Syntax: CREATE TABLE tv_name AS SELECT ...\n\
-                     See docs for limitations.".to_string(),
+                     See docs for limitations."
+                .to_string(),
         })?;
 
     let schema_name = caps.get(1).map(|m| m.as_str().to_string());
-    let tview_name = caps.get(2)
+    let tview_name = caps
+        .get(2)
         .ok_or_else(|| TViewError::InvalidTViewName {
             name: String::new(),
             reason: "Missing TVIEW name".to_string(),
         })?
         .as_str()
         .to_string();
-    let select_sql = caps.get(3)
+    let select_sql = caps
+        .get(3)
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: sql.to_string(),
             reason: "Missing SELECT statement after AS".to_string(),
@@ -193,12 +198,19 @@ mod tests {
 
         // Test that the cached regex works
         let sql = "CREATE TABLE tv_user AS SELECT id, data FROM tb_user";
-        assert!(re.is_match(sql), "Cached regex should match CREATE TABLE statement");
+        assert!(
+            re.is_match(sql),
+            "Cached regex should match CREATE TABLE statement"
+        );
 
         // Verify captures work
         let caps = re.captures(sql);
         assert!(caps.is_some(), "Should capture groups from CREATE TABLE");
         let caps = caps.unwrap();
-        assert_eq!(caps.get(2).map(|m| m.as_str()), Some("tv_user"), "Should capture table name");
+        assert_eq!(
+            caps.get(2).map(|m| m.as_str()),
+            Some("tv_user"),
+            "Should capture table name"
+        );
     }
 }

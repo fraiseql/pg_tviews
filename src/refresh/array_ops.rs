@@ -22,10 +22,10 @@
 //! - DELETE: O(n) where n = array length (find element to remove)
 //! - Both operations are surgical - only the affected array is modified
 
-use pgrx::prelude::*;
+use crate::error::{TViewError, TViewResult};
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
-use crate::error::{TViewError, TViewResult};
+use pgrx::prelude::*;
 
 /// Insert an element into a JSONB array at the specified path
 ///
@@ -61,36 +61,36 @@ pub fn insert_array_element(
     let path_str = array_path.join(",");
     let path_array = format!("ARRAY['{path_str}']");
 
-    let sql = sort_key.map_or_else(|| {
-        // Insert at end (no sorting)
-        format!(
-            r"
+    let sql = sort_key.map_or_else(
+        || {
+            // Insert at end (no sorting)
+            format!(
+                r"
             UPDATE {table_name} SET
                 data = jsonb_array_insert_where(data, {path_array}, $1, NULL, NULL),
                 updated_at = now()
             WHERE {pk_column} = $2
             "
-        )
-    }, |key| {
-        // Insert with sorting
-        format!(
-            r"
+            )
+        },
+        |key| {
+            // Insert with sorting
+            format!(
+                r"
             UPDATE {table_name} SET
                 data = jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC'),
                 updated_at = now()
             WHERE {pk_column} = $2
             "
-        )
-    });
+            )
+        },
+    );
 
     let args = vec![
         unsafe { DatumWithOid::new(new_element, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
         unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
     ];
-    Spi::run_with_args(
-        &sql,
-        &args,
-    ).map_err(|e| TViewError::SpiError {
+    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),
     })?;
@@ -144,10 +144,7 @@ pub fn delete_array_element(
         unsafe { DatumWithOid::new(match_value, PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value()) },
         unsafe { DatumWithOid::new(pk_value, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
     ];
-    Spi::run_with_args(
-        &sql,
-        &args,
-    ).map_err(|e| TViewError::SpiError {
+    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),
     })?;
@@ -180,24 +177,28 @@ pub fn check_array_functions_available() -> TViewResult<bool> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use super::*;
-
 
     /// Test `insert_array_element` function
     #[pg_test]
     fn test_insert_array_element() {
         // Setup test table
-        Spi::run(r#"
+        Spi::run(
+            r#"
             CREATE TABLE test_array_ops (
                 id BIGINT PRIMARY KEY,
                 data JSONB DEFAULT '{"items": []}'::jsonb
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
-        Spi::run(r#"
+        Spi::run(
+            r#"
             INSERT INTO test_array_ops VALUES (1, '{"items": []}'::jsonb)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Test insert
         let new_element = JsonB(serde_json::json!({"id": 1, "name": "Test Item"}));
@@ -208,10 +209,13 @@ mod tests {
             &["items".to_string()],
             new_element,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify
-        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1").unwrap().unwrap();
+        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1")
+            .unwrap()
+            .unwrap();
         let items = result.0["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["name"], "Test Item");
@@ -221,12 +225,15 @@ mod tests {
     #[pg_test]
     fn test_delete_array_element() {
         // Setup test table with array element
-        Spi::run(r#"
+        Spi::run(
+            r#"
             CREATE TABLE test_array_ops (
                 id BIGINT PRIMARY KEY,
                 data JSONB DEFAULT '{"items": [{"id": 1, "name": "Test Item"}]}'::jsonb
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         Spi::run(r#"
             INSERT INTO test_array_ops VALUES (1, '{"items": [{"id": 1, "name": "Test Item"}]}'::jsonb)
@@ -241,10 +248,13 @@ mod tests {
             &["items".to_string()],
             "id",
             match_value,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify
-        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1").unwrap().unwrap();
+        let result = Spi::get_one::<JsonB>("SELECT data FROM test_array_ops WHERE id = 1")
+            .unwrap()
+            .unwrap();
         let items = result.0["items"].as_array().unwrap();
         assert_eq!(items.len(), 0);
     }

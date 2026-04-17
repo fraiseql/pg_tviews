@@ -11,12 +11,15 @@ use pgrx::prelude::*;
 /// - Orphaned triggers
 /// - Queue status
 #[pg_extern]
-fn pg_tviews_health_check() -> TableIterator<'static, (
-    name!(status, String),
-    name!(component, String),
-    name!(message, String),
-    name!(severity, String),
-)> {
+fn pg_tviews_health_check() -> TableIterator<
+    'static,
+    (
+        name!(status, String),
+        name!(component, String),
+        name!(message, String),
+        name!(severity, String),
+    ),
+> {
     let mut results = Vec::new();
 
     // Check 1: Extension loaded
@@ -28,9 +31,10 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
     ));
 
     // Check 2: jsonb_delta availability
-    let has_jsonb_delta = Spi::get_one::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'"
-    ).unwrap_or(Some(false)).unwrap_or(false);
+    let has_jsonb_delta =
+        Spi::get_one::<bool>("SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'")
+            .unwrap_or(Some(false))
+            .unwrap_or(false);
 
     if has_jsonb_delta {
         results.push((
@@ -53,8 +57,10 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
         "SELECT COUNT(*) FROM pg_tview_meta m
          WHERE NOT EXISTS (
            SELECT 1 FROM pg_class WHERE relname = 'tv_' || m.entity
-         )"
-    ).unwrap_or(Some(0)).unwrap_or(0);
+         )",
+    )
+    .unwrap_or(Some(0))
+    .unwrap_or(0);
 
     if orphaned_meta > 0 {
         results.push((
@@ -79,8 +85,10 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
            AND tgrelid NOT IN (
              SELECT ('tb_' || entity)::regclass::oid
              FROM pg_tview_meta
-           )"
-    ).unwrap_or(Some(0)).unwrap_or(0);
+           )",
+    )
+    .unwrap_or(Some(0))
+    .unwrap_or(0);
 
     if orphaned_triggers > 0 {
         results.push((
@@ -99,9 +107,9 @@ fn pg_tviews_health_check() -> TableIterator<'static, (
     }
 
     // Check 5: TVIEW count
-    let tview_count = Spi::get_one::<i64>(
-        "SELECT COUNT(*) FROM pg_tview_meta"
-    ).unwrap_or(Some(0)).unwrap_or(0);
+    let tview_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pg_tview_meta")
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
     results.push((
         "OK".to_string(),
@@ -159,13 +167,16 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
 ///
 /// Returns size, row count, and index information for each TVIEW
 #[pg_extern]
-fn pg_tviews_performance_stats() -> TableIterator<'static, (
-    name!(entity, String),
-    name!(table_size, String),
-    name!(total_size, String),
-    name!(row_count, i64),
-    name!(index_count, i32),
-)> {
+fn pg_tviews_performance_stats() -> TableIterator<
+    'static,
+    (
+        name!(entity, String),
+        name!(table_size, String),
+        name!(total_size, String),
+        name!(row_count, i64),
+        name!(index_count, i32),
+    ),
+> {
     let query = "
         SELECT
             pg_tview_meta.entity,
@@ -177,26 +188,25 @@ fn pg_tviews_performance_stats() -> TableIterator<'static, (
         ORDER BY pg_relation_size('tv_' || pg_tview_meta.entity) DESC
     ";
 
-    let results = Spi::connect(|client| {
-        match client.select(query, None, &[]) {
-            Ok(rows) => {
-                let mut stats = Vec::new();
-                for row in rows {
-                    let entity = row["entity"].value::<String>()?.unwrap_or_default();
-                    let table_size = row["table_size"].value::<String>()?.unwrap_or_default();
-                    let total_size = row["total_size"].value::<String>()?.unwrap_or_default();
-                    let row_count = row["row_count"].value::<i64>()?.unwrap_or(0);
-                    let index_count = row["index_count"].value::<i32>()?.unwrap_or(0);
-                    stats.push((entity, table_size, total_size, row_count, index_count));
-                }
-                Ok::<_, spi::Error>(stats)
-            },
-            Err(e) => {
-                warning!("Failed to query performance stats: {}", e);
-                Ok(Vec::new())
+    let results = Spi::connect(|client| match client.select(query, None, &[]) {
+        Ok(rows) => {
+            let mut stats = Vec::new();
+            for row in rows {
+                let entity = row["entity"].value::<String>()?.unwrap_or_default();
+                let table_size = row["table_size"].value::<String>()?.unwrap_or_default();
+                let total_size = row["total_size"].value::<String>()?.unwrap_or_default();
+                let row_count = row["row_count"].value::<i64>()?.unwrap_or(0);
+                let index_count = row["index_count"].value::<i32>()?.unwrap_or(0);
+                stats.push((entity, table_size, total_size, row_count, index_count));
             }
+            Ok::<_, spi::Error>(stats)
         }
-    }).unwrap_or_default();
+        Err(e) => {
+            warning!("Failed to query performance stats: {}", e);
+            Ok(Vec::new())
+        }
+    })
+    .unwrap_or_default();
 
     TableIterator::new(results)
 }

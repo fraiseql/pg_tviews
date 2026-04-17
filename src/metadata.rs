@@ -27,8 +27,8 @@
 //! - **ALTER EXTENSION**: Handles schema migrations
 //! - **DROP EXTENSION**: Cleans up metadata
 
-use pgrx::prelude::*;
 use crate::error::{TViewError, TViewResult};
+use pgrx::prelude::*;
 
 // Generate SQL to create metadata tables during extension installation.
 // @extschema@ is substituted by PostgreSQL with the extension's install schema.
@@ -231,7 +231,8 @@ pub fn create_metadata_tables() -> TViewResult<()> {
         COMMENT ON TABLE pg_tview_helpers IS
             'Tracks helper views used by TVIEWs';
         ",
-    ).map_err(|e| TViewError::CatalogError {
+    )
+    .map_err(|e| TViewError::CatalogError {
         operation: "create_metadata_tables".to_string(),
         pg_error: e.to_string(),
     })?;
@@ -249,7 +250,8 @@ pub fn drop_metadata_tables() -> TViewResult<()> {
         DROP TABLE IF EXISTS pg_tview_helpers;
         DROP TABLE IF EXISTS pg_tview_meta;
         ",
-    ).map_err(|e| TViewError::CatalogError {
+    )
+    .map_err(|e| TViewError::CatalogError {
         operation: "drop_metadata_tables".to_string(),
         pg_error: e.to_string(),
     })?;
@@ -264,16 +266,18 @@ pub fn drop_metadata_tables() -> TViewResult<()> {
 pub fn metadata_tables_exist() -> TViewResult<bool> {
     let meta_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_name = 'pg_tview_meta'"
-    ).map_err(|e| TViewError::SpiError {
+         WHERE table_name = 'pg_tview_meta'",
+    )
+    .map_err(|e| TViewError::SpiError {
         query: "check pg_tview_meta exists".to_string(),
         error: e.to_string(),
     })?;
 
     let helpers_exists = Spi::get_one::<bool>(
         "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_name = 'pg_tview_helpers'"
-    ).map_err(|e| TViewError::SpiError {
+         WHERE table_name = 'pg_tview_helpers'",
+    )
+    .map_err(|e| TViewError::SpiError {
         query: "check pg_tview_helpers exists".to_string(),
         error: e.to_string(),
     })?;
@@ -284,9 +288,7 @@ pub fn metadata_tables_exist() -> TViewResult<bool> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use super::*;
-
 
     #[pg_test]
     fn test_metadata_tables_creation() {
@@ -299,23 +301,30 @@ mod tests {
         // Verify pg_tview_meta exists
         let result = Spi::get_one::<bool>(
             "SELECT COUNT(*) = 1 FROM information_schema.tables
-             WHERE table_name = 'pg_tview_meta'"
+             WHERE table_name = 'pg_tview_meta'",
         );
         assert_eq!(result, Ok(Some(true)), "pg_tview_meta table should exist");
 
         // Verify pg_tview_helpers exists
         let result = Spi::get_one::<bool>(
             "SELECT COUNT(*) = 1 FROM information_schema.tables
-             WHERE table_name = 'pg_tview_helpers'"
+             WHERE table_name = 'pg_tview_helpers'",
         );
-        assert_eq!(result, Ok(Some(true)), "pg_tview_helpers table should exist");
+        assert_eq!(
+            result,
+            Ok(Some(true)),
+            "pg_tview_helpers table should exist"
+        );
 
         // Verify pg_tview_meta has expected columns
         let result = Spi::get_one::<i64>(
             "SELECT COUNT(*) FROM information_schema.columns
-             WHERE table_name = 'pg_tview_meta'"
+             WHERE table_name = 'pg_tview_meta'",
         );
-        assert!(result.unwrap_or(Some(0)).unwrap_or(0) > 0, "pg_tview_meta should have columns");
+        assert!(
+            result.unwrap_or(Some(0)).unwrap_or(0) > 0,
+            "pg_tview_meta should have columns"
+        );
     }
 
     #[pg_test]
@@ -341,7 +350,8 @@ mod tests {
             }
 
             Ok::<_, pgrx::spi::SpiError>(columns)
-        }).expect("Failed to query column info");
+        })
+        .expect("Failed to query column info");
 
         // Verify expected columns exist
         let expected_columns = vec![
@@ -360,11 +370,14 @@ mod tests {
 
         for (expected_name, expected_type, expected_nullable) in expected_columns {
             let found = columns.iter().any(|(name, data_type, nullable)| {
-                name == expected_name &&
-                (data_type == expected_type || data_type.starts_with(expected_type)) &&
-                nullable == expected_nullable
+                name == expected_name
+                    && (data_type == expected_type || data_type.starts_with(expected_type))
+                    && nullable == expected_nullable
             });
-            assert!(found, "Column {expected_name} with type {expected_type} nullable {expected_nullable} not found");
+            assert!(
+                found,
+                "Column {expected_name} with type {expected_type} nullable {expected_nullable} not found"
+            );
         }
     }
 
@@ -372,10 +385,18 @@ mod tests {
     fn test_metadata_tables_exist_function() {
         // Clean up first
         let _ = drop_metadata_tables();
-        assert_eq!(metadata_tables_exist(), Ok(false), "Tables should not exist initially");
+        assert_eq!(
+            metadata_tables_exist(),
+            Ok(false),
+            "Tables should not exist initially"
+        );
 
         // Create tables
         create_metadata_tables().expect("Failed to create metadata tables");
-        assert_eq!(metadata_tables_exist(), Ok(true), "Tables should exist after creation");
+        assert_eq!(
+            metadata_tables_exist(),
+            Ok(true),
+            "Tables should exist after creation"
+        );
     }
 }

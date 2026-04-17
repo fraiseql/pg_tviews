@@ -1,5 +1,5 @@
-use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 use std::collections::HashMap;
 
 /// Propagation Engine: Parent Discovery for Dependent Views
@@ -29,8 +29,10 @@ use crate::queue::RefreshKey;
 /// // ]
 /// // These are all the tv_post and tv_comment rows where fk_user = 1
 /// ```
-pub fn find_parents_for(key: &RefreshKey, graph: &crate::queue::EntityDepGraph) -> crate::TViewResult<Vec<RefreshKey>> {
-
+pub fn find_parents_for(
+    key: &RefreshKey,
+    graph: &crate::queue::EntityDepGraph,
+) -> crate::TViewResult<Vec<RefreshKey>> {
     // Find all parent entities that depend on this entity (from cached graph)
     let parent_entities = find_parent_entities(&key.entity, graph)?;
 
@@ -90,10 +92,7 @@ pub fn find_parents_batch(
 
     // Filter to PK-only keys (dedup keys don't propagate)
     // Pre-allocate with capacity for all keys (worst case: all are PK-based)
-    let pk_keys: Vec<_> = keys.iter()
-        .filter(|k| !k.is_dedup())
-        .cloned()
-        .collect();
+    let pk_keys: Vec<_> = keys.iter().filter(|k| !k.is_dedup()).cloned().collect();
 
     if pk_keys.is_empty() {
         return Ok(result);
@@ -108,7 +107,9 @@ pub fn find_parents_batch(
 
         // Map results back to original keys
         for key in &pk_keys {
-            if key.entity == child_entity && let Some(affected_pks) = affected_pk_map.get(&key.pk) {
+            if key.entity == child_entity
+                && let Some(affected_pks) = affected_pk_map.get(&key.pk)
+            {
                 for pk in affected_pks {
                     result
                         .entry(key.clone())
@@ -162,9 +163,8 @@ fn find_affected_pks_batch(
     let parent_pk_col = format!("pk_{parent_entity}");
 
     // Use = ANY($1) to batch multiple child PKs into one query
-    let query = format!(
-        "SELECT {fk_col}, {parent_pk_col} FROM {parent_table} WHERE {fk_col} = ANY($1)"
-    );
+    let query =
+        format!("SELECT {fk_col}, {parent_pk_col} FROM {parent_table} WHERE {fk_col} = ANY($1)");
 
     Spi::connect(|client| {
         // Convert child_pks to a PostgreSQL array datum
@@ -200,7 +200,10 @@ fn find_affected_pks_batch(
 ///
 /// Example: `find_parent_entities`("user") -> `["post", "comment"]`
 /// This means `tv_post` and `tv_comment` both have FK references to `tv_user`
-fn find_parent_entities(child_entity: &str, graph: &crate::queue::EntityDepGraph) -> spi::Result<Vec<String>> {
+fn find_parent_entities(
+    child_entity: &str,
+    graph: &crate::queue::EntityDepGraph,
+) -> spi::Result<Vec<String>> {
     // Look up parent entities from cached graph (no SPI query)
     Ok(graph.parents.get(child_entity).cloned().unwrap_or_default())
 }
@@ -219,9 +222,7 @@ fn find_affected_pks(
     let parent_pk_col = format!("pk_{parent_entity}");
 
     // Table/column names are from pg_tview_meta (internal); child_pk is parameterized
-    let query = format!(
-        "SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = $1"
-    );
+    let query = format!("SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = $1");
     let args = vec![unsafe {
         DatumWithOid::new(child_pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value())
     }];
@@ -258,48 +259,66 @@ mod tests {
     fn test_find_parents_batch_pre_allocation() {
         // Setup: Create tables with multiple FK relationships
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("CREATE TABLE tb_post (
+        Spi::run(
+            "CREATE TABLE tb_post (
             pk_post BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             title TEXT
-        )").unwrap();
-        Spi::run("CREATE TABLE tb_comment (
+        )",
+        )
+        .unwrap();
+        Spi::run(
+            "CREATE TABLE tb_comment (
             pk_comment BIGSERIAL PRIMARY KEY,
             fk_user BIGINT REFERENCES tb_user(pk_user),
             fk_post BIGINT REFERENCES tb_post(pk_post),
             text TEXT
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         // Insert test data
         Spi::run("INSERT INTO tb_user (pk_user, name) VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
         Spi::run("INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'Post 1'), (2, 1, 'Post 2'), (3, 2, 'Post 3')").unwrap();
-        Spi::run("INSERT INTO tb_comment (pk_comment, fk_user, fk_post, text)
-                  VALUES (1, 1, 1, 'Comment 1'), (2, 1, 2, 'Comment 2'), (3, 2, 3, 'Comment 3')").unwrap();
+        Spi::run(
+            "INSERT INTO tb_comment (pk_comment, fk_user, fk_post, text)
+                  VALUES (1, 1, 1, 'Comment 1'), (2, 1, 2, 'Comment 2'), (3, 2, 3, 'Comment 3')",
+        )
+        .unwrap();
 
         // Create dependency TVIEWs
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('user', $$
                 SELECT pk_user, jsonb_build_object('name', name) AS data
                 FROM tb_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('post', $$
                 SELECT pk_post, fk_user,
                        jsonb_build_object('title', title, 'author', v_user.data) AS data
                 FROM tb_post
                 LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('comment', $$
                 SELECT pk_comment, fk_user, fk_post,
                        jsonb_build_object('text', text) AS data
                 FROM tb_comment
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // Test: Find parents for multiple user PKs using batched discovery
         let graph = crate::queue::EntityDepGraph::load().unwrap();
@@ -319,20 +338,14 @@ mod tests {
         let key1 = &keys[0];
         if let Some(parents) = batched_result.get(key1) {
             // Should have multiple post parents
-            let post_parents: Vec<_> = parents
-                .iter()
-                .filter(|p| p.entity == "post")
-                .collect();
+            let post_parents: Vec<_> = parents.iter().filter(|p| p.entity == "post").collect();
             assert!(!post_parents.is_empty(), "User 1 should have post parents");
         }
 
         // For user pk=2, should find post 3
         let key2 = &keys[1];
         if let Some(parents) = batched_result.get(key2) {
-            let post_parents: Vec<_> = parents
-                .iter()
-                .filter(|p| p.entity == "post")
-                .collect();
+            let post_parents: Vec<_> = parents.iter().filter(|p| p.entity == "post").collect();
             assert!(!post_parents.is_empty(), "User 2 should have post parents");
         }
     }
@@ -348,12 +361,15 @@ mod tests {
         Spi::run("INSERT INTO tb_tag (pk_tag, name) VALUES (1, 'Tag1'), (2, 'Tag2')").unwrap();
 
         // Create TVIEW
-        Spi::run("
+        Spi::run(
+            "
             SELECT pg_tviews_create('tag', $$
                 SELECT pk_tag, jsonb_build_object('name', name) AS data
                 FROM tb_tag
             $$)
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         let graph = crate::queue::EntityDepGraph::load().unwrap();
 
@@ -375,5 +391,3 @@ mod tests {
         }
     }
 }
-
-

@@ -1,6 +1,6 @@
+use crate::error::TViewResult;
 use pgrx::prelude::*;
 use std::collections::HashMap;
-use crate::error::TViewResult;
 
 /// Infer column types from `PostgreSQL` catalog
 ///
@@ -60,14 +60,13 @@ pub fn table_exists(table_name: &str) -> TViewResult<bool> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use super::*;
-
 
     #[pg_test]
     fn test_infer_column_types() {
         // Create test table
-        Spi::run("CREATE TABLE test_types (
+        Spi::run(
+            "CREATE TABLE test_types (
             pk INTEGER PRIMARY KEY,
             id UUID NOT NULL,
             name TEXT,
@@ -75,7 +74,9 @@ mod tests {
             created_at TIMESTAMPTZ DEFAULT NOW(),
             tags TEXT[],
             data JSONB
-        )").unwrap();
+        )",
+        )
+        .unwrap();
 
         let columns = vec![
             "pk".to_string(),
@@ -93,7 +94,10 @@ mod tests {
         assert_eq!(types.get("id"), Some(&"uuid".to_string()));
         assert_eq!(types.get("name"), Some(&"text".to_string()));
         assert_eq!(types.get("is_active"), Some(&"boolean".to_string()));
-        assert_eq!(types.get("created_at"), Some(&"timestamp with time zone".to_string()));
+        assert_eq!(
+            types.get("created_at"),
+            Some(&"timestamp with time zone".to_string())
+        );
         assert_eq!(types.get("tags"), Some(&"text[]".to_string()));
         assert_eq!(types.get("data"), Some(&"jsonb".to_string()));
     }

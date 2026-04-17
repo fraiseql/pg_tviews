@@ -1,9 +1,9 @@
 //! Administrative SQL functions: refresh, migration, schema analysis, cascade path.
 
-use pgrx::prelude::*;
-use pgrx::datum::DatumWithOid;
-use pgrx::JsonB;
 use crate::{TViewError, TViewResult, utils::quote_identifier};
+use pgrx::JsonB;
+use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
 ///
@@ -13,36 +13,27 @@ use crate::{TViewError, TViewResult, utils::quote_identifier};
 #[pg_extern]
 fn pg_tviews_analyze_select(sql: &str) -> JsonB {
     match crate::schema::inference::infer_schema(sql) {
-        Ok(schema) => {
-            match schema.to_jsonb() {
-                Ok(jsonb) => jsonb,
-                Err(e) => {
-                    JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
-                }
+        Ok(schema) => match schema.to_jsonb() {
+            Ok(jsonb) => jsonb,
+            Err(e) => {
+                JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
             }
-        }
-        Err(e) => {
-            JsonB(serde_json::json!({"error": e.to_string()}))
-        }
+        },
+        Err(e) => JsonB(serde_json::json!({"error": e.to_string()})),
     }
 }
 
 /// Infer column types from `PostgreSQL` catalog
 #[pg_extern]
 #[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires Vec by value
-fn pg_tviews_infer_types(
-    table_name: &str,
-    columns: Vec<String>,
-) -> JsonB {
+fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
     match crate::schema::types::infer_column_types(table_name, &columns) {
-        Ok(types) => {
-            match serde_json::to_value(&types) {
-                Ok(json_value) => JsonB(json_value),
-                Err(e) => {
-                    error!("Failed to serialize types to JSONB: {}", e);
-                }
+        Ok(types) => match serde_json::to_value(&types) {
+            Ok(json_value) => JsonB(json_value),
+            Err(e) => {
+                error!("Failed to serialize types to JSONB: {}", e);
             }
-        }
+        },
         Err(e) => {
             error!("Type inference failed: {}", e);
         }
@@ -68,10 +59,9 @@ fn pg_tviews_infer_types(
 fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     use crate::catalog::TviewMeta;
 
-    let meta = TviewMeta::load_by_entity(entity)?
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
+    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
+        entity: entity.to_string(),
+    })?;
 
     let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
     let view_name = crate::utils::lookup_view_for_source(meta.view_oid)?;
@@ -85,7 +75,8 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
         });
     }
 
-    let col_list = view_columns.iter()
+    let col_list = view_columns
+        .iter()
         .map(|c| quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ");
@@ -144,11 +135,16 @@ fn pg_tviews_migrate_triggers() {
 ///
 /// Returns the dependency chain showing which TVIEWs depend on this entity
 #[pg_extern]
-fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
-    name!(depth, i32),
-    name!(entity_name, String),
-    name!(depends_on, String),
-)> {
+fn pg_tviews_show_cascade_path(
+    entity: &str,
+) -> TableIterator<
+    'static,
+    (
+        name!(depth, i32),
+        name!(entity_name, String),
+        name!(depends_on, String),
+    ),
+> {
     let results = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -190,13 +186,14 @@ fn pg_tviews_show_cascade_path(entity: &str) -> TableIterator<'static, (
                     paths.push((depth, entity_name, depends_on));
                 }
                 Ok::<_, spi::Error>(paths)
-            },
+            }
             Err(e) => {
                 warning!("Failed to query cascade path: {}", e);
                 Ok(Vec::new())
             }
         }
-    }).unwrap_or_default();
+    })
+    .unwrap_or_default();
 
     TableIterator::new(results)
 }

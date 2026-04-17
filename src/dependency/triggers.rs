@@ -1,7 +1,7 @@
-use pgrx::prelude::*;
-use pgrx::datum::DatumWithOid;
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
+use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 
 /// Install cascade triggers on all base tables for a TVIEW.
 ///
@@ -12,22 +12,31 @@ use crate::utils::quote_identifier;
 ///
 /// # Errors
 /// Returns error if trigger creation or installation fails.
-pub fn install_triggers(
-    table_oids: &[pg_sys::Oid],
-    tview_entity: &str,
-) -> TViewResult<()> {
+pub fn install_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TViewResult<()> {
     // Install trigger on each base table
     for &table_oid in table_oids {
-        let table_name = get_table_name(table_oid)?;
-        let qi_table = quote_identifier(&table_name);
+        let (schema, relname) = get_table_name(table_oid)?;
+        // Schema-qualified SQL reference: "schema"."table"
+        let qi_table = format!(
+            "{}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&relname)
+        );
+        // Trigger name uses schema_table to stay free of dots
+        let trigger_suffix = format!("{schema}_{relname}");
 
-        // Use deterministic trigger name: trg_tview_{entity}_on_{table}
-        let trigger_name = format!("trg_tview_{tview_entity}_on_{table_name}");
+        // Use deterministic trigger name: trg_tview_{entity}_on_{schema}_{table}
+        let trigger_name = format!("trg_tview_{tview_entity}_on_{trigger_suffix}");
         let qi_trigger = quote_identifier(&trigger_name);
 
         // Check if trigger already exists
-        if trigger_exists(&table_name, &trigger_name)? {
-            warning!("Trigger {} already exists on {}, skipping", trigger_name, table_name);
+        if trigger_exists_by_oid(table_oid, &trigger_name)? {
+            warning!(
+                "Trigger {} already exists on {}.{}, skipping",
+                trigger_name,
+                schema,
+                relname
+            );
             continue;
         }
 
@@ -41,16 +50,16 @@ pub fn install_triggers(
         );
 
         crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Install trigger on {table_name}"),
+            operation: format!("Install trigger on {schema}.{relname}"),
             pg_error: e,
         })?;
 
         // Install statement-level AFTER trigger (flushes the refresh queue).
         // This ensures auto-commit transactions get TVIEWs refreshed.
         // For explicit transactions, the ProcessUtility hook also flushes on COMMIT.
-        let flush_trigger_name = format!("trg_tview_flush_{tview_entity}_on_{table_name}");
+        let flush_trigger_name = format!("trg_tview_flush_{tview_entity}_on_{trigger_suffix}");
         let qi_flush_trigger = quote_identifier(&flush_trigger_name);
-        if !trigger_exists(&table_name, &flush_trigger_name)? {
+        if !trigger_exists_by_oid(table_oid, &flush_trigger_name)? {
             let flush_sql = format!(
                 "CREATE TRIGGER {qi_flush_trigger}
                  AFTER INSERT OR UPDATE OR DELETE ON {qi_table}
@@ -58,11 +67,10 @@ pub fn install_triggers(
                  EXECUTE FUNCTION pg_tview_flush_trigger()"
             );
             crate::utils::spi_run_ddl(&flush_sql).map_err(|e| TViewError::CatalogError {
-                operation: format!("Install flush trigger on {table_name}"),
+                operation: format!("Install flush trigger on {schema}.{relname}"),
                 pg_error: e,
             })?;
         }
-
     }
 
     Ok(())
@@ -72,22 +80,24 @@ pub fn install_triggers(
 ///
 /// # Errors
 /// Returns error if trigger removal fails.
-pub fn remove_triggers(
-    table_oids: &[pg_sys::Oid],
-    tview_entity: &str,
-) -> TViewResult<()> {
+pub fn remove_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TViewResult<()> {
     for &table_oid in table_oids {
-        let table_name = get_table_name(table_oid)?;
-        let qi_table = quote_identifier(&table_name);
-        let trigger_name = format!("trg_tview_{tview_entity}_on_{table_name}");
-        let flush_trigger_name = format!("trg_tview_flush_{tview_entity}_on_{table_name}");
+        let (schema, relname) = get_table_name(table_oid)?;
+        let qi_table = format!(
+            "{}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&relname)
+        );
+        let trigger_suffix = format!("{schema}_{relname}");
+        let trigger_name = format!("trg_tview_{tview_entity}_on_{trigger_suffix}");
+        let flush_trigger_name = format!("trg_tview_flush_{tview_entity}_on_{trigger_suffix}");
 
         let drop_sql = format!(
             "DROP TRIGGER IF EXISTS {} ON {qi_table}",
             quote_identifier(&trigger_name),
         );
         crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Drop trigger from {table_name}"),
+            operation: format!("Drop trigger from {schema}.{relname}"),
             pg_error: e,
         })?;
 
@@ -96,10 +106,9 @@ pub fn remove_triggers(
             quote_identifier(&flush_trigger_name),
         );
         crate::utils::spi_run_ddl(&drop_flush_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Drop flush trigger from {table_name}"),
+            operation: format!("Drop flush trigger from {schema}.{relname}"),
             pg_error: e,
         })?;
-
     }
 
     Ok(())
@@ -126,18 +135,18 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
 
         let mut out = Vec::new();
         for row in rows {
-            let entity: String = row["entity"]
-                .value()?
-                .ok_or_else(|| spi::Error::from(TViewError::SpiError {
+            let entity: String = row["entity"].value()?.ok_or_else(|| {
+                spi::Error::from(TViewError::SpiError {
                     query: "migrate: SELECT entity".to_string(),
                     error: "entity column is NULL".to_string(),
-                }))?;
-            let table_oid: pg_sys::Oid = row["table_oid"]
-                .value()?
-                .ok_or_else(|| spi::Error::from(TViewError::SpiError {
+                })
+            })?;
+            let table_oid: pg_sys::Oid = row["table_oid"].value()?.ok_or_else(|| {
+                spi::Error::from(TViewError::SpiError {
                     query: "migrate: SELECT table_oid".to_string(),
                     error: "table_oid column is NULL".to_string(),
-                }))?;
+                })
+            })?;
             out.push((entity, table_oid));
         }
         Ok(out)
@@ -148,15 +157,20 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
     })?;
 
     for (entity, table_oid) in pairs {
-        let table_name = get_table_name(table_oid)?;
-        let qi_table = quote_identifier(&table_name);
-        let trigger_name = format!("trg_tview_{entity}_on_{table_name}");
+        let (schema, relname) = get_table_name(table_oid)?;
+        let qi_table = format!(
+            "{}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&relname)
+        );
+        let trigger_suffix = format!("{schema}_{relname}");
+        let trigger_name = format!("trg_tview_{entity}_on_{trigger_suffix}");
         let qi_trigger = quote_identifier(&trigger_name);
 
         // Drop the old trigger (IF EXISTS makes this safe if already removed)
         let drop_sql = format!("DROP TRIGGER IF EXISTS {qi_trigger} ON {qi_table}");
         crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Migrate trigger: drop {trigger_name} on {table_name}"),
+            operation: format!("Migrate trigger: drop {trigger_name} on {schema}.{relname}"),
             pg_error: e,
         })?;
 
@@ -168,12 +182,12 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
              EXECUTE FUNCTION pg_tview_trigger_handler()"
         );
         crate::utils::spi_run_ddl(&create_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Migrate trigger: create {trigger_name} on {table_name}"),
+            operation: format!("Migrate trigger: create {trigger_name} on {schema}.{relname}"),
             pg_error: e,
         })?;
 
         // Install statement-level flush trigger
-        let flush_trigger_name = format!("trg_tview_flush_{entity}_on_{table_name}");
+        let flush_trigger_name = format!("trg_tview_flush_{entity}_on_{trigger_suffix}");
         let qi_flush = quote_identifier(&flush_trigger_name);
         let drop_flush = format!("DROP TRIGGER IF EXISTS {qi_flush} ON {qi_table}");
         crate::utils::spi_run_ddl(&drop_flush).map_err(|e| TViewError::CatalogError {
@@ -196,9 +210,18 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
     Ok(())
 }
 
-fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
-    crate::utils::spi_get_string(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
+/// Returns `(schema_name, table_name)` for the given OID.
+///
+/// Both parts are unquoted identifiers.  Build the SQL reference as
+/// `quote_identifier(schema) + "." + quote_identifier(table)`, and the
+/// trigger name suffix as `schema + "_" + table` (dots are not valid in
+/// PostgreSQL trigger names).
+fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
+    let row = crate::utils::spi_get_string(&format!(
+        "SELECT n.nspname || ':' || c.relname \
+         FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.oid = {oid:?}"
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get table name for OID {oid:?}"),
@@ -207,18 +230,31 @@ fn get_table_name(oid: pg_sys::Oid) -> TViewResult<String> {
     .ok_or_else(|| TViewError::DependencyResolutionFailed {
         view_name: format!("OID {oid:?}"),
         reason: "Table not found".to_string(),
-    })
+    })?;
+
+    // Split on the sentinel ':' — safe because PostgreSQL identifiers never
+    // contain ':'.
+    let (schema, relname) =
+        row.split_once(':')
+            .ok_or_else(|| TViewError::DependencyResolutionFailed {
+                view_name: format!("OID {oid:?}"),
+                reason: "Unexpected format from pg_class lookup".to_string(),
+            })?;
+    Ok((schema.to_string(), relname.to_string()))
 }
 
-fn trigger_exists(table_name: &str, trigger_name: &str) -> TViewResult<bool> {
-    let args = vec![
-        unsafe { DatumWithOid::new(table_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(trigger_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-    ];
+/// Check if a trigger exists on a table identified by OID, to avoid search_path
+/// sensitivity of the `::regclass` cast.
+fn trigger_exists_by_oid(table_oid: pg_sys::Oid, trigger_name: &str) -> TViewResult<bool> {
+    let args = vec![unsafe {
+        DatumWithOid::new(trigger_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+    }];
     Spi::get_one_with_args::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_trigger
-         WHERE tgrelid = $1::regclass
-           AND tgname = $2",
+        &format!(
+            "SELECT COUNT(*) > 0 FROM pg_trigger \
+             WHERE tgrelid = {table_oid:?} \
+               AND tgname = $1"
+        ),
         &args,
     )
     .map_err(|e| TViewError::CatalogError {

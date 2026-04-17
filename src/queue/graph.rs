@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use pgrx::prelude::*;
 use crate::TViewResult;
+use pgrx::prelude::*;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Entity dependency graph for refresh ordering
 ///
@@ -42,7 +42,8 @@ impl EntityDepGraph {
             let rows = client.select(query, None, &[])?;
 
             for row in rows {
-                let entity: String = row["entity"].value()
+                let entity: String = row["entity"]
+                    .value()
                     .map_err(|e| crate::TViewError::SpiError {
                         query: query.to_string(),
                         error: format!("Failed to get entity: {e}"),
@@ -51,11 +52,13 @@ impl EntityDepGraph {
                         query: query.to_string(),
                         error: "entity column is NULL".to_string(),
                     })?;
-                let fk_columns: Option<Vec<String>> = row["fk_columns"].value()
-                    .map_err(|e| crate::TViewError::SpiError {
-                        query: query.to_string(),
-                        error: format!("Failed to get fk_columns: {e}"),
-                    })?;
+                let fk_columns: Option<Vec<String>> =
+                    row["fk_columns"]
+                        .value()
+                        .map_err(|e| crate::TViewError::SpiError {
+                            query: query.to_string(),
+                            error: format!("Failed to get fk_columns: {e}"),
+                        })?;
 
                 all_entities.insert(entity.clone());
 
@@ -64,15 +67,17 @@ impl EntityDepGraph {
                         // FK column format: "fk_<entity>"
                         // Example: "fk_user" -> "user"
                         if let Some(parent_entity) = fk_col.strip_prefix("fk_") {
-            // Register parent relationship
-            parents.entry(parent_entity.to_string())
-                .or_default()
-                .push(entity.clone());
+                            // Register parent relationship
+                            parents
+                                .entry(parent_entity.to_string())
+                                .or_default()
+                                .push(entity.clone());
 
-            // Register child relationship
-            children.entry(entity.clone())
-                .or_default()
-                .push(parent_entity.to_string());
+                            // Register child relationship
+                            children
+                                .entry(entity.clone())
+                                .or_default()
+                                .push(parent_entity.to_string());
                         }
                     }
                 }
@@ -134,13 +139,13 @@ fn topological_sort(
 
     // Start with entities that have no dependencies
     let mut queue: VecDeque<String> = VecDeque::new();
-        for (entity, &degree) in &in_degree {
-            if degree == 0 {
-                queue.push_back(entity.clone());
-            }
+    for (entity, &degree) in &in_degree {
+        if degree == 0 {
+            queue.push_back(entity.clone());
         }
+    }
 
-        let mut result = Vec::new();
+    let mut result = Vec::new();
 
     while let Some(entity) = queue.pop_front() {
         result.push(entity.clone());
@@ -168,12 +173,10 @@ fn topological_sort(
         });
     }
 
-        Ok(result)
-    }
+    Ok(result)
+}
 
-
-
-    #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -224,7 +227,9 @@ mod tests {
         // feed -> post
 
         let entities: HashSet<String> = ["company", "user", "post", "feed"]
-            .iter().map(|&s| s.to_string()).collect();
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
 
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         children.insert("user".to_string(), vec!["company".to_string()]);

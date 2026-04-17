@@ -14,13 +14,13 @@
 //! 4. Set up triggers on base tables for change tracking
 //! 5. Create the actual view with refresh triggers
 
+pub mod convert;
 pub mod create;
 pub mod drop;
-pub mod convert;
 
+pub use convert::convert_existing_table_to_tview;
 pub use create::create_tview;
 pub use drop::drop_tview;
-pub use convert::convert_existing_table_to_tview;
 
 use pgrx::prelude::*;
 
@@ -37,7 +37,7 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
         crate::hooks::ensure_hook_installed();
     }
 
-    match create_tview(tview_name, select_sql) {
+    match create_tview(tview_name, select_sql, None) {
         Ok(()) => Ok(format!("TVIEW '{tview_name}' created successfully")),
         Err(e) => Err(format!("Failed to create TVIEW: {e}")),
     }
@@ -72,8 +72,9 @@ fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> 
         .map_err(|e| format!("Invalid table name: {e}"))?;
 
     match convert_existing_table_to_tview(table_name) {
-        Ok(()) => Ok(format!("Table '{table_name}' converted to TVIEW successfully")),
+        Ok(()) => Ok(format!(
+            "Table '{table_name}' converted to TVIEW successfully"
+        )),
         Err(e) => Err(format!("Failed to convert table to TVIEW: {e}")),
     }
 }
-

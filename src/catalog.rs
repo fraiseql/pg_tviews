@@ -1,6 +1,6 @@
-use pgrx::prelude::*;
-use pgrx::pg_sys::Oid;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::Oid;
+use pgrx::prelude::*;
 /// Type of dependency relationship for `jsonb_delta` optimization
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyType {
@@ -110,7 +110,9 @@ impl TviewMeta {
     /// Look up metadata by source table OID or view OID.
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
-            let args = vec![unsafe { DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+            let args = vec![unsafe {
+                DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+            }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -132,7 +134,9 @@ impl TviewMeta {
     /// Look up metadata by entity name
     pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
-            let args = vec![unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
+            let args = vec![unsafe {
+                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -179,7 +183,9 @@ impl TviewMeta {
     #[allow(dead_code)] // Reason: May be useful in future optimization phases or external code
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
         Spi::connect(|client| {
-            let args = vec![unsafe { DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+            let args = vec![unsafe {
+                DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+            }];
             let mut rows = client.select(
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
@@ -228,21 +234,24 @@ impl TviewMeta {
         let is_union: bool = row["is_union"].value::<bool>()?.unwrap_or(false);
 
         Ok(Self {
-                    tview_oid: row["tview_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "tview_oid column is NULL".to_string(),
-                        }))?,
-                    view_oid: row["view_oid"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "view_oid column is NULL".to_string(),
-                        }))?,
-                    entity_name: row["entity"].value()?
-                        .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
-                            query: String::new(),
-                            error: "entity column is NULL".to_string(),
-                        }))?,
+            tview_oid: row["tview_oid"].value()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
+                    query: String::new(),
+                    error: "tview_oid column is NULL".to_string(),
+                })
+            })?,
+            view_oid: row["view_oid"].value()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
+                    query: String::new(),
+                    error: "view_oid column is NULL".to_string(),
+                })
+            })?,
+            entity_name: row["entity"].value()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
+                    query: String::new(),
+                    error: "entity column is NULL".to_string(),
+                })
+            })?,
 
             fk_columns: fk_cols_val.unwrap_or_default(),
             uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
@@ -293,7 +302,11 @@ impl TviewMeta {
         let mut details = Vec::with_capacity(len);
 
         for i in 0..len {
-            let dep_type = self.dependency_types.get(i).cloned().unwrap_or(DependencyType::Scalar);
+            let dep_type = self
+                .dependency_types
+                .get(i)
+                .cloned()
+                .unwrap_or(DependencyType::Scalar);
             let path = self.dependency_paths.get(i).cloned().flatten();
             let match_key = self.array_match_keys.get(i).cloned().flatten();
 
@@ -306,7 +319,6 @@ impl TviewMeta {
 
         details
     }
-
 }
 
 /// Represents a single dependency with its type, path, and match key.
@@ -398,7 +410,8 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     // Query pg_class to get table name from OID
     let table_name = crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {table_oid:?}"
-    ))?.ok_or_else(|| crate::TViewError::SpiError {
+    ))?
+    .ok_or_else(|| crate::TViewError::SpiError {
         query: format!("SELECT relname FROM pg_class WHERE oid = {table_oid:?}"),
         error: "Table OID not found".to_string(),
     })?;
@@ -412,13 +425,10 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     // Without this check, tb_comment would return Some("comment") even though
     // there's no TVIEW for "comment" — causing the trigger handler to take the
     // direct path instead of the indirect (array dependency) path.
-    let args = vec![unsafe {
-        DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-    }];
-    let exists: Option<String> = Spi::get_one_with_args(
-        "SELECT entity FROM pg_tview_meta WHERE entity = $1",
-        &args,
-    )?;
+    let args =
+        vec![unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
+    let exists: Option<String> =
+        Spi::get_one_with_args("SELECT entity FROM pg_tview_meta WHERE entity = $1", &args)?;
 
     Ok(exists)
 }
@@ -430,7 +440,10 @@ mod tests {
     #[test]
     fn test_dependency_type_from_str() {
         assert_eq!(DependencyType::from_str("scalar"), DependencyType::Scalar);
-        assert_eq!(DependencyType::from_str("nested_object"), DependencyType::NestedObject);
+        assert_eq!(
+            DependencyType::from_str("nested_object"),
+            DependencyType::NestedObject
+        );
         assert_eq!(DependencyType::from_str("array"), DependencyType::Array);
         assert_eq!(DependencyType::from_str("unknown"), DependencyType::Scalar); // default
     }
@@ -470,8 +483,8 @@ mod tests {
             ("tb_user", Some("user")),
             ("tb_post", Some("post")),
             ("tb_company", Some("company")),
-            ("users", None),  // Not a tb_* table
-            ("pg_class", None),  // System table
+            ("users", None),    // Not a tb_* table
+            ("pg_class", None), // System table
         ];
 
         for (table_name, expected_entity) in test_cases {

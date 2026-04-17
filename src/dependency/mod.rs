@@ -1,5 +1,3 @@
-
-
 //! Dependency Analysis: Base Table Discovery and Trigger Management
 //!
 //! This module analyzes `PostgreSQL's` system catalogs to understand view dependencies:
@@ -24,5 +22,5 @@
 pub mod graph;
 pub mod triggers;
 
-pub use graph::{find_base_tables, DependencyGraph};
+pub use graph::{DependencyGraph, find_base_tables};
 pub use triggers::{install_triggers, remove_triggers};

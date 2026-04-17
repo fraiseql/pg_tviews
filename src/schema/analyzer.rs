@@ -101,10 +101,7 @@ impl DependencyInfo {
 /// # Returns
 /// Vector of `DependencyInfo`, one per FK column (order matches input)
 #[must_use]
-pub fn analyze_dependencies(
-    select_sql: &str,
-    fk_columns: &[String],
-) -> Vec<DependencyInfo> {
+pub fn analyze_dependencies(select_sql: &str, fk_columns: &[String]) -> Vec<DependencyInfo> {
     let mut deps = Vec::new();
 
     for fk_col in fk_columns {
@@ -145,9 +142,7 @@ fn infer_view_name(fk_col: &str) -> Option<String> {
 /// Detect how a single FK is used in the SELECT statement
 fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Normalize SQL: remove extra whitespace, make lowercase for pattern matching
-    let sql_normalized = select_sql
-        .replace(['\n', '\t'], " ")
-        .to_lowercase();
+    let sql_normalized = select_sql.replace(['\n', '\t'], " ").to_lowercase();
 
     // Try to infer view name from FK column
     let Some(view_name) = infer_view_name(fk_col) else {
@@ -192,16 +187,17 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
     let mut seen_keys = std::collections::HashSet::new();
 
     // Normalize SQL for pattern matching
-    let sql_normalized = select_sql
-        .replace(['\n', '\t'], " ")
-        .to_lowercase();
+    let sql_normalized = select_sql.replace(['\n', '\t'], " ").to_lowercase();
 
     // Pattern 1: 'array_name', jsonb_agg(v_something.data ...) — uses cached regex
     for capture in ARRAY_PATTERN_REGEX.captures_iter(&sql_normalized) {
         if let Some(array_name) = capture.get(1) {
             let key = array_name.as_str().to_string();
             if seen_keys.insert(key.clone()) {
-                deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
+                deps.push(DependencyInfo::array(
+                    key,
+                    DEFAULT_ARRAY_MATCH_KEY.to_string(),
+                ));
             }
         }
     }
@@ -211,7 +207,10 @@ fn detect_array_dependencies(select_sql: &str) -> Vec<DependencyInfo> {
         if let Some(array_name) = capture.get(1) {
             let key = array_name.as_str().to_string();
             if seen_keys.insert(key.clone()) {
-                deps.push(DependencyInfo::array(key, DEFAULT_ARRAY_MATCH_KEY.to_string()));
+                deps.push(DependencyInfo::array(
+                    key,
+                    DEFAULT_ARRAY_MATCH_KEY.to_string(),
+                ));
             }
         }
     }
@@ -293,7 +292,11 @@ mod tests {
             LEFT JOIN v_comment ON v_comment.fk_post = pk_post
             GROUP BY pk_post, fk_user, fk_category, v_user.data, v_category.data
         ";
-        let fk_cols = vec!["fk_user".to_string(), "fk_category".to_string(), "fk_comment".to_string()];
+        let fk_cols = vec![
+            "fk_user".to_string(),
+            "fk_category".to_string(),
+            "fk_comment".to_string(),
+        ];
 
         let deps = analyze_dependencies(sql, &fk_cols);
 

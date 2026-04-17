@@ -6,16 +6,16 @@
 //! - Enqueue/dequeue operations
 //! - Transaction callback registration
 
-pub mod key;
-mod state;
-mod ops;
-pub mod xact;
-pub mod graph;
 pub mod cache;
+pub mod graph;
 mod integration_tests;
+pub mod key;
+mod ops;
+mod state;
+pub mod xact;
 
+pub use graph::EntityDepGraph;
 pub use key::RefreshKey;
 pub use ops::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup, is_queue_empty};
-pub use state::{get_queue_size, get_queue_contents};
+pub use state::{get_queue_contents, get_queue_size};
 pub use xact::flush_refresh_queue;
-pub use graph::EntityDepGraph;

@@ -10,8 +10,8 @@
 //! The PL/pgSQL wrapper satisfies PostgreSQL's type requirement and calls this C
 //! function for the actual conversion logic.
 
-use pgrx::prelude::*;
 use crate::utils::quote_identifier;
+use pgrx::prelude::*;
 
 /// Convert a `tv_*` table (just created by `CREATE TABLE tv_* AS SELECT …`) to a TVIEW.
 ///
@@ -27,18 +27,39 @@ use crate::utils::quote_identifier;
 #[pg_extern]
 #[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires String by value
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Retrieve (and consume) the pending SELECT.  Empty cache = created by pg_tviews_create.
-    let Some(select_sql) = crate::hooks::take_pending_tview_select(&table_name) else {
+    // Retrieve (and consume) the pending (schema, SELECT) pair.
+    // Empty cache = table was created by pg_tviews_create(), not DDL interception.
+    let Some((schema_name, select_sql)) = crate::hooks::take_pending_tview_select(&table_name)
+    else {
         return Ok(());
     };
 
-    // Drop the regular table PostgreSQL created — we replace it with TVIEW semantics.
-    let qi_table = quote_identifier(&table_name);
-    Spi::run(&format!("DROP TABLE IF EXISTS {qi_table} CASCADE"))
-        .map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
+    // Resolve the target schema:
+    // - Non-empty schema_name → the user wrote `CREATE TABLE schema.tv_* AS SELECT …`
+    // - Empty schema_name → schema was omitted; defer to current_schema() inside create_tview
+    let schema_override: Option<&str> = if schema_name.is_empty() {
+        None
+    } else {
+        Some(schema_name.as_str())
+    };
+
+    // Drop the regular table PostgreSQL just created — we replace it with TVIEW semantics.
+    // Use the resolved schema when available to avoid search_path ambiguity.
+    let drop_sql = match schema_override {
+        Some(s) => format!(
+            "DROP TABLE IF EXISTS {}.{} CASCADE",
+            quote_identifier(s),
+            quote_identifier(&table_name),
+        ),
+        None => format!(
+            "DROP TABLE IF EXISTS {} CASCADE",
+            quote_identifier(&table_name)
+        ),
+    };
+    Spi::run(&drop_sql).map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
     // Create the proper TVIEW: backing view, materialized table, triggers.
-    crate::ddl::create_tview(&table_name, &select_sql)
+    crate::ddl::create_tview(&table_name, &select_sql, schema_override)
         .map_err(|e| format!("Failed to create TVIEW '{table_name}': {e}"))?;
 
     Ok(())

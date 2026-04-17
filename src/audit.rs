@@ -1,5 +1,5 @@
-use pgrx::prelude::*;
 use pgrx::datum::DatumWithOid;
+use pgrx::prelude::*;
 
 /// Return the authenticated session user (not affected by SET ROLE).
 fn session_user() -> spi::Result<String> {
@@ -14,7 +14,8 @@ pub fn log_create(entity: &str, definition: &str) -> spi::Result<()> {
     let json_str = serde_json::json!({
         "definition": definition,
         "version": env!("CARGO_PKG_VERSION")
-    }).to_string();
+    })
+    .to_string();
 
     let user_ref: &str = &user;
     let json_ref: &str = &json_str;
