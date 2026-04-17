@@ -190,7 +190,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
             Some(dml) => dml,
             None => {
                 // Slow path: build and cache
-                let col_names = get_view_columns(&view_name)?;
+                let col_names = crate::utils::get_view_columns(&view_name)?;
                 if col_names.is_empty() {
                     return Ok(());
                 }
@@ -225,51 +225,6 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
     crate::audit::log_refresh(&meta.entity_name, rows_affected)?;
 
     Ok(())
-}
-
-/// Get the list of column names for a view (used for UPSERT column lists).
-/// Results are cached per session to avoid repeated pg_attribute queries.
-fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
-    // Fast path: check cache
-    {
-        let cache = crate::utils::VIEW_COLUMNS_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(cols) = cache.get(view_name) {
-            return Ok(cols.clone());
-        }
-    }
-
-    // Slow path: query and cache
-    let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
-        let args = vec![unsafe {
-            DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
-        let rows = client.select(
-            "SELECT a.attname::text \
-             FROM pg_attribute a \
-             JOIN pg_class c ON c.oid = a.attrelid \
-             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            None,
-            &args,
-        )?;
-        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
-        let mut result = Vec::with_capacity(10);
-        for r in rows {
-            if let Some(name) = r["attname"].value::<String>()? {
-                result.push(name);
-            }
-        }
-        Ok(result)
-    })?;
-
-    // Cache the result
-    crate::utils::VIEW_COLUMNS_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(view_name.to_string(), cols.clone());
-    Ok(cols)
 }
 
 /// Build DML components (col_list, DO UPDATE clause) for dedup key refresh.
@@ -618,31 +573,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
-    let col_names: Vec<String> = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(
-                view_name.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        }];
-        let rows = client.select(
-            "SELECT a.attname::text \
-             FROM pg_attribute a \
-             JOIN pg_class c ON c.oid = a.attrelid \
-             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            None,
-            &args,
-        )?;
-        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
-        let mut cols: Vec<String> = Vec::with_capacity(10);
-        for r in rows {
-            if let Some(name) = r["attname"].value::<String>()? {
-                cols.push(name);
-            }
-        }
-        Ok::<Vec<String>, spi::SpiError>(cols)
-    })?;
+    let col_names = crate::utils::get_view_columns(&view_name)?;
 
     // Build DO UPDATE SET clause (update every non-pk column; timestamps use DEFAULT on INSERT)
     let do_update: String = {

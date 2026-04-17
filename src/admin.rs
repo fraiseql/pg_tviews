@@ -66,7 +66,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
     let view_name = crate::utils::lookup_view_for_source(meta.view_oid)?;
 
-    let view_columns = get_view_columns_by_oid(meta.view_oid)?;
+    let view_columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
 
     if view_columns.is_empty() {
         return Err(TViewError::CatalogError {
@@ -89,33 +89,6 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     ))?;
 
     Ok(())
-}
-
-/// Return the column names of a relation identified by OID, in attribute order.
-///
-/// Only user-visible columns are returned (`attnum > 0`, `NOT attisdropped`).
-fn get_view_columns_by_oid(rel_oid: pg_sys::Oid) -> spi::Result<Vec<String>> {
-    Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
-        let rows = client.select(
-            "SELECT attname::text \
-             FROM pg_attribute \
-             WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped \
-             ORDER BY attnum",
-            None,
-            &args,
-        )?;
-
-        let mut cols = Vec::new();
-        for row in rows {
-            if let Some(col) = row[1].value::<String>()? {
-                cols.push(col);
-            }
-        }
-        Ok(cols)
-    })
 }
 
 /// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the

@@ -1,8 +1,8 @@
-use pgrx::AllocatedByPostgres;
 use pgrx::datum::DatumWithOid;
 use pgrx::heap_tuple::PgHeapTuple;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
+use pgrx::AllocatedByPostgres;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -251,6 +251,56 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         .unwrap_or_else(|e| e.into_inner())
         .insert(oid, name.clone());
     Ok(name)
+}
+
+/// Get the list of column names for a view/table by name. Results are cached per session.
+/// Used for UPSERT column lists to avoid repeated pg_attribute queries.
+pub fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
+    // Fast path: check cache
+    {
+        let cache = VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cols) = cache.get(view_name) {
+            return Ok(cols.clone());
+        }
+    }
+
+    // Slow path: query and cache
+    let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
+        let args = vec![unsafe {
+            DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let rows = client.select(
+            "SELECT a.attname::text \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+            None,
+            &args,
+        )?;
+        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
+        let mut result = Vec::with_capacity(10);
+        for r in rows {
+            if let Some(name) = r["attname"].value::<String>()? {
+                result.push(name);
+            }
+        }
+        Ok(result)
+    })?;
+
+    // Cache the result
+    VIEW_COLUMNS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(view_name.to_string(), cols.clone());
+    Ok(cols)
+}
+
+/// Get column names for a relation by OID. Resolves name via relname_from_oid,
+/// then delegates to get_view_columns for caching.
+pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
+    let name = relname_from_oid(rel_oid)?;
+    get_view_columns(&name)
 }
 
 /// Quote a SQL identifier for safe use in queries.
