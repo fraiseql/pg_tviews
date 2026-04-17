@@ -781,7 +781,6 @@ mod tests {
         assert_eq!(find_last_as(sql), Some(43)); // Position of "as full_name"
     }
 
-    // ── Phase 1, Cycle 1: CTE detection — main SELECT columns ────────────────
 
     #[test]
     fn test_parse_cte_columns() {
@@ -809,7 +808,6 @@ mod tests {
         assert!(!names.contains(&"item_id"), "CTE-only column item_id leaked: {names:?}");
     }
 
-    // ── Phase 1, Cycle 2: multi-CTE and edge cases ───────────────────────────
 
     #[test]
     fn test_parse_multiple_ctes() {
@@ -849,7 +847,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_item", "id", "data"]);
     }
 
-    // ── Phase 1, Cycle 3: WITH RECURSIVE rejection ───────────────────────────
 
     #[test]
     fn test_recursive_cte_rejected() {
@@ -870,7 +867,6 @@ mod tests {
         assert!(result.unwrap_err().contains("RECURSIVE"));
     }
 
-    // ── Phase 1: skip_paren_block unit tests ─────────────────────────────────
 
     #[test]
     fn test_skip_paren_block_simple() {
@@ -893,7 +889,6 @@ mod tests {
         assert_eq!(end, 20);
     }
 
-    // ── Phase 1: regression — non-CTE SQL unaffected ─────────────────────────
 
     #[test]
     fn test_non_cte_sql_unchanged() {
@@ -902,7 +897,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
 
-    // ── Phase 2, Cycle 1: DISTINCT ON parser ─────────────────────────────────
 
     #[test]
     fn test_parse_distinct_on_columns() {
@@ -941,7 +935,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_contract", "id", "data"]);
     }
 
-    // ── Phase 2, Cycle 2: extract_distinct_on_keys ───────────────────────────
 
     #[test]
     fn test_extract_distinct_on_keys_single() {
@@ -979,7 +972,6 @@ mod tests {
         assert_eq!(keys, vec!["id"]);
     }
 
-    // ── Phase 2: regressions — non-DISTINCT SQL unaffected ───────────────────
 
     #[test]
     fn test_non_distinct_sql_unchanged() {
@@ -988,7 +980,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_post", "id", "data"]);
     }
 
-    // ── Phase 3, Cycle 1: UNION ALL / UNION column extraction ────────────────
 
     #[test]
     fn test_parse_union_all_columns() {
@@ -1033,7 +1024,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_post", "id", "top"]);
     }
 
-    // ── Phase 3, Cycle 2: CTE + UNION ALL combination ────────────────────────
 
     #[test]
     fn test_parse_cte_with_union_all() {
@@ -1045,7 +1035,6 @@ mod tests {
         assert_eq!(cols, vec!["pk_item", "id", "label"]);
     }
 
-    // ── Phase 3, Cycle 3: DISTINCT ON + UNION ALL combination ────────────────
 
     #[test]
     fn test_parse_distinct_on_union_all() {

@@ -93,7 +93,7 @@ pub fn create_tview(
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
-    // Extract DISTINCT ON keys for Phase 2 support
+    // Extract DISTINCT ON keys from SQL
     let distinct_on_keys = crate::schema::parser::extract_distinct_on_keys(&final_select_sql)
         .unwrap_or_default();
 
