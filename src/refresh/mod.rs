@@ -8,8 +8,6 @@ pub mod main;
 pub mod array_ops;
 
 pub mod bulk;
-#[allow(dead_code)] // Reason: prepared statement caching — planned optimization, not yet wired
-mod cache;
 
 // Re-export main functions for backward compatibility
 pub use main::refresh_pk;
@@ -17,5 +15,3 @@ pub use main::refresh_pk;
 pub use main::refresh_by_dedup_key;
 // Re-export bulk functions
 pub use bulk::refresh_bulk;
-// Re-export cache functions
-// pub use cache::{register_cache_invalidation_callbacks, clear_prepared_statement_cache};

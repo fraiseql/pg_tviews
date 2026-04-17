@@ -12,7 +12,6 @@ mod ops;
 pub mod xact;
 pub mod graph;
 pub mod cache;
-pub mod persistence;
 mod integration_tests;
 
 pub use key::RefreshKey;

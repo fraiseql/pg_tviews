@@ -20,7 +20,6 @@ between base tables and derived views through trigger-based change tracking.
 - **Dependency Resolution**: Handles complex multi-level view dependencies
 - **Performance Optimized**: Incremental updates avoid full view rebuilds
 - **`PostgreSQL` Native**: Written as a C extension using `pgrx` framework
-- **2PC Support**: Transaction queue persistence for prepared transactions
 
 ## Safety
 
@@ -46,7 +45,6 @@ mod audit;
 // Feature modules
 mod lifecycle;
 mod health;
-mod twophase;
 mod cascade;
 mod admin;
 
