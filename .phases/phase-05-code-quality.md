@@ -5,12 +5,12 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 
 ## Success Criteria
 - [x] F-08: Verify & simplify pgrx 0.17.0 workaround (or add regression test) ✅
-- [ ] F-09: Add pg_tviews.max_queue_size GUC with backpressure enforcement
-- [ ] F-10: Compile regex patterns once (use LazyLock<Regex>)
-- [ ] F-12a: Wire up log_refresh function or remove it
-- [ ] F-12b + P-12: Delete dead 2PC infrastructure & refresh/cache.rs
-- [ ] F-13: Harden missing-row handling in refresh_pk
-- [ ] Zero clippy warnings
+- [x] F-09: Add pg_tviews.max_queue_size GUC with backpressure enforcement ✅
+- [x] F-10: Compile regex patterns once (use LazyLock<Regex>) ✅
+- [x] F-12a: Wire up log_refresh function or remove it ✅
+- [x] F-12b + P-12: Delete dead 2PC infrastructure & refresh/cache.rs ✅
+- [x] F-13: Harden missing-row handling in refresh_pk ✅
+- [x] Zero clippy warnings ✅
 
 ## TDD Cycles
 
@@ -102,4 +102,4 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 6 complete, Cycle 7 ready)
+[x] Complete (All 6 cycles complete, all success criteria met)
