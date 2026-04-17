@@ -1,9 +1,9 @@
 //! Administrative SQL functions: refresh, migration, schema analysis, cascade path.
 
-use crate::{TViewError, TViewResult, utils::quote_identifier};
-use pgrx::JsonB;
+use crate::{utils::quote_identifier, TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+use pgrx::JsonB;
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
 ///
@@ -96,15 +96,16 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
 /// Only user-visible columns are returned (`attnum > 0`, `NOT attisdropped`).
 fn get_view_columns_by_oid(rel_oid: pg_sys::Oid) -> spi::Result<Vec<String>> {
     Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }];
         let rows = client.select(
-            &format!(
-                "SELECT attname::text \
-                 FROM pg_attribute \
-                 WHERE attrelid = {rel_oid:?} AND attnum > 0 AND NOT attisdropped \
-                 ORDER BY attnum"
-            ),
+            "SELECT attname::text \
+             FROM pg_attribute \
+             WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped \
+             ORDER BY attnum",
             None,
-            &[],
+            &args,
         )?;
 
         let mut cols = Vec::new();

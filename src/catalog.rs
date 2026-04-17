@@ -408,11 +408,15 @@ pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
 /// Used by the cache when there's a cache miss.
 pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<String>> {
     // Query pg_class to get table name from OID
-    let table_name = crate::utils::spi_get_string(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {table_oid:?}"
-    ))?
+    let args = vec![unsafe {
+        DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+    }];
+    let table_name = Spi::get_one_with_args::<String>(
+        "SELECT relname::text FROM pg_class WHERE oid = $1",
+        &args,
+    )?
     .ok_or_else(|| crate::TViewError::SpiError {
-        query: format!("SELECT relname FROM pg_class WHERE oid = {table_oid:?}"),
+        query: "SELECT relname FROM pg_class WHERE oid = $1".to_string(),
         error: "Table OID not found".to_string(),
     })?;
 
@@ -445,7 +449,8 @@ mod tests {
             DependencyType::NestedObject
         );
         assert_eq!(DependencyType::from_str("array"), DependencyType::Array);
-        assert_eq!(DependencyType::from_str("unknown"), DependencyType::Scalar); // default
+        assert_eq!(DependencyType::from_str("unknown"), DependencyType::Scalar);
+        // default
     }
 
     #[test]

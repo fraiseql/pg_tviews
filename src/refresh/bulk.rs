@@ -3,13 +3,13 @@
 //! Provides efficient refresh of multiple rows in a single operation.
 //! Reduces query count from N queries to 2 queries for N rows.
 
-use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::utils::{lookup_view_for_source, quote_identifier};
-use pgrx::JsonB;
+use crate::TViewResult;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi;
+use pgrx::JsonB;
 
 /// Refresh multiple rows of the same entity in a single operation
 ///
@@ -77,7 +77,7 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
         let rows = client.select(&query, None, &args)?;
 
         // Batch update using UPDATE ... FROM unnest()
-        let tv_name = relname_from_oid(meta.tview_oid)?;
+        let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
 
         // Collect data for update
         let mut update_pks: Vec<i64> = Vec::new();
@@ -138,19 +138,6 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
         )?;
 
         Ok(())
-    })
-}
-
-/// Helper: Look up TVIEW table name given its OID
-fn relname_from_oid(oid: pg_sys::Oid) -> spi::Result<String> {
-    crate::utils::spi_get_string(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
-    ))?
-    .ok_or_else(|| {
-        spi::Error::from(crate::TViewError::SpiError {
-            query: format!("SELECT relname FROM pg_class WHERE oid = {oid:?}"),
-            error: "No pg_class entry found".to_string(),
-        })
     })
 }
 

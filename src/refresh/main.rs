@@ -51,10 +51,10 @@
 //! -- Optimized: UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1, '{author}')
 //! ```
 
-use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
+use pgrx::JsonB;
 
 use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
@@ -663,20 +663,22 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // and existing rows that need their data refreshed.
     let sql = format!(
         "INSERT INTO {tv_name} ({col_list}) \
-         SELECT {col_list} FROM {view_name} WHERE {pk_col} = {} \
-         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}",
-        row.pk
+         SELECT {col_list} FROM {view_name} WHERE {pk_col} = $1 \
+         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}"
     );
 
-    Spi::run(&sql)?;
+    Spi::run_with_args(
+        &sql,
+        &[unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+    )?;
     Ok(())
 }
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::JsonB;
     use pgrx::prelude::*;
+    use pgrx::JsonB;
 
     /// Test smart patching for nested object dependencies.
     ///
