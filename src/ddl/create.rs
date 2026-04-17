@@ -433,9 +433,59 @@ fn create_materialized_table(
         columns.push(format!("{} BIGINT", quote_identifier(fk)));
     }
 
+    // Fetch actual column types from the backing view to guard against name-based
+    // type mismatches. A column ending in `_id` is inferred as UUID by infer_schema,
+    // but it may actually be TEXT (e.g. customer_contract_id, provider_contract_id).
+    let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
+    let view_name_for_types = format!("v_{entity}");
+    let actual_col_types: std::collections::HashMap<String, String> = {
+        let args = vec![
+            unsafe {
+                DatumWithOid::new(
+                    view_name_for_types.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    schema_name,
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ];
+        Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT column_name::text, data_type::text \
+                 FROM information_schema.columns \
+                 WHERE table_name = $1 AND table_schema = $2",
+                None,
+                &args,
+            )?;
+            let mut map = std::collections::HashMap::new();
+            for row in rows {
+                let name = row[1].value::<String>()?;
+                let typ = row[2].value::<String>()?;
+                if let (Some(n), Some(t)) = (name, typ) {
+                    map.insert(n, t);
+                }
+            }
+            Ok::<std::collections::HashMap<String, String>, pgrx::spi::Error>(map)
+        })
+        .unwrap_or_default()
+    };
+
     // UUID foreign key columns (for filtering)
+    // Verify the actual view column type — a column ending in _id may be TEXT.
     for uuid_fk in &schema.uuid_fk_columns {
-        columns.push(format!("{} UUID", quote_identifier(uuid_fk)));
+        let is_actually_uuid = actual_col_types
+            .get(uuid_fk.as_str())
+            .map(|t| t == "uuid")
+            .unwrap_or(true); // if not found, trust name-based inference
+        if is_actually_uuid {
+            columns.push(format!("{} UUID", quote_identifier(uuid_fk)));
+        } else {
+            columns.push(format!("{} TEXT", quote_identifier(uuid_fk)));
+        }
     }
 
     // Additional columns with inferred types

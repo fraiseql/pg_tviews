@@ -5,7 +5,7 @@ use crate::error::TViewResult;
 ///
 /// This function analyzes the SQL expression to determine the appropriate
 /// `PostgreSQL` type. For array columns, it detects `ARRAY(...)` subqueries
-/// and infers element types.
+/// and infers element types. Explicit `::typename` casts take highest priority.
 #[must_use]
 pub fn infer_column_type(sql_expression: &str) -> String {
     let expr = sql_expression.trim();
@@ -20,8 +20,79 @@ pub fn infer_column_type(sql_expression: &str) -> String {
         return "JSONB".to_string();
     }
 
+    // Detect explicit ::typename casts — highest-confidence signal.
+    // Strip any trailing " AS alias" first so the cast token is the last token.
+    let before_alias = strip_alias(expr);
+    if let Some(pg_type) = detect_cast_type(before_alias) {
+        return pg_type;
+    }
+
     // Default to TEXT for other expressions
     "TEXT".to_string()
+}
+
+/// Strip a trailing ` AS alias` or ` alias` suffix from an expression so that
+/// `detect_cast_type` sees `expr::typename` rather than `expr::typename AS alias`.
+fn strip_alias(expr: &str) -> &str {
+    // Look for " AS " (case-insensitive) followed by a simple identifier
+    let lower = expr.to_lowercase();
+    if let Some(as_pos) = lower.rfind(" as ") {
+        let after_as = lower[as_pos + 4..].trim();
+        // Ensure what follows " AS " is a plain identifier (no spaces)
+        if !after_as.contains(' ') && !after_as.contains('(') {
+            return &expr[..as_pos];
+        }
+    }
+    expr
+}
+
+/// Detect the PostgreSQL type from an explicit `::typename` cast at the end of `expr`.
+///
+/// Returns `None` if no cast is found or the cast type is not recognised.
+fn detect_cast_type(expr: &str) -> Option<String> {
+    let pos = expr.rfind("::")?;
+    let raw = expr[pos + 2..].trim();
+    // Grab the first word of the type name (handles e.g. "double precision" → "double …")
+    let first_word = raw.split_whitespace().next().unwrap_or("").to_lowercase();
+    let rest: Vec<&str> = raw.split_whitespace().collect();
+
+    let pg_type = match first_word.as_str() {
+        // Integer family
+        "bigint" | "int8" => "BIGINT",
+        "integer" | "int4" | "int" => "INTEGER",
+        "smallint" | "int2" => "SMALLINT",
+        // Floating point
+        "float8" => "DOUBLE PRECISION",
+        "float4" | "real" => "REAL",
+        "numeric" | "decimal" => "NUMERIC",
+        // Two-word float type
+        "double" if rest.get(1).map(|s| s.to_lowercase()) == Some("precision".to_string()) => {
+            "DOUBLE PRECISION"
+        }
+        // Boolean
+        "boolean" | "bool" => "BOOLEAN",
+        // Text family
+        "text" => "TEXT",
+        "varchar" | "character" => "TEXT",
+        // UUID
+        "uuid" => "UUID",
+        // JSON
+        "jsonb" => "JSONB",
+        "json" => "JSON",
+        // Temporal
+        "timestamptz" => "TIMESTAMPTZ",
+        "timestamp" => "TIMESTAMP",
+        "date" => "DATE",
+        "time" => "TIME",
+        // Ltree / PostGIS / other extensions
+        "ltree" => "LTREE",
+        "lquery" => "LQUERY",
+        "geometry" => "GEOMETRY",
+        "geography" => "GEOGRAPHY",
+        _ => return None,
+    };
+
+    Some(pg_type.to_string())
 }
 
 /// Infer the element type for an ARRAY(...) subquery

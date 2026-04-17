@@ -688,8 +688,18 @@ fn extract_column_name(part: &str) -> Result<String, String> {
 /// Find the last `AS` keyword position, handling nested contexts
 fn find_last_as(sql_lower: &str) -> Option<usize> {
     let mut last_as_pos = None;
+    let bytes = sql_lower.as_bytes();
 
     for (i, _) in sql_lower.match_indices("as") {
+        // Word-boundary check: "as" must be preceded by whitespace or start of string
+        let preceded_by_space = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        // Word-boundary check: "as" must be followed by whitespace or end of string
+        let followed_by_space = i + 2 >= sql_lower.len() || bytes[i + 2].is_ascii_whitespace();
+
+        if !preceded_by_space || !followed_by_space {
+            continue;
+        }
+
         // Count parentheses to handle nested expressions
         let before = &sql_lower[..i];
         let paren_depth = before.chars().fold(0i32, |depth, c| match c {
