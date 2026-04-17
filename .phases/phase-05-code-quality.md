@@ -82,21 +82,24 @@ Resolve remaining code quality issues, wire up dead code, and ensure zero techni
 - Code compiles cleanly with zero clippy warnings
 - **Commit**: d11c5e5 (refactor: remove dead 2PC infrastructure)
 
-### Cycle 6: Harden Missing-Row Handling (F-13)
+### Cycle 6: Harden Missing-Row Handling (F-13) ✅
 - **Objective**: Improve error handling for missing rows in refresh_pk
 - **Target**: `src/refresh/main.rs:267-272`
 - **Strategy**: Add validation and better error messages
 
 #### Implementation
-- Review missing-row handling logic
-- Add defensive checks for edge cases
-- Improve error messages for debugging
-- Add tests for edge cases
-- **Commit**: TBD
+- Enhanced missing row error message with:
+  * Entity name and view name for context
+  * Actual SQL query being executed
+  * List of possible causes (cascading delete, UNION ALL condition, view WHERE clause)
+- Enhanced NULL data column error with similar improvements
+- Added test_missing_row_error_handling to verify deletion handling
+- Added test_null_data_column_error_handling to verify NULL column handling
+- **Commit**: afd6979 (feat: harden missing-row error handling)
 
 ## Dependencies
 - Requires: Phase 4 complete ✅
 - Blocks: Phase 6 (Finalize)
 
 ## Status
-[~] In Progress (Cycle 5 complete, Cycle 6 ready)
+[~] In Progress (Cycle 6 complete, Cycle 7 ready)
