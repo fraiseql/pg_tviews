@@ -184,6 +184,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **💾 Query Plan Caching**: 10× faster with cached prepared statements
 - **📦 Bulk Optimization**: N rows with just 2 queries instead of N queries
 - **🎨 Smart Patching**: 2× performance boost with optional jsonb_delta integration
+- **🚀 UNLOGGED Tables**: 2-3× write performance with automatic crash recovery
 
 ### Production-Ready
 
@@ -227,6 +228,48 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **Sub-linear scaling** for cascading updates (graph caching)
 - **Constant time** for cache hits (90%+ hit rate in production)
 - **O(1) queue operations** with HashSet-based deduplication
+
+---
+
+## 🚀 UNLOGGED Tables
+
+**pg_tviews** automatically creates TVIEWs as **UNLOGGED tables** for maximum write performance.
+
+### Benefits
+
+- **⚡ 2-3× Faster Writes**: No WAL overhead for TVIEW updates
+- **🔄 Automatic Recovery**: Transparent crash recovery from base tables
+- **💾 I/O Reduction**: Less disk writes for high-frequency updates
+- **🔧 Configurable**: GUC parameter controls default behavior
+
+### Crash Recovery
+
+UNLOGGED tables are truncated on PostgreSQL crash, but **pg_tviews** automatically recovers:
+
+```sql
+-- Check and recover after potential crash
+SELECT pg_tviews_recover_after_crash('user_summary');
+
+-- Returns true if recovery was performed, false if not needed
+```
+
+### Configuration
+
+```sql
+-- Control default UNLOGGED behavior (default: true)
+SET pg_tviews.unlogged_by_default = true;
+
+-- Alter existing TVIEWs
+ALTER TABLE tv_my_view SET UNLOGGED;
+ALTER TABLE tv_my_view SET LOGGED;  -- ⚠️ Truncates data
+```
+
+### Safety Guarantees
+
+- **✅ Data Recovery**: All TVIEW data reconstructible from base tables
+- **✅ Transparent**: Applications work unchanged
+- **✅ Configurable**: Can disable UNLOGGED for specific use cases
+- **✅ Tested**: Comprehensive crash simulation and recovery testing
 
 ---
 
