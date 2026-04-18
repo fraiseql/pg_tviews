@@ -147,7 +147,7 @@ fn traverse_dependencies(
         visiting.insert(current_oid);
 
         // Query dependencies
-        let deps = query_dependencies(view_oid, current_oid)?;
+        let deps = query_dependencies(current_oid)?;
 
         // Process each dependency
         for (dep_oid, relkind_opt) in deps {
@@ -172,16 +172,13 @@ fn traverse_dependencies(
     Ok(all_dependencies)
 }
 
-fn query_dependencies(
-    view_oid: pg_sys::Oid,
-    current_oid: pg_sys::Oid,
-) -> TViewResult<Vec<(pg_sys::Oid, Option<String>)>> {
+fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid, Option<String>)>> {
     let deps_query = format!(
         "SELECT DISTINCT d.refobjid, c.relkind
          FROM pg_rewrite r
          JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
          LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
-         WHERE r.ev_class = {view_oid:?}
+          WHERE r.ev_class = {current_oid:?}
            AND d.refclassid = 'pg_class'::regclass::oid
            AND c.oid != {current_oid:?}"
     );
