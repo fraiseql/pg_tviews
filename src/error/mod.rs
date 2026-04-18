@@ -41,6 +41,9 @@ pub enum TViewError {
     /// Column type inference failed
     TypeInferenceFailed { column_name: String, reason: String },
 
+    /// SQL parsing failed for cascade path extraction
+    SqlParseError { reason: String },
+
     // ============ Extension Dependency Errors (58xxx) ============
     /// `jsonb_delta` extension not installed
     JsonbIvmNotInstalled,
@@ -139,6 +142,7 @@ impl TViewError {
             Self::InvalidSelectStatement { .. } => "42601", // Syntax error
             Self::RequiredColumnMissing { .. } => "42703",  // Undefined column
             Self::TypeInferenceFailed { .. } => "42804",    // Datatype mismatch
+            Self::SqlParseError { .. } => "42601",          // Syntax error
 
             Self::JsonbIvmNotInstalled | Self::ExtensionVersionMismatch { .. } => "58P01", // Undefined file (extension)
 
@@ -216,6 +220,9 @@ impl fmt::Display for TViewError {
                     f,
                     "Failed to infer type for column '{column_name}': {reason}"
                 )
+            }
+            Self::SqlParseError { reason } => {
+                write!(f, "SQL parsing failed: {reason}")
             }
             Self::JsonbIvmNotInstalled => {
                 write!(

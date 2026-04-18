@@ -305,14 +305,18 @@ pub fn create_tview(
     // current_schema() resolves to a different schema due to the database search_path.
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
 
-    // Step 7: Register metadata (with dependencies)
+    // Step 6.5: Extract cascade paths from the SELECT SQL
+    // TODO: Implement cascade path extraction
+    let cascade_paths = vec![]; // Placeholder
+
+    // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
         &view_name,
         &tv_table_name,
         &final_select_sql,
         &final_schema,
-        &dep_graph.base_tables,
+        &cascade_paths,
         &schema_name,
         &distinct_on_keys,
     )?;
@@ -334,6 +338,27 @@ pub fn create_tview(
     }
 
     Ok(())
+}
+
+/// Extract and resolve cascade paths from SELECT SQL
+fn extract_and_resolve_cascade_paths(
+    _select_sql: &str,
+    _entity_name: &str,
+    _schema: &TViewSchema,
+    _base_table_oids: &[pg_sys::Oid],
+) -> TViewResult<Vec<cascade_path::CascadePath>> {
+    // TODO: Implement cascade path extraction
+    Ok(vec![]) // Placeholder
+}
+
+/// Resolve table names in cascade path to OIDs and validate columns
+#[allow(dead_code)] // TODO: Implement OID resolution
+fn resolve_cascade_path_oids(
+    _path: &cascade_path::CascadePath,
+    _base_table_oids: &[pg_sys::Oid],
+) -> TViewResult<cascade_path::CascadePath> {
+    // TODO: Implement cascade path OID resolution
+    Ok(cascade_path::CascadePath { hops: vec![] }) // Placeholder
 }
 
 /// Check if a TVIEW already exists
@@ -770,7 +795,7 @@ fn register_metadata(
     tview_name: &str,
     definition_sql: &str,
     schema: &TViewSchema,
-    dependencies: &[pg_sys::Oid],
+    cascade_paths: &[cascade_path::CascadePath],
     schema_name: &str,
     distinct_on_keys: &[String],
 ) -> TViewResult<()> {
@@ -825,20 +850,11 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize dependencies as JSONB array of cascade paths
-    let cascade_paths_json: Vec<String> = dependencies
+    // Serialize cascade paths as JSONB array
+    let cascade_paths_json: Vec<String> = cascade_paths
         .iter()
-        .map(|oid| {
-            // Create a simple cascade path with single hop: source_oid -> target_entity
-            // For now, we'll assume the target_entity is derived from the base table name
-            // This will be refined in later phases
-            let cascade_path = cascade_path::CascadePath {
-                hops: vec![cascade_path::CascadeHop {
-                    source_oid: *oid,
-                    target_entity: entity_name.to_string(), // This is a simplification; will be fixed in phase 2
-                }],
-            };
-            serde_json::to_string(&cascade_path).expect("Failed to serialize cascade path")
+        .map(|path| {
+            serde_json::to_string(path).expect("Failed to serialize cascade path")
         })
         .collect();
     let cascade_paths_str = cascade_paths_json
