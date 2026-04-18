@@ -1353,4 +1353,104 @@ mod tests {
         .unwrap_or(false);
         assert!(is_unlogged, "tv_unlogged_test should be an UNLOGGED table");
     }
+
+    /// Test detection of post-crash empty UNLOGGED table.
+    #[pg_test]
+    fn test_detect_post_crash_empty_tview() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table with data
+        Spi::run("CREATE TABLE tb_crash_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_crash_test VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+
+        // Create TVIEW
+        Spi::run(
+            "SELECT pg_tviews_create('crash_test', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_crash_test
+        $$)",
+        )
+        .unwrap();
+
+        // Verify TVIEW has data
+        let initial_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_crash_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(initial_count, 2, "TVIEW should have 2 rows initially");
+
+        // Before truncation, should not detect crash
+        let crash_before = crate::lifecycle::detect_post_crash_truncation("crash_test").unwrap();
+        assert!(!crash_before, "Should not detect crash when table has data");
+
+        // Simulate post-crash truncation (UNLOGGED table behavior)
+        Spi::run("TRUNCATE TABLE tv_crash_test").unwrap();
+
+        // Verify table is now empty
+        let after_truncate_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_crash_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_truncate_count, 0, "TVIEW should be empty after truncate");
+
+        // Should now detect crash (table empty but view has data)
+        let crash_detected = crate::lifecycle::detect_post_crash_truncation("crash_test").unwrap();
+        assert!(crash_detected, "Should detect crash when UNLOGGED table is empty but view has data");
+
+        // Verify backing view still has data
+        let view_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM v_crash_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(view_count, 2, "Backing view should still have data after table truncate");
+    }
+
+    /// Test automatic recovery after crash detection.
+    #[pg_test]
+    fn test_auto_recover_after_crash() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table with data
+        Spi::run("CREATE TABLE tb_recover_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_recover_test VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+
+        // Create TVIEW
+        Spi::run(
+            "SELECT pg_tviews_create('recover_test', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_recover_test
+        $$)",
+        )
+        .unwrap();
+
+        // Verify TVIEW has data initially
+        let initial_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_recover_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(initial_count, 2, "TVIEW should have 2 rows initially");
+
+        // Simulate post-crash truncation
+        Spi::run("TRUNCATE TABLE tv_recover_test").unwrap();
+
+        // Verify table is now empty
+        let after_truncate_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_recover_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_truncate_count, 0, "TVIEW should be empty after truncate");
+
+        // Call auto-recovery function
+        let recovery_performed = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
+            .unwrap()
+            .unwrap_or(false);
+        assert!(recovery_performed, "Recovery should be performed when crash is detected");
+
+        // Verify TVIEW has data again after recovery
+        let after_recovery_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_recover_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_recovery_count, 2, "TVIEW should have 2 rows after recovery");
+
+        // Call recovery again - should return false (no recovery needed)
+        let second_recovery = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
+            .unwrap()
+            .unwrap_or(true);
+        assert!(!second_recovery, "Second recovery call should return false when no crash detected");
+    }
 }

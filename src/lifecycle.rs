@@ -1,7 +1,12 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
+use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+use pgrx::PgBuiltInOids;
+use pgrx::PgOid;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::utils::quote_identifier;
 
 // Static cache for jsonb_delta availability (performance optimization)
 static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -51,6 +56,76 @@ pub fn check_jsonb_delta_available() -> bool {
     JSONB_IVM_CHECKED.store(true, Ordering::Relaxed);
 
     is_available
+}
+
+/// Detect and recover from post-crash truncation of UNLOGGED TVIEW tables.
+///
+/// Checks if a TVIEW table has been truncated due to crash and automatically
+/// refreshes it if recovery is needed. This function is safe to call multiple times
+/// and will only perform refresh when actually needed.
+///
+/// # Arguments
+/// * `entity_name` - Name of the TVIEW entity (without tv_ prefix)
+///
+/// # Returns
+/// `Ok(true)` if recovery was performed, `Ok(false)` if no recovery needed
+#[pg_extern]
+pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
+    if detect_post_crash_truncation(entity_name)? {
+        // Perform full refresh of the TVIEW
+        Spi::run(&format!("SELECT pg_tviews_refresh('{}')", entity_name))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Detect if a TVIEW table has been truncated due to UNLOGGED table crash recovery.
+///
+/// Returns `true` if the table is empty but the backing view contains data,
+/// indicating a post-crash truncation that requires refresh.
+///
+/// # Arguments
+/// * `entity_name` - Name of the TVIEW entity (without tv_ prefix)
+///
+/// # Returns
+/// `Ok(true)` if crash recovery is needed, `Ok(false)` if table is healthy
+#[allow(dead_code)] // Used in tests, will be used in production code
+pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<bool> {
+    let tview_table = format!("tv_{entity_name}");
+    let backing_view = format!("v_{entity_name}");
+
+    // Check if TVIEW table exists and is UNLOGGED
+    let is_unlogged: Option<bool> = Spi::get_one_with_args(
+        "SELECT c.relpersistence = 'u'
+         FROM pg_class c
+         JOIN pg_namespace n ON c.relnamespace = n.oid
+         WHERE c.relname = $1 AND n.nspname = current_schema() AND c.relkind = 'r'",
+        &[unsafe { DatumWithOid::new(tview_table.as_str(), PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+    )?;
+
+    // If table doesn't exist or isn't UNLOGGED, no crash detection needed
+    if !is_unlogged.unwrap_or(false) {
+        return Ok(false);
+    }
+
+    // Get table row count by querying the actual table
+    let table_row_count: Option<i64> = Spi::get_one(&format!("SELECT COUNT(*) FROM {}", quote_identifier(&tview_table)))?;
+
+    let table_count = table_row_count.unwrap_or(0);
+
+    // If table has data, no crash detected
+    if table_count > 0 {
+        return Ok(false);
+    }
+
+    // Check if backing view has data
+    let view_row_count: Option<i64> = Spi::get_one(&format!("SELECT COUNT(*) FROM {}", quote_identifier(&backing_view)))?;
+
+    let view_count = view_row_count.unwrap_or(0);
+
+    // If backing view has data but table is empty, crash detected
+    Ok(view_count > 0)
 }
 
 /// Export as SQL function for testing
