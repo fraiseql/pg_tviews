@@ -56,7 +56,7 @@ fn pg_tviews_health_check() -> TableIterator<
     let orphaned_meta = Spi::get_one::<i64>(
         "SELECT COUNT(*) FROM pg_tview_meta m
          WHERE NOT EXISTS (
-           SELECT 1 FROM pg_class WHERE relname = 'tv_' || m.entity
+           SELECT 1 FROM pg_class WHERE relname::text = 'tv_' || m.entity
          )",
     )
     .unwrap_or(Some(0))
