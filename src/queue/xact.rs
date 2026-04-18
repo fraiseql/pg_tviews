@@ -49,6 +49,21 @@ pub unsafe fn register_subxact_callback() {
     unsafe {
         pg_sys::RegisterSubXactCallback(Some(tview_subxact_callback), std::ptr::null_mut());
     }
+
+    // Initialize SAVEPOINT_DEPTH from current transaction nest level
+    // When loaded inside a DO block, subtransactions may already be open
+    let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+    SAVEPOINT_DEPTH.with(|d| {
+        *d.borrow_mut() = (nest_level as usize).saturating_sub(1);
+    });
+
+    // Push placeholder queue snapshots for existing subtransactions
+    QUEUE_SNAPSHOTS.with(|s| {
+        let mut snapshots = s.borrow_mut();
+        for _ in 0..(nest_level as usize).saturating_sub(1) {
+            snapshots.push(HashSet::new());
+        }
+    });
 }
 
 /// Transaction callback handler (invoked by `PostgreSQL`)
