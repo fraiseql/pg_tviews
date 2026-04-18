@@ -707,7 +707,7 @@ fn populate_initial_data(
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
     let view_oid = Spi::get_one::<Oid>(&format!(
         "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = '{}' AND n.nspname = '{}' AND c.relkind = 'v'",
+         WHERE c.relname::text = '{}' AND n.nspname::text = '{}' AND c.relkind = 'v'",
         view_name, schema_name
     ))?
     .ok_or_else(|| TViewError::CatalogError {

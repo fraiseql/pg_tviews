@@ -517,7 +517,7 @@ fn drain_pending_populates() {
     for entry in entries {
         let view_oid = match Spi::get_one::<pg_sys::Oid>(&format!(
             "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
-             WHERE c.relname = '{}' AND n.nspname = '{}'  AND c.relkind = 'v'",
+             WHERE c.relname::text = '{}' AND n.nspname::text = '{}'  AND c.relkind = 'v'",
             entry.view_name, entry.schema_name
         )) {
             Ok(Some(oid)) => oid,
@@ -745,22 +745,8 @@ unsafe fn handle_alter_table(
                 // SET UNLOGGED - data is preserved, no special handling needed
                 return Ok(false); // Let PostgreSQL handle it normally
             } else if cmd_ref.subtype == pg_sys::AlterTableType::AT_SetLogged {
-                // SET LOGGED on UNLOGGED table - table will be truncated by PostgreSQL
-                // We need to refresh it after the ALTER completes
-                // Extract entity name from table name (tv_entity -> entity)
-                let entity_name = table_name.strip_prefix("tv_").unwrap_or(table_name);
-
-                // Store that we need to refresh this entity after the ALTER
-                // Since hooks run before the DDL, we can't refresh immediately
-                // Instead, we'll rely on applications to call recovery functions
-                // For now, just log that this happened
-                warning!(
-                    "ALTER TABLE {} SET LOGGED will truncate data. Call pg_tviews_recover_after_crash('{}') to restore data.",
-                    table_name,
-                    entity_name
-                );
-
-                return Ok(false); // Let PostgreSQL handle the ALTER
+                // SET LOGGED preserves data — no special handling needed
+                return Ok(false); // Let PostgreSQL handle it normally
             }
         }
 
