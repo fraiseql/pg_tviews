@@ -73,7 +73,10 @@ pub fn check_jsonb_delta_available() -> bool {
 pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
     if detect_post_crash_truncation(entity_name)? {
         // Perform full refresh of the TVIEW
-        Spi::run(&format!("SELECT pg_tviews_refresh('{}')", entity_name))?;
+        Spi::run_with_args(
+            "SELECT pg_tviews_refresh($1)",
+            &[unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+        )?;
         Ok(true)
     } else {
         Ok(false)
