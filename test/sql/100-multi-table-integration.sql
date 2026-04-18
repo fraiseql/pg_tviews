@@ -375,7 +375,9 @@ BEGIN
 END $$;
 
 -- Clean up
-DROP TABLE tv_mt_user_summary, tv_mt_product_summary, tv_mt_category_summary;
+SELECT pg_tviews_drop('mt_user_summary');
+SELECT pg_tviews_drop('mt_product_summary');
+SELECT pg_tviews_drop('mt_category_summary');
 
 \echo ''
 \echo '=========================================='

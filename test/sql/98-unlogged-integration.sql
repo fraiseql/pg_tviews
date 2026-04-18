@@ -281,7 +281,8 @@ BEGIN
 END $$;
 
 -- Clean up
-DROP TABLE tv_user_summary, tv_logged_test;
+SELECT pg_tviews_drop('user_summary');
+SELECT pg_tviews_drop('logged_test');
 
 \echo ''
 \echo '=========================================='

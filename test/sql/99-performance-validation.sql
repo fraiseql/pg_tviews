@@ -225,7 +225,9 @@ BEGIN
 END $$;
 
 -- Clean up
-DROP TABLE tv_perf_logged, tv_perf_unlogged, perf_base;
+SELECT pg_tviews_drop('perf_logged');
+SELECT pg_tviews_drop('perf_unlogged');
+DROP TABLE perf_base;
 
 \echo ''
 \echo '=========================================='

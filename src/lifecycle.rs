@@ -1,5 +1,6 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
+use pgrx::pg_sys::Oid;
 use pgrx::PgBuiltInOids;
 use pgrx::PgOid;
 use pgrx::datum::DatumWithOid;
@@ -96,20 +97,32 @@ pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bo
 /// # Returns
 /// `Ok(true)` if crash recovery is needed, `Ok(false)` if table is healthy
 pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<bool> {
-    let tview_table = format!("tv_{entity_name}");
-    let backing_view = format!("v_{entity_name}");
-
-    // Check if TVIEW table exists and is UNLOGGED
-    let is_unlogged: Option<bool> = Spi::get_one_with_args(
-        "SELECT c.relpersistence = 'u'
-         FROM pg_class c
-         JOIN pg_namespace n ON c.relnamespace = n.oid
-         WHERE c.relname = $1 AND n.nspname = current_schema() AND c.relkind = 'r'",
+    // Get the table OID and view OID from pg_tview_meta
+    let (table_oid_opt, view_oid_opt): (Option<Oid>, Option<Oid>) = Spi::get_two_with_args(
+        "SELECT table_oid, view_oid FROM pg_tview_meta WHERE entity = $1",
         &[unsafe {
             DatumWithOid::new(
-                tview_table.as_str(),
+                entity_name,
                 PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
             )
+        }],
+    )?;
+
+    let table_oid = match table_oid_opt {
+        Some(t) => t,
+        None => return Ok(false), // Entity not found
+    };
+
+    let view_oid = match view_oid_opt {
+        Some(v) => v,
+        None => return Ok(false), // Entity not found
+    };
+
+    // Check if TVIEW table is UNLOGGED
+    let is_unlogged: Option<bool> = Spi::get_one_with_args(
+        "SELECT relpersistence = 'u' FROM pg_class WHERE oid = $1 AND relkind = 'r'",
+        &[unsafe {
+            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
         }],
     )?;
 
@@ -118,29 +131,55 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
         return Ok(false);
     }
 
-    // Get table row count by querying the actual table
-    let table_row_count: Option<i64> = Spi::get_one(&format!(
-        "SELECT COUNT(*) FROM {}",
+    // Get schema name for qualified queries
+    let schema: Option<String> = Spi::get_one_with_args(
+        "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
+        &[unsafe {
+            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }],
+    )?;
+
+    let schema = schema.unwrap_or_else(|| "public".to_string());
+
+    // Get table and view names
+    let tview_table: Option<String> = Spi::get_one_with_args(
+        "SELECT relname FROM pg_class WHERE oid = $1",
+        &[unsafe {
+            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }],
+    )?;
+
+    let backing_view: Option<String> = Spi::get_one_with_args(
+        "SELECT relname FROM pg_class WHERE oid = $1",
+        &[unsafe {
+            DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }],
+    )?;
+
+    let tview_table = tview_table.unwrap_or_default();
+    let backing_view = backing_view.unwrap_or_default();
+
+    // Check if table has any rows (O(1) emptiness check)
+    let table_has_rows: Option<bool> = Spi::get_one(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {}.{} LIMIT 1)",
+        quote_identifier(&schema),
         quote_identifier(&tview_table)
     ))?;
 
-    let table_count = table_row_count.unwrap_or(0);
-
     // If table has data, no crash detected
-    if table_count > 0 {
+    if table_has_rows.unwrap_or(false) {
         return Ok(false);
     }
 
-    // Check if backing view has data
-    let view_row_count: Option<i64> = Spi::get_one(&format!(
-        "SELECT COUNT(*) FROM {}",
+    // Check if backing view has any data
+    let view_has_rows: Option<bool> = Spi::get_one(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {}.{} LIMIT 1)",
+        quote_identifier(&schema),
         quote_identifier(&backing_view)
     ))?;
 
-    let view_count = view_row_count.unwrap_or(0);
-
     // If backing view has data but table is empty, crash detected
-    Ok(view_count > 0)
+    Ok(view_has_rows.unwrap_or(false))
 }
 
 /// Export as SQL function for testing

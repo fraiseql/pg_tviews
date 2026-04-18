@@ -628,7 +628,8 @@ fn create_materialized_table(
     } else {
         ""
     };
-    let create_table_sql = format!("CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
+    let create_table_sql =
+        format!("CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
@@ -1359,7 +1360,10 @@ mod tests {
         )
         .unwrap()
         .unwrap_or(false);
-        assert!(is_unlogged, "tv_guc_test1 should be UNLOGGED when GUC is true");
+        assert!(
+            is_unlogged,
+            "tv_guc_test1 should be UNLOGGED when GUC is true"
+        );
 
         // Test with GUC set to false
         Spi::run("SET pg_tviews.unlogged_by_default TO false").unwrap();
@@ -1430,7 +1434,10 @@ mod tests {
         )
         .unwrap()
         .unwrap_or(false);
-        assert!(is_unlogged, "tv_alter_test should be UNLOGGED after ALTER TABLE");
+        assert!(
+            is_unlogged,
+            "tv_alter_test should be UNLOGGED after ALTER TABLE"
+        );
 
         // ALTER TABLE back to LOGGED
         Spi::run("ALTER TABLE tv_alter_test SET LOGGED").unwrap();
@@ -1443,7 +1450,10 @@ mod tests {
         )
         .unwrap()
         .unwrap_or(false);
-        assert!(is_logged_again, "tv_alter_test should be LOGGED again after ALTER TABLE");
+        assert!(
+            is_logged_again,
+            "tv_alter_test should be LOGGED again after ALTER TABLE"
+        );
 
         // Reset GUC
         Spi::run("RESET pg_tviews.unlogged_by_default").unwrap();
@@ -1455,8 +1465,10 @@ mod tests {
         Spi::run("SET search_path TO public").unwrap();
 
         // Create base table with data
-        Spi::run("CREATE TABLE tb_integrity_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_integrity_test VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')").unwrap();
+        Spi::run("CREATE TABLE tb_integrity_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)")
+            .unwrap();
+        Spi::run("INSERT INTO tb_integrity_test VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
+            .unwrap();
 
         // Create TVIEW as LOGGED
         Spi::run("SET pg_tviews.unlogged_by_default TO false").unwrap();
@@ -1480,26 +1492,21 @@ mod tests {
         let after_unlogged_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(after_unlogged_count, 3, "Data should be preserved when converting LOGGED to UNLOGGED");
+        assert_eq!(
+            after_unlogged_count, 3,
+            "Data should be preserved when converting LOGGED to UNLOGGED"
+        );
 
-        // ALTER TABLE from UNLOGGED to LOGGED - table becomes empty (PostgreSQL behavior)
+        // ALTER TABLE from UNLOGGED to LOGGED - data is preserved (PostgreSQL behavior)
         Spi::run("ALTER TABLE tv_integrity_test SET LOGGED").unwrap();
 
         let after_logged_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(after_logged_count, 0, "UNLOGGED to LOGGED conversion empties the table");
-
-        // Restore data by calling recovery function
-        let recovery_result = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('integrity_test')")
-            .unwrap()
-            .unwrap_or(false);
-        assert!(recovery_result, "Recovery should succeed and restore data");
-
-        let after_recovery_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
-            .unwrap()
-            .unwrap_or(0);
-        assert_eq!(after_recovery_count, 3, "Data should be restored after recovery");
+        assert_eq!(
+            after_logged_count, 3,
+            "Data should be preserved when converting UNLOGGED to LOGGED"
+        );
 
         // Reset GUC
         Spi::run("RESET pg_tviews.unlogged_by_default").unwrap();
@@ -1540,17 +1547,26 @@ mod tests {
         let after_truncate_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_crash_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(after_truncate_count, 0, "TVIEW should be empty after truncate");
+        assert_eq!(
+            after_truncate_count, 0,
+            "TVIEW should be empty after truncate"
+        );
 
         // Should now detect crash (table empty but view has data)
         let crash_detected = crate::lifecycle::detect_post_crash_truncation("crash_test").unwrap();
-        assert!(crash_detected, "Should detect crash when UNLOGGED table is empty but view has data");
+        assert!(
+            crash_detected,
+            "Should detect crash when UNLOGGED table is empty but view has data"
+        );
 
         // Verify backing view still has data
         let view_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM v_crash_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(view_count, 2, "Backing view should still have data after table truncate");
+        assert_eq!(
+            view_count, 2,
+            "Backing view should still have data after table truncate"
+        );
     }
 
     /// Test automatic recovery after crash detection.
@@ -1559,7 +1575,8 @@ mod tests {
         Spi::run("SET search_path TO public").unwrap();
 
         // Create base table with data
-        Spi::run("CREATE TABLE tb_recover_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("CREATE TABLE tb_recover_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)")
+            .unwrap();
         Spi::run("INSERT INTO tb_recover_test VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
 
         // Create TVIEW
@@ -1584,24 +1601,38 @@ mod tests {
         let after_truncate_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_recover_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(after_truncate_count, 0, "TVIEW should be empty after truncate");
+        assert_eq!(
+            after_truncate_count, 0,
+            "TVIEW should be empty after truncate"
+        );
 
         // Call auto-recovery function
-        let recovery_performed = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
-            .unwrap()
-            .unwrap_or(false);
-        assert!(recovery_performed, "Recovery should be performed when crash is detected");
+        let recovery_performed =
+            Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
+                .unwrap()
+                .unwrap_or(false);
+        assert!(
+            recovery_performed,
+            "Recovery should be performed when crash is detected"
+        );
 
         // Verify TVIEW has data again after recovery
         let after_recovery_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_recover_test")
             .unwrap()
             .unwrap_or(0);
-        assert_eq!(after_recovery_count, 2, "TVIEW should have 2 rows after recovery");
+        assert_eq!(
+            after_recovery_count, 2,
+            "TVIEW should have 2 rows after recovery"
+        );
 
         // Call recovery again - should return false (no recovery needed)
-        let second_recovery = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
-            .unwrap()
-            .unwrap_or(true);
-        assert!(!second_recovery, "Second recovery call should return false when no crash detected");
+        let second_recovery =
+            Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('recover_test')")
+                .unwrap()
+                .unwrap_or(true);
+        assert!(
+            !second_recovery,
+            "Second recovery call should return false when no crash detected"
+        );
     }
 }
