@@ -540,6 +540,7 @@ mod tests {
             array_match_keys: vec![None],
             distinct_on_keys: vec![],
             is_union: false,
+            cascade_paths: vec![],
         };
 
         assert_eq!(meta.dependency_types.len(), 1);

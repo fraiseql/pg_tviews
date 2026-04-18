@@ -40,6 +40,7 @@ mod metrics;
 mod propagate;
 mod queue;
 mod refresh;
+mod sql_parser;
 mod trigger;
 mod utils;
 

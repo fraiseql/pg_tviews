@@ -306,8 +306,12 @@ pub fn create_tview(
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
 
     // Step 6.5: Extract cascade paths from the SELECT SQL
-    // TODO: Implement cascade path extraction
-    let cascade_paths = vec![]; // Placeholder
+    let cascade_paths = extract_and_resolve_cascade_paths(
+        &final_select_sql,
+        entity_name,
+        &final_schema,
+        &dep_graph.base_tables,
+    )?;
 
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
@@ -341,6 +345,7 @@ pub fn create_tview(
 }
 
 /// Extract and resolve cascade paths from SELECT SQL
+#[expect(dead_code)] // TODO: Integrate with sql_parser module
 fn extract_and_resolve_cascade_paths(
     _select_sql: &str,
     _entity_name: &str,

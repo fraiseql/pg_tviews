@@ -255,7 +255,7 @@ BEGIN
     RAISE NOTICE '✓ ALTER TABLE LOGGED to UNLOGGED preserves data';
 END $$;
 
--- Alter back to LOGGED (table gets truncated)
+-- Alter back to LOGGED (data is preserved by PostgreSQL)
 ALTER TABLE tv_logged_test SET LOGGED;
 
 DO $$
@@ -273,11 +273,11 @@ BEGIN
     END IF;
 
     SELECT COUNT(*) INTO row_count FROM tv_logged_test;
-    IF row_count != 0 THEN
-        RAISE EXCEPTION 'Table should be empty after UNLOGGED->LOGGED, got % rows', row_count;
+    IF row_count != 1 THEN
+        RAISE EXCEPTION 'Data should be preserved after UNLOGGED->LOGGED, expected 1 row, got %', row_count;
     END IF;
 
-    RAISE NOTICE '✓ ALTER TABLE UNLOGGED to LOGGED truncates table as expected';
+    RAISE NOTICE '✓ ALTER TABLE UNLOGGED to LOGGED preserves data';
 END $$;
 
 -- Clean up
