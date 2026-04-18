@@ -169,7 +169,7 @@ fn pg_tviews_show_cascade_path(
                     dt.path || m.entity,
                     dt.entity as depends_on
                 FROM dep_tree dt
-                JOIN pg_tview_meta m ON ('tv_' || dt.entity)::regclass::oid = ANY(m.dependencies)
+                JOIN pg_tview_meta m ON ('fk_' || dt.entity) = ANY(m.fk_columns)
                 WHERE NOT (m.entity = ANY(dt.path))
                   AND dt.depth < 10
             )

@@ -124,7 +124,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -148,7 +148,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -169,7 +169,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
                  FROM pg_tview_meta \
                  ORDER BY entity",
                 None,
@@ -219,7 +219,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,

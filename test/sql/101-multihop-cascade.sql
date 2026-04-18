@@ -20,35 +20,40 @@ CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 -- tv_order JOINs all three, so a change to tb_item must cascade
 -- through tb_group to find the affected order PK.
 
-CREATE TABLE mh_order (
+CREATE TABLE tb_order (
     pk_order BIGINT PRIMARY KEY,
+    id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     customer TEXT NOT NULL
 );
 
-CREATE TABLE mh_group (
+CREATE TABLE tb_group (
     pk_group BIGINT PRIMARY KEY,
-    fk_order BIGINT NOT NULL REFERENCES mh_order,
+    id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    fk_order BIGINT NOT NULL REFERENCES tb_order,
     label TEXT NOT NULL
 );
 
-CREATE TABLE mh_item (
+CREATE TABLE tb_item (
     pk_item BIGINT PRIMARY KEY,
-    fk_group BIGINT NOT NULL REFERENCES mh_group,
+    id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    fk_group BIGINT NOT NULL REFERENCES tb_group,
     product TEXT NOT NULL,
     qty INTEGER NOT NULL DEFAULT 1
 );
 
 -- Seed data: 2 orders, 3 groups, 5 items
-INSERT INTO mh_order VALUES (1, 'Alice'), (2, 'Bob');
-INSERT INTO mh_group VALUES (10, 1, 'Group A1'), (20, 1, 'Group A2'), (30, 2, 'Group B1');
-INSERT INTO mh_item VALUES (100, 10, 'Widget', 2), (101, 10, 'Gadget', 1),
-                           (102, 20, 'Bolt', 5),
-                           (103, 30, 'Nut', 10), (104, 30, 'Washer', 3);
+INSERT INTO tb_order (pk_order, customer) VALUES (1, 'Alice'), (2, 'Bob');
+INSERT INTO tb_group (pk_group, fk_order, label) VALUES (10, 1, 'Group A1'), (20, 1, 'Group A2'), (30, 2, 'Group B1');
+INSERT INTO tb_item (pk_item, fk_group, product, qty) VALUES
+    (100, 10, 'Widget', 2), (101, 10, 'Gadget', 1),
+    (102, 20, 'Bolt', 5),
+    (103, 30, 'Nut', 10), (104, 30, 'Washer', 3);
 
 -- Create a TVIEW on tb_order that JOINs through tb_group to tb_item
 SELECT pg_tviews_create('order', $$
     SELECT
         o.pk_order,
+        o.id,
         jsonb_build_object(
             'customer', o.customer,
             'items', COALESCE(jsonb_agg(
@@ -59,10 +64,10 @@ SELECT pg_tviews_create('order', $$
                 )
             ) FILTER (WHERE i.pk_item IS NOT NULL), '[]'::jsonb)
         ) AS data
-    FROM mh_order o
-    LEFT JOIN mh_group g ON g.fk_order = o.pk_order
-    LEFT JOIN mh_item i ON i.fk_group = g.pk_group
-    GROUP BY o.pk_order, o.customer
+    FROM tb_order o
+    LEFT JOIN tb_group g ON g.fk_order = o.pk_order
+    LEFT JOIN tb_item i ON i.fk_group = g.pk_group
+    GROUP BY o.pk_order, o.id, o.customer
 $$);
 
 -- Verify cascade_paths were stored
@@ -114,7 +119,7 @@ END $$;
 \echo ''
 \echo '### Test 3: UPDATE on leaf table cascades through 2 hops'
 
-UPDATE mh_item SET product = 'SuperWidget', qty = 99 WHERE pk_item = 100;
+UPDATE tb_item SET product = 'SuperWidget', qty = 99 WHERE pk_item = 100;
 
 DO $$
 DECLARE
@@ -142,7 +147,7 @@ END $$;
 \echo ''
 \echo '### Test 4: INSERT on leaf table cascades'
 
-INSERT INTO mh_item VALUES (105, 20, 'Spring', 7);
+INSERT INTO tb_item (pk_item, fk_group, product, qty) VALUES (105, 20, 'Spring', 7);
 
 DO $$
 DECLARE
@@ -163,7 +168,7 @@ END $$;
 \echo ''
 \echo '### Test 5: DELETE on leaf table cascades'
 
-DELETE FROM mh_item WHERE pk_item = 105;
+DELETE FROM tb_item WHERE pk_item = 105;
 
 DO $$
 DECLARE
@@ -184,7 +189,7 @@ END $$;
 \echo ''
 \echo '### Test 6: UPDATE on intermediate table cascades'
 
-UPDATE mh_group SET label = 'Updated Group A1' WHERE pk_group = 10;
+UPDATE tb_group SET label = 'Updated Group A1' WHERE pk_group = 10;
 
 DO $$
 DECLARE
@@ -212,7 +217,7 @@ END $$;
 \echo ''
 \echo '### Test 7: Bulk UPDATE on leaf table'
 
-UPDATE mh_item SET qty = qty + 100 WHERE fk_group = 30;
+UPDATE tb_item SET qty = qty + 100 WHERE fk_group = 30;
 
 DO $$
 DECLARE
@@ -227,7 +232,7 @@ BEGIN
         total_qty := total_qty + (elem->>'qty')::int;
     END LOOP;
 
-    -- Original: Nut=10, Washer=3 → after +100: Nut=110, Washer=103 → total=213
+    -- Original: Nut=10, Washer=3 -> after +100: Nut=110, Washer=103 -> total=213
     IF total_qty != 213 THEN
         RAISE EXCEPTION 'Bulk update: expected total qty 213, got %', total_qty;
     END IF;
@@ -235,14 +240,14 @@ BEGIN
     RAISE NOTICE 'Bulk UPDATE cascaded correctly: total qty = 213';
 END $$;
 
--- Test 8: NULL FK handling — item with NULL fk_group should not crash
+-- Test 8: NULL FK handling -- item with NULL fk_group should not crash
 \echo ''
 \echo '### Test 8: NULL FK handling'
 
 -- Temporarily drop the NOT NULL constraint for this test
-ALTER TABLE mh_item ALTER COLUMN fk_group DROP NOT NULL;
+ALTER TABLE tb_item ALTER COLUMN fk_group DROP NOT NULL;
 
-INSERT INTO mh_item VALUES (200, NULL, 'Orphan', 1);
+INSERT INTO tb_item (pk_item, fk_group, product, qty) VALUES (200, NULL, 'Orphan', 1);
 
 -- Should not crash, the cascade should silently skip this row
 DO $$
@@ -251,8 +256,8 @@ BEGIN
 END $$;
 
 -- Clean up
-DELETE FROM mh_item WHERE pk_item = 200;
-ALTER TABLE mh_item ALTER COLUMN fk_group SET NOT NULL;
+DELETE FROM tb_item WHERE pk_item = 200;
+ALTER TABLE tb_item ALTER COLUMN fk_group SET NOT NULL;
 
 -- Test 9: Verify order 2 was not affected by order 1 changes
 \echo ''
@@ -276,9 +281,9 @@ END $$;
 \echo '### Cleanup'
 
 SELECT pg_tviews_drop('order');
-DROP TABLE mh_item;
-DROP TABLE mh_group;
-DROP TABLE mh_order;
+DROP TABLE tb_item CASCADE;
+DROP TABLE tb_group CASCADE;
+DROP TABLE tb_order CASCADE;
 
 \echo ''
 \echo '=========================================='
