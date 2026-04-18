@@ -124,7 +124,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -148,7 +148,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -169,7 +169,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  ORDER BY entity",
                 None,
@@ -219,7 +219,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths::text[] AS cascade_paths \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
@@ -262,7 +262,7 @@ impl TviewMeta {
         // is_union (BOOLEAN) — true when backing view is a UNION ALL / UNION query
         let is_union: bool = row["is_union"].value::<bool>()?.unwrap_or(false);
 
-        // cascade_paths (JSONB[]) — array of cascade path objects
+        // cascade_paths (TEXT[]) — array of JSON-serialized cascade path objects
         let cascade_paths_raw: Option<Vec<String>> = row["cascade_paths"].value()?;
         let cascade_paths = if let Some(json_strings) = cascade_paths_raw {
             json_strings

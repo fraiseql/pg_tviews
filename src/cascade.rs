@@ -68,7 +68,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                 m.distinct_on_keys, m.is_union, m.cascade_paths \
          FROM pg_tview_meta m \
          WHERE {:?} IN (
-             SELECT (cp->>'source_oid')::oid
+             SELECT (cp::jsonb->>'source_oid')::oid
              FROM unnest(m.cascade_paths) AS cp
          )",
         base_table_oid.to_u32()

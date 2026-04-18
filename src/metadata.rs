@@ -39,7 +39,7 @@ extension_sql!(
         view_oid OID NOT NULL,
         table_oid OID NOT NULL,
         definition TEXT NOT NULL,
-        cascade_paths JSONB[] NOT NULL DEFAULT '{}',
+        cascade_paths TEXT[] NOT NULL DEFAULT '{}',
         fk_columns TEXT[] NOT NULL DEFAULT '{}',
         uuid_fk_columns TEXT[] NOT NULL DEFAULT '{}',
         dependency_types TEXT[] NOT NULL DEFAULT '{}',

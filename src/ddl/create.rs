@@ -957,18 +957,22 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize cascade paths as ARRAY[...]::jsonb[]
-    let cascade_paths_sql = if cascade_paths.is_empty() {
-        "ARRAY[]::jsonb[]".to_string()
+    // Serialize cascade paths as a TEXT[] array of JSON strings
+    let cascade_paths_literal = if cascade_paths.is_empty() {
+        "'{}'".to_string()
     } else {
         let elements: Vec<String> = cascade_paths
             .iter()
             .map(|path| {
                 let json = serde_json::to_string(path).expect("Failed to serialize cascade path");
-                format!("'{}'::jsonb", json.replace('\'', "''"))
+                // Double-quote and escape for PostgreSQL text array literal
+                format!(
+                    "\"{}\"",
+                    json.replace('\\', "\\\\").replace('"', "\\\"")
+                )
             })
             .collect();
-        format!("ARRAY[{}]", elements.join(","))
+        format!("'{{{}}}'", elements.join(","))
     };
 
     // Get OIDs for the created objects (schema-qualified, parameterized to prevent injection)
@@ -1038,7 +1042,7 @@ fn register_metadata(
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
-        cascade_paths_sql,
+        cascade_paths_literal,
         fk_columns,
         uuid_fk_columns,
         dep_types,
