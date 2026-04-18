@@ -108,21 +108,38 @@ pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
 /// - Reusable across different modules
 use pgrx::pg_sys::Oid;
 
+/// Result of extracting an integer column from a tuple.
+///
+/// Parallels `KeyExtraction` in `trigger.rs` but for integer (PK/FK) columns.
+pub enum IntExtraction {
+    /// Column exists and has a non-NULL integer value.
+    Value(i64),
+    /// Column exists but the value is NULL.
+    Null,
+    /// Column not found or type is not integer (i32/i64).
+    Missing,
+}
+
 /// Extract an integer column value as i64, supporting both INTEGER and BIGINT columns.
 ///
 /// Tries BIGINT (i64) first, then falls back to INTEGER (i32) with promotion.
 /// This allows triggers to work regardless of whether the PK/FK column is
 /// `INTEGER`/`SERIAL` or `BIGINT`/`BIGSERIAL`.
-pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) -> Option<i64> {
-    // Try BIGINT (i64) first — most common for pk_*/fk_* columns
-    if let Ok(Some(v)) = tuple.get_by_name::<i64>(col) {
-        return Some(v);
+///
+/// Returns `IntExtraction::Null` when the column exists but is NULL (normal for
+/// optional FKs), and `IntExtraction::Missing` when the column is absent entirely
+/// (likely a misconfiguration).
+pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) -> IntExtraction {
+    match tuple.get_by_name::<i64>(col) {
+        Ok(Some(v)) => return IntExtraction::Value(v),
+        Ok(None) => return IntExtraction::Null,
+        Err(_) => {} // not i64, try i32
     }
-    // Fall back to INTEGER (i32) and promote
-    if let Ok(Some(v)) = tuple.get_by_name::<i32>(col) {
-        return Some(i64::from(v));
+    match tuple.get_by_name::<i32>(col) {
+        Ok(Some(v)) => IntExtraction::Value(i64::from(v)),
+        Ok(None) => IntExtraction::Null,
+        Err(_) => IntExtraction::Missing,
     }
-    None
 }
 
 /// Extracts a `pk_*` integer from `NEW` or `OLD` tuple by convention.
@@ -152,13 +169,21 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
 
     let pk_column = format!("pk_{entity}");
 
-    tuple_get_i64(&tuple, &pk_column).ok_or_else(|| {
-        crate::TViewError::SpiError {
+    match tuple_get_i64(&tuple, &pk_column) {
+        IntExtraction::Value(v) => Ok(v),
+        IntExtraction::Null => Err(crate::TViewError::SpiError {
             query: pk_column.clone(),
-            error: format!("{pk_column} must not be null"),
+            error: format!("{pk_column} must not be NULL"),
         }
-        .into()
-    })
+        .into()),
+        IntExtraction::Missing => Err(crate::TViewError::SpiError {
+            query: pk_column.clone(),
+            error: format!(
+                "{pk_column} column not found on tuple (expected INTEGER or BIGINT)"
+            ),
+        }
+        .into()),
+    }
 }
 
 /// Look up the view name from an OID

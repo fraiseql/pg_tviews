@@ -1,6 +1,6 @@
 use crate::catalog::entity_for_table;
 use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
-use crate::utils::{quote_identifier, tuple_get_i64};
+use crate::utils::{quote_identifier, tuple_get_i64, IntExtraction};
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
 ///
@@ -173,12 +173,15 @@ fn enqueue_indirect_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         // Convention: child row has fk_{parent_entity} column
         let fk_col = format!("fk_{parent_entity}");
         match tuple_get_i64(&tuple, &fk_col) {
-            Some(parent_pk) => {
+            IntExtraction::Value(parent_pk) => {
                 enqueue_refresh(&parent_entity, parent_pk);
             }
-            None => {
+            IntExtraction::Null => {
+                // Optional FK is NULL — normal for nullable relationships, skip silently
+            }
+            IntExtraction::Missing => {
                 warning!(
-                    "FK column {} is NULL or missing, skipping refresh for {}",
+                    "FK column {} not found on tuple, skipping refresh for {}",
                     fk_col,
                     parent_entity
                 );
