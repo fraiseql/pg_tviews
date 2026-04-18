@@ -12,7 +12,7 @@ FROM pg_tviews_debug_queue()
 GROUP BY current_setting('application_name'), txid_current();
 
 -- Historical performance metrics table
-CREATE TABLE IF NOT EXISTS pg_tviews_metrics (
+CREATE UNLOGGED TABLE IF NOT EXISTS pg_tviews_metrics (
     metric_id BIGSERIAL PRIMARY KEY,
     recorded_at TIMESTAMPTZ DEFAULT now(),
     transaction_id BIGINT,

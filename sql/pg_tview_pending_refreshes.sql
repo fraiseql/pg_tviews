@@ -2,7 +2,7 @@
 -- Persists refresh queues for prepared transactions
 
 -- Table to persist queues for prepared transactions
-CREATE TABLE pg_tview_pending_refreshes (
+CREATE UNLOGGED TABLE pg_tview_pending_refreshes (
     gid TEXT PRIMARY KEY,  -- Global transaction ID
     refresh_queue JSONB NOT NULL,  -- Serialized queue: [{"entity": "user", "pk": 1}, ...]
     prepared_at TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -2,7 +2,7 @@
 -- Distributes refresh tasks across workers
 
 -- Table for parallel refresh work distribution
-CREATE TABLE pg_tview_work_queue (
+CREATE UNLOGGED TABLE pg_tview_work_queue (
     batch_id BIGSERIAL PRIMARY KEY,
     refresh_keys JSONB NOT NULL,  -- Array of RefreshKey: [{"entity": "user", "pk": 1}, ...]
     status TEXT NOT NULL DEFAULT 'pending',  -- pending, processing, completed, failed

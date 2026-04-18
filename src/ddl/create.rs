@@ -623,7 +623,7 @@ fn create_materialized_table(
 
     let columns_sql = columns.join(",\n    ");
 
-    let create_table_sql = format!("CREATE TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
+    let create_table_sql = format!("CREATE UNLOGGED TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
@@ -1324,5 +1324,33 @@ mod tests {
         .unwrap()
         .unwrap_or(false);
         assert!(alice_exists, "Alice should be in the TVIEW");
+    }
+
+    /// Test that TVIEW tables are created as UNLOGGED tables.
+    #[pg_test]
+    fn test_tview_table_is_unlogged() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table
+        Spi::run("CREATE TABLE tb_unlogged_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+
+        // Create TVIEW using pg_tviews_create function
+        Spi::run(
+            "SELECT pg_tviews_create('unlogged_test', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_unlogged_test
+        $$)",
+        )
+        .unwrap();
+
+        // Check that the TVIEW table exists and is UNLOGGED
+        let is_unlogged = Spi::get_one::<bool>(
+            "SELECT c.relpersistence = 'u' FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_unlogged_test' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
+        assert!(is_unlogged, "tv_unlogged_test should be an UNLOGGED table");
     }
 }
