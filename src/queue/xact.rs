@@ -1,5 +1,8 @@
-use super::ops::{clear_queue, take_queue_snapshot};
+use super::ops::{
+    clear_queue, is_crash_recovery_checked, mark_crash_recovery_checked, take_queue_snapshot,
+};
 use crate::TViewResult;
+use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::collections::HashSet;
@@ -113,6 +116,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
         }
         XactEvent::Abort => {
             clear_queue();
+            super::ops::clear_crash_recovery_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }
@@ -266,6 +270,20 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 
             // Process each entity group
             for (entity, entity_keys) in keys_by_entity {
+                // Check for post-crash truncation and auto-refresh if needed
+                if !is_crash_recovery_checked(&entity) {
+                    mark_crash_recovery_checked(&entity);
+                    if crate::lifecycle::detect_post_crash_truncation(&entity)? {
+                        // TVIEW is empty but backing view has data - perform full refresh first
+                        Spi::run_with_args("SELECT pg_tviews_refresh($1)", &[unsafe {
+                            DatumWithOid::new(
+                                &entity,
+                                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                            )
+                        }])?;
+                    }
+                }
+
                 if entity_keys.len() == 1 {
                     // Single key: use existing individual refresh
                     let key = &entity_keys[0];

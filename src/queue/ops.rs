@@ -1,5 +1,5 @@
 use super::key::RefreshKey;
-use super::state::TX_REFRESH_QUEUE;
+use super::state::{TX_CRASH_RECOVERY_CHECKED, TX_REFRESH_QUEUE};
 use std::collections::HashSet;
 
 /// Check queue size against a limit and raise ERROR if exceeded.
@@ -91,6 +91,25 @@ pub fn is_queue_empty() -> bool {
 pub fn clear_queue() {
     TX_REFRESH_QUEUE.with(|q| {
         q.borrow_mut().clear();
+    });
+}
+
+/// Check if crash recovery has already been checked for this entity in this transaction
+pub fn is_crash_recovery_checked(entity: &str) -> bool {
+    TX_CRASH_RECOVERY_CHECKED.with(|checked| checked.borrow().contains(entity))
+}
+
+/// Mark that crash recovery has been checked for this entity in this transaction
+pub fn mark_crash_recovery_checked(entity: &str) {
+    TX_CRASH_RECOVERY_CHECKED.with(|checked| {
+        checked.borrow_mut().insert(entity.to_string());
+    });
+}
+
+/// Clear the crash recovery check cache (used on transaction abort)
+pub fn clear_crash_recovery_cache() {
+    TX_CRASH_RECOVERY_CHECKED.with(|checked| {
+        checked.borrow_mut().clear();
     });
 }
 

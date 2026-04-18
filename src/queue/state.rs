@@ -11,6 +11,12 @@ thread_local! {
     /// - Cleared on transaction abort
     pub static TX_REFRESH_QUEUE: RefCell<HashSet<RefreshKey>> = RefCell::new(HashSet::new());
 
+    /// Transaction-local set of entities that have been checked for post-crash truncation
+    ///
+    /// - Prevents duplicate EXISTS queries per entity per transaction
+    /// - Ensures auto-refresh runs at most once per entity per transaction
+    pub static TX_CRASH_RECOVERY_CHECKED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+
 }
 
 /// Replace the current queue with a new one (used for savepoint rollback)
