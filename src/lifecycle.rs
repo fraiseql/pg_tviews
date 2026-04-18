@@ -1,9 +1,9 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
-use pgrx::pg_sys::Oid;
 use pgrx::PgBuiltInOids;
 use pgrx::PgOid;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -101,10 +101,7 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
     let (table_oid_opt, view_oid_opt): (Option<Oid>, Option<Oid>) = Spi::get_two_with_args(
         "SELECT table_oid, view_oid FROM pg_tview_meta WHERE entity = $1",
         &[unsafe {
-            DatumWithOid::new(
-                entity_name,
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
+            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }],
     )?;
 
@@ -121,9 +118,7 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
     // Check if TVIEW table is UNLOGGED
     let is_unlogged: Option<bool> = Spi::get_one_with_args(
         "SELECT relpersistence = 'u' FROM pg_class WHERE oid = $1 AND relkind = 'r'",
-        &[unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }],
+        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
     // If table doesn't exist or isn't UNLOGGED, no crash detection needed
@@ -134,9 +129,7 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
     // Get schema name for qualified queries
     let schema: Option<String> = Spi::get_one_with_args(
         "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
-        &[unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }],
+        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
     let schema = schema.unwrap_or_else(|| "public".to_string());
@@ -144,16 +137,12 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
     // Get table and view names
     let tview_table: Option<String> = Spi::get_one_with_args(
         "SELECT relname FROM pg_class WHERE oid = $1",
-        &[unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }],
+        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
     let backing_view: Option<String> = Spi::get_one_with_args(
         "SELECT relname FROM pg_class WHERE oid = $1",
-        &[unsafe {
-            DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }],
+        &[unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
     let tview_table = tview_table.unwrap_or_default();

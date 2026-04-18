@@ -275,12 +275,15 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     mark_crash_recovery_checked(&entity);
                     if crate::lifecycle::detect_post_crash_truncation(&entity)? {
                         // TVIEW is empty but backing view has data - perform full refresh first
-                        Spi::run_with_args("SELECT pg_tviews_refresh($1)", &[unsafe {
-                            DatumWithOid::new(
-                                &entity,
-                                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                            )
-                        }])?;
+                        Spi::run_with_args(
+                            "SELECT pg_tviews_refresh($1)",
+                            &[unsafe {
+                                DatumWithOid::new(
+                                    &entity,
+                                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                                )
+                            }],
+                        )?;
                     }
                 }
 

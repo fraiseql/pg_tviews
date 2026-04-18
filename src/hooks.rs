@@ -754,8 +754,11 @@ unsafe fn handle_alter_table(
                 // Since hooks run before the DDL, we can't refresh immediately
                 // Instead, we'll rely on applications to call recovery functions
                 // For now, just log that this happened
-                warning!("ALTER TABLE {} SET LOGGED will truncate data. Call pg_tviews_recover_after_crash('{}') to restore data.",
-                        table_name, entity_name);
+                warning!(
+                    "ALTER TABLE {} SET LOGGED will truncate data. Call pg_tviews_recover_after_crash('{}') to restore data.",
+                    table_name,
+                    entity_name
+                );
 
                 return Ok(false); // Let PostgreSQL handle the ALTER
             }
