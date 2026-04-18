@@ -178,9 +178,7 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
         .into()),
         IntExtraction::Missing => Err(crate::TViewError::SpiError {
             query: pk_column.clone(),
-            error: format!(
-                "{pk_column} column not found on tuple (expected INTEGER or BIGINT)"
-            ),
+            error: format!("{pk_column} column not found on tuple (expected INTEGER or BIGINT)"),
         }
         .into()),
     }

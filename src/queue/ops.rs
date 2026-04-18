@@ -113,6 +113,55 @@ pub fn clear_crash_recovery_cache() {
     });
 }
 
+/// Batch lookup of carry column values via SPI.
+///
+/// Executes: `SELECT {carry_col} FROM {table_name} WHERE {lookup_col} = ANY($1)`
+///
+/// Used for cascade path traversal to find parent IDs that need refreshing.
+/// Table and column names come from `CascadePath` data validated at registration time.
+pub fn spi_batch_lookup(
+    table_name: &str,
+    lookup_col: &str,
+    carry_col: &str,
+    ids: &[i64],
+) -> crate::TViewResult<Vec<i64>> {
+    use crate::utils::quote_identifier;
+    use pgrx::prelude::*;
+
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let qi_table = quote_identifier(table_name);
+    let qi_lookup = quote_identifier(lookup_col);
+    let qi_carry = quote_identifier(carry_col);
+
+    let query = format!("SELECT {qi_carry} FROM {qi_table} WHERE {qi_lookup} = ANY($1)");
+
+    let pks_array = ids.to_vec();
+    let args = vec![unsafe {
+        pgrx::datum::DatumWithOid::new(
+            pks_array,
+            PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
+        )
+    }];
+
+    Spi::connect(|client| {
+        let rows = client.select(&query, None, &args)?;
+        let mut result = Vec::new();
+        for row in rows {
+            if let Some(value) = row[1].value::<i64>()? {
+                result.push(value);
+            }
+        }
+        Ok(result)
+    })
+    .map_err(|e: pgrx::spi::Error| crate::TViewError::SpiError {
+        query,
+        error: format!("SPI batch lookup failed: {e}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

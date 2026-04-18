@@ -1,7 +1,7 @@
+use crate::cascade_path;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{TViewSchema, analyzer::analyze_dependencies, inference::infer_schema};
 use crate::utils::quote_identifier;
-use crate::cascade_path;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -344,26 +344,128 @@ pub fn create_tview(
     Ok(())
 }
 
-/// Extract and resolve cascade paths from SELECT SQL
-#[expect(dead_code)] // TODO: Integrate with sql_parser module
+/// Extract cascade paths from the view's SELECT SQL and resolve table names to OIDs.
+///
+/// Parses the JOIN tree to find all non-root tables, computes the hop chain
+/// from each back to the root (= the TVIEW's own base table), then resolves
+/// table names to OIDs and validates that all referenced columns exist.
 fn extract_and_resolve_cascade_paths(
-    _select_sql: &str,
-    _entity_name: &str,
+    select_sql: &str,
+    entity_name: &str,
     _schema: &TViewSchema,
-    _base_table_oids: &[pg_sys::Oid],
+    base_table_oids: &[pg_sys::Oid],
 ) -> TViewResult<Vec<cascade_path::CascadePath>> {
-    // TODO: Implement cascade path extraction
-    Ok(vec![]) // Placeholder
+    let root_table = format!("tb_{entity_name}");
+
+    // Step 1: Parse JOIN tree to extract unresolved paths
+    let join_paths = match crate::sql_parser::extract_join_paths(select_sql, &root_table) {
+        Ok(paths) => paths,
+        Err(e) => {
+            notice!("Could not parse JOIN tree for cascade paths: {e}");
+            return Ok(vec![]);
+        }
+    };
+
+    if join_paths.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Step 2: Build OID lookup map for base tables: relname → OID
+    let oid_map = build_oid_name_map(base_table_oids)?;
+
+    // Step 3: Resolve each join path to a CascadePath with OIDs
+    let mut cascade_paths = Vec::new();
+    for jp in &join_paths {
+        match resolve_join_path(jp, entity_name, &oid_map) {
+            Ok(cp) => cascade_paths.push(cp),
+            Err(e) => {
+                notice!(
+                    "Cascade path from '{}' unresolvable: {e} — changes to this table will not trigger incremental refresh of '{entity_name}'",
+                    jp.source_table
+                );
+            }
+        }
+    }
+
+    Ok(cascade_paths)
 }
 
-/// Resolve table names in cascade path to OIDs and validate columns
-#[allow(dead_code)] // TODO: Implement OID resolution
-fn resolve_cascade_path_oids(
-    _path: &cascade_path::CascadePath,
-    _base_table_oids: &[pg_sys::Oid],
+/// Build a map from table name → OID for a set of base table OIDs.
+fn build_oid_name_map(
+    oids: &[pg_sys::Oid],
+) -> TViewResult<std::collections::HashMap<String, pg_sys::Oid>> {
+    use std::collections::HashMap;
+
+    if oids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let oid_list = oids
+        .iter()
+        .map(|o| o.to_u32().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!("SELECT oid, relname::text FROM pg_class WHERE oid IN ({oid_list})");
+
+    let mut map = HashMap::new();
+    Spi::connect(|client| {
+        let rows = client.select(&query, None, &[])?;
+        for row in rows {
+            let oid: pg_sys::Oid = row["oid"].value()?.unwrap_or(pg_sys::Oid::INVALID);
+            let name: String = row["relname"].value()?.unwrap_or_default();
+            map.insert(name, oid);
+        }
+        Ok::<_, spi::Error>(())
+    })?;
+
+    Ok(map)
+}
+
+/// Resolve a `JoinPath` (table names only) to a `CascadePath` (with OIDs).
+fn resolve_join_path(
+    jp: &crate::sql_parser::JoinPath,
+    entity_name: &str,
+    oid_map: &std::collections::HashMap<String, pg_sys::Oid>,
 ) -> TViewResult<cascade_path::CascadePath> {
-    // TODO: Implement cascade path OID resolution
-    Ok(cascade_path::CascadePath { hops: vec![] }) // Placeholder
+    let source_oid = *oid_map
+        .get(&jp.source_table)
+        .ok_or_else(|| TViewError::CatalogError {
+            operation: "resolve cascade path".to_string(),
+            pg_error: format!(
+                "Table '{}' not found in base table dependencies",
+                jp.source_table
+            ),
+        })?;
+
+    let mut hops = Vec::with_capacity(jp.steps.len());
+    for step in &jp.steps {
+        let table_oid = *oid_map
+            .get(&step.table_name)
+            .ok_or_else(|| TViewError::CatalogError {
+                operation: "resolve cascade path hop".to_string(),
+                pg_error: format!(
+                    "Intermediate table '{}' not found in base table dependencies",
+                    step.table_name
+                ),
+            })?;
+
+        hops.push(cascade_path::CascadeHop {
+            table_oid,
+            table_name: step.table_name.clone(),
+            lookup_col: step.lookup_col.clone(),
+            carry_col: step.carry_col.clone(),
+        });
+    }
+
+    Ok(cascade_path::CascadePath {
+        source_oid,
+        source_table: jp.source_table.clone(),
+        entity_name: entity_name.to_string(),
+        initial_col: jp.initial_col.clone(),
+        hops,
+        unresolvable: false,
+    })
 }
 
 /// Check if a TVIEW already exists
@@ -855,18 +957,19 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize cascade paths as JSONB array
-    let cascade_paths_json: Vec<String> = cascade_paths
-        .iter()
-        .map(|path| {
-            serde_json::to_string(path).expect("Failed to serialize cascade path")
-        })
-        .collect();
-    let cascade_paths_str = cascade_paths_json
-        .iter()
-        .map(|json| format!("'{}'", json.replace("'", "''"))) // Escape single quotes for SQL
-        .collect::<Vec<_>>()
-        .join(",");
+    // Serialize cascade paths as ARRAY[...]::jsonb[]
+    let cascade_paths_sql = if cascade_paths.is_empty() {
+        "ARRAY[]::jsonb[]".to_string()
+    } else {
+        let elements: Vec<String> = cascade_paths
+            .iter()
+            .map(|path| {
+                let json = serde_json::to_string(path).expect("Failed to serialize cascade path");
+                format!("'{}'::jsonb", json.replace('\'', "''"))
+            })
+            .collect();
+        format!("ARRAY[{}]", elements.join(","))
+    };
 
     // Get OIDs for the created objects (schema-qualified, parameterized to prevent injection)
     let view_oid_args = vec![
@@ -931,11 +1034,11 @@ fn register_metadata(
             array_match_keys,
             distinct_on_keys,
             is_union
-        ) VALUES ($1, {}, {}, $2, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
-        cascade_paths_str,
+        cascade_paths_sql,
         fk_columns,
         uuid_fk_columns,
         dep_types,

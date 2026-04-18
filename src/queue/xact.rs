@@ -118,6 +118,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
         XactEvent::Abort => {
             clear_queue();
             super::ops::clear_crash_recovery_cache();
+            super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }

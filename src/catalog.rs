@@ -1,7 +1,7 @@
+use crate::cascade_path::CascadePath;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
-use crate::cascade_path::CascadePath;
 /// Type of dependency relationship for `jsonb_delta` optimization
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyType {
@@ -87,7 +87,6 @@ pub struct TviewMeta {
     ///
     /// Each path represents a sequence of hops from a source table to this TVIEW,
     /// enabling indirect dependency tracking for multi-level cascades.
-    #[allow(dead_code)] // Reason: Will be used in future cascade implementation phases
     pub cascade_paths: Vec<CascadePath>,
 }
 
@@ -393,41 +392,6 @@ impl Default for TviewMeta {
             cascade_paths: vec![],
         }
     }
-}
-
-/// Find all TVIEW entities whose cascade paths include the given base table OID.
-///
-/// This is the reverse lookup for indirect dependencies: when `tb_comment` changes,
-/// this function finds that entity `"post"` depends on it (because `tb_comment`'s OID
-/// appears as a source_oid in one of `tv_post`'s `cascade_paths`).
-///
-/// Returns entity names (e.g. `["post"]`) for all TVIEWs that depend on this table.
-pub fn parent_entities_for_base_table(table_oid: Oid) -> crate::TViewResult<Vec<String>> {
-    let result: Result<Vec<String>, spi::Error> = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
-        let rows = client.select(
-            "SELECT entity FROM pg_tview_meta
-             WHERE $1 IN (
-                 SELECT (cp->>'source_oid')::oid
-                 FROM unnest(cascade_paths) AS cp
-             )",
-            None,
-            &args,
-        )?;
-        let mut entities = Vec::new();
-        for row in rows {
-            if let Some(entity) = row["entity"].value::<String>()? {
-                entities.push(entity);
-            }
-        }
-        Ok(entities)
-    });
-    result.map_err(|e| crate::TViewError::CatalogError {
-        operation: "parent_entities_for_base_table".to_string(),
-        pg_error: format!("{e:?}"),
-    })
 }
 
 /// Map a base table OID to its entity name

@@ -2,6 +2,8 @@ use pgrx::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
+use crate::cascade_path::CascadePath;
+
 /// Cached information for a table managed by pg_tviews
 #[derive(Clone, Debug)]
 pub struct CachedEntityInfo {
@@ -18,6 +20,13 @@ static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>>
 /// Stores Option<CachedEntityInfo> to cache negative lookups (None results)
 static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, Option<CachedEntityInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// Transaction-scoped cache for table OID → cascade paths.
+// Cleared on transaction end to avoid stale data.
+thread_local! {
+    static CASCADE_PATH_CACHE: std::cell::RefCell<HashMap<pg_sys::Oid, Vec<CascadePath>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
 
 /// Cache operations for `EntityDepGraph`
 pub mod graph_cache {
@@ -154,6 +163,52 @@ pub mod table_cache {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         cache.clear();
+    }
+}
+
+/// Cache operations for cascade paths (transaction-scoped)
+pub mod cascade_cache {
+    use super::*;
+
+    /// Get cached cascade paths for a source table OID.
+    /// Returns all `CascadePath` entries across all entities where `source_oid` matches.
+    pub fn cascade_paths_for_table(table_oid: pg_sys::Oid) -> crate::TViewResult<Vec<CascadePath>> {
+        CASCADE_PATH_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+
+            if let Some(paths) = cache.get(&table_oid) {
+                return Ok(paths.clone());
+            }
+
+            let paths = load_cascade_paths_for_table(table_oid)?;
+            cache.insert(table_oid, paths.clone());
+            Ok(paths)
+        })
+    }
+
+    /// Load cascade paths matching a source table OID from pg_tview_meta
+    fn load_cascade_paths_for_table(
+        table_oid: pg_sys::Oid,
+    ) -> crate::TViewResult<Vec<CascadePath>> {
+        let meta_list = crate::catalog::TviewMeta::load_all()?;
+
+        let mut relevant_paths = Vec::new();
+        for meta in meta_list {
+            for path in meta.cascade_paths {
+                if path.source_oid == table_oid {
+                    relevant_paths.push(path);
+                }
+            }
+        }
+
+        Ok(relevant_paths)
+    }
+
+    /// Clear the cascade path cache (called on transaction end)
+    pub fn clear_cache() {
+        CASCADE_PATH_CACHE.with(|cache| {
+            cache.borrow_mut().clear();
+        });
     }
 }
 
