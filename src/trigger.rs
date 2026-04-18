@@ -26,6 +26,27 @@ use pgrx::prelude::*;
 /// - Queue processing deferred to commit time
 use pgrx::spi;
 
+/// Extract DISTINCT ON key value from tuple, trying multiple types
+/// Returns Some(key_value) if successful, None if all attempts fail (type mismatch or NULL)
+fn extract_distinct_on_key<'a>(
+    tuple: &PgHeapTuple<'a, AllocatedByPostgres>,
+    key_col: &str,
+) -> Option<String> {
+    // Try String first
+    if let Ok(Some(val)) = tuple.get_by_name::<String>(key_col) {
+        return Some(val);
+    }
+    // Try i64 (BIGINT)
+    if let Ok(Some(val)) = tuple.get_by_name::<i64>(key_col) {
+        return Some(val.to_string());
+    }
+    // Try i32 (INTEGER)
+    if let Ok(Some(val)) = tuple.get_by_name::<i32>(key_col) {
+        return Some(val.to_string());
+    }
+    None
+}
+
 /// Trigger handler function for TVIEW cascades
 /// This is called by triggers installed on base tables when rows change
 #[pg_trigger]
@@ -56,17 +77,15 @@ fn pg_tview_trigger_handler<'a>(
                         return Ok(None);
                     }
                 };
-                match tuple.get_by_name::<String>(key_col) {
-                    Ok(Some(key_val)) => {
+                match extract_distinct_on_key(&tuple, key_col) {
+                    Some(key_val) => {
                         enqueue_refresh_dedup(entity, &key_val);
                     }
-                    Ok(None) => {
-                        warning!("DISTINCT ON key '{key_col}' is NULL for entity '{entity}'");
-                    }
-                    Err(e) => {
+                    None => {
                         warning!(
-                            "Failed to extract DISTINCT ON key '{key_col}' for '{entity}': {e:?}"
+                            "Falling back to full refresh for DISTINCT ON key '{key_col}' in '{entity}'"
                         );
+                        enqueue_refresh(entity, 0);
                     }
                 }
             } else {
