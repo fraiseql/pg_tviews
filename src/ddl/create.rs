@@ -623,7 +623,12 @@ fn create_materialized_table(
 
     let columns_sql = columns.join(",\n    ");
 
-    let create_table_sql = format!("CREATE UNLOGGED TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
+    let unlogged_keyword = if crate::config::unlogged_by_default() {
+        "UNLOGGED "
+    } else {
+        ""
+    };
+    let create_table_sql = format!("CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
@@ -1326,32 +1331,178 @@ mod tests {
         assert!(alice_exists, "Alice should be in the TVIEW");
     }
 
-    /// Test that TVIEW tables are created as UNLOGGED tables.
+    /// Test that TVIEW tables respect the unlogged_by_default GUC.
     #[pg_test]
-    fn test_tview_table_is_unlogged() {
+    fn test_tview_unlogged_guc_control() {
         Spi::run("SET search_path TO public").unwrap();
 
-        // Create base table
-        Spi::run("CREATE TABLE tb_unlogged_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        // Test with GUC set to true (default)
+        Spi::run("SET pg_tviews.unlogged_by_default TO true").unwrap();
 
-        // Create TVIEW using pg_tviews_create function
+        // Create base table
+        Spi::run("CREATE TABLE tb_guc_test1 (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+
+        // Create TVIEW
         Spi::run(
-            "SELECT pg_tviews_create('unlogged_test', $$
+            "SELECT pg_tviews_create('guc_test1', $$
             SELECT pk_test, jsonb_build_object('name', name) AS data
-            FROM tb_unlogged_test
+            FROM tb_guc_test1
         $$)",
         )
         .unwrap();
 
-        // Check that the TVIEW table exists and is UNLOGGED
+        // Check that the TVIEW table is UNLOGGED
         let is_unlogged = Spi::get_one::<bool>(
             "SELECT c.relpersistence = 'u' FROM pg_class c \
              JOIN pg_namespace n ON c.relnamespace = n.oid \
-             WHERE c.relname = 'tv_unlogged_test' AND n.nspname = 'public'",
+             WHERE c.relname = 'tv_guc_test1' AND n.nspname = 'public'",
         )
         .unwrap()
         .unwrap_or(false);
-        assert!(is_unlogged, "tv_unlogged_test should be an UNLOGGED table");
+        assert!(is_unlogged, "tv_guc_test1 should be UNLOGGED when GUC is true");
+
+        // Test with GUC set to false
+        Spi::run("SET pg_tviews.unlogged_by_default TO false").unwrap();
+
+        // Create another base table
+        Spi::run("CREATE TABLE tb_guc_test2 (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+
+        // Create another TVIEW
+        Spi::run(
+            "SELECT pg_tviews_create('guc_test2', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_guc_test2
+        $$)",
+        )
+        .unwrap();
+
+        // Check that this TVIEW table is LOGGED
+        let is_logged = Spi::get_one::<bool>(
+            "SELECT c.relpersistence = 'p' FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_guc_test2' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
+        assert!(is_logged, "tv_guc_test2 should be LOGGED when GUC is false");
+
+        // Reset GUC to default
+        Spi::run("RESET pg_tviews.unlogged_by_default").unwrap();
+    }
+
+    /// Test ALTER TABLE SET UNLOGGED/LOGGED on TVIEWs.
+    #[pg_test]
+    fn test_alter_tview_unlogged_logged() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table with data
+        Spi::run("CREATE TABLE tb_alter_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_alter_test VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+
+        // Create TVIEW as LOGGED first
+        Spi::run("SET pg_tviews.unlogged_by_default TO false").unwrap();
+        Spi::run(
+            "SELECT pg_tviews_create('alter_test', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_alter_test
+        $$)",
+        )
+        .unwrap();
+
+        // Verify TVIEW is initially LOGGED
+        let is_logged = Spi::get_one::<bool>(
+            "SELECT c.relpersistence = 'p' FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_alter_test' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
+        assert!(is_logged, "tv_alter_test should initially be LOGGED");
+
+        // ALTER TABLE to UNLOGGED
+        Spi::run("ALTER TABLE tv_alter_test SET UNLOGGED").unwrap();
+
+        // Verify it's now UNLOGGED
+        let is_unlogged = Spi::get_one::<bool>(
+            "SELECT c.relpersistence = 'u' FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_alter_test' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
+        assert!(is_unlogged, "tv_alter_test should be UNLOGGED after ALTER TABLE");
+
+        // ALTER TABLE back to LOGGED
+        Spi::run("ALTER TABLE tv_alter_test SET LOGGED").unwrap();
+
+        // Verify it's now LOGGED again
+        let is_logged_again = Spi::get_one::<bool>(
+            "SELECT c.relpersistence = 'p' FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_alter_test' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
+        assert!(is_logged_again, "tv_alter_test should be LOGGED again after ALTER TABLE");
+
+        // Reset GUC
+        Spi::run("RESET pg_tviews.unlogged_by_default").unwrap();
+    }
+
+    /// Test data integrity during ALTER TABLE UNLOGGED/LOGGED operations.
+    #[pg_test]
+    fn test_alter_tview_data_integrity() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table with data
+        Spi::run("CREATE TABLE tb_integrity_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_integrity_test VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')").unwrap();
+
+        // Create TVIEW as LOGGED
+        Spi::run("SET pg_tviews.unlogged_by_default TO false").unwrap();
+        Spi::run(
+            "SELECT pg_tviews_create('integrity_test', $$
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_integrity_test
+        $$)",
+        )
+        .unwrap();
+
+        // Verify data is present
+        let initial_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(initial_count, 3, "TVIEW should have 3 rows initially");
+
+        // ALTER TABLE from LOGGED to UNLOGGED - data should be preserved
+        Spi::run("ALTER TABLE tv_integrity_test SET UNLOGGED").unwrap();
+
+        let after_unlogged_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_unlogged_count, 3, "Data should be preserved when converting LOGGED to UNLOGGED");
+
+        // ALTER TABLE from UNLOGGED to LOGGED - table becomes empty (PostgreSQL behavior)
+        Spi::run("ALTER TABLE tv_integrity_test SET LOGGED").unwrap();
+
+        let after_logged_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_logged_count, 0, "UNLOGGED to LOGGED conversion empties the table");
+
+        // Restore data by calling recovery function
+        let recovery_result = Spi::get_one::<bool>("SELECT pg_tviews_recover_after_crash('integrity_test')")
+            .unwrap()
+            .unwrap_or(false);
+        assert!(recovery_result, "Recovery should succeed and restore data");
+
+        let after_recovery_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_integrity_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(after_recovery_count, 3, "Data should be restored after recovery");
+
+        // Reset GUC
+        Spi::run("RESET pg_tviews.unlogged_by_default").unwrap();
     }
 
     /// Test detection of post-crash empty UNLOGGED table.

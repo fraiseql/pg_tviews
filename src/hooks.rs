@@ -191,6 +191,17 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             }
         }
 
+        // Check for ALTER TABLE
+        if node_tag == pg_sys::NodeTag::T_AlterTableStmt {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → AlterTableStmt* cast
+            let alter_stmt = utility_stmt.cast::<pg_sys::AlterTableStmt>();
+            match unsafe { handle_alter_table(alter_stmt, query_string) } {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
         // Not a tv_* statement - pass through
         Ok(false)
     });
@@ -675,6 +686,84 @@ unsafe fn handle_drop_table(
         // All tables were tv_* — we handled everything
         Ok(true)
     } // unsafe
+}
+
+/// Handle ALTER TABLE statements on TVIEW tables
+unsafe fn handle_alter_table(
+    alter_stmt: *mut pg_sys::AlterTableStmt,
+    _query_string: *const ::std::os::raw::c_char,
+) -> Result<bool, TViewError> {
+    // Safety: all pointer dereferences are guarded by null checks.
+    unsafe {
+        if alter_stmt.is_null() {
+            return Ok(false);
+        }
+
+        let alter_ref = &*alter_stmt;
+
+        // Get the table name
+        let relation = alter_ref.relation;
+        if relation.is_null() {
+            return Ok(false);
+        }
+
+        let rel_ref = &*relation;
+        let table_name_cstr = rel_ref.relname;
+        if table_name_cstr.is_null() {
+            return Ok(false);
+        }
+
+        let table_name = CStr::from_ptr(table_name_cstr).to_str().unwrap_or("");
+
+        // Check if it's a TVIEW table (starts with tv_)
+        if !table_name.starts_with("tv_") {
+            return Ok(false);
+        }
+
+        // Check the ALTER TABLE commands for SET UNLOGGED/LOGGED
+        let cmds = alter_ref.cmds;
+        if cmds.is_null() {
+            return Ok(false);
+        }
+
+        let num_cmds = pg_sys::list_length(cmds);
+        for i in 0..num_cmds {
+            let cmd_node = pg_sys::list_nth(cmds, i);
+            if cmd_node.is_null() {
+                continue;
+            }
+
+            let cmd = cmd_node as *mut pg_sys::AlterTableCmd;
+            if cmd.is_null() {
+                continue;
+            }
+
+            let cmd_ref = &*cmd;
+
+            // Check for SET UNLOGGED or SET LOGGED
+            if cmd_ref.subtype == pg_sys::AlterTableType::AT_SetUnLogged {
+                // SET UNLOGGED - data is preserved, no special handling needed
+                return Ok(false); // Let PostgreSQL handle it normally
+            } else if cmd_ref.subtype == pg_sys::AlterTableType::AT_SetLogged {
+                // SET LOGGED on UNLOGGED table - table will be truncated by PostgreSQL
+                // We need to refresh it after the ALTER completes
+                // Extract entity name from table name (tv_entity -> entity)
+                let entity_name = table_name.strip_prefix("tv_").unwrap_or(table_name);
+
+                // Store that we need to refresh this entity after the ALTER
+                // Since hooks run before the DDL, we can't refresh immediately
+                // Instead, we'll rely on applications to call recovery functions
+                // For now, just log that this happened
+                warning!("ALTER TABLE {} SET LOGGED will truncate data. Call pg_tviews_recover_after_crash('{}') to restore data.",
+                        table_name, entity_name);
+
+                return Ok(false); // Let PostgreSQL handle the ALTER
+            }
+        }
+
+        // Not a SET UNLOGGED/LOGGED command we care about
+        Ok(false)
+    }
 }
 
 /// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`

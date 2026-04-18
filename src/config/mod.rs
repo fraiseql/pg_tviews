@@ -41,6 +41,7 @@ static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"error"));
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -124,6 +125,15 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.unlogged_by_default",
+        c"Create TVIEW tables as UNLOGGED by default.",
+        c"When true, new TVIEWs are created as UNLOGGED tables for better write performance.",
+        &UNLOGGED_BY_DEFAULT_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -185,4 +195,10 @@ pub fn max_queue_size() -> usize {
 #[must_use]
 pub fn audit_enabled() -> bool {
     AUDIT_ENABLED_GUC.get()
+}
+
+/// Check if TVIEWs should be created as UNLOGGED by default (default: true)
+#[must_use]
+pub fn unlogged_by_default() -> bool {
+    UNLOGGED_BY_DEFAULT_GUC.get()
 }
