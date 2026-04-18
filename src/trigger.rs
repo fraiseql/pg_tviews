@@ -26,25 +26,41 @@ use pgrx::prelude::*;
 /// - Queue processing deferred to commit time
 use pgrx::spi;
 
+/// Result of attempting to extract a DISTINCT ON key from a tuple
+enum KeyExtraction {
+    /// Successfully extracted and converted to String
+    Value(String),
+    /// Column exists but value is NULL
+    Null,
+    /// All typed extraction attempts failed (unsupported column type)
+    TypeMismatch,
+}
+
 /// Extract DISTINCT ON key value from tuple, trying multiple types
-/// Returns Some(key_value) if successful, None if all attempts fail (type mismatch or NULL)
+/// Returns the extraction result: Value on success, Null if column is NULL, TypeMismatch if unsupported type
 fn extract_distinct_on_key<'a>(
     tuple: &PgHeapTuple<'a, AllocatedByPostgres>,
     key_col: &str,
-) -> Option<String> {
-    // Try String first
-    if let Ok(Some(val)) = tuple.get_by_name::<String>(key_col) {
-        return Some(val);
+) -> KeyExtraction {
+    // Try String (TEXT, UUID, VARCHAR)
+    match tuple.get_by_name::<String>(key_col) {
+        Ok(Some(val)) => return KeyExtraction::Value(val),
+        Ok(None) => return KeyExtraction::Null,
+        Err(_) => {} // type mismatch, try next
     }
     // Try i64 (BIGINT)
-    if let Ok(Some(val)) = tuple.get_by_name::<i64>(key_col) {
-        return Some(val.to_string());
+    match tuple.get_by_name::<i64>(key_col) {
+        Ok(Some(val)) => return KeyExtraction::Value(val.to_string()),
+        Ok(None) => return KeyExtraction::Null,
+        Err(_) => {}
     }
     // Try i32 (INTEGER)
-    if let Ok(Some(val)) = tuple.get_by_name::<i32>(key_col) {
-        return Some(val.to_string());
+    match tuple.get_by_name::<i32>(key_col) {
+        Ok(Some(val)) => return KeyExtraction::Value(val.to_string()),
+        Ok(None) => return KeyExtraction::Null,
+        Err(_) => {}
     }
-    None
+    KeyExtraction::TypeMismatch
 }
 
 /// Trigger handler function for TVIEW cascades
@@ -78,14 +94,19 @@ fn pg_tview_trigger_handler<'a>(
                     }
                 };
                 match extract_distinct_on_key(&tuple, key_col) {
-                    Some(key_val) => {
+                    KeyExtraction::Value(key_val) => {
                         enqueue_refresh_dedup(entity, &key_val);
                     }
-                    None => {
+                    KeyExtraction::Null => {
                         warning!(
-                            "Falling back to full refresh for DISTINCT ON key '{key_col}' in '{entity}'"
+                            "DISTINCT ON key '{key_col}' is NULL for entity '{entity}' — skipping refresh"
                         );
-                        enqueue_refresh(entity, 0);
+                    }
+                    KeyExtraction::TypeMismatch => {
+                        warning!(
+                            "Cannot extract DISTINCT ON key '{key_col}' for '{entity}': \
+                             unsupported column type — skipping refresh for this row"
+                        );
                     }
                 }
             } else {

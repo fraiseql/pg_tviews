@@ -177,7 +177,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
         "SELECT DISTINCT d.refobjid, c.relkind
          FROM pg_rewrite r
          JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
-         LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
+          LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
           WHERE r.ev_class = {current_oid:?}
            AND d.refclassid = 'pg_class'::regclass::oid
            AND c.oid != {current_oid:?}"

@@ -389,8 +389,11 @@ fn validate_tview_select(select_sql: &str) -> Result<(), String> {
     let sql_lower = select_sql.to_lowercase();
 
     // Early return for SELECT * - defer validation to event trigger
-    if sql_lower.contains("select *") {
-        return Ok(());
+    if let Some(pos) = sql_lower.find("select") {
+        let after = &sql_lower[pos + 6..].trim_start();
+        if after.starts_with('*') {
+            return Ok(());
+        }
     }
 
     // Check for id column (required) — handle both bare `id,` and qualified `alias.id,`
