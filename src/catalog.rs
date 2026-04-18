@@ -429,34 +429,52 @@ pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
 /// This is the slow path that queries `pg_class` every time.
 /// Used by the cache when there's a cache miss.
 pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<String>> {
-    // Query pg_class to get table name from OID
-    let args = vec![unsafe {
-        DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-    }];
-    let table_name = Spi::get_one_with_args::<String>(
-        "SELECT relname::text FROM pg_class WHERE oid = $1",
-        &args,
-    )?
-    .ok_or_else(|| crate::TViewError::SpiError {
-        query: "SELECT relname FROM pg_class WHERE oid = $1".to_string(),
-        error: "Table OID not found".to_string(),
-    })?;
+    // Use Spi::connect + client.select instead of Spi::get_one_with_args because
+    // pgrx 0.17's get_one_with_args returns Err(InvalidPosition) when the query
+    // returns 0 rows — it calls .first().get_one() which goes through
+    // get_datum_by_ordinal's bounds check (current >= size) instead of the
+    // get_heap_tuple path that properly returns Ok(None) for empty results.
+    Spi::connect(|client| {
+        // Step 1: resolve OID → table name
+        let args = vec![unsafe {
+            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }];
+        let mut rows = client.select(
+            "SELECT relname::text FROM pg_class WHERE oid = $1",
+            Some(1),
+            &args,
+        )?;
+        let table_name: String = match rows.next() {
+            Some(row) => match row[1].value::<String>()? {
+                Some(name) => name,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        };
 
-    // Check if table name matches "tb_<entity>" pattern
-    let Some(entity) = table_name.strip_prefix("tb_") else {
-        return Ok(None);
-    };
+        // Step 2: check for "tb_<entity>" prefix
+        let Some(entity) = table_name.strip_prefix("tb_") else {
+            return Ok(None);
+        };
 
-    // Verify this entity actually exists in pg_tview_meta.
-    // Without this check, tb_comment would return Some("comment") even though
-    // there's no TVIEW for "comment" — causing the trigger handler to take the
-    // direct path instead of the indirect (array dependency) path.
-    let args =
-        vec![unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    let exists: Option<String> =
-        Spi::get_one_with_args("SELECT entity FROM pg_tview_meta WHERE entity = $1", &args)?;
-
-    Ok(exists)
+        // Step 3: verify entity exists in pg_tview_meta
+        let args = vec![unsafe {
+            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let mut meta_rows = client.select(
+            "SELECT entity FROM pg_tview_meta WHERE entity = $1",
+            Some(1),
+            &args,
+        )?;
+        match meta_rows.next() {
+            Some(row) => Ok(row[1].value::<String>()?),
+            None => Ok(None),
+        }
+    })
+    .map_err(|e: spi::Error| crate::TViewError::SpiError {
+        query: "entity_for_table_uncached".to_string(),
+        error: format!("{e:?}"),
+    })
 }
 
 #[cfg(test)]
