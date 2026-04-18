@@ -155,6 +155,28 @@ impl TviewMeta {
         })
     }
 
+    /// Load all TVIEW metadata
+    pub fn load_all() -> spi::Result<Vec<Self>> {
+        Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT table_oid AS tview_oid, view_oid, entity, \
+                        fk_columns, uuid_fk_columns, \
+                        dependency_types, dependency_paths, array_match_keys, \
+                        distinct_on_keys, is_union \
+                 FROM pg_tview_meta \
+                 ORDER BY entity",
+                None,
+                &[],
+            )?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(Self::from_spi_row(&row)?);
+            }
+            Ok(result)
+        })
+    }
+
     /// Load metadata for a specific TVIEW OID.
     ///
     /// Queries `pg_tview_meta` to retrieve dependency information needed for

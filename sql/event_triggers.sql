@@ -18,7 +18,7 @@ BEGIN
         -- Only process CREATE TABLE and SELECT INTO
         IF obj.command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') THEN
             -- Check if table name starts with tv_
-            IF obj.object_identity LIKE 'public.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
+            IF obj.object_identity LIKE '%.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
                 RAISE INFO 'pg_tviews: Detected TVIEW creation: %', obj.object_identity;
 
                 -- Extract table name (remove schema prefix if present)
@@ -40,11 +40,8 @@ BEGIN
                     RAISE INFO 'pg_tviews: Successfully converted ''%'' to TVIEW', table_name_only;
                 EXCEPTION
                     WHEN OTHERS THEN
-                        -- Log error but don't fail the transaction
-                        -- The table was already created by PostgreSQL
-                        RAISE WARNING 'pg_tviews: Failed to convert ''%'' to TVIEW: %',
-                            table_name_only, SQLERRM;
-                        RAISE WARNING 'pg_tviews: Table exists as regular table, not a TVIEW';
+                        -- pg_tviews_convert_table raises its own error; re-raise here.
+                        RAISE;
                 END;
             END IF;
         END IF;

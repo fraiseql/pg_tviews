@@ -318,7 +318,7 @@ fn get_base_table_hints(table_name: &str) -> TViewResult<Option<Vec<String>>> {
         DatumWithOid::new(table_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
     }];
     let comment: Option<String> = Spi::get_one_with_args(
-        "SELECT obj_description(oid, 'pg_class') as comment
+        "SELECT obj_description(pg_class.oid, 'pg_class') as comment
          FROM pg_class
          WHERE relname = $1",
         &args,
@@ -419,7 +419,7 @@ fn register_tview_metadata(
         DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
     }];
     let view_oid = Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT oid FROM pg_class WHERE relname = $1",
+        "SELECT pg_class.oid FROM pg_class WHERE relname = $1",
         &view_args,
     )?
     .ok_or_else(|| TViewError::CatalogError {
@@ -431,7 +431,7 @@ fn register_tview_metadata(
         DatumWithOid::new(tview_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
     }];
     let table_oid = Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT oid FROM pg_class WHERE relname = $1",
+        "SELECT pg_class.oid FROM pg_class WHERE relname = $1",
         &table_args,
     )?
     .ok_or_else(|| TViewError::CatalogError {

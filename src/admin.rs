@@ -91,6 +91,36 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
+/// Refresh all TVIEWs in the database.
+/// This is a convenience function for bulk operations like schema migrations
+/// or data seeding workflows.
+///
+/// # Errors
+/// Returns error if any TVIEW cannot be refreshed
+#[pg_extern]
+fn pg_tviews_refresh_all() -> TViewResult<()> {
+    use crate::catalog::TviewMeta;
+
+    // Get all TVIEW metadata
+    let all_tviews = TviewMeta::load_all()?;
+
+    if all_tviews.is_empty() {
+        info!("No TVIEWs found to refresh");
+        return Ok(());
+    }
+
+    // Refresh all TVIEWs (simplified - no complex dependency ordering needed for bulk refresh)
+    for meta in &all_tviews {
+        info!("Refreshing TVIEW for entity: {}", meta.entity_name);
+        pg_tviews_refresh(&meta.entity_name)?;
+    }
+
+    info!("Successfully refreshed {} TVIEWs", all_tviews.len());
+    Ok(())
+}
+
+
+
 /// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
 /// Rust `pg_tview_trigger_handler()`.
 ///

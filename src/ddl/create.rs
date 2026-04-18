@@ -2,6 +2,7 @@ use crate::error::{TViewError, TViewResult};
 use crate::schema::{TViewSchema, analyzer::analyze_dependencies, inference::infer_schema};
 use crate::utils::quote_identifier;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 
 /// Resolve the target schema for creating TVIEW objects.
@@ -199,6 +200,7 @@ pub fn create_tview(
     tview_name: &str,
     select_sql: &str,
     schema_override: Option<&str>,
+    defer_populate: bool,
 ) -> TViewResult<()> {
     // Step 1: Check if TVIEW already exists
     let exists = tview_exists(tview_name)?;
@@ -285,7 +287,15 @@ pub fn create_tview(
     )?;
 
     // Step 5: Populate initial data
-    populate_initial_data(&tv_table_name, &view_name, &final_schema, &schema_name)?;
+    // When called from the ddl_command_end event trigger (CTAS path), the DDL
+    // sub-transactions corrupt savepoint depth tracking and the INSERT's effects
+    // are lost.  Defer the populate to after the event trigger returns, where
+    // the ProcessUtility hook drains the queue in a clean SPI context.
+    if defer_populate {
+        crate::hooks::enqueue_pending_populate(&tv_table_name, &view_name, &schema_name);
+    } else {
+        populate_initial_data(&tv_table_name, &view_name, &final_schema, &schema_name)?;
+    }
 
     // Step 6: Find base table dependencies.
     // Pass schema_name so the view OID lookup searches in the correct schema even when
@@ -685,56 +695,45 @@ fn create_tview_indexes(
 fn populate_initial_data(
     tview_name: &str,
     view_name: &str,
-    schema: &TViewSchema,
+    _schema: &TViewSchema,
     schema_name: &str,
 ) -> TViewResult<()> {
-    // Build column list from schema (excluding created_at/updated_at which have defaults)
-    let mut select_columns = Vec::new();
-    let mut insert_columns = Vec::new();
+    // Get actual column names from the backing view (like pg_tviews_refresh does)
+    // This ensures consistency and handles any discrepancies between inferred schema and actual view
+    let view_oid = Spi::get_one::<Oid>(&format!(
+        "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
+         WHERE c.relname = '{}' AND n.nspname = '{}' AND c.relkind = 'v'",
+        view_name, schema_name
+    ))?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Find view {view_name} in schema {schema_name}"),
+        pg_error: "View not found".to_string(),
+    })?;
 
-    if let Some(pk) = &schema.pk_column {
-        insert_columns.push(pk.clone());
-        select_columns.push(pk.clone());
+    let view_columns = crate::utils::get_view_columns_by_oid(view_oid)?;
+
+    if view_columns.is_empty() {
+        return Err(TViewError::CatalogError {
+            operation: format!("Get columns for view {view_name}"),
+            pg_error: "View has no selectable columns".to_string(),
+        });
     }
-    if let Some(id) = &schema.id_column {
-        insert_columns.push(id.clone());
-        // Cast id to UUID to ensure compatibility
-        select_columns.push(format!("{id}::uuid"));
-    }
-    if let Some(identifier) = &schema.identifier_column {
-        insert_columns.push(identifier.clone());
-        select_columns.push(identifier.clone());
-    }
-    if let Some(data) = &schema.data_column {
-        insert_columns.push(data.clone());
-        select_columns.push(data.clone());
-    }
-    for fk in &schema.fk_columns {
-        insert_columns.push(fk.clone());
-        select_columns.push(fk.clone());
-    }
-    for uuid_fk in &schema.uuid_fk_columns {
-        insert_columns.push(uuid_fk.clone());
-        select_columns.push(uuid_fk.clone());
-    }
-    for col in &schema.additional_columns {
-        insert_columns.push(col.clone());
-        select_columns.push(col.clone());
-    }
+
+    // Use the actual view columns for both insert and select
+    let insert_columns = view_columns;
 
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
     let qi_view = quote_identifier(view_name);
-    let insert_column_list = insert_columns
+    let col_list = insert_columns
         .iter()
         .map(|c| quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ");
-    let select_column_list = select_columns.join(", ");
 
     let insert_sql = format!(
-        "INSERT INTO {qi_schema}.{qi_tview} ({insert_column_list}) \
-         SELECT {select_column_list} FROM {qi_schema}.{qi_view}"
+        "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
+         SELECT {col_list} FROM {qi_schema}.{qi_view}"
     );
 
     Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
@@ -1286,5 +1285,43 @@ mod tests {
             in_public,
             "tv_gadget should be in public with default search_path"
         );
+    }
+
+    /// Test CTAS (CREATE TABLE AS SELECT) with preexisting data.
+    /// This reproduces the bug where initial population fails.
+    #[pg_test]
+    fn test_ctas_with_preexisting_data() {
+        Spi::run("SET search_path TO public").unwrap();
+
+        // Create base table with data
+        Spi::run("CREATE TABLE tb_ctas_test (pk_test BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
+        Spi::run("INSERT INTO tb_ctas_test VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+
+        // Do CTAS - this should create a TVIEW with the existing data
+        Spi::run(
+            "CREATE TABLE tv_ctas_test AS
+            SELECT pk_test, jsonb_build_object('name', name) AS data
+            FROM tb_ctas_test"
+        ).unwrap();
+
+        // Check that TVIEW was created
+        let tview_exists = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM pg_class c \
+             JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = 'tv_ctas_test' AND n.nspname = 'public'"
+        ).unwrap().unwrap_or(false);
+        assert!(tview_exists, "tv_ctas_test should exist");
+
+        // Check that it has the initial data (this is where the bug manifests)
+        let row_count = Spi::get_one::<i64>(
+            "SELECT COUNT(*) FROM tv_ctas_test"
+        ).unwrap().unwrap_or(0);
+        assert_eq!(row_count, 2, "tv_ctas_test should have 2 rows from initial population");
+
+        // Check specific data
+        let alice_exists = Spi::get_one::<bool>(
+            "SELECT COUNT(*) > 0 FROM tv_ctas_test WHERE data->>'name' = 'Alice'"
+        ).unwrap().unwrap_or(false);
+        assert!(alice_exists, "Alice should be in the TVIEW");
     }
 }

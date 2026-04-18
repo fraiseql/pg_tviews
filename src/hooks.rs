@@ -241,6 +241,11 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 qc,
             );
         }
+
+        // After the event trigger returns, populate any TVIEWs created via CTAS.
+        // The INSERT runs via SPI (DML, not utility), so it does not re-enter
+        // ProcessUtility and there is no reentrancy issue with HOOK_IN_PROGRESS.
+        drain_pending_populates();
     }
 
     // Release the reentrancy guard
@@ -448,6 +453,106 @@ static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, (
 /// table was created by `pg_tviews_create()` directly, not via DDL interception).
 pub fn take_pending_tview_select(table_name: &str) -> Option<(String, String)> {
     PENDING_TVIEW_SELECTS.lock().ok()?.remove(table_name)
+}
+
+/// Pending initial-data population requests deferred from the event trigger.
+///
+/// When `create_tview` is called from the `ddl_command_end` event trigger (CTAS path),
+/// the INSERT that populates the materialized table silently loses its effects due to
+/// sub-transaction depth corruption.  Instead, `create_tview` enqueues the populate
+/// request here and the `ProcessUtility` hook drains the queue **after** the event
+/// trigger returns, in a clean SPI context.
+static PENDING_POPULATES: LazyLock<Mutex<Vec<PendingPopulate>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+struct PendingPopulate {
+    tv_table_name: String,
+    view_name: String,
+    schema_name: String,
+}
+
+/// Enqueue a deferred initial-data population for a TVIEW created via CTAS.
+///
+/// Called by `create_tview` when `defer_populate` is `true`.
+pub fn enqueue_pending_populate(tv_table_name: &str, view_name: &str, schema_name: &str) {
+    if let Ok(mut queue) = PENDING_POPULATES.lock() {
+        queue.push(PendingPopulate {
+            tv_table_name: tv_table_name.to_string(),
+            view_name: view_name.to_string(),
+            schema_name: schema_name.to_string(),
+        });
+    }
+}
+
+/// Drain and execute all pending TVIEW population requests.
+///
+/// Called by the `ProcessUtility` hook after `call_prev_hook_or_standard` returns
+/// (the event trigger has completed).  Runs the INSERT via SPI in a clean context
+/// outside the event trigger's sub-transaction scope.
+fn drain_pending_populates() {
+    let entries: Vec<PendingPopulate> = PENDING_POPULATES
+        .lock()
+        .map(|mut q| q.drain(..).collect())
+        .unwrap_or_default();
+
+    for entry in entries {
+        let view_oid = match Spi::get_one::<pg_sys::Oid>(&format!(
+            "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
+             WHERE c.relname = '{}' AND n.nspname = '{}'  AND c.relkind = 'v'",
+            entry.view_name, entry.schema_name
+        )) {
+            Ok(Some(oid)) => oid,
+            Ok(None) => {
+                error!(
+                    "pg_tviews: deferred populate failed — view {}.{} not found",
+                    entry.schema_name, entry.view_name
+                );
+            }
+            Err(e) => {
+                error!(
+                    "pg_tviews: deferred populate failed — cannot resolve view {}.{}: {e}",
+                    entry.schema_name, entry.view_name
+                );
+            }
+        };
+
+        let view_columns = match crate::utils::get_view_columns_by_oid(view_oid) {
+            Ok(cols) if !cols.is_empty() => cols,
+            Ok(_) => {
+                error!(
+                    "pg_tviews: deferred populate failed — view {}.{} has no columns",
+                    entry.schema_name, entry.view_name
+                );
+            }
+            Err(e) => {
+                error!(
+                    "pg_tviews: deferred populate failed — cannot get columns for {}.{}: {e}",
+                    entry.schema_name, entry.view_name
+                );
+            }
+        };
+
+        let qi_schema = crate::utils::quote_identifier(&entry.schema_name);
+        let qi_tview = crate::utils::quote_identifier(&entry.tv_table_name);
+        let qi_view = crate::utils::quote_identifier(&entry.view_name);
+        let col_list = view_columns
+            .iter()
+            .map(|c| crate::utils::quote_identifier(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let insert_sql = format!(
+            "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
+             SELECT {col_list} FROM {qi_schema}.{qi_view}"
+        );
+
+        if let Err(e) = Spi::run(&insert_sql) {
+            error!(
+                "pg_tviews: deferred populate failed for {}: {e}",
+                entry.tv_table_name
+            );
+        }
+    }
 }
 
 /// Handle DROP TABLE tv_*

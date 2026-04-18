@@ -91,7 +91,7 @@ BEGIN
         -- Only process table-creation commands
         IF obj.command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') THEN
             -- Only intercept tv_* tables
-            IF obj.object_identity LIKE 'public.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
+            IF obj.object_identity LIKE '%.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
                 DECLARE
                     table_name_only TEXT;
                 BEGIN

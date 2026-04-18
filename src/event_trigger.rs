@@ -59,7 +59,7 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
     Spi::run(&drop_sql).map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
     // Create the proper TVIEW: backing view, materialized table, triggers.
-    crate::ddl::create_tview(&table_name, &select_sql, schema_override)
+    crate::ddl::create_tview(&table_name, &select_sql, schema_override, true)
         .map_err(|e| format!("Failed to create TVIEW '{table_name}': {e}"))?;
 
     Ok(())

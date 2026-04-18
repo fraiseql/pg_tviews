@@ -37,7 +37,7 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
         crate::hooks::ensure_hook_installed();
     }
 
-    match create_tview(tview_name, select_sql, None) {
+    match create_tview(tview_name, select_sql, None, false) {
         Ok(()) => Ok(format!("TVIEW '{tview_name}' created successfully")),
         Err(e) => Err(format!("Failed to create TVIEW: {e}")),
     }
