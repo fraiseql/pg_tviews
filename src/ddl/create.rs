@@ -110,12 +110,13 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
             )?;
             let mut result = Vec::new();
             for row in rows {
-                if let Some(col) = row[1]
-                    .value::<String>()
-                    .map_err(|e| TViewError::CatalogError {
-                        operation: "expand_select_star: read column_name".to_string(),
-                        pg_error: format!("{e:?}"),
-                    })?
+                if let Some(col) =
+                    row[1]
+                        .value::<String>()
+                        .map_err(|e| TViewError::CatalogError {
+                            operation: "expand_select_star: read column_name".to_string(),
+                            pg_error: format!("{e:?}"),
+                        })?
                 {
                     result.push(col);
                 }
@@ -144,12 +145,13 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
             )?;
             let mut result = Vec::new();
             for row in rows {
-                if let Some(col) = row[1]
-                    .value::<String>()
-                    .map_err(|e| TViewError::CatalogError {
-                        operation: "expand_select_star: read column_name".to_string(),
-                        pg_error: format!("{e:?}"),
-                    })?
+                if let Some(col) =
+                    row[1]
+                        .value::<String>()
+                        .map_err(|e| TViewError::CatalogError {
+                            operation: "expand_select_star: read column_name".to_string(),
+                            pg_error: format!("{e:?}"),
+                        })?
                 {
                     result.push(col);
                 }
@@ -557,10 +559,7 @@ fn create_materialized_table(
                 )
             },
             unsafe {
-                DatumWithOid::new(
-                    schema_name,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
+                DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             },
         ];
         Spi::connect(|client| {
@@ -1068,7 +1067,10 @@ mod tests {
     fn test_scalar_pg_type_floating_point() {
         assert_eq!(super::scalar_pg_type_to_sql("real"), "REAL");
         assert_eq!(super::scalar_pg_type_to_sql("float4"), "REAL");
-        assert_eq!(super::scalar_pg_type_to_sql("double precision"), "DOUBLE PRECISION");
+        assert_eq!(
+            super::scalar_pg_type_to_sql("double precision"),
+            "DOUBLE PRECISION"
+        );
         assert_eq!(super::scalar_pg_type_to_sql("float8"), "DOUBLE PRECISION");
     }
 
@@ -1110,10 +1112,7 @@ mod tests {
 
     #[test]
     fn test_resolve_pg_column_type_builtin_scalar() {
-        assert_eq!(
-            super::resolve_pg_column_type("boolean", None),
-            "BOOLEAN"
-        );
+        assert_eq!(super::resolve_pg_column_type("boolean", None), "BOOLEAN");
         assert_eq!(super::resolve_pg_column_type("uuid", None), "UUID");
         assert_eq!(super::resolve_pg_column_type("bigint", None), "BIGINT");
         assert_eq!(super::resolve_pg_column_type("text", None), "TEXT");
@@ -1147,10 +1146,7 @@ mod tests {
     #[test]
     fn test_resolve_pg_column_type_user_defined_missing_udt_name() {
         // USER-DEFINED without udt_name falls back to TEXT
-        assert_eq!(
-            super::resolve_pg_column_type("USER-DEFINED", None),
-            "TEXT"
-        );
+        assert_eq!(super::resolve_pg_column_type("USER-DEFINED", None), "TEXT");
     }
 
     #[test]
@@ -1189,10 +1185,7 @@ mod tests {
     #[test]
     fn test_resolve_pg_column_type_array_missing_udt_name() {
         // ARRAY without udt_name falls back to TEXT[]
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", None),
-            "TEXT[]"
-        );
+        assert_eq!(super::resolve_pg_column_type("ARRAY", None), "TEXT[]");
     }
 
     #[test]
@@ -1301,27 +1294,35 @@ mod tests {
         Spi::run(
             "CREATE TABLE tv_ctas_test AS
             SELECT pk_test, jsonb_build_object('name', name) AS data
-            FROM tb_ctas_test"
-        ).unwrap();
+            FROM tb_ctas_test",
+        )
+        .unwrap();
 
         // Check that TVIEW was created
         let tview_exists = Spi::get_one::<bool>(
             "SELECT COUNT(*) > 0 FROM pg_class c \
              JOIN pg_namespace n ON c.relnamespace = n.oid \
-             WHERE c.relname = 'tv_ctas_test' AND n.nspname = 'public'"
-        ).unwrap().unwrap_or(false);
+             WHERE c.relname = 'tv_ctas_test' AND n.nspname = 'public'",
+        )
+        .unwrap()
+        .unwrap_or(false);
         assert!(tview_exists, "tv_ctas_test should exist");
 
         // Check that it has the initial data (this is where the bug manifests)
-        let row_count = Spi::get_one::<i64>(
-            "SELECT COUNT(*) FROM tv_ctas_test"
-        ).unwrap().unwrap_or(0);
-        assert_eq!(row_count, 2, "tv_ctas_test should have 2 rows from initial population");
+        let row_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_ctas_test")
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(
+            row_count, 2,
+            "tv_ctas_test should have 2 rows from initial population"
+        );
 
         // Check specific data
         let alice_exists = Spi::get_one::<bool>(
-            "SELECT COUNT(*) > 0 FROM tv_ctas_test WHERE data->>'name' = 'Alice'"
-        ).unwrap().unwrap_or(false);
+            "SELECT COUNT(*) > 0 FROM tv_ctas_test WHERE data->>'name' = 'Alice'",
+        )
+        .unwrap()
+        .unwrap_or(false);
         assert!(alice_exists, "Alice should be in the TVIEW");
     }
 }

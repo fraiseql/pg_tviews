@@ -51,10 +51,10 @@
 //! -- Optimized: UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1, '{author}')
 //! ```
 
+use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
-use pgrx::JsonB;
 
 use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
@@ -600,8 +600,8 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use pgrx::prelude::*;
     use pgrx::JsonB;
+    use pgrx::prelude::*;
 
     /// Test smart patching for nested object dependencies.
     ///
@@ -1523,46 +1523,38 @@ mod tests {
         crate::audit::log_create("comment", "SELECT ...");
 
         // Verify nothing written to DB yet
-        let count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let count: i64 = Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log")
+            .unwrap()
+            .unwrap_or(0);
         assert_eq!(count, 0, "Buffer should not write to DB before flush");
 
         // Flush
         crate::audit::flush_audit_buffer().unwrap();
 
         // Verify all 3 entries written
-        let count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let count: i64 = Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log")
+            .unwrap()
+            .unwrap_or(0);
         assert_eq!(count, 3, "Flush should write all buffered entries");
 
         // Verify operations are correct
-        let refresh_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH'",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let refresh_count: i64 =
+            Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'REFRESH'")
+                .unwrap()
+                .unwrap_or(0);
         assert_eq!(refresh_count, 2, "Should have 2 REFRESH entries");
 
-        let create_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'CREATE'",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let create_count: i64 =
+            Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log WHERE operation = 'CREATE'")
+                .unwrap()
+                .unwrap_or(0);
         assert_eq!(create_count, 1, "Should have 1 CREATE entry");
 
         // Verify buffer is empty after flush (second flush is no-op)
         crate::audit::flush_audit_buffer().unwrap();
-        let count_after: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let count_after: i64 = Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log")
+            .unwrap()
+            .unwrap_or(0);
         assert_eq!(count_after, 3, "Second flush should be no-op");
     }
 
@@ -1580,11 +1572,9 @@ mod tests {
         // Flush should be no-op
         crate::audit::flush_audit_buffer().unwrap();
 
-        let count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let count: i64 = Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log")
+            .unwrap()
+            .unwrap_or(0);
         assert_eq!(count, 0, "Cleared buffer should not produce any rows");
     }
 
@@ -1598,11 +1588,9 @@ mod tests {
         // Flush should skip writing because audit is disabled
         crate::audit::flush_audit_buffer().unwrap();
 
-        let count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM pg_tview_audit_log",
-        )
-        .unwrap()
-        .unwrap_or(0);
+        let count: i64 = Spi::get_one("SELECT COUNT(*) FROM pg_tview_audit_log")
+            .unwrap()
+            .unwrap_or(0);
         assert_eq!(count, 0, "Disabled audit should not write any rows");
     }
 

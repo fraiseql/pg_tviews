@@ -1,9 +1,9 @@
 //! Administrative SQL functions: refresh, migration, schema analysis, cascade path.
 
-use crate::{utils::quote_identifier, TViewError, TViewResult};
+use crate::{TViewError, TViewResult, utils::quote_identifier};
+use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use pgrx::JsonB;
 
 /// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
 ///
@@ -118,8 +118,6 @@ fn pg_tviews_refresh_all() -> TViewResult<()> {
     info!("Successfully refreshed {} TVIEWs", all_tviews.len());
     Ok(())
 }
-
-
 
 /// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
 /// Rust `pg_tview_trigger_handler()`.

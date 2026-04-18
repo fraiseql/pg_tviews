@@ -195,11 +195,13 @@ mod tests {
         }
 
         // Verify it's there
-        assert!(TABLE_ENTITY_CACHE
-            .lock()
-            .unwrap()
-            .get(&pg_sys::Oid::from(123))
-            .is_some());
+        assert!(
+            TABLE_ENTITY_CACHE
+                .lock()
+                .unwrap()
+                .get(&pg_sys::Oid::from(123))
+                .is_some()
+        );
 
         // Invalidate
         table_cache::invalidate();

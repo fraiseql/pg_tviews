@@ -1,8 +1,8 @@
+use pgrx::AllocatedByPostgres;
 use pgrx::datum::DatumWithOid;
 use pgrx::heap_tuple::PgHeapTuple;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
-use pgrx::AllocatedByPostgres;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 

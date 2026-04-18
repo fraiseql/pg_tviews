@@ -3,13 +3,13 @@
 //! Provides efficient refresh of multiple rows in a single operation.
 //! Reduces query count from N queries to 2 queries for N rows.
 
+use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::utils::{lookup_view_for_source, quote_identifier};
-use crate::TViewResult;
+use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi;
-use pgrx::JsonB;
 
 /// Refresh multiple rows of the same entity in a single operation
 ///

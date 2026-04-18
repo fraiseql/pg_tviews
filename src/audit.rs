@@ -86,8 +86,7 @@ pub fn log_refresh(entity: &str, rows_affected: i64) {
 /// **MUST be called from ProcessUtility hook COMMIT path** (where SPI is safe).
 /// MUST NOT be called from xact callbacks.
 pub fn flush_audit_buffer() -> spi::Result<()> {
-    let entries: Vec<AuditEntry> =
-        AUDIT_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect());
+    let entries: Vec<AuditEntry> = AUDIT_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect());
 
     if entries.is_empty() || !crate::config::audit_enabled() {
         return Ok(());
@@ -126,9 +125,7 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
             unsafe {
                 DatumWithOid::new(payload_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             },
-            unsafe {
-                DatumWithOid::new(user_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
+            unsafe { DatumWithOid::new(user_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         ],
     )?;
 
