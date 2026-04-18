@@ -128,7 +128,7 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
 
     // Get schema name for qualified queries
     let schema: Option<String> = Spi::get_one_with_args(
-        "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
+        "SELECT n.nspname::text FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
         &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
@@ -136,12 +136,12 @@ pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<boo
 
     // Get table and view names
     let tview_table: Option<String> = Spi::get_one_with_args(
-        "SELECT relname FROM pg_class WHERE oid = $1",
+        "SELECT relname::text FROM pg_class WHERE oid = $1",
         &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
     let backing_view: Option<String> = Spi::get_one_with_args(
-        "SELECT relname FROM pg_class WHERE oid = $1",
+        "SELECT relname::text FROM pg_class WHERE oid = $1",
         &[unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
     )?;
 
