@@ -1,6 +1,7 @@
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{TViewSchema, analyzer::analyze_dependencies, inference::infer_schema};
 use crate::utils::quote_identifier;
+use crate::cascade_path;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -824,10 +825,25 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Serialize dependencies as OID array
-    let deps_str = dependencies
+    // Serialize dependencies as JSONB array of cascade paths
+    let cascade_paths_json: Vec<String> = dependencies
         .iter()
-        .map(|oid| oid.to_u32().to_string())
+        .map(|oid| {
+            // Create a simple cascade path with single hop: source_oid -> target_entity
+            // For now, we'll assume the target_entity is derived from the base table name
+            // This will be refined in later phases
+            let cascade_path = cascade_path::CascadePath {
+                hops: vec![cascade_path::CascadeHop {
+                    source_oid: *oid,
+                    target_entity: entity_name.to_string(), // This is a simplification; will be fixed in phase 2
+                }],
+            };
+            serde_json::to_string(&cascade_path).expect("Failed to serialize cascade path")
+        })
+        .collect();
+    let cascade_paths_str = cascade_paths_json
+        .iter()
+        .map(|json| format!("'{}'", json.replace("'", "''"))) // Escape single quotes for SQL
         .collect::<Vec<_>>()
         .join(",");
 
@@ -886,7 +902,7 @@ fn register_metadata(
             view_oid,
             table_oid,
             definition,
-            dependencies,
+            cascade_paths,
             fk_columns,
             uuid_fk_columns,
             dependency_types,
@@ -898,7 +914,7 @@ fn register_metadata(
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
-        deps_str,
+        cascade_paths_str,
         fk_columns,
         uuid_fk_columns,
         dep_types,

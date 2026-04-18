@@ -64,9 +64,13 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
     let query = format!(
         "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, \
                 m.fk_columns, m.uuid_fk_columns, \
-                m.dependency_types, m.dependency_paths, m.array_match_keys \
+                m.dependency_types, m.dependency_paths, m.array_match_keys, \
+                m.distinct_on_keys, m.is_union, m.cascade_paths \
          FROM pg_tview_meta m \
-         WHERE {:?} = ANY(m.dependencies)",
+         WHERE {:?} IN (
+             SELECT (cp->>'source_oid')::oid
+             FROM unnest(m.cascade_paths) AS cp
+         )",
         base_table_oid.to_u32()
     );
 

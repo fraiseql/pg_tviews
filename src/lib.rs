@@ -32,6 +32,7 @@ use pgrx::prelude::*;
 
 // Core modules
 mod audit;
+mod cascade_path;
 mod catalog;
 mod event_trigger;
 mod hooks;

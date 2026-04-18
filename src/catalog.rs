@@ -1,6 +1,7 @@
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
+use crate::cascade_path::CascadePath;
 /// Type of dependency relationship for `jsonb_delta` optimization
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyType {
@@ -81,6 +82,13 @@ pub struct TviewMeta {
     /// for the same PK during refresh (which can occur with non-mutually-exclusive
     /// UNION ALL branches).
     pub is_union: bool,
+
+    /// Cascade paths defining how changes propagate to this TVIEW.
+    ///
+    /// Each path represents a sequence of hops from a source table to this TVIEW,
+    /// enabling indirect dependency tracking for multi-level cascades.
+    #[allow(dead_code)] // Reason: Will be used in future cascade implementation phases
+    pub cascade_paths: Vec<CascadePath>,
 }
 
 impl TviewMeta {
@@ -117,7 +125,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -141,7 +149,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -162,7 +170,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  ORDER BY entity",
                 None,
@@ -212,7 +220,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union \
+                        distinct_on_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
@@ -255,6 +263,18 @@ impl TviewMeta {
         // is_union (BOOLEAN) — true when backing view is a UNION ALL / UNION query
         let is_union: bool = row["is_union"].value::<bool>()?.unwrap_or(false);
 
+        // cascade_paths (JSONB[]) — array of cascade path objects
+        let cascade_paths_raw: Option<Vec<String>> = row["cascade_paths"].value()?;
+        let cascade_paths = if let Some(json_strings) = cascade_paths_raw {
+            json_strings
+                .into_iter()
+                .map(|json| serde_json::from_str(&json))
+                .collect::<Result<Vec<CascadePath>, _>>()
+                .map_err(|_e| spi::Error::InvalidPosition)? // Use appropriate error type
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             tview_oid: row["tview_oid"].value()?.ok_or_else(|| {
                 spi::Error::from(crate::TViewError::SpiError {
@@ -282,6 +302,7 @@ impl TviewMeta {
             array_match_keys: array_keys.unwrap_or_default(),
             distinct_on_keys,
             is_union,
+            cascade_paths,
         })
     }
 
@@ -369,15 +390,16 @@ impl Default for TviewMeta {
             array_match_keys: vec![],
             distinct_on_keys: vec![],
             is_union: false,
+            cascade_paths: vec![],
         }
     }
 }
 
-/// Find all TVIEW entities whose dependency list includes the given base table OID.
+/// Find all TVIEW entities whose cascade paths include the given base table OID.
 ///
 /// This is the reverse lookup for indirect dependencies: when `tb_comment` changes,
 /// this function finds that entity `"post"` depends on it (because `tb_comment`'s OID
-/// is in `tv_post`'s `dependencies` array).
+/// appears as a source_oid in one of `tv_post`'s `cascade_paths`).
 ///
 /// Returns entity names (e.g. `["post"]`) for all TVIEWs that depend on this table.
 pub fn parent_entities_for_base_table(table_oid: Oid) -> crate::TViewResult<Vec<String>> {
@@ -386,7 +408,11 @@ pub fn parent_entities_for_base_table(table_oid: Oid) -> crate::TViewResult<Vec<
             DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
         }];
         let rows = client.select(
-            "SELECT entity FROM pg_tview_meta WHERE $1 = ANY(dependencies)",
+            "SELECT entity FROM pg_tview_meta
+             WHERE $1 IN (
+                 SELECT (cp->>'source_oid')::oid
+                 FROM unnest(cascade_paths) AS cp
+             )",
             None,
             &args,
         )?;
