@@ -34,7 +34,7 @@ use pgrx::prelude::*;
 // @extschema@ is substituted by PostgreSQL with the extension's install schema.
 extension_sql!(
     r"
-    CREATE UNLOGGED TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
+    CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
         view_oid OID NOT NULL,
         table_oid OID NOT NULL,
@@ -50,7 +50,7 @@ extension_sql!(
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    CREATE UNLOGGED TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
+    CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
         is_helper BOOLEAN NOT NULL DEFAULT TRUE,
         used_by TEXT[] NOT NULL DEFAULT '{}',
@@ -133,7 +133,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 // Audit logging table for DDL operations
 extension_sql!(
     r"
-CREATE UNLOGGED TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
+CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_audit_log (
     log_id BIGSERIAL PRIMARY KEY,
     operation TEXT NOT NULL,  -- CREATE, DROP, REFRESH
     entity TEXT NOT NULL,

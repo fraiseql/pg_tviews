@@ -24,4 +24,10 @@ BEGIN;
     WHERE table_name = 'pg_tview_meta'
     ORDER BY ordinal_position;
 
+    -- Test 4: Verify catalog tables are WAL-logged (relpersistence = 'p')
+    SELECT relname, relpersistence = 'p' AS is_logged
+    FROM pg_class
+    WHERE relname IN ('pg_tview_meta', 'pg_tview_helpers', 'pg_tview_audit_log')
+    ORDER BY relname;
+
 ROLLBACK;
