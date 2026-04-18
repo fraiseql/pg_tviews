@@ -958,22 +958,15 @@ fn register_metadata(
         .join(",");
 
     // Serialize cascade paths as a TEXT[] array of JSON strings
-    let cascade_paths_literal = if cascade_paths.is_empty() {
-        "'{}'".to_string()
-    } else {
-        let elements: Vec<String> = cascade_paths
-            .iter()
-            .map(|path| {
-                let json = serde_json::to_string(path).expect("Failed to serialize cascade path");
-                // Double-quote and escape for PostgreSQL text array literal
-                format!(
-                    "\"{}\"",
-                    json.replace('\\', "\\\\").replace('"', "\\\"")
-                )
-            })
-            .collect();
-        format!("'{{{}}}'", elements.join(","))
-    };
+    let cascade_paths_str = cascade_paths
+        .iter()
+        .map(|path| {
+            let json = serde_json::to_string(path).expect("Failed to serialize cascade path");
+            pg_array_elem(&json)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let cascade_paths_literal = format!("'{{{cascade_paths_str}}}'");
 
     // Get OIDs for the created objects (schema-qualified, parameterized to prevent injection)
     let view_oid_args = vec![
