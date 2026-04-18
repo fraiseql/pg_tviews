@@ -7,6 +7,7 @@ use crate::cascade_path::{CascadeHop, CascadePath};
 use sqlparser::ast::{Join, JoinOperator, Query, Select, SetExpr, Statement, TableFactor, TableWithJoins};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::{Parser, ParserError};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[allow(dead_code)] // Reason: Will be used in future cascade implementation phases
 
@@ -28,6 +29,27 @@ pub enum SqlParseError {
     NoRootFound,
     /// Table alias resolution failed
     AliasResolutionError(String),
+}
+
+/// Represents a JOIN relationship between two tables
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Reason: Will be used in future ON condition parsing
+struct JoinEdge {
+    left_table: String,
+    #[allow(dead_code)] // Reason: Will be used for FK relationship analysis
+    left_column: String,
+    right_table: String,
+    #[allow(dead_code)] // Reason: Will be used for FK relationship analysis
+    right_column: String,
+}
+
+/// Graph representation of table relationships
+#[derive(Debug)]
+struct TableGraph {
+    /// Maps table name -> set of tables it joins to
+    adjacency: HashMap<String, HashSet<String>>,
+    /// Maps (table_a, table_b) -> JoinEdge
+    edges: HashMap<(String, String), JoinEdge>,
 }
 
 impl From<ParserError> for SqlParseError {
@@ -84,44 +106,42 @@ fn extract_from_query(
 fn extract_from_select(
     select: &Select,
     root_table: &str,
-    root_pk_col: &str,
+    _root_pk_col: &str,
 ) -> SqlParseResult<Vec<CascadePath>> {
-    // For cycle 2, we'll implement basic single-hop extraction
-    // Start with the FROM clause
-    if let Some(from) = &select.from.first() {
-        return extract_from_table_with_joins(from, root_table, root_pk_col);
+    // For cycle 3: implement multi-hop path extraction
+    if select.from.is_empty() {
+        return Ok(vec![]);
     }
 
-    Ok(vec![])
-}
+    let from = &select.from[0];
+    let graph = build_table_graph(from)?;
 
-fn extract_from_table_with_joins(
-    table_with_joins: &TableWithJoins,
-    root_table: &str,
-    root_pk_col: &str,
-) -> SqlParseResult<Vec<CascadePath>> {
-    // For cycle 2: simple case - one root table with one JOIN
-    // We'll extract the relationship and create a basic cascade path
-
-    // Get the root table name (resolve aliases if present)
-    let root_table_name = match &table_with_joins.relation {
-        sqlparser::ast::TableFactor::Table { name, .. } => {
-            name.0.last().map(|ident| ident.value.clone())
-                .ok_or(SqlParseError::NoRootFound)?
-        }
-        _ => return Err(SqlParseError::UnsupportedConstruct("Only table factors supported".to_string())),
-    };
-
-    // Check if this is our root table
-    if root_table_name != root_table {
-        return Ok(vec![]); // Not our root table
+    // Find the root table in our graph
+    if !graph.adjacency.contains_key(root_table) {
+        return Ok(vec![]); // Root table not found in this query
     }
 
+    // Find all leaf tables (tables that are not referenced as JOIN sources)
+    let all_tables: HashSet<String> = graph.adjacency.keys().cloned().collect();
+    let mut join_sources = HashSet::new();
+
+    // The root table is always a source
+    join_sources.insert(root_table.to_string());
+
+    // Add all tables that appear as the left side of any join
+    for edge in graph.edges.values() {
+        join_sources.insert(edge.left_table.clone());
+    }
+
+    let leaf_tables: Vec<String> = all_tables
+        .difference(&join_sources)
+        .cloned()
+        .collect();
+
+    // For each leaf table, find path back to root
     let mut paths = Vec::new();
-
-    // Process each JOIN
-    for join in &table_with_joins.joins {
-        if let Some(path) = extract_join_path(join, &root_table_name, root_pk_col)? {
+    for leaf in leaf_tables {
+        if let Some(path) = find_path_to_root(&graph, &leaf, root_table) {
             paths.push(path);
         }
     }
@@ -129,42 +149,114 @@ fn extract_from_table_with_joins(
     Ok(paths)
 }
 
-fn extract_join_path(
-    join: &Join,
-    _root_table: &str,
-    _root_pk_col: &str,
-) -> SqlParseResult<Option<CascadePath>> {
-    // For cycle 2: extract simple JOIN relationship
-    // Only handle INNER JOIN and basic ON conditions for now
+fn build_table_graph(table_with_joins: &TableWithJoins) -> SqlParseResult<TableGraph> {
+    let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut edges: HashMap<(String, String), JoinEdge> = HashMap::new();
 
-    match join.join_operator {
-        JoinOperator::Inner(_) => {
-            // Good, we can handle INNER JOIN
+    // Start with the root table
+    let root_table = extract_table_name(&table_with_joins.relation)?;
+
+    // Process each JOIN
+    for join in &table_with_joins.joins {
+        if let JoinOperator::Inner(_) = join.join_operator {
+            let right_table = extract_table_name(&join.relation)?;
+            let join_edge = extract_join_condition(&join, &root_table, &right_table)?;
+
+            // Add bidirectional adjacency
+            adjacency.entry(join_edge.left_table.clone())
+                .or_insert_with(HashSet::new)
+                .insert(join_edge.right_table.clone());
+            adjacency.entry(join_edge.right_table.clone())
+                .or_insert_with(HashSet::new)
+                .insert(join_edge.left_table.clone());
+
+            // Store the edge
+            let key = if join_edge.left_table < join_edge.right_table {
+                (join_edge.left_table.clone(), join_edge.right_table.clone())
+            } else {
+                (join_edge.right_table.clone(), join_edge.left_table.clone())
+            };
+            edges.insert(key, join_edge);
         }
-        _ => return Ok(None), // Skip other join types for now
+        // Skip other join types for now
     }
 
-    // Get the joined table name
-    let join_table_name = match &join.relation {
+    Ok(TableGraph { adjacency, edges })
+}
+
+fn extract_table_name(table_factor: &TableFactor) -> SqlParseResult<String> {
+    match table_factor {
         TableFactor::Table { name, .. } => {
-            name.0.last().map(|ident| ident.value.clone())
-                .ok_or(SqlParseError::AliasResolutionError("Invalid table name".to_string()))?
+            name.0.last()
+                .map(|ident| ident.value.clone())
+                .ok_or(SqlParseError::AliasResolutionError("Invalid table name".to_string()))
         }
-        _ => return Ok(None), // Skip complex table factors
-    };
+        _ => Err(SqlParseError::UnsupportedConstruct("Complex table factors not supported".to_string())),
+    }
+}
 
-    // For now, create a simple cascade path
-    // This is a placeholder - we'll extract actual FK relationships in later cycles
-    let hop = CascadeHop {
-        source_oid: pgrx::pg_sys::Oid::INVALID, // Will be resolved later
-        target_entity: join_table_name.clone(),
-    };
+fn extract_join_condition(_join: &Join, left_table: &str, right_table: &str) -> SqlParseResult<JoinEdge> {
+    // For now, create a simple edge - we'll parse actual ON conditions later
+    // This is a placeholder for the FK relationship extraction
+    Ok(JoinEdge {
+        left_table: left_table.to_string(),
+        left_column: "id".to_string(), // Placeholder
+        right_table: right_table.to_string(),
+        right_column: "fk_id".to_string(), // Placeholder
+    })
+}
 
-    let path = CascadePath {
-        hops: vec![hop],
-    };
+fn find_path_to_root(graph: &TableGraph, start: &str, root: &str) -> Option<CascadePath> {
+    // BFS from start to root
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+    let mut parent_map: HashMap<String, String> = HashMap::new();
 
-    Ok(Some(path))
+    queue.push_back(start.to_string());
+    visited.insert(start.to_string());
+
+    while let Some(current) = queue.pop_front() {
+        if current == root {
+            // Found path! Reconstruct it
+            return Some(reconstruct_path(&parent_map, start, root));
+        }
+
+        if let Some(neighbors) = graph.adjacency.get(&current) {
+            for neighbor in neighbors {
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor.clone());
+                    parent_map.insert(neighbor.clone(), current.clone());
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+    }
+
+    None // No path found
+}
+
+fn reconstruct_path(parent_map: &HashMap<String, String>, start: &str, root: &str) -> CascadePath {
+    let mut path = vec![];
+    let mut current = start;
+
+    while current != root {
+        if let Some(parent) = parent_map.get(current) {
+            // Create hop from parent to current
+            let hop = CascadeHop {
+                source_oid: pgrx::pg_sys::Oid::INVALID, // Will be resolved later
+                target_entity: current.to_string(),
+            };
+            path.push(hop);
+            current = parent;
+        } else {
+            break;
+        }
+    }
+
+    // Reverse to get root -> leaf order
+    path.reverse();
+
+    CascadePath { hops: path }
 }
 
 #[cfg(test)]
@@ -203,5 +295,30 @@ mod tests {
         let path = &paths[0];
         assert_eq!(path.hops.len(), 1);
         assert_eq!(path.hops[0].target_entity, "tb_item");
+    }
+
+    #[test]
+    fn test_extract_cascade_paths_multi_hop() {
+        // Test for cycle 3: multi-hop JOIN chain
+        let sql = "SELECT 1 FROM tb_order o \
+                   JOIN tb_group g ON o.pk_order = g.fk_order \
+                   JOIN tb_item i ON g.pk_group = i.fk_group";
+        let result = extract_cascade_paths(sql, "tb_order", "pk_order");
+
+        // Should succeed and return paths
+        assert!(result.is_ok());
+        let paths = result.unwrap();
+
+        // Should find tb_item as a leaf table
+        let item_path = paths.iter().find(|p| {
+            p.hops.last().map(|h| h.target_entity == "tb_item").unwrap_or(false)
+        });
+        assert!(item_path.is_some(), "Should find path to tb_item");
+
+        let path = item_path.unwrap();
+        // Should have 2 hops: order -> group -> item
+        assert_eq!(path.hops.len(), 2);
+        assert_eq!(path.hops[0].target_entity, "tb_group");
+        assert_eq!(path.hops[1].target_entity, "tb_item");
     }
 }
