@@ -1,0 +1,33 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      # pgrx requires cargo-pgrx to be installed even for `cargo publish`,
+      # because the build script invokes pgrx machinery.
+      - name: Install cargo-pgrx
+        run: cargo install --locked cargo-pgrx --version 0.17.0
+
+      # --no-verify skips the local test-compile step.  The crate is already
+      # validated by the ci.yml and clippy.yml workflows that must pass before
+      # a tag can be pushed.  Publishing with --no-verify avoids the need to
+      # spin up a full PostgreSQL 18 dev environment here.
+      - name: Publish to crates.io
+        run: cargo publish --no-default-features --features pg18 --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

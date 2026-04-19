@@ -19,7 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx --version 0.16.1
+        run: cargo install --locked cargo-pgrx --version 0.17.0
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

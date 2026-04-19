@@ -215,7 +215,7 @@ fn follow_cascade_path(
             return Ok(());
         }
         current_ids = crate::queue::spi_batch_lookup(
-            &hop.table_name,
+            hop.table_oid,
             &hop.lookup_col,
             &hop.carry_col,
             &current_ids,

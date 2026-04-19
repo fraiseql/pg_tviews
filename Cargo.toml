@@ -8,8 +8,10 @@ license = "MIT"
 repository = "https://github.com/fraiseql/pg_tviews"
 homepage = "https://github.com/fraiseql/pg_tviews"
 documentation = "https://github.com/fraiseql/pg_tviews"
+readme = "README.md"
 keywords = ["postgresql", "materialized-views", "incremental-refresh", "database", "pgrx"]
 categories = ["database"]
+exclude = [".phases/", "test/", ".github/", "scripts/", "sbom/"]
 
 [lib]
 crate-type = ["cdylib", "lib"]

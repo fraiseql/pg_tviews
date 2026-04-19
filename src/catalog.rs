@@ -116,6 +116,8 @@ impl TviewMeta {
 
     /// Look up metadata by source table OID or view OID.
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
+        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+        // The OID is a validated PostgreSQL object identifier.
         Spi::connect(|client| {
             let args = vec![unsafe {
                 DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
@@ -140,6 +142,8 @@ impl TviewMeta {
 
     /// Look up metadata by entity name
     pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
+        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+        // The entity name is validated before this call.
         Spi::connect(|client| {
             let args = vec![unsafe {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -211,6 +215,8 @@ impl TviewMeta {
     /// ```
     #[allow(dead_code)] // Reason: May be useful in future optimization phases or external code
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
+        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+        // The OID is a validated PostgreSQL object identifier.
         Spi::connect(|client| {
             let args = vec![unsafe {
                 DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())

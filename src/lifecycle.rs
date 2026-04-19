@@ -193,6 +193,8 @@ pub fn invalidate_jsonb_delta_cache() {
 pub extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
 
+    // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
+    // registering callbacks is valid in this context.
     unsafe {
         crate::hooks::ensure_hook_installed();
     }
@@ -200,6 +202,7 @@ pub extern "C-unwind" fn _PG_init() {
     // Register transaction callbacks once at startup.
     // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
     // so registering per-transaction would accumulate N copies after N transactions.
+    // SAFETY: Transaction callbacks are registered in backend initialization context.
     unsafe {
         crate::queue::xact::register_xact_callback();
         crate::queue::xact::register_subxact_callback();

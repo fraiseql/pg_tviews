@@ -127,6 +127,8 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
+    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+    // The entity name is validated before this call.
     let args =
         [
             unsafe {

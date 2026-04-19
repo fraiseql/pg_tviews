@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.81%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.9-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.11-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:
@@ -76,7 +76,7 @@ class Post: ...
 
 ## 📋 Version Status
 
-**Current Version**: `0.1.0-beta.9` (March 2026)
+**Current Version**: `0.1.0-beta.11` (April 2026)
 - **Status**: Public Beta - Feature-complete, API may change
 - **Production Use**: Suitable for evaluation, not mission-critical systems
 - **Support**: Community support via GitHub issues

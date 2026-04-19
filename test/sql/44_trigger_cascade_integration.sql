@@ -347,15 +347,15 @@ WHERE data->'author'->'company'->>'industry' = 'Tech & Innovation';
 
 SELECT
     entity,
-    array_length(dependencies, 1) AS dep_count,
+    array_length(cascade_paths, 1) AS cascade_count,
     array_length(fk_columns, 1) AS fk_count,
     array_length(uuid_fk_columns, 1) AS uuid_fk_count
 FROM pg_tview_meta
 ORDER BY entity;
 -- Expected:
---   company: 0 deps, 0 fks, 0 uuid_fks
---   user: 1 dep, 1 fk, 1 uuid_fk
---   post: 2 deps, 1 fk, 1 uuid_fk
+--   company: 0 cascades, 0 fks, 0 uuid_fks
+--   user: 1 cascade, 1 fk, 1 uuid_fk
+--   post: 2 cascades, 1 fk, 1 uuid_fk
 
 \echo '✓ Test 9 passed: Metadata integrity correct'
 

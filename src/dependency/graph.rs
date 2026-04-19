@@ -85,6 +85,8 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
         |s| Ok(s.to_string()),
     )?;
 
+    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+    // The view/schema names are validated before this call.
     let args = vec![
         unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe {

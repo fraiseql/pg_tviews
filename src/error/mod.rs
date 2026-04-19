@@ -401,11 +401,12 @@ impl From<std::io::Error> for TViewError {
 
 /// Convert `TViewError` to pgrx `SpiError` for use in SPI closures.
 ///
-/// Maps to the closest `SpiErrorCodes` variant. Most callers wrap the
-/// result back into `TViewError` via `map_err`, so the specific variant
-/// mainly affects error messages in SPI contexts.
+/// `pgrx::spi::SpiError` has no string-carrying variant, so the original
+/// error detail cannot be preserved in the return value. We log it as a
+/// PostgreSQL WARNING before converting so the message is not silently lost.
 impl From<TViewError> for pgrx::spi::Error {
-    fn from(_e: TViewError) -> Self {
+    fn from(e: TViewError) -> Self {
+        pgrx::warning!("TViewError crossing SPI boundary (detail will be lost): {e}");
         Self::SpiError(pgrx::spi::SpiErrorCodes::OpUnknown)
     }
 }

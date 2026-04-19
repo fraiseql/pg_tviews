@@ -225,11 +225,11 @@ SELECT COUNT(*) FROM tv_user WHERE pk_user = 1;
 
 SELECT
     entity,
-    array_length(dependencies, 1) AS dependency_count,
+    array_length(cascade_paths, 1) AS cascade_count,
     array_length(fk_columns, 1) AS fk_count
 FROM pg_tview_meta
 ORDER BY entity;
--- Expected: user (0 deps, 0 fks), post (depends on user, 1 fk)
+-- Expected: user (0 cascades, 0 fks), post (1 cascade, 1 fk)
 
 \echo '✓ Test 8 passed: Metadata correct'
 

@@ -40,6 +40,8 @@ static mut HOOK_IN_PROGRESS: bool = false;
 /// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
 /// Install the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 pub unsafe fn install_hook() {
+    // SAFETY: install_hook is called during extension load, modifying global PostgreSQL
+    // hook pointers. The hook is a valid function pointer matching the C signature.
     unsafe {
         PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
         pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
@@ -49,6 +51,8 @@ pub unsafe fn install_hook() {
 /// Check if hook is installed, install it if not
 /// This is called lazily to avoid issues during postmaster startup
 pub unsafe fn ensure_hook_installed() {
+    // SAFETY: Called lazily from PostgreSQL backend context. Modifies static to track
+    // initialization state.
     unsafe {
         static mut HOOK_INSTALLED: bool = false;
 
@@ -268,11 +272,14 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 /// Returns `Ok(true)` if the hook handled the statement, `Ok(false)` if it should
 /// pass through. Returns `Err` on failures that should abort with `error!()` —
 /// the caller is responsible for resetting `HOOK_IN_PROGRESS` before raising.
+///
+/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
     query_string: *const ::std::os::raw::c_char,
 ) -> Result<bool, TViewError> {
-    // Safety: all pointer dereferences are guarded by null checks above each use.
+    // SAFETY: All pointer dereferences are guarded by null checks above each use.
     unsafe {
         if ctas.is_null() {
             return Ok(false);
@@ -586,11 +593,14 @@ fn drain_pending_populates() {
 /// `Ok(false)` to let the standard handler process the remaining tables.
 ///
 /// Returns `Err` on failures — caller resets `HOOK_IN_PROGRESS` before raising.
+///
+/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
     _query_string: *const ::std::os::raw::c_char,
 ) -> Result<bool, TViewError> {
-    // Safety: all pointer dereferences are guarded by null checks.
+    // SAFETY: All pointer dereferences are guarded by null checks.
     unsafe {
         if drop_stmt.is_null() {
             return Ok(false);
@@ -689,11 +699,14 @@ unsafe fn handle_drop_table(
 }
 
 /// Handle ALTER TABLE statements on TVIEW tables
+///
+/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_alter_table(
     alter_stmt: *mut pg_sys::AlterTableStmt,
     _query_string: *const ::std::os::raw::c_char,
 ) -> Result<bool, TViewError> {
-    // Safety: all pointer dereferences are guarded by null checks.
+    // SAFETY: All pointer dereferences are guarded by null checks.
     unsafe {
         if alter_stmt.is_null() {
             return Ok(false);
@@ -756,6 +769,9 @@ unsafe fn handle_alter_table(
 }
 
 /// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`
+///
+/// SAFETY: This calls into either a previous PostgreSQL hook or standard_ProcessUtility.
+/// The parameters are raw C pointers from the calling ProcessUtility hook.
 #[allow(clippy::too_many_arguments)] // Reason: PostgreSQL ProcessUtility_hook C callback signature
 unsafe fn call_prev_hook_or_standard(
     pstmt: *mut pg_sys::PlannedStmt,
@@ -767,6 +783,7 @@ unsafe fn call_prev_hook_or_standard(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
+    // SAFETY: Delegates to PostgreSQL internal hook or standard utility handler.
     unsafe {
         match PREV_PROCESS_UTILITY_HOOK {
             Some(prev_hook) => {

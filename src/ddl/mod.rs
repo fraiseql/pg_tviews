@@ -32,7 +32,8 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
     crate::validation::validate_sql_identifier(tview_name, "tview_name")
         .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
 
-    // Ensure ProcessUtility hook is installed for DDL syntax support
+    // Ensure ProcessUtility hook is installed for DDL syntax support.
+    // SAFETY: Called from PostgreSQL backend context, hook installation is valid.
     unsafe {
         crate::hooks::ensure_hook_installed();
     }

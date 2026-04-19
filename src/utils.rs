@@ -33,6 +33,9 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
 
     let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
 
+    // SAFETY: spi_run_ddl is only called from PostgreSQL backend context where SPI
+    // functions are valid. SPI_connect_ext/SPI_execute_extended/SPI_finish
+    // are thread-local PostgreSQL operations.
     unsafe {
         // SPI_OPT_NONATOMIC allows DDL in SPI context without triggering the
         // "attempted to execute DDL in atomic SPI context" assertion in PG18.
@@ -196,11 +199,22 @@ pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
 static OID_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Invalidate the OID→relname cache
-/// Called when DDL creates/drops tables
+/// Global cache for OID → qualified relname mappings (schema-qualified)
+/// Populated by `qualified_relname_from_oid`; invalidated alongside `OID_RELNAME_CACHE`.
+static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Invalidate the OID→relname caches (both bare and schema-qualified).
+/// Called when DDL creates/drops tables.
 pub fn invalidate_oid_relname_cache() {
-    let mut cache = OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.clear();
+    OID_RELNAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    OID_QUALIFIED_RELNAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 /// Global cache for view column names (view_name → column names)
@@ -274,6 +288,59 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         .unwrap_or_else(|e| e.into_inner())
         .insert(oid, name.clone());
     Ok(name)
+}
+
+/// Look up the schema-qualified, properly-quoted name for a relation OID.
+///
+/// Returns `"schema"."table"` using `quote_ident` on each part so the result is safe
+/// for direct embedding in a FROM clause regardless of `search_path` or special characters.
+/// Results are cached per session.
+pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
+    // Fast path: check cache
+    {
+        let cache = OID_QUALIFIED_RELNAME_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(name) = cache.get(&oid) {
+            return Ok(name.clone());
+        }
+    }
+
+    // Slow path: resolve via pg_class + pg_namespace
+    let qname: String = Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }];
+        let mut rows = client.select(
+            "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS qname \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.oid = $1",
+            None,
+            &args,
+        )?;
+
+        if let Some(row) = rows.next() {
+            row["qname"].value::<String>()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
+                    query: "qualified_relname_from_oid".to_string(),
+                    error: "qname column is NULL".to_string(),
+                })
+            })
+        } else {
+            Err(spi::Error::from(crate::TViewError::SpiError {
+                query: "qualified_relname_from_oid".to_string(),
+                error: format!("No pg_class entry for oid: {oid:?}"),
+            }))
+        }
+    })?;
+
+    // Cache the result
+    OID_QUALIFIED_RELNAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(oid, qname.clone());
+    Ok(qname)
 }
 
 /// Get the list of column names for a view/table by name. Results are cached per session.

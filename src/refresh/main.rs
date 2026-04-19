@@ -414,6 +414,8 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps);
 
     // Execute update
+    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+    // The JSONB patch data and INT8 primary key are validated structured data.
     Spi::run_with_args(
         &sql,
         &[

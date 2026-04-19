@@ -22,6 +22,10 @@ pub struct JoinPath {
     pub initial_col: String,
     /// Intermediate hops to reach the root table's PK
     pub steps: Vec<JoinStep>,
+    /// Column on the root table that the last hop (or initial_col) connects to.
+    /// Used by the resolver to detect when a reverse-lookup hop through the
+    /// root table is needed (i.e. when this is NOT the entity PK column).
+    pub root_join_col: String,
 }
 
 /// One intermediate SPI query step in a join path.
@@ -392,10 +396,23 @@ fn build_path(graph: &JoinGraph, leaf: &str, root: &str) -> Option<JoinPath> {
         });
     }
 
+    // Extract the root table's column from the edge connecting to it.
+    // This tells the resolver whether the path already terminates at the
+    // entity PK or whether a reverse-lookup hop is needed.
+    let last_idx = chain.len() - 1;
+    let root_edge = graph.edges_between(&chain[last_idx - 1], &chain[last_idx]);
+    let root_edge = root_edge.first()?;
+    let root_join_col = if root_edge.left_table == chain[last_idx] {
+        root_edge.left_col.clone()
+    } else {
+        root_edge.right_col.clone()
+    };
+
     Some(JoinPath {
         source_table: chain[0].clone(),
         initial_col,
         steps,
+        root_join_col,
     })
 }
 
@@ -419,6 +436,10 @@ mod tests {
             path.steps.is_empty(),
             "single hop should have no intermediate steps"
         );
+        assert_eq!(
+            path.root_join_col, "pk_order",
+            "root_join_col should be the root's PK (child→parent FK)"
+        );
     }
 
     #[test]
@@ -436,6 +457,7 @@ mod tests {
         let group_path = paths.iter().find(|p| p.source_table == "tb_group").unwrap();
         assert_eq!(group_path.initial_col, "fk_order");
         assert!(group_path.steps.is_empty());
+        assert_eq!(group_path.root_join_col, "pk_order");
 
         let item_path = paths.iter().find(|p| p.source_table == "tb_item").unwrap();
         assert_eq!(item_path.initial_col, "fk_group");
@@ -511,5 +533,30 @@ mod tests {
         let sql = "SELECT 1 FROM tb_order o JOIN tb_group g ON g.fk_order = o.pk_order";
         let paths = extract_join_paths(sql, "tb_nonexistent").unwrap();
         assert!(paths.is_empty());
+    }
+
+    /// Issue #007: When the root table holds the FK (lookup/dimension join),
+    /// root_join_col must reflect the root's FK column, not its PK.
+    /// The resolver uses this to detect the need for a reverse-lookup hop.
+    #[test]
+    fn test_lookup_table_join_root_holds_fk() {
+        let sql = "SELECT o.pk_order, o.fk_currency, c.iso_code \
+                   FROM tb_order o \
+                   LEFT JOIN tb_currency c ON o.fk_currency = c.pk_currency";
+
+        let paths = extract_join_paths(sql, "tb_order").unwrap();
+        assert_eq!(paths.len(), 1);
+
+        let path = &paths[0];
+        assert_eq!(path.source_table, "tb_currency");
+        assert_eq!(path.initial_col, "pk_currency");
+        assert!(
+            path.steps.is_empty(),
+            "direct lookup join has no intermediate steps"
+        );
+        assert_eq!(
+            path.root_join_col, "fk_currency",
+            "root_join_col must be the FK on the root table, not its PK"
+        );
     }
 }

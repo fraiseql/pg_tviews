@@ -2,94 +2,133 @@
 -- Verify CREATE TABLE tv_ AS SELECT ... and pg_tviews_create() produce identical results
 
 -- Clean up any existing test data
-DROP TABLE IF EXISTS tb_test_user CASCADE;
-DROP VIEW IF EXISTS v_test_user CASCADE;
-DROP TABLE IF EXISTS tv_test_user1 CASCADE;
-DROP TABLE IF EXISTS tv_test_user2 CASCADE;
+SELECT pg_tviews_drop('ddl_user') WHERE EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'ddl_user');
+SELECT pg_tviews_drop('fn_user') WHERE EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'fn_user');
+DROP TABLE IF EXISTS tb_ddl_user CASCADE;
+DROP TABLE IF EXISTS tb_fn_user CASCADE;
+DROP VIEW IF EXISTS v_ddl_user CASCADE;
+DROP VIEW IF EXISTS v_fn_user CASCADE;
+DROP TABLE IF EXISTS tv_ddl_user CASCADE;
+DROP TABLE IF EXISTS tv_fn_user CASCADE;
 
--- Create test base table
-CREATE TABLE tb_test_user (
-    pk_test_user BIGSERIAL PRIMARY KEY,
-    id UUID DEFAULT gen_random_uuid(),
+-- Create two identical base tables (entity derived from pk_<entity>)
+CREATE TABLE tb_ddl_user (
+    pk_ddl_user BIGSERIAL PRIMARY KEY,
+    id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     name TEXT NOT NULL,
     email TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Insert test data
-INSERT INTO tb_test_user (name, email) VALUES 
-    ('Alice', 'alice@example.com'),
-    ('Bob', 'bob@example.com');
+CREATE TABLE tb_fn_user (
+    pk_fn_user BIGSERIAL PRIMARY KEY,
+    id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    email TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 
--- Method 1: CREATE TABLE tv_ AS SELECT ... DDL (intercepted by ProcessUtility hook)
-CREATE TABLE tv_test_user1 AS
+-- Insert identical test data
+INSERT INTO tb_ddl_user (pk_ddl_user, name, email) VALUES
+    (1, 'Alice', 'alice@example.com'),
+    (2, 'Bob', 'bob@example.com');
+
+INSERT INTO tb_fn_user (pk_fn_user, name, email) VALUES
+    (1, 'Alice', 'alice@example.com'),
+    (2, 'Bob', 'bob@example.com');
+
+-- Method 1: CREATE TABLE tv_ AS SELECT ... DDL (intercepted by event trigger)
+CREATE TABLE tv_ddl_user AS
 SELECT
-    pk_test_user as pk_test_user,
+    pk_ddl_user,
     id,
-    name,
     jsonb_build_object(
         'id', id,
         'name', name,
         'email', email,
         'created_at', created_at
     ) as data
-FROM tb_test_user;
+FROM tb_ddl_user;
 
 -- Method 2: pg_tviews_create() function
-SELECT pg_tviews_create('tv_test_user2', '
+SELECT pg_tviews_create('fn_user', $$
 SELECT
-    pk_test_user as pk_test_user,
+    pk_fn_user,
     id,
-    name,
     jsonb_build_object(
-        ''id'', id,
-        ''name'', name,
-        ''email'', email,
-        ''created_at'', created_at
+        'id', id,
+        'name', name,
+        'email', email,
+        'created_at', created_at
     ) as data
-FROM tb_test_user
-');
+FROM tb_fn_user
+$$);
 
 -- Compare results
 SELECT 'DDL Method Results:' as method;
-SELECT * FROM tv_test_user1 ORDER BY pk_test_user;
+SELECT * FROM tv_ddl_user ORDER BY pk_ddl_user;
 
 SELECT 'Function Method Results:' as method;
-SELECT * FROM tv_test_user2 ORDER BY pk_test_user;
+SELECT * FROM tv_fn_user ORDER BY pk_fn_user;
 
--- Check metadata
+-- Check metadata: both should have entries
 SELECT 'Metadata Comparison:' as comparison;
-SELECT 
+SELECT
     entity,
     view_oid,
     table_oid,
-    array_length(dependencies, 1) as dep_count
-FROM pg_tview_meta 
-WHERE entity = 'test_user1' OR entity = 'test_user2'
+    array_length(cascade_paths, 1) as cascade_count
+FROM pg_tview_meta
+WHERE entity IN ('ddl_user', 'fn_user')
 ORDER BY entity;
 
--- Check triggers
-SELECT 'Trigger Comparison:' as comparison;
-SELECT 
-    tgname,
-    tgrelid::regclass::text as table_name,
-    obj_description(tgrelid, 'pg_class') as table_comment
-FROM pg_trigger 
-WHERE tgname LIKE '%test_user%'
-ORDER BY tgname;
+-- Verify both methods created the same number of rows
+DO $$
+DECLARE
+    ddl_count INTEGER;
+    fn_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO ddl_count FROM tv_ddl_user;
+    SELECT COUNT(*) INTO fn_count FROM tv_fn_user;
 
--- Check views
+    IF ddl_count != fn_count THEN
+        RAISE EXCEPTION 'Row count mismatch: DDL=%, function=%', ddl_count, fn_count;
+    END IF;
+
+    IF ddl_count != 2 THEN
+        RAISE EXCEPTION 'Expected 2 rows each, got %', ddl_count;
+    END IF;
+
+    RAISE NOTICE 'Both methods produced % rows', ddl_count;
+END $$;
+
+-- Verify both have metadata entries
+DO $$
+DECLARE
+    meta_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO meta_count
+    FROM pg_tview_meta
+    WHERE entity IN ('ddl_user', 'fn_user');
+
+    IF meta_count != 2 THEN
+        RAISE EXCEPTION 'Expected 2 metadata entries, got %', meta_count;
+    END IF;
+
+    RAISE NOTICE 'Both methods created metadata entries';
+END $$;
+
+-- Check views exist
 SELECT 'View Comparison:' as comparison;
-SELECT 
+SELECT
     schemaname,
-    viewname,
-    definition 
-FROM pg_views 
-WHERE viewname LIKE '%test_user%'
+    viewname
+FROM pg_views
+WHERE viewname IN ('v_ddl_user', 'v_fn_user')
 ORDER BY viewname;
 
 -- Clean up
-DROP TABLE IF EXISTS tb_test_user CASCADE;
-DROP VIEW IF EXISTS v_test_user CASCADE;
-DROP TABLE IF EXISTS tv_test_user1 CASCADE;
-DROP TABLE IF EXISTS tv_test_user2 CASCADE;
+SELECT pg_tviews_drop('ddl_user');
+SELECT pg_tviews_drop('fn_user');
+DROP TABLE IF EXISTS tb_ddl_user CASCADE;
+DROP TABLE IF EXISTS tb_fn_user CASCADE;

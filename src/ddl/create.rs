@@ -86,6 +86,9 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
 
     // Query information_schema.columns for the column names in order
     let columns: Vec<String> = if let Some(ref schema) = schema_name {
+        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+        // The OID parameter ensures correct type handling in PostgreSQL. Validated strings
+        // from table/schema names are passed as text OID parameters.
         let args = vec![
             unsafe {
                 pgrx::datum::DatumWithOid::new(
@@ -458,6 +461,28 @@ fn resolve_join_path(
         });
     }
 
+    // Check if the path terminates at the entity PK. If root_join_col is
+    // NOT pk_{entity}, the incoming IDs are foreign keys on the root table
+    // (not entity PKs), so we need a reverse-lookup hop through the root.
+    let pk_col = format!("pk_{entity_name}");
+    if jp.root_join_col != pk_col {
+        let root_table = format!("tb_{entity_name}");
+        let root_oid = *oid_map
+            .get(&root_table)
+            .ok_or_else(|| TViewError::CatalogError {
+                operation: "resolve cascade path reverse-lookup hop".to_string(),
+                pg_error: format!(
+                    "Root table '{root_table}' not found in base table dependencies"
+                ),
+            })?;
+        hops.push(cascade_path::CascadeHop {
+            table_oid: root_oid,
+            table_name: root_table,
+            lookup_col: jp.root_join_col.clone(),
+            carry_col: pk_col,
+        });
+    }
+
     Ok(cascade_path::CascadePath {
         source_oid,
         source_table: jp.source_table.clone(),
@@ -684,6 +709,8 @@ fn create_materialized_table(
     let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
     let view_name_for_types = format!("v_{entity}");
     let actual_col_types: std::collections::HashMap<String, String> = {
+        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
+        // The view/schema names are validated before this point.
         let args = vec![
             unsafe {
                 DatumWithOid::new(

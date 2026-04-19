@@ -33,9 +33,8 @@ enum XactEvent {
 /// This uses `PostgreSQL`'s `RegisterXactCallback` FFI to install our handler.
 /// The callback will be invoked at transaction commit/abort.
 pub unsafe fn register_xact_callback() {
-    // Safety: We're calling into PostgreSQL FFI
-    // The callback function must be extern "C" and #[no_mangle]
-
+    // SAFETY: Called from PostgreSQL backend context. RegisterXactCallback
+    // registers a valid extern "C" callback function pointer.
     unsafe {
         pg_sys::RegisterXactCallback(Some(tview_xact_callback), std::ptr::null_mut());
     }
@@ -46,9 +45,8 @@ pub unsafe fn register_xact_callback() {
 /// This uses `PostgreSQL`'s `RegisterSubXactCallback` FFI to handle savepoints.
 /// The callback will be invoked when savepoints are created/released/rolled back.
 pub unsafe fn register_subxact_callback() {
-    // Safety: We're calling into PostgreSQL FFI
-    // The callback function must be extern "C" and #[no_mangle]
-
+    // SAFETY: Called from PostgreSQL backend context. RegisterSubXactCallback
+    // registers a valid extern "C" callback function pointer.
     unsafe {
         pg_sys::RegisterSubXactCallback(Some(tview_subxact_callback), std::ptr::null_mut());
     }
