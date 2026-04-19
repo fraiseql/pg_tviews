@@ -209,6 +209,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔧 JSONB Optimized**: Built for modern JSONB-heavy applications
 - **📊 Array Support**: Full INSERT/DELETE handling for array columns
 - **🐛 Excellent Debugging**: Rich error messages, debug functions, health checks
+- **⏸️ Bulk Operations**: Suspend/resume triggers for safe bulk data loading (Issue #44)
 
 ---
 
@@ -365,6 +366,80 @@ SELECT * FROM pg_tviews_health_check();
 -- View real-time metrics
 SELECT * FROM pg_tviews_queue_realtime;
 ```
+
+---
+
+## ⏸️ Bulk Operations (Issue #44)
+
+For bulk INSERT/UPDATE/DELETE operations (e.g., seed data loading, ETL imports) on tables with TVIEWs, use the suspend/resume API to prevent trigger-based refresh during the operation:
+
+### Basic Pattern
+
+```sql
+-- Suspend trigger-based refresh globally
+SELECT pg_tviews_suspend_triggers();
+
+-- Perform bulk operations
+INSERT INTO customers SELECT * FROM staging_customers;
+INSERT INTO orders SELECT * FROM staging_orders;
+
+-- Resume triggers and refresh all TVIEWs in dependency order
+SELECT pg_tviews_resume_triggers();
+SELECT pg_tviews_refresh_all();
+```
+
+### Why This Matters
+
+When bulk inserting into multiple related tables:
+- Triggers fire on EACH insert
+- But dependent TVIEWs may not have all their data yet
+- This causes silent refresh failures (due to ON CONFLICT DO NOTHING)
+
+The suspend/resume API ensures:
+1. All data is loaded before any refresh happens
+2. TVIEWs are refreshed in dependency order
+3. JOINs in TVIEWs succeed because all tables are populated
+
+### Transaction-Scoped
+
+Suspension auto-resumes at transaction end:
+
+```sql
+BEGIN;
+  SELECT pg_tviews_suspend_triggers();
+  -- Bulk operations
+  -- No explicit resume needed!
+COMMIT;  -- Auto-resumes and enqueues changes
+
+SELECT pg_tviews_refresh_all();
+```
+
+### API Reference
+
+- `pg_tviews_suspend_triggers()` - Start suspension (supports nesting)
+- `pg_tviews_resume_triggers()` - Resume; enqueues changed entities
+- `pg_tviews_refresh_all()` - Refresh all queued TVIEWs in dependency order
+- `pg_tviews_is_suspended()` - Check current suspension state
+- `pg_tviews_suspended_entities()` - List entities that changed during suspension
+
+### Nested Suspension
+
+Calls can be nested; each must be matched:
+
+```sql
+SELECT pg_tviews_suspend_triggers();  -- depth 1
+SELECT pg_tviews_suspend_triggers();  -- depth 2
+-- operations...
+SELECT pg_tviews_resume_triggers();   -- depth 1
+SELECT pg_tviews_resume_triggers();   -- depth 0 (now resumed)
+```
+
+### Use Cases
+
+- **Seed data loading**: DB initialization with initial data set
+- **ETL imports**: Loading data from external sources into staging tables
+- **Snapshot imports**: Restoring from database dumps or migrations
+- **Bulk migrations**: Large data transformations
 
 ---
 

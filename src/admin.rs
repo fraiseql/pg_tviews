@@ -98,7 +98,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
 /// # Errors
 /// Returns error if any TVIEW cannot be refreshed
 #[pg_extern]
-fn pg_tviews_refresh_all() -> TViewResult<()> {
+fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
     use crate::catalog::TviewMeta;
 
     // Get all TVIEW metadata

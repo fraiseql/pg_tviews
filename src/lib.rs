@@ -49,6 +49,7 @@ mod admin;
 mod cascade;
 mod health;
 mod lifecycle;
+mod suspend;
 
 // Public API modules
 pub mod config;
@@ -65,8 +66,115 @@ pub use catalog::entity_for_table;
 pub use error::{TViewError, TViewResult};
 pub use lifecycle::check_jsonb_delta_available;
 pub use queue::RefreshKey;
+pub use suspend::{is_suspended, record_change, get_changed_entities, clear_changed_entities, suspend, resume};
 
 pg_module_magic!();
+
+#[pg_extern]
+pub fn pg_tviews_is_suspended() -> bool {
+    crate::suspend::is_suspended()
+}
+
+#[pg_extern]
+pub fn pg_tviews_suspend_triggers() {
+    if let Err(e) = crate::suspend::suspend() {
+        error!("{}", e);
+    }
+}
+
+#[pg_extern]
+pub fn pg_tviews_resume_triggers() {
+    match crate::suspend::resume() {
+        Ok(_) => {
+            #[allow(clippy::collapsible_if)]
+            if !crate::suspend::is_suspended() {
+                if let Err(e) = crate::suspend::enqueue_suspended_changes() {
+                    error!("{}", e);
+                }
+            }
+        }
+        Err(e) => error!("{}", e),
+    }
+}
+
+
+
+#[pg_extern]
+pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
+    if crate::suspend::is_suspended() {
+        return Err("Cannot refresh: triggers are suspended".to_string());
+    }
+    
+    let start = std::time::Instant::now();
+    
+    // Read queued entities
+    let queued_entities = read_queued_entities().map_err(|e| format!("Failed to read queue: {:?}", e))?;
+    let queued_count = queued_entities.len();
+    
+    if queued_count == 0 {
+        return Ok(pgrx::datum::JsonB(serde_json::json!({
+            "refreshed_count": 0,
+            "queued_count": 0,
+            "duration_ms": start.elapsed().as_millis(),
+        })));
+    }
+    
+    // Load graph and sort
+    let graph = crate::queue::graph::EntityDepGraph::load()
+        .map_err(|e| format!("Failed to load dependency graph: {:?}", e))?;
+    let sorted_entities: Vec<String> = graph.topo_order.into_iter().filter(|e| queued_entities.contains(e)).collect();
+    
+    // Refresh each
+    let mut refreshed_count = 0;
+    for entity in &sorted_entities {
+        if let Err(e) = refresh_entity(entity) {
+            warning!("Failed to refresh entity {}: {:?}", entity, e);
+            continue;
+        }
+        refreshed_count += 1;
+    }
+    
+    // Clear queue
+    clear_refresh_queue()?;
+    
+    let duration_ms = start.elapsed().as_millis();
+    
+    Ok(pgrx::datum::JsonB(serde_json::json!({
+        "refreshed_count": refreshed_count,
+        "queued_count": queued_count,
+        "duration_ms": duration_ms,
+    })))
+}
+
+fn read_queued_entities() -> pgrx::spi::SpiResult<std::collections::HashSet<String>> {
+    Spi::connect(|client| {
+        let rows = client.select("SELECT DISTINCT entity FROM pg_tview_refresh_queue", None, &[])?;
+        let mut entities = std::collections::HashSet::new();
+        for row in rows {
+            if let Some(entity) = row["entity"].value::<String>()? {
+                entities.insert(entity);
+            } else {
+                error!("entity column is NULL in pg_tview_refresh_queue");
+            }
+        }
+        Ok(entities)
+    })
+}
+
+fn refresh_entity(entity: &str) -> Result<(), String> {
+    Spi::run(&format!("SELECT pg_tviews_refresh('{}')", entity))
+        .map_err(|e| format!("Full refresh failed for {}: {:?}", entity, e))
+}
+
+fn clear_refresh_queue() -> Result<(), String> {
+    Spi::run("DELETE FROM pg_tview_refresh_queue")
+        .map_err(|e| format!("Failed to clear queue: {:?}", e))
+}
+
+#[pg_extern]
+pub fn pg_tviews_suspended_entities() -> Vec<String> {
+    crate::suspend::get_changed_entities()
+}
 
 #[cfg(any(test, feature = "pg_test"))]
 pub mod pg_test {
@@ -83,7 +191,7 @@ pub mod pg_test {
 #[pg_schema]
 mod tests {
     use crate::error::TViewError;
-    use pgrx::prelude::*;
+use pgrx::prelude::*;
 
     #[pg_test]
     fn sanity_check() {
@@ -209,5 +317,52 @@ mod tests {
             restored.0["name"], "rust",
             "refresh should restore data from the backing view"
         );
+    }
+
+    #[pg_test]
+    fn test_suspend_triggers_basic() {
+        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
+        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()").unwrap().unwrap();
+        assert!(is_suspended);
+    }
+
+    #[pg_test]
+    fn test_resume_triggers_basic() {
+        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
+        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
+        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()").unwrap().unwrap();
+        assert!(!is_suspended);
+    }
+
+    #[pg_test]
+    fn test_nested_suspend_resume() {
+        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
+        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
+        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()").unwrap().unwrap();
+        assert!(is_suspended);
+
+        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
+        let still_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()").unwrap().unwrap();
+        assert!(still_suspended);
+
+        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
+        let not_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()").unwrap().unwrap();
+        assert!(!not_suspended);
+    }
+
+    #[pg_test]
+    fn test_resume_without_suspend_errors() {
+        let result = Spi::run("SELECT pg_tviews_resume_triggers()");
+        assert!(result.is_err(), "Resume without suspend should error");
+    }
+
+    #[pg_test]
+    fn test_refresh_all_returns_json() {
+        let result = Spi::get_one::<pgrx::JsonB>("SELECT pg_tviews_refresh_all()");
+        assert!(result.is_ok(), "pg_tviews_refresh_all should return JSON");
+        let json = result.unwrap().unwrap();
+        assert!(json.0.is_object(), "Should return JSON object");
+        assert!(json.0.get("refreshed_count").is_some(), "Should have refreshed_count");
+        assert!(json.0.get("queued_count").is_some(), "Should have queued_count");
     }
 }

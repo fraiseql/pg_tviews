@@ -102,6 +102,17 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // handled by the ProcessUtility hook intercepting COMMIT instead.
     match xact_event {
         XactEvent::PreCommit | XactEvent::Commit => {
+            #[allow(clippy::collapsible_if)]
+            // Auto-enqueue suspended changes if any
+            if crate::suspend::is_suspended() {
+                if let Err(e) = crate::suspend::enqueue_suspended_changes() {
+                    warning!("Failed to enqueue suspended changes: {}", e);
+                }
+            }
+
+            // Auto-resume suspension
+            crate::suspend::force_resume();
+
             // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
             // Clear audit buffer as safety net (should already be empty after flush).
             crate::audit::clear_audit_buffer();
@@ -114,6 +125,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::metrics::metrics_api::reset_metrics();
         }
         XactEvent::Abort => {
+            // Auto-resume suspension on abort (discard changes)
+            crate::suspend::force_resume();
+
             clear_queue();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();

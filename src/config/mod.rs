@@ -14,6 +14,7 @@
 //! | `pg_tviews.metrics_enabled` | bool | false | Collect refresh metrics |
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | Logging verbosity |
+//! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
 //!
 //! ## Compile-time Constants
 //!
@@ -42,6 +43,7 @@ static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -134,6 +136,15 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.suspend_triggers",
+        c"Suspend trigger-based refresh during bulk operations.",
+        c"When true, row-level triggers will not enqueue refresh tasks.",
+        &SUSPEND_TRIGGERS_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -201,4 +212,10 @@ pub fn audit_enabled() -> bool {
 #[must_use]
 pub fn unlogged_by_default() -> bool {
     UNLOGGED_BY_DEFAULT_GUC.get()
+}
+
+/// Check if trigger-based refresh is suspended (default: false)
+#[must_use]
+pub fn suspend_triggers() -> bool {
+    SUSPEND_TRIGGERS_GUC.get()
 }

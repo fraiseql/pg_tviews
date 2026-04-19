@@ -79,6 +79,29 @@ fn pg_tview_trigger_handler<'a>(
         }
     };
 
+    // If triggers are suspended, record the change instead of enqueuing
+    if crate::config::suspend_triggers() {
+        // Record direct entity if any
+        if let Ok(Some(entity_info)) = crate::queue::cache::table_cache::entity_info_cached(table_oid) {
+            crate::suspend::record_change(&entity_info.name);
+        }
+
+        // Record entities from cascade paths (indirect dependencies)
+        let paths: Vec<crate::cascade_path::CascadePath> =
+            match crate::queue::cache::cascade_cache::cascade_paths_for_table(table_oid) {
+                Ok(p) => p,
+                Err(e) => {
+                    warning!("Failed to load cascade paths for suspended trigger: {:?}", e);
+                    vec![]
+                }
+            };
+        for path in paths {
+            crate::suspend::record_change(&path.entity_name);
+        }
+
+        return Ok(None);
+    }
+
     // 1. Direct entity: this table IS a TVIEW source (e.g. tb_user → entity "user")
     match crate::queue::cache::table_cache::entity_info_cached(table_oid) {
         Ok(Some(entity_info)) => {
@@ -240,11 +263,18 @@ fn follow_cascade_path(
 /// For explicit transactions (BEGIN...COMMIT), both this trigger and the
 /// `ProcessUtility` hook may run. The flush is idempotent — the second call
 /// finds an empty queue and returns immediately.
+///
+/// If triggers are suspended, this trigger skips the flush.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
     _trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    // Skip flush if triggers are suspended
+    if crate::config::suspend_triggers() {
+        return Ok(None);
+    }
+
     if let Err(e) = crate::queue::flush_refresh_queue() {
         warning!("TVIEW refresh failed in statement trigger: {:?}", e);
     }
