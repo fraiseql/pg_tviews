@@ -257,10 +257,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             );
         }
 
-        // After the event trigger returns, populate any TVIEWs created via CTAS.
+        // After the event trigger should have fired, drain any pending populatesand convert
+        // any TVIEWs that weren't converted by the event trigger (fallback for bulk operations).
         // The INSERT runs via SPI (DML, not utility), so it does not re-enter
         // ProcessUtility and there is no reentrancy issue with HOOK_IN_PROGRESS.
         drain_pending_populates();
+        drain_pending_unconverted_tviews();
     }
 
     // Release the reentrancy guard
@@ -507,6 +509,94 @@ pub fn enqueue_pending_populate(tv_table_name: &str, view_name: &str, schema_nam
             view_name: view_name.to_string(),
             schema_name: schema_name.to_string(),
         });
+    }
+}
+
+/// Drain and convert any TVIEW tables that weren't converted by the event trigger.
+///
+/// This is a fallback mechanism for bulk SQL operations where event triggers don't fire.
+/// PostgreSQL's event trigger system may not fire during certain bulk import operations,
+/// so we check if there are any pending TVIEWs still in the cache after the statement
+/// executes and convert them directly.
+fn drain_pending_unconverted_tviews() {
+    // Get all pending unconverted TVIEWs
+    let entries: Vec<(String, String, String)> = PENDING_TVIEW_SELECTS
+        .lock()
+        .map(|mut cache| {
+            cache
+                .drain()
+                .map(|(table_name, (schema_name, select_sql))| {
+                    (table_name, schema_name, select_sql)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if entries.is_empty() {
+        return; // No unconverted TVIEWs, event trigger must have fired
+    }
+
+    // Log that we're using the fallback mechanism
+    notice!(
+        "pg_tviews: Event trigger did not fire for {} TVIEW(s), using fallback conversion",
+        entries.len()
+    );
+
+    // Convert each TVIEW directly in this context
+    for (table_name, schema_name, select_sql) in entries {
+        notice!(
+            "pg_tviews: Fallback converting TVIEW table '{}' (schema: '{}')",
+            table_name,
+            if schema_name.is_empty() {
+                "(current_schema)"
+            } else {
+                &schema_name
+            }
+        );
+
+        // Resolve the target schema
+        let schema_override: Option<&str> = if schema_name.is_empty() {
+            None
+        } else {
+            Some(schema_name.as_str())
+        };
+
+        // Drop the regular table PostgreSQL created and replace it with TVIEW semantics
+        let drop_sql = match schema_override {
+            Some(s) => format!(
+                "DROP TABLE IF EXISTS {}.{} CASCADE",
+                crate::utils::quote_identifier(s),
+                crate::utils::quote_identifier(&table_name),
+            ),
+            None => format!(
+                "DROP TABLE IF EXISTS {} CASCADE",
+                crate::utils::quote_identifier(&table_name)
+            ),
+        };
+
+        if let Err(e) = Spi::run(&drop_sql) {
+            warning!(
+                "pg_tviews: Failed to drop table '{}' during fallback conversion: {e}",
+                table_name
+            );
+            continue;
+        }
+
+        // Create the proper TVIEW: backing view, materialized table, triggers
+        match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
+            Ok(_) => {
+                notice!(
+                    "pg_tviews: Fallback conversion SUCCEEDED for TVIEW '{}'",
+                    table_name
+                );
+            }
+            Err(e) => {
+                warning!(
+                    "pg_tviews: Fallback conversion FAILED for TVIEW '{}': {e}",
+                    table_name
+                );
+            }
+        }
     }
 }
 
