@@ -186,7 +186,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
             Some(dml) => dml,
             None => {
                 // Slow path: build and cache
-                let col_names = crate::utils::get_view_columns(&view_name)?;
+                let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
                 if col_names.is_empty() {
                     return Ok(());
                 }
@@ -567,7 +567,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
-    let col_names = crate::utils::get_view_columns(&view_name)?;
+    let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
 
     // Build DO UPDATE SET clause (update every non-pk column; timestamps use DEFAULT on INSERT)
     let do_update: String = {

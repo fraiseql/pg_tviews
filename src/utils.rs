@@ -351,27 +351,38 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     Ok(qname)
 }
 
-/// Get the list of column names for a view/table by name. Results are cached per session.
+/// Get the list of column names for a view/table by schema-qualified name. Results are cached per session.
 /// Used for UPSERT column lists to avoid repeated pg_attribute queries.
-pub fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
+///
+/// The cache key includes the schema name to avoid collisions when multiple views
+/// have the same name in different schemas.
+pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<String>> {
+    let cache_key = format!("{}.{}", schema_name, view_name);
+
     // Fast path: check cache
     {
         let cache = VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cols) = cache.get(view_name) {
+        if let Some(cols) = cache.get(&cache_key) {
             return Ok(cols.clone());
         }
     }
 
     // Slow path: query and cache
     let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
-        let args = vec![unsafe {
-            DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+        let args = vec![
+            unsafe {
+                DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            },
+            unsafe {
+                DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            },
+        ];
         let rows = client.select(
             "SELECT a.attname::text \
              FROM pg_attribute a \
              JOIN pg_class c ON c.oid = a.attrelid \
-             WHERE c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
              ORDER BY a.attnum",
             None,
             &args,
@@ -390,15 +401,48 @@ pub fn get_view_columns(view_name: &str) -> spi::Result<Vec<String>> {
     VIEW_COLUMNS_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(view_name.to_string(), cols.clone());
+        .insert(cache_key, cols.clone());
     Ok(cols)
 }
 
-/// Get column names for a relation by OID. Resolves name via relname_from_oid,
+/// Get column names for a relation by OID. Resolves schema and name from the OID,
 /// then delegates to get_view_columns for caching.
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
-    let name = relname_from_oid(rel_oid)?;
-    get_view_columns(&name)
+    // Get schema and table name from OID
+    let (schema_name, table_name): (String, String) = Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+        }];
+        let mut rows = client.select(
+            "SELECT n.nspname::text, c.relname::text \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.oid = $1",
+            None,
+            &args,
+        )?;
+
+        if let Some(row) = rows.next() {
+            let schema = row["nspname"].value::<String>()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "get_view_columns_by_oid schema lookup".to_string(),
+                    error: "nspname column is NULL".to_string(),
+                }))?;
+            let table = row["relname"].value::<String>()?
+                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                    query: "get_view_columns_by_oid table lookup".to_string(),
+                    error: "relname column is NULL".to_string(),
+                }))?;
+            Ok((schema, table))
+        } else {
+            Err(spi::Error::from(crate::TViewError::SpiError {
+                query: "get_view_columns_by_oid".to_string(),
+                error: format!("No pg_class entry for oid: {rel_oid:?}"),
+            }))
+        }
+    })?;
+
+    get_view_columns(&schema_name, &table_name)
 }
 
 /// Quote a SQL identifier for safe use in queries.
@@ -479,25 +523,40 @@ mod tests {
         // Clear cache first
         invalidate_view_columns_cache();
 
-        // Populate cache with test entries
+        // Populate cache with test entries using schema-qualified keys
         {
             let mut cache = VIEW_COLUMNS_CACHE.lock().unwrap();
             cache.insert(
-                "v_user".to_string(),
+                "public.v_user".to_string(),
                 vec!["id".to_string(), "name".to_string()],
             );
             cache.insert(
-                "v_post".to_string(),
+                "public.v_post".to_string(),
                 vec!["id".to_string(), "title".to_string(), "user_id".to_string()],
+            );
+            // Test that same view name in different schema creates separate cache entries
+            cache.insert(
+                "app.v_user".to_string(),
+                vec!["id".to_string(), "name".to_string(), "org_id".to_string()],
             );
         }
 
         // Verify entries are there
         {
             let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
-            assert_eq!(cache.len(), 2);
-            assert!(cache.contains_key("v_user"));
-            assert!(cache.contains_key("v_post"));
+            assert_eq!(cache.len(), 3);
+            assert!(cache.contains_key("public.v_user"));
+            assert!(cache.contains_key("public.v_post"));
+            assert!(cache.contains_key("app.v_user"));
+        }
+
+        // Verify different schemas have different column lists
+        {
+            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
+            let public_user = cache.get("public.v_user").unwrap();
+            let app_user = cache.get("app.v_user").unwrap();
+            assert_eq!(public_user.len(), 2);
+            assert_eq!(app_user.len(), 3);
         }
 
         // Invalidate cache
