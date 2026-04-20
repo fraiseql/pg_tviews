@@ -517,32 +517,70 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     let qi_view = quote_identifier(view_name);
     let create_view_sql = format!("CREATE VIEW {qi_schema}.{qi_view} AS {select_sql}");
 
-    crate::utils::spi_run_ddl(&create_view_sql).map_err(|e| TViewError::SpiError {
-        query: create_view_sql.clone(),
-        error: e,
-    })?;
+    // Use notice! instead of info! to ensure visibility
+    notice!("DEBUG: create_backing_view START - schema='{}', view='{}', sql_len={}",
+          schema_name, view_name, create_view_sql.len());
+
+    match crate::utils::spi_run_ddl(&create_view_sql) {
+        Ok(_) => {
+            // Log successful spi_run_ddl
+            notice!("DEBUG: spi_run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
+        }
+        Err(e) => {
+            // Log spi_run_ddl failure
+            notice!("DEBUG: spi_run_ddl FAILED - {}.{} - error: {}",
+                   schema_name, view_name, e);
+            // Note: error!() macro diverges, so this return is unreachable but needed for type checking
+            return Err(TViewError::SpiError {
+                query: create_view_sql.clone(),
+                error: e,
+            });
+        }
+    }
+
+    // Log before verification check
+    notice!("DEBUG: checking if view exists - schema='{}', view='{}' in pg_class",
+          schema_name, view_name);
 
     // Verify the view was created (schema-qualified to avoid false positives across schemas)
     let check_args = vec![
         unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
     ];
-    let exists = Spi::get_one_with_args::<i32>(
+    let exists = match Spi::get_one_with_args::<i32>(
         "SELECT 1 FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
          WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'v'",
         &check_args,
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: format!("Check view {schema_name}.{view_name} exists"),
-        error: e.to_string(),
-    })?
-    .is_some();
+    ) {
+        Ok(result) => {
+            if result.is_some() {
+                // Log successful verification
+                notice!("DEBUG: VERIFIED - backing view {}.{} exists in pg_class",
+                      schema_name, view_name);
+                true
+            } else {
+                // Log verification failure
+                notice!("DEBUG: VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
+                         schema_name, view_name);
+                false
+            }
+        }
+        Err(e) => {
+            // Log verification query failure
+            notice!("DEBUG: verification query FAILED - could not check pg_class: {}", e);
+            // Note: error!() macro diverges, so this return is unreachable but needed for type checking
+            return Err(TViewError::SpiError {
+                query: format!("Check view {schema_name}.{view_name} exists"),
+                error: e.to_string(),
+            });
+        }
+    };
 
     if !exists {
         return Err(TViewError::CatalogError {
             operation: format!("Create view {schema_name}.{view_name}"),
-            pg_error: "View was not created".to_string(),
+            pg_error: "View was not created (CREATE VIEW succeeded but view missing from pg_class)".to_string(),
         });
     }
 
@@ -1155,19 +1193,24 @@ fn transform_raw_select_to_tview(
     // Drop temp view
     crate::utils::spi_run_ddl(&format!("DROP VIEW {qi_temp_view}")).ok();
 
-    // Find primary key column (look for 'id' or first integer/bigint column)
+    // Find primary key column using this priority order:
+    // 1. Column named exactly 'pk' (original source PK, most reliable)
+    // 2. Column that is integer/serial type (natural database PKs)
+    // 3. Column named 'id' (may be UUID identifier, fallback only)
+    // This avoids incorrectly selecting a UUID 'id' column when an actual 'pk' exists.
     let pk_source_col = columns
         .iter()
-        .find(|(name, _)| name == "id")
+        .find(|(name, _)| name == "pk")
         .or_else(|| {
             columns
                 .iter()
                 .find(|(_, typ)| typ.contains("int") || typ.contains("serial"))
         })
+        .or_else(|| columns.iter().find(|(name, _)| name == "id"))
         .map(|(name, _)| name.clone())
         .ok_or_else(|| TViewError::InvalidSelectStatement {
             sql: select_sql.to_string(),
-            reason: "No suitable primary key column found (need 'id' or an integer column)"
+            reason: "No suitable primary key column found (need 'pk', an integer column, or 'id')"
                 .to_string(),
         })?;
 

@@ -31,6 +31,10 @@ use std::sync::{LazyLock, Mutex};
 pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     use std::ffi::CString;
 
+    // ADD THIS: Log start of SPI DDL execution
+    info!("spi_run_ddl() called with SQL ({} chars): {}",
+          sql.len(), &sql[..sql.len().min(200)]);
+
     let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
 
     // SAFETY: spi_run_ddl is only called from PostgreSQL backend context where SPI
@@ -44,7 +48,9 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         #[allow(clippy::cast_possible_wrap)]
         // Reason: PostgreSQL SPI constants are u32, API takes i32
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
-            return Err(format!("SPI_connect_ext failed: {connect_result}"));
+            error!("spi_run_ddl() FAILED: SPI_connect_ext returned error code: {}", connect_result);
+            #[allow(unreachable_code)]
+            return Err(format!("SPI_connect_ext failed (error! should diverge): {connect_result}"));
         }
 
         // Use SPI_execute_extended with allow_nonatomic=true so PostgreSQL 18's
@@ -64,12 +70,14 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         pg_sys::SPI_finish();
 
         if execute_result < 0 {
-            return Err(format!(
-                "SPI_execute_extended returned error code {execute_result} for DDL: {sql}"
-            ));
+            error!("spi_run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}", execute_result, sql);
+            #[allow(unreachable_code)]
+            return Err(format!("SPI_execute_extended failed (error! should diverge): {execute_result}"));
         }
     }
 
+    // ADD THIS: Log successful execution
+    info!("✅ spi_run_ddl() succeeded");
     Ok(())
 }
 
