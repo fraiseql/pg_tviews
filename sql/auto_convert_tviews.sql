@@ -22,15 +22,18 @@ DECLARE
     v_columns text;
     v_pk_col text;
     v_result text;
+    v_rec record;
 BEGIN
     -- Iterate through all tv_* tables in the schema
-    FOR v_tv_table IN
+    FOR v_rec IN
         SELECT tablename
         FROM pg_tables
         WHERE schemaname = schema_name
           AND tablename ~ '^tv_'
         ORDER BY tablename
     LOOP
+        v_tv_table := v_rec.tablename;
+
         -- Extract entity name (remove 'tv_' prefix)
         v_entity := substring(v_tv_table from 4);
         v_tb_table := 'tb_' || v_entity;
@@ -113,14 +116,17 @@ DECLARE
     v_select_sql text;
     v_columns text;
     v_pk_col text;
+    v_rec record;
+    v_tv_table text;
 BEGIN
-    FOR v_tv_table IN
+    FOR v_rec IN
         SELECT tablename
         FROM pg_tables
         WHERE schemaname = schema_name
           AND tablename ~ '^tv_'
         ORDER BY tablename
     LOOP
+        v_tv_table := v_rec.tablename;
         v_entity := substring(v_tv_table from 4);
         v_tb_table := 'tb_' || v_entity;
         v_view_name := 'v_' || v_entity;
