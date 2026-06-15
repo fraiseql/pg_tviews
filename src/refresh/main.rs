@@ -178,29 +178,28 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         let cached_dml: Option<(String, String)> = {
             let cache = crate::utils::DEDUP_DML_CACHE
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             cache.get(&view_name).cloned()
         };
 
-        let (col_list, do_update) = match cached_dml {
-            Some(dml) => dml,
-            None => {
-                // Slow path: build and cache
-                let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-                if col_names.is_empty() {
-                    return Ok(());
-                }
-
-                let dml = build_dedup_dml_components(&col_names, key_col.as_str());
-
-                // Cache the DML strings
-                crate::utils::DEDUP_DML_CACHE
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(view_name.clone(), dml.clone());
-
-                dml
+        let (col_list, do_update) = if let Some(dml) = cached_dml {
+            dml
+        } else {
+            // Slow path: build and cache
+            let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+            if col_names.is_empty() {
+                return Ok(());
             }
+
+            let dml = build_dedup_dml_components(&col_names, key_col.as_str());
+
+            // Cache the DML strings
+            crate::utils::DEDUP_DML_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(view_name.clone(), dml.clone());
+
+            dml
         };
 
         let upsert_sql = format!(
@@ -219,7 +218,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
     Ok(())
 }
 
-/// Build DML components (col_list, DO UPDATE clause) for dedup key refresh.
+/// Build DML components (`col_list`, DO UPDATE clause) for dedup key refresh.
 ///
 /// Constructs the column list and DO UPDATE SET clause used in UPSERT operations.
 /// Skips the dedup key column in the DO UPDATE clause since it's part of the CONFLICT key.
@@ -231,7 +230,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 ///
 /// # Returns
 ///
-/// Tuple of (col_list, do_update_clause)
+/// Tuple of (`col_list`, `do_update_clause`)
 fn build_dedup_dml_components(col_names: &[String], key_col: &str) -> (String, String) {
     let do_update: String = {
         let mut update_parts = Vec::with_capacity(col_names.len());
@@ -1295,7 +1294,7 @@ mod tests {
 
     /// Test DISTINCT ON TVIEW refresh with dedup key.
     ///
-    /// Verifies that refresh_by_dedup_key() correctly generates and reuses
+    /// Verifies that `refresh_by_dedup_key()` correctly generates and reuses
     /// DML strings (column list and DO UPDATE clause) across multiple calls.
     #[pg_test]
     fn test_refresh_by_dedup_key_basic() {
@@ -1385,7 +1384,7 @@ mod tests {
 
     /// Test multiple dedup key refreshes for DISTINCT ON TVIEW.
     ///
-    /// Verifies that multiple refresh_by_dedup_key() calls reuse the cached
+    /// Verifies that multiple `refresh_by_dedup_key()` calls reuse the cached
     /// DML strings without rebuilding them.
     #[pg_test]
     fn test_refresh_by_dedup_key_multiple_keys() {
@@ -1508,11 +1507,11 @@ mod tests {
         );
     }
 
-    /// Test that audit entries are buffered and flushed via flush_audit_buffer().
+    /// Test that audit entries are buffered and flushed via `flush_audit_buffer()`.
     ///
     /// Verifies that:
-    /// 1. log_refresh() buffers entries without writing to the DB
-    /// 2. flush_audit_buffer() writes all buffered entries in one go
+    /// 1. `log_refresh()` buffers entries without writing to the DB
+    /// 2. `flush_audit_buffer()` writes all buffered entries in one go
     /// 3. The buffer is empty after flush
     #[pg_test]
     fn test_audit_buffer_and_flush() {
@@ -1560,7 +1559,7 @@ mod tests {
         assert_eq!(count_after, 3, "Second flush should be no-op");
     }
 
-    /// Test that clear_audit_buffer() discards entries without writing.
+    /// Test that `clear_audit_buffer()` discards entries without writing.
     #[pg_test]
     fn test_audit_buffer_clear() {
         Spi::run("SET pg_tviews.audit_enabled = true").unwrap();
@@ -1580,7 +1579,7 @@ mod tests {
         assert_eq!(count, 0, "Cleared buffer should not produce any rows");
     }
 
-    /// Test that flush_audit_buffer() is a no-op when audit is disabled.
+    /// Test that `flush_audit_buffer()` is a no-op when audit is disabled.
     #[pg_test]
     fn test_audit_disabled_skips_flush() {
         Spi::run("SET pg_tviews.audit_enabled = false").unwrap();
@@ -1598,7 +1597,7 @@ mod tests {
 
     /// Test missing-row error handling when backing view returns no rows.
     ///
-    /// Verifies that refresh_pk() handles the case where a row has been deleted
+    /// Verifies that `refresh_pk()` handles the case where a row has been deleted
     /// from the backing view (due to cascading deletes or view condition changes)
     /// with a clear, actionable error message.
     #[pg_test]
@@ -1659,7 +1658,7 @@ mod tests {
 
     /// Test error handling when NULL data column is encountered.
     ///
-    /// Verifies that refresh_pk() gracefully handles the edge case where
+    /// Verifies that `refresh_pk()` gracefully handles the edge case where
     /// the backing view returns a row but the data column is NULL.
     #[pg_test]
     fn test_null_data_column_error_handling() {

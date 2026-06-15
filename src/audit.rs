@@ -83,7 +83,7 @@ pub fn log_refresh(entity: &str, rows_affected: i64) {
 ///
 /// Gated by `pg_tviews.audit_enabled` — if disabled, just clears the buffer.
 ///
-/// **MUST be called from ProcessUtility hook COMMIT path** (where SPI is safe).
+/// **MUST be called from `ProcessUtility` hook COMMIT path** (where SPI is safe).
 /// MUST NOT be called from xact callbacks.
 pub fn flush_audit_buffer() -> spi::Result<()> {
     let entries: Vec<AuditEntry> = AUDIT_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect());

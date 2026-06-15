@@ -32,8 +32,11 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     use std::ffi::CString;
 
     // ADD THIS: Log start of SPI DDL execution
-    info!("spi_run_ddl() called with SQL ({} chars): {}",
-          sql.len(), &sql[..sql.len().min(200)]);
+    info!(
+        "spi_run_ddl() called with SQL ({} chars): {}",
+        sql.len(),
+        &sql[..sql.len().min(200)]
+    );
 
     let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
 
@@ -48,9 +51,14 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         #[allow(clippy::cast_possible_wrap)]
         // Reason: PostgreSQL SPI constants are u32, API takes i32
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
-            error!("spi_run_ddl() FAILED: SPI_connect_ext returned error code: {}", connect_result);
+            error!(
+                "spi_run_ddl() FAILED: SPI_connect_ext returned error code: {}",
+                connect_result
+            );
             #[allow(unreachable_code)]
-            return Err(format!("SPI_connect_ext failed (error! should diverge): {connect_result}"));
+            return Err(format!(
+                "SPI_connect_ext failed (error! should diverge): {connect_result}"
+            ));
         }
 
         // Use SPI_execute_extended with allow_nonatomic=true so PostgreSQL 18's
@@ -70,9 +78,14 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         pg_sys::SPI_finish();
 
         if execute_result < 0 {
-            error!("spi_run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}", execute_result, sql);
+            error!(
+                "spi_run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}",
+                execute_result, sql
+            );
             #[allow(unreachable_code)]
-            return Err(format!("SPI_execute_extended failed (error! should diverge): {execute_result}"));
+            return Err(format!(
+                "SPI_execute_extended failed (error! should diverge): {execute_result}"
+            ));
         }
     }
 
@@ -217,15 +230,15 @@ static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
 pub fn invalidate_oid_relname_cache() {
     OID_RELNAME_CACHE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     OID_QUALIFIED_RELNAME_CACHE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
 }
 
-/// Global cache for view column names (view_name → column names)
+/// Global cache for view column names (`view_name` → column names)
 /// View column lists are stable within a session (only change on DDL)
 pub static VIEW_COLUMNS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -233,15 +246,17 @@ pub static VIEW_COLUMNS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
 /// Invalidate the view columns cache
 /// Called when DDL creates/drops/alters tables with columns
 pub fn invalidate_view_columns_cache() {
-    let mut cache = VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = VIEW_COLUMNS_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.clear();
 }
 
-/// DML components for dedup key refresh: (col_list, do_update_clause)
+/// DML components for dedup key refresh: (`col_list`, `do_update_clause`)
 /// Precomputed once per TVIEW to avoid repeated string building
 pub type DedupDmlCache = HashMap<String, (String, String)>;
 
-/// Global cache for dedup key DML strings (view_name → (col_list, do_update))
+/// Global cache for dedup key DML strings (`view_name` → (`col_list`, `do_update`))
 /// DML strings are stable within a session (only change on DDL)
 pub static DEDUP_DML_CACHE: LazyLock<Mutex<DedupDmlCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -249,16 +264,20 @@ pub static DEDUP_DML_CACHE: LazyLock<Mutex<DedupDmlCache>> =
 /// Invalidate the dedup key DML cache
 /// Called when DDL creates/drops/alters tables with columns
 pub fn invalidate_dedup_dml_cache() {
-    let mut cache = DEDUP_DML_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = DEDUP_DML_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.clear();
 }
 
 /// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
-/// Results are cached per session to avoid repeated pg_class queries.
+/// Results are cached per session to avoid repeated `pg_class` queries.
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     // Fast path: check cache
     {
-        let cache = OID_RELNAME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = OID_RELNAME_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(name) = cache.get(&oid) {
             return Ok(name.clone());
         }
@@ -293,7 +312,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     // Cache the result
     OID_RELNAME_CACHE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(oid, name.clone());
     Ok(name)
 }
@@ -308,7 +327,7 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     {
         let cache = OID_QUALIFIED_RELNAME_CACHE
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(name) = cache.get(&oid) {
             return Ok(name.clone());
         }
@@ -316,9 +335,8 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
 
     // Slow path: resolve via pg_class + pg_namespace
     let qname: String = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
+        let args =
+            vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         let mut rows = client.select(
             "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS qname \
              FROM pg_class c \
@@ -346,22 +364,24 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     // Cache the result
     OID_QUALIFIED_RELNAME_CACHE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(oid, qname.clone());
     Ok(qname)
 }
 
 /// Get the list of column names for a view/table by schema-qualified name. Results are cached per session.
-/// Used for UPSERT column lists to avoid repeated pg_attribute queries.
+/// Used for UPSERT column lists to avoid repeated `pg_attribute` queries.
 ///
 /// The cache key includes the schema name to avoid collisions when multiple views
 /// have the same name in different schemas.
 pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<String>> {
-    let cache_key = format!("{}.{}", schema_name, view_name);
+    let cache_key = format!("{schema_name}.{view_name}");
 
     // Fast path: check cache
     {
-        let cache = VIEW_COLUMNS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = VIEW_COLUMNS_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cols) = cache.get(&cache_key) {
             return Ok(cols.clone());
         }
@@ -373,9 +393,7 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
             unsafe {
                 DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             },
-            unsafe {
-                DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
+            unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         ];
         let rows = client.select(
             "SELECT a.attname::text \
@@ -400,13 +418,13 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
     // Cache the result
     VIEW_COLUMNS_CACHE
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(cache_key, cols.clone());
     Ok(cols)
 }
 
 /// Get column names for a relation by OID. Resolves schema and name from the OID,
-/// then delegates to get_view_columns for caching.
+/// then delegates to `get_view_columns` for caching.
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
     // Get schema and table name from OID
     let (schema_name, table_name): (String, String) = Spi::connect(|client| {
@@ -423,16 +441,18 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
         )?;
 
         if let Some(row) = rows.next() {
-            let schema = row["nspname"].value::<String>()?
-                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+            let schema = row["nspname"].value::<String>()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
                     query: "get_view_columns_by_oid schema lookup".to_string(),
                     error: "nspname column is NULL".to_string(),
-                }))?;
-            let table = row["relname"].value::<String>()?
-                .ok_or_else(|| spi::Error::from(crate::TViewError::SpiError {
+                })
+            })?;
+            let table = row["relname"].value::<String>()?.ok_or_else(|| {
+                spi::Error::from(crate::TViewError::SpiError {
                     query: "get_view_columns_by_oid table lookup".to_string(),
                     error: "relname column is NULL".to_string(),
-                }))?;
+                })
+            })?;
             Ok((schema, table))
         } else {
             Err(spi::Error::from(crate::TViewError::SpiError {
@@ -448,7 +468,7 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
 /// Quote a SQL identifier for safe use in queries.
 ///
 /// Doubles any internal double-quotes and wraps the identifier in double-quotes.
-/// This is safe for identifiers that are already constrained by PostgreSQL
+/// This is safe for identifiers that are already constrained by `PostgreSQL`
 /// (entity names, column names, etc. which match `\w+`).
 ///
 /// # Examples

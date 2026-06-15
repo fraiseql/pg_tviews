@@ -55,7 +55,18 @@ panic = "unwind"
 
  [lints.clippy]
  all = { level = "deny", priority = -1 }
- # Disable specific lints that conflict with PostgreSQL FFI
+ pedantic = { level = "deny", priority = -1 }
+ # Disable specific lints that conflict with PostgreSQL FFI / pgrx idioms.
+ # These are the project's deliberate, reviewed exceptions to clippy::pedantic.
  missing_errors_doc = "allow"  # FFI functions often can't document all Postgres errors
+ missing_panics_doc = "allow"  # internal invariants; most "panics" are pgrx error!() conversions
  module_name_repetitions = "allow"  # pg_tviews_ prefix is intentional
+ too_many_lines = "allow"  # SQL-generating and FFI dispatch functions are long by nature
+ similar_names = "allow"  # pk/fk/oid/tv/tb domain names are intentionally similar
+ struct_field_names = "allow"  # catalog structs mirror PostgreSQL column names
+ unnecessary_wraps = "allow"  # Result-returning signatures kept uniform across the DDL API
+ manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
+ match_same_arms = "allow"  # XactEvent / NodeTag arms kept explicit for clarity
+ cast_sign_loss = "allow"  # PostgreSQL OID/SPI integer casts are intentional and bounded
+ non_std_lazy_statics = "allow"  # lazy_static! is used deliberately for session-local state
 

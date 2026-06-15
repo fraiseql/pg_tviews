@@ -5,9 +5,9 @@
 //!
 //! ## Why PL/pgSQL for the event trigger handler?
 //!
-//! pgrx always generates `RETURNS VOID` for `#[pg_extern]` functions, but PostgreSQL
+//! pgrx always generates `RETURNS VOID` for `#[pg_extern]` functions, but `PostgreSQL`
 //! requires event trigger handlers to return the `event_trigger` pseudo-type.
-//! The PL/pgSQL wrapper satisfies PostgreSQL's type requirement and calls this C
+//! The PL/pgSQL wrapper satisfies `PostgreSQL`'s type requirement and calls this C
 //! function for the actual conversion logic.
 
 use crate::utils::quote_identifier;
@@ -15,7 +15,7 @@ use pgrx::prelude::*;
 
 /// Convert a `tv_*` table (just created by `CREATE TABLE tv_* AS SELECT …`) to a TVIEW.
 ///
-/// Called by the PL/pgSQL event trigger `pg_tviews_handle_ddl_event()` after PostgreSQL
+/// Called by the PL/pgSQL event trigger `pg_tviews_handle_ddl_event()` after `PostgreSQL`
 /// creates the table.  Runs in a safe SPI context (DDL already completed).
 ///
 /// ## Two code paths that produce `tv_*` tables
@@ -28,7 +28,10 @@ use pgrx::prelude::*;
 #[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires String by value
 fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
     // Log event trigger entry
-    notice!("===== EVENT TRIGGER: pg_tviews_convert_table START for table '{}' =====", table_name);
+    notice!(
+        "===== EVENT TRIGGER: pg_tviews_convert_table START for table '{}' =====",
+        table_name
+    );
 
     // Retrieve (and consume) the pending (schema, SELECT) pair.
     // Empty cache = table was created by pg_tviews_create(), not DDL interception.
@@ -39,7 +42,14 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
     };
 
     notice!("DEBUG:   Found cached SELECT ({} chars)", select_sql.len());
-    notice!("DEBUG:   Schema: '{}'", if schema_name.is_empty() { "(empty - will use current_schema())" } else { &schema_name });
+    notice!(
+        "DEBUG:   Schema: '{}'",
+        if schema_name.is_empty() {
+            "(empty - will use current_schema())"
+        } else {
+            &schema_name
+        }
+    );
 
     // Resolve the target schema:
     // - Non-empty schema_name → the user wrote `CREATE TABLE schema.tv_* AS SELECT …`
@@ -70,7 +80,7 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
     // Create the proper TVIEW: backing view, materialized table, triggers.
     notice!("DEBUG:   Calling create_tview()...");
     match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
-        Ok(_) => {
+        Ok(()) => {
             notice!("DEBUG: ✅ create_tview() SUCCEEDED for '{}'", table_name);
             notice!("DEBUG: ===== EVENT TRIGGER: COMPLETE =====");
             Ok(())

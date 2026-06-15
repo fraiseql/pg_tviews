@@ -46,7 +46,7 @@ fn strip_alias(expr: &str) -> &str {
     expr
 }
 
-/// Detect the PostgreSQL type from an explicit `::typename` cast at the end of `expr`.
+/// Detect the `PostgreSQL` type from an explicit `::typename` cast at the end of `expr`.
 ///
 /// Returns `None` if no cast is found or the cast type is not recognised.
 fn detect_cast_type(expr: &str) -> Option<String> {

@@ -22,7 +22,7 @@ pub struct JoinPath {
     pub initial_col: String,
     /// Intermediate hops to reach the root table's PK
     pub steps: Vec<JoinStep>,
-    /// Column on the root table that the last hop (or initial_col) connects to.
+    /// Column on the root table that the last hop (or `initial_col`) connects to.
     /// Used by the resolver to detect when a reverse-lookup hop through the
     /// root table is needed (i.e. when this is NOT the entity PK column).
     pub root_join_col: String,
@@ -39,7 +39,7 @@ pub struct JoinStep {
     pub carry_col: String,
 }
 
-/// A directed edge in the join graph: left.left_col = right.right_col
+/// A directed edge in the join graph: `left.left_col` = `right.right_col`
 #[derive(Debug, Clone)]
 struct JoinEdge {
     left_table: String,
@@ -536,7 +536,7 @@ mod tests {
     }
 
     /// Issue #007: When the root table holds the FK (lookup/dimension join),
-    /// root_join_col must reflect the root's FK column, not its PK.
+    /// `root_join_col` must reflect the root's FK column, not its PK.
     /// The resolver uses this to detect the need for a reverse-lookup hop.
     #[test]
     fn test_lookup_table_join_root_holds_fk() {

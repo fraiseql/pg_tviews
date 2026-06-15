@@ -37,9 +37,9 @@ enum KeyExtraction {
 }
 
 /// Extract DISTINCT ON key value from tuple, trying multiple types
-/// Returns the extraction result: Value on success, Null if column is NULL, TypeMismatch if unsupported type
-fn extract_distinct_on_key<'a>(
-    tuple: &PgHeapTuple<'a, AllocatedByPostgres>,
+/// Returns the extraction result: Value on success, Null if column is NULL, `TypeMismatch` if unsupported type
+fn extract_distinct_on_key(
+    tuple: &PgHeapTuple<'_, AllocatedByPostgres>,
     key_col: &str,
 ) -> KeyExtraction {
     // Try String (TEXT, UUID, VARCHAR)
@@ -82,7 +82,9 @@ fn pg_tview_trigger_handler<'a>(
     // If triggers are suspended, record the change instead of enqueuing
     if crate::config::suspend_triggers() {
         // Record direct entity if any
-        if let Ok(Some(entity_info)) = crate::queue::cache::table_cache::entity_info_cached(table_oid) {
+        if let Ok(Some(entity_info)) =
+            crate::queue::cache::table_cache::entity_info_cached(table_oid)
+        {
             crate::suspend::record_change(&entity_info.name);
         }
 
@@ -91,7 +93,10 @@ fn pg_tview_trigger_handler<'a>(
             match crate::queue::cache::cascade_cache::cascade_paths_for_table(table_oid) {
                 Ok(p) => p,
                 Err(e) => {
-                    warning!("Failed to load cascade paths for suspended trigger: {:?}", e);
+                    warning!(
+                        "Failed to load cascade paths for suspended trigger: {:?}",
+                        e
+                    );
                     vec![]
                 }
             };
@@ -109,12 +114,11 @@ fn pg_tview_trigger_handler<'a>(
             // Check if this is a DISTINCT ON TVIEW using cached distinct_on_key
             if let Some(key_col) = &entity_info.distinct_on_key {
                 // DISTINCT ON TVIEW: enqueue dedup key value instead of base PK
-                let tuple = match trigger.new().or_else(|| trigger.old()) {
-                    Some(t) => t,
-                    None => {
-                        warning!("No tuple in trigger context for DISTINCT ON TVIEW '{entity}'");
-                        return Ok(None);
-                    }
+                let tuple = if let Some(t) = trigger.new().or_else(|| trigger.old()) {
+                    t
+                } else {
+                    warning!("No tuple in trigger context for DISTINCT ON TVIEW '{entity}'");
+                    return Ok(None);
                 };
                 match extract_distinct_on_key(&tuple, key_col) {
                     KeyExtraction::Value(key_val) => {

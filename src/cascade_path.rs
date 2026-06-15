@@ -28,7 +28,7 @@ pub struct CascadeHop {
 
 /// A complete path from a source base table to a TVIEW entity's PK.
 ///
-/// Single-hop example (tb_comment → tv_post):
+/// Single-hop example (`tb_comment` → `tv_post)`:
 /// ```json
 /// {
 ///   "source_oid": 12345,
@@ -41,7 +41,7 @@ pub struct CascadeHop {
 /// The trigger reads `fk_post` from the changed `tb_comment` row and
 /// enqueues refresh of entity "post" for that PK directly.
 ///
-/// Multi-hop example (tb_item → tb_group → tv_order):
+/// Multi-hop example (`tb_item` → `tb_group` → `tv_order)`:
 /// ```json
 /// {
 ///   "source_oid": 12345,

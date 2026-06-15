@@ -219,7 +219,7 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
 /// Both parts are unquoted identifiers.  Build the SQL reference as
 /// `quote_identifier(schema) + "." + quote_identifier(table)`, and the
 /// trigger name suffix as `schema + "_" + table` (dots are not valid in
-/// PostgreSQL trigger names).
+/// `PostgreSQL` trigger names).
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
     let row = crate::utils::spi_get_string(&format!(
         "SELECT n.nspname::text || ':' || c.relname::text \
@@ -247,7 +247,7 @@ fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
     Ok((schema.to_string(), relname.to_string()))
 }
 
-/// Check if a trigger exists on a table identified by OID, to avoid search_path
+/// Check if a trigger exists on a table identified by OID, to avoid `search_path`
 /// sensitivity of the `::regclass` cast.
 fn trigger_exists_by_oid(table_oid: pg_sys::Oid, trigger_name: &str) -> TViewResult<bool> {
     let args = vec![unsafe {

@@ -24,7 +24,7 @@ fn current_schema() -> TViewResult<String> {
 
 /// Expand `SELECT * FROM [schema.]source` to an explicit column list.
 ///
-/// When the SELECT is just `SELECT * FROM …`, pg_tviews cannot infer the
+/// When the SELECT is just `SELECT * FROM …`, `pg_tviews` cannot infer the
 /// Trinity schema (pk_*, id, data columns) from the wildcard at parse time.
 /// This function detects that pattern and expands it by querying
 /// `information_schema.columns` for the source view/table's actual columns,
@@ -51,13 +51,7 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
 
     // The token after * must be FROM (no other clauses like WHERE before FROM)
     let after_from = match after_star.strip_prefix("from") {
-        Some(rest)
-            if rest
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_whitespace())
-                .unwrap_or(true) =>
-        {
+        Some(rest) if rest.chars().next().is_none_or(|c| c.is_ascii_whitespace()) => {
             rest.trim_start()
         }
         _ => return Ok(select_sql.to_string()),
@@ -471,9 +465,7 @@ fn resolve_join_path(
             .get(&root_table)
             .ok_or_else(|| TViewError::CatalogError {
                 operation: "resolve cascade path reverse-lookup hop".to_string(),
-                pg_error: format!(
-                    "Root table '{root_table}' not found in base table dependencies"
-                ),
+                pg_error: format!("Root table '{root_table}' not found in base table dependencies"),
             })?;
         hops.push(cascade_path::CascadeHop {
             table_oid: root_oid,
@@ -518,18 +510,30 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     let create_view_sql = format!("CREATE VIEW {qi_schema}.{qi_view} AS {select_sql}");
 
     // Use notice! instead of info! to ensure visibility
-    notice!("DEBUG: create_backing_view START - schema='{}', view='{}', sql_len={}",
-          schema_name, view_name, create_view_sql.len());
+    notice!(
+        "DEBUG: create_backing_view START - schema='{}', view='{}', sql_len={}",
+        schema_name,
+        view_name,
+        create_view_sql.len()
+    );
 
     match crate::utils::spi_run_ddl(&create_view_sql) {
-        Ok(_) => {
+        Ok(()) => {
             // Log successful spi_run_ddl
-            notice!("DEBUG: spi_run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
+            notice!(
+                "DEBUG: spi_run_ddl SUCCEEDED for {}.{}",
+                schema_name,
+                view_name
+            );
         }
         Err(e) => {
             // Log spi_run_ddl failure
-            notice!("DEBUG: spi_run_ddl FAILED - {}.{} - error: {}",
-                   schema_name, view_name, e);
+            notice!(
+                "DEBUG: spi_run_ddl FAILED - {}.{} - error: {}",
+                schema_name,
+                view_name,
+                e
+            );
             // Note: error!() macro diverges, so this return is unreachable but needed for type checking
             return Err(TViewError::SpiError {
                 query: create_view_sql.clone(),
@@ -539,8 +543,11 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     }
 
     // Log before verification check
-    notice!("DEBUG: checking if view exists - schema='{}', view='{}' in pg_class",
-          schema_name, view_name);
+    notice!(
+        "DEBUG: checking if view exists - schema='{}', view='{}' in pg_class",
+        schema_name,
+        view_name
+    );
 
     // Verify the view was created (schema-qualified to avoid false positives across schemas)
     let check_args = vec![
@@ -556,19 +563,28 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
         Ok(result) => {
             if result.is_some() {
                 // Log successful verification
-                notice!("DEBUG: VERIFIED - backing view {}.{} exists in pg_class",
-                      schema_name, view_name);
+                notice!(
+                    "DEBUG: VERIFIED - backing view {}.{} exists in pg_class",
+                    schema_name,
+                    view_name
+                );
                 true
             } else {
                 // Log verification failure
-                notice!("DEBUG: VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
-                         schema_name, view_name);
+                notice!(
+                    "DEBUG: VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
+                    schema_name,
+                    view_name
+                );
                 false
             }
         }
         Err(e) => {
             // Log verification query failure
-            notice!("DEBUG: verification query FAILED - could not check pg_class: {}", e);
+            notice!(
+                "DEBUG: verification query FAILED - could not check pg_class: {}",
+                e
+            );
             // Note: error!() macro diverges, so this return is unreachable but needed for type checking
             return Err(TViewError::SpiError {
                 query: format!("Check view {schema_name}.{view_name} exists"),
@@ -580,14 +596,15 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     if !exists {
         return Err(TViewError::CatalogError {
             operation: format!("Create view {schema_name}.{view_name}"),
-            pg_error: "View was not created (CREATE VIEW succeeded but view missing from pg_class)".to_string(),
+            pg_error: "View was not created (CREATE VIEW succeeded but view missing from pg_class)"
+                .to_string(),
         });
     }
 
     Ok(())
 }
 
-/// Map a scalar PostgreSQL type name to an uppercase SQL type string for CREATE TABLE.
+/// Map a scalar `PostgreSQL` type name to an uppercase SQL type string for CREATE TABLE.
 ///
 /// Handles both `information_schema.data_type` values (e.g. `"boolean"`, `"uuid"`) and
 /// `udt_name` values for extension types (e.g. `"ltree"`, `"geometry"`).
@@ -659,10 +676,10 @@ fn scalar_pg_type_to_sql(pg_type: &str) -> &'static str {
     }
 }
 
-/// Resolve an `information_schema.columns` row (data_type + udt_name) to a SQL type
+/// Resolve an `information_schema.columns` row (`data_type` + `udt_name`) to a SQL type
 /// string suitable for a CREATE TABLE column definition.
 ///
-/// Handles the three cases PostgreSQL presents:
+/// Handles the three cases `PostgreSQL` presents:
 /// - Built-in scalar: `data_type` is the canonical name, `udt_name` is redundant.
 /// - Extension / user-defined: `data_type = "USER-DEFINED"`, `udt_name` is the type name.
 /// - Array: `data_type = "ARRAY"`, `udt_name` is `_<element_udt_name>` (e.g. `_uuid`).
@@ -670,16 +687,16 @@ fn resolve_pg_column_type(data_type: &str, udt_name: Option<&str>) -> String {
     match data_type {
         "USER-DEFINED" => {
             // udt_name holds the extension type name (ltree, geometry, hstore, citext, …)
-            udt_name
-                .map(|u| scalar_pg_type_to_sql(u).to_string())
-                .unwrap_or_else(|| "TEXT".to_string())
+            udt_name.map_or_else(
+                || "TEXT".to_string(),
+                |u| scalar_pg_type_to_sql(u).to_string(),
+            )
         }
         "ARRAY" => {
             // udt_name is "_<element>" (e.g. "_uuid" → UUID[], "_ltree" → LTREE[])
             let element_sql = udt_name
                 .and_then(|u| u.strip_prefix('_'))
-                .map(scalar_pg_type_to_sql)
-                .unwrap_or("TEXT");
+                .map_or("TEXT", scalar_pg_type_to_sql);
             format!("{element_sql}[]")
         }
         other => scalar_pg_type_to_sql(other).to_string(),
@@ -794,8 +811,7 @@ fn create_materialized_table(
     for uuid_fk in &schema.uuid_fk_columns {
         let sql_type = actual_col_types
             .get(uuid_fk.as_str())
-            .map(String::as_str)
-            .unwrap_or("UUID"); // if not found, trust name-based inference
+            .map_or("UUID", String::as_str); // if not found, trust name-based inference
         columns.push(format!("{} {sql_type}", quote_identifier(uuid_fk)));
     }
 
@@ -805,8 +821,7 @@ fn create_materialized_table(
     for (col_name, col_type) in &schema.additional_columns_with_types {
         let effective_type = actual_col_types
             .get(col_name.as_str())
-            .map(String::as_str)
-            .unwrap_or(col_type.as_str());
+            .map_or(col_type.as_str(), String::as_str);
         let qi_col = quote_identifier(col_name);
         if first_dedup == Some(col_name.as_str()) {
             columns.push(format!("{qi_col} {effective_type} PRIMARY KEY"));
@@ -905,8 +920,7 @@ fn populate_initial_data(
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
     let view_oid = Spi::get_one::<Oid>(&format!(
         "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname::text = '{}' AND n.nspname::text = '{}' AND c.relkind = 'v'",
-        view_name, schema_name
+         WHERE c.relname::text = '{view_name}' AND n.nspname::text = '{schema_name}' AND c.relkind = 'v'"
     ))?
     .ok_or_else(|| TViewError::CatalogError {
         operation: format!("Find view {view_name} in schema {schema_name}"),
@@ -1539,7 +1553,7 @@ mod tests {
         assert!(alice_exists, "Alice should be in the TVIEW");
     }
 
-    /// Test that TVIEW tables respect the unlogged_by_default GUC.
+    /// Test that TVIEW tables respect the `unlogged_by_default` GUC.
     #[pg_test]
     fn test_tview_unlogged_guc_control() {
         Spi::run("SET search_path TO public").unwrap();

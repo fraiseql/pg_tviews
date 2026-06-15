@@ -403,7 +403,7 @@ impl From<std::io::Error> for TViewError {
 ///
 /// `pgrx::spi::SpiError` has no string-carrying variant, so the original
 /// error detail cannot be preserved in the return value. We log it as a
-/// PostgreSQL WARNING before converting so the message is not silently lost.
+/// `PostgreSQL` WARNING before converting so the message is not silently lost.
 impl From<TViewError> for pgrx::spi::Error {
     fn from(e: TViewError) -> Self {
         pgrx::warning!("TViewError crossing SPI boundary (detail will be lost): {e}");

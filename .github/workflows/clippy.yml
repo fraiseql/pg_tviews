@@ -22,17 +22,12 @@ jobs:
         run: |
           cargo install --locked cargo-pgrx --version 0.16.1
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
-      - name: Run strict clippy with efficient jsonb_delta focus
+      - name: Run strict clippy
         run: |
-          cargo clippy --all-targets --no-default-features --features pg16 -- \
-            -D warnings \
-            -D clippy::all \
-            -D clippy::pedantic \
-            -W clippy::nursery \
-            -W clippy::cargo \
-            -A clippy::missing_errors_doc \
-            -A clippy::module_name_repetitions \
-            -A clippy::multiple_crate_versions
+          # Lint policy (clippy::all + clippy::pedantic = deny, with reviewed
+          # selective allows) lives in [lints.clippy] in Cargo.toml so CI and
+          # local `cargo clippy` enforce exactly the same rules.
+          cargo clippy --all-targets --no-default-features --features pg16 -- -D warnings
       - name: Check for SQL quote-doubling anti-pattern
         run: |
           # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast

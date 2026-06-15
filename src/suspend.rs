@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 /// Global runtime state for trigger suspension
 pub struct SuspensionState {
@@ -43,9 +43,8 @@ pub fn resume() -> Result<(), String> {
     Ok(())
 }
 
-
-
 /// Check if trigger-based refresh is currently suspended
+#[must_use]
 pub fn is_suspended() -> bool {
     SUSPENSION_STATE.lock().unwrap().is_suspended
 }
@@ -53,13 +52,20 @@ pub fn is_suspended() -> bool {
 /// Record that an entity changed while triggers are suspended
 pub fn record_change(entity_name: &str) {
     if is_suspended() {
-        SUSPENSION_STATE.lock().unwrap().changed_entities.insert(entity_name.to_string());
+        SUSPENSION_STATE
+            .lock()
+            .unwrap()
+            .changed_entities
+            .insert(entity_name.to_string());
     }
 }
 
 /// Get list of entities that changed while suspended
+#[must_use]
 pub fn get_changed_entities() -> Vec<String> {
-    SUSPENSION_STATE.lock().unwrap()
+    SUSPENSION_STATE
+        .lock()
+        .unwrap()
         .changed_entities
         .iter()
         .cloned()

@@ -93,7 +93,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 query_env,
                 dest,
                 qc,
-            )
+            );
         };
         return;
     }
@@ -253,7 +253,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             error!(
                 "PANIC in ProcessUtility hook: {panic_msg} - This is a bug in pg_tviews - please report it!"
             );
-            #[allow(unreachable_code)] // Reason: rethrow()/error!() diverge via longjmp, not Rust's !
+            #[allow(unreachable_code)]
+            // Reason: rethrow()/error!() diverge via longjmp, not Rust's !
             {
                 true
             }
@@ -293,7 +294,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 /// pass through. Returns `Err` on failures that should abort with `error!()` —
 /// the caller is responsible for resetting `HOOK_IN_PROGRESS` before raising.
 ///
-/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// SAFETY: This function operates on raw `PostgreSQL` C pointers from the `ProcessUtility` hook.
 /// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
@@ -533,7 +534,7 @@ pub fn enqueue_pending_populate(tv_table_name: &str, view_name: &str, schema_nam
 /// Drain and convert any TVIEW tables that weren't converted by the event trigger.
 ///
 /// This is a fallback mechanism for bulk SQL operations where event triggers don't fire.
-/// PostgreSQL's event trigger system may not fire during certain bulk import operations,
+/// `PostgreSQL`'s event trigger system may not fire during certain bulk import operations,
 /// so we check if there are any pending TVIEWs still in the cache after the statement
 /// executes and convert them directly.
 fn drain_pending_unconverted_tviews() {
@@ -602,7 +603,7 @@ fn drain_pending_unconverted_tviews() {
 
         // Create the proper TVIEW: backing view, materialized table, triggers
         match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
-            Ok(_) => {
+            Ok(()) => {
                 notice!(
                     "pg_tviews: Fallback conversion SUCCEEDED for TVIEW '{}'",
                     table_name
@@ -702,7 +703,7 @@ fn drain_pending_populates() {
 ///
 /// Returns `Err` on failures — caller resets `HOOK_IN_PROGRESS` before raising.
 ///
-/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// SAFETY: This function operates on raw `PostgreSQL` C pointers from the `ProcessUtility` hook.
 /// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_drop_table(
     drop_stmt: *mut pg_sys::DropStmt,
@@ -740,7 +741,7 @@ unsafe fn handle_drop_table(
         let mut has_non_tv = false;
 
         for i in 0..num_tables {
-            let name_list = pg_sys::list_nth(objects, i) as *mut pg_sys::List;
+            let name_list = pg_sys::list_nth(objects, i).cast::<pg_sys::List>();
             if name_list.is_null() {
                 has_non_tv = true;
                 continue;
@@ -754,7 +755,7 @@ unsafe fn handle_drop_table(
             }
 
             // Get the last name part (table name, ignoring schema qualification)
-            let last_part = pg_sys::list_nth(name_list, name_parts - 1) as *mut pg_sys::String;
+            let last_part = pg_sys::list_nth(name_list, name_parts - 1).cast::<pg_sys::String>();
             if last_part.is_null() {
                 has_non_tv = true;
                 continue;
@@ -813,7 +814,7 @@ unsafe fn handle_drop_table(
 
 /// Handle ALTER TABLE statements on TVIEW tables
 ///
-/// SAFETY: This function operates on raw PostgreSQL C pointers from the ProcessUtility hook.
+/// SAFETY: This function operates on raw `PostgreSQL` C pointers from the `ProcessUtility` hook.
 /// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_alter_table(
     alter_stmt: *mut pg_sys::AlterTableStmt,
@@ -859,7 +860,7 @@ unsafe fn handle_alter_table(
                 continue;
             }
 
-            let cmd = cmd_node as *mut pg_sys::AlterTableCmd;
+            let cmd = cmd_node.cast::<pg_sys::AlterTableCmd>();
             if cmd.is_null() {
                 continue;
             }
@@ -883,8 +884,8 @@ unsafe fn handle_alter_table(
 
 /// Call the previous hook if it exists, otherwise call `standard_ProcessUtility`
 ///
-/// SAFETY: This calls into either a previous PostgreSQL hook or standard_ProcessUtility.
-/// The parameters are raw C pointers from the calling ProcessUtility hook.
+/// SAFETY: This calls into either a previous `PostgreSQL` hook or `standard_ProcessUtility`.
+/// The parameters are raw C pointers from the calling `ProcessUtility` hook.
 #[allow(clippy::too_many_arguments)] // Reason: PostgreSQL ProcessUtility_hook C callback signature
 unsafe fn call_prev_hook_or_standard(
     pstmt: *mut pg_sys::PlannedStmt,

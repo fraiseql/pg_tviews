@@ -227,7 +227,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
 
 /// Load OIDs of all TVIEW-managed tables from `pg_tview_meta`.
 ///
-/// These are the `tv_*` tables that pg_tviews owns. They must NOT be treated
+/// These are the `tv_*` tables that `pg_tviews` owns. They must NOT be treated
 /// as base tables for trigger installation — cascade is metadata-driven via
 /// `find_parents_for()`, not trigger-driven.
 fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {

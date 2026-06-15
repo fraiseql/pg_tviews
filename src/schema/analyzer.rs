@@ -43,7 +43,7 @@ static INLINE_ARRAY_PATTERN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("INLINE_ARRAY_PATTERN_REGEX is valid")
 });
 
-/// Cached regex for detecting 'array_name', jsonb_agg(v_something.data ...)
+/// Cached regex for detecting '`array_name`', `jsonb_agg(v_something.data` ...)
 static ARRAY_PATTERN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.data")
         .expect("ARRAY_PATTERN_REGEX is valid")

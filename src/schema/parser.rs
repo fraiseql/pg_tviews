@@ -138,6 +138,7 @@ fn find_outer_from(sql_lower: &str, after_pos: usize, end_bound: usize) -> Optio
 /// whether a SQL statement is a UNION query for metadata purposes.
 ///
 /// `sql_lower` must already be lowercased. Scans from `start`.
+#[must_use]
 pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
     let bytes = sql_lower.as_bytes();
     let len = bytes.len();

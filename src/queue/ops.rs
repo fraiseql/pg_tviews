@@ -9,8 +9,7 @@ fn check_queue_backpressure(limit: usize) -> Result<(), String> {
     let current_size = TX_REFRESH_QUEUE.with(|q| q.borrow().len());
     if current_size >= limit {
         return Err(format!(
-            "refresh queue backpressure: queue size ({}) would exceed max_queue_size ({})",
-            current_size, limit
+            "refresh queue backpressure: queue size ({current_size}) would exceed max_queue_size ({limit})"
         ));
     }
     Ok(())
@@ -30,7 +29,7 @@ pub fn enqueue_refresh_with_limit(entity: &str, pk: i64, limit: usize) -> Result
 ///
 /// This is the main entry point from triggers for normal TVIEWs.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if max_queue_size would be exceeded.
+/// Raises ERROR if `max_queue_size` would be exceeded.
 pub fn enqueue_refresh(entity: &str, pk: i64) {
     if let Err(msg) = enqueue_refresh_with_limit(entity, pk, crate::config::max_queue_size()) {
         pgrx::error!("{}", msg);
@@ -42,7 +41,7 @@ pub fn enqueue_refresh(entity: &str, pk: i64) {
 /// Used by triggers on DISTINCT ON TVIEWs.  The `dedup_key` is the value
 /// of the DISTINCT ON column (cast to TEXT) identifying the group to re-evaluate.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if max_queue_size would be exceeded.
+/// Raises ERROR if `max_queue_size` would be exceeded.
 pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
     TX_REFRESH_QUEUE.with(|q| {
         let limit = crate::config::max_queue_size();
@@ -57,7 +56,7 @@ pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if max_queue_size would be exceeded.
+/// Raises ERROR if `max_queue_size` would be exceeded.
 pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) {
     TX_REFRESH_QUEUE.with(|q| {
         let limit = crate::config::max_queue_size();
@@ -139,12 +138,11 @@ pub fn spi_batch_lookup(
     // Resolve OID → "schema"."table" so the FROM clause is valid SQL regardless
     // of search_path.  Cast expressions like `(52276294::regclass)` are not valid
     // FROM-clause table references in PostgreSQL.
-    let qualified_name = qualified_relname_from_oid(table_oid).map_err(|e| {
-        crate::TViewError::SpiError {
+    let qualified_name =
+        qualified_relname_from_oid(table_oid).map_err(|e| crate::TViewError::SpiError {
             query: "qualified_relname_from_oid".to_string(),
             error: format!("failed to resolve table OID {table_oid:?}: {e}"),
-        }
-    })?;
+        })?;
     let qi_lookup = quote_identifier(lookup_col);
     let qi_carry = quote_identifier(carry_col);
 

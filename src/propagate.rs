@@ -65,10 +65,10 @@ pub fn find_parents_for(
 
 /// Find parent keys for multiple child keys in a single batched operation (P-07).
 ///
-/// This is the **optimized version of find_parents_for** that batches multiple keys
-/// into fewer SPI queries. Instead of calling find_affected_pks once per key,
-/// it groups keys by (parent_entity, child_entity) and issues ONE query per group
-/// using PostgreSQL's `= ANY($1)` operator.
+/// This is the **optimized version of `find_parents_for`** that batches multiple keys
+/// into fewer SPI queries. Instead of calling `find_affected_pks` once per key,
+/// it groups keys by (`parent_entity`, `child_entity`) and issues ONE query per group
+/// using `PostgreSQL`'s `= ANY($1)` operator.
 ///
 /// # Performance
 /// - **Before**: N keys × M parent entities = N*M SPI queries
@@ -78,7 +78,7 @@ pub fn find_parents_for(
 ///   - After: 2 queries (1 per parent entity)
 ///
 /// # Arguments
-/// * `keys` - Multiple RefreshKey values to propagate
+/// * `keys` - Multiple `RefreshKey` values to propagate
 /// * `graph` - Cached entity dependency graph
 ///
 /// # Returns
@@ -125,8 +125,8 @@ pub fn find_parents_batch(
 
 /// Build batch groups for propagation query (unit-testable logic).
 ///
-/// Groups keys by (parent_entity, child_entity) to minimize queries.
-/// Returns: Map<(parent, child), Vec<child_pk>>
+/// Groups keys by (`parent_entity`, `child_entity`) to minimize queries.
+/// Returns: Map<(parent, child), Vec<`child_pk`>>
 fn build_batch_groups(
     keys: &[RefreshKey],
     graph: &crate::queue::EntityDepGraph,
@@ -151,8 +151,8 @@ fn build_batch_groups(
 
 /// Find all PKs in a parent TVIEW that reference any of the given child PKs (batched).
 ///
-/// This uses PostgreSQL's `= ANY($1)` to check multiple FKs in one query.
-/// Returns a map from child_pk to the list of parent PKs referencing it.
+/// This uses `PostgreSQL`'s `= ANY($1)` to check multiple FKs in one query.
+/// Returns a map from `child_pk` to the list of parent PKs referencing it.
 fn find_affected_pks_batch(
     parent_entity: &str,
     child_entity: &str,

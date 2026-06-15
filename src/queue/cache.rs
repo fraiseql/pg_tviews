@@ -4,7 +4,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::cascade_path::CascadePath;
 
-/// Cached information for a table managed by pg_tviews
+/// Cached information for a table managed by `pg_tviews`
 #[derive(Clone, Debug)]
 pub struct CachedEntityInfo {
     pub name: String,
@@ -16,7 +16,7 @@ pub struct CachedEntityInfo {
 static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Global cache for table OID → entity info (name + distinct_on_key)
+/// Global cache for table OID → entity info (name + `distinct_on_key`)
 /// Stores Option<CachedEntityInfo> to cache negative lookups (None results)
 static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, Option<CachedEntityInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -73,7 +73,7 @@ pub mod table_cache {
     #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
-    /// Get cached entity info (name + distinct_on_key) for table OID
+    /// Get cached entity info (name + `distinct_on_key`) for table OID
     /// Loads from database on first miss per session, caches negative results
     pub fn entity_info_cached(
         table_oid: pg_sys::Oid,
@@ -113,7 +113,7 @@ pub mod table_cache {
         entity_info_cached(table_oid).map(|info| info.map(|i| i.name))
     }
 
-    /// Load entity info from database (name + distinct_on_key)
+    /// Load entity info from database (name + `distinct_on_key`)
     fn load_entity_info_uncached(
         table_oid: pg_sys::Oid,
     ) -> crate::TViewResult<Option<CachedEntityInfo>> {
@@ -168,7 +168,7 @@ pub mod table_cache {
 
 /// Cache operations for cascade paths (transaction-scoped)
 pub mod cascade_cache {
-    use super::*;
+    use super::{CASCADE_PATH_CACHE, CascadePath, pg_sys};
 
     /// Get cached cascade paths for a source table OID.
     /// Returns all `CascadePath` entries across all entities where `source_oid` matches.
@@ -186,7 +186,7 @@ pub mod cascade_cache {
         })
     }
 
-    /// Load cascade paths matching a source table OID from pg_tview_meta
+    /// Load cascade paths matching a source table OID from `pg_tview_meta`
     fn load_cascade_paths_for_table(
         table_oid: pg_sys::Oid,
     ) -> crate::TViewResult<Vec<CascadePath>> {

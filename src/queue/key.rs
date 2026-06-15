@@ -41,6 +41,7 @@ impl RefreshKey {
     }
 
     /// Returns `true` if this is a DISTINCT ON dedup key.
+    #[must_use]
     pub fn is_dedup(&self) -> bool {
         self.dedup_key.is_some()
     }

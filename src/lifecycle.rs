@@ -177,7 +177,7 @@ fn pg_tviews_check_jsonb_delta() -> bool {
     check_jsonb_delta_available()
 }
 
-/// Reset the jsonb_delta availability cache
+/// Reset the `jsonb_delta` availability cache
 /// Called during cache invalidation when the extension is created or dropped
 pub fn invalidate_jsonb_delta_cache() {
     JSONB_IVM_CHECKED.store(false, Ordering::Relaxed);
