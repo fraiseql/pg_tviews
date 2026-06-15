@@ -16,7 +16,7 @@ jobs:
 
       - name: Install pgrx
         run: |
-          cargo install --locked cargo-pgrx --version 0.16.1
+          cargo install --locked cargo-pgrx --version 0.17.0
           cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
 
       - name: Build docs

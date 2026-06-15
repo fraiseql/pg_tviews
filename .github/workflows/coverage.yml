@@ -28,7 +28,7 @@ jobs:
         sudo systemctl enable postgresql
 
     - name: Install pgrx
-      run: cargo install --locked cargo-pgrx --version 0.16.1
+      run: cargo install --locked cargo-pgrx --version 0.17.0
 
     - name: Initialize pgrx
       run: cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config

@@ -21,7 +21,7 @@ jobs:
           cargo install cargo-cyclonedx
 
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx --version 0.16.1
+        run: cargo install --locked cargo-pgrx --version 0.17.0
 
       - name: Generate SBOM
         run: ./scripts/generate-sbom.sh
