@@ -30,7 +30,7 @@ jobs:
                                   postgresql-server-dev-${{ env.PG_VERSION }}
 
       - name: Install pgrx
-        run: cargo install cargo-pgrx --locked --version 0.16.1
+        run: cargo install cargo-pgrx --locked --version 0.17.0
 
       - name: Initialize pgrx
         run: |
