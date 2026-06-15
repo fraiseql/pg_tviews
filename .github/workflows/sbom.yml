@@ -24,7 +24,10 @@ jobs:
         run: cargo install --locked cargo-pgrx --version 0.17.0
 
       - name: Generate SBOM
-        run: ./scripts/generate-sbom.sh
+        # Pass the ref name as the version so the generated filenames match the
+        # scan-ref and release-attach steps below (the script otherwise derives
+        # the version from Cargo.toml, which never matched github.ref_name).
+        run: ./scripts/generate-sbom.sh "${{ github.ref_name }}"
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v4
@@ -33,7 +36,7 @@ jobs:
           path: sbom/*
 
       - name: Scan SBOM for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: 'sbom'
           scan-ref: 'sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json'
