@@ -238,7 +238,8 @@ AS 'MODULE_PATHNAME', 'pg_tviews_delete_wrapper';
 -- pg_tviews::ddl::pg_tviews_drop
 CREATE  FUNCTION "pg_tviews_drop"(
 	"tview_name" TEXT, /* &str */
-	"if_exists" bool DEFAULT false /* bool */
+	"if_exists" bool DEFAULT false, /* bool */
+	"cascade" bool DEFAULT false /* bool */
 ) RETURNS TEXT /* core::result::Result<alloc::string::String, alloc::string::String> */
 STRICT
 LANGUAGE c /* Rust */

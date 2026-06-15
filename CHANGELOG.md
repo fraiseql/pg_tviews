@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **`DROP TABLE tv_* CASCADE` panics in ProcessUtility hook (#47)**: The hook ignored
+  `DropStmt.behavior`, so the internal drop was always RESTRICT — dropping a TVIEW with
+  any dependent object raised "cannot drop ... because other objects depend on it"
+  internally, which `catch_unwind` degraded to the opaque
+  `PANIC in ProcessUtility hook: Any { .. }` message. The hook now honors CASCADE/RESTRICT
+  and re-raises caught PostgreSQL errors faithfully (preserving SQLSTATE, detail, and hint)
+  instead of mislabeling them as a pg_tviews bug. `pg_tviews_drop()` gains an optional
+  `cascade` argument.
+
 ## [0.1.0-beta.11] - 2026-04-19
 
 ### Fixed

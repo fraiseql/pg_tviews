@@ -224,18 +224,36 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             }
         }
         Err(panic_info) => {
-            // PANIC in ProcessUtility hook - reset guard BEFORE raising error!()
+            // Something unwound out of the handler. Reset the guard BEFORE re-raising
+            // so subsequent statements in this session are still intercepted.
             unsafe { HOOK_IN_PROGRESS = false };
+
+            // A PostgreSQL `ereport(ERROR)` raised by SPI inside the handler (e.g.
+            // "cannot drop ... because other objects depend on it") is converted by
+            // pgrx into a Rust panic carrying a `CaughtError`; a Rust-side `error!()`
+            // carries an `ErrorReportWithLevel`. Both are legitimate, actionable errors
+            // — not pg_tviews bugs — so re-raise them faithfully (preserving message,
+            // detail, hint, and SQLSTATE) rather than degrading to the opaque
+            // "Any { .. }" message.
+            let panic_info = match panic_info.downcast::<pg_sys::panic::CaughtError>() {
+                Ok(caught) => caught.rethrow(),
+                Err(panic_info) => panic_info,
+            };
+            let panic_info = match panic_info.downcast::<pg_sys::panic::ErrorReportWithLevel>() {
+                Ok(report) => pg_sys::panic::CaughtError::ErrorReport(*report).rethrow(),
+                Err(panic_info) => panic_info,
+            };
+
+            // A genuine Rust panic — this really is a bug in pg_tviews.
             let panic_msg = panic_info
                 .downcast_ref::<&str>()
                 .map(|s| (*s).to_string())
                 .or_else(|| panic_info.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| format!("{panic_info:?}"));
             error!(
-                "PANIC in ProcessUtility hook: {} - This is a bug in pg_tviews - please report it!",
-                panic_msg
+                "PANIC in ProcessUtility hook: {panic_msg} - This is a bug in pg_tviews - please report it!"
             );
-            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
+            #[allow(unreachable_code)] // Reason: rethrow()/error!() diverge via longjmp, not Rust's !
             {
                 true
             }
@@ -710,6 +728,11 @@ unsafe fn handle_drop_table(
 
         let if_exists = drop_ref.missing_ok;
 
+        // Honor the statement's CASCADE/RESTRICT behavior. Without this the internal
+        // drop was always RESTRICT, so `DROP TABLE tv_* CASCADE` on a TVIEW with
+        // dependents raised a dependency error that surfaced as an opaque panic.
+        let cascade = drop_ref.behavior == pg_sys::DropBehavior::DROP_CASCADE;
+
         // Collect table names and indices from DropStmt.objects.
         // Each element in objects is a List* of String* (name parts: [schema, table] or [table]).
         let num_tables = pg_sys::list_length(objects);
@@ -761,7 +784,7 @@ unsafe fn handle_drop_table(
 
         // Drop each tv_* table via drop_tview
         for (_, name) in &tv_entries {
-            match drop_tview(name, if_exists) {
+            match drop_tview(name, if_exists, cascade) {
                 Ok(()) => {}
                 Err(e) => {
                     if if_exists {

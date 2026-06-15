@@ -10,11 +10,14 @@ use pgrx::prelude::*;
 /// - The metadata record in `pg_tview_meta`
 ///
 /// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
+/// If `cascade` is true, dependent objects are dropped too (mirrors
+/// `DROP TABLE … CASCADE`); otherwise the drop is RESTRICT and `PostgreSQL`
+/// raises a dependency error when other objects depend on the TVIEW.
 /// `PostgreSQL's` transaction system provides automatic atomicity.
 ///
 /// # Errors
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
-pub fn drop_tview(tview_name: &str, if_exists: bool) -> TViewResult<()> {
+pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<()> {
     let entity_name = tview_name.trim_start_matches("tv_");
     let view_name = format!("v_{entity_name}");
 
@@ -56,14 +59,16 @@ pub fn drop_tview(tview_name: &str, if_exists: bool) -> TViewResult<()> {
         }
     }
 
-    // Step 3: Drop the materialized table (schema-resolved via OID)
+    // Step 3: Drop the materialized table (schema-resolved via OID).
+    // Honor the caller's CASCADE/RESTRICT behavior so an explicit
+    // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
     if let Some(ref m) = meta {
-        drop_by_oid(m.tview_oid, "TABLE")?;
+        drop_by_oid(m.tview_oid, "TABLE", cascade)?;
     }
 
     // Step 4: Drop the backing view (schema-resolved via OID)
     if let Some(ref m) = meta {
-        drop_by_oid(m.view_oid, "VIEW")?;
+        drop_by_oid(m.view_oid, "VIEW", cascade)?;
     }
 
     // Step 5: Drop metadata record
@@ -85,7 +90,10 @@ pub fn drop_tview(tview_name: &str, if_exists: bool) -> TViewResult<()> {
 ///
 /// Uses `pg_class JOIN pg_namespace` to find the object's schema at runtime,
 /// so drops work regardless of which schema the TVIEW was created in.
-fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
+///
+/// When `cascade` is true the generated statement uses `CASCADE` so dependent
+/// objects are removed as well.
+fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
     let qualified = crate::utils::spi_get_string(&format!(
         "SELECT quote_ident(n.nspname::text) || '.' || quote_ident(c.relname::text) \
          FROM pg_class c \
@@ -99,7 +107,8 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str) -> TViewResult<()> {
     })?;
 
     if let Some(qname) = qualified {
-        let sql = format!("DROP {kind} IF EXISTS {qname}");
+        let cascade_kw = if cascade { " CASCADE" } else { "" };
+        let sql = format!("DROP {kind} IF EXISTS {qname}{cascade_kw}");
         crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
             query: sql,
             error: e,
@@ -153,7 +162,7 @@ mod tests {
     #[pg_test]
     fn test_drop_tview_nonexistent_if_exists() {
         // Dropping a non-existent TVIEW with IF EXISTS should not error
-        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', true)");
+        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', true, false)");
         assert!(
             result.is_ok(),
             "IF EXISTS drop of non-existent TVIEW should succeed"
@@ -163,7 +172,7 @@ mod tests {
     #[pg_test]
     fn test_drop_tview_nonexistent_strict() {
         // Dropping a non-existent TVIEW without IF EXISTS should error
-        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', false)");
+        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', false, false)");
         assert!(
             result.is_err(),
             "Strict drop of non-existent TVIEW should fail"

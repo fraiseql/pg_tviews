@@ -46,13 +46,18 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
 
 /// SQL function: Drop a TVIEW
 ///
-/// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);  -- true = IF EXISTS
+/// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);        -- true = IF EXISTS
+///        SELECT `pg_tviews_drop`('`my_entity`', true, true);  -- IF EXISTS + CASCADE
 #[pg_extern]
-fn pg_tviews_drop(tview_name: &str, if_exists: default!(bool, false)) -> Result<String, String> {
+fn pg_tviews_drop(
+    tview_name: &str,
+    if_exists: default!(bool, false),
+    cascade: default!(bool, false),
+) -> Result<String, String> {
     crate::validation::validate_sql_identifier(tview_name, "tview_name")
         .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
 
-    match drop_tview(tview_name, if_exists) {
+    match drop_tview(tview_name, if_exists, cascade) {
         Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
         Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
     }
