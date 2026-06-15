@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.12] - 2026-06-15
+
+### Added
+
+- **Pause/resume API for bulk INSERT operations (#44)**: Suspend row-level refresh
+  triggers during bulk loads, then refresh affected TVIEWs in dependency order on resume.
+  Adds `pg_tviews_suspend_triggers()`, `pg_tviews_resume_triggers()`, and
+  `pg_tviews_refresh_all()`, the `pg_tviews.suspend_triggers` GUC, nested suspend/resume
+  depth tracking, and auto-resume on COMMIT/ABORT to prevent orphaned state.
+- **Automatic `tv_*` to TVIEW conversion**: SQL helpers (`pg_tviews_auto_convert()` and
+  `pg_tviews_auto_convert_plan()` dry-run) plus a `convert_tviews.sh` CLI to detect `tv_*`
+  tables created via bulk DDL and convert them to TVIEWs after schema creation.
+- **`cascade` argument for `pg_tviews_drop()`**: Optional third argument to drop dependent
+  objects along with the TVIEW.
+
 ### Fixed
 
 - **`DROP TABLE tv_* CASCADE` panics in ProcessUtility hook (#47)**: The hook ignored
@@ -15,8 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   internally, which `catch_unwind` degraded to the opaque
   `PANIC in ProcessUtility hook: Any { .. }` message. The hook now honors CASCADE/RESTRICT
   and re-raises caught PostgreSQL errors faithfully (preserving SQLSTATE, detail, and hint)
-  instead of mislabeling them as a pg_tviews bug. `pg_tviews_drop()` gains an optional
-  `cascade` argument.
+  instead of mislabeling them as a pg_tviews bug.
+- **Schema collision in `VIEW_COLUMNS_CACHE`**: The cache was keyed by view name only, so
+  identically named backing views in different schemas (e.g. `public.v_machine` and
+  `app.v_machine`) returned the wrong columns. The cache is now keyed by
+  `{schema}.{view_name}`, fixing multi-schema deployments.
+- **TVIEW conversion fallback when event triggers don't fire**: During bulk SQL, the
+  `ddl_command_end` event trigger may not fire for every statement. The ProcessUtility hook
+  now drains any pending unconverted `tv_*` entries after each statement so registration
+  still succeeds.
+- **Schema inference prioritizes the `pk` column over `id`**: A `SELECT` exposing both `pk`
+  (BIGINT) and `id` (UUID) incorrectly chose `id` as the primary key, causing type-mismatch
+  errors when populating the materialized table. PK detection now prefers an explicit `pk`
+  column, then integer/serial types, and falls back to `id` last.
+- **PL/pgSQL syntax in the auto-convert functions**: Loop variables in
+  `pg_tviews_auto_convert()` / `pg_tviews_auto_convert_plan()` are now declared as record
+  types so both functions parse correctly.
+
+### Documentation
+
+- **`INTEGRATION_GUIDE` for automatic TVIEW conversion**: End-to-end guide for wiring
+  `tv_*` detection and conversion into schema build workflows, including shell-script usage,
+  custom backing views, multi-database builds, and troubleshooting.
 
 ## [0.1.0-beta.11] - 2026-04-19
 
