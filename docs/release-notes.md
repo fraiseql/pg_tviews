@@ -71,7 +71,7 @@ psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 ### Optional: jsonb_delta (Recommended)
 For optimal performance, install the jsonb_delta extension first:
 ```bash
-git clone https://github.com/fraiseql/jsonb_delta.git
+git clone https://github.com/evoludigit/jsonb_delta.git
 cd jsonb_delta
 cargo pgrx install --release
 
@@ -177,7 +177,7 @@ MIT License - see LICENSE file for details.
 ## Acknowledgments
 
 - Built with [pgrx](https://github.com/pgcentralfoundation/pgrx) framework
-- Optional [jsonb_delta](https://github.com/fraiseql/jsonb_delta) integration
+- Optional [jsonb_delta](https://github.com/evoludigit/jsonb_delta) integration
 - Inspired by PostgreSQL's materialized view system
 
 ---

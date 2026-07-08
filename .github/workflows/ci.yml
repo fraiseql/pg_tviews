@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  PG_MAJOR: "18"
+  PGRX_VERSION: "0.17.0"
+  # jsonb_delta v0.2.0 targets pg18 (pgrx 0.17.0) and still ships the 0.1.0
+  # extension (default_version), which is the API pg_tviews is built against.
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.2.0"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,29 +24,73 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install PostgreSQL 16 (Ubuntu default)
+      - name: Install PostgreSQL ${{ env.PG_MAJOR }} (PGDG)
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y \
+            "postgresql-${PG_MAJOR}" "postgresql-server-dev-${PG_MAJOR}"
 
-      - name: Start PostgreSQL service
+      - name: Configure and start PostgreSQL
         run: |
+          # Ephemeral CI runner: trust local TCP so the test scripts can connect
+          # as the postgres superuser (PGUSER=postgres) without a password.
+          hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
+          echo "host all all 127.0.0.1/32 trust" | sudo tee -a "$hba"
+          echo "host all all ::1/128 trust"      | sudo tee -a "$hba"
           sudo systemctl start postgresql
           sudo systemctl enable postgresql
 
       - name: Install pgrx
         run: |
-          cargo install --locked cargo-pgrx --version 0.17.0
-          cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
+          cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+          cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
 
-      - name: Build extension (verification)
+      - name: Build and install pg_tviews
         run: |
-          # Build extension to verify compilation
-          # Note: Rust unit tests with #[pg_test] require pgrx test framework
-          # SQL-based integration tests in test/sql/*.sql provide comprehensive coverage
-          cargo build --no-default-features --features pg16 --release
+          cargo pgrx install --release --no-default-features "--features pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
-      - name: Install extension
+      - name: Build and install jsonb_delta (real extension, 0.1.0 API)
         run: |
-          cargo pgrx install --release --no-default-features --features pg16 --sudo
+          git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+          cd /tmp/jsonb_delta
+          cargo pgrx install --release \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
+      - name: Enable shared_preload_libraries and restart
+        run: |
+          # Required for the pg_tviews GUCs; pg_tviews must already be installed.
+          sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+          sudo systemctl restart postgresql
+
+      - name: Preflight (extensions available, preload active)
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+        run: |
+          psql -d postgres -tAc "SELECT 1" >/dev/null
+          for ext in pg_tviews jsonb_delta; do
+            n="$(psql -d postgres -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='$ext'")"
+            test "$n" = "1" || { echo "FATAL: extension '$ext' not available in the cluster"; exit 1; }
+          done
+          psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
+            || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
+
+      # These scripts create a throwaway database per test and exit non-zero on
+      # any failure. With jsonb_delta present, the regression suite skips nothing.
+      - name: Regression suite (test/sql/regress_issue_*.sql)
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+        run: ./test/run_regression_tests.sh
+
+      - name: Integration suite (test/sql/[0-9]*.sql)
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+        run: ./test/run_integration_tests.sh

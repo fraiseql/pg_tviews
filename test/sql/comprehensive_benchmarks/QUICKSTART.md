@@ -52,7 +52,7 @@ cargo pgrx install --release
 ```
 /path/to/code/
   ├── pg_tviews/
-  └── jsonb_delta/    # Clone from https://github.com/fraiseql/jsonb_delta
+  └── jsonb_delta/    # Clone from https://github.com/evoludigit/jsonb_delta
 ```
 
 ```bash

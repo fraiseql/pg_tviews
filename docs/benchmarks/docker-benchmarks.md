@@ -18,7 +18,7 @@
 
 ### Repository Requirements
 - **pg_tviews**: Current repository
-- **jsonb_delta**: Separate repository (https://github.com/fraiseql/jsonb_delta)
+- **jsonb_delta**: Separate repository (https://github.com/evoludigit/jsonb_delta)
 
 ### When to Use Docker
 - You need real jsonb_delta extension performance (not stubs)
@@ -117,13 +117,13 @@ Both repositories must be in the same parent directory:
 ```
 /path/to/code/
   ├── pg_tviews/       # This repository
-  └── jsonb_delta/       # Clone from https://github.com/fraiseql/jsonb_delta
+  └── jsonb_delta/       # Clone from https://github.com/evoludigit/jsonb_delta
 ```
 
 **Clone jsonb_delta if you haven't already**:
 ```bash
 cd /path/to/code  # Parent directory containing pg_tviews
-git clone https://github.com/fraiseql/jsonb_delta.git
+git clone https://github.com/evoludigit/jsonb_delta.git
 ```
 
 ## Quick Start

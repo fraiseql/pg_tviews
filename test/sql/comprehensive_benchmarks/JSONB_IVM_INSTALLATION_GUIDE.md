@@ -59,7 +59,7 @@ docker run --name pg17-bench \
 
 # Install extension in container
 docker exec -it pg17-bench bash
-cd /tmp && git clone https://github.com/fraiseql/jsonb_delta.git
+cd /tmp && git clone https://github.com/evoludigit/jsonb_delta.git
 cd jsonb_delta
 cargo pgrx install --release
 ```

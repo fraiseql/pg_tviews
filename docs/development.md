@@ -56,7 +56,7 @@ cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
 
 ```bash
 # Clone and build jsonb_delta
-git clone https://github.com/fraiseql/jsonb_delta.git
+git clone https://github.com/evoludigit/jsonb_delta.git
 cd jsonb_delta
 make && sudo make install
 ```

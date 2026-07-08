@@ -246,7 +246,7 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 
 **Resolution**:
 1. Install jsonb_delta: `CREATE EXTENSION jsonb_delta;`
-2. Download from: https://github.com/fraiseql/jsonb_delta
+2. Download from: https://github.com/evoludigit/jsonb_delta
 3. Restart pg_tviews extension if needed
 
 **Note**: This is a warning, not an error. pg_tviews works without jsonb_delta but slower.
