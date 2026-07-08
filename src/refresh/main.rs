@@ -59,7 +59,7 @@ use pgrx::prelude::*;
 use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
 use crate::lifecycle::check_jsonb_delta_available;
-use crate::utils::{lookup_view_for_source, relname_from_oid};
+use crate::utils::{lookup_view_for_source, quote_identifier, relname_from_oid};
 
 /// Represents a materialized view row pulled from `v_entity`.
 pub struct ViewRow {
@@ -154,13 +154,22 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         );
     }
 
-    // Use the first key column for WHERE lookup (the view handles full DISTINCT ON logic)
-    let key_col = &meta.distinct_on_keys[0];
+    // Use the projected OUTPUT column for WHERE / ON CONFLICT — the name the backing
+    // view and tv actually expose. For an aliased DISTINCT ON key this differs from
+    // the source column the trigger reads; fall back to the source key when output
+    // keys are absent (unaliased keys, or metadata predating distinct_on_output_keys).
+    // `key_col` stays bare for column-name comparison in build_dedup_dml_components;
+    // `key_col_q` is quoted for interpolation into SQL.
+    let key_col = meta
+        .distinct_on_output_keys
+        .first()
+        .unwrap_or(&meta.distinct_on_keys[0]);
+    let key_col_q = quote_identifier(key_col);
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let tv_name = relname_from_oid(meta.tview_oid)?;
 
     // Check whether any winning row exists for this dedup key
-    let count_sql = format!("SELECT COUNT(*) FROM {view_name} WHERE {key_col}::text = $1");
+    let count_sql = format!("SELECT COUNT(*) FROM {view_name} WHERE {key_col_q}::text = $1");
     let row_count: i64 = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -175,7 +184,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
     if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
-        let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col}::text = $1");
+        let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col_q}::text = $1");
         Spi::run_with_args(
             &delete_sql,
             &[unsafe {
@@ -219,8 +228,8 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
         let upsert_sql = format!(
             "INSERT INTO {tv_name} ({col_list}) \
-             SELECT {col_list} FROM {view_name} WHERE {key_col}::text = $1 LIMIT 1 \
-             ON CONFLICT ({key_col}) DO UPDATE SET {do_update}"
+             SELECT {col_list} FROM {view_name} WHERE {key_col_q}::text = $1 LIMIT 1 \
+             ON CONFLICT ({key_col_q}) DO UPDATE SET {do_update}"
         );
         Spi::run_with_args(
             &upsert_sql,
@@ -428,10 +437,12 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // for both dependency-path changes and own-column changes. Only pure-scalar
     // dependency sets stay on the smart-patch path below, where the shallow
     // `jsonb_smart_patch_scalar` merge already carries own columns along.
-    if deps
-        .iter()
-        .any(|d| matches!(d.dep_type, DependencyType::Array | DependencyType::NestedObject))
-    {
+    if deps.iter().any(|d| {
+        matches!(
+            d.dep_type,
+            DependencyType::Array | DependencyType::NestedObject
+        )
+    }) {
         return apply_full_replacement(row, meta);
     }
 

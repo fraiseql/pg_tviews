@@ -5,8 +5,8 @@
 //! resolved to OIDs and stored as `CascadePath` entries in `pg_tview_meta`.
 
 use sqlparser::ast::{
-    BinaryOperator, Expr, JoinConstraint, JoinOperator, SetExpr, Statement, TableFactor,
-    TableWithJoins,
+    BinaryOperator, Distinct, Expr, JoinConstraint, JoinOperator, SelectItem, SetExpr, Statement,
+    TableFactor, TableWithJoins,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -416,6 +416,93 @@ fn build_path(graph: &JoinGraph, leaf: &str, root: &str) -> Option<JoinPath> {
     })
 }
 
+/// Extract the OUTPUT (projected) column name for each `DISTINCT ON` key.
+///
+/// Maps every `DISTINCT ON (expr)` to the SELECT-list item that projects it and
+/// returns that item's output name — its `AS` alias, or the bare column name when
+/// unaliased. This is the column the backing view and `tv_<entity>` actually
+/// expose, so it is the name `refresh_by_dedup_key` must query and the tview's
+/// primary key must use.
+///
+/// This is deliberately distinct from `schema::parser::extract_distinct_on_keys`,
+/// which returns the raw SOURCE column read off the base tuple by the trigger.
+/// When the `DISTINCT ON` key is aliased (`c.id_contract AS pk_contract`) the two
+/// differ; both are stored so each consumer reads the correct one.
+///
+/// Returns `Ok(vec![])` when the query has no top-level `DISTINCT ON`.
+///
+/// # Errors
+///
+/// Returns `Err` if the SQL cannot be parsed, or if a `DISTINCT ON` key does not
+/// map to a resolvable projected output column — the caller rejects the create,
+/// because such a tview would build an invalid dedup key / primary key.
+pub fn extract_distinct_on_output_keys(select_sql: &str) -> Result<Vec<String>, String> {
+    let dialect = PostgreSqlDialect {};
+    let stmts = Parser::new(&dialect)
+        .try_with_sql(select_sql)
+        .map_err(|e| format!("SQL init error: {e}"))?
+        .parse_statements()
+        .map_err(|e| format!("SQL parse error: {e}"))?;
+
+    let Some(Statement::Query(query)) = stmts.into_iter().next() else {
+        return Ok(vec![]);
+    };
+
+    // DISTINCT ON only applies to a plain SELECT body (not a set operation).
+    let SetExpr::Select(select) = *query.body else {
+        return Ok(vec![]);
+    };
+
+    let on_exprs = match &select.distinct {
+        Some(Distinct::On(exprs)) => exprs,
+        _ => return Ok(vec![]), // plain SELECT, or SELECT DISTINCT with no ON
+    };
+
+    let mut output_keys = Vec::with_capacity(on_exprs.len());
+    for on_expr in on_exprs {
+        let name = resolve_projection_output(on_expr, &select.projection).ok_or_else(|| {
+            format!(
+                "DISTINCT ON key `{on_expr}` is not projected under a resolvable output \
+                 column; project it explicitly (e.g. `{on_expr} AS pk_<entity>`)"
+            )
+        })?;
+        output_keys.push(name);
+    }
+    Ok(output_keys)
+}
+
+/// Resolve a `DISTINCT ON` expression to the output name of the SELECT-list item
+/// that projects it. Matches structurally, or by bare column name when one side
+/// is qualified (`t.col`) and the other is not (`col`).
+fn resolve_projection_output(on_expr: &Expr, projection: &[SelectItem]) -> Option<String> {
+    let on_col = expr_bare_column(on_expr);
+    let matches =
+        |expr: &Expr| expr == on_expr || (on_col.is_some() && expr_bare_column(expr) == on_col);
+    for item in projection {
+        match item {
+            SelectItem::ExprWithAlias { expr, alias } if matches(expr) => {
+                return Some(alias.value.clone());
+            }
+            // Unaliased projection: the output name IS the bare column name.
+            SelectItem::UnnamedExpr(expr) if matches(expr) => {
+                return expr_bare_column(expr);
+            }
+            _ => {} // wildcards / non-matching items carry no name to bind here
+        }
+    }
+    None
+}
+
+/// Return the bare column name of a simple column reference (`col` or `t.col`).
+/// `None` for non-column expressions (function calls, literals, casts, etc.).
+fn expr_bare_column(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(ident) => Some(ident.value.clone()),
+        Expr::CompoundIdentifier(parts) => parts.last().map(|i| i.value.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +645,62 @@ mod tests {
             path.root_join_col, "fk_currency",
             "root_join_col must be the FK on the root table, not its PK"
         );
+    }
+
+    #[test]
+    fn test_distinct_on_output_aliased() {
+        // Aliased dedup key: output name is the alias, not the source column.
+        let sql = "SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id \
+                   FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC";
+        let keys = extract_distinct_on_output_keys(sql).unwrap();
+        assert_eq!(keys, vec!["pk_contract"]);
+    }
+
+    #[test]
+    fn test_distinct_on_output_unaliased() {
+        // Bare projected key: output name == source column.
+        let sql = "SELECT DISTINCT ON (c.id) c.id, c.pk_contract FROM tb_contract c";
+        let keys = extract_distinct_on_output_keys(sql).unwrap();
+        assert_eq!(keys, vec!["id"]);
+    }
+
+    #[test]
+    fn test_distinct_on_output_qualifier_mismatch() {
+        // DISTINCT ON unqualified, projection qualified: match by bare column name.
+        let sql =
+            "SELECT DISTINCT ON (id_contract) c.id_contract AS pk_contract FROM tb_contract c";
+        let keys = extract_distinct_on_output_keys(sql).unwrap();
+        assert_eq!(keys, vec!["pk_contract"]);
+    }
+
+    #[test]
+    fn test_distinct_on_output_with_cte_preamble() {
+        let sql = "WITH x AS (SELECT 1) \
+                   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract \
+                   FROM tb_contract c";
+        let keys = extract_distinct_on_output_keys(sql).unwrap();
+        assert_eq!(keys, vec!["pk_contract"]);
+    }
+
+    #[test]
+    fn test_distinct_on_output_none_when_no_distinct_on() {
+        assert!(
+            extract_distinct_on_output_keys("SELECT a, b FROM t")
+                .unwrap()
+                .is_empty()
+        );
+        // Plain DISTINCT (no ON) has no dedup key.
+        assert!(
+            extract_distinct_on_output_keys("SELECT DISTINCT a FROM t")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_distinct_on_output_unresolvable_expression_key() {
+        // Expression key not projected under a resolvable name → Err (caller rejects).
+        let sql = "SELECT DISTINCT ON (lower(c.code)) c.id FROM tb_contract c";
+        assert!(extract_distinct_on_output_keys(sql).is_err());
     }
 }
