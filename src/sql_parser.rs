@@ -48,6 +48,19 @@ struct JoinEdge {
     right_col: String,
 }
 
+/// A CTE resolved to the single base table it reads, with a map from each of its
+/// output columns to the base-table column that produces it. Only CTEs whose body
+/// is a single SELECT over one base table (no joins, no set operation, no nesting)
+/// are resolved; anything else is left unresolved so a reference to it produces no
+/// cascade path rather than a wrong one.
+#[derive(Debug, Clone)]
+struct ResolvedCte {
+    base_table: String,
+    /// CTE output column name → base-table column name (passthrough columns only;
+    /// aggregates / computed projections are absent).
+    col_map: HashMap<String, String>,
+}
+
 /// Adjacency graph of table join relationships
 #[derive(Debug)]
 struct JoinGraph {
@@ -57,6 +70,9 @@ struct JoinGraph {
     edges: Vec<JoinEdge>,
     /// Alias → real table name
     aliases: HashMap<String, String>,
+    /// Column-reference qualifier (CTE name or its FROM alias) → resolved CTE.
+    /// Used to remap `cte.out_col` references to the underlying base column.
+    cte_refs: HashMap<String, ResolvedCte>,
 }
 
 impl JoinGraph {
@@ -65,6 +81,7 @@ impl JoinGraph {
             tables: HashSet::new(),
             edges: Vec::new(),
             aliases: HashMap::new(),
+            cte_refs: HashMap::new(),
         }
     }
 
@@ -140,6 +157,14 @@ pub fn extract_join_paths(select_sql: &str, root_table: &str) -> Result<Vec<Join
     let entity = root_table.strip_prefix("tb_").unwrap_or(root_table);
     let pk_col = format!("pk_{entity}");
 
+    // Resolve CTEs to their base tables so a reference through a WITH alias reaches
+    // the underlying base table (issue #51). WITH RECURSIVE is rejected upstream at
+    // create; here it simply yields no resolutions.
+    let ctes = match &query.with {
+        Some(with) if !with.recursive => resolve_ctes(with),
+        _ => HashMap::new(),
+    };
+
     // A UNION takes its output column names from the leftmost branch; find the
     // projection position that produces pk_<entity> so a root-less branch (one that
     // does not read tb_<entity> directly) can be connected back to the entity PK.
@@ -152,9 +177,90 @@ pub fn extract_join_paths(select_sql: &str, root_table: &str) -> Result<Vec<Join
         &pk_col,
         pk_position,
         false,
+        &ctes,
         &mut paths,
     )?;
     Ok(dedup_join_paths(paths))
+}
+
+/// Resolve the CTEs declared in a `WITH` clause to their base tables. Only CTEs
+/// whose body is a single SELECT over exactly one base table (no joins, no set
+/// operation, and not reading another CTE) are resolved; the rest are omitted so
+/// references to them stay unresolvable (no wrong cascade path is produced).
+fn resolve_ctes(with: &sqlparser::ast::With) -> HashMap<String, ResolvedCte> {
+    let mut resolved: HashMap<String, ResolvedCte> = HashMap::new();
+    for cte in &with.cte_tables {
+        let name = cte.alias.name.value.clone();
+        if let Some(rc) = resolve_single_cte(cte, &resolved) {
+            resolved.insert(name, rc);
+        }
+    }
+    resolved
+}
+
+/// Resolve one CTE to `(base_table, output_col -> base_col)` when its body is a
+/// single SELECT over one base table. Returns `None` for multi-table, set-op,
+/// or CTE-on-CTE bodies (out of v1 scope).
+fn resolve_single_cte(
+    cte: &sqlparser::ast::Cte,
+    already_resolved: &HashMap<String, ResolvedCte>,
+) -> Option<ResolvedCte> {
+    let SetExpr::Select(select) = &*cte.query.body else {
+        return None; // set-operation body — out of scope
+    };
+    if select.from.len() != 1 {
+        return None;
+    }
+    let twj = &select.from[0];
+    if !twj.joins.is_empty() {
+        return None; // multi-base body — out of scope
+    }
+    let (from_name, _) = extract_table_info(&twj.relation).ok()?;
+    if already_resolved.contains_key(&from_name) {
+        return None; // reads another CTE — out of scope (no chaining in v1)
+    }
+
+    // Build the output-column → base-column map. WITH-declared column aliases
+    // (`WITH c(a, b) AS ...`) rename outputs positionally; otherwise the output
+    // name is the projection item's own name.
+    let declared = &cte.alias.columns;
+    let mut col_map = HashMap::new();
+    for (i, item) in select.projection.iter().enumerate() {
+        let (out_name, src_col) = match item {
+            SelectItem::UnnamedExpr(e) => match expr_bare_column(e) {
+                Some(col) => (col.clone(), col),
+                None => continue, // aggregate / computed — not a passthrough
+            },
+            SelectItem::ExprWithAlias { expr, alias } => match expr_bare_column(expr) {
+                Some(col) => (alias.value.clone(), col),
+                None => continue,
+            },
+            _ => continue,
+        };
+        let out_name = declared.get(i).map_or(out_name, |ident| ident.value.clone());
+        col_map.insert(out_name, src_col);
+    }
+
+    Some(ResolvedCte {
+        base_table: from_name,
+        col_map,
+    })
+}
+
+/// True if the query begins with a `WITH RECURSIVE` clause. Recursive CTEs are not
+/// supported for cascade tracking and are rejected at create time.
+pub fn has_recursive_cte(select_sql: &str) -> bool {
+    let dialect = PostgreSqlDialect {};
+    let Ok(mut parser) = Parser::new(&dialect).try_with_sql(select_sql) else {
+        return false;
+    };
+    let Ok(stmts) = parser.parse_statements() else {
+        return false;
+    };
+    matches!(
+        stmts.into_iter().next(),
+        Some(Statement::Query(q)) if q.with.as_ref().is_some_and(|w| w.recursive)
+    )
 }
 
 /// Recursively collect cascade `JoinPath`s from a query body, descending into
@@ -167,6 +273,7 @@ fn collect_paths_from_setexpr(
     pk_col: &str,
     pk_position: Option<usize>,
     in_set_op: bool,
+    ctes: &HashMap<String, ResolvedCte>,
     out: &mut Vec<JoinPath>,
 ) -> Result<(), String> {
     match body {
@@ -177,6 +284,7 @@ fn collect_paths_from_setexpr(
                 pk_col,
                 pk_position,
                 in_set_op,
+                ctes,
             )?);
             Ok(())
         }
@@ -191,13 +299,13 @@ fn collect_paths_from_setexpr(
                     "{op:?} set operations are not supported for cascade paths"
                 ));
             }
-            collect_paths_from_setexpr(left, root_table, pk_col, pk_position, true, out)?;
-            collect_paths_from_setexpr(right, root_table, pk_col, pk_position, true, out)?;
+            collect_paths_from_setexpr(left, root_table, pk_col, pk_position, true, ctes, out)?;
+            collect_paths_from_setexpr(right, root_table, pk_col, pk_position, true, ctes, out)?;
             Ok(())
         }
         // Parenthesized branch / subquery body — recurse into it.
         SetExpr::Query(q) => {
-            collect_paths_from_setexpr(&q.body, root_table, pk_col, pk_position, in_set_op, out)
+            collect_paths_from_setexpr(&q.body, root_table, pk_col, pk_position, in_set_op, ctes, out)
         }
         _ => Err("Unsupported query body for cascade paths".to_string()),
     }
@@ -217,6 +325,7 @@ fn paths_for_select(
     pk_col: &str,
     pk_position: Option<usize>,
     in_set_op: bool,
+    ctes: &HashMap<String, ResolvedCte>,
 ) -> Result<Vec<JoinPath>, String> {
     if select.from.is_empty() {
         return Ok(vec![]);
@@ -225,7 +334,7 @@ fn paths_for_select(
     // Build join graph from FROM clause
     let mut graph = JoinGraph::new();
     for table_with_joins in &select.from {
-        build_graph_from_table_with_joins(table_with_joins, &mut graph)?;
+        build_graph_from_table_with_joins(table_with_joins, &mut graph, ctes)?;
     }
 
     // Also extract implicit joins from WHERE clause
@@ -347,15 +456,16 @@ fn dedup_join_paths(paths: Vec<JoinPath>) -> Vec<JoinPath> {
 fn build_graph_from_table_with_joins(
     twj: &TableWithJoins,
     graph: &mut JoinGraph,
+    ctes: &HashMap<String, ResolvedCte>,
 ) -> Result<(), String> {
     // Extract root table
     let (root_name, root_alias) = extract_table_info(&twj.relation)?;
-    graph.add_table(&root_name, root_alias.as_deref());
+    add_table_or_cte(&root_name, root_alias.as_deref(), ctes, graph);
 
     // Process each JOIN
     for join in &twj.joins {
         let (right_name, right_alias) = extract_table_info(&join.relation)?;
-        graph.add_table(&right_name, right_alias.as_deref());
+        add_table_or_cte(&right_name, right_alias.as_deref(), ctes, graph);
 
         // Extract ON condition columns
         let constraint = match &join.join_operator {
@@ -393,6 +503,35 @@ fn build_graph_from_table_with_joins(
     }
 
     Ok(())
+}
+
+/// Add a FROM/JOIN table to the graph, inlining a CTE reference to its base table.
+///
+/// For a CTE reference the base table becomes the graph node, and both the FROM
+/// alias and the CTE name are registered in `cte_refs` so column references
+/// (`alias.col` or `cte.col`) can be remapped to the base column in
+/// `extract_col_ref`.
+fn add_table_or_cte(
+    name: &str,
+    alias: Option<&str>,
+    ctes: &HashMap<String, ResolvedCte>,
+    graph: &mut JoinGraph,
+) {
+    if let Some(resolved) = ctes.get(name) {
+        graph.tables.insert(resolved.base_table.clone());
+        graph
+            .aliases
+            .insert(name.to_string(), resolved.base_table.clone());
+        graph.cte_refs.insert(name.to_string(), resolved.clone());
+        if let Some(a) = alias {
+            graph
+                .aliases
+                .insert(a.to_string(), resolved.base_table.clone());
+            graph.cte_refs.insert(a.to_string(), resolved.clone());
+        }
+    } else {
+        graph.add_table(name, alias);
+    }
 }
 
 /// Extract table name and alias from a `TableFactor`
@@ -444,12 +583,21 @@ fn extract_equalities(expr: &Expr, graph: &mut JoinGraph) {
 
 /// Extract a `table.column` reference from an expression, resolving aliases.
 /// Returns `(resolved_table_name, column_name)`.
+///
+/// When the qualifier is a CTE reference, the CTE output column is remapped to its
+/// underlying base column; a reference to a non-passthrough CTE output (an
+/// aggregate/computed column absent from the CTE's `col_map`) yields `None`, so no
+/// (wrong) edge is created for it.
 fn extract_col_ref(expr: &Expr, graph: &JoinGraph) -> Option<(String, String)> {
     match expr {
         Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-            let table = graph.resolve(&parts[0].value);
-            let column = parts[1].value.clone();
-            Some((table, column))
+            let qualifier = &parts[0].value;
+            let column = &parts[1].value;
+            if let Some(cte) = graph.cte_refs.get(qualifier) {
+                let base_col = cte.col_map.get(column)?;
+                return Some((cte.base_table.clone(), base_col.clone()));
+            }
+            Some((graph.resolve(qualifier), column.clone()))
         }
         _ => None,
     }
@@ -905,5 +1053,47 @@ mod tests {
         // INTERSECT / EXCEPT are not supported for cascade tracking.
         let sql = "SELECT pk_task FROM tb_task INTERSECT SELECT pk_task FROM tb_task_archive";
         assert!(extract_join_paths(sql, "tb_task").is_err());
+    }
+
+    #[test]
+    fn test_cte_single_base_resolves() {
+        let sql = "WITH cust_orders AS (\
+                     SELECT fk_customer, count(*) AS n FROM tb_order GROUP BY fk_customer\
+                   ) \
+                   SELECT c.pk_customer, c.id FROM tb_customer c \
+                   LEFT JOIN cust_orders co ON co.fk_customer = c.pk_customer";
+        let paths = extract_join_paths(sql, "tb_customer").unwrap();
+        let order = paths
+            .iter()
+            .find(|p| p.source_table == "tb_order")
+            .expect("CTE-wrapped tb_order should resolve to a cascade path");
+        assert_eq!(order.initial_col, "fk_customer");
+        assert!(order.steps.is_empty());
+        assert_eq!(order.root_join_col, "pk_customer");
+    }
+
+    #[test]
+    fn test_cte_computed_join_column_unresolvable() {
+        // Joining on a CTE aggregate output (not a passthrough base column) must not
+        // synthesize a cascade path — leaving it unresolved is correct, a wrong path
+        // is not.
+        let sql = "WITH s AS (SELECT fk_customer, count(*) AS c FROM tb_order GROUP BY fk_customer) \
+                   SELECT cust.pk_customer FROM tb_customer cust JOIN s ON s.c = cust.pk_customer";
+        let paths = extract_join_paths(sql, "tb_customer").unwrap();
+        assert!(
+            paths.iter().all(|p| p.source_table != "tb_order"),
+            "a join on a CTE aggregate must not produce a cascade path"
+        );
+    }
+
+    #[test]
+    fn test_recursive_cte_detected() {
+        assert!(has_recursive_cte(
+            "WITH RECURSIVE t AS (SELECT 1) SELECT pk_x FROM tb_x"
+        ));
+        assert!(!has_recursive_cte("SELECT pk_x FROM tb_x"));
+        assert!(!has_recursive_cte(
+            "WITH t AS (SELECT 1) SELECT pk_x FROM tb_x"
+        ));
     }
 }

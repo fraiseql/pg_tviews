@@ -270,6 +270,20 @@ pub fn create_tview(
         None => current_schema()?,
     };
 
+    // Reject WITH RECURSIVE up front (issue #51): cascade paths cannot be tracked
+    // through a recursive CTE, so creating one would leave a tview that silently
+    // refreshes incompletely.
+    if crate::sql_parser::has_recursive_cte(&final_select_sql) {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "TVIEW '{tv_table_name}' uses WITH RECURSIVE, which pg_tviews does not support: \
+                 cascade paths cannot be tracked through a recursive CTE, so the tview would \
+                 refresh incompletely. Rewrite the definition without recursion."
+            ),
+        });
+    }
+
     // Resolve DISTINCT ON keys before creating any objects, so an unresolvable
     // dedup key rejects the create cleanly (issue #51). `distinct_on_keys` is the
     // raw SOURCE column the trigger reads off the base tuple; `distinct_on_output_keys`
