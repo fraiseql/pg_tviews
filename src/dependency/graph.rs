@@ -1,4 +1,3 @@
-use crate::config::MAX_DEPENDENCY_DEPTH;
 use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
@@ -126,12 +125,13 @@ fn traverse_dependencies(
 
     queue.push_back((view_oid, initial_depth));
 
+    let max_dependency_depth = crate::config::max_dependency_depth();
     while let Some((current_oid, depth)) = queue.pop_front() {
-        // Check depth limit
-        if depth > MAX_DEPENDENCY_DEPTH {
+        // Check depth limit (tunable via pg_tviews.max_dependency_depth)
+        if depth > max_dependency_depth {
             return Err(TViewError::DependencyDepthExceeded {
                 depth,
-                max_depth: MAX_DEPENDENCY_DEPTH,
+                max_depth: max_dependency_depth,
             });
         }
 
@@ -383,14 +383,14 @@ mod tests {
 
         // For now, verify no cycle in simple case
         let graph = find_base_tables("v_c", None).unwrap();
-        assert!(graph.max_depth_reached < MAX_DEPENDENCY_DEPTH);
+        assert!(graph.max_depth_reached < crate::config::MAX_DEPENDENCY_DEPTH);
     }
 
     #[pg_test]
     fn test_depth_limit_enforced() {
         // This test would require creating 11+ nested views.
         // Left as integration test — verifying the limit matches expectations.
-        let limit = MAX_DEPENDENCY_DEPTH;
+        let limit = crate::config::MAX_DEPENDENCY_DEPTH;
         assert_eq!(limit, 10, "Expected depth limit of 10");
     }
 }

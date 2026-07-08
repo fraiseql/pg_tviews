@@ -205,11 +205,14 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
             let dml = build_dedup_dml_components(&col_names, key_col.as_str());
 
-            // Cache the DML strings
-            crate::utils::DEDUP_DML_CACHE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(view_name.clone(), dml.clone());
+            // Cache the DML strings (bounded by pg_tviews.cache_size)
+            {
+                let mut cache = crate::utils::DEDUP_DML_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                crate::utils::bound_cache(&mut cache);
+                cache.insert(view_name.clone(), dml.clone());
+            }
 
             dml
         };

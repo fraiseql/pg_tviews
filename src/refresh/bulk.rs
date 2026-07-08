@@ -91,26 +91,32 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
            AND NOT EXISTS (SELECT 1 FROM {view_name} v WHERE v.{pk_col} = t.{pk_col})"
     );
 
-    // Both statements are keyed on the same requested-pk array. SAFETY:
+    // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
+    // single statement never carries an unbounded pk array. Each batch's UPSERT and
+    // stale-DELETE are keyed on that batch's pks; the DELETE only affects tview rows
+    // whose pk is in the batch, so per-batch execution stays correct. SAFETY:
     // DatumWithOid wraps the validated BIGINT[] for SPI parameter passing.
-    Spi::run_with_args(
-        &upsert_sql,
-        &[unsafe {
-            DatumWithOid::new(
-                pks.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        }],
-    )?;
-    Spi::run_with_args(
-        &delete_sql,
-        &[unsafe {
-            DatumWithOid::new(
-                pks.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        }],
-    )?;
+    let batch = crate::config::batch_size();
+    for chunk in pks.chunks(batch) {
+        Spi::run_with_args(
+            &upsert_sql,
+            &[unsafe {
+                DatumWithOid::new(
+                    chunk.to_vec(),
+                    PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
+                )
+            }],
+        )?;
+        Spi::run_with_args(
+            &delete_sql,
+            &[unsafe {
+                DatumWithOid::new(
+                    chunk.to_vec(),
+                    PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
+                )
+            }],
+        )?;
+    }
 
     Ok(())
 }

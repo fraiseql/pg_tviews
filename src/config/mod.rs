@@ -15,10 +15,14 @@
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | Logging verbosity |
 //! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
+//! | `pg_tviews.max_queue_size` | int | 10000 | Refresh-queue backpressure limit |
+//! | `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
+//! | `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement |
+//! | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory cache |
 //!
 //! ## Compile-time Constants
 //!
-//! - `MAX_DEPENDENCY_DEPTH`: Prevents infinite recursion in view hierarchies
+//! - `MAX_DEPENDENCY_DEPTH`: default for `pg_tviews.max_dependency_depth`
 //! - `DEBUG_DEPENDENCIES`: Enable verbose dependency logging
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
@@ -44,6 +48,10 @@ static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+// Default must equal MAX_DEPENDENCY_DEPTH (10); GucSetting::new needs an i32 literal.
+static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
+static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
+static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -145,6 +153,41 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_dependency_depth",
+        c"Maximum pg_depend traversal depth when building the dependency graph.",
+        c"Bounds how deep view-on-view hierarchies may nest before an error is raised.",
+        &MAX_DEPENDENCY_DEPTH_GUC,
+        1,   // min
+        100, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_int_guc(
+        c"pg_tviews.batch_size",
+        c"Maximum primary keys processed per statement during bulk refresh.",
+        c"Large multi-row changes are chunked into batches of this size to bound \
+          statement size and memory on very large bulk operations.",
+        &BATCH_SIZE_GUC,
+        1,         // min
+        1_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_int_guc(
+        c"pg_tviews.cache_size",
+        c"Maximum entries kept in each in-memory metadata cache.",
+        c"When a cache exceeds this many entries it is cleared and repopulated \
+          lazily, bounding per-backend memory on high-cardinality workloads.",
+        &CACHE_SIZE_GUC,
+        1,          // min
+        10_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -218,4 +261,25 @@ pub fn unlogged_by_default() -> bool {
 #[must_use]
 pub fn suspend_triggers() -> bool {
     SUSPEND_TRIGGERS_GUC.get()
+}
+
+/// Maximum `pg_depend` traversal depth when building the dependency graph
+/// (default: 10). Bounds view-on-view nesting.
+#[must_use]
+pub fn max_dependency_depth() -> usize {
+    MAX_DEPENDENCY_DEPTH_GUC.get().unsigned_abs() as usize
+}
+
+/// Maximum primary keys processed per statement during bulk refresh (default: 1000).
+/// Large multi-row changes are chunked into batches of this size.
+#[must_use]
+pub fn batch_size() -> usize {
+    BATCH_SIZE_GUC.get().unsigned_abs().max(1) as usize
+}
+
+/// Maximum entries kept in each in-memory metadata cache before it is cleared and
+/// repopulated lazily (default: 10000). Bounds per-backend cache memory.
+#[must_use]
+pub fn cache_size() -> usize {
+    CACHE_SIZE_GUC.get().unsigned_abs().max(1) as usize
 }
