@@ -105,12 +105,27 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
         error!("No TVIEW metadata for source_oid: {:?}", source_oid);
     };
 
-    // 2. Recompute row from v_entity
-    let view_row = recompute_view_row(&meta, pk)?;
+    // 2. Recompute row from v_entity. Absent → the base row was deleted, so remove
+    //    the tview row instead of erroring (issue #48: DELETE left stale rows).
+    match recompute_view_row(&meta, pk)? {
+        Some(view_row) => apply_patch(&view_row, &meta),
+        None => delete_tview_row(&meta, pk),
+    }
+}
 
-    // 3. Patch tv_entity using jsonb_delta (pass metadata to avoid duplicate load)
-    apply_patch(&view_row, &meta)?;
-
+/// Delete the tview row for a pk whose backing-view row has disappeared.
+///
+/// Called when `recompute_view_row` returns `None` (base row deleted or now
+/// filtered out of the backing view). Removing the row here is what makes DELETE
+/// propagate to the tview instead of leaving a stale row (issue #48).
+fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
+    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let pk_col = format!("pk_{}", meta.entity_name);
+    let sql = format!("DELETE FROM {tv_name} WHERE {pk_col} = $1");
+    Spi::run_with_args(
+        &sql,
+        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+    )?;
     Ok(())
 }
 
@@ -268,7 +283,7 @@ fn build_dedup_dml_components(col_names: &[String], key_col: &str) -> (String, S
 /// SELECT * FROM v_post WHERE pk_post = 1
 /// -- Returns: pk_post, fk_user, data JSONB
 /// ```
-fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
+fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
@@ -279,18 +294,13 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
             vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
         let mut rows = client.select(&sql, None, &args)?;
 
-        let row_data = rows.next().ok_or_else(|| {
-            spi::Error::from(crate::TViewError::SpiError {
-                query: sql.clone(),
-                error: format!(
-                    "TVIEW '{}': No row found in backing view '{view_name}' for {pk_col} = {pk}. \
-                     Possible causes: (1) row deleted from base table, \
-                     (2) row violates UNION ALL branch conditions, \
-                     (3) row filtered by view WHERE clause",
-                    meta.entity_name
-                ),
-            })
-        })?;
+        // No backing-view row for this pk means the base row was deleted (or now
+        // fails the view's WHERE/branch conditions). This is not an error: the
+        // caller removes the corresponding tview row. Returning Ok(None) is what
+        // makes DELETE propagate instead of being swallowed as an SPI failure.
+        let Some(row_data) = rows.next() else {
+            return Ok(None);
+        };
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
         if meta.is_union && rows.next().is_some() {
@@ -327,12 +337,12 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<ViewRow> {
             })
         })?;
 
-        Ok(ViewRow {
+        Ok(Some(ViewRow {
             entity_name: meta.entity_name.clone(),
             pk,
             tview_oid: meta.tview_oid,
             data,
-        })
+        }))
     })
 }
 
@@ -409,10 +419,29 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
         return apply_full_replacement(row, meta);
     }
 
-    // Build SQL UPDATE with smart patch calls for each dependency
-    let sql = build_smart_patch_sql(&tv_name, &pk_col, &deps);
+    // UPSERT rather than UPDATE (issue #48): a smart patch only makes sense for a
+    // row that already exists, but an INSERT into the base table has no tview row
+    // to patch yet, so an UPDATE-only statement silently drops it. Insert the full
+    // row from the backing view, or smart-patch the existing row on conflict.
+    let view_name = lookup_view_for_source(meta.view_oid)?;
+    let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    if col_names.is_empty() {
+        return apply_full_replacement(row, meta);
+    }
+    let col_list = col_names.join(", ");
+    // Qualify the target column as `{tv}.data`: the INSERT … SELECT source relation
+    // is in scope inside ON CONFLICT DO UPDATE, so a bare `data` is ambiguous.
+    let patch_expr = build_smart_patch_expr(&deps, &format!("{tv_name}.data"));
 
-    // Execute update
+    // $1 = freshly computed document (patch source for the DO UPDATE branch),
+    // $2 = primary key (selects the row to insert from the backing view). In the
+    // DO UPDATE clause, bare `data` is the existing tview value being patched.
+    let sql = format!(
+        "INSERT INTO {tv_name} ({col_list}) \
+         SELECT {col_list} FROM {view_name} WHERE {pk_col} = $2 \
+         ON CONFLICT ({pk_col}) DO UPDATE SET data = {patch_expr}, updated_at = now()"
+    );
+
     // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
     // The JSONB patch data and INT8 primary key are validated structured data.
     Spi::run_with_args(
@@ -430,53 +459,34 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     Ok(())
 }
 
-/// Build SQL UPDATE with nested smart patch function calls.
+/// Build the nested `jsonb_smart_patch_*()` expression for a set of dependencies.
 ///
-/// Constructs a chain of `jsonb_smart_patch_*()` calls based on dependency metadata.
-/// Each dependency adds one layer of patching, creating a nested function call structure.
-///
-/// # Algorithm
-///
-/// 1. Start with base expression: `"data"`
-/// 2. For each dependency, wrap expression in appropriate patch function:
+/// The returned SQL expression patches the tview's existing `data` column
+/// (starting from `base_data_expr`, which the caller qualifies as `tv_<entity>.data`
+/// so it is unambiguous inside `INSERT … SELECT … ON CONFLICT DO UPDATE`) with the
+/// freshly computed document bound to `$1::jsonb`. Each dependency wraps the
+/// expression in one patch call:
 ///    - `NestedObject` → `jsonb_smart_patch_nested(expr, $1, path)`
 ///    - `Array` → `jsonb_smart_patch_array(expr, $1, path, key)`
 ///    - `Scalar` → `jsonb_smart_patch_scalar(expr, $1)`
-/// 3. Generate final `UPDATE` statement with composed expression
+///
+/// With no usable dependency it returns the bare column reference `data` (a no-op
+/// patch). The caller embeds the result in an `INSERT … ON CONFLICT DO UPDATE`.
 ///
 /// # Example Output
 ///
-/// For TVIEW with dependencies: `[author (nested), comments (array)]`
+/// For dependencies `[comments (array), author (nested)]`:
 ///
 /// ```sql
-/// UPDATE tv_post
-/// SET data = jsonb_smart_patch_nested(
-///                jsonb_smart_patch_array(data, $1, ARRAY['comments'], 'id'),
-///                $1, ARRAY['author']
-///            ),
-///     updated_at = now()
-/// WHERE pk_post = $2
+/// jsonb_smart_patch_nested(
+///     jsonb_smart_patch_array(data, $1::jsonb, ARRAY['comments'], 'id'),
+///     $1::jsonb, ARRAY['author'])
 /// ```
-///
-/// # Arguments
-///
-/// * `tv_name` - TVIEW table name (e.g., `"tv_post"`)
-/// * `pk_col` - Primary key column name (e.g., `"pk_post"`)
-/// * `deps` - Parsed dependency metadata with types and paths
-///
-/// # Returns
-///
-/// SQL UPDATE statement as a `String`, or error if construction fails.
-fn build_smart_patch_sql(tv_name: &str, pk_col: &str, deps: &[DependencyDetail]) -> String {
-    if deps.is_empty() {
-        // No dependencies = full replacement
-        return format!(
-            "UPDATE {tv_name} SET data = $1::jsonb, updated_at = now() WHERE {pk_col} = $2"
-        );
-    }
-
-    // Start with current data column
-    let mut patch_expr = "data".to_string();
+fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> String {
+    // Start with the target's current data column. The caller qualifies it (e.g.
+    // `tv_post.data`) because inside `INSERT … SELECT … ON CONFLICT DO UPDATE` a
+    // bare `data` is ambiguous with the SELECT source relation.
+    let mut patch_expr = base_data_expr.to_string();
 
     // Apply patches for each dependency in order
     for dep in deps {
@@ -511,7 +521,7 @@ fn build_smart_patch_sql(tv_name: &str, pk_col: &str, deps: &[DependencyDetail])
         };
     }
 
-    format!("UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() WHERE {pk_col} = $2")
+    patch_expr
 }
 
 /// Check if `jsonb_delta` extension is installed in the current database.
@@ -1595,13 +1605,14 @@ mod tests {
         assert_eq!(count, 0, "Disabled audit should not write any rows");
     }
 
-    /// Test missing-row error handling when backing view returns no rows.
+    /// Test that refreshing a deleted row removes it from the tview (issue #48).
     ///
-    /// Verifies that `refresh_pk()` handles the case where a row has been deleted
-    /// from the backing view (due to cascading deletes or view condition changes)
-    /// with a clear, actionable error message.
+    /// When a base row is deleted (or the view condition no longer matches), the
+    /// backing view returns no row for that pk. `refresh_pk()` must remove the
+    /// corresponding tview row and succeed — previously it raised a swallowed SPI
+    /// error and left the row stale.
     #[pg_test]
-    fn test_missing_row_error_handling() {
+    fn test_missing_row_deletes_tview_row() {
         // Create base tables
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run(
@@ -1629,30 +1640,32 @@ mod tests {
         )
         .unwrap();
 
+        // The tview row exists after creation.
+        let before: i64 = Spi::get_one("SELECT count(*) FROM tv_post WHERE pk_post = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(before, 1, "tview row should exist before delete");
+
         // Delete the underlying post
         Spi::run("DELETE FROM tb_post WHERE pk_post = 1").unwrap();
 
-        // Attempt to refresh should fail with helpful error message
+        // Refresh should succeed and remove the tview row (no swallowed error).
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
 
         let result = crate::refresh::refresh_pk(post_oid, 1);
-
-        // Error should occur (row no longer exists)
         assert!(
-            result.is_err(),
-            "Refresh should fail when backing row is missing"
+            result.is_ok(),
+            "Refresh of a deleted row should succeed by removing the tview row, got {result:?}"
         );
 
-        // Error message should be descriptive
-        let error_msg = format!("{:?}", result.unwrap_err());
-        // Should mention either entity name, view name, or the specific pk that's missing
-        assert!(
-            error_msg.contains("post")
-                || error_msg.contains("v_post")
-                || error_msg.contains("pk=1"),
-            "Error message should provide context about missing row"
+        let after: i64 = Spi::get_one("SELECT count(*) FROM tv_post WHERE pk_post = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after, 0,
+            "tview row should be gone after refreshing a deleted pk"
         );
     }
 
