@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **Incremental refresh silently dropped INSERTs and failed DELETE (#48)**: After the
+  first change statement per entity, subsequent INSERTs were silently lost and DELETEs
+  left stale rows. Three write sites were UPDATE-only (a not-yet-materialized row matched
+  nothing and was dropped), and a deleted base row raised a swallowed SPI error instead of
+  removing the tview row. `apply_patch` and `refresh_bulk` now UPSERT
+  (`INSERT … ON CONFLICT DO UPDATE`), and a missing backing-view row now deletes the tview
+  row. Fixed in both jsonb_delta modes.
+- **`jsonb_smart_patch_array` signature mismatch (#50, #24)**: pg_tviews emitted a 4-arg
+  call that jsonb_delta 0.1.0 never exported (a test stub masked it), so every array
+  dependency errored against the real extension. Array-dependency tviews are now recomputed
+  via full replacement — correct for array element insert/update/delete and for the entity's
+  own-column changes. This also resolves the array test failures reported as #24. The
+  jsonb_delta availability latch is now invalidated on `CREATE/DROP EXTENSION jsonb_delta`.
+
+### Added
+
+- **Create-time refreshability validation (#49)**: `pg_tviews_create` now rejects a
+  definition whose derived entity can never refresh — no `tb_<entity>` base table **and** no
+  cascade path routing changes to it — instead of registering a permanently-stale tview that
+  can silently shadow a correctly-named sibling on the same base table.
+- **New tunable GUCs (#27)**: `pg_tviews.max_dependency_depth` (was a compile-time constant),
+  `pg_tviews.batch_size` (bulk refresh is now chunked), and `pg_tviews.cache_size` (bounds
+  the previously unbounded per-session metadata caches). Existing `pg_tviews.max_queue_size`
+  already covered the issue's `queue_depth`.
+
 ## [0.1.0-beta.12] - 2026-06-15
 
 ### Added

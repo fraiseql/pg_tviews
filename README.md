@@ -256,14 +256,45 @@ SELECT pg_tviews_recover_after_crash('user_summary');
 
 ### Configuration
 
+All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
+`postgresql.conf`); none require recompiling:
+
+| GUC | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations before aborting |
+| `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
+| `pg_tviews.max_queue_size` | int | 10000 | Refresh-queue backpressure limit |
+| `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement (chunking) |
+| `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory metadata cache |
+| `pg_tviews.graph_cache_enabled` | bool | on | Cache dependency graphs |
+| `pg_tviews.table_cache_enabled` | bool | on | Cache table→entity mappings |
+| `pg_tviews.metrics_enabled` | bool | off | Collect refresh metrics |
+| `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
+| `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED |
+| `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
+| `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
+| `pg_tviews.log_level` | string | info | Logging verbosity |
+
 ```sql
--- Control default UNLOGGED behavior (default: true)
-SET pg_tviews.unlogged_by_default = true;
+-- Examples
+SET pg_tviews.unlogged_by_default = true;   -- default UNLOGGED behavior
+SET pg_tviews.batch_size = 5000;            -- larger bulk-refresh chunks
+SET pg_tviews.cache_size = 50000;           -- bigger per-session caches
 
 -- Alter existing TVIEWs
 ALTER TABLE tv_my_view SET UNLOGGED;
 ALTER TABLE tv_my_view SET LOGGED;  -- ⚠️ Truncates data
 ```
+
+> GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
+> extension) so they are registered at backend start.
+
+### TVIEW naming convention
+
+A TVIEW's derived entity must be refreshable: either a `tb_<entity>` base table
+exists (its primary key is `pk_<entity>`), or the definition joins the base tables
+it derives from so cascade paths can route changes to it. `pg_tviews_create`
+rejects a definition that satisfies neither, since it could never refresh.
 
 ### Safety Guarantees
 
