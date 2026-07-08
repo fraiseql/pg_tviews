@@ -1,3 +1,9 @@
+# pre-commit.ci runs in a bare container that cannot build a pgrx extension
+# (no PostgreSQL headers / pg_config), so skip the clippy hook there. It still
+# runs locally on commit and as the dedicated `clippy` job in CI.
+ci:
+  skip: [clippy-strict]
+
 repos:
   - repo: local
     hooks:

@@ -34,13 +34,24 @@ jobs:
 
       - name: Configure and start PostgreSQL
         run: |
-          # Ephemeral CI runner: trust local TCP so the test scripts can connect
-          # as the postgres superuser (PGUSER=postgres) without a password.
+          # GitHub runners may not auto-create the PGDG "main" cluster, and if a
+          # default PostgreSQL already holds 5432 the new cluster lands on 5433.
+          # Create it if missing, trust all local connections (ephemeral runner),
+          # start it, and export the ACTUAL port to later steps.
+          if ! pg_lsclusters -h | awk '{print $1"/"$2}' | grep -qx "${PG_MAJOR}/main"; then
+            sudo pg_createcluster "${PG_MAJOR}" main
+          fi
+          # Prepend trust rules so they match before the default scram/peer rules.
           hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
-          echo "host all all 127.0.0.1/32 trust" | sudo tee -a "$hba"
-          echo "host all all ::1/128 trust"      | sudo tee -a "$hba"
-          sudo systemctl start postgresql
-          sudo systemctl enable postgresql
+          sudo sed -i '1i local all all trust\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust' "$hba"
+          sudo pg_ctlcluster "${PG_MAJOR}" main start \
+            || sudo pg_ctlcluster "${PG_MAJOR}" main restart
+          port="$(pg_lsclusters -h | awk -v v="${PG_MAJOR}" '$1==v && $2=="main" {print $3}')"
+          {
+            echo "PGHOST=localhost"
+            echo "PGPORT=${port}"
+            echo "PGUSER=postgres"
+          } >> "$GITHUB_ENV"
 
       - name: Install pgrx
         run: |
