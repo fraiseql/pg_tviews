@@ -310,6 +310,32 @@ pub fn create_tview(
         &dep_graph.base_tables,
     )?;
 
+    // Step 6.6: Reject a tview that can never be incrementally refreshed (issue #49).
+    // A refresh is enqueued for this entity only if either a `tb_<entity>` base table
+    // exists (its row trigger resolves the entity by stripping `tb_`) or a cascade
+    // path routes some base-table change to it. With neither, the tview would silently
+    // never refresh — and, when built directly on a `tb_` base table that already
+    // backs another entity (e.g. `order_summary` over `tb_order`), shadow that
+    // sibling. Aggregate/summary tviews without a `tb_<entity>` stay valid as long as
+    // their joins produce cascade paths. This runs before metadata registration and
+    // trigger installation, and any objects created above roll back with the ERROR,
+    // so a rejected create leaves the incumbent tview untouched.
+    if cascade_paths.is_empty() && !entity_base_table_exists(entity_name, &schema_name)? {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "TVIEW '{tv_table_name}' (entity '{entity_name}') can never be refreshed: \
+                 there is no base table 'tb_{entity_name}', and no cascade path routes any \
+                 base-table change to it. pg_tviews maintains a tview either directly (a \
+                 pk_<entity> primary key over a tb_<entity> base table) or via cascade \
+                 paths from its joined base tables. Rename the primary-key column to match \
+                 an existing base table, or ensure the definition joins the base tables it \
+                 derives from. Creating it as-is would leave a permanently stale tview and \
+                 can silently shadow a correctly-named tview on the same base table."
+            ),
+        });
+    }
+
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
@@ -498,6 +524,45 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW exists: {tview_name}"),
+        pg_error: format!("{e:?}"),
+    })
+    .map(|opt| opt.unwrap_or(false))
+}
+
+/// Does a `tb_<entity>` base table exist for this entity?
+///
+/// Used by the issue #49 refreshability guard: a `tb_<entity>` base table means the
+/// entity is reachable directly (its row trigger resolves the entity by stripping
+/// `tb_`). The table is resolved in the tview's target schema first, then via the
+/// active `search_path`, so both explicit-schema and `current_schema()` callers are
+/// handled.
+fn entity_base_table_exists(entity_name: &str, schema_name: &str) -> TViewResult<bool> {
+    let tb_name = format!("tb_{entity_name}");
+    let qualified = format!(
+        "{}.{}",
+        quote_identifier(schema_name),
+        quote_identifier(&tb_name)
+    );
+
+    Spi::get_one_with_args::<bool>(
+        "SELECT COALESCE(to_regclass($1), to_regclass($2)) IS NOT NULL",
+        &[
+            unsafe {
+                DatumWithOid::new(
+                    qualified.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    tb_name.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check base table exists for entity '{entity_name}'"),
         pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
