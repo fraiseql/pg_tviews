@@ -4,6 +4,7 @@
 -- Drop existing if any
 DROP FUNCTION IF EXISTS jsonb_smart_patch_nested(jsonb, jsonb, text[]) CASCADE;
 DROP FUNCTION IF EXISTS jsonb_smart_patch_array(jsonb, jsonb, text[], text) CASCADE;
+DROP FUNCTION IF EXISTS jsonb_smart_patch_array(jsonb, jsonb, text, text, jsonb) CASCADE;
 DROP FUNCTION IF EXISTS jsonb_smart_patch_scalar(jsonb, jsonb) CASCADE;
 
 -- Nested object patching: merges patch at specific path
@@ -52,12 +53,16 @@ BEGIN
 END;
 $$;
 
--- Array patching: updates matching element in array at path
+-- Array patching: updates the element matching (match_key = match_value) in the
+-- array at array_path. Signature mirrors the SHIPPED jsonb_delta 0.1.0 exactly
+-- (target, source, array_path TEXT scalar, match_key TEXT, match_value jsonb) so
+-- the stub can never again mask a signature mismatch (issue #50).
 CREATE OR REPLACE FUNCTION jsonb_smart_patch_array(
-    data jsonb,
-    patch jsonb,
-    path text[],
-    match_key text DEFAULT 'id'
+    target jsonb,
+    source jsonb,
+    array_path text,
+    match_key text,
+    match_value jsonb
 ) RETURNS jsonb
 LANGUAGE plpgsql IMMUTABLE
 AS $$
@@ -65,30 +70,19 @@ DECLARE
     result jsonb;
     array_data jsonb;
     element jsonb;
-    match_value jsonb;
+    path text[];
     idx int;
 BEGIN
-    -- Get the array at the specified path
-    array_data := data #> path;
-
-    -- Get the match value from patch
-    match_value := patch -> match_key;
-
-    -- Find and update the matching element
-    result := data;
+    path := string_to_array(array_path, '.');
+    array_data := target #> path;
+    result := target;
 
     IF array_data IS NOT NULL AND jsonb_typeof(array_data) = 'array' THEN
-        -- Find matching element index
         FOR idx IN 0..jsonb_array_length(array_data) - 1 LOOP
             element := array_data -> idx;
             IF element -> match_key = match_value THEN
-                -- Found match, merge patch into this element
-                result := jsonb_set(
-                    result,
-                    path || ARRAY[idx::text],
-                    element || patch,
-                    false
-                );
+                -- Merge the source document into the matching element.
+                result := jsonb_set(result, path || ARRAY[idx::text], element || source, false);
                 EXIT;
             END IF;
         END LOOP;

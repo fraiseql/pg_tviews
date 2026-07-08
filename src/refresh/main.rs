@@ -61,9 +61,6 @@ use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 use crate::lifecycle::check_jsonb_delta_available;
 use crate::utils::{lookup_view_for_source, relname_from_oid};
 
-/// Default match key for array patching (assumes 'id' field)
-const DEFAULT_ARRAY_MATCH_KEY: &str = "id";
-
 /// Represents a materialized view row pulled from `v_entity`.
 pub struct ViewRow {
     pub entity_name: String,
@@ -419,6 +416,18 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
         return apply_full_replacement(row, meta);
     }
 
+    // Array dependencies cannot be surgically patched correctly (issue #50):
+    // jsonb_delta 0.1.0's jsonb_smart_patch_array patches a single element by a
+    // match_value not tracked here, and a path-level array replace would silently
+    // miss changes to the entity's own columns. Recompute the whole row instead —
+    // correct for array element insert/update/delete and for own-column changes.
+    if deps
+        .iter()
+        .any(|d| matches!(d.dep_type, DependencyType::Array))
+    {
+        return apply_full_replacement(row, meta);
+    }
+
     // UPSERT rather than UPDATE (issue #48): a smart patch only makes sense for a
     // row that already exists, but an INSERT into the base table has no tview row
     // to patch yet, so an UPDATE-only statement silently drops it. Insert the full
@@ -503,16 +512,12 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
                 }
             }
             DependencyType::Array => {
-                if let Some(path) = &dep.path {
-                    let path_str = path.join(",");
-                    let match_key = dep.match_key.as_deref().unwrap_or(DEFAULT_ARRAY_MATCH_KEY);
-                    format!(
-                        "jsonb_smart_patch_array({patch_expr}, $1::jsonb, ARRAY['{path_str}'], '{match_key}')"
-                    )
-                } else {
-                    warning!("Array dependency missing path, skipping");
-                    patch_expr
-                }
+                // Unreachable in practice: apply_patch routes any tview with an Array
+                // dependency to full replacement (issue #50), because jsonb_delta
+                // 0.1.0 cannot surgically sync a whole array and a path-level replace
+                // would miss the entity's own-column changes. Kept as a safe passthrough
+                // for match exhaustiveness.
+                patch_expr
             }
             DependencyType::Scalar => {
                 // Scalar = shallow merge (no nested paths affected)
