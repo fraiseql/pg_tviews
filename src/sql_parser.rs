@@ -5,8 +5,8 @@
 //! resolved to OIDs and stored as `CascadePath` entries in `pg_tview_meta`.
 
 use sqlparser::ast::{
-    BinaryOperator, Distinct, Expr, JoinConstraint, JoinOperator, SelectItem, SetExpr, Statement,
-    TableFactor, TableWithJoins,
+    BinaryOperator, Distinct, Expr, JoinConstraint, JoinOperator, Select, SelectItem, SetExpr,
+    SetOperator, Statement, TableFactor, TableWithJoins,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -137,47 +137,210 @@ pub fn extract_join_paths(select_sql: &str, root_table: &str) -> Result<Vec<Join
         _ => return Err("Only SELECT queries are supported".to_string()),
     };
 
-    let select = match *query.body {
-        SetExpr::Select(s) => s,
-        _ => return Err("UNION/set operations not yet supported for cascade paths".to_string()),
-    };
+    let entity = root_table.strip_prefix("tb_").unwrap_or(root_table);
+    let pk_col = format!("pk_{entity}");
 
+    // A UNION takes its output column names from the leftmost branch; find the
+    // projection position that produces pk_<entity> so a root-less branch (one that
+    // does not read tb_<entity> directly) can be connected back to the entity PK.
+    let pk_position = leftmost_select(&query.body).and_then(|s| pk_output_position(s, &pk_col));
+
+    let mut paths = Vec::new();
+    collect_paths_from_setexpr(
+        &query.body,
+        root_table,
+        &pk_col,
+        pk_position,
+        false,
+        &mut paths,
+    )?;
+    Ok(dedup_join_paths(paths))
+}
+
+/// Recursively collect cascade `JoinPath`s from a query body, descending into
+/// UNION branches. `in_set_op` becomes true once inside a set operation, enabling
+/// the root-less branch connection for a UNION branch that does not read
+/// `tb_<entity>` directly.
+fn collect_paths_from_setexpr(
+    body: &SetExpr,
+    root_table: &str,
+    pk_col: &str,
+    pk_position: Option<usize>,
+    in_set_op: bool,
+    out: &mut Vec<JoinPath>,
+) -> Result<(), String> {
+    match body {
+        SetExpr::Select(select) => {
+            out.extend(paths_for_select(
+                select,
+                root_table,
+                pk_col,
+                pk_position,
+                in_set_op,
+            )?);
+            Ok(())
+        }
+        SetExpr::SetOperation {
+            left, right, op, ..
+        } => {
+            // Only UNION [ALL] is supported for cascade tracking. INTERSECT / EXCEPT
+            // have set-difference semantics the per-pk recompute does not model, so
+            // reject them here rather than let them fall through as a UNION.
+            if !matches!(op, SetOperator::Union) {
+                return Err(format!(
+                    "{op:?} set operations are not supported for cascade paths"
+                ));
+            }
+            collect_paths_from_setexpr(left, root_table, pk_col, pk_position, true, out)?;
+            collect_paths_from_setexpr(right, root_table, pk_col, pk_position, true, out)?;
+            Ok(())
+        }
+        // Parenthesized branch / subquery body — recurse into it.
+        SetExpr::Query(q) => {
+            collect_paths_from_setexpr(&q.body, root_table, pk_col, pk_position, in_set_op, out)
+        }
+        _ => Err("Unsupported query body for cascade paths".to_string()),
+    }
+}
+
+/// Build cascade paths for a single SELECT branch.
+///
+/// A branch that contains `root_table` uses the ordinary join-graph traversal. A
+/// `root_table`-less UNION branch (`in_set_op`) is connected to the entity by
+/// synthesizing an edge from the table that projects `pk_<entity>` (at
+/// `pk_position`) to the entity PK. A plain SELECT without `root_table` yields no
+/// paths (unchanged behaviour). Unresolvable branches are skipped, never producing
+/// a wrong path.
+fn paths_for_select(
+    select: &Select,
+    root_table: &str,
+    pk_col: &str,
+    pk_position: Option<usize>,
+    in_set_op: bool,
+) -> Result<Vec<JoinPath>, String> {
     if select.from.is_empty() {
         return Ok(vec![]);
     }
 
     // Build join graph from FROM clause
     let mut graph = JoinGraph::new();
-
     for table_with_joins in &select.from {
         build_graph_from_table_with_joins(table_with_joins, &mut graph)?;
     }
 
     // Also extract implicit joins from WHERE clause
-    if let Some(ref where_expr) = select.selection {
+    if let Some(where_expr) = &select.selection {
         extract_implicit_joins(where_expr, &mut graph);
     }
 
-    if !graph.tables.contains(root_table) {
+    // Direct branch: the entity base table is present; traverse to it as usual.
+    if graph.tables.contains(root_table) {
+        return Ok(build_paths_to_root(&graph, root_table));
+    }
+
+    // A plain (non-UNION) SELECT without the root table has no cascade paths.
+    if !in_set_op {
         return Ok(vec![]);
     }
 
-    // Find all non-root tables and compute paths to root
-    let non_root_tables: Vec<String> = graph
+    // Root-less UNION branch: connect the pk_<entity> provider to the entity PK.
+    let Some(pk_pos) = pk_position else {
+        return Ok(vec![]);
+    };
+    let Some((pk_table, pk_source_col)) = branch_pk_provider(select, pk_pos, &graph) else {
+        return Ok(vec![]);
+    };
+    graph.add_table(root_table, None);
+    graph.add_edge(JoinEdge {
+        left_table: pk_table,
+        left_col: pk_source_col,
+        right_table: root_table.to_string(),
+        right_col: pk_col.to_string(),
+    });
+    Ok(build_paths_to_root(&graph, root_table))
+}
+
+/// Build a `JoinPath` from every non-root table in the graph back to `root_table`.
+fn build_paths_to_root(graph: &JoinGraph, root_table: &str) -> Vec<JoinPath> {
+    graph
         .tables
         .iter()
         .filter(|t| *t != root_table)
-        .cloned()
-        .collect();
+        .filter_map(|leaf| build_path(graph, leaf, root_table))
+        .collect()
+}
 
-    let mut paths = Vec::new();
-    for leaf in &non_root_tables {
-        if let Some(path) = build_path(&graph, leaf, root_table) {
-            paths.push(path);
+/// Resolve the table and source column that provides the entity PK in a root-less
+/// UNION branch (the projection item at `pk_position`).
+///
+/// Returns `None` for a wildcard, a non-column expression, or a bare column in a
+/// multi-table branch (ambiguous ownership) — the branch is then skipped rather
+/// than mapped to a guessed table.
+fn branch_pk_provider(
+    select: &Select,
+    pk_position: usize,
+    graph: &JoinGraph,
+) -> Option<(String, String)> {
+    let expr = match select.projection.get(pk_position)? {
+        SelectItem::UnnamedExpr(e) => e,
+        SelectItem::ExprWithAlias { expr, .. } => expr,
+        _ => return None,
+    };
+    match expr {
+        Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+            let table = graph.resolve(&parts[0].value);
+            Some((table, parts[1].value.clone()))
+        }
+        Expr::Identifier(ident) => {
+            // Bare column: unambiguous only when the branch reads a single table.
+            if graph.tables.len() == 1 {
+                graph
+                    .tables
+                    .iter()
+                    .next()
+                    .map(|t| (t.clone(), ident.value.clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Find the leftmost `Select` of a query body, descending through set operations
+/// and parenthesized queries. UNION output column names come from this branch.
+fn leftmost_select(body: &SetExpr) -> Option<&Select> {
+    match body {
+        SetExpr::Select(s) => Some(s),
+        SetExpr::SetOperation { left, .. } => leftmost_select(left),
+        SetExpr::Query(q) => leftmost_select(&q.body),
+        _ => None,
+    }
+}
+
+/// Return the projection index whose OUTPUT name is `pk_col`, if any.
+fn pk_output_position(select: &Select, pk_col: &str) -> Option<usize> {
+    select.projection.iter().position(|item| {
+        let name = match item {
+            SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
+            SelectItem::UnnamedExpr(e) => expr_bare_column(e),
+            _ => None,
+        };
+        name.as_deref() == Some(pk_col)
+    })
+}
+
+/// Deduplicate `JoinPath`s by full structural equality, preserving order. Two
+/// branches can legitimately produce different paths for the same source table,
+/// so equality is over the whole path, not just `source_table`.
+fn dedup_join_paths(paths: Vec<JoinPath>) -> Vec<JoinPath> {
+    let mut unique: Vec<JoinPath> = Vec::with_capacity(paths.len());
+    for p in paths {
+        if !unique.contains(&p) {
+            unique.push(p);
         }
     }
-
-    Ok(paths)
+    unique
 }
 
 /// Build the join graph from a single FROM clause entry
@@ -702,5 +865,45 @@ mod tests {
         // Expression key not projected under a resolvable name → Err (caller rejects).
         let sql = "SELECT DISTINCT ON (lower(c.code)) c.id FROM tb_contract c";
         assert!(extract_distinct_on_output_keys(sql).is_err());
+    }
+
+    #[test]
+    fn test_union_cross_table_paths() {
+        let sql = "SELECT pk_task, id, title FROM tb_task \
+                   UNION ALL \
+                   SELECT pk_task, id, title FROM tb_task_archive";
+        let paths = extract_join_paths(sql, "tb_task").unwrap();
+        // The direct branch (tb_task) needs no cascade path (direct entity trigger);
+        // the archive branch must get one connecting its pk_task to the entity PK.
+        let archive = paths
+            .iter()
+            .find(|p| p.source_table == "tb_task_archive")
+            .expect("expected a cascade path for the UNION archive branch");
+        assert_eq!(archive.initial_col, "pk_task");
+        assert!(archive.steps.is_empty());
+        assert_eq!(archive.root_join_col, "pk_task");
+    }
+
+    #[test]
+    fn test_union_aliased_pk_position() {
+        // Branch 2 provides the entity pk under a different source column, matched
+        // by position (UNION output names come from the first branch).
+        let sql = "SELECT pk_task, id FROM tb_task \
+                   UNION ALL \
+                   SELECT arch_id, id FROM tb_task_archive";
+        let paths = extract_join_paths(sql, "tb_task").unwrap();
+        let archive = paths
+            .iter()
+            .find(|p| p.source_table == "tb_task_archive")
+            .expect("expected a cascade path for the aliased-position branch");
+        assert_eq!(archive.initial_col, "arch_id");
+        assert_eq!(archive.root_join_col, "pk_task");
+    }
+
+    #[test]
+    fn test_intersect_rejected() {
+        // INTERSECT / EXCEPT are not supported for cascade tracking.
+        let sql = "SELECT pk_task FROM tb_task INTERSECT SELECT pk_task FROM tb_task_archive";
+        assert!(extract_join_paths(sql, "tb_task").is_err());
     }
 }
