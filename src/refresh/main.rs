@@ -419,14 +419,18 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
         return apply_full_replacement(row, meta);
     }
 
-    // Array dependencies cannot be surgically patched correctly (issue #50):
-    // jsonb_delta 0.1.0's jsonb_smart_patch_array patches a single element by a
-    // match_value not tracked here, and a path-level array replace would silently
-    // miss changes to the entity's own columns. Recompute the whole row instead —
-    // correct for array element insert/update/delete and for own-column changes.
+    // Array (issue #50) and nested-object (issue #52) dependencies cannot be
+    // surgically patched correctly. A path-level smart patch only touches the
+    // dependency sub-path (`jsonb_smart_patch_nested(data, $1, ARRAY['author'])`
+    // for nested; the array element sync for array), so a change to one of the
+    // entity's OWN columns — recomputed correctly into `$1` but living outside the
+    // patched path — is silently dropped. Recompute the whole row instead: correct
+    // for both dependency-path changes and own-column changes. Only pure-scalar
+    // dependency sets stay on the smart-patch path below, where the shallow
+    // `jsonb_smart_patch_scalar` merge already carries own columns along.
     if deps
         .iter()
-        .any(|d| matches!(d.dep_type, DependencyType::Array))
+        .any(|d| matches!(d.dep_type, DependencyType::Array | DependencyType::NestedObject))
     {
         return apply_full_replacement(row, meta);
     }
@@ -504,6 +508,10 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
     for dep in deps {
         patch_expr = match dep.dep_type {
             DependencyType::NestedObject => {
+                // Unreachable in practice: apply_patch routes any tview with a
+                // NestedObject dependency to full replacement (issue #52), because a
+                // path-level nested patch misses the entity's own-column changes.
+                // Kept as a safe passthrough for match exhaustiveness.
                 if let Some(path) = &dep.path {
                     let path_str = path.join(",");
                     format!(
@@ -727,7 +735,7 @@ mod tests {
 
         assert_eq!(
             updated_json["title"], "Hello",
-            "Title should NOT be touched by smart patch"
+            "Title should be recomputed unchanged (own column not modified)"
         );
         assert_eq!(
             updated_json["author"]["name"], "Alice Updated",
