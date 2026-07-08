@@ -143,13 +143,16 @@ FROM tb_post;
 
 ### Unsupported SQL Features
 
-**Error**: `ERROR: Unsupported SQL feature: UNION`
+**Error**: `ERROR: INTERSECT set operations are not supported for cascade paths`
+
+UNION / UNION ALL, simple CTEs (single-base body), and DISTINCT ON are supported.
+INTERSECT, EXCEPT, `WITH RECURSIVE`, and window functions are not.
 
 **Solutions**:
 
-1. **Rewrite without UNION**:
+1. **Rewrite without INTERSECT/EXCEPT** (UNION is fine):
    ```sql
-   -- Instead of UNION
+   -- UNION / UNION ALL is supported and cascades to every branch
    CREATE TABLE tv_content AS
    SELECT 'post' as type, pk_post as pk_content, id, title as name, data FROM tv_post
    UNION
@@ -672,7 +675,7 @@ flowchart TD
 
     D -->|Invalid name| H[Use tv_* naming]
     D -->|Missing column| I[Add pk_* and data columns]
-    D -->|Unsupported SQL| J[Remove UNION/CTE/etc]
+    D -->|Unsupported SQL| J[Remove INTERSECT/EXCEPT/RECURSIVE/window]
     D -->|Circular dependency| K[Redesign relationships]
 
     H --> L[Success]

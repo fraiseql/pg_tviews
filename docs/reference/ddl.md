@@ -232,15 +232,25 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **Subqueries**: In SELECT list (scalar subqueries)
 - **Functions**: jsonb_build_object(), jsonb_array_elements(), etc.
 - **Operators**: Standard PostgreSQL operators
+- **UNION / UNION ALL**: incremental refresh cascades to every branch's base
+  table; branches must key on disjoint `pk_<entity>` values (otherwise
+  `pg_tviews.union_duplicate_policy` governs the duplicate)
+- **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body is a single
+  SELECT over one base table (aggregation / column passthrough)
+- **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
+  the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`)
 
 #### ❌ Not Supported
 
-- **Set Operations**: UNION, INTERSECT, EXCEPT
-- **CTEs**: WITH clauses (Common Table Expressions)
+- **Set Operations**: INTERSECT, EXCEPT (only UNION / UNION ALL is tracked)
+- **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
+- **Complex CTEs**: multi-base-table CTE bodies, CTE-on-CTE chains, and
+  UNION-bodied CTEs — the tview is created, but base tables reachable only through
+  such a CTE do not cascade
 - **Window Functions**: ROW_NUMBER(), RANK(), etc.
-- **Recursive Queries**: Recursive CTEs
 - **Self-Joins**: May cause dependency cycles
-- **DISTINCT ON**: Use GROUP BY instead
+- **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
+  tables that would require PK-based cascade paths (rejected at create time)
 
 ### Limitations
 
@@ -368,11 +378,12 @@ jsonb_build_object(...) as json  -- ❌ Wrong name
 -- TVIEW A references TVIEW B which references TVIEW A
 ```
 
-**"Unsupported SQL feature: UNION"**
+**"INTERSECT/EXCEPT set operations are not supported for cascade paths"**
 ```sql
--- Fix: Rewrite without UNION
+-- UNION / UNION ALL are supported and cascade to every branch.
+-- INTERSECT and EXCEPT are not (their set-difference semantics are not tracked).
 SELECT ... FROM table1
-UNION                    -- ❌ Not supported
+INTERSECT                -- ❌ Not supported
 SELECT ... FROM table2
 
 -- Alternative: Use separate TVIEWs or application logic
