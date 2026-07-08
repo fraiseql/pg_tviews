@@ -109,11 +109,13 @@ INSERT INTO tb_order_item (fk_order, fk_product, quantity, price_at_order) VALUE
     (1, 1, 2, 10.00),
     (1, 2, 1, 20.00);
 
--- Refresh TVIEW (manual for testing)
+-- Refresh TVIEW (manual for testing). The materialized tview keeps only the
+-- Trinity columns (pk_order, id, data); the CTAS's extra fk_user projection is
+-- not materialized, so the manual refresh must target the real columns.
 TRUNCATE tv_order;
-INSERT INTO tv_order
+INSERT INTO tv_order (pk_order, id, data)
 SELECT
-    o.pk_order, o.id, o.fk_user,
+    o.pk_order, o.id,
     jsonb_build_object(
         'id', o.id,
         'status', o.status,
@@ -129,247 +131,31 @@ LEFT JOIN tb_order_item oi ON oi.fk_order = o.pk_order
 LEFT JOIN tb_product p ON p.pk_product = oi.fk_product
 GROUP BY o.pk_order, o.id, o.status, u.id, u.name, u.email;
 
--- Test: jsonb_extract_id
+-- Test: extract id from the materialized document (plain JSONB — this file
+-- deliberately runs without jsonb_delta, so it must not call jsonb_delta helpers).
 DO $$
 DECLARE
     order_id text;
 BEGIN
-    SELECT jsonb_extract_id(data, 'id') INTO order_id FROM tv_order WHERE pk_order = 1;
+    SELECT data->>'id' INTO order_id FROM tv_order WHERE pk_order = 1;
     IF order_id IS NOT NULL THEN
-        RAISE NOTICE 'PASS: jsonb_extract_id works';
+        RAISE NOTICE 'PASS: order id extracted from document';
     ELSE
         RAISE EXCEPTION 'FAIL: Could not extract order ID';
     END IF;
 END $$;
 
--- Test: jsonb_array_contains_id
-DO $$
-DECLARE
-    has_item boolean;
-    item_id uuid;
-BEGIN
-    SELECT id INTO item_id FROM tb_order_item WHERE fk_order = 1 LIMIT 1;
-    SELECT jsonb_array_contains_id(data, ARRAY['items'], 'id', to_jsonb(item_id::text))
-    INTO has_item FROM tv_order WHERE pk_order = 1;
 
-    IF has_item THEN
-        RAISE NOTICE 'PASS: jsonb_array_contains_id detects existing item';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Should have found item in array';
-    END IF;
-END $$;
-
-\echo ''
-\echo '### Test 2: Nested Path Updates'
-
--- Test: Update nested field in array element (product name)
-DO $$
-DECLARE
-    item_id uuid;
-    old_name text;
-    new_name text;
-BEGIN
-    SELECT id INTO item_id FROM tb_order_item WHERE fk_order = 1 LIMIT 1;
-    SELECT data->'items'->0->'product'->>'name' INTO old_name FROM tv_order WHERE pk_order = 1;
-
-    -- Update using nested path
-    UPDATE tv_order
-    SET data = jsonb_delta_array_update_where_path(
-        data,
-        'items',
-        'id',
-        to_jsonb(item_id::text),
-        'product.name',
-        '"Widget A Updated"'::jsonb
-    )
-    WHERE pk_order = 1;
-
-    SELECT data->'items'->0->'product'->>'name' INTO new_name FROM tv_order WHERE pk_order = 1;
-
-    IF new_name = 'Widget A Updated' THEN
-        RAISE NOTICE 'PASS: Nested path update in array element works';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Expected "Widget A Updated", got %', new_name;
-    END IF;
-END $$;
-
-\echo ''
-\echo '### Test 3: Batch Operations'
-
--- Add more items
-INSERT INTO tb_order_item (fk_order, fk_product, quantity, price_at_order) VALUES
-    (1, 3, 3, 30.00);
-
--- Refresh
-TRUNCATE tv_order;
-INSERT INTO tv_order
-SELECT
-    o.pk_order, o.id, o.fk_user,
-    jsonb_build_object(
-        'id', o.id,
-        'items', COALESCE(jsonb_agg(jsonb_build_object(
-            'id', oi.id, 'quantity', oi.quantity, 'price', oi.price_at_order
-        ) ORDER BY oi.pk_order_item) FILTER (WHERE oi.pk_order_item IS NOT NULL), '[]'::jsonb)
-    ) as data
-FROM tb_order o
-LEFT JOIN tb_order_item oi ON oi.fk_order = o.pk_order
-GROUP BY o.pk_order, o.id;
-
--- Test: Batch update multiple items
-DO $$
-DECLARE
-    items_json jsonb;
-    item1_price numeric;
-    item2_price numeric;
-BEGIN
-    -- Build batch update
-    SELECT jsonb_agg(
-        jsonb_build_object(
-            'id', id::text,
-            'price', price_at_order + 5.00
-        )
-    )
-    INTO items_json
-    FROM tb_order_item
-    WHERE fk_order = 1;
-
-    -- Apply batch update
-    UPDATE tv_order
-    SET data = jsonb_array_update_where_batch(
-        data,
-        'items',
-        'id',
-        items_json
-    )
-    WHERE pk_order = 1;
-
-    -- Verify
-    SELECT (data->'items'->0->>'price')::numeric INTO item1_price FROM tv_order WHERE pk_order = 1;
-    SELECT (data->'items'->1->>'price')::numeric INTO item2_price FROM tv_order WHERE pk_order = 1;
-
-    IF item1_price = 15.00 AND item2_price = 25.00 THEN
-        RAISE NOTICE 'PASS: Batch array update works for multiple elements';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Batch update did not apply correctly';
-    END IF;
-END $$;
-
-\echo ''
-\echo '### Test 4: Fallback Path Operations'
-
--- Test: Direct path update
-UPDATE tv_order
-SET data = jsonb_delta_set_path(
-    data,
-    'status',
-    '"shipped"'::jsonb
-)
-WHERE pk_order = 1;
-
-DO $$
-DECLARE
-    status text;
-BEGIN
-    SELECT data->>'status' INTO status FROM tv_order WHERE pk_order = 1;
-
-    IF status = 'shipped' THEN
-        RAISE NOTICE 'PASS: jsonb_delta_set_path works for simple paths';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Status not updated correctly';
-    END IF;
-END $$;
-
-\echo ''
-\echo '### Test 5: Combined Operations'
-
--- Scenario: Price change + customer update + status change
--- This tests that all functions work together
-
-DO $$
-DECLARE
-    item_id uuid;
-BEGIN
-    SELECT id INTO item_id FROM tb_order_item WHERE fk_order = 1 LIMIT 1;
-
-    -- Chain multiple operations
-    UPDATE tv_order
-    SET data = jsonb_delta_set_path(
-        jsonb_delta_array_update_where_path(
-            data,
-            'items',
-            'id',
-            to_jsonb(item_id::text),
-            'quantity',
-            '5'::jsonb
-        ),
-        'status',
-        '"completed"'::jsonb
-    )
-    WHERE pk_order = 1;
-
-    -- Verify both changes
-    IF (
-        SELECT data->>'status' FROM tv_order WHERE pk_order = 1
-    ) = 'completed' AND (
-        SELECT (data->'items'->0->>'quantity')::int FROM tv_order WHERE pk_order = 1
-    ) = 5 THEN
-        RAISE NOTICE 'PASS: Chained operations work correctly';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Chained operations failed';
-    END IF;
-END $$;
-
-\echo ''
-\echo '### Test 6: Error Handling'
-
--- Test: Invalid path
-DO $$
-BEGIN
-    UPDATE tv_order
-    SET data = jsonb_delta_set_path(
-        data,
-        'invalid..path..syntax',
-        '"test"'::jsonb
-    )
-    WHERE pk_order = 1;
-
-    RAISE EXCEPTION 'FAIL: Should have rejected invalid path syntax';
-EXCEPTION
-    WHEN OTHERS THEN
-        RAISE NOTICE 'PASS: Invalid path correctly rejected';
-END $$;
-
--- Test: Non-existent array element
-DO $$
-DECLARE
-    result jsonb;
-BEGIN
-    SELECT jsonb_delta_array_update_where_path(
-        '{"items": []}'::jsonb,
-        'items',
-        'id',
-        '"nonexistent"'::jsonb,
-        'price',
-        '99.99'::jsonb
-    ) INTO result;
-
-    -- Should return unchanged data
-    IF jsonb_array_length(result->'items') = 0 THEN
-        RAISE NOTICE 'PASS: Non-existent element handled gracefully';
-    ELSE
-        RAISE EXCEPTION 'FAIL: Should not have modified array';
-    END IF;
-END $$;
+-- The remaining jsonb_delta helper tests (jsonb_array_contains_id, nested path
+-- updates, jsonb_delta_set_path, batch) were removed (issue #55): this file
+-- deliberately runs WITHOUT jsonb_delta, and those helpers require it. That
+-- coverage lives in 92/93/94/95, which create the jsonb_delta extension.
 
 -- Cleanup
-DROP TABLE tv_order;
-DROP TABLE tb_order_item;
-DROP TABLE tb_order;
-DROP TABLE tb_product;
-DROP TABLE tb_user;
+DROP TABLE IF EXISTS tv_order CASCADE;
+DROP TABLE IF EXISTS tb_order_item CASCADE;
+DROP TABLE IF EXISTS tb_order CASCADE;
+DROP TABLE IF EXISTS tb_product CASCADE;
+DROP TABLE IF EXISTS tb_user CASCADE;
 
-\echo ''
-\echo '=========================================='
-\echo '✓ All integration tests passed!'
-\echo 'All phases (1-4) working correctly'
-\echo '=========================================='
+\echo '96 PASS: pg_tviews fallback refresh (no jsonb_delta) works'

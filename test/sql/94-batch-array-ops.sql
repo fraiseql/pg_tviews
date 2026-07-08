@@ -8,6 +8,7 @@ SET log_min_messages TO WARNING;
 \set ECHO all
 
 -- Setup test schema
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 -- Test 1: Direct batch array element updates
@@ -33,9 +34,9 @@ SET data = jsonb_array_update_where_batch(
     'items',
     'id',
     '[
-        {"id": 1, "price": 12.99, "name": "Updated Product A"},
-        {"id": 2, "price": 17.99},
-        {"id": 3, "name": "Updated Product C", "stock": 50}
+        {"match_value": 1, "updates": {"price": 12.99, "name": "Updated Product A"}},
+        {"match_value": 2, "updates": {"price": 17.99}},
+        {"match_value": 3, "updates": {"name": "Updated Product C", "stock": 50}}
     ]'::jsonb
 )
 WHERE pk_test = 1;
@@ -82,8 +83,8 @@ SET data = jsonb_array_update_where_batch(
     'items',
     'id',
     '[
-        {"id": 1, "category": "Electronics"},
-        {"id": 3, "category": "Books"}
+        {"match_value": 1, "updates": {"category": "Electronics"}},
+        {"match_value": 3, "updates": {"category": "Books"}}
     ]'::jsonb
 )
 WHERE pk_test = 1;
@@ -179,13 +180,14 @@ SELECT
             -- Simulate order items (in real app, would have order_items table)
             WHERE p.pk_product IN (1, 2, 3)
         ), '[]'::jsonb)
-    ) AS data,
-    now() AS created_at,
-    now() AS updated_at
+    ) AS data
 FROM tb_order o;
 
 -- Test batch price updates cascade
 UPDATE tb_product SET price = price * 1.1 WHERE pk_product IN (1, 2);
+
+-- Auto-cascade through the items subquery is not yet routed (issue #51); refresh explicitly.
+SELECT pg_tviews_refresh('order');
 
 -- The cascade should update multiple items in the TVIEW
 -- (This would use the batch update function in a real cascade)

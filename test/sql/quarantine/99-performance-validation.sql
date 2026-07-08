@@ -1,3 +1,9 @@
+-- QUARANTINED (issue #55): exercises aggregate/window/summary TVIEWs (entity with
+-- no tb_<entity> base table) which the #49 refreshability guard correctly rejects at
+-- create time. Support for aggregate TVIEWs is tracked in #58; this test is excluded
+-- from the CI regression suite until that lands, at which point it becomes acceptance
+-- criteria (converted to the aggregate API/shape).
+--
 -- UNLOGGED TVIEW Performance Validation Tests
 -- Tests to validate performance benefits of UNLOGGED tables
 \set ECHO none

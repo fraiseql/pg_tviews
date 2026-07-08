@@ -1,3 +1,10 @@
+-- QUARANTINED (issue #55): tests a two-phase-commit API
+-- (pg_tviews_commit_prepared / pg_tviews_rollback_prepared /
+-- pg_tviews_recover_prepared_transactions) that is NOT implemented in the current
+-- codebase, requires max_prepared_transactions > 0, and drops an internal extension
+-- table (pg_tview_pending_refreshes). 2PC support is tracked in #59; excluded from
+-- the CI suite until it lands (then revive as acceptance criteria).
+--
 -- Tests for PREPARE TRANSACTION, COMMIT PREPARED, and recovery scenarios
 
 -- Test 1: Basic PREPARE + COMMIT PREPARED flow

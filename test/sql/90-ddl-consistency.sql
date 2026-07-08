@@ -1,3 +1,11 @@
+-- Standalone preamble (issue #55): make this file self-contained so it passes
+-- on its own in a fresh database under psql -v ON_ERROR_STOP=1.
+\set ON_ERROR_STOP on
+SET client_min_messages TO WARNING;
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
 -- Test DDL Syntax Consistency
 -- Verify CREATE TABLE tv_ AS SELECT ... and pg_tviews_create() produce identical results
 
