@@ -73,14 +73,14 @@ jobs:
       - name: Enable shared_preload_libraries and restart
         run: |
           # Required for the pg_tviews GUCs; pg_tviews must already be installed.
-          sudo -u postgres psql -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
-          sudo systemctl restart postgresql
+          # PGPORT was exported to $GITHUB_ENV by the cluster-setup step.
+          sudo -u postgres psql -p "${PGPORT}" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart
 
+      # PGHOST/PGPORT/PGUSER come from $GITHUB_ENV (cluster-setup step) so the
+      # discovered port is used, not a hard-coded 5432.
       - name: Preflight (extensions available, preload active)
-        env:
-          PGHOST: localhost
-          PGPORT: "5432"
-          PGUSER: postgres
         run: |
           psql -d postgres -tAc "SELECT 1" >/dev/null
           for ext in pg_tviews jsonb_delta; do
@@ -93,15 +93,7 @@ jobs:
       # These scripts create a throwaway database per test and exit non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
       - name: Regression suite (test/sql/regress_issue_*.sql)
-        env:
-          PGHOST: localhost
-          PGPORT: "5432"
-          PGUSER: postgres
         run: ./test/run_regression_tests.sh
 
       - name: Integration suite (test/sql/[0-9]*.sql)
-        env:
-          PGHOST: localhost
-          PGPORT: "5432"
-          PGUSER: postgres
         run: ./test/run_integration_tests.sh
