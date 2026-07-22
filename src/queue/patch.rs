@@ -102,6 +102,40 @@ pub fn clear_patch_map() {
     TX_PATCH_MAP.with(|m| m.borrow_mut().clear());
 }
 
+// ── Flush-local map operations (issue #56 Phase 4) ───────────────────────────
+//
+// Parent patch derivation happens against the flush's *local* snapshot map, not
+// the thread-local `TX_PATCH_MAP` (already drained). These mirror `record`/`poison`
+// but operate on a caller-owned map.
+
+/// Merge a derived `chain` into `map` for `key` (same rules as [`record`]): a
+/// `Poisoned` key stays poisoned; a `Direct` key merges each entry; an absent key
+/// starts a new `Direct`.
+pub fn merge_chain_into(
+    map: &mut HashMap<RefreshKey, PatchState>,
+    key: RefreshKey,
+    chain: Vec<PatchEntry>,
+) {
+    match map.get_mut(&key) {
+        Some(PatchState::Poisoned) => {}
+        Some(PatchState::Direct(existing)) => {
+            for (prefix, fields) in chain {
+                merge_into_chain(existing, prefix, fields);
+            }
+        }
+        None => {
+            map.insert(key, PatchState::Direct(chain));
+        }
+    }
+}
+
+/// Poison `key` in `map` (sticky) — the parent must recompute. Used when a parent
+/// is reached from a recomputed child, or from a child whose dependency can't take
+/// a path patch (array/scalar/uuid-fk).
+pub fn poison_into(map: &mut HashMap<RefreshKey, PatchState>, key: RefreshKey) {
+    map.insert(key, PatchState::Poisoned);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

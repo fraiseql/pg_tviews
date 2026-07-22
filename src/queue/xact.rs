@@ -290,6 +290,13 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let mut processed: std::collections::HashSet<super::key::RefreshKey> =
         std::collections::HashSet::with_capacity(pending.len().max(16));
 
+    // Parent metadata cache for patch derivation (issue #56 Phase 4) — avoids
+    // reloading a parent entity's TviewMeta once per discovered parent key.
+    let mut parent_meta_cache: std::collections::HashMap<
+        String,
+        Option<crate::catalog::TviewMeta>,
+    > = std::collections::HashMap::new();
+
     // Outer drain loop: after the inner loop empties `pending`, check for
     // late-enqueued items from triggers that fired during refresh (e.g.,
     // pg_treekey cascading child rows in tb_location).  The `processed` set
@@ -373,10 +380,13 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 }
 
                 // Recompute the remaining keys via the existing single/bulk path.
+                // A recomputed child's whole document changed, so its parents must
+                // recompute too: poison any parent patch (issue #56 Phase 4).
                 if recompute_keys.len() == 1 {
                     let key = &recompute_keys[0];
                     let parents = refresh_and_get_parents(key, &graph)?;
                     for parent_key in parents {
+                        super::patch::poison_into(&mut patches, parent_key.clone());
                         if !processed.contains(&parent_key) {
                             pending.insert(parent_key);
                         }
@@ -395,6 +405,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     let parent_map = crate::propagate::find_parents_batch(&recompute_keys, &graph)?;
                     for parent_keys in parent_map.values() {
                         for parent_key in parent_keys {
+                            super::patch::poison_into(&mut patches, parent_key.clone());
                             if !processed.contains(parent_key) {
                                 pending.insert(parent_key.clone());
                             }
@@ -402,17 +413,49 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     }
                 }
 
-                // Parent discovery for the patched keys that applied (they were not
-                // recomputed above). In this phase parents are plain recompute keys;
-                // Phase 4 derives patches for them.
+                // Parent patch derivation for the patched keys that applied (issue
+                // #56 Phase 4). For each parent embedding the child via a
+                // nested_object dependency, prepend the dependency path to the
+                // child's chain and record it for the parent; where a patch can't be
+                // derived (array/scalar/uuid-fk dep, or the parent itself gated), the
+                // parent is poisoned and recomputes. Poison stickiness means a parent
+                // reached by both a patched and a recomputed child recomputes.
                 if !applied_pks.is_empty() {
                     let applied_keys: Vec<super::key::RefreshKey> = applied_pks
                         .iter()
                         .map(|&pk| super::key::RefreshKey::pk(&entity, pk))
                         .collect();
                     let parent_map = crate::propagate::find_parents_batch(&applied_keys, &graph)?;
-                    for parent_keys in parent_map.values() {
+                    for (child_key, parent_keys) in &parent_map {
+                        // Snapshot the child's applied chain before mutating `patches`.
+                        let child_chain = match patches.get(child_key) {
+                            Some(super::patch::PatchState::Direct(chain)) => Some(chain.clone()),
+                            _ => None,
+                        };
                         for parent_key in parent_keys {
+                            let derived = match &child_chain {
+                                Some(chain) => {
+                                    load_meta_cached(&parent_key.entity, &mut parent_meta_cache)?
+                                        .and_then(|m| {
+                                            crate::refresh::direct::derive_parent_chain(
+                                                &m,
+                                                &child_key.entity,
+                                                chain,
+                                            )
+                                        })
+                                }
+                                None => None,
+                            };
+                            match derived {
+                                Some(chain) => super::patch::merge_chain_into(
+                                    &mut patches,
+                                    parent_key.clone(),
+                                    chain,
+                                ),
+                                None => {
+                                    super::patch::poison_into(&mut patches, parent_key.clone());
+                                }
+                            }
                             if !processed.contains(parent_key) {
                                 pending.insert(parent_key.clone());
                             }
@@ -466,6 +509,22 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     );
 
     Ok(())
+}
+
+/// Load and cache a parent entity's `TviewMeta` for patch derivation (issue #56).
+///
+/// The cache lives for the duration of one flush; parent entities are few, so this
+/// keeps derivation from re-querying `pg_tview_meta` per discovered parent key.
+fn load_meta_cached(
+    entity: &str,
+    cache: &mut std::collections::HashMap<String, Option<crate::catalog::TviewMeta>>,
+) -> spi::Result<Option<crate::catalog::TviewMeta>> {
+    if let Some(meta) = cache.get(entity) {
+        return Ok(meta.clone());
+    }
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?;
+    cache.insert(entity.to_string(), meta.clone());
+    Ok(meta)
 }
 
 /// Refresh a single entity+pk and return discovered parent keys (without refreshing them)

@@ -5,12 +5,75 @@
 //! backing-view queries. Any pk whose tview row does not yet exist is reported
 //! back so the caller recomputes it (a patch can only update an existing row).
 
-use crate::catalog::TviewMeta;
+use crate::catalog::{DependencyType, TviewMeta};
 use crate::queue::patch::PatchEntry;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+
+/// Derive a parent's patch chain from a patched child's chain (issue #56 Phase 4).
+///
+/// When `parent_meta` embeds `child_entity` via a `nested_object` dependency at a
+/// concrete path, the child's chain is reproduced at the parent with that path
+/// prepended to every entry's prefix — `([], {bio})` for `user` becomes
+/// `(["author"], {bio})` for `post`. Multi-level cascades compose by prepending
+/// again. Returns `None` (⇒ the parent must recompute) when:
+/// - the parent is itself DISTINCT ON or a UNION,
+/// - the linkage is UUID-fk based (different plumbing, out of scope),
+/// - there is no `fk_<child>` dependency, or it appears more than once (ambiguous),
+/// - the dependency is not `nested_object`, or has no/empty path (array/scalar can't
+///   take a path patch — interlock with #50).
+pub fn derive_parent_chain(
+    parent_meta: &TviewMeta,
+    child_entity: &str,
+    child_chain: &[PatchEntry],
+) -> Option<Vec<PatchEntry>> {
+    // Parent must itself clear the entity-level gates.
+    if !parent_meta.distinct_on_keys.is_empty() || parent_meta.is_union {
+        return None;
+    }
+
+    let fk_name = format!("fk_{child_entity}");
+
+    // UUID-fk linkage uses different plumbing — decline in this cut.
+    if parent_meta.uuid_fk_columns.contains(&fk_name) {
+        return None;
+    }
+
+    // Locate the dependency by fk column; ambiguous (embedded under multiple keys)
+    // or absent ⇒ decline.
+    let mut idx = None;
+    for (i, col) in parent_meta.fk_columns.iter().enumerate() {
+        if *col == fk_name {
+            if idx.is_some() {
+                return None; // more than one — ambiguous
+            }
+            idx = Some(i);
+        }
+    }
+    let idx = idx?;
+
+    // Must be a NestedObject dependency with a concrete, non-empty path.
+    if parent_meta.dependency_types.get(idx)? != &DependencyType::NestedObject {
+        return None;
+    }
+    let path = parent_meta.dependency_paths.get(idx)?.as_ref()?;
+    if path.is_empty() {
+        return None;
+    }
+
+    // Prepend the dependency path to every chain entry's prefix.
+    let derived = child_chain
+        .iter()
+        .map(|(prefix, fields)| {
+            let mut new_prefix = path.clone();
+            new_prefix.extend(prefix.iter().cloned());
+            (new_prefix, fields.clone())
+        })
+        .collect();
+    Some(derived)
+}
 
 /// Apply one patch chain to a set of rows of a single entity.
 ///
@@ -192,5 +255,122 @@ mod tests {
             build_direct_patch_expr(&chain),
             "jsonb_smart_patch_nested(data, $1::jsonb, ARRAY['we''ird'])"
         );
+    }
+
+    // ── derive_parent_chain (Phase 4 Cycle 1) ────────────────────────────────
+
+    /// A parent `TviewMeta` with a single dependency on `fk_<child>`.
+    fn parent_meta(fk: &str, dep: DependencyType, path: Option<Vec<String>>) -> TviewMeta {
+        TviewMeta {
+            fk_columns: vec![fk.to_string()],
+            dependency_types: vec![dep],
+            dependency_paths: vec![path],
+            ..TviewMeta::default()
+        }
+    }
+
+    #[test]
+    fn nested_object_dep_prepends_path() {
+        let meta = parent_meta(
+            "fk_user",
+            DependencyType::NestedObject,
+            Some(vec!["author".to_string()]),
+        );
+        let child = vec![entry(&[], "bio", "x")];
+        let derived = derive_parent_chain(&meta, "user", &child).unwrap();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0].0, vec!["author".to_string()]);
+        assert_eq!(derived[0].1.get("bio").unwrap(), &Value::String("x".into()));
+    }
+
+    #[test]
+    fn array_dep_declines() {
+        let meta = parent_meta(
+            "fk_comment",
+            DependencyType::Array,
+            Some(vec!["comments".to_string()]),
+        );
+        assert!(derive_parent_chain(&meta, "comment", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn scalar_dep_declines() {
+        let meta = parent_meta("fk_user", DependencyType::Scalar, None);
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn nested_without_path_declines() {
+        let meta = parent_meta("fk_user", DependencyType::NestedObject, None);
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn uuid_fk_linkage_declines() {
+        let mut meta = parent_meta(
+            "fk_user",
+            DependencyType::NestedObject,
+            Some(vec!["author".to_string()]),
+        );
+        meta.uuid_fk_columns = vec!["fk_user".to_string()];
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn duplicate_embedding_declines() {
+        let mut meta = parent_meta(
+            "fk_user",
+            DependencyType::NestedObject,
+            Some(vec!["author".to_string()]),
+        );
+        // Same fk appears twice → ambiguous which key to patch.
+        meta.fk_columns.push("fk_user".to_string());
+        meta.dependency_types.push(DependencyType::NestedObject);
+        meta.dependency_paths.push(Some(vec!["editor".to_string()]));
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn missing_dependency_declines() {
+        let meta = parent_meta(
+            "fk_other",
+            DependencyType::NestedObject,
+            Some(vec!["x".to_string()]),
+        );
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn distinct_on_or_union_parent_declines() {
+        let mut meta = parent_meta(
+            "fk_user",
+            DependencyType::NestedObject,
+            Some(vec!["author".to_string()]),
+        );
+        meta.distinct_on_keys = vec!["id".to_string()];
+        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
+
+        let mut meta2 = parent_meta(
+            "fk_user",
+            DependencyType::NestedObject,
+            Some(vec!["author".to_string()]),
+        );
+        meta2.is_union = true;
+        assert!(derive_parent_chain(&meta2, "user", &[entry(&[], "b", "x")]).is_none());
+    }
+
+    #[test]
+    fn two_level_composition_prepends_both_prefixes() {
+        // Child `user` already embedded at ["author"] within `post`; now `feed`
+        // embeds `post` at ["post"]. A user patch derived for post as
+        // (["author"], …) composes at feed as (["post","author"], …).
+        let feed_meta = parent_meta(
+            "fk_post",
+            DependencyType::NestedObject,
+            Some(vec!["post".to_string()]),
+        );
+        let post_chain = vec![entry(&["author"], "bio", "x")];
+        let derived = derive_parent_chain(&feed_meta, "post", &post_chain).unwrap();
+        assert_eq!(derived[0].0, vec!["post".to_string(), "author".to_string()]);
     }
 }
