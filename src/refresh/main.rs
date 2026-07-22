@@ -293,6 +293,10 @@ fn build_dedup_dml_components(col_names: &[String], key_col: &str) -> (String, S
 /// -- Returns: pk_post, fk_user, data JSONB
 /// ```
 fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>> {
+    // Count the backing-view query (issue #56): the direct-patch fast path exists
+    // precisely to avoid reaching here for eligible changes.
+    crate::metrics::metrics_api::record_view_recomputes(1);
+
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 

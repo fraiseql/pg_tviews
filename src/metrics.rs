@@ -42,11 +42,22 @@ thread_local! {
 struct DirectPatchMetrics {
     /// Eligible UPDATEs whose patch was captured by the row trigger.
     captured: u64,
+    /// Tview rows updated directly by a patch (no backing-view query).
+    applied: u64,
+    /// Patched pks that fell back to recompute (row not yet materialised).
+    fallbacks: u64,
+    /// Tview rows recomputed from the backing view (the non-fast path).
+    view_recomputes: u64,
 }
 
 impl DirectPatchMetrics {
     const fn new_const() -> Self {
-        Self { captured: 0 }
+        Self {
+            captured: 0,
+            applied: 0,
+            fallbacks: 0,
+            view_recomputes: 0,
+        }
     }
 }
 
@@ -194,12 +205,33 @@ pub mod metrics_api {
         });
     }
 
+    /// Record `n` tview rows updated directly by a patch (issue #56).
+    pub fn record_direct_patches_applied(n: u64) {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().applied += n;
+        });
+    }
+
+    /// Record `n` patched pks that fell back to recompute (issue #56).
+    pub fn record_direct_patch_fallbacks(n: u64) {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().fallbacks += n;
+        });
+    }
+
+    /// Record `n` tview rows recomputed from the backing view (issue #56).
+    pub fn record_view_recomputes(n: u64) {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().view_recomputes += n;
+        });
+    }
+
     /// Get current queue statistics
     pub fn get_queue_stats() -> QueueStats {
         // Get current queue size from state
         let queue_size = crate::queue::get_queue_size();
 
-        let direct_patch_captured = DIRECT_PATCH_METRICS.with(|m| m.borrow().captured);
+        let dp = DIRECT_PATCH_METRICS.with(|m| *m.borrow());
 
         METRICS.with(|m| {
             let metrics = m.borrow();
@@ -217,7 +249,10 @@ pub mod metrics_api {
                 prepared_stmt_cache_misses: metrics.prepared_stmt_cache_misses,
                 bulk_refresh_count: metrics.bulk_refresh_count,
                 individual_refresh_count: metrics.individual_refresh_count,
-                direct_patch_captured,
+                direct_patch_captured: dp.captured,
+                direct_patches_applied: dp.applied,
+                direct_patch_fallbacks: dp.fallbacks,
+                view_recomputes: dp.view_recomputes,
             }
         })
     }
@@ -269,8 +304,11 @@ pub struct QueueStats {
     pub prepared_stmt_cache_misses: u64,
     pub bulk_refresh_count: u64,
     pub individual_refresh_count: u64,
-    /// Session-cumulative count of captured direct patches (issue #56).
+    /// Session-cumulative direct-patch counters (issue #56).
     pub direct_patch_captured: u64,
+    pub direct_patches_applied: u64,
+    pub direct_patch_fallbacks: u64,
+    pub view_recomputes: u64,
 }
 
 impl QueueStats {

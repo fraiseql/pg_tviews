@@ -275,9 +275,9 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     }
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never
-    // outlives its queue entries. Phase 2 discards these; Phase 3 consumes them to
-    // apply direct patches instead of recomputing.
-    let _patches = super::patch::take_patch_snapshot();
+    // outlives its queue entries. Keys carrying a usable `Direct` chain are patched
+    // straight into tv_<entity>; everything else recomputes.
+    let mut patches = super::patch::take_patch_snapshot();
 
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
@@ -336,37 +336,81 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     }
                 }
 
-                if entity_keys.len() == 1 {
-                    // Single key: use existing individual refresh
-                    let key = &entity_keys[0];
-                    let parents = refresh_and_get_parents(key, &graph)?;
+                // Issue #56: split off keys carrying a usable direct patch. They are
+                // applied straight to tv_<entity> (no backing-view query); everything
+                // else — poisoned keys, dedup keys, keys with no patch, or the fast
+                // path disabled — recomputes exactly as before. The GUC is re-checked
+                // here so toggling it off between capture and commit forces recompute.
+                let apply_enabled = crate::config::direct_patch_enabled();
+                let mut patched: Vec<(i64, Vec<super::patch::PatchEntry>)> = Vec::new();
+                let mut applied_pks: HashSet<i64> = HashSet::new();
+                let mut recompute_keys: Vec<super::key::RefreshKey> = Vec::new();
+                for key in entity_keys {
+                    if apply_enabled
+                        && !key.is_dedup()
+                        && let Some(super::patch::PatchState::Direct(chain)) = patches.get(&key)
+                    {
+                        patched.push((key.pk, chain.clone()));
+                        applied_pks.insert(key.pk);
+                        continue;
+                    }
+                    recompute_keys.push(key);
+                }
 
-                    // Add discovered parents to pending queue
+                // Apply direct patches; any pk whose tview row is missing falls back.
+                if !patched.is_empty() {
+                    let meta =
+                        crate::catalog::TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+                            crate::TViewError::MetadataNotFound {
+                                entity: entity.clone(),
+                            }
+                        })?;
+                    let fallback = crate::refresh::direct::apply_entity_patches(&meta, patched)?;
+                    for pk in fallback {
+                        applied_pks.remove(&pk);
+                        recompute_keys.push(super::key::RefreshKey::pk(&entity, pk));
+                    }
+                }
+
+                // Recompute the remaining keys via the existing single/bulk path.
+                if recompute_keys.len() == 1 {
+                    let key = &recompute_keys[0];
+                    let parents = refresh_and_get_parents(key, &graph)?;
                     for parent_key in parents {
                         if !processed.contains(&parent_key) {
                             pending.insert(parent_key);
                         }
                     }
-                } else {
-                    // Multiple keys for same entity: use bulk refresh (PK-only path)
-                    // Pre-allocate Vec based on PK-only keys (exclude dedup keys)
+                } else if recompute_keys.len() > 1 {
                     let mut pks =
-                        Vec::with_capacity(entity_keys.iter().filter(|k| !k.is_dedup()).count());
-                    for key in &entity_keys {
+                        Vec::with_capacity(recompute_keys.iter().filter(|k| !k.is_dedup()).count());
+                    for key in &recompute_keys {
                         if !key.is_dedup() {
                             pks.push(key.pk);
                         }
                     }
-
-                    // Bulk refresh this entity
                     // FAIL-FAST: Propagate error immediately to abort transaction
                     crate::refresh::refresh_bulk(&entity, &pks)?;
 
-                    // Discover parents for all keys in this entity group (P-07: batched)
-                    // Instead of N × M separate queries, issue M batched queries (one per parent entity)
-                    let parent_map = crate::propagate::find_parents_batch(&entity_keys, &graph)?;
+                    let parent_map = crate::propagate::find_parents_batch(&recompute_keys, &graph)?;
+                    for parent_keys in parent_map.values() {
+                        for parent_key in parent_keys {
+                            if !processed.contains(parent_key) {
+                                pending.insert(parent_key.clone());
+                            }
+                        }
+                    }
+                }
 
-                    // Add discovered parents to pending queue
+                // Parent discovery for the patched keys that applied (they were not
+                // recomputed above). In this phase parents are plain recompute keys;
+                // Phase 4 derives patches for them.
+                if !applied_pks.is_empty() {
+                    let applied_keys: Vec<super::key::RefreshKey> = applied_pks
+                        .iter()
+                        .map(|&pk| super::key::RefreshKey::pk(&entity, pk))
+                        .collect();
+                    let parent_map = crate::propagate::find_parents_batch(&applied_keys, &graph)?;
                     for parent_keys in parent_map.values() {
                         for parent_key in parent_keys {
                             if !processed.contains(parent_key) {
@@ -394,8 +438,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         if late.is_empty() {
             break;
         }
-        // Keep the patch map in lockstep with the late-enqueue drain (issue #56).
-        let _late_patches = super::patch::take_patch_snapshot();
+        // Merge patches captured by triggers that fired during refresh (issue #56).
+        for (k, v) in super::patch::take_patch_snapshot() {
+            patches.insert(k, v);
+        }
         pending = late;
     }
 

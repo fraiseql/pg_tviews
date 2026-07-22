@@ -8,6 +8,7 @@ pub mod array_ops;
 pub mod main;
 
 pub mod bulk;
+pub mod direct;
 
 // Re-export main functions for backward compatibility
 pub use main::refresh_pk;
