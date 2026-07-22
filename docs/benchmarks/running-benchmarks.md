@@ -1,5 +1,12 @@
 # Running Benchmarks
 
+> **Deprecated.** The `comprehensive_benchmarks/` harness this guide describes has
+> been **removed** — it drove pg_tviews through a `pg_tviews.enable_tview(...)`
+> function the extension never exported, so it never ran against the real extension.
+> The current benchmark is [`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md)
+> (`run.sh --scales "small medium large"`); published numbers live in
+> [results.md](results.md). The procedure below is retained for historical context only.
+
 This guide explains how to run the pg_tviews benchmark suite to validate functionality and measure performance.
 
 ## Table of Contents

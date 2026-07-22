@@ -9,10 +9,12 @@ on:
 env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
-  # jsonb_delta v0.2.0 targets pg18 (pgrx 0.17.0) and still ships the 0.1.0
-  # extension (default_version), which is the API pg_tviews is built against.
+  # jsonb_delta v0.3.0 targets pg18 (pgrx 0.17.0) and ships 0.3.0 as its
+  # default_version. It is a byte-identical SQL drop-in over the 0.1.0/0.2.0
+  # contract pg_tviews is built against: detection is by extension presence
+  # only (no version pin), so CREATE EXTENSION lands on 0.3.0 unchanged.
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.2.0"
+  JSONB_DELTA_REF: "v0.3.0"
 
 jobs:
   test:
@@ -60,10 +62,10 @@ jobs:
 
       - name: Build and install pg_tviews
         run: |
-          cargo pgrx install --release --no-default-features "--features pg${PG_MAJOR}" \
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
-      - name: Build and install jsonb_delta (real extension, 0.1.0 API)
+      - name: Build and install jsonb_delta (real extension, 0.3.0)
         run: |
           git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
           cd /tmp/jsonb_delta
@@ -87,6 +89,10 @@ jobs:
             n="$(psql -d postgres -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='$ext'")"
             test "$n" = "1" || { echo "FATAL: extension '$ext' not available in the cluster"; exit 1; }
           done
+          # Prove the suites exercise jsonb_delta 0.3.0 (the documented minimum),
+          # since the test scripts CREATE EXTENSION at default_version.
+          jd_ver="$(psql -d postgres -tAc "SELECT default_version FROM pg_available_extensions WHERE name='jsonb_delta'")"
+          test "$jd_ver" = "0.3.0" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.0"; exit 1; }
           psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
             || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
 

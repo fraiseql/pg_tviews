@@ -1,5 +1,12 @@
 # Docker Quickstart for pg_tviews Benchmarks
 
+> **Deprecated.** This Docker flow bakes in the `comprehensive_benchmarks/` harness,
+> which has been **removed** — it targeted a `pg_tviews.enable_tview(...)` API the
+> extension never exported and never ran against the real extension. The current
+> benchmark is [`test/sql/real_benchmark/`](../test/sql/real_benchmark/README.md);
+> published numbers live in [benchmarks/results.md](benchmarks/results.md). Retained
+> for historical context only.
+
 ## Quick Commands
 
 ```bash

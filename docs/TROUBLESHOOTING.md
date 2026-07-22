@@ -256,9 +256,10 @@ docker compose logs postgres | tail -50
 
 ### Full Benchmark Diagnostic
 ```bash
-# Run benchmark with full logging
-cd test/sql/comprehensive_benchmarks
-./run_benchmarks.sh --scale small 2>&1 | tee /tmp/benchmark_debug.log
+# Run benchmark with full logging (the old comprehensive_benchmarks harness was
+# removed — it never ran against the real extension; use test/sql/real_benchmark/)
+cd test/sql/real_benchmark
+PGHOST=localhost PGPORT=28818 PGUSER=postgres ./run.sh --scales small 2>&1 | tee /tmp/benchmark_debug.log
 
 # Check for errors
 grep -i "error" /tmp/benchmark_debug.log | grep -v "0 errors"

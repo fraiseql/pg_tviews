@@ -22,7 +22,7 @@ This guide helps you upgrade to pg_tviews with enhanced jsonb_delta integration.
 ### Step 1: Update jsonb_delta
 
 ```bash
-# Ensure jsonb_delta >= 0.2.0
+# Ensure jsonb_delta >= 0.3.0
 cd ../jsonb_delta
 cargo pgrx install --release
 ```

@@ -1,5 +1,11 @@
 # Performance Benchmarks Overview
 
+> **Deprecated.** The `comprehensive_benchmarks/` harness referenced here has been
+> **removed** — it targeted a `pg_tviews.enable_tview(...)` API the extension never
+> exported and never ran against the real extension. The current benchmark is
+> [`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md); published
+> numbers live in [results.md](results.md). Sections below are historical context only.
+
 Comprehensive benchmarking methodology and test scenarios for pg_tviews performance validation.
 
 **Version**: 0.1.0-beta.1 • **Last Updated**: December 12, 2025

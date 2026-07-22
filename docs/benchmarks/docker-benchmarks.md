@@ -1,5 +1,11 @@
 # Docker-Based Benchmarking (Advanced)
 
+> **Deprecated.** This guide drives the `comprehensive_benchmarks/` harness, which
+> has been **removed** — it targeted a `pg_tviews.enable_tview(...)` API the extension
+> never exported and never ran against the real extension. The current benchmark is
+> [`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md); published
+> numbers live in [results.md](results.md). This guide is retained for historical context only.
+
 **⚠️ Advanced Setup**: This guide explains how to run comprehensive benchmarks for `pg_tviews` using Docker. This is the most complex setup option and requires building multiple extensions from source.
 
 ## Prerequisites
@@ -499,7 +505,6 @@ jobs:
 
 ## Related Documentation
 
-- [Comprehensive Benchmarks Overview](../test/sql/comprehensive_benchmarks/README.md)
-- [Benchmark Implementation Guide](../test/sql/comprehensive_benchmarks/IMPLEMENTATION_SUMMARY.md)
+- [Real benchmark harness](../../test/sql/real_benchmark/README.md)
 - [pg_ivm Extension Documentation](https://github.com/sraoss/pg_ivm)
 - [pg_tviews Architecture](../docs/ARCHITECTURE.md)

@@ -1,5 +1,11 @@
 # Benchmarking pg_tviews with Real jsonb_delta Extension
 
+> **Deprecated.** The `comprehensive_benchmarks/` harness this guide uses has been
+> **removed** — it targeted a `pg_tviews.enable_tview(...)` API the extension never
+> exported and never ran against the real extension. The current benchmark is
+> [`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md); published
+> numbers live in [results.md](results.md). Sections below are historical context only.
+
 ## Overview
 
 This guide explains how to run comprehensive benchmarks with the **real Rust-based jsonb_delta extension** instead of PL/pgSQL stubs.
@@ -319,7 +325,7 @@ docker exec -it pg_tviews_bench psql -U postgres -c "
 ## Related Documentation
 
 - [Docker Quickstart](../DOCKER_QUICKSTART.md)
-- [Comprehensive Benchmarks](../test/sql/comprehensive_benchmarks/README.md)
+- [Real benchmark harness](../../test/sql/real_benchmark/README.md)
 - [jsonb_delta README](../../jsonb_delta/README.md)
 - [pg_tviews Architecture](ARCHITECTURE.md)
 

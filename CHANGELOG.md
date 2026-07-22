@@ -34,6 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the previously unbounded per-session metadata caches). Existing `pg_tviews.max_queue_size`
   already covered the issue's `queue_depth`.
 
+### Changed
+
+- **jsonb_delta 0.3.0 is the documented drop-in minimum**: CI and docs now target
+  jsonb_delta **0.3.0**. The upgrade is zero-code for pg_tviews — the extension is
+  detected by presence only (no version pin), and the SQL contract is byte-identical
+  to 0.1.0/0.2.0. 0.3.0 installs cleanly over an existing extension via
+  `ALTER EXTENSION jsonb_delta UPDATE TO '0.3.0'`. pg_tviews' only live runtime call
+  into jsonb_delta is the stable `jsonb_smart_patch_scalar` entry point; benchmarking
+  0.3.0 against the native fallback shows the two at parity for pg_tviews' refresh
+  workload (see `docs/benchmarks/results.md`), so this is a maintenance/compatibility
+  bump, not a performance change. Resolves jsonb_delta #12 on the consumer side
+  (Option A: contract test only).
+
 ## [0.1.0-beta.12] - 2026-06-15
 
 ### Added

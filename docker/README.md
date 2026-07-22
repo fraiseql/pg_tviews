@@ -1,5 +1,12 @@
 # pg_tviews Docker Benchmark Environment
 
+> **Deprecated.** This image copies in the `comprehensive_benchmarks/` harness, which
+> has been **removed** — it targeted a `pg_tviews.enable_tview(...)` API the extension
+> never exported and never ran against the real extension. The current benchmark is
+> [`test/sql/real_benchmark/`](../test/sql/real_benchmark/README.md); published numbers
+> live in [docs/benchmarks/results.md](../docs/benchmarks/results.md). This Docker flow
+> is retained for historical context only and would need reworking to the new harness.
+
 This directory contains Docker configuration for running pg_tviews benchmarks in an isolated PostgreSQL environment with all required extensions pre-installed.
 
 ## Architecture
