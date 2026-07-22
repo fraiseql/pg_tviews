@@ -1,6 +1,10 @@
 use crate::catalog::entity_for_table;
-use crate::queue::{enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup};
+use crate::queue::cache::CachedEntityInfo;
+use crate::queue::{
+    enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup, enqueue_refresh_patched,
+};
 use crate::utils::{IntExtraction, quote_identifier, tuple_get_i64};
+use pgrx::PgTupleDesc;
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
 ///
@@ -152,7 +156,17 @@ fn pg_tview_trigger_handler<'a>(
                         return Ok(None);
                     }
                 };
-                enqueue_refresh(entity, pk_value);
+                // Issue #56: on an eligible row-level UPDATE, capture a direct patch
+                // from NEW and enqueue it alongside the key (the counter is bumped
+                // once per fresh key inside enqueue_refresh_patched). Anything
+                // ineligible (or any capture miss) falls through to the plain
+                // enqueue, which poisons the key so it recomputes — the universal,
+                // always-correct path.
+                if let Some(fields) = try_capture_direct_patch(trigger, &entity_info) {
+                    enqueue_refresh_patched(entity, pk_value, fields);
+                } else {
+                    enqueue_refresh(entity, pk_value);
+                }
             }
             return Ok(None);
         }
@@ -262,6 +276,199 @@ fn follow_cascade_path(
     }
 
     Ok(())
+}
+
+// ── Issue #56: direct-patch capture ──────────────────────────────────────────
+
+unsafe extern "C" {
+    /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
+    /// by the backend but absent from the pgrx bindings; resolved at `.so` load
+    /// time like every other `pg_sys` symbol. Compares datums for physical equality.
+    #[link_name = "datumIsEqual"]
+    fn datum_is_equal(
+        value1: pg_sys::Datum,
+        value2: pg_sys::Datum,
+        typ_by_val: bool,
+        typ_len: i32,
+    ) -> bool;
+}
+
+/// Try to capture a direct patch for an eligible row-level UPDATE (issue #56).
+///
+/// Returns `Some(fields)` — a `key → value` JSONB map ready to merge into the
+/// entity's own `data` — only when **every** eligibility condition holds; `None`
+/// (fall back to recompute) otherwise. Pure in-memory: cached `EntityInfo`, a raw
+/// datum diff, and typed value extraction — no SPI.
+fn try_capture_direct_patch(
+    trigger: &PgTrigger,
+    entity_info: &CachedEntityInfo,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    use std::collections::HashSet;
+
+    // Entity-level gates (cheapest first).
+    if !crate::config::direct_patch_enabled()
+        || entity_info.direct_map.is_empty()
+        || entity_info.distinct_on_key.is_some()
+        || entity_info.is_union
+    {
+        return None;
+    }
+    if !crate::lifecycle::check_jsonb_delta_available() {
+        return None;
+    }
+
+    // Full-tuple diff — `None` unless this is a row-level UPDATE (OLD and NEW both
+    // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
+    let changed = changed_columns(trigger)?;
+    if changed.is_empty() {
+        return None;
+    }
+
+    // Eligibility: every changed column must feed the entity's own `data` via the
+    // direct map, and none may be a membership/identity/projected column that a
+    // data-only patch would leave stale.
+    let pk_col = format!("pk_{}", entity_info.name);
+    let fk_set: HashSet<&str> = entity_info.fk_columns.iter().map(String::as_str).collect();
+    let uuid_fk_set: HashSet<&str> = entity_info
+        .uuid_fk_columns
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let output_set: HashSet<&str> = entity_info
+        .output_columns
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    for col in &changed {
+        if col == &pk_col
+            || fk_set.contains(col.as_str())
+            || uuid_fk_set.contains(col.as_str())
+            || output_set.contains(col.as_str())
+            || !entity_info.direct_map.contains_key(col.as_str())
+        {
+            return None;
+        }
+    }
+
+    // Capture NEW's value for each changed column with the type whitelist.
+    let new_tuple = trigger.new()?;
+    let mut fields = serde_json::Map::with_capacity(changed.len());
+    for col in &changed {
+        let key = entity_info.direct_map.get(col.as_str())?;
+        let value = capture_value(&new_tuple, col)?;
+        fields.insert(key.clone(), value);
+    }
+    Some(fields)
+}
+
+/// Diff OLD vs NEW over **all** columns of the changed row. Returns the names of
+/// columns whose stored value changed, or `None` when this is not a row-level
+/// UPDATE (either OLD or NEW absent).
+///
+/// Type-agnostic: compares raw datums via `datumIsEqual` over the relation's tuple
+/// descriptor, so it detects changes to *unmapped* columns (filter columns,
+/// computed-field inputs) without knowing their types. A false "changed" (e.g. an
+/// equal-but-differently-TOASTed varlena) is safe — it only forces a recompute.
+fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
+    // SAFETY: inside a row-level AFTER trigger the `TriggerData` and its relation
+    // are valid for the call; `tg_trigtuple`/`tg_newtuple` are the OLD/NEW heap
+    // tuples and `rd_att` the matching tuple descriptor. `heap_getattr` reads a
+    // single attribute; `datum_is_equal` performs a physical (non-detoasting)
+    // comparison — never dereferencing beyond the datum itself.
+    unsafe {
+        let td: &pg_sys::TriggerData = trigger.trigger_data();
+        let old_tuple = td.tg_trigtuple;
+        let new_tuple = td.tg_newtuple;
+        if old_tuple.is_null() || new_tuple.is_null() {
+            return None; // INSERT or DELETE — a membership change, not a patch
+        }
+        let rel = td.tg_relation;
+        if rel.is_null() {
+            return None;
+        }
+        let tupdesc_ptr = (*rel).rd_att;
+        if tupdesc_ptr.is_null() {
+            return None;
+        }
+
+        let tupdesc = PgTupleDesc::from_pg_unchecked(tupdesc_ptr);
+        let mut changed = Vec::new();
+        for i in 0..tupdesc.len() {
+            let Some(att) = tupdesc.get(i) else { continue };
+            if att.attisdropped {
+                continue;
+            }
+            let attnum = i32::try_from(i + 1).ok()?;
+            let mut old_isnull = false;
+            let mut new_isnull = false;
+            let old_datum = pg_sys::heap_getattr(old_tuple, attnum, tupdesc_ptr, &mut old_isnull);
+            let new_datum = pg_sys::heap_getattr(new_tuple, attnum, tupdesc_ptr, &mut new_isnull);
+
+            let differs = if old_isnull != new_isnull {
+                true
+            } else if old_isnull {
+                false // both NULL
+            } else {
+                !datum_is_equal(old_datum, new_datum, att.attbyval, i32::from(att.attlen))
+            };
+            if differs {
+                changed.push(att.name().to_string());
+            }
+        }
+        Some(changed)
+    }
+}
+
+/// Extract NEW's value for `col` as a `serde_json::Value` using the type whitelist
+/// (issue #56). The whitelist matches `PostgreSQL`'s own `to_jsonb` output
+/// byte-for-byte; any other type (float, numeric, timestamp, array, …) yields
+/// `None`, forcing a recompute. SQL NULL becomes `Value::Null`.
+fn capture_value(
+    tuple: &PgHeapTuple<'_, AllocatedByPostgres>,
+    col: &str,
+) -> Option<serde_json::Value> {
+    use serde_json::Value;
+
+    // Each arm: Ok(Some) → value, Ok(None) → SQL NULL, Err → wrong type, try next.
+    match tuple.get_by_name::<String>(col) {
+        Ok(Some(v)) => return Some(Value::String(v)),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    match tuple.get_by_name::<bool>(col) {
+        Ok(Some(v)) => return Some(Value::Bool(v)),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    match tuple.get_by_name::<i64>(col) {
+        Ok(Some(v)) => return Some(Value::Number(v.into())),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    match tuple.get_by_name::<i32>(col) {
+        Ok(Some(v)) => return Some(Value::Number(v.into())),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    match tuple.get_by_name::<i16>(col) {
+        Ok(Some(v)) => return Some(Value::Number(v.into())),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    // UUID → canonical lowercase string, matching uuid::text / to_jsonb(uuid).
+    match tuple.get_by_name::<pgrx::Uuid>(col) {
+        Ok(Some(v)) => return Some(Value::String(v.to_string())),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    // JSONB → passthrough of the parsed value.
+    match tuple.get_by_name::<pgrx::JsonB>(col) {
+        Ok(Some(v)) => return Some(v.0),
+        Ok(None) => return Some(Value::Null),
+        Err(_) => {}
+    }
+    None
 }
 
 /// Statement-level AFTER trigger that flushes the refresh queue.

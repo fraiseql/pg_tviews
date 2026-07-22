@@ -17,6 +17,13 @@ thread_local! {
     /// Queue snapshots for each savepoint level
     static QUEUE_SNAPSHOTS: std::cell::RefCell<Vec<HashSet<super::key::RefreshKey>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+
+    /// Direct-patch map snapshots for each savepoint level (issue #56).
+    /// Kept in lockstep with `QUEUE_SNAPSHOTS` so a patch rolls back exactly when
+    /// its queue entry does.
+    static PATCH_SNAPSHOTS: std::cell::RefCell<
+        Vec<std::collections::HashMap<super::key::RefreshKey, super::patch::PatchState>>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Transaction event types
@@ -63,6 +70,14 @@ pub unsafe fn register_subxact_callback() {
         let mut snapshots = s.borrow_mut();
         for _ in 0..(nest_level as usize).saturating_sub(1) {
             snapshots.push(HashSet::new());
+        }
+    });
+
+    // Mirror the placeholders for the patch-map snapshot stack (issue #56).
+    PATCH_SNAPSHOTS.with(|s| {
+        let mut snapshots = s.borrow_mut();
+        for _ in 0..(nest_level as usize).saturating_sub(1) {
+            snapshots.push(std::collections::HashMap::new());
         }
     });
 }
@@ -129,6 +144,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
 
             clear_queue();
+            super::patch::clear_patch_map();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
@@ -166,6 +182,12 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(snapshot);
                 });
+
+                // Snapshot the patch map in lockstep (issue #56).
+                let patch_snapshot = super::patch::take_patch_snapshot();
+                PATCH_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().push(patch_snapshot);
+                });
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
@@ -176,13 +198,21 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                     // Replace current queue with the snapshot
                     super::state::replace_queue(snapshot);
                 }
+
+                // Restore the patch map in lockstep (issue #56).
+                if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
+                    super::patch::replace_patch_map(patch_snapshot);
+                }
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
                 // RELEASE SAVEPOINT: just decrement depth and discard snapshot
                 decrement_savepoint_depth();
 
-                // Discard the snapshot (savepoint committed)
+                // Discard the snapshots (savepoint committed)
                 QUEUE_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().pop();
+                });
+                PATCH_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
             }
@@ -243,6 +273,11 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     if pending.is_empty() {
         return Ok(());
     }
+
+    // Issue #56: drain the direct-patch map in lockstep with the queue so it never
+    // outlives its queue entries. Phase 2 discards these; Phase 3 consumes them to
+    // apply direct patches instead of recomputing.
+    let _patches = super::patch::take_patch_snapshot();
 
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
@@ -359,6 +394,8 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         if late.is_empty() {
             break;
         }
+        // Keep the patch map in lockstep with the late-enqueue drain (issue #56).
+        let _late_patches = super::patch::take_patch_snapshot();
         pending = late;
     }
 

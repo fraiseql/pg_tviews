@@ -19,6 +19,7 @@
 //! | `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
 //! | `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement |
 //! | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory cache |
+//! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path (issue #56) |
 //!
 //! ## Compile-time Constants
 //!
@@ -52,6 +53,7 @@ static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
 static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -188,6 +190,18 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.direct_patch_enabled",
+        c"Enable the direct-patch fast path for eligible single-row UPDATEs.",
+        c"When true (default), an UPDATE whose changed columns all map identity-style \
+          to JSONB keys patches tv_<entity> directly, skipping the backing-view \
+          recompute. When false, every change takes the recompute path. Purely a \
+          performance switch — results are identical either way (issue #56).",
+        &DIRECT_PATCH_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -282,4 +296,14 @@ pub fn batch_size() -> usize {
 #[must_use]
 pub fn cache_size() -> usize {
     CACHE_SIZE_GUC.get().unsigned_abs().max(1) as usize
+}
+
+/// Check if the direct-patch fast path is enabled (default: true, issue #56).
+///
+/// Checked at capture time (trigger) and apply time (flush); when false the
+/// recompute path is used exclusively. A pure performance switch — the resulting
+/// `tv_<entity>.data` is byte-identical either way.
+#[must_use]
+pub fn direct_patch_enabled() -> bool {
+    DIRECT_PATCH_ENABLED_GUC.get()
 }
