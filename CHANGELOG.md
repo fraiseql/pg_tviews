@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.13] - 2026-07-22
+
 ### Fixed
 
 - **Incremental refresh silently dropped INSERTs and failed DELETE (#48)**: After the
@@ -46,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   workload (see `docs/benchmarks/results.md`), so this is a maintenance/compatibility
   bump, not a performance change. Resolves jsonb_delta #12 on the consumer side
   (Option A: contract test only).
+
+### Documentation
+
+- **Benchmark docs rewritten to the real harness**: the entire `docs/benchmarks/`
+  section now documents `test/sql/real_benchmark/` (the real `pg_tviews_create`
+  API) instead of the removed `comprehensive_benchmarks/` harness. Every figure
+  traces to a measured run in `docs/benchmarks/results.md`. Removed the dead
+  Docker/podman benchmark tooling (`docker/dockerfile-benchmarks`, its helper
+  scripts, and `scripts/{01..06,master}.sh`), which targeted the removed harness.
 
 ## [0.1.0-beta.12] - 2026-06-15
 
