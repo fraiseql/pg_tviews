@@ -580,11 +580,11 @@ SELECT pg_tviews_resume_triggers();   -- depth 0 (now resumed)
 - **[Upgrades](docs/operations/upgrades.md)** - Version migration guides
 
 ### Benchmarks
-- **[Overview](docs/benchmarks/overview.md)** - Performance testing methodology and 4-way comparison
-- **[Running Benchmarks](docs/benchmarks/running-benchmarks.md)** - How to run benchmarks (Docker, pgrx, manual)
-- **[Docker Setup](docs/benchmarks/docker-benchmarks.md)** - Advanced Docker benchmarking (requires jsonb_delta)
-- **[Results Interpretation](docs/benchmarks/results-interpretation.md)** - Understanding benchmark results
-- **[Results](docs/benchmarks/results.md)** - Detailed benchmark data
+- **[Overview](docs/benchmarks/overview.md)** - Methodology and the three-arm comparison
+- **[Running Benchmarks](docs/benchmarks/running-benchmarks.md)** - How to run the harness on a local pgrx cluster
+- **[Results](docs/benchmarks/results.md)** - Measured performance figures
+- **[Results Interpretation](docs/benchmarks/results-interpretation.md)** - Reading the numbers honestly
+- **[jsonb_delta Integration](docs/benchmarks/jsonb-ivm-integration.md)** - jsonb_delta's role and the parity finding
 
 ### Development
 - **[Contributing](docs/development/contributing.md)** - Development setup and contribution guidelines

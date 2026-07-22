@@ -1,7 +1,7 @@
 # Testing Guide
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
+**Version**: 0.1.0
+**Last Updated**: 2026-07-22
 
 ## Overview
 
@@ -244,6 +244,9 @@ cargo pgrx test pg17 -- --nocapture --test test_name
 cd test/sql/real_benchmark
 PGHOST=localhost PGPORT=28818 PGUSER=postgres ./run.sh --scales "small medium large"
 ```
+
+See [Running Benchmarks](../benchmarks/running-benchmarks.md) for prerequisites,
+options, and how to read the output.
 
 ### Profiling Tests
 
