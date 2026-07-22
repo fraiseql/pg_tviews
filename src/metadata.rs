@@ -47,9 +47,20 @@ extension_sql!(
         array_match_keys TEXT[] NOT NULL DEFAULT '{}',
         distinct_on_keys TEXT[] NOT NULL DEFAULT '{}',
         distinct_on_output_keys TEXT[] NOT NULL DEFAULT '{}',
+        direct_map_columns TEXT[] NOT NULL DEFAULT '{}',
+        direct_map_keys TEXT[] NOT NULL DEFAULT '{}',
         is_union BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Upgrade path (issue #56): CREATE TABLE IF NOT EXISTS is a no-op on a
+    -- pre-existing catalog, so add the direct-patch column map idempotently.
+    -- Pre-existing tviews get empty maps ⇒ the fast path stays disabled for them
+    -- until they are re-created (documented behaviour, safe default).
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS direct_map_columns TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS direct_map_keys TEXT[] NOT NULL DEFAULT '{}';
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
@@ -266,6 +277,8 @@ pub fn create_metadata_tables() -> TViewResult<()> {
             dependency_paths TEXT[]  NOT NULL DEFAULT '{}',
             array_match_keys TEXT[] NOT NULL DEFAULT '{}',
             distinct_on_keys TEXT[] NOT NULL DEFAULT '{}',
+            direct_map_columns TEXT[] NOT NULL DEFAULT '{}',
+            direct_map_keys TEXT[] NOT NULL DEFAULT '{}',
             is_union BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );

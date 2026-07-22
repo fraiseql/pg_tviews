@@ -26,6 +26,7 @@
 //! ```
 
 pub mod analyzer;
+pub mod direct_map;
 pub mod inference;
 pub mod parser;
 pub mod types;

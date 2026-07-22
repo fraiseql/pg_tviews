@@ -594,7 +594,7 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
 }
 
 /// Split string by commas, but only at top level (outside parentheses and quotes)
-fn split_by_top_level_comma(s: &str) -> Vec<String> {
+pub(crate) fn split_by_top_level_comma(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut paren_depth: i32 = 0;
