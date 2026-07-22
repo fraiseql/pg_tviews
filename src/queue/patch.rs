@@ -20,7 +20,7 @@ use std::collections::HashMap;
 ///
 /// An empty prefix targets the entity's own `data` object; a non-empty prefix
 /// (e.g. `["author"]`) targets a nested embedded object — used by parent patch
-/// derivation in Phase 4.
+/// derivation (issue #56).
 pub type PatchEntry = (Vec<String>, Map<String, Value>);
 
 /// The patch payload carried for a queued [`RefreshKey`].
@@ -102,7 +102,7 @@ pub fn clear_patch_map() {
     TX_PATCH_MAP.with(|m| m.borrow_mut().clear());
 }
 
-// ── Flush-local map operations (issue #56 Phase 4) ───────────────────────────
+// ── Flush-local map operations (issue #56) ───────────────────────────
 //
 // Parent patch derivation happens against the flush's *local* snapshot map, not
 // the thread-local `TX_PATCH_MAP` (already drained). These mirror `record`/`poison`

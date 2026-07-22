@@ -18,28 +18,23 @@ pub struct CachedEntityInfo {
 
     /// Direct-patch column→key map (issue #56): base column name → JSONB key it
     /// feeds in the entity's own `data`. Empty ⇒ the fast path never engages.
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub direct_map: HashMap<String, String>,
 
     /// Integer FK columns of this entity's base table. A changed FK is a
     /// membership change ⇒ the fast path must decline (issue #56 eligibility).
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub fk_columns: Vec<String>,
 
     /// UUID FK columns of this entity's base table (same membership rule).
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub uuid_fk_columns: Vec<String>,
 
     /// Output columns the `tv_<entity>` table materialises (`pk_<entity>`, `id`,
     /// `data`, and any column projected outside `data`). A changed base column that
     /// is also a projected output column would go stale under a data-only patch ⇒
     /// the fast path declines (issue #56 eligibility).
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub output_columns: Vec<String>,
 
     /// `true` when the backing view is a UNION / UNION ALL — different refresh
     /// machinery, so the fast path declines (issue #56 eligibility).
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub is_union: bool,
 }
 

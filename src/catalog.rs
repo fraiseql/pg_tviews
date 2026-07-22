@@ -93,11 +93,9 @@ pub struct TviewMeta {
     /// column name (e.g. `bio`) and `direct_map_keys[i]` the JSONB key it feeds
     /// (e.g. `bio`). Populated at CREATE time from bare `jsonb_build_object` pairs;
     /// empty ⇒ the direct-patch fast path never engages for this entity.
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub direct_map_columns: Vec<String>,
 
     /// JSONB keys aligned with [`Self::direct_map_columns`]. See that field.
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
     pub direct_map_keys: Vec<String>,
 
     /// `true` when this TVIEW's backing view is a `UNION ALL` or `UNION` query.
@@ -395,7 +393,7 @@ impl TviewMeta {
     /// Returns an empty map for entities without an extracted map (pre-#56 tviews,
     /// or tviews whose `data` column isn't a bare `jsonb_build_object` of base
     /// columns) — in which case the direct-patch fast path never engages.
-    #[allow(dead_code)] // Reason: consumed by the Phase 2 trigger capture path (issue #56)
+    #[allow(dead_code)] // Reason: public helper; the trigger reads the map off the cached EntityInfo
     #[must_use]
     pub fn direct_map(&self) -> std::collections::HashMap<&str, &str> {
         self.direct_map_columns

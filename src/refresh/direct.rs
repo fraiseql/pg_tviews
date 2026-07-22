@@ -12,7 +12,7 @@ use pgrx::prelude::*;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// Derive a parent's patch chain from a patched child's chain (issue #56 Phase 4).
+/// Derive a parent's patch chain from a patched child's chain (issue #56).
 ///
 /// When `parent_meta` embeds `child_entity` via a `nested_object` dependency at a
 /// concrete path, the child's chain is reproduced at the parent with that path
@@ -257,7 +257,7 @@ mod tests {
         );
     }
 
-    // ── derive_parent_chain (Phase 4 Cycle 1) ────────────────────────────────
+    // ── derive_parent_chain (issue #56) ─────────────────────────────────────
 
     /// A parent `TviewMeta` with a single dependency on `fk_<child>`.
     fn parent_meta(fk: &str, dep: DependencyType, path: Option<Vec<String>>) -> TviewMeta {

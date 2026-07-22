@@ -290,7 +290,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let mut processed: std::collections::HashSet<super::key::RefreshKey> =
         std::collections::HashSet::with_capacity(pending.len().max(16));
 
-    // Parent metadata cache for patch derivation (issue #56 Phase 4) — avoids
+    // Parent metadata cache for patch derivation (issue #56) — avoids
     // reloading a parent entity's TviewMeta once per discovered parent key.
     let mut parent_meta_cache: std::collections::HashMap<
         String,
@@ -381,7 +381,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 
                 // Recompute the remaining keys via the existing single/bulk path.
                 // A recomputed child's whole document changed, so its parents must
-                // recompute too: poison any parent patch (issue #56 Phase 4).
+                // recompute too: poison any parent patch (issue #56).
                 if recompute_keys.len() == 1 {
                     let key = &recompute_keys[0];
                     let parents = refresh_and_get_parents(key, &graph)?;
@@ -414,7 +414,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 }
 
                 // Parent patch derivation for the patched keys that applied (issue
-                // #56 Phase 4). For each parent embedding the child via a
+                // #56). For each parent embedding the child via a
                 // nested_object dependency, prepend the dependency path to the
                 // child's chain and record it for the parent; where a patch can't be
                 // derived (array/scalar/uuid-fk dep, or the parent itself gated), the
