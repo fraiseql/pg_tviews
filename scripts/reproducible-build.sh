@@ -1,21 +1,25 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 VERSION="${1:?Usage: $0 <version>}"
 
-echo "Building pg_tviews v${VERSION} reproducibly..."
+echo "Building pg_tviews ${VERSION} reproducibly..."
 
-# Create dist directory
-mkdir -p dist
+# Clean output dirs. `pkg/` collects the staged extension tree emitted by the
+# container's `cargo pgrx package --out-dir /out`; `dist/` holds only the release
+# artifacts (the SLSA workflow hashes `dist/*`, so it must contain files only).
+rm -rf pkg dist
+mkdir -p pkg dist
 
-# Build in container for reproducibility
-echo "→ Building in reproducible Docker environment..."
-docker build -t pg_tviews-builder:${VERSION} -f Dockerfile.build .
+echo "→ Building in the pinned Docker environment..."
+docker build -t pg_tviews-builder:${VERSION} -f docker/dockerfile-build .
 
-# Run build in container
-docker run --rm -v $(pwd)/dist:/build/target pg_tviews-builder:${VERSION}
+# The image CMD packages into /out; mount pkg/ there to collect the artifacts.
+docker run --rm -v "$(pwd)/pkg:/out" pg_tviews-builder:${VERSION}
 
-# Generate build metadata
+echo "→ Packaging artifacts..."
+tar czf "dist/pg_tviews-${VERSION}.tar.gz" -C pkg .
+
 echo "→ Generating build metadata..."
 cat > dist/build-info.json <<EOF
 {
@@ -23,19 +27,20 @@ cat > dist/build-info.json <<EOF
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
   "builder": "docker",
   "rust_version": "1.91.1",
-  "postgres_version": "17",
-  "pgrx_version": "0.12.8",
+  "postgres_version": "18",
+  "pgrx_version": "0.17.0",
   "commit": "$(git rev-parse HEAD)",
   "build_environment": "debian-bookworm-slim",
   "reproducible": true
 }
 EOF
 
-# Generate checksums
 echo "→ Generating checksums..."
-cd dist
-sha256sum pg_tviews-${VERSION}.tar.gz > SHA256SUMS
-sha512sum pg_tviews-${VERSION}.tar.gz > SHA512SUMS
+(
+  cd dist
+  sha256sum "pg_tviews-${VERSION}.tar.gz" > SHA256SUMS
+  sha512sum "pg_tviews-${VERSION}.tar.gz" > SHA512SUMS
+)
 
 echo "✓ Reproducible build completed in dist/"
-ls -lh
+ls -lh dist

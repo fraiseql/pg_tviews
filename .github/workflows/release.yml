@@ -18,15 +18,27 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install PostgreSQL 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+
       - name: Install pgrx
-        run: cargo install --locked cargo-pgrx --version 0.17.0
+        run: |
+          cargo install --locked cargo-pgrx --version 0.17.0
+          # `cargo pgrx package` needs an initialized PGRX_HOME; without this the
+          # build fails with "$PGRX_HOME does not exist".
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
       - name: Build extension
         run: |
-          cargo pgrx package
+          # default features already target pg18 (see Cargo.toml [features]).
+          cargo pgrx package --pg-config /usr/lib/postgresql/18/bin/pg_config
           tar czf pg_tviews-${{ github.ref_name }}.tar.gz target/release/
 
       - name: Generate SBOM
