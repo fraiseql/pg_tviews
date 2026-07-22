@@ -232,6 +232,62 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 ---
 
+## ⚡ Direct-patch fast path (Issue #56)
+
+For an eligible `UPDATE`, pg_tviews builds a JSONB patch **at trigger time from
+`NEW`** and applies it straight to `tv_<entity>.data` with
+`jsonb_smart_patch_scalar/_nested` — **skipping the backing-view recompute
+entirely** (zero `SELECT … FROM v_entity`). The same patch is *derived* for
+parent tviews that embed the entity as a nested object, so a single-field change
+with a wide fan-out (e.g. an author edited on 60 posts) propagates as a handful of
+grouped patch UPDATEs with no view queries.
+
+Anything outside the eligibility boundary silently falls back to the normal
+recompute path, which stays the single source of truth — the fast path is a pure
+optimization and its `data` output is byte-identical to a recompute.
+
+### What qualifies
+
+The fast path engages only when **every** condition holds (otherwise recompute):
+
+- the change is a row-level `UPDATE` (INSERT/DELETE change membership);
+- `jsonb_delta` is installed and `pg_tviews.direct_patch_enabled = on`;
+- the entity is not `DISTINCT ON` and not a `UNION`;
+- every changed column maps identity-style to a top-level `data` key
+  (`jsonb_build_object('bio', bio)` — no expression, cast, or other relation);
+- no changed column is a foreign key, the primary key, or a column the tview also
+  projects **outside** `data`;
+- the changed values' types are TEXT/VARCHAR, INT2/4/8, BOOL, UUID, JSONB, or NULL
+  (anything else — float, numeric, timestamps, arrays — falls back);
+- for a parent, its dependency on the child is `nested_object` with a path
+  (array/scalar/UUID-fk parents recompute).
+
+### Kill-switch and observability
+
+```sql
+SET pg_tviews.direct_patch_enabled = off;   -- force the recompute path everywhere
+```
+
+`pg_tviews_queue_stats()` exposes the counters (session-cumulative):
+
+```sql
+SELECT pg_tviews_queue_stats();
+-- { … "direct_patch_captured": N, "direct_patches_applied": N,
+--     "direct_patch_fallbacks": N, "view_recomputes": N }
+```
+
+An eligible update leaves `view_recomputes` unchanged and bumps
+`direct_patches_applied` — proof it skipped the view.
+
+### Upgrade note
+
+The column→key map is extracted **at `pg_tviews_create` time**. Tviews created
+before this version have an empty map, so the fast path stays inactive for them
+until they are re-created (`pg_tviews_drop` + `pg_tviews_create`). Existing tviews
+keep working unchanged on the recompute path.
+
+---
+
 ## 🚀 UNLOGGED Tables
 
 **pg_tviews** automatically creates TVIEWs as **UNLOGGED tables** for maximum write performance.

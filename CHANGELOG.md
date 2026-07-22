@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- **Direct-patch fast path (#56)**: an eligible row-level `UPDATE` whose changed
+  columns all map identity-style to top-level `data` keys now patches
+  `tv_<entity>` (and nested-object parents) directly via `jsonb_smart_patch_*`,
+  skipping the backing-view recompute entirely (zero view queries, counter-proven).
+  Anything outside the eligibility boundary falls back to the recompute path, which
+  remains the source of truth; the fast-path `data` output is byte-identical to a
+  recompute. New GUC `pg_tviews.direct_patch_enabled` (bool, default `on`) is a
+  kill-switch. New `pg_tviews_queue_stats()` counters: `direct_patch_captured`,
+  `direct_patches_applied`, `direct_patch_fallbacks`, `view_recomputes`.
+  `pg_tview_meta` gains `direct_map_columns` / `direct_map_keys`.
+  **Upgrade note:** the column→key map is extracted at `pg_tviews_create` time, so
+  tviews created before this version have an empty map and stay on the recompute
+  path until re-created (`pg_tviews_drop` + `pg_tviews_create`).
+
 ## [0.1.0-beta.13] - 2026-07-22
 
 ### Fixed
