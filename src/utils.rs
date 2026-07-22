@@ -270,6 +270,18 @@ pub fn invalidate_dedup_dml_cache() {
     cache.clear();
 }
 
+/// Bound a per-session memoization cache to `pg_tviews.cache_size` entries.
+///
+/// Call immediately before inserting a fresh entry: if the cache is already at the
+/// configured limit it is cleared and repopulated lazily on subsequent misses.
+/// Safe because every cache this is used on is pure catalog-lookup memoization —
+/// clearing it only costs a re-query, never correctness.
+pub fn bound_cache<K, V>(cache: &mut HashMap<K, V>) {
+    if cache.len() >= crate::config::cache_size() {
+        cache.clear();
+    }
+}
+
 /// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
 /// Results are cached per session to avoid repeated `pg_class` queries.
 pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
@@ -309,11 +321,14 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
         }
     })?;
 
-    // Cache the result
-    OID_RELNAME_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(oid, name.clone());
+    // Cache the result (bounded by pg_tviews.cache_size)
+    {
+        let mut cache = OID_RELNAME_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bound_cache(&mut cache);
+        cache.insert(oid, name.clone());
+    }
     Ok(name)
 }
 
@@ -361,11 +376,14 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
         }
     })?;
 
-    // Cache the result
-    OID_QUALIFIED_RELNAME_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(oid, qname.clone());
+    // Cache the result (bounded by pg_tviews.cache_size)
+    {
+        let mut cache = OID_QUALIFIED_RELNAME_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bound_cache(&mut cache);
+        cache.insert(oid, qname.clone());
+    }
     Ok(qname)
 }
 
@@ -415,11 +433,14 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
         Ok(result)
     })?;
 
-    // Cache the result
-    VIEW_COLUMNS_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(cache_key, cols.clone());
+    // Cache the result (bounded by pg_tviews.cache_size)
+    {
+        let mut cache = VIEW_COLUMNS_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bound_cache(&mut cache);
+        cache.insert(cache_key, cols.clone());
+    }
     Ok(cols)
 }
 

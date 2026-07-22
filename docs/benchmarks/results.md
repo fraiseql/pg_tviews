@@ -1,292 +1,132 @@
 # Performance Benchmark Results
 
-Detailed performance data from comprehensive benchmarking of pg_tviews against traditional materialized views.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
-
-## Executive Summary
-
-The comprehensive 4-way benchmark comparison validates that pg_tviews delivers exceptional performance for incremental materialized view maintenance in PostgreSQL, achieving **5,000-12,000× performance improvements** over traditional approaches at medium scale (100K+ rows).
-
-## Key Performance Results
-
-### Small Scale (1K products, 5K reviews)
-- **pg_tviews + jsonb_delta**: 0.364-0.591 ms per single product update
-- **Manual Function Refresh**: 0.912-1.255 ms (99% of automatic performance)
-- **Traditional Full Refresh**: 78-101 ms per operation
-- **Improvement**: 100-200× faster for incremental approaches
-
-### Medium Scale (100K products, 500K reviews)
-- **pg_tviews + jsonb_delta**: 0.591 ms per single product update
-- **Manual Function Refresh**: 1.255 ms per single product update
-- **Bulk Operations**: 10,000-10,500 ms for 100 product updates
-- **Traditional Full Refresh**: 7,050-7,974 ms per operation
-- **Improvement**: 5,000-12,000× faster for incremental approaches
-
-### Scaling Projections (Large Scale - 1M products)
-- **Estimated Performance**: 35,000-70,000× faster than full refresh
-- **Memory Efficiency**: Constant memory usage for incremental vs O(n) for full refresh
-- **Query Performance**: Sub-millisecond single updates regardless of dataset size
-
-## Detailed Results by Approach
-
-### Approach 1: pg_tviews + jsonb_delta (Recommended)
-
-**Architecture**: Automatic triggers with optimized JSONB patching using jsonb_delta extension.
-
-#### Small Scale Performance
-| Operation | Time (ms) | Improvement |
-|-----------|-----------|-------------|
-| Single product update | 0.364-0.591 | 132-278× |
-| Bulk category update (10 products) | 2.1-3.8 | 156-190× |
-| Cascade supplier change | 0.455-0.723 | 108-222× |
-
-#### Medium Scale Performance
-| Operation | Time (ms) | Improvement |
-|-----------|-----------|-------------|
-| Single product update | 0.591 | 11,927× |
-| Bulk category update (100 products) | 10,500 | 674× |
-| Cascade supplier change | 0.723 | 9,818× |
-| Deep category hierarchy | 1.2-2.1 | 3,357-6,642× |
-
-#### Performance Characteristics
-- **Cache Hit Rate**: 95%+ for graph and table caches
-- **Queue Deduplication**: 85% reduction in redundant operations
-- **Memory Usage**: Constant ~50MB regardless of dataset size
-- **Concurrent Operations**: Linear scaling with connection count
-
-### Approach 2: pg_tviews + Native PostgreSQL
-
-**Architecture**: Automatic triggers with standard PostgreSQL jsonb_set operations.
-
-#### Performance Comparison
-| Scale | vs jsonb_delta | Performance Ratio |
-|-------|-------------|-------------------|
-| Small | 98% | 0.98x |
-| Medium | 97% | 0.97x |
-| Large (projected) | 95% | 0.95x |
-
-#### Use Cases
-- Environments without jsonb_delta extension
-- Compatibility with existing PostgreSQL installations
-- Minimal dependency requirements
-
-### Approach 3: Manual Function Refresh
-
-**Architecture**: Explicit function calls with full cascade support and developer control.
-
-#### Performance Comparison
-| Scale | vs jsonb_delta | Performance Ratio |
-|-------|-------------|-------------------|
-| Small | 95% | 0.95x |
-| Medium | 94% | 0.94x |
-| Large (projected) | 92% | 0.92x |
-
-#### Control Benefits
-- **Timing Control**: Refresh exactly when needed
-- **Batch Optimization**: Group related updates
-- **Error Handling**: Custom retry logic and error recovery
-- **Monitoring**: Detailed logging and metrics collection
-
-### Approach 4: Full REFRESH MATERIALIZED VIEW (Baseline)
-
-**Architecture**: Traditional PostgreSQL materialized view with complete rebuild.
-
-#### Performance Baseline
-| Scale | Time per Operation | Operations/Minute |
-|-------|-------------------|-------------------|
-| Small | 78-101 ms | 600-769 |
-| Medium | 7,050-7,974 ms | 7.5-8.5 |
-| Large (projected) | 350,000-700,000 ms | 0.085-0.17 |
-
-#### Scaling Characteristics
-- **Time Complexity**: O(n) - linear with dataset size
-- **Memory Usage**: O(n) - proportional to dataset size
-- **I/O Pattern**: Full table scans on every refresh
-- **Locking**: Exclusive locks during entire refresh operation
-
-## Technical Achievements
-
-### 1. Surgical JSONB Operations
-
-**Field-level precision**: Update only changed JSONB paths instead of rebuilding entire objects.
-
-```sql
--- Traditional approach: Replace entire JSONB
-UPDATE tv_product
-SET data = jsonb_set(data, '{price,current}', '29.99'::jsonb)
-WHERE pk_product = 123;
-
--- pg_tviews approach: Surgical patch with jsonb_delta
--- Updates only the changed field, preserves all other data
-```
-
-**Performance Impact**:
-- 2.03× improvement in cascade update operations
-- Reduced I/O for large JSONB objects
-- Better index utilization and cache efficiency
-
-### 2. Unlimited Cascade Depth
-
-**Dependency resolution**: Automatic handling of product → category/supplier/inventory/review relationships.
-
-**Test Scenario**: Category name change affecting 1,000 products
-- **Cascade Depth**: 3 levels (category → products → reviews)
-- **Entities Updated**: 1 category + 1,000 products + 3,000 reviews
-- **Time**: 45.2 ms total
-- **Efficiency**: 0.015 ms per entity update
-
-### 3. Optimistic Concurrency Control
-
-**Version-based locking**: Prevent concurrent update conflicts without blocking.
-
-**Implementation**:
-- Row-level optimistic locking using version columns
-- Automatic retry logic with exponential backoff
-- Non-blocking conflict resolution
-- Sub-millisecond conflict detection
-
-### 4. Generic Refresh Architecture
-
-**Single function interface**: `refresh_product_manual(entity_type, entity_pk, change_type)`
-
-**Supported Operations**:
-- Product updates (price, name, description, category, supplier)
-- Category updates (name, description, parent relationships)
-- Supplier updates (contact info, location)
-- Inventory updates (stock levels, reorder points)
-- Review additions/modifications
-
-## Architecture Validation
-
-### Approaches Compared
-
-1. **pg_tviews + jsonb_delta**: Automatic triggers with optimized JSONB patching
-2. **pg_tviews + Native**: Automatic triggers with standard jsonb_set operations
-3. **Manual Function Refresh**: Explicit function calls with full cascade support
-4. **Full Refresh**: Traditional REFRESH MATERIALIZED VIEW
-
-### Performance Hierarchy
-
-- **Approach 1**: Maximum performance (1.0x baseline)
-- **Approach 2**: 98% of maximum performance
-- **Approach 3**: 95% of maximum performance with full developer control
-- **Approach 4**: 0.01-0.02% of incremental performance (baseline for comparison)
-
-## Business Impact
-
-### Performance Gains
-
-| Environment | Traditional MV | pg_tviews | Improvement |
-|-------------|----------------|-----------|-------------|
-| Development | 100-200 ms/op | 0.5-1 ms/op | 100-200× |
-| Production | 7-8 seconds/op | 0.6-1.2 ms/op | 5,000-12,000× |
-| Enterprise | 6-12 minutes/op | 0.6-1.2 ms/op | 35,000-70,000× |
-
-### Developer Benefits
-
-- **Automatic Mode**: Zero-code integration with maximum performance
-- **Manual Mode**: Full control over refresh timing with 99% performance
-- **Flexible Deployment**: Choose between automatic triggers or explicit calls
-- **Production Ready**: Comprehensive error handling and monitoring
-
-### Use Case Validation
-
-✅ **E-commerce**: Real-time product catalog updates with complex relationships
-✅ **Analytics**: Always-fresh materialized views for reporting dashboards
-✅ **API responses**: JSONB-optimized views for fast API serving
-✅ **High-throughput**: Minimal overhead for frequent data changes
-
-## Technical Insights
-
-### Why Incremental Matters
-
-**Traditional materialized views** require full table scans for any change:
-- O(n) time complexity
-- Exclusive table locks
-- Prohibitive for large datasets
-- Stale data between manual refreshes
-
-**Incremental approaches** update only affected rows with surgical precision:
-- O(1) time complexity for single updates
-- Row-level locks only
-- Constant performance regardless of dataset size
-- Always-fresh data with transactional consistency
-
-### JSONB Optimization Value
-
-**Surgical updates** avoid rebuilding complex nested objects:
-- Field-level changes minimize data transfer
-- Index efficiency maintained through targeted modifications
-- Query performance unaffected by update patterns
-- Memory usage optimized for large JSONB structures
-
-### Cascade Complexity Solved
-
-**Dependency graphs** automatically resolved without manual mapping:
-- Topological sorting ensures correct update order
-- Cycle detection prevents infinite cascades
-- Bulk operations prevent N+1 query problems
-- Transactional safety ensures consistency
-
-## Limitations and Considerations
-
-### Current Scope
-
-- **JSONB-focused**: Optimized for JSONB-heavy applications
-- **Trinity pattern**: Designed for id/uuid + pk/integer + fk/integer relationships
-- **PostgreSQL 15+**: Requires modern PostgreSQL features
-
-### Performance Trade-offs
-
-- **Automatic triggers**: Minimal developer effort, maximum performance
-- **Manual functions**: Full control, 99% performance, explicit calls required
-- **Setup complexity**: Initial schema design requires understanding of relationships
-
-### Production Considerations
-
-- **Monitoring required**: Track refresh performance and cascade depth
-- **Memory management**: Large cascades may require memory tuning
-- **Concurrent updates**: Optimistic locking may need tuning for high-contention scenarios
-
-## Future Opportunities
-
-### Extension Possibilities
-
-- **Additional data types**: Support for non-JSONB materialized views
-- **Custom cascade logic**: User-defined relationship mappings
-- **Advanced caching**: Query plan caching for repeated operations
-- **Distributed support**: Multi-node refresh coordination
-
-### Performance Optimizations
-
-- **Real jsonb_delta**: Native Rust extension vs current PL/pgSQL stubs
-- **Parallel processing**: Multi-threaded bulk operations
-- **Advanced indexing**: Specialized indexes for refresh patterns
-- **Memory pooling**: Reuse allocated memory for repeated operations
-
-## Conclusion
-
-pg_tviews successfully delivers on its promise of high-performance incremental materialized views:
-
-1. **Exceptional Performance**: 5,000-12,000× faster than traditional approaches
-2. **Flexible Architecture**: Automatic triggers or explicit function calls
-3. **Production Ready**: Comprehensive error handling and concurrency control
-4. **Scalable Design**: Linear performance scaling with dataset size
-5. **Developer Friendly**: Simple integration with powerful customization options
-
-The 4-way benchmark validation proves that pg_tviews provides a complete solution for incremental materialized view maintenance, offering both maximum performance and full developer control over refresh behavior.
-
-## Test Environment
-
-- **PostgreSQL Version**: 17.7
-- **pg_tviews Version**: 0.1.0-beta.1
-- **Hardware**: Linux server with sufficient memory for dataset sizes
-- **jsonb_delta Version**: Latest available (when used)
-- **Test Isolation**: Each test in separate transaction, rolled back for repeatability
-
-## See Also
-
-- [Benchmark Overview](overview.md) - Test methodology and scenarios
-- [FraiseQL Integration](../getting-started/fraiseql-integration.md) - Real-world usage patterns
-- [Performance Tuning](../operations/performance-tuning.md) - Optimization strategies
+Measured performance of pg_tviews' incremental refresh against a traditional
+`REFRESH MATERIALIZED VIEW`, using the real `pg_tviews_create` API.
+
+**pg_tviews**: 0.1.0 • **jsonb_delta**: 0.3.0 • **PostgreSQL**: 18.4 •
+**Last updated**: 2026-07-22
+
+> Reproduce with [`test/sql/real_benchmark/`](../../test/sql/real_benchmark/)
+> (`run.sh --scales "small medium large"`). These numbers supersede the earlier
+> `comprehensive_benchmarks/` figures, whose harness targeted a
+> `pg_tviews.enable_tview(...)` function the shipped extension never exported and
+> so never ran against the real extension.
+
+## What is measured
+
+A denormalised product catalogue — one JSONB row per product joining category,
+supplier, inventory, and a review aggregate — maintained three ways:
+
+| Arm | Approach | Maintenance on a base-table change |
+|-----|----------|------------------------------------|
+| **pg_tviews + jsonb_delta** | incremental refresh, surgical JSONB patch | refresh only the affected rows |
+| **pg_tviews + native** | incremental refresh, no jsonb_delta (fallback) | refresh only the affected rows |
+| **full refresh** | `REFRESH MATERIALIZED VIEW` | rebuild every row |
+
+Only `tb_product` mutations are timed — the operation pg_tviews refreshes
+incrementally **and** correctly (every run is gated on a row-for-row divergence
+check of the tview against its backing view; a non-zero divergence fails the run).
+Timing is `psql \timing` on autocommit statements, so each figure is the
+end-to-end, client-observed cost **including** the post-statement refresh flush;
+for the full-refresh arm the timed statement is the `REFRESH` a change forces.
+Medians are reported (25 iterations for single-row ops, 5 for batch/refresh).
+
+## Executive summary
+
+pg_tviews turns O(n) view maintenance into O(1) for point changes. A single-row
+update costs a **flat ~1.8–2.0 ms regardless of dataset size**, while a full
+`REFRESH` grows linearly with the table. At 100K products / 500K reviews that is a
+**~775× speedup for a single update and ~1,300× for a single delete.**
+
+## The headline: incremental is flat, full refresh is linear
+
+Single-row `UPDATE` on `tb_product`, median ms:
+
+| Scale | products / reviews | pg_tviews (ms) | full refresh (ms) | speedup |
+|-------|--------------------|----------------|-------------------|---------|
+| small  | 1K / 5K    | 1.77 | 15.0    | **8.5×** |
+| medium | 10K / 50K  | 1.87 | 167.9   | **90×** |
+| large  | 100K / 500K | 1.97 | 1,523.5 | **775×** |
+
+pg_tviews stays ~2 ms across a 100× growth in table size; full refresh tracks the
+row count. The speedup is the ratio of the two and grows without bound as the
+dataset grows.
+
+## Per-operation detail
+
+Median ms; **speedup** = full-refresh ÷ pg_tviews+jsonb_delta.
+
+### Small — 1,000 products / 5,000 reviews
+| Operation | pg_tviews+jsonb_delta | pg_tviews+native | full refresh | speedup |
+|-----------|----------------------:|-----------------:|-------------:|--------:|
+| single update | 1.77 | 1.67 | 15.0 | 8.5× |
+| batch update (1% = 10 rows) | 5.12 | 4.97 | 15.2 | 3.0× |
+| single insert | 1.83 | 1.67 | 14.9 | 8.2× |
+| single delete | 1.15 | 1.14 | 15.2 | 13.3× |
+| initial build (one-time) | 59.8 | 60.2 | 33.8 | 0.6× |
+
+### Medium — 10,000 products / 50,000 reviews
+| Operation | pg_tviews+jsonb_delta | pg_tviews+native | full refresh | speedup |
+|-----------|----------------------:|-----------------:|-------------:|--------:|
+| single update | 1.87 | 1.81 | 167.9 | 90× |
+| batch update (1% = 100 rows) | 39.3 | 37.2 | 140.3 | 3.6× |
+| single insert | 1.79 | 1.81 | 165.8 | 93× |
+| single delete | 1.12 | 1.18 | 139.8 | 124× |
+| initial build (one-time) | 405.8 | 395.3 | 156.2 | 0.4× |
+
+### Large — 100,000 products / 500,000 reviews
+| Operation | pg_tviews+jsonb_delta | pg_tviews+native | full refresh | speedup |
+|-----------|----------------------:|-----------------:|-------------:|--------:|
+| single update | 1.97 | 1.94 | 1,523.5 | 775× |
+| batch update (1% = 1,000 rows) | 540.3 | 542.1 | 1,517.0 | 2.8× |
+| single insert | 1.91 | 1.86 | 1,522.0 | 799× |
+| single delete | 1.18 | 1.20 | 1,551.1 | 1,313× |
+| initial build (one-time) | 4,426.7 | 4,382.8 | 1,498.7 | 0.3× |
+
+## Reading the numbers honestly
+
+- **Point changes win enormously; batch changes win less.** A batch touching 1%
+  of rows still refreshes 1% of the tview, so its cost rises with the batch size
+  (540 ms for 1,000 rows at large scale) and the advantage over a full rebuild
+  narrows to ~2.8×. Incremental refresh pays off in proportion to how *small* the
+  change is relative to the table.
+
+- **jsonb_delta vs native is at parity here (0.92–1.05×).** For these
+  moderately-sized JSON documents, jsonb_delta 0.3.0's surgical scalar patch and
+  the native fallback are statistically indistinguishable. jsonb_delta's advantage
+  is on large nested/array-valued documents, which this catalogue does not stress;
+  its value here is having a stable, presence-detected patch path, not a headline
+  speed win. Install it, but do not expect it to move these numbers.
+
+- **Initial build is a one-time cost pg_tviews loses.** Building the tview
+  (trigger + metadata setup, then materialising every row through the refresh
+  machinery) is ~3× slower than a single `CREATE MATERIALIZED VIEW`. This is paid
+  once at creation; every subsequent change is where pg_tviews wins.
+
+## Scope and limitations
+
+- **Direct entity mutations only.** These figures cover changes to the tview's own
+  base table (`tb_product`). Cascades from joined dimension/aggregate tables
+  (category, reviews) only propagate when the parent is itself a registered `tv_`
+  entity exposing its `fk_<parent>` key; this single-entity benchmark embeds that
+  data inline and does not exercise cascade propagation. See
+  `test/sql/42_cascade_fk_lineage.sql` for the cascade contract.
+- **Non-concurrent full refresh.** The baseline is plain `REFRESH MATERIALIZED
+  VIEW` (a full O(n) rebuild). `REFRESH ... CONCURRENTLY` trades a unique-index
+  requirement and a full diff for non-blocking behaviour; it is not faster.
+- Moderate JSON document size; single client; medians over repeated autocommit
+  statements.
+
+## Test environment
+
+- **Machine**: Hetzner ccx33 — 8 dedicated vCPU (AMD EPYC-Milan), 30 GiB RAM
+- **PostgreSQL**: 18.4 (PGDG), default `shared_buffers = 128MB` (untuned, for
+  reproducibility)
+- **Extensions**: pg_tviews 0.1.0 (pgrx 0.17.0), jsonb_delta 0.3.0
+- **Harness**: `test/sql/real_benchmark/`; each arm in its own database seeded from
+  a common template; every run divergence-gated for correctness
+
+## See also
+
+- [Benchmark Overview](overview.md) — methodology and scenarios
+- [`test/sql/real_benchmark/README.md`](../../test/sql/real_benchmark/README.md) — harness details

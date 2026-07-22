@@ -102,6 +102,7 @@ pub mod table_cache {
             let mut cache = TABLE_ENTITY_CACHE
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            crate::utils::bound_cache(&mut cache);
             cache.insert(table_oid, info.clone());
         }
 

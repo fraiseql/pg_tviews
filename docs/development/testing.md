@@ -1,7 +1,7 @@
 # Testing Guide
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
+**Version**: 0.1.0
+**Last Updated**: 2026-07-22
 
 ## Overview
 
@@ -239,13 +239,14 @@ cargo pgrx test pg17 -- --nocapture --test test_name
 ### Benchmark Tests
 
 ```bash
-# Run performance benchmarks
-cd test/sql/comprehensive_benchmarks
-./run_benchmarks.sh
-
-# Analyze results
-python3 generate_report.py
+# Run performance benchmarks (the old comprehensive_benchmarks harness was removed —
+# it never ran against the real extension; see test/sql/real_benchmark/README.md)
+cd test/sql/real_benchmark
+PGHOST=localhost PGPORT=28818 PGUSER=postgres ./run.sh --scales "small medium large"
 ```
+
+See [Running Benchmarks](../benchmarks/running-benchmarks.md) for prerequisites,
+options, and how to read the output.
 
 ### Profiling Tests
 

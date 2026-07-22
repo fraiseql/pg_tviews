@@ -1,52 +1,62 @@
 -- Regression test for issue #004: name-type OID mismatch
--- This test reproduces the OID mismatch bug in SPI queries that read 'name' type columns
--- without explicit ::text casts. The bug causes refresh operations to fail silently,
--- leaving TVIEWs unpopulated after INSERTs that should trigger refreshes.
+-- The original bug: SPI queries that read 'name'/text columns without explicit
+-- ::text casts caused refresh to fail silently, leaving TVIEWs unpopulated after
+-- INSERTs that should have triggered a refresh.
+--
+-- Updated for the current API (issue #55): the removed pg_tviews_register(name,
+-- view, table, pk) form is replaced by pg_tviews_create(tview_name, select_sql),
+-- which builds the backing view itself. The regression intent is preserved: a
+-- TVIEW whose projection carries a text column must populate after an INSERT.
+--
+--   psql -v ON_ERROR_STOP=1 -f test/sql/99-name-oid-regression.sql
 
-\set ECHO none
-\set QUIET 1
-
+\set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
-SET log_min_messages TO WARNING;
 
-\set ECHO all
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
 
 \echo '=========================================='
-\echo 'Regression Test: Name-Type OID Mismatch'
+\echo 'Regression Test: Name-Type OID Mismatch (#004)'
 \echo '=========================================='
 
-CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
+DROP TABLE IF EXISTS tb_nametest CASCADE;
 
--- Create test table and view
-CREATE UNLOGGED TABLE tb_nametest (
+CREATE TABLE tb_nametest (
     pk_nametest BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    label TEXT NOT NULL
+    id          UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    label       TEXT NOT NULL
 );
-CREATE VIEW v_nametest AS SELECT pk_nametest, label FROM tb_nametest;
 
--- Register as TVIEW
-SELECT pg_tviews_register('nametest', 'v_nametest', 'tb_nametest', 'pk_nametest');
+SELECT pg_tviews_create('tv_nametest', $TVIEW$
+    SELECT pk_nametest, id, jsonb_build_object('label', label) AS data
+    FROM tb_nametest
+$TVIEW$);
 
--- Insert data (this should trigger refresh)
+-- Insert data (this triggers a refresh).
 INSERT INTO tb_nametest (label) VALUES ('hello');
 
--- Verify TVIEW is populated (this will fail due to the bug)
+-- Verify the TVIEW is populated and the text column round-trips through refresh.
 DO $$
 DECLARE
     row_count INTEGER;
+    got_label TEXT;
 BEGIN
     SELECT COUNT(*) INTO row_count FROM tv_nametest;
-
-    IF row_count != 1 THEN
-        RAISE EXCEPTION 'TVIEW should have 1 row after INSERT, but has % rows. This indicates the refresh failed due to name-type OID mismatch.', row_count;
+    IF row_count <> 1 THEN
+        RAISE EXCEPTION '#004 FAIL: tv_nametest should have 1 row after INSERT, has % (refresh dropped by name-type OID mismatch?)', row_count;
     END IF;
 
-    RAISE NOTICE '✓ TVIEW correctly populated after INSERT';
+    SELECT data->>'label' INTO got_label FROM tv_nametest WHERE pk_nametest = 1;
+    IF got_label <> 'hello' THEN
+        RAISE EXCEPTION '#004 FAIL: text column did not round-trip through refresh (got %)', got_label;
+    END IF;
+
+    RAISE NOTICE '#004 ok: TVIEW populated and text column preserved after INSERT';
 END $$;
 
--- Clean up
-SELECT pg_tviews_drop('nametest');
+SELECT pg_tviews_drop('tv_nametest', true);
 
-\echo '=========================================='
-\echo 'Regression test completed (should fail until fixes applied)'
-\echo '=========================================='
+\echo '#004 PASS: name-type text column refreshes correctly'

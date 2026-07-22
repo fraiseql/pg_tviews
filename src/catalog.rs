@@ -76,6 +76,16 @@ pub struct TviewMeta {
     /// Empty for standard (PK-based) TVIEWs.
     pub distinct_on_keys: Vec<String>,
 
+    /// OUTPUT (projected) column name for each DISTINCT ON key — the alias the
+    /// backing view / `tv_<entity>` actually expose (e.g. `["pk_contract"]` for
+    /// `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`).
+    ///
+    /// `distinct_on_keys` holds the raw SOURCE column read off the base tuple by
+    /// the trigger; this holds the OUTPUT column used by `refresh_by_dedup_key`'s
+    /// WHERE / ON CONFLICT and the materialized table's primary key. Equal to
+    /// `distinct_on_keys` when the key is not aliased. Aligned by index.
+    pub distinct_on_output_keys: Vec<String>,
+
     /// `true` when this TVIEW's backing view is a `UNION ALL` or `UNION` query.
     ///
     /// Used to apply the duplicate-row policy when multiple rows are returned
@@ -126,7 +136,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE view_oid = $1 OR table_oid = $1",
                 None,
@@ -152,7 +162,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE entity = $1",
                 None,
@@ -173,7 +183,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  ORDER BY entity",
                 None,
@@ -225,7 +235,7 @@ impl TviewMeta {
                 "SELECT table_oid AS tview_oid, view_oid, entity, \
                         fk_columns, uuid_fk_columns, \
                         dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, is_union, cascade_paths \
+                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
                  FROM pg_tview_meta \
                  WHERE table_oid = $1",
                 None,
@@ -260,8 +270,13 @@ impl TviewMeta {
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
-        // distinct_on_keys (TEXT[]) — present in pg_tview_meta for DISTINCT ON TVIEWs
+        // distinct_on_keys (TEXT[]) — raw SOURCE column read off the base tuple by the trigger
         let distinct_on_keys: Vec<String> = row["distinct_on_keys"]
+            .value::<Vec<String>>()?
+            .unwrap_or_default();
+
+        // distinct_on_output_keys (TEXT[]) — projected OUTPUT column used by refresh/PK
+        let distinct_on_output_keys: Vec<String> = row["distinct_on_output_keys"]
             .value::<Vec<String>>()?
             .unwrap_or_default();
 
@@ -306,6 +321,7 @@ impl TviewMeta {
             dependency_paths: dep_paths,
             array_match_keys: array_keys.unwrap_or_default(),
             distinct_on_keys,
+            distinct_on_output_keys,
             is_union,
             cascade_paths,
         })
@@ -394,6 +410,7 @@ impl Default for TviewMeta {
             dependency_paths: vec![],
             array_match_keys: vec![],
             distinct_on_keys: vec![],
+            distinct_on_output_keys: vec![],
             is_union: false,
             cascade_paths: vec![],
         }
@@ -509,6 +526,7 @@ mod tests {
             dependency_paths: vec![None],
             array_match_keys: vec![None],
             distinct_on_keys: vec![],
+            distinct_on_output_keys: vec![],
             is_union: false,
             cascade_paths: vec![],
         };

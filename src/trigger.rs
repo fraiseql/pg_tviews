@@ -42,11 +42,18 @@ fn extract_distinct_on_key(
     tuple: &PgHeapTuple<'_, AllocatedByPostgres>,
     key_col: &str,
 ) -> KeyExtraction {
-    // Try String (TEXT, UUID, VARCHAR)
+    // Try String (TEXT, VARCHAR)
     match tuple.get_by_name::<String>(key_col) {
         Ok(Some(val)) => return KeyExtraction::Value(val),
         Ok(None) => return KeyExtraction::Null,
         Err(_) => {} // type mismatch, try next
+    }
+    // Try UUID — pgrx's Display yields the canonical lowercase hyphenated form,
+    // matching PostgreSQL's `uuid::text` used by refresh_by_dedup_key's WHERE clause.
+    match tuple.get_by_name::<pgrx::Uuid>(key_col) {
+        Ok(Some(val)) => return KeyExtraction::Value(val.to_string()),
+        Ok(None) => return KeyExtraction::Null,
+        Err(_) => {}
     }
     // Try i64 (BIGINT)
     match tuple.get_by_name::<i64>(key_col) {

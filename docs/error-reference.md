@@ -166,7 +166,8 @@ CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('
 
 **Common Causes**:
 - Syntax errors in SQL
-- Unsupported SQL features (UNION, CTEs, window functions)
+- Unsupported SQL features (INTERSECT/EXCEPT, `WITH RECURSIVE`, window functions;
+  UNION / UNION ALL, simple CTEs, and DISTINCT ON *are* supported)
 - Missing required columns (pk_*, data)
 
 **Example**:
@@ -246,7 +247,7 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 
 **Resolution**:
 1. Install jsonb_delta: `CREATE EXTENSION jsonb_delta;`
-2. Download from: https://github.com/fraiseql/jsonb_delta
+2. Download from: https://github.com/evoludigit/jsonb_delta
 3. Restart pg_tviews extension if needed
 
 **Note**: This is a warning, not an error. pg_tviews works without jsonb_delta but slower.

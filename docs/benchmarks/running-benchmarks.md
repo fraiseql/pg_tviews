@@ -1,992 +1,236 @@
 # Running Benchmarks
 
-This guide explains how to run the pg_tviews benchmark suite to validate functionality and measure performance.
+This guide explains how to run the pg_tviews performance benchmark and read its
+output. The benchmark lives in
+[`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md) and drives
+the extension through its **real** `pg_tviews_create` API — the same call path a
+production tview uses. Published numbers from a measured run live in
+[results.md](results.md).
 
 ## Table of Contents
 
+- [What the benchmark does](#what-the-benchmark-does)
 - [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-  - [Option A: Docker (Recommended)](#option-a-docker-recommended---full-4-way-benchmark)
-  - [Option B: Manual Approaches 3 & 4 Only](#option-b-manual-approaches-3--4-only-no-extensions-required)
-  - [Option C: pgrx-managed PostgreSQL](#option-c-pgrx-managed-postgresql-advanced)
-  - [Option D: System PostgreSQL](#option-d-system-postgresql-with-manual-extension-install-requires-sudo)
-- [Deployment Options](#deployment-options)
-- [Running the Benchmark Suite](#running-the-benchmark-suite)
-- [Understanding Results](#understanding-results)
+- [Quick start](#quick-start)
+- [Options](#options)
+- [How a run works](#how-a-run-works)
+- [Reading the results](#reading-the-results)
+- [Reproducing on a clean box](#reproducing-on-a-clean-box)
 - [Troubleshooting](#troubleshooting)
-- [Next Steps](#next-steps)
+- [See also](#see-also)
+
+---
+
+## What the benchmark does
+
+The harness maintains a denormalised product catalogue — one JSONB row per
+product joining category, supplier, inventory, and a review aggregate — three
+ways, and times `tb_product` mutations against each:
+
+| Arm | Approach | Maintenance on a base-table change |
+|-----|----------|------------------------------------|
+| **A** — pg_tviews + jsonb_delta | incremental refresh, surgical JSONB patch | refresh only the affected rows |
+| **B** — pg_tviews + native | incremental refresh, no jsonb_delta (fallback) | refresh only the affected rows |
+| **C** — full refresh | `REFRESH MATERIALIZED VIEW` | rebuild every row |
+
+Each arm runs in its own database, seeded from a common template so the base
+data is identical. Every run is **gated on correctness**: `tv_product` is
+compared row-for-row against its backing view `v_product`, and any divergence
+fails the run before a single timing is trusted.
+
+See [overview.md](overview.md) for the schema, the operations measured, and the
+measurement methodology.
 
 ---
 
 ## Prerequisites
 
-**IMPORTANT**: pg_tviews supports **PostgreSQL 13-18**. The extension uses pgrx 0.16.1 with full PostgreSQL 18 compatibility.
+- **PostgreSQL 18** cluster with `pg_tviews` in `shared_preload_libraries`.
+  A `cargo pgrx` cluster (default port **28818**) is the reference setup; a
+  system PostgreSQL 18 works too.
+- **pg_tviews** installed into that cluster.
+- **jsonb_delta 0.3.0** installed into that cluster (needed only for arm A;
+  arms B and C run without it).
+- **A superuser / `CREATEDB` role** — the harness creates and drops several
+  scratch databases per run.
+- **`psql`, `bash`, and `python3`** on `PATH` (`aggregate.py` needs python3).
 
-### System Requirements
-
-- **PostgreSQL**: 13-18 (all versions supported)
-- **Rust**: 1.70 or later (`rustc --version`)
-- **pgrx**: 0.16.1 (`cargo install cargo-pgrx --version 0.16.1 --locked`)
-- **Disk Space**:
-  - Small scale: 5GB free
-  - Medium scale: 10GB free
-  - Large scale: 20GB+ free
-- **Memory**:
-  - Small scale: 4GB+ recommended
-  - Medium scale: 8GB+ recommended
-  - Large scale: 16GB+ recommended
-- **Docker**: Optional but recommended for full 4-way benchmarks
-
-### Extension Dependencies
-
-- **pg_tviews**: Core extension (built from source) - **Required for approaches 1 & 2**
-- **jsonb_delta**: Optional performance extension (built from source) - **Required for approach 1**
-- **pg_ivm**: Alternative incremental view extension (optional)
-
-### Check Your PostgreSQL Version
+Install both extensions into a local pgrx cluster (always pass `--pg-config`):
 
 ```bash
-psql --version
-# pg_tviews supports PostgreSQL 13-18
+PGC="$HOME/.pgrx/18.4/pgrx-install/bin/pg_config"   # adjust to your cluster
+
+# pg_tviews (from this repo)
+cargo pgrx install --release --no-default-features --features pg18 --pg-config "$PGC"
+
+# jsonb_delta 0.3.0 (sibling checkout)
+cd ../jsonb_delta && cargo pgrx install --release --pg-config "$PGC"
 ```
 
-### Benchmark Capability Matrix
+`pg_tviews` must be in `shared_preload_libraries` (its GUCs and hooks are
+registered at postmaster start). Add it to the cluster's `postgresql.conf`
+(for a pgrx cluster, `~/.pgrx/data-18/postgresql.conf`) and restart:
 
-| Approach | Extensions Required | Performance | Setup Difficulty |
-|----------|-------------------|-------------|------------------|
-| **1: pg_tviews + jsonb_delta** | pg_tviews + jsonb_delta | Maximum (1.0x) | Hard (system install) |
-| **2: pg_tviews + native PG** | pg_tviews only | 98% of maximum | Hard (system install) |
-| **3: Manual functions** | None | 95% of maximum | Medium (manual setup) |
-| **4: Full refresh** | None | 0.01-0.02% of max | Easy (built-in PG) |
-
----
-
-## Quick Start (4 Options)
-
-### Option A: Docker (Recommended - Full 4-Way Benchmark)
-
-**✅ Supports all 4 approaches** - Most reliable for complete testing
-
-**Prerequisites**:
-- Docker and Docker Compose installed
-- Both repositories cloned in same parent directory:
-  ```
-  /path/to/code/
-    ├── pg_tviews/
-    └── jsonb_delta/    # Clone from https://github.com/fraiseql/jsonb_delta
-  ```
-
-```bash
-# 1. Build benchmark container with extensions
-# Note: Build context is parent directory (must contain both pg_tviews and jsonb_delta)
-cd /path/to/pg_tviews
-docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
-
-# OR use docker-compose (recommended):
-cd /path/to/pg_tviews/docker
-docker-compose up -d --build
-
-# 2. Run container (if using docker build)
-docker run -d --name pg_tviews_benchmark \
-  -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres \
-  pg_tviews_bench
-
-# 3. Wait for startup (30 seconds)
-sleep 30
-
-# 4. Run benchmarks (choose scale)
-# Small scale (fastest, ~5 minutes total):
-docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
-\i /benchmarks/00_setup.sql
-\i /benchmarks/schemas/01_ecommerce_schema.sql
-\i /benchmarks/data/01_ecommerce_data_small.sql
-\i /benchmarks/scenarios/01_ecommerce_benchmarks_small.sql
-"
-
-# Medium scale (~15 minutes, requires 8GB+ RAM):
-docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
-\i /benchmarks/00_setup.sql
-\i /benchmarks/schemas/01_ecommerce_schema.sql
-\i /benchmarks/data/01_ecommerce_data_medium.sql
-\i /benchmarks/scenarios/01_ecommerce_benchmarks_medium.sql
-"
-
-# Large scale (~1 hour, requires 16GB+ RAM):
-docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
-\i /benchmarks/00_setup.sql
-\i /benchmarks/schemas/01_ecommerce_schema.sql
-\i /benchmarks/data/01_ecommerce_data_large.sql
-\i /benchmarks/scenarios/01_ecommerce_benchmarks_large.sql
-"
-
-# 5. View results
-docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "
-SELECT * FROM benchmark_summary ORDER BY execution_time_ms;
-SELECT * FROM benchmark_comparison WHERE improvement_ratio IS NOT NULL ORDER BY improvement_ratio DESC;
-"
-```
-
-### Option B: Manual Approaches 3 & 4 Only (No Extensions Required)
-
-**✅ Works on any PostgreSQL** - Demonstrates incremental vs full refresh benefits
-
-#### Scale Options:
-- **Small**: 1K products, 5K reviews (~2 minutes setup, 4GB RAM)
-- **Medium**: 100K products, 500K reviews (~5 minutes setup, 8GB RAM)
-- **Large**: 1M products, 5M reviews (~30 minutes setup, 16GB RAM)
-
-```bash
-# 1. Create benchmark database
-createdb pg_tviews_benchmark
-psql -d pg_tviews_benchmark -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
-
-# 2. Setup schema manually (skip pg_tviews parts)
-cd test/sql/comprehensive_benchmarks
-psql -d pg_tviews_benchmark -f 00_setup.sql
-
-# 3. Load data (choose scale)
-psql -d pg_tviews_benchmark -f data/01_ecommerce_data_small_manual.sql    # Small scale
-# OR
-psql -d pg_tviews_benchmark -f data/01_ecommerce_data_medium_manual.sql  # Medium scale
-# OR
-psql -d pg_tviews_benchmark -f data/01_ecommerce_data_large_manual.sql   # Large scale
-
-# 4. Load manual functions
-psql -d pg_tviews_benchmark -f functions/refresh_product_manual.sql
-
-# 5. Populate manual tables
-psql -d pg_tviews_benchmark -c "
-INSERT INTO manual_func_product (pk_product, fk_category, data)
-SELECT pk_product, fk_category, data FROM v_product;
-REFRESH MATERIALIZED VIEW mv_product;
-"
-
-# 6. Run manual benchmark
-psql -d pg_tviews_benchmark -c "
--- Test Approach 3 vs 4
-UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
-SELECT refresh_product_manual('product', 1, 'price_current');
-UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
-REFRESH MATERIALIZED VIEW mv_product;
-"
-```
-
-### Option C: pgrx-managed PostgreSQL (Advanced)
-
-**⚠️ Time-intensive setup** - Compiles PostgreSQL from source
-
-```bash
-# 1. Initialize pgrx (30-60 minutes first time)
-cargo pgrx init
-
-# 2. Start managed PostgreSQL 18
-cargo pgrx start pg18
-
-# 3. Install extensions
-cargo pgrx install --release
-
-# 4. Run benchmarks (use port 28818 for pg18)
-psql -h localhost -p 28818 -c "CREATE DATABASE pg_tviews_benchmark;"
-psql -h localhost -p 28818 -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
-psql -h localhost -p 28818 -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/00_setup.sql
-psql -h localhost -p 28818 -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/schemas/01_ecommerce_schema.sql
-```
-
-### Option D: System PostgreSQL with Manual Extension Install (Requires sudo)
-
-**❌ Requires system admin access** - Not available in many environments
-
-```bash
-# 1. Install system-wide (requires sudo)
-sudo cargo pgrx install --release
-
-# 2. Create benchmark database
-createdb pg_tviews_benchmark
-psql -d pg_tviews_benchmark -c "CREATE EXTENSION pg_tviews;"
-
-# 3. Run full benchmarks
-cd test/sql/comprehensive_benchmarks
-psql -d pg_tviews_benchmark -f 00_setup.sql
-psql -d pg_tviews_benchmark -f scenarios/01_ecommerce_benchmarks_small.sql
+```conf
+shared_preload_libraries = 'pg_tviews'
 ```
 
 ---
 
-## Deployment Options
-
-You have two options for running benchmarks, depending on your PostgreSQL installation.
-
-### Option A: pgrx-managed PostgreSQL (Recommended)
-
-pgrx can manage its own PostgreSQL installations, which is ideal for development and testing.
-
-#### Setup
+## Quick start
 
 ```bash
-# Initialize pgrx (one-time setup)
-cargo pgrx init
-
-# Check status
-cargo pgrx status
+cd test/sql/real_benchmark
+PGHOST=localhost PGPORT=28818 PGUSER=postgres ./run.sh --scales "small medium large"
 ```
 
-**Expected output**:
-```
-Postgres v13 is stopped
-Postgres v14 is stopped
-Postgres v15 is stopped
-Postgres v16 is stopped
-Postgres v17 is stopped
-```
+`PGHOST`/`PGPORT`/`PGUSER` default to `localhost` / `28818` / `postgres`, so on
+the reference pgrx cluster you can just run `./run.sh --scales "small"`.
 
-#### Start PostgreSQL 17
+Scales:
 
-```bash
-# Start pg17
-cargo pgrx start pg17
+| Scale | Categories | Suppliers | Products | Reviews |
+|-------|-----------:|----------:|---------:|--------:|
+| small  | 20  | 10  | 1,000   | 5,000   |
+| medium | 50  | 30  | 10,000  | 50,000  |
+| large  | 100 | 100 | 100,000 | 500,000 |
 
-# Verify it's running
-cargo pgrx status
-```
-
-**Expected output**:
-```
-Postgres v17 is running
-```
-
-#### Connection Details
-
-- **Host**: `localhost`
-- **Port**: `28817` (NOT the default 5432)
-- **User**: Your system username (`$(whoami)`)
-- **Database**: `postgres` (default)
-
-#### Test Connection
-
-```bash
-psql -h localhost -p 28817 -c "SELECT version();"
-```
-
-**Expected output**: Version string showing PostgreSQL 17.x
+Start with `small` to validate the setup end-to-end (it finishes quickly); add
+`medium` and `large` once it passes. At large scale each of the three arms
+materialises 100K products / 500K reviews, so the run takes correspondingly
+longer — expect the full `REFRESH` arm to dominate wall-clock time, which is the
+cost the comparison is measuring.
 
 ---
 
-### Option B: Docker
+## Options
 
-Use Docker if you prefer containerized environments or need isolation from your host system.
+`run.sh` accepts:
 
-#### Build Benchmark Container
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--scales "<list>"` | `small` | Space-separated scales to run (`small`, `medium`, `large`). |
+| `--single-iters N` | `25` | Iterations for the single-row `UPDATE` op on arms A/B. |
+| `--c-iters N` | `5` | Iterations per op for arm C (each is a full `REFRESH`). |
+| `--help` | — | Print the script header and exit. |
 
-```bash
-# Build from pg_tviews directory (build context is parent directory)
-cd /path/to/pg_tviews
-docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
-
-# OR use docker-compose:
-cd /path/to/pg_tviews/docker
-docker-compose up -d --build
-```
-
-**Note**: The build context is the parent directory, which must contain both `pg_tviews/` and `jsonb_delta/` projects side-by-side.
-
-#### Run Container
-
-```bash
-# Start container
-docker run -d --name pg_tviews_benchmark \
-  -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres \
-  pg_tviews_bench
-
-# Wait for PostgreSQL to start
-sleep 5
-
-# Verify container is running
-docker ps | grep pg_tviews_benchmark
-```
-
-#### Connection Details
-
-- **Host**: `localhost`
-- **Port**: `5432` (default PostgreSQL port)
-- **User**: `postgres`
-- **Password**: `postgres`
-- **Database**: `pg_tviews_benchmark` (auto-created)
-
-#### Test Connection
-
-```bash
-# From host
-docker exec -it pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "SELECT version();"
-
-# Or connect directly
-psql -h localhost -p 5432 -U postgres -d pg_tviews_benchmark
-```
+Insert/delete ops use 10 iterations and batch ops use 5 (fixed in the script).
+Medians are reported, so a handful of iterations is enough to be stable; raise
+`--single-iters` if you want tighter medians on a noisy machine.
 
 ---
 
-## Running the Benchmark Suite
+## How a run works
 
-### Step 1: Clean Build Environment
+For each scale, `run.sh`:
 
-```bash
-# Clean previous builds
-cargo clean
+1. Builds a template database `bench_rb_data`, loads `schema.sql`, and generates
+   data with `gen_data.sql` (parameterised by the scale's row counts).
+2. Clones the template into one database per arm:
+   - **Arm A** — `CREATE EXTENSION jsonb_delta; CREATE EXTENSION pg_tviews;`
+   - **Arm B** — `CREATE EXTENSION pg_tviews;`
+   - **Arm C** — no extensions.
+3. Arms A/B create the tview with
+   `SELECT pg_tviews_create('tv_product', <product_select.sql>)`; arm C creates a
+   `MATERIALIZED VIEW mv_product` with a unique index on `pk_product`.
+4. Runs the same sequence of `tb_product` mutations under `psql \timing`:
+   `update_single`, `update_batch` (1% of rows), `insert_single`,
+   `delete_single`, plus the one-time `build`. For arm C each timed statement is
+   the `REFRESH MATERIALIZED VIEW` that the change forces.
+5. Checks the correctness gate. Arms A/B emit `RB_OK divergence=0` on success; a
+   non-zero divergence emits `RB_DIVERGENCE <n>` and **fails the run**.
+6. Parses each `\timing` log, appending `scale · arm · op · ms` rows to
+   `results/raw.tsv`, and drops the scratch databases.
 
-# Verify clean state
-ls -la target/ 2>/dev/null || echo "Clean state confirmed"
-```
+After all scales, `aggregate.py` prints a per-operation median table and writes
+`results/summary.tsv`.
 
-### Step 2: Compile and Install Extension
-
-```bash
-# Compile and install (release mode for accurate performance)
-cargo pgrx install --release
-
-# Verify installation
-psql -h localhost -p 28817 -c "SELECT * FROM pg_available_extensions WHERE name = 'pg_tviews';"
-```
-
-**Expected output**:
-```
-   name    | default_version | installed_version | comment
------------+-----------------+-------------------+---------
- pg_tviews | 0.1.0-beta.1   |                   | Transactional materialized views...
-```
-
-### Step 3: Create Benchmark Database
-
-```bash
-# Drop existing benchmark DB if it exists
-psql -h localhost -p 28817 -c "DROP DATABASE IF EXISTS pg_tviews_benchmark;"
-
-# Create fresh benchmark database
-psql -h localhost -p 28817 -c "CREATE DATABASE pg_tviews_benchmark;"
-
-# Create extension
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;"
-
-# Verify extension loaded
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_tviews';"
-```
-
-**Expected output**:
-```
-  extname  | extversion
------------+------------
- pg_tviews | 0.1.0-beta.1
-```
-
-### Step 4: Run E-commerce Benchmark
-
-```bash
-# Execute benchmark SQL
-psql -h localhost -p 28817 -d pg_tviews_benchmark \
-  -f test/sql/comprehensive_benchmarks/schemas/01_ecommerce_schema.sql
-
-# Check exit code
-echo "Exit code: $?"
-```
-
-**Expected output**:
-- Schema creation statements execute successfully
-- TVIEW creation statements succeed
-- Sample data inserted
-- Benchmark queries execute with timing data
-- Exit code: 0
-
-#### Verify Results
-
-```sql
--- Connect to benchmark database
-psql -h localhost -p 28817 -d pg_tviews_benchmark
-
--- Check tviews were created
-SELECT entity, table_oid::regclass AS table_name, view_oid::regclass AS view_name
-FROM pg_tview_meta
-ORDER BY entity;
-
--- Verify data is present (adjust table names based on actual schema)
-SELECT COUNT(*) FROM tv_customer_order_summary;
-SELECT COUNT(*) FROM tv_product_sales_stats;
-```
-
-### Step 5: Run Full Test Suite
-
-```bash
-# Run all SQL tests (this may take several minutes)
-cargo pgrx test pg17
-```
-
-**Expected output**:
-- Test database created
-- Extension loaded
-- All tests pass
-- Test summary showing pass/fail counts
-
-### Step 6: Load Monitoring System (Optional)
-
-For production-like metrics collection:
-
-```bash
-# Load monitoring views and functions
-psql -h localhost -p 28817 -d pg_tviews_benchmark \
-  -f sql/pg_tviews_monitoring.sql
-
-# Verify monitoring tables created
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "\dt pg_tviews_*"
-```
-
-**Expected output**:
-```
-                List of relations
- Schema |       Name       | Type  | Owner
---------+------------------+-------+-------
- public | pg_tviews_metrics| table | ...
-```
-
-### Step 7: Collect Performance Metrics
-
-```bash
-psql -h localhost -p 28817 -d pg_tviews_benchmark <<'EOF'
--- Report on all tviews in the catalog
-SELECT
-    entity,
-    table_oid::regclass AS tview_table,
-    view_oid::regclass AS view_name,
-    array_length(dependencies, 1) AS dependency_count,
-    created_at
-FROM pg_tview_meta
-ORDER BY entity;
-
--- Report on table sizes
-SELECT
-    table_oid::regclass AS tview_table,
-    pg_size_pretty(pg_total_relation_size(table_oid)) AS total_size,
-    pg_size_pretty(pg_relation_size(table_oid)) AS table_size,
-    pg_size_pretty(pg_indexes_size(table_oid)) AS indexes_size
-FROM pg_tview_meta
-ORDER BY pg_total_relation_size(table_oid) DESC;
-
--- Check trigger execution stats
-SELECT
-    schemaname,
-    tablename,
-    pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) as size
-FROM pg_stat_user_tables
-WHERE schemaname = 'public' AND tablename LIKE 'tv_%'
-ORDER BY pg_relation_size(schemaname||'.'||tablename) DESC;
-EOF
-```
-
-### Step 8: Verify Data Consistency (Optional)
-
-Check that materialized data matches source data:
-
-```sql
--- Connect to benchmark database
-psql -h localhost -p 28817 -d pg_tviews_benchmark
-
--- List all tables to identify TVIEWs and source tables
-\dt
-
--- Example consistency check (adjust based on actual schema):
-WITH source_data AS (
-    SELECT customer_id, COUNT(*) as order_count, SUM(total_amount) as total_spent
-    FROM orders
-    GROUP BY customer_id
-),
-tview_data AS (
-    SELECT pk_customer, order_count, total_spent
-    FROM tv_customer_summary
-)
-SELECT
-    CASE
-        WHEN COUNT(*) = 0 THEN 'CONSISTENT ✓'
-        ELSE 'INCONSISTENT: ' || COUNT(*) || ' mismatches ✗'
-    END as consistency_check
-FROM (
-    SELECT * FROM source_data
-    EXCEPT
-    SELECT * FROM tview_data
-    UNION ALL
-    SELECT * FROM tview_data
-    EXCEPT
-    SELECT * FROM source_data
-) mismatches;
-```
-
-### Step 9: Cleanup (Optional)
-
-```bash
-# Drop benchmark database
-psql -h localhost -p 28817 -c "DROP DATABASE IF EXISTS pg_tviews_benchmark;"
-
-# Verify cleanup
-psql -h localhost -p 28817 -l | grep benchmark
-
-# Stop PostgreSQL 17 (if using pgrx)
-cargo pgrx stop pg17
-```
+Timing is `psql \timing` on autocommit statements, so every figure is the
+end-to-end, client-observed cost **including** the post-statement refresh flush
+— not an internal micro-timing.
 
 ---
 
-## Understanding Results
+## Reading the results
 
-### Benchmark Output
+Everything lands in `test/sql/real_benchmark/results/`:
 
-The e-commerce benchmark measures:
+| File | Contents |
+|------|----------|
+| `raw.tsv` | One row per measured statement: `scale⇥arm⇥op⇥ms`. |
+| `summary.tsv` | Per `(scale, arm, op)` stats: `n`, `min_ms`, `median_ms`, `mean_ms`. Arms are named `pg_tviews+jsonb_delta`, `pg_tviews+native`, `full_refresh_matview`. |
+| `<scale>_<arm>.log` | The raw `psql \timing` transcript for that arm (`small_a.log`, `large_c.log`, …). Grep these for `RB_OK` / `RB_DIVERGENCE`. |
 
-1. **Schema Creation Time**: Time to create base tables
-2. **TVIEW Creation Time**: Time to create transactional views
-3. **Initial Population Time**: Time to populate with sample data
-4. **Incremental Update Performance**: Time for single-row updates to propagate
-5. **Cascade Performance**: Time for updates to cascade through dependencies
+`aggregate.py` also prints a comparison table to stdout, e.g.:
 
-### Performance Baselines
+```
+── small ────────────────────────────────────────
+  op               A median   B median   C median    A vs C   A vs B
+  build              59.800     60.200     33.800      0.6x    1.01x
+  update_single       1.770      1.670     15.000      8.5x    0.94x
+  update_batch        5.120      4.970     15.200      3.0x    0.97x
+  insert_single       1.830      1.670     14.900      8.2x    0.91x
+  delete_single       1.150      1.140     15.200     13.3x    0.99x
+```
 
-Expected performance (will vary based on hardware):
+- **`A vs C`** = `full_refresh ÷ pg_tviews+jsonb_delta` — the incremental speedup.
+- **`A vs B`** = `pg_tviews+native ÷ pg_tviews+jsonb_delta` — jsonb_delta's effect
+  (≈1.0 means parity; see [jsonb-ivm-integration.md](jsonb-ivm-integration.md)).
 
-| Operation | Expected Duration |
-|-----------|------------------|
-| Simple TVIEW refresh | < 100ms for 1K rows |
-| Complex join TVIEW refresh | < 1s for 10K rows |
-| Trigger-based incremental refresh | < 50ms per change |
-| Cascade through 3 levels | < 200ms per change |
+For how to interpret these — flat vs linear, point vs batch, the one-time build
+cost — see [results-interpretation.md](results-interpretation.md). The published
+figures are in [results.md](results.md).
 
-### Success Indicators
+---
 
-#### Docker Setup Success
-- ✅ `docker build` completes without errors
-- ✅ Container starts: `docker ps` shows running container
-- ✅ PostgreSQL accessible: `docker exec pg_tviews_benchmark psql -U postgres -c "SELECT 1;"`
-- ✅ Extensions loaded: `SELECT * FROM pg_extension;` shows pg_tviews and jsonb_delta
+## Reproducing on a clean box
 
-#### Manual Setup Success (Approaches 3 & 4)
-- ✅ Database created: `psql -l` shows pg_tviews_benchmark
-- ✅ Setup script runs: `00_setup.sql` executes without errors
-- ✅ Data loads: `01_ecommerce_data_small_manual.sql` completes
-- ✅ Manual functions available: `\df refresh_product_manual` shows function
-- ✅ Tables populated: `SELECT COUNT(*) FROM manual_func_product;` > 0
+`test/sql/real_benchmark/provision-ubuntu.sh` provisions a fresh Ubuntu 24.04
+host (run as root) with PostgreSQL 18 (PGDG), pgrx 0.17.0, pg_tviews, and
+jsonb_delta 0.3.0 — the exact stack behind [results.md](results.md). Sync this
+working tree to `/root/pg_tviews`, then:
 
-#### Compilation Success (pgrx/system)
-- ✅ `cargo pgrx install --release` exits with code 0
-- ✅ No "error" lines in output (warnings are OK)
-- ✅ Messages show "Installing shared library to..." and "Copying control file to..."
-
-#### Installation Success
-- ✅ Extension appears in `pg_available_extensions`
-- ✅ `CREATE EXTENSION pg_tviews` succeeds
-- ✅ Extension version is `0.1.0-beta.1`
-- ✅ Catalog tables `pg_tview_meta` and `pg_tview_helpers` are created
-
-#### Benchmark Success
-- ✅ All SQL files execute without errors
-- ✅ TVIEWs created and registered in catalog (approaches 1 & 2)
-- ✅ Manual tables populated (approaches 3 & 4)
-- ✅ Refresh operations complete successfully
-- ✅ Performance improvements shown in benchmark_comparison table
+```bash
+sudo test/sql/real_benchmark/provision-ubuntu.sh
+sudo -u postgres bash -c 'cd /root/pg_tviews/test/sql/real_benchmark && \
+  PGUSER=postgres ./run.sh --scales "small medium large"'
+```
 
 ---
 
 ## Troubleshooting
 
-### Compilation Fails
+**`CREATE EXTENSION pg_tviews` fails / GUCs missing.** `pg_tviews` must be in
+`shared_preload_libraries` and the cluster restarted. Verify with
+`SHOW shared_preload_libraries;`.
 
-```bash
-# Check Rust toolchain
-rustc --version  # Should be 1.70+
+**Arm A can't find jsonb_delta.** Install jsonb_delta 0.3.0 into the same
+cluster (`cargo pgrx install --pg-config "$PGC"` in the jsonb_delta checkout) and
+confirm `SELECT default_version FROM pg_available_extensions WHERE name = 'jsonb_delta';`
+returns `0.3.0`. Arms B and C do not need it.
 
-# Check pgrx version
-cargo pgrx --version  # Should be 0.12.8+
+**`permission denied to create database`.** The connecting role must be a
+superuser or hold `CREATEDB`; the harness creates and drops scratch databases.
 
-# Ensure pgrx is initialized
-cargo pgrx init
+**`RB_DIVERGENCE <n>` in a log.** The tview did not match its backing view — a
+correctness failure, not a timing issue. Inspect the offending arm's
+`<scale>_<arm>.log` and the divergent rows:
 
-# Try clean build
-cargo clean && cargo pgrx install --release
+```sql
+SELECT pk_product, t.data, v.data
+FROM tv_product t FULL JOIN v_product v USING (pk_product)
+WHERE t.data IS DISTINCT FROM v.data;
 ```
 
-### PostgreSQL 17 Won't Start
-
-```bash
-# Check status
-cargo pgrx status
-
-# Try starting explicitly
-cargo pgrx start pg17
-
-# Check you can connect
-psql -h localhost -p 28817 -c "SELECT version();"
-
-# If still failing, re-initialize
-cargo pgrx init
-```
-
-### Extension Installation Fails
-
-```bash
-# For system-wide installation (requires sudo)
-sudo cargo pgrx install --release
-
-# For pgrx-managed PostgreSQL
-cargo pgrx start pg18  # Use pg18 for PostgreSQL 18
-cargo pgrx install --release
-
-# Verify installation
-psql -h localhost -p 28818 -c "SELECT * FROM pg_available_extensions WHERE name LIKE '%tviews%';"
-```
-
-### Permission Denied During Installation
-
-**Problem**: `cargo pgrx install` fails with "Permission denied"
-
-**Solutions**:
-1. **Use Docker** (recommended):
-   ```bash
-   cd /path/to/pg_tviews
-   docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
-   docker run -d --name pg_tviews_benchmark -p 5432:5432 -e POSTGRES_PASSWORD=postgres pg_tviews_bench
-   ```
-
-2. **Use pgrx-managed PostgreSQL**:
-   ```bash
-   cargo pgrx start pg18
-   cargo pgrx install --release
-   # Use port 28818 instead of 5432
-   ```
-
-3. **Manual approaches 3 & 4** (no extensions needed):
-   ```bash
-   # Skip extension installation entirely
-   # Use manual functions and materialized views
-   ```
-
-### pgrx init Takes Too Long
-
-**Problem**: `cargo pgrx init` compiles multiple PostgreSQL versions (30-60 minutes)
-
-**Solutions**:
-1. **Use Docker** - bypasses local compilation
-2. **Use manual approaches** - no extensions needed
-3. **Pre-built PostgreSQL** - use system PostgreSQL with manual setup
-
-### Data Loading Fails
-
-**Problem**: Foreign key constraint violations during data generation
-
-**Solution**: The data script expects specific sequence values. Use:
-```bash
-# Reset sequences before loading data
-psql -d pg_tviews_benchmark -c "TRUNCATE tb_category, tb_supplier, tb_product, tb_review, tb_inventory RESTART IDENTITY CASCADE;"
-```
-
-### Benchmarks Fail
-
-```bash
-# Check PostgreSQL logs
-cat ~/.pgrx/17.*/pgdata/log/*.log | tail -50
-
-# Verify base tables were created
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "\dt"
-
-# Check for permission issues
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "\dp"
-
-# Verify sufficient resources
-free -h  # Check memory
-df -h    # Check disk space
-```
-
-### Data Inconsistency Detected
-
-```bash
-# Check catalog metadata
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c "SELECT * FROM pg_tview_meta;"
-
-# Verify dependencies are correct
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c \
-  "SELECT entity, dependencies FROM pg_tview_meta;"
-
-# Check if triggers are installed
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c \
-  "SELECT * FROM pg_trigger WHERE tgname LIKE '%tview%';"
-
-# Examine definition
-psql -h localhost -p 28817 -d pg_tviews_benchmark -c \
-  "SELECT entity, definition FROM pg_tview_meta WHERE entity = 'your_entity';"
-```
-
-### Port Already in Use
-
-If port 28817 is already in use:
-
-```bash
-# Check what's using the port
-lsof -i :28817
-
-# Stop conflicting process or use Docker instead
-docker run -d --name pg_tviews_benchmark \
-  -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres \
-  pg_tviews_bench
-```
-
-### Manual Setup for Approaches 3 & 4
-
-**Problem**: Want to test incremental benefits without extension complexity
-
-**Solution**: Manual setup process (tested and working):
-
-```bash
-# 1. Create database and setup
-createdb pg_tviews_benchmark
-cd test/sql/comprehensive_benchmarks
-psql -d pg_tviews_benchmark -f 00_setup.sql
-
-# 2. Load modified data (skips extension-dependent parts)
-psql -d pg_tviews_benchmark -v data_scale="'small'" -f data/01_ecommerce_data_small_manual.sql
-
-# 3. Load manual functions
-psql -d pg_tviews_benchmark -f functions/refresh_product_manual.sql
-
-# 4. Populate manual tables
-psql -d pg_tviews_benchmark -c "
-INSERT INTO manual_func_product (pk_product, fk_category, data)
-SELECT pk_product, fk_category, data FROM v_product;
-REFRESH MATERIALIZED VIEW mv_product;
-"
-
-# 5. Run performance comparison
-psql -d pg_tviews_benchmark -c "
--- Single product update comparison
-UPDATE tb_product SET current_price = current_price * 0.9 WHERE pk_product = 1;
-SELECT refresh_product_manual('product', 1, 'price_current');
-UPDATE tb_product SET current_price = current_price / 0.9 WHERE pk_product = 1;
-REFRESH MATERIALIZED VIEW mv_product;
-"
-```
-
-**Expected Results**:
-- Manual function: ~2-3ms (surgical update)
-- Full refresh: ~70-80ms (scans all products)
-- Improvement: 25-35× faster
-
-### Docker-Specific Issues
-
-```bash
-# Check container is running
-docker ps | grep pg_tviews_benchmark
-
-# Check container logs
-docker logs pg_tviews_benchmark
-
-# Restart container
-docker restart pg_tviews_benchmark
-
-# Rebuild container (from pg_tviews directory)
-cd /path/to/pg_tviews
-docker rm -f pg_tviews_benchmark
-docker build -f docker/dockerfile-benchmarks -t pg_tviews_bench ..
-docker run -d --name pg_tviews_benchmark -p 5432:5432 -e POSTGRES_PASSWORD=postgres pg_tviews_bench
-```
-
-## Troubleshooting
-
-### Extension Installation Issues
-
-#### pg_tviews not available
-```bash
-# Check PostgreSQL version
-psql --version  # Must be 13-17, not 18+
-
-# Check if extension is installed
-psql -d postgres -c "SELECT * FROM pg_available_extensions WHERE name = 'pg_tviews';"
-
-# Rebuild extension
-cargo clean && cargo pgrx install --release
-```
-
-#### jsonb_delta not found
-```bash
-# Benchmarks will automatically use stubs
-# Check if stubs are loaded
-psql -d pg_tviews_benchmark -c "SELECT jsonb_delta_available();"
-# Should return true
-```
-
-#### Build failures
-```bash
-# Check Rust version
-rustc --version  # Must be 1.70+
-
-# Check pgrx version
-cargo pgrx --version  # Should be 0.12.8+
-
-# Clean and rebuild
-cargo clean && cargo pgrx install --release
-```
-
-### Performance Issues
-
-#### Slow benchmark results
-```bash
-# Check PostgreSQL configuration
-psql -c "SHOW shared_buffers;"
-psql -c "SHOW work_mem;"
-
-# Check system resources
-free -h  # Memory
-df -h    # Disk space
-
-# Restart PostgreSQL with optimized settings
-pg_ctl restart -o "-c shared_buffers=512MB -c work_mem=256MB"
-```
-
-#### Inconsistent results
-```bash
-# Use fresh database for each test
-dropdb pg_tviews_benchmark
-createdb pg_tviews_benchmark
-
-# Clear system cache (Linux)
-echo 3 | sudo tee /proc/sys/vm/drop_caches
-
-# Check for concurrent activity
-psql -c "SELECT * FROM pg_stat_activity;"
-```
-
-### PostgreSQL Connection Issues
-
-#### Port already in use
-```bash
-# Find what's using the port
-lsof -i :5432
-
-# Use different port for pgrx
-cargo pgrx start pg17 --port 5433
-```
-
-#### Permission denied
-```bash
-# Check PostgreSQL is running
-sudo systemctl status postgresql
-
-# Check your user can connect
-psql -U postgres -c "SELECT version();"
-```
-
-### Docker-Specific Issues
-
-#### Container won't start
-```bash
-# Check Docker is running
-docker ps
-
-# Check container logs
-docker logs pg_tviews_bench
-
-# Clean up and restart
-docker-compose down -v
-docker-compose up -d pg_tviews_bench
-```
-
-#### Extension build fails in Docker
-```bash
-# Check available memory
-docker system info | grep Memory
-
-# Increase Docker memory limit or reduce build parallelism
-export DOCKER_BUILDKIT=0
-```
-
-### Benchmark Script Issues
-
-#### Schema creation fails
-```bash
-# Check database exists and is accessible
-psql -l | grep pg_tviews_benchmark
-
-# Run setup manually
-psql -d pg_tviews_benchmark -f test/sql/comprehensive_benchmarks/00_setup.sql
-```
-
-#### No results generated
-```bash
-# Check benchmark log
-tail -f test/sql/comprehensive_benchmarks/results/benchmark_run_*.log
-
-# Verify extensions are loaded
-psql -d pg_tviews_benchmark -c "\dx"
-```
-
-### pgrx Version Compatibility
-
-**Important**: There are two different version numbers:
-- **pgrx library** (in `Cargo.toml`): 0.16.1 - The Rust library used by the extension
-- **cargo-pgrx CLI tool**: 0.12.8 or 0.16.1 - The command-line tool to build extensions
-
-**These versions are cross-compatible**:
-- cargo-pgrx 0.12.8 can build projects using pgrx 0.16.1 ✅
-- cargo-pgrx 0.16.1 can build projects using pgrx 0.16.1 ✅
-
-**Current setup**:
-- Docker uses: cargo-pgrx 0.12.8 (stable, tested)
-- Project library: pgrx 0.16.1 (with PostgreSQL 18 support)
-
-If you encounter pgrx-related issues:
-
-```bash
-# Check your cargo-pgrx version
-cargo pgrx --version
-
-# Option 1: Use 0.12.8 (stable, works with pgrx 0.16.1)
-cargo install cargo-pgrx --version 0.12.8 --locked
-
-# Option 2: Upgrade to 0.16.1 (latest, matching library version)
-cargo install cargo-pgrx --version 0.16.1 --locked
-```
+**`aggregate.py` not found / python missing.** Install `python3`; the raw
+timings are still in `results/raw.tsv` even if aggregation fails.
 
 ---
 
-## Additional Resources
+## See also
 
-- **Benchmark Results**: See `test/sql/comprehensive_benchmarks/final_results/` for detailed analysis
-- **Docker Benchmarks**: See `docs/benchmarks/docker-benchmarks.md` for Docker-specific setup
-- **Performance Analysis**: See `docs/benchmarks/results.md` for detailed performance metrics
-- **Architecture**: See `ARCHITECTURE.md` for system design details
-
----
-
-## Next Steps
-
-After running benchmarks:
-
-1. **Review Results**:
-   - Docker: `docker exec pg_tviews_benchmark psql -U postgres -d pg_tviews_benchmark -c "SELECT * FROM benchmark_comparison ORDER BY improvement_ratio DESC;"`
-   - Manual: `psql -d pg_tviews_benchmark -c "SELECT * FROM benchmark_summary;"`
-   - Check `docs/benchmarks/results.md` for interpretation
-
-2. **Choose Your Approach**:
-   - **Production with extensions**: Use Docker or pgrx-managed setup
-   - **Evaluation/development**: Use manual approaches 3 & 4
-   - **Existing systems**: Start with approach 3 (manual functions)
-
-3. **Test Your Workload**: Create custom benchmarks matching your use case
-4. **Production Deployment**: See `docs/operations/` for deployment guides
-5. **Performance Tuning**: See `docs/operations/performance-tuning.md` (if available)
-
-## Summary
-
-| Setup Method | Approaches Supported | Difficulty | Use Case |
-|-------------|---------------------|------------|----------|
-| **Docker** | 1, 2, 3, 4 | Easy | Complete evaluation, production testing |
-| **Manual (3 & 4 only)** | 3, 4 | Medium | Quick evaluation, existing PostgreSQL |
-| **pgrx-managed** | 1, 2, 3, 4 | Hard | Development, full control |
-| **System install** | 1, 2, 3, 4 | Hard | Production deployment (requires sudo) |
-
----
-
-**Last Updated**: December 2025
-**pg_tviews Version**: 0.1.0-beta.1
+- [Benchmark Overview](overview.md) — schema, operations, and methodology
+- [Results](results.md) — published figures from a measured run
+- [Results Interpretation](results-interpretation.md) — how to read the numbers
+- [jsonb_delta Integration](jsonb-ivm-integration.md) — jsonb_delta's role and the parity finding
+- [`test/sql/real_benchmark/README.md`](../../test/sql/real_benchmark/README.md) — harness details

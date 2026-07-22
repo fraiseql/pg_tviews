@@ -76,10 +76,11 @@ Production operations and maintenance:
 ### Benchmarks
 Performance testing and validation:
 
-- **[Running Benchmarks](benchmarks/running-benchmarks.md)** - Step-by-step guide to execute benchmarks
+- **[Running Benchmarks](benchmarks/running-benchmarks.md)** - Step-by-step guide to execute the harness
 - **[Overview](benchmarks/overview.md)** - Benchmark methodology and test scenarios
-- **[Results](benchmarks/results.md)** - Detailed performance data and analysis
-- **[Docker Setup](benchmarks/docker-benchmarks.md)** - Containerized benchmark environment
+- **[Results](benchmarks/results.md)** - Measured performance data and analysis
+- **[Results Interpretation](benchmarks/results-interpretation.md)** - Reading the numbers honestly
+- **[jsonb_delta Integration](benchmarks/jsonb-ivm-integration.md)** - jsonb_delta's role and the parity finding
 
 ### Development
 For contributors and advanced users:

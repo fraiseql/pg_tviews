@@ -154,6 +154,13 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
         // Skip extension-related statements to avoid infinite recursion during installation
         if query_lower.contains("create extension") || query_lower.contains("drop extension") {
+            // Invalidate the jsonb_delta availability latch first, so a backend that
+            // cached availability re-checks on its next refresh after CREATE/DROP
+            // EXTENSION jsonb_delta (issue #50). This is a pair of atomic stores — no
+            // SPI — and runs before the pass-through so the stale value cannot survive.
+            if query_lower.contains("jsonb_delta") {
+                crate::lifecycle::invalidate_jsonb_delta_cache();
+            }
             return Ok(false); // Pass through
         }
 

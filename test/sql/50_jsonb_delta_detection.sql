@@ -32,9 +32,11 @@ BEGIN;
     SELECT data->>'name' AS name FROM tv_test WHERE pk_test = 1;
     -- Expected: 'Test'
 
-    -- Cleanup for next test case
+    -- Cleanup for next test case. Dropping the base table now auto-deregisters
+    -- the tview via the sql_drop event trigger (issue #53), so the explicit
+    -- drop must tolerate an already-removed tview (if_exists = true).
     DROP TABLE IF EXISTS tb_test CASCADE;
-    SELECT pg_tviews_drop('test');
+    SELECT pg_tviews_drop('test', true);
 
     -- Test Case 2: Detection when jsonb_delta IS installed
     CREATE EXTENSION IF NOT EXISTS jsonb_delta;

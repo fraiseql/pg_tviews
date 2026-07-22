@@ -270,20 +270,50 @@ pub fn create_tview(
         None => current_schema()?,
     };
 
+    // Reject WITH RECURSIVE up front (issue #51): cascade paths cannot be tracked
+    // through a recursive CTE, so creating one would leave a tview that silently
+    // refreshes incompletely.
+    if crate::sql_parser::has_recursive_cte(&final_select_sql) {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "TVIEW '{tv_table_name}' uses WITH RECURSIVE, which pg_tviews does not support: \
+                 cascade paths cannot be tracked through a recursive CTE, so the tview would \
+                 refresh incompletely. Rewrite the definition without recursion."
+            ),
+        });
+    }
+
+    // Resolve DISTINCT ON keys before creating any objects, so an unresolvable
+    // dedup key rejects the create cleanly (issue #51). `distinct_on_keys` is the
+    // raw SOURCE column the trigger reads off the base tuple; `distinct_on_output_keys`
+    // is the projected OUTPUT column the view / tv expose and that refresh + the
+    // tview primary key must use. They differ when the DISTINCT ON key is aliased
+    // (e.g. `c.id_contract AS pk_contract`).
+    let distinct_on_keys =
+        crate::schema::parser::extract_distinct_on_keys(&final_select_sql).unwrap_or_default();
+    let distinct_on_output_keys = if distinct_on_keys.is_empty() {
+        Vec::new()
+    } else {
+        crate::sql_parser::extract_distinct_on_output_keys(&final_select_sql).map_err(|reason| {
+            TViewError::InvalidInput {
+                parameter: "DISTINCT ON key".to_string(),
+                reason,
+            }
+        })?
+    };
+
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
-    // Extract DISTINCT ON keys from SQL
-    let distinct_on_keys =
-        crate::schema::parser::extract_distinct_on_keys(&final_select_sql).unwrap_or_default();
-
-    // Step 4: Create materialized table tv_<entity>
+    // Step 4: Create materialized table tv_<entity>.
+    // DISTINCT ON tviews key the table on the projected OUTPUT column.
     create_materialized_table(
         &tv_table_name,
         &final_schema,
         &schema_name,
-        &distinct_on_keys,
+        &distinct_on_output_keys,
     )?;
 
     // Step 5: Populate initial data
@@ -310,6 +340,52 @@ pub fn create_tview(
         &dep_graph.base_tables,
     )?;
 
+    // Step 6.55: Reject a DISTINCT ON tview that also has JOIN-based cascade paths
+    // (issue #51). A DISTINCT ON tview refreshes by dedup key (the trigger enqueues
+    // the DISTINCT ON key value); a cascade path enqueues a base-table PK that
+    // `refresh_pk` looks up by `pk_<entity>`. When the dedup key is aliased the two
+    // are different values, so mixing them would refresh the wrong row silently.
+    // The dedup and PK refresh paths are mutually exclusive by design.
+    if !distinct_on_keys.is_empty() && !cascade_paths.is_empty() {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "TVIEW '{tv_table_name}' combines DISTINCT ON with a JOIN that produces \
+                 cascade paths ({} dependent table(s)). DISTINCT ON tviews refresh by \
+                 deduplication key and cannot also track PK-based cascade dependencies — the \
+                 two refresh paths are mutually exclusive. Remove the DISTINCT ON, or express \
+                 the dependency without a join that pg_tviews would cascade.",
+                cascade_paths.len()
+            ),
+        });
+    }
+
+    // Step 6.6: Reject a tview that can never be incrementally refreshed (issue #49).
+    // A refresh is enqueued for this entity only if either a `tb_<entity>` base table
+    // exists (its row trigger resolves the entity by stripping `tb_`) or a cascade
+    // path routes some base-table change to it. With neither, the tview would silently
+    // never refresh — and, when built directly on a `tb_` base table that already
+    // backs another entity (e.g. `order_summary` over `tb_order`), shadow that
+    // sibling. Aggregate/summary tviews without a `tb_<entity>` stay valid as long as
+    // their joins produce cascade paths. This runs before metadata registration and
+    // trigger installation, and any objects created above roll back with the ERROR,
+    // so a rejected create leaves the incumbent tview untouched.
+    if cascade_paths.is_empty() && !entity_base_table_exists(entity_name, &schema_name)? {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "TVIEW '{tv_table_name}' (entity '{entity_name}') can never be refreshed: \
+                 there is no base table 'tb_{entity_name}', and no cascade path routes any \
+                 base-table change to it. pg_tviews maintains a tview either directly (a \
+                 pk_<entity> primary key over a tb_<entity> base table) or via cascade \
+                 paths from its joined base tables. Rename the primary-key column to match \
+                 an existing base table, or ensure the definition joins the base tables it \
+                 derives from. Creating it as-is would leave a permanently stale tview and \
+                 can silently shadow a correctly-named tview on the same base table."
+            ),
+        });
+    }
+
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
@@ -320,6 +396,7 @@ pub fn create_tview(
         &cascade_paths,
         &schema_name,
         &distinct_on_keys,
+        &distinct_on_output_keys,
     )?;
 
     // Step 8: Install triggers on base tables
@@ -498,6 +575,45 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW exists: {tview_name}"),
+        pg_error: format!("{e:?}"),
+    })
+    .map(|opt| opt.unwrap_or(false))
+}
+
+/// Does a `tb_<entity>` base table exist for this entity?
+///
+/// Used by the issue #49 refreshability guard: a `tb_<entity>` base table means the
+/// entity is reachable directly (its row trigger resolves the entity by stripping
+/// `tb_`). The table is resolved in the tview's target schema first, then via the
+/// active `search_path`, so both explicit-schema and `current_schema()` callers are
+/// handled.
+fn entity_base_table_exists(entity_name: &str, schema_name: &str) -> TViewResult<bool> {
+    let tb_name = format!("tb_{entity_name}");
+    let qualified = format!(
+        "{}.{}",
+        quote_identifier(schema_name),
+        quote_identifier(&tb_name)
+    );
+
+    Spi::get_one_with_args::<bool>(
+        "SELECT COALESCE(to_regclass($1), to_regclass($2)) IS NOT NULL",
+        &[
+            unsafe {
+                DatumWithOid::new(
+                    qualified.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    tb_name.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check base table exists for entity '{entity_name}'"),
         pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
@@ -708,13 +824,14 @@ fn create_materialized_table(
     tview_name: &str,
     schema: &TViewSchema,
     schema_name: &str,
-    distinct_on_keys: &[String],
+    distinct_on_output_keys: &[String],
 ) -> TViewResult<()> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
 
-    // For DISTINCT ON TVIEWs the dedup key is the table PK; pk_<entity> becomes a plain column.
-    let first_dedup = distinct_on_keys.first().map(String::as_str);
+    // For DISTINCT ON TVIEWs the dedup key is the table PK; pk_<entity> becomes a plain
+    // column. The key here is the projected OUTPUT column (the name the view exposes).
+    let first_dedup = distinct_on_output_keys.first().map(String::as_str);
     let is_distinct_on = first_dedup.is_some();
 
     // Build column definitions based on inferred schema
@@ -984,6 +1101,7 @@ fn register_metadata(
     cascade_paths: &[cascade_path::CascadePath],
     schema_name: &str,
     distinct_on_keys: &[String],
+    distinct_on_output_keys: &[String],
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
     // CTE bodies are inside (...) so their UNION is at depth > 0 and not matched.
@@ -1088,8 +1206,13 @@ fn register_metadata(
         pg_error: "Table OID not found".to_string(),
     })?;
 
-    // Serialize distinct_on_keys as a PostgreSQL array literal
+    // Serialize distinct_on_keys (source) and distinct_on_output_keys as array literals
     let distinct_on_str = distinct_on_keys
+        .iter()
+        .map(|s| pg_array_elem(s))
+        .collect::<Vec<_>>()
+        .join(",");
+    let distinct_on_output_str = distinct_on_output_keys
         .iter()
         .map(|s| pg_array_elem(s))
         .collect::<Vec<_>>()
@@ -1109,8 +1232,9 @@ fn register_metadata(
             dependency_paths,
             array_match_keys,
             distinct_on_keys,
+            distinct_on_output_keys,
             is_union
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1121,6 +1245,7 @@ fn register_metadata(
         dep_paths,
         array_keys,
         distinct_on_str,
+        distinct_on_output_str,
         is_union
     );
 

@@ -1,204 +1,119 @@
 # Understanding Benchmark Results
 
-This guide explains how to interpret pg_tviews benchmark results, including the difference between measured and projected performance.
+How to read the pg_tviews benchmark output honestly — what the numbers mean,
+where the advantage is real, and where it isn't. All figures cited here come from
+[results.md](results.md), a measured run of
+[`test/sql/real_benchmark/`](../../test/sql/real_benchmark/README.md).
 
-## Results Status Overview
+**pg_tviews**: 0.1.0 • **jsonb_delta**: 0.3.0 • **PostgreSQL**: 18.4 •
+**Last updated**: 2026-07-22
 
-### ✅ REAL MEASUREMENTS (Small & Medium Scale)
-- **Small Scale (1K products)**: Actual PostgreSQL 13-18 execution times
-- **Medium Scale (100K products)**: Actual PostgreSQL 13-18 execution times
-- **Performance ratios**: Calculated from real measurements
-- **All PostgreSQL versions**: 13-18 fully supported
+## The three arms
 
-### ⚠️ PROJECTIONS (Large Scale & Extensions)
-- **Large Scale (1M+ products)**: Linear extrapolation from measured results
-- **Real jsonb_delta performance**: Estimated 20-50% improvement over stubs
-- **pg_ivm extension performance**: Not measured (different architecture)
+| Arm | What it is |
+|-----|------------|
+| **pg_tviews + jsonb_delta** | incremental refresh with jsonb_delta's surgical scalar patch |
+| **pg_tviews + native** | incremental refresh with the in-core JSONB fallback |
+| **full refresh** | plain `REFRESH MATERIALIZED VIEW` — the O(n) baseline |
 
-## Understanding the Approaches
+All three produce identical tview rows; every run is gated on a row-for-row
+divergence check before its timings are trusted. Speedups are
+`full_refresh ÷ pg_tviews+jsonb_delta` on the same operation and scale.
 
-### 1. pg_tviews + jsonb_delta (Optimal)
-- **What it does**: Automatic triggers + optimized JSONB patching
-- **Performance**: Best when real extension is available
-- **Current results**: Using PL/pgSQL stubs (20-50% slower than real C extension)
-- **Real performance**: ~1.0-1.5ms for single updates (projected)
+## The headline: flat vs linear
 
-### 2. pg_tviews + Native PG (Compatible)
-- **What it does**: Automatic triggers + standard `jsonb_set()` operations
-- **Performance**: 98% of optimal, no additional extensions required
-- **Advantage**: Works without jsonb_delta extension
-- **Measured performance**: 1.461-2.105ms for single updates
+The core finding is a **complexity-class difference**, not a constant factor. A
+single-row `UPDATE`:
 
-### 3. Manual Function (Controlled)
-- **What it does**: Explicit refresh calls with full cascade support
-- **Performance**: 95% of optimal with full control over timing
-- **Advantage**: Application controls when refreshes happen
-- **Use case**: Batch processing or controlled refresh scenarios
+| Scale | pg_tviews (ms) | full refresh (ms) | speedup |
+|-------|---------------:|------------------:|--------:|
+| small (1K products)   | 1.77 | 15.0    | 8.5× |
+| medium (10K products) | 1.87 | 167.9   | 90× |
+| large (100K products) | 1.97 | 1,523.5 | 775× |
 
-### 4. Full Refresh (Baseline)
-- **What it does**: Traditional `REFRESH MATERIALIZED VIEW`
-- **Performance**: 0.01-0.02% of incremental performance
-- **Scaling**: O(n) - performance degrades linearly with dataset size
-- **Use case**: Batch processing only, not real-time applications
+pg_tviews stays ~1.8–2.0 ms across a **100× growth** in table size; the full
+rebuild tracks the row count. That is why the speedup grows without bound: it is
+the ratio of a flat line to a rising one. At large scale a single delete reaches
+**1,313×** (1.18 ms vs 1,551 ms).
 
-## Performance Metrics Explained
+**How to read it:** don't fixate on the multiplier at any one scale. The point is
+that the incremental cost is *independent of dataset size* while the full-refresh
+cost is *proportional to it*. The bigger your table, the larger the gap — and at
+100K+ rows a full refresh per change (~1.5 s) is simply not viable for
+interactive workloads.
 
-### Execution Time (ms)
-- **What it measures**: Total time for operation completion
-- **Lower is better**: Faster operations
-- **Context matters**: Compare within same scale/dataset
+## Where the advantage narrows
 
-### Rows Affected
-- **What it counts**: Number of database rows modified
-- **Incremental approaches**: Only affected rows
-- **Full refresh**: Entire dataset (even for single changes)
+Read these caveats before quoting a headline number:
 
-### Improvement Ratio
-- **How calculated**: `full_refresh_time / incremental_time`
-- **Example**: 2000× means incremental is 2000 times faster
-- **Scaling**: Ratios increase dramatically with dataset size
+### Batch changes win less than point changes
 
-## Scaling Analysis
+A batch touching 1% of rows still refreshes 1% of the tview, so its cost rises
+with the batch size. At large scale a 1,000-row batch update is 540 ms vs 1,517 ms
+for a full refresh — **~2.8×**, not 775×. Incremental refresh pays off in
+proportion to how *small* the change is relative to the table. If you routinely
+rewrite large fractions of a table in one statement, a full refresh is closer to
+competitive.
 
-### Linear vs Constant Scaling
+### Initial build is a cost pg_tviews loses
 
-| Approach | Small Scale (1K) | Medium Scale (100K) | Large Scale (1M)* |
-|----------|------------------|---------------------|-------------------|
-| **Incremental** | ~1-2ms (constant) | ~2-3ms (constant) | ~2-3ms (constant) |
-| **Full Refresh** | ~76ms | ~4,170ms (55× slower) | ~42,000ms (550× slower) |
+Building the tview (trigger + metadata setup, then materialising every row
+through the refresh machinery) is ~3× slower than a single
+`CREATE MATERIALIZED VIEW` — e.g. at large scale 4,427 ms vs 1,499 ms. This is a
+**one-time** cost paid at creation; every subsequent change is where pg_tviews
+wins it back. It is reported as the `build` op so it is visible, not hidden.
 
-*Projected based on measured scaling patterns
+### jsonb_delta vs native is a wash on this workload
 
-### Why Scaling Matters
+The `A vs B` column sits at 0.92–1.05× everywhere. For the moderately-sized JSON
+documents in this catalogue, jsonb_delta's surgical scalar patch and the native
+fallback are indistinguishable. jsonb_delta earns its keep on large nested /
+array-valued documents (see
+[jsonb-ivm-integration.md](jsonb-ivm-integration.md) and
+[array-fastpath-go-no-go.md](array-fastpath-go-no-go.md)), which this benchmark
+does not stress. Install it for the stable patch path, not for these numbers.
 
-- **Incremental approaches**: Performance stays constant regardless of total dataset size
-- **Full refresh**: Performance degrades linearly with dataset size
-- **Real-world impact**: At 1M products, full refresh becomes completely impractical
+## What the timings include
 
-## Stub vs Real Extension Performance
+Each figure is `psql \timing` on an autocommit statement — the end-to-end,
+client-observed cost, **including** the post-statement refresh flush for the
+pg_tviews arms. For the full-refresh arm the timed statement is the `REFRESH`
+that a change forces. So these are not internal micro-timings; they are what an
+application actually waits for. Medians are reported (25 iterations for single-row
+ops, fewer for batch/build/refresh).
 
-### Current Benchmark Limitation
+## Scope — what these numbers do *not* cover
 
-**All published results use PL/pgSQL stubs**, not the real jsonb_delta C extension:
+- **Only direct `tb_product` mutations.** Cascades from joined dimension/aggregate
+  tables are out of scope: they propagate only when the parent is itself a
+  registered `tv_` entity exposing its `fk_<parent>` key, which this
+  single-entity benchmark does not model. The cascade contract is covered by
+  [`test/sql/42_cascade_fk_lineage.sql`](../../test/sql/42_cascade_fk_lineage.sql).
+- **Non-concurrent baseline.** The baseline is plain `REFRESH MATERIALIZED VIEW`.
+  `REFRESH ... CONCURRENTLY` is non-blocking but not faster.
+- **One machine, one client.** Moderate JSON document size, single connection,
+  untuned `shared_buffers`. Your hardware and schema will shift the absolute
+  numbers; the *shape* (flat vs linear) is the portable finding.
 
-| Test | Current (PL/pgSQL Stubs) | Projected (Real C Extension) |
-|------|--------------------------|------------------------------|
-| Single update (100K scale) | 2.105ms | ~1.0-1.5ms (20-50% faster) |
-| Cascade (1000 products) | 45.9ms | ~25-35ms (20-50% faster) |
+## Common misreadings
 
-### Why Stubs Are Used
+- **"pg_tviews is ~775× faster."** Only for a single-row change at 100K rows.
+  It's 8.5× at 1K rows and ~2.8× for a 1%-batch at 100K rows. The multiplier is a
+  function of scale and change size — always quote both.
+- **"You must install jsonb_delta for the speedup."** No — the incremental
+  advantage is pg_tviews' doing; arm B (native, no jsonb_delta) matches arm A on
+  this workload.
+- **"Incremental always wins."** Not for the initial build, and not by much for
+  large batch rewrites. It wins decisively for *point changes on large tables*.
 
-1. **Compatibility**: Stubs work on any PostgreSQL version
-2. **Reproducibility**: Same API as real extension
-3. **Fallback**: Benchmarks run even without real extension
-4. **Architecture validation**: Proves incremental approach works
+## Reproduce it yourself
 
-### Real Extension Benefits
+The portable conclusion is the flat-vs-linear shape; the absolute numbers depend
+on your hardware and schema. Run the harness on your own workload — see
+[Running Benchmarks](running-benchmarks.md).
 
-The real jsonb_delta C extension provides:
-- **Direct C calls**: No PL/pgSQL overhead
-- **Optimized memory usage**: No intermediate variables
-- **SIMD operations**: Potential vectorized JSONB processing
-- **Lower latency**: 20-50% performance improvement
+## See also
 
-## Interpreting Results Tables
-
-### Raw Performance Table
-
-```
-| Approach | Time (ms) | Notes |
-|----------|-----------|-------|
-| pg_tviews + jsonb_delta | 2.105 | Incremental JSONB patching |
-| Manual + native PG | 1.461 | Direct jsonb_set calls |
-| Full Refresh | 4169.995 | Entire table refresh |
-```
-
-**How to read**:
-- Compare times within same test scenario
-- Lower numbers are better
-- Notes explain what each approach does
-
-### Improvement Analysis
-
-```
-Small Scale: Incremental approaches are 49× - 128× faster
-Medium Scale: Incremental approaches are 1,979× - 2,853× faster
-```
-
-**How to read**:
-- Shows speedup relative to full refresh
-- Higher numbers = better performance
-- Scales dramatically with dataset size
-
-## Common Misinterpretations
-
-### ❌ "pg_tviews is only 2× faster"
-- **Reality**: At small scale, yes. At production scale (100K+), 2000×+ faster
-- **Why**: Full refresh scales poorly, incremental stays constant
-
-### ❌ "Results are invalid without real jsonb_delta"
-- **Reality**: Results prove architectural advantage of incremental approach
-- **Why**: Even with stubs, incremental beats full refresh by orders of magnitude
-
-### ❌ "Manual approach is always fastest"
-- **Reality**: Sometimes yes (due to no function call overhead), but pg_tviews provides automation
-- **Why**: Trade-off between performance and developer experience
-
-## Real-World Application
-
-### When to Use Each Approach
-
-| Scenario | Recommended Approach | Why |
-|----------|---------------------|-----|
-| **Real-time e-commerce** | pg_tviews + jsonb_delta | Automatic, fast enough for user interactions |
-| **Batch ETL processing** | Manual Function | Full control over refresh timing |
-| **Legacy system migration** | pg_tviews + Native PG | No additional dependencies |
-| **Analytics dashboard** | Any incremental | Orders of magnitude faster than full refresh |
-
-### Performance Expectations
-
-| Dataset Size | Use Case | Acceptable Response Time | Recommended Approach |
-|-------------|----------|-------------------------|---------------------|
-| 1K products | Development | <100ms | Any approach |
-| 100K products | Production | <50ms | Incremental only |
-| 1M products | Enterprise | <100ms | Incremental with jsonb_delta |
-
-## Troubleshooting Results
-
-### Unexpectedly Slow Results
-
-**Check**:
-- PostgreSQL configuration (shared_buffers, work_mem)
-- System resources (memory, disk I/O)
-- Concurrent load on database
-- Extension installation status
-
-### Inconsistent Results
-
-**Check**:
-- Database state between runs (use fresh database)
-- PostgreSQL version compatibility
-- Extension loading (check `pg_extension` table)
-- System cache state
-
-### Results Don't Match Documentation
-
-**Check**:
-- Scale of test (1K vs 100K vs 1M)
-- Whether using stubs or real extensions
-- PostgreSQL version (17 vs 18)
-- Hardware specifications
-
-## Next Steps
-
-1. **Run your own benchmarks** with your specific schema and workload
-2. **Test at your expected scale** to validate performance
-3. **Consider real jsonb_delta extension** for production deployments
-4. **Monitor performance** in your actual application environment
-
-## Related Documentation
-
-- **[Running Benchmarks](running-benchmarks.md)** - How to execute benchmarks
-- **[Docker Setup](docker-benchmarks.md)** - Advanced containerized testing
-- **[Architecture](../architecture.md)** - System design details</content>
-<parameter name="filePath">docs/benchmarks/results-interpretation.md
+- [Results](results.md) — the full measured figures
+- [Running Benchmarks](running-benchmarks.md) — how to execute the harness
+- [Overview](overview.md) — schema, operations, and methodology

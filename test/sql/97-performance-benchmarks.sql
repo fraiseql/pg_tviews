@@ -12,6 +12,7 @@ SET log_min_messages TO WARNING;
 \echo 'Comparing old vs new approaches'
 \echo '=========================================='
 
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 -- Create test table with realistic data
@@ -78,9 +79,9 @@ WHERE EXISTS(
 SELECT COUNT(*) FROM bench_orders
 WHERE jsonb_array_contains_id(
     data,
-    ARRAY['items'],
+    'items',
     'id',
-    (data->'items'->0->>'id')::jsonb
+    data->'items'->0->'id'
 );
 \echo 'jsonb_array_contains_id ^^^'
 \echo 'Expected: 8-10× faster'
@@ -116,7 +117,7 @@ SET data = jsonb_delta_array_update_where_path(
     data,
     'items',
     'id',
-    (data->'items'->0->>'id')::jsonb,
+    data->'items'->0->'id',
     'metadata.category',
     '"updated"'::jsonb
 )
@@ -148,7 +149,7 @@ BEGIN
         SET data = jsonb_smart_patch_array(
             data,
             jsonb_build_object('price', 99.99),
-            ARRAY['items'],
+            'items',
             'id',
             to_jsonb(item_rec.item_id::text)
         )

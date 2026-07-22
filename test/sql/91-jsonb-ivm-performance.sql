@@ -1,3 +1,11 @@
+-- Standalone preamble (issue #55): make this file self-contained so it passes
+-- on its own in a fresh database under psql -v ON_ERROR_STOP=1.
+\set ON_ERROR_STOP on
+SET client_min_messages TO WARNING;
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
 -- Test jsonb_delta performance impact
 -- Compare TVIEW update performance with and without jsonb_delta
 
@@ -57,7 +65,7 @@ BEGIN
         
         -- Update a nested field (this should benefit from jsonb_delta)
         UPDATE tb_perf_test 
-        SET data = jsonb_set(data, '{field2,nested1}', '"updated_' || i || '"')
+        SET data = jsonb_set(data, '{field2,nested1}'::text[], ('"updated_' || i || '"')::jsonb)
         WHERE pk_perf_test = i;
         
         end_time := clock_timestamp();

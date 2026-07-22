@@ -1,3 +1,13 @@
+-- Standalone preamble (issue #55): create the extensions and load the shared
+-- security helpers (assert_rejects_injection / assert_accepts_valid) so this file
+-- passes on its own in a fresh database under psql -v ON_ERROR_STOP=1.
+\set ON_ERROR_STOP on
+SET client_min_messages TO WARNING;
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
+\ir 00-security-test-helpers.sql
 -- Comprehensive Security Test Suite
 -- Tests all phases for SQL injection vulnerabilities
 
@@ -6,42 +16,38 @@
 \echo 'Tests all phases for SQL injection'
 \echo '=========================================='
 
--- Helper function security tests
-\echo '### Helper Functions'
+-- SQL-injection rejection for the public pg_tviews functions that take
+-- identifier arguments (issue #55: the previous targets — extract_jsonb_id,
+-- update_array_element_path, … — are not part of the current API). Each
+-- malicious identifier must be rejected (validated, or treated as a literal via
+-- a parameterized lookup) and never executed.
+\echo '### Identifier validation'
 SELECT assert_rejects_injection(
-    'Phase1: extract_id injection',
-    $$SELECT extract_jsonb_id('{"id": "test"}'::jsonb, 'id''; DROP TABLE users; --')$$
+    'pg_tviews_create: tview_name injection',
+    $$SELECT pg_tviews_create('tv_x; DROP TABLE tb_x; --', 'SELECT 1')$$
+);
+SELECT assert_rejects_injection(
+    'pg_tviews_create: quote-escape injection',
+    $$SELECT pg_tviews_create('tv_x''; DROP TABLE tb_x; --', 'SELECT 1')$$
 );
 
+\echo '### Drop / convert'
 SELECT assert_rejects_injection(
-    'Phase1: array_contains injection',
-    $$SELECT check_array_element_exists('tv_posts', 'pk_post', 1, 'comments', 'id', '123'::jsonb)$$
+    'pg_tviews_drop: tview_name injection',
+    $$SELECT pg_tviews_drop('tv_x''; DROP TABLE y; --')$$
+);
+SELECT assert_rejects_injection(
+    'pg_tviews_convert_existing_table: name injection',
+    $$SELECT pg_tviews_convert_existing_table('tv_x; DROP TABLE y; --')$$
 );
 
--- Nested path security tests
-\echo '### Nested Paths'
+-- Entity lookups are parameterized, so a malicious entity is treated as a
+-- (non-existent) literal rather than executed.
+\echo '### Refresh (parameterized entity lookup)'
 SELECT assert_rejects_injection(
-    'Phase2: table name injection',
-    $$SELECT update_array_element_path('tv_posts; DROP TABLE users; --', 'pk_post', 1, 'comments', 'id', '123'::jsonb, 'author.name', 'test'::jsonb)$$
-);
-
-SELECT assert_rejects_injection(
-    'Phase2: nested path injection',
-    $$SELECT update_array_element_path('tv_posts', 'pk_post', 1, 'comments''; DROP TABLE users; --', 'id', '123'::jsonb, 'author.name', 'test'::jsonb)$$
-);
-
--- Batch operation security tests
-\echo '### Batch Operations'
-SELECT assert_rejects_injection(
-    'Phase3: batch injection',
-    $$SELECT update_array_elements_batch('tv_orders; DROP TABLE users; --', 'pk_order', 1, 'items', 'id', '[{"id": 1, "price": 10}]'::jsonb)$$
-);
-
--- Fallback path security tests
-\echo '### Fallback Paths'
-SELECT assert_rejects_injection(
-    'Phase4: set_path injection',
-    $$SELECT update_single_path('tv_posts; DROP TABLE users; --', 'pk_post', 1, 'title', 'new title'::jsonb)$$
+    'pg_tviews_refresh: entity injection',
+    $$SELECT pg_tviews_refresh('x; DROP TABLE y; --')$$,
+    'not found|invalid|injection|security'
 );
 
 \echo '### All security tests passed! ✓'

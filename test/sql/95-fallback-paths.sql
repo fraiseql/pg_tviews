@@ -8,6 +8,7 @@ SET log_min_messages TO WARNING;
 \set ECHO all
 
 -- Setup
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 \echo '### Test 1: Basic path-based update'

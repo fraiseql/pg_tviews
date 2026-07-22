@@ -25,8 +25,9 @@
 //!
 //! ## Limitations (v1)
 //!
-//! - Regex-based parsing (not full SQL parser)
-//! - No support for CTEs (WITH clauses)
+//! - Regex-based parsing (not full SQL parser) for the `CREATE TABLE tv_* AS`
+//!   envelope only; the inner SELECT is analysed by the full parser in `sql_parser`
+//! - `WITH RECURSIVE` is rejected at create time (see `ddl::create`)
 //! - Comments may cause parsing issues
 //! - String literals containing keywords may confuse parser
 
@@ -67,7 +68,6 @@ pub struct CreateTViewStmt {
 /// - `CREATE TABLE schema.tv_name AS SELECT ...`
 ///
 /// Limitations (v1):
-/// - No CTE support (`WITH` clause)
 /// - No parenthesized `SELECT`
 /// - Comments may cause issues
 /// - String literals containing `AS` may confuse parser
@@ -122,11 +122,9 @@ pub fn parse_create_tview(sql: &str) -> TViewResult<CreateTViewStmt> {
         });
     }
 
-    // Warn about unsupported features
-    if select_sql.to_uppercase().contains(" WITH ") {
-        pgrx::warning!("CTEs (`WITH` clause) may not be fully supported in v1");
-    }
-
+    // Warn about features the regex envelope may mishandle. CTEs are handled by
+    // the full parser (recursive CTEs are rejected downstream at create time), so
+    // no blanket WITH warning here.
     if select_sql.contains("/*") || select_sql.contains("--") {
         pgrx::warning!("Comments in SELECT may cause parsing issues in v1");
     }

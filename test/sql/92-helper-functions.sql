@@ -8,6 +8,7 @@ SET log_min_messages TO WARNING;
 \set ECHO all
 
 -- Setup test schema
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 -- Test 1: jsonb_extract_id with default 'id' key
@@ -55,7 +56,7 @@ DECLARE
     }'::jsonb;
     element_exists boolean;
 BEGIN
-    SELECT jsonb_array_contains_id(test_data, ARRAY['comments'], 'id', '2'::jsonb)
+    SELECT jsonb_array_contains_id(test_data, 'comments', 'id', '2'::jsonb)
     INTO element_exists;
 
     IF element_exists THEN
@@ -77,7 +78,7 @@ DECLARE
     }'::jsonb;
     element_exists boolean;
 BEGIN
-    SELECT jsonb_array_contains_id(test_data, ARRAY['comments'], 'id', '99'::jsonb)
+    SELECT jsonb_array_contains_id(test_data, 'comments', 'id', '99'::jsonb)
     INTO element_exists;
 
     IF NOT element_exists THEN
@@ -100,7 +101,7 @@ INSERT INTO test_safe_insert VALUES (1, '{"items": []}'::jsonb);
 UPDATE test_safe_insert
 SET data = jsonb_array_insert_where(
     data,
-    ARRAY['items'],
+    'items',
     '{"id": 1, "name": "Item 1"}'::jsonb,
     NULL, NULL
 )
@@ -124,7 +125,7 @@ DO $$
 DECLARE
     already_exists boolean;
 BEGIN
-    SELECT jsonb_array_contains_id(data, ARRAY['items'], 'id', '1'::jsonb)
+    SELECT jsonb_array_contains_id(data, 'items', 'id', '1'::jsonb)
     INTO already_exists
     FROM test_safe_insert WHERE pk_test = 1;
 

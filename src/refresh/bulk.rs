@@ -5,11 +5,9 @@
 
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
-use crate::utils::{lookup_view_for_source, quote_identifier};
-use pgrx::JsonB;
+use crate::utils::lookup_view_for_source;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use pgrx::spi;
 
 /// Refresh multiple rows of the same entity in a single operation
 ///
@@ -53,92 +51,74 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
             entity: entity.to_string(),
         })?;
 
-    // Recompute ALL rows in a single query using parameterized ANY($1)
+    // Resolve backing view + tview names and the authoritative data-column list.
     let view_name = lookup_view_for_source(meta.view_oid)?;
+    let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
     let pk_col = format!("pk_{entity}");
 
-    let data_col = "data";
-    let query = format!(
-        "SELECT {}, {} FROM {} WHERE {} = ANY($1)",
-        quote_identifier(&pk_col),
-        quote_identifier(data_col),
-        quote_identifier(&view_name),
-        quote_identifier(&pk_col)
+    let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    if col_names.is_empty() {
+        return Ok(());
+    }
+    let col_list = col_names.join(", ");
+
+    // DO UPDATE SET: every non-pk column tracks the backing view; refresh timestamp.
+    let do_update: String = {
+        let mut parts = Vec::with_capacity(col_names.len());
+        for c in &col_names {
+            if c.as_str() != pk_col.as_str() {
+                parts.push(format!("{c} = EXCLUDED.{c}"));
+            }
+        }
+        parts.push("updated_at = NOW()".to_string());
+        parts.join(", ")
+    };
+
+    // UPSERT every requested pk that still resolves in the backing view. Rows not
+    // yet materialized are inserted rather than silently skipped — the old
+    // `UPDATE … FROM unnest()` path dropped every not-yet-present row (issue #48).
+    let upsert_sql = format!(
+        "INSERT INTO {tv_name} ({col_list}) \
+         SELECT {col_list} FROM {view_name} WHERE {pk_col} = ANY($1) \
+         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}"
     );
 
-    Spi::connect(|client| {
-        // Create PostgreSQL BIGINT[] array from Vec<i64>
-        let args = vec![unsafe {
-            DatumWithOid::new(
-                pks.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        }];
-        let rows = client.select(&query, None, &args)?;
+    // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
+    // The old UPDATE-only path left these stale (issue #48).
+    let delete_sql = format!(
+        "DELETE FROM {tv_name} t \
+         WHERE t.{pk_col} = ANY($1) \
+           AND NOT EXISTS (SELECT 1 FROM {view_name} v WHERE v.{pk_col} = t.{pk_col})"
+    );
 
-        // Batch update using UPDATE ... FROM unnest()
-        let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
-
-        // Collect data for update
-        let mut update_pks: Vec<i64> = Vec::new();
-        let mut update_data: Vec<JsonB> = Vec::new();
-
-        for row in rows {
-            let pk: i64 = row[&pk_col as &str].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: String::new(),
-                    error: format!("{pk_col} column is NULL"),
-                })
-            })?;
-            let data: JsonB = row["data"].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: String::new(),
-                    error: "data column is NULL".to_string(),
-                })
-            })?;
-            update_pks.push(pk);
-            update_data.push(data);
-        }
-
-        if update_pks.is_empty() {
-            return Ok(()); // No rows to update
-        }
-
-        // SAFE: Single UPDATE with unnest() (parameterized)
-        let update_query = format!(
-            "UPDATE {}
-             SET data = v.data, updated_at = now()
-             FROM (
-                 SELECT unnest($1::bigint[]) as pk,
-                        unnest($2::jsonb[]) as data
-             ) AS v
-             WHERE {}.{} = v.pk",
-            quote_identifier(&tv_name),
-            quote_identifier(&tv_name),
-            quote_identifier(&pk_col)
-        );
-
-        // Execute batch update with parameters
+    // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
+    // single statement never carries an unbounded pk array. Each batch's UPSERT and
+    // stale-DELETE are keyed on that batch's pks; the DELETE only affects tview rows
+    // whose pk is in the batch, so per-batch execution stays correct. SAFETY:
+    // DatumWithOid wraps the validated BIGINT[] for SPI parameter passing.
+    let batch = crate::config::batch_size();
+    for chunk in pks.chunks(batch) {
         Spi::run_with_args(
-            &update_query,
-            &[
-                unsafe {
-                    DatumWithOid::new(
-                        update_pks,
-                        PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-                    )
-                },
-                unsafe {
-                    DatumWithOid::new(
-                        update_data,
-                        PgOid::BuiltIn(PgBuiltInOids::JSONBARRAYOID).value(),
-                    )
-                },
-            ],
+            &upsert_sql,
+            &[unsafe {
+                DatumWithOid::new(
+                    chunk.to_vec(),
+                    PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
+                )
+            }],
         )?;
+        Spi::run_with_args(
+            &delete_sql,
+            &[unsafe {
+                DatumWithOid::new(
+                    chunk.to_vec(),
+                    PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
+                )
+            }],
+        )?;
+    }
 
-        Ok(())
-    })
+    Ok(())
 }
 
 #[cfg(test)]
