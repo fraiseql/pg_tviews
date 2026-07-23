@@ -168,7 +168,14 @@ fn pg_tview_trigger_handler<'a>(
                     enqueue_refresh(entity, pk_value);
                 }
             }
-            return Ok(None);
+            // No early return: a direct TVIEW source can simultaneously be a
+            // base-table dependency of other TVIEWs (tb_user feeds tv_user directly
+            // AND tv_post/tv_comment, which embed the author inline via a JOIN on
+            // tb_user). That embed is classified a `scalar` dependency, NOT the
+            // nested_object/v_user.data form that commit-time entity propagation
+            // (find_parents_batch) follows — so without falling through to
+            // enqueue_cascade_parents (which walks the base-table cascade paths),
+            // tb_user edits leave tv_post/tv_comment author fields stale.
         }
         Ok(None) => { /* fall through to indirect lookup */ }
         Err(e) => {
