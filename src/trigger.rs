@@ -168,7 +168,14 @@ fn pg_tview_trigger_handler<'a>(
                     enqueue_refresh(entity, pk_value);
                 }
             }
-            return Ok(None);
+            // No early return: a direct TVIEW source can simultaneously be a
+            // base-table dependency of other TVIEWs (tb_user feeds tv_user directly
+            // AND tv_post/tv_comment, which embed the author inline via a JOIN on
+            // tb_user). That embed is classified a `scalar` dependency, NOT the
+            // nested_object/v_user.data form that commit-time entity propagation
+            // (find_parents_batch) follows — so without falling through to
+            // enqueue_cascade_parents (which walks the base-table cascade paths),
+            // tb_user edits leave tv_post/tv_comment author fields stale.
         }
         Ok(None) => { /* fall through to indirect lookup */ }
         Err(e) => {
@@ -216,7 +223,21 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         return;
     };
 
+    // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
+    // depends on NONE of the changed columns cannot alter any target row, so the
+    // refresh is skipped. `changed_columns` returns None for INSERT/DELETE
+    // (membership changes) — those always cascade. A path with an empty
+    // `source_columns` (multi-hop, unknown, or whole-row/.data reference) also
+    // always cascades — the safe default.
+    let changed = changed_columns(trigger);
+
     for path in &paths {
+        if let Some(changed) = &changed
+            && !path.source_columns.is_empty()
+            && !path.source_columns.iter().any(|c| changed.contains(c))
+        {
+            continue;
+        }
         if let Err(e) = follow_cascade_path(path, &tuple) {
             warning!(
                 "Cascade refresh failed for path {} → {}: {:?}",
