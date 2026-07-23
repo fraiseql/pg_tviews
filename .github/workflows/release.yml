@@ -55,16 +55,16 @@ jobs:
       - name: Sign with Sigstore (keyless)
         run: |
           # Sign release tarball
-          cosign sign-blob \
+          cosign sign-blob --yes \
             --bundle pg_tviews-${{ github.ref_name }}.tar.gz.sigstore \
             pg_tviews-${{ github.ref_name }}.tar.gz
 
           # Sign SBOM files
-          cosign sign-blob \
+          cosign sign-blob --yes \
             --bundle sbom/pg_tviews-${{ github.ref_name }}.spdx.json.sigstore \
             sbom/pg_tviews-${{ github.ref_name }}.spdx.json
 
-          cosign sign-blob \
+          cosign sign-blob --yes \
             --bundle sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json.sigstore \
             sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
 
