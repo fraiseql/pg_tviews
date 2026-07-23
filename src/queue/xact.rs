@@ -17,6 +17,13 @@ thread_local! {
     /// Queue snapshots for each savepoint level
     static QUEUE_SNAPSHOTS: std::cell::RefCell<Vec<HashSet<super::key::RefreshKey>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+
+    /// Direct-patch map snapshots for each savepoint level (issue #56).
+    /// Kept in lockstep with `QUEUE_SNAPSHOTS` so a patch rolls back exactly when
+    /// its queue entry does.
+    static PATCH_SNAPSHOTS: std::cell::RefCell<
+        Vec<std::collections::HashMap<super::key::RefreshKey, super::patch::PatchState>>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Transaction event types
@@ -63,6 +70,14 @@ pub unsafe fn register_subxact_callback() {
         let mut snapshots = s.borrow_mut();
         for _ in 0..(nest_level as usize).saturating_sub(1) {
             snapshots.push(HashSet::new());
+        }
+    });
+
+    // Mirror the placeholders for the patch-map snapshot stack (issue #56).
+    PATCH_SNAPSHOTS.with(|s| {
+        let mut snapshots = s.borrow_mut();
+        for _ in 0..(nest_level as usize).saturating_sub(1) {
+            snapshots.push(std::collections::HashMap::new());
         }
     });
 }
@@ -129,6 +144,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
 
             clear_queue();
+            super::patch::clear_patch_map();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
@@ -166,6 +182,12 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(snapshot);
                 });
+
+                // Snapshot the patch map in lockstep (issue #56).
+                let patch_snapshot = super::patch::take_patch_snapshot();
+                PATCH_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().push(patch_snapshot);
+                });
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
@@ -176,13 +198,21 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                     // Replace current queue with the snapshot
                     super::state::replace_queue(snapshot);
                 }
+
+                // Restore the patch map in lockstep (issue #56).
+                if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
+                    super::patch::replace_patch_map(patch_snapshot);
+                }
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
                 // RELEASE SAVEPOINT: just decrement depth and discard snapshot
                 decrement_savepoint_depth();
 
-                // Discard the snapshot (savepoint committed)
+                // Discard the snapshots (savepoint committed)
                 QUEUE_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().pop();
+                });
+                PATCH_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
             }
@@ -244,6 +274,11 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         return Ok(());
     }
 
+    // Issue #56: drain the direct-patch map in lockstep with the queue so it never
+    // outlives its queue entries. Keys carrying a usable `Direct` chain are patched
+    // straight into tv_<entity>; everything else recomputes.
+    let mut patches = super::patch::take_patch_snapshot();
+
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
 
@@ -254,6 +289,13 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     // Pre-allocate with capacity based on initial pending size
     let mut processed: std::collections::HashSet<super::key::RefreshKey> =
         std::collections::HashSet::with_capacity(pending.len().max(16));
+
+    // Parent metadata cache for patch derivation (issue #56) — avoids
+    // reloading a parent entity's TviewMeta once per discovered parent key.
+    let mut parent_meta_cache: std::collections::HashMap<
+        String,
+        Option<crate::catalog::TviewMeta>,
+    > = std::collections::HashMap::new();
 
     // Outer drain loop: after the inner loop empties `pending`, check for
     // late-enqueued items from triggers that fired during refresh (e.g.,
@@ -301,39 +343,119 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                     }
                 }
 
-                if entity_keys.len() == 1 {
-                    // Single key: use existing individual refresh
-                    let key = &entity_keys[0];
-                    let parents = refresh_and_get_parents(key, &graph)?;
+                // Issue #56: split off keys carrying a usable direct patch. They are
+                // applied straight to tv_<entity> (no backing-view query); everything
+                // else — poisoned keys, dedup keys, keys with no patch, or the fast
+                // path disabled — recomputes exactly as before. The GUC is re-checked
+                // here so toggling it off between capture and commit forces recompute.
+                let apply_enabled = crate::config::direct_patch_enabled();
+                let mut patched: Vec<(i64, Vec<super::patch::PatchEntry>)> = Vec::new();
+                let mut applied_pks: HashSet<i64> = HashSet::new();
+                let mut recompute_keys: Vec<super::key::RefreshKey> = Vec::new();
+                for key in entity_keys {
+                    if apply_enabled
+                        && !key.is_dedup()
+                        && let Some(super::patch::PatchState::Direct(chain)) = patches.get(&key)
+                    {
+                        patched.push((key.pk, chain.clone()));
+                        applied_pks.insert(key.pk);
+                        continue;
+                    }
+                    recompute_keys.push(key);
+                }
 
-                    // Add discovered parents to pending queue
+                // Apply direct patches; any pk whose tview row is missing falls back.
+                if !patched.is_empty() {
+                    let meta =
+                        crate::catalog::TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+                            crate::TViewError::MetadataNotFound {
+                                entity: entity.clone(),
+                            }
+                        })?;
+                    let fallback = crate::refresh::direct::apply_entity_patches(&meta, patched)?;
+                    for pk in fallback {
+                        applied_pks.remove(&pk);
+                        recompute_keys.push(super::key::RefreshKey::pk(&entity, pk));
+                    }
+                }
+
+                // Recompute the remaining keys via the existing single/bulk path.
+                // A recomputed child's whole document changed, so its parents must
+                // recompute too: poison any parent patch (issue #56).
+                if recompute_keys.len() == 1 {
+                    let key = &recompute_keys[0];
+                    let parents = refresh_and_get_parents(key, &graph)?;
                     for parent_key in parents {
+                        super::patch::poison_into(&mut patches, parent_key.clone());
                         if !processed.contains(&parent_key) {
                             pending.insert(parent_key);
                         }
                     }
-                } else {
-                    // Multiple keys for same entity: use bulk refresh (PK-only path)
-                    // Pre-allocate Vec based on PK-only keys (exclude dedup keys)
+                } else if recompute_keys.len() > 1 {
                     let mut pks =
-                        Vec::with_capacity(entity_keys.iter().filter(|k| !k.is_dedup()).count());
-                    for key in &entity_keys {
+                        Vec::with_capacity(recompute_keys.iter().filter(|k| !k.is_dedup()).count());
+                    for key in &recompute_keys {
                         if !key.is_dedup() {
                             pks.push(key.pk);
                         }
                     }
-
-                    // Bulk refresh this entity
                     // FAIL-FAST: Propagate error immediately to abort transaction
                     crate::refresh::refresh_bulk(&entity, &pks)?;
 
-                    // Discover parents for all keys in this entity group (P-07: batched)
-                    // Instead of N × M separate queries, issue M batched queries (one per parent entity)
-                    let parent_map = crate::propagate::find_parents_batch(&entity_keys, &graph)?;
-
-                    // Add discovered parents to pending queue
+                    let parent_map = crate::propagate::find_parents_batch(&recompute_keys, &graph)?;
                     for parent_keys in parent_map.values() {
                         for parent_key in parent_keys {
+                            super::patch::poison_into(&mut patches, parent_key.clone());
+                            if !processed.contains(parent_key) {
+                                pending.insert(parent_key.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Parent patch derivation for the patched keys that applied (issue
+                // #56). For each parent embedding the child via a
+                // nested_object dependency, prepend the dependency path to the
+                // child's chain and record it for the parent; where a patch can't be
+                // derived (array/scalar/uuid-fk dep, or the parent itself gated), the
+                // parent is poisoned and recomputes. Poison stickiness means a parent
+                // reached by both a patched and a recomputed child recomputes.
+                if !applied_pks.is_empty() {
+                    let applied_keys: Vec<super::key::RefreshKey> = applied_pks
+                        .iter()
+                        .map(|&pk| super::key::RefreshKey::pk(&entity, pk))
+                        .collect();
+                    let parent_map = crate::propagate::find_parents_batch(&applied_keys, &graph)?;
+                    for (child_key, parent_keys) in &parent_map {
+                        // Snapshot the child's applied chain before mutating `patches`.
+                        let child_chain = match patches.get(child_key) {
+                            Some(super::patch::PatchState::Direct(chain)) => Some(chain.clone()),
+                            _ => None,
+                        };
+                        for parent_key in parent_keys {
+                            let derived = match &child_chain {
+                                Some(chain) => {
+                                    load_meta_cached(&parent_key.entity, &mut parent_meta_cache)?
+                                        .and_then(|m| {
+                                            crate::refresh::direct::derive_parent_chain(
+                                                &m,
+                                                &child_key.entity,
+                                                chain,
+                                            )
+                                        })
+                                }
+                                None => None,
+                            };
+                            match derived {
+                                Some(chain) => super::patch::merge_chain_into(
+                                    &mut patches,
+                                    parent_key.clone(),
+                                    chain,
+                                ),
+                                None => {
+                                    super::patch::poison_into(&mut patches, parent_key.clone());
+                                }
+                            }
                             if !processed.contains(parent_key) {
                                 pending.insert(parent_key.clone());
                             }
@@ -359,6 +481,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         if late.is_empty() {
             break;
         }
+        // Merge patches captured by triggers that fired during refresh (issue #56).
+        for (k, v) in super::patch::take_patch_snapshot() {
+            patches.insert(k, v);
+        }
         pending = late;
     }
 
@@ -383,6 +509,22 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     );
 
     Ok(())
+}
+
+/// Load and cache a parent entity's `TviewMeta` for patch derivation (issue #56).
+///
+/// The cache lives for the duration of one flush; parent entities are few, so this
+/// keeps derivation from re-querying `pg_tview_meta` per discovered parent key.
+fn load_meta_cached(
+    entity: &str,
+    cache: &mut std::collections::HashMap<String, Option<crate::catalog::TviewMeta>>,
+) -> spi::Result<Option<crate::catalog::TviewMeta>> {
+    if let Some(meta) = cache.get(entity) {
+        return Ok(meta.clone());
+    }
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?;
+    cache.insert(entity.to_string(), meta.clone());
+    Ok(meta)
 }
 
 /// Refresh a single entity+pk and return discovered parent keys (without refreshing them)

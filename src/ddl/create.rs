@@ -1,6 +1,9 @@
 use crate::cascade_path;
 use crate::error::{TViewError, TViewResult};
-use crate::schema::{TViewSchema, analyzer::analyze_dependencies, inference::infer_schema};
+use crate::schema::{
+    TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
+    inference::infer_schema,
+};
 use crate::utils::quote_identifier;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
@@ -1113,6 +1116,21 @@ fn register_metadata(
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
 
+    // Extract the direct-patch column→key map (issue #56): base columns that map
+    // identity-style to top-level keys of this entity's own `data` object. Empty
+    // ⇒ the direct-patch fast path never engages for this entity.
+    let direct_map = extract_direct_column_map(definition_sql, &format!("tb_{entity_name}"));
+    let direct_map_columns = direct_map
+        .iter()
+        .map(|(col, _)| pg_array_elem(col))
+        .collect::<Vec<_>>()
+        .join(",");
+    let direct_map_keys = direct_map
+        .iter()
+        .map(|(_, key)| pg_array_elem(key))
+        .collect::<Vec<_>>()
+        .join(",");
+
     // Serialize schema information (quoted for safe PostgreSQL array literals)
     let fk_columns = schema
         .fk_columns
@@ -1233,8 +1251,10 @@ fn register_metadata(
             array_match_keys,
             distinct_on_keys,
             distinct_on_output_keys,
+            direct_map_columns,
+            direct_map_keys,
             is_union
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
         ON CONFLICT (entity) DO NOTHING",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1246,6 +1266,8 @@ fn register_metadata(
         array_keys,
         distinct_on_str,
         distinct_on_output_str,
+        direct_map_columns,
+        direct_map_keys,
         is_union
     );
 

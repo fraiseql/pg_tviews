@@ -86,6 +86,18 @@ pub struct TviewMeta {
     /// `distinct_on_keys` when the key is not aliased. Aligned by index.
     pub distinct_on_output_keys: Vec<String>,
 
+    /// Direct-patch column map (issue #56): base-table columns that map
+    /// identity-style to top-level keys of this entity's own `data` object.
+    ///
+    /// Aligned with [`Self::direct_map_keys`]: `direct_map_columns[i]` is a base
+    /// column name (e.g. `bio`) and `direct_map_keys[i]` the JSONB key it feeds
+    /// (e.g. `bio`). Populated at CREATE time from bare `jsonb_build_object` pairs;
+    /// empty ⇒ the direct-patch fast path never engages for this entity.
+    pub direct_map_columns: Vec<String>,
+
+    /// JSONB keys aligned with [`Self::direct_map_columns`]. See that field.
+    pub direct_map_keys: Vec<String>,
+
     /// `true` when this TVIEW's backing view is a `UNION ALL` or `UNION` query.
     ///
     /// Used to apply the duplicate-row policy when multiple rows are returned
@@ -99,6 +111,16 @@ pub struct TviewMeta {
     /// enabling indirect dependency tracking for multi-level cascades.
     pub cascade_paths: Vec<CascadePath>,
 }
+
+/// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
+/// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
+/// out of sync as catalog columns are added (e.g. issue #56's direct-patch map).
+const META_SELECT: &str = "SELECT table_oid AS tview_oid, view_oid, entity, \
+     fk_columns, uuid_fk_columns, \
+     dependency_types, dependency_paths, array_match_keys, \
+     distinct_on_keys, distinct_on_output_keys, \
+     direct_map_columns, direct_map_keys, is_union, cascade_paths \
+     FROM pg_tview_meta";
 
 impl TviewMeta {
     /// Helper: Parse TEXT[] to Vec<DependencyType>
@@ -133,12 +155,7 @@ impl TviewMeta {
                 DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
             let mut rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, \
-                        fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
-                 FROM pg_tview_meta \
-                 WHERE view_oid = $1 OR table_oid = $1",
+                &format!("{META_SELECT} WHERE view_oid = $1 OR table_oid = $1"),
                 None,
                 &args,
             )?;
@@ -158,16 +175,8 @@ impl TviewMeta {
             let args = vec![unsafe {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }];
-            let mut rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, \
-                        fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
-                 FROM pg_tview_meta \
-                 WHERE entity = $1",
-                None,
-                &args,
-            )?;
+            let mut rows =
+                client.select(&format!("{META_SELECT} WHERE entity = $1"), None, &args)?;
 
             match rows.next() {
                 Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
@@ -179,16 +188,7 @@ impl TviewMeta {
     /// Load all TVIEW metadata
     pub fn load_all() -> spi::Result<Vec<Self>> {
         Spi::connect(|client| {
-            let rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, \
-                        fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
-                 FROM pg_tview_meta \
-                 ORDER BY entity",
-                None,
-                &[],
-            )?;
+            let rows = client.select(&format!("{META_SELECT} ORDER BY entity"), None, &[])?;
 
             let mut result = Vec::new();
             for row in rows {
@@ -231,16 +231,8 @@ impl TviewMeta {
             let args = vec![unsafe {
                 DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
-            let mut rows = client.select(
-                "SELECT table_oid AS tview_oid, view_oid, entity, \
-                        fk_columns, uuid_fk_columns, \
-                        dependency_types, dependency_paths, array_match_keys, \
-                        distinct_on_keys, distinct_on_output_keys, is_union, cascade_paths \
-                 FROM pg_tview_meta \
-                 WHERE table_oid = $1",
-                None,
-                &args,
-            )?;
+            let mut rows =
+                client.select(&format!("{META_SELECT} WHERE table_oid = $1"), None, &args)?;
 
             let result = if let Some(row) = rows.next() {
                 Some(Self::from_spi_row(&row)?)
@@ -277,6 +269,15 @@ impl TviewMeta {
 
         // distinct_on_output_keys (TEXT[]) — projected OUTPUT column used by refresh/PK
         let distinct_on_output_keys: Vec<String> = row["distinct_on_output_keys"]
+            .value::<Vec<String>>()?
+            .unwrap_or_default();
+
+        // direct_map_columns / direct_map_keys (TEXT[]) — aligned column→key map
+        // for the issue #56 direct-patch fast path. Empty for pre-#56 tviews.
+        let direct_map_columns: Vec<String> = row["direct_map_columns"]
+            .value::<Vec<String>>()?
+            .unwrap_or_default();
+        let direct_map_keys: Vec<String> = row["direct_map_keys"]
             .value::<Vec<String>>()?
             .unwrap_or_default();
 
@@ -322,6 +323,8 @@ impl TviewMeta {
             array_match_keys: array_keys.unwrap_or_default(),
             distinct_on_keys,
             distinct_on_output_keys,
+            direct_map_columns,
+            direct_map_keys,
             is_union,
             cascade_paths,
         })
@@ -383,6 +386,22 @@ impl TviewMeta {
 
         details
     }
+
+    /// Build the direct-patch column→key lookup (issue #56): base-table column
+    /// name → JSONB key it feeds in this entity's own `data` object.
+    ///
+    /// Returns an empty map for entities without an extracted map (pre-#56 tviews,
+    /// or tviews whose `data` column isn't a bare `jsonb_build_object` of base
+    /// columns) — in which case the direct-patch fast path never engages.
+    #[allow(dead_code)] // Reason: public helper; the trigger reads the map off the cached EntityInfo
+    #[must_use]
+    pub fn direct_map(&self) -> std::collections::HashMap<&str, &str> {
+        self.direct_map_columns
+            .iter()
+            .zip(self.direct_map_keys.iter())
+            .map(|(col, key)| (col.as_str(), key.as_str()))
+            .collect()
+    }
 }
 
 /// Represents a single dependency with its type, path, and match key.
@@ -411,6 +430,8 @@ impl Default for TviewMeta {
             array_match_keys: vec![],
             distinct_on_keys: vec![],
             distinct_on_output_keys: vec![],
+            direct_map_columns: vec![],
+            direct_map_keys: vec![],
             is_union: false,
             cascade_paths: vec![],
         }
@@ -527,6 +548,8 @@ mod tests {
             array_match_keys: vec![None],
             distinct_on_keys: vec![],
             distinct_on_output_keys: vec![],
+            direct_map_columns: vec!["bio".to_string(), "name".to_string()],
+            direct_map_keys: vec!["bio".to_string(), "display_name".to_string()],
             is_union: false,
             cascade_paths: vec![],
         };
@@ -534,6 +557,12 @@ mod tests {
         assert_eq!(meta.dependency_types.len(), 1);
         assert_eq!(meta.dependency_paths.len(), 1);
         assert_eq!(meta.array_match_keys.len(), 1);
+
+        // Direct-patch column map round-trips into a col→key lookup (issue #56).
+        let map = meta.direct_map();
+        assert_eq!(map.get("bio"), Some(&"bio"));
+        assert_eq!(map.get("name"), Some(&"display_name"));
+        assert_eq!(map.len(), 2);
     }
 
     #[test]

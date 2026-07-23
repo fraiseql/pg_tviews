@@ -45,6 +45,9 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
         return Ok(());
     }
 
+    // Count the backing-view recompute of these rows (issue #56).
+    crate::metrics::metrics_api::record_view_recomputes(pks.len() as u64);
+
     // Load metadata once
     let meta =
         TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::MetadataNotFound {

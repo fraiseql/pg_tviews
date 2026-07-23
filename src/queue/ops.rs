@@ -30,9 +30,35 @@ pub fn enqueue_refresh_with_limit(entity: &str, pk: i64, limit: usize) -> Result
 /// This is the main entry point from triggers for normal TVIEWs.
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `max_queue_size` would be exceeded.
+///
+/// A plain enqueue **poisons** any direct patch for this key (issue #56): the key
+/// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
 pub fn enqueue_refresh(entity: &str, pk: i64) {
     if let Err(msg) = enqueue_refresh_with_limit(entity, pk, crate::config::max_queue_size()) {
         pgrx::error!("{}", msg);
+    }
+    super::patch::poison(RefreshKey::pk(entity, pk));
+}
+
+/// Enqueue a PK-based refresh **and** record a direct patch (issue #56 fast path).
+///
+/// Inserts `(entity, pk)` into the refresh queue under the same backpressure limit
+/// as [`enqueue_refresh`], then records the captured `fields` as a top-level
+/// (`prefix = []`) direct patch. If the key was already poisoned this transaction
+/// (e.g. an INSERT then UPDATE of the same row), the patch is ignored and the key
+/// recomputes — a patch alone cannot materialise a not-yet-created row.
+pub fn enqueue_refresh_patched(
+    entity: &str,
+    pk: i64,
+    fields: serde_json::Map<String, serde_json::Value>,
+) {
+    if let Err(msg) = enqueue_refresh_with_limit(entity, pk, crate::config::max_queue_size()) {
+        pgrx::error!("{}", msg);
+    }
+    // Count the capture once per fresh key: a base table feeding several tviews
+    // has several row triggers that each re-record the same key in one statement.
+    if super::patch::record(RefreshKey::pk(entity, pk), Vec::new(), fields) {
+        crate::metrics::metrics_api::record_direct_patch_captured();
     }
 }
 
@@ -50,6 +76,8 @@ pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
         });
         q.borrow_mut().insert(RefreshKey::dedup(entity, dedup_key));
     });
+    // Plain enqueue poisons any direct patch for this key (issue #56).
+    super::patch::poison(RefreshKey::dedup(entity, dedup_key));
 }
 
 /// Bulk enqueue PK-based refresh requests for multiple PKs of the same entity.
@@ -64,10 +92,14 @@ pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) {
             pgrx::error!("{}", msg);
         });
         let mut queue = q.borrow_mut();
-        for pk in pks {
-            queue.insert(RefreshKey::pk(entity, pk));
+        for pk in &pks {
+            queue.insert(RefreshKey::pk(entity, *pk));
         }
     });
+    // Plain (bulk) enqueue poisons any direct patches for these keys (issue #56).
+    for pk in pks {
+        super::patch::poison(RefreshKey::pk(entity, pk));
+    }
 }
 
 /// Take a snapshot of the current queue and clear it

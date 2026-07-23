@@ -138,7 +138,11 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
         "graph_cache_hits": stats.graph_cache_hits,
         "graph_cache_misses": stats.graph_cache_misses,
         "table_cache_hits": stats.table_cache_hits,
-        "table_cache_misses": stats.table_cache_misses
+        "table_cache_misses": stats.table_cache_misses,
+        "direct_patch_captured": stats.direct_patch_captured,
+        "direct_patches_applied": stats.direct_patches_applied,
+        "direct_patch_fallbacks": stats.direct_patch_fallbacks,
+        "view_recomputes": stats.view_recomputes
     });
 
     pgrx::JsonB(json_value)
