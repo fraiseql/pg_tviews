@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.14] - 2026-07-23
+
 ### Added
 
 - **Direct-patch fast path (#56)**: an eligible row-level `UPDATE` whose changed
