@@ -223,7 +223,21 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         return;
     };
 
+    // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
+    // depends on NONE of the changed columns cannot alter any target row, so the
+    // refresh is skipped. `changed_columns` returns None for INSERT/DELETE
+    // (membership changes) — those always cascade. A path with an empty
+    // `source_columns` (multi-hop, unknown, or whole-row/.data reference) also
+    // always cascades — the safe default.
+    let changed = changed_columns(trigger);
+
     for path in &paths {
+        if let Some(changed) = &changed
+            && !path.source_columns.is_empty()
+            && !path.source_columns.iter().any(|c| changed.contains(c))
+        {
+            continue;
+        }
         if let Err(e) = follow_cascade_path(path, &tuple) {
             warning!(
                 "Cascade refresh failed for path {} → {}: {:?}",

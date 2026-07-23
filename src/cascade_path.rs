@@ -74,6 +74,14 @@ pub struct CascadePath {
     /// If true, path could not be statically resolved — fall back to full refresh
     #[serde(default)]
     pub unresolvable: bool,
+    /// Columns of `source_table` that the target tview's projection actually
+    /// depends on (derived from `PostgreSQL`'s column-level `pg_depend` records on
+    /// the backing view `v_<entity>`). Column-aware refresh: an UPDATE that
+    /// touches none of these columns cannot change any target tview row, so the
+    /// cascade is skipped. Empty = unknown (multi-hop, parse gap, or a
+    /// whole-row/`.data` reference) ⇒ always refresh, the safe default.
+    #[serde(default)]
+    pub source_columns: Vec<String>,
 }
 
 #[cfg(test)]
@@ -89,6 +97,7 @@ mod tests {
             initial_col: "fk_post".to_string(),
             hops: vec![],
             unresolvable: false,
+            source_columns: vec![],
         };
 
         let json = serde_json::to_string(&path).unwrap();
@@ -110,6 +119,7 @@ mod tests {
                 carry_col: "fk_order".to_string(),
             }],
             unresolvable: false,
+            source_columns: vec![],
         };
 
         let json = serde_json::to_string(&path).unwrap();

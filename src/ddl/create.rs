@@ -341,6 +341,7 @@ pub fn create_tview(
         entity_name,
         &final_schema,
         &dep_graph.base_tables,
+        &schema_name,
     )?;
 
     // Step 6.55: Reject a DISTINCT ON tview that also has JOIN-based cascade paths
@@ -431,6 +432,7 @@ fn extract_and_resolve_cascade_paths(
     entity_name: &str,
     _schema: &TViewSchema,
     base_table_oids: &[pg_sys::Oid],
+    schema_name: &str,
 ) -> TViewResult<Vec<cascade_path::CascadePath>> {
     let root_table = format!("tb_{entity_name}");
 
@@ -454,7 +456,14 @@ fn extract_and_resolve_cascade_paths(
     let mut cascade_paths = Vec::new();
     for jp in &join_paths {
         match resolve_join_path(jp, entity_name, &oid_map) {
-            Ok(cp) => cascade_paths.push(cp),
+            Ok(mut cp) => {
+                // Column-aware refresh: record which columns of this path's source
+                // table the target tview actually depends on (via pg_depend on the
+                // backing view). Empty ⇒ always refresh.
+                cp.source_columns =
+                    view_source_columns(schema_name, entity_name, &jp.source_table);
+                cascade_paths.push(cp);
+            }
             Err(e) => {
                 notice!(
                     "Cascade path from '{}' unresolvable: {e} — changes to this table will not trigger incremental refresh of '{entity_name}'",
@@ -562,7 +571,59 @@ fn resolve_join_path(
         initial_col: jp.initial_col.clone(),
         hops,
         unresolvable: false,
+        // Populated by the caller (which has the schema) via `view_source_columns`.
+        source_columns: Vec::new(),
     })
+}
+
+/// Columns of `source_table` that the backing view `v_<entity>` depends on,
+/// read from `PostgreSQL`'s own column-level `pg_depend` records. This is the
+/// exact set of source columns whose change can alter a target tview row —
+/// it correctly accounts for expressions, `SELECT *` expansion, and repeated
+/// joins, with none of the fragility of parsing the SELECT text.
+///
+/// Returns an empty vec on any error or when the view has no *direct* column
+/// dependency on `source_table` (e.g. a multi-hop cascade whose backing view
+/// references an intermediate view, not the leaf table). The caller treats an
+/// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
+fn view_source_columns(schema: &str, entity: &str, source_table: &str) -> Vec<String> {
+    // SQL string-literal quoting: wrap in single quotes, double any embedded ones.
+    let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let view_name = format!("v_{entity}");
+    let qi_src = format!(
+        "{}.{}",
+        quote_identifier(schema),
+        quote_identifier(source_table)
+    );
+    let query = format!(
+        "SELECT a.attname::text AS col \
+         FROM pg_depend d \
+         JOIN pg_rewrite r ON r.oid = d.objid \
+         JOIN pg_class v ON v.oid = r.ev_class \
+         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
+         WHERE v.relname = {} AND v.relnamespace = {}::regnamespace \
+           AND d.refobjid = {}::regclass AND d.refobjsubid > 0",
+        lit(&view_name),
+        lit(schema),
+        lit(&qi_src),
+    );
+    let mut cols = Vec::new();
+    let result = Spi::connect(|client| {
+        let rows = client.select(&query, None, &[])?;
+        for row in rows {
+            if let Ok(Some(name)) = row["col"].value::<String>() {
+                cols.push(name);
+            }
+        }
+        Ok::<_, spi::Error>(())
+    });
+    if let Err(e) = result {
+        notice!(
+            "view_source_columns({view_name}, {source_table}): {e} — cascade will always refresh"
+        );
+        return Vec::new();
+    }
+    cols
 }
 
 /// Check if a TVIEW already exists
