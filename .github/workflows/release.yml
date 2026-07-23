@@ -41,6 +41,14 @@ jobs:
           cargo pgrx package --pg-config /usr/lib/postgresql/18/bin/pg_config
           tar czf pg_tviews-${{ github.ref_name }}.tar.gz target/release/
 
+      - name: Install SBOM tools
+        # scripts/generate-sbom.sh calls `cargo sbom` and `cargo cyclonedx`; the
+        # release job (unlike sbom.yml) did not install them, so the SBOM step
+        # failed with "no such command: sbom" before "Create release" ran.
+        run: |
+          cargo install cargo-sbom
+          cargo install cargo-cyclonedx
+
       - name: Generate SBOM
         run: ./scripts/generate-sbom.sh ${{ github.ref_name }}
 
