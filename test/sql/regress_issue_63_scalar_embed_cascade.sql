@@ -1,5 +1,5 @@
--- Regression test: a base table that is BOTH a TVIEW's own source AND a
--- base-table (scalar) dependency of other TVIEWs must cascade to those parents.
+-- Regression test for issue #63: a base table that is BOTH a TVIEW's own source
+-- AND a base-table (scalar) dependency of other TVIEWs must cascade to those parents.
 --
 -- `tb_user` backs `tv_user` directly, and `tv_post`/`tv_comment` embed the author
 -- inline as a jsonb object built from base `tb_user` columns via a direct JOIN.
