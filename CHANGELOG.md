@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.15] - 2026-07-23
+
+### Fixed
+
+- **Stale scalar/base-table embeds when the embedded table is itself a TVIEW source
+  (#63)**: a base table that backs its own TVIEW (`tb_user` → `tv_user`) and is *also*
+  embedded into other TVIEWs via a direct JOIN to its columns (a `scalar`/base-table
+  dependency, not the `v_<entity>.data` nested-object form) was left **silently stale**
+  on `UPDATE`. The row trigger resolved the table to its own entity and returned before
+  walking the base-table cascade paths, and commit-time entity propagation
+  (`find_parents_batch`) only follows nested-object references — so a `tb_user` rename
+  never reached `tv_post.author` / `tv_comment.author` (P1 silent data divergence). The
+  row trigger now falls through to `enqueue_cascade_parents` for direct sources too;
+  tables with no cascade paths hit the existing empty-paths early return, so the added
+  cost is a single cache lookup.
+
+### Added
+
+- **Column-aware cascade refresh**: an `UPDATE` to a base-table column that a dependent
+  TVIEW does not project can no longer trigger a wasted cascade recompute. `CascadePath`
+  now records the source-table columns the target's backing view actually depends on —
+  derived from PostgreSQL's column-level `pg_depend` records on `v_<entity>` (exact, and
+  robust to expressions, `CASE`/`WHERE` qualifiers, `SELECT *`, and repeated/self joins,
+  unlike parsing the SELECT text) — and a cascade path is skipped when the UPDATE's
+  changed columns are disjoint from it. `INSERT`/`DELETE` (membership changes) and
+  multi-hop / unknown paths always cascade — the safe default. On a lean read model this
+  drops the write fan-out of a volatile-but-unembedded column (e.g. `tb_user.bio`) to
+  zero, while embedded summary fields still fan out correctly.
+
 ## [0.1.0-beta.14] - 2026-07-23
 
 ### Added
