@@ -587,29 +587,33 @@ fn resolve_join_path(
 /// references an intermediate view, not the leaf table). The caller treats an
 /// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
 fn view_source_columns(schema: &str, entity: &str, source_table: &str) -> Vec<String> {
-    // SQL string-literal quoting: wrap in single quotes, double any embedded ones.
-    let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    // All three identifiers are bound as text parameters (no in-band SQL quoting)
+    // and cast to regnamespace/regclass by PostgreSQL.
+    const QUERY: &str = "SELECT a.attname::text AS col \
+         FROM pg_depend d \
+         JOIN pg_rewrite r ON r.oid = d.objid \
+         JOIN pg_class v ON v.oid = r.ev_class \
+         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
+         WHERE v.relname = $1 AND v.relnamespace = $2::regnamespace \
+           AND d.refobjid = $3::regclass AND d.refobjsubid > 0";
     let view_name = format!("v_{entity}");
+    // Schema-qualified, identifier-quoted name for the ::regclass lookup.
     let qi_src = format!(
         "{}.{}",
         quote_identifier(schema),
         quote_identifier(source_table)
     );
-    let query = format!(
-        "SELECT a.attname::text AS col \
-         FROM pg_depend d \
-         JOIN pg_rewrite r ON r.oid = d.objid \
-         JOIN pg_class v ON v.oid = r.ev_class \
-         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
-         WHERE v.relname = {} AND v.relnamespace = {}::regnamespace \
-           AND d.refobjid = {}::regclass AND d.refobjsubid > 0",
-        lit(&view_name),
-        lit(schema),
-        lit(&qi_src),
-    );
     let mut cols = Vec::new();
     let result = Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
+        // SAFETY: DatumWithOid::new wraps datum pointers for SPI parameter passing;
+        // view_name/schema/qi_src outlive this select call.
+        let text = PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value();
+        let args = vec![
+            unsafe { DatumWithOid::new(view_name.as_str(), text) },
+            unsafe { DatumWithOid::new(schema, text) },
+            unsafe { DatumWithOid::new(qi_src.as_str(), text) },
+        ];
+        let rows = client.select(QUERY, None, &args)?;
         for row in rows {
             if let Ok(Some(name)) = row["col"].value::<String>() {
                 cols.push(name);
