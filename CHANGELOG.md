@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.17] - 2026-07-24
+
+### Fixed
+
+- **Release workflow: the signed source tarball now attaches to the GitHub Release.**
+  The `Generate provenance` step (`actions/attest-build-provenance`) requires
+  `attestations: write`, which `release.yml`'s permissions block did not grant, so it
+  failed with "Resource not accessible by integration" before the `Create release` step
+  could attach the tarball. No runtime or API changes — release-pipeline fix only.
+
 ## [0.1.0-beta.16] - 2026-07-24
 
 ### Changed
