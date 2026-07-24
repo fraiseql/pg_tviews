@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.16] - 2026-07-24
+
+### Changed
+
+- **Multi-hop column-aware refresh**: flush-time entity propagation no longer
+  recomputes a parent that embeds only a child's *own* scalar columns. Such an embed
+  (e.g. a comment embedding a post's `{title}`) is already covered by the column-aware
+  `tb_<child>` cascade path added in beta.15, so the extra propagation was redundant —
+  and it fired even when the child was recomputed for an *unrelated* deeper embed (a
+  post recomputed because its author's bio changed dragged every comment on that post
+  through a data-preserving recompute). `EntityDepGraph` now drops such a `parents`
+  edge only when a covering cascade path provably exists (non-empty, all-non-FK
+  `source_columns` from `pg_depend`); `nested_object`/`array` embeds, scalar embeds
+  that follow a child FK, and any ambiguous case keep the edge — the safe default.
+  Measured on the lean benchmark schema: `updateUser(bio)` drops from 110 to ~11
+  recomputes, `updateUser(username)` from 110 to ~61.
+
 ## [0.1.0-beta.15] - 2026-07-23
 
 ### Fixed
