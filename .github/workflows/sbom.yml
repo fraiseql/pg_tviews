@@ -54,7 +54,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
+          # Version-specific (not a wildcard) so a stray/stale sbom/ file can never
+          # be re-attached to a release.
           files: |
-            sbom/pg_tviews-*.spdx.json
-            sbom/pg_tviews-*.cyclonedx.json
-            sbom/pg_tviews-*.sbom.txt
+            sbom/pg_tviews-${{ github.ref_name }}.spdx.json
+            sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
+            sbom/pg_tviews-${{ github.ref_name }}.sbom.txt

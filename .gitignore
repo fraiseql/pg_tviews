@@ -1,6 +1,9 @@
 /target/
 Cargo.lock
 
+# Generated SBOM artifacts (produced fresh per release by scripts/generate-sbom.sh)
+/sbom/
+
 # Development phases (not shipped)
 .phases/
 
