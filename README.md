@@ -41,7 +41,7 @@ By Lionel Hamayon • Part of the FraiseQL framework
 |------|---------|--------|------------------|
 | **[pg_tviews](https://github.com/fraiseql/pg_tviews)** | Incremental materialized views | **Beta** ⭐ | **100-500× faster** |
 | **[jsonb_delta](https://github.com/evoludigit/jsonb_delta)** | JSONB surgical updates | Stable | **2-7× faster** |
-| **[pgGit](https://pggit.dev)** | Database version control | Stable | Git for databases |
+| **[pgGit](https://github.com/evoludigit/pgGit)** | Database per branch or agent, attributed DDL history | In development (v2) | Not a schema source of truth; promotes into confiture |
 | **[confiture](https://github.com/fraiseql/confiture)** | PostgreSQL migrations | Stable | **300-600× faster** |
 | **[fraiseql](https://fraiseql.dev)** | GraphQL framework | Stable | **7-10× faster** |
 | **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Planned | Auto-dependency resolution |
