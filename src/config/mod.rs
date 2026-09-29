@@ -48,6 +48,7 @@ static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 // Default must equal MAX_DEPENDENCY_DEPTH (10); GucSetting::new needs an i32 literal.
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
@@ -125,6 +126,16 @@ pub fn register_gucs() {
         &MAX_QUEUE_SIZE_GUC,
         1,         // min
         1_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.test_skip_ctas_intercept",
+        c"TEST ONLY: make the ProcessUtility hook skip CREATE TABLE tv_* AS interception.",
+        c"Simulates a session where the hook did not see the statement, to test the \
+          missed-interception error. Never enable in production.",
+        &TEST_SKIP_CTAS_INTERCEPT_GUC,
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -263,6 +274,12 @@ pub fn max_queue_size() -> usize {
 #[must_use]
 pub fn audit_enabled() -> bool {
     AUDIT_ENABLED_GUC.get()
+}
+
+/// TEST ONLY: true when the hook must skip CTAS interception (default: false)
+#[must_use]
+pub fn test_skip_ctas_intercept() -> bool {
+    TEST_SKIP_CTAS_INTERCEPT_GUC.get()
 }
 
 /// Check if TVIEWs should be created as UNLOGGED by default (default: true)

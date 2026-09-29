@@ -384,6 +384,12 @@ unsafe fn handle_create_table_as(
                 .to_string()
         };
 
+        // TEST ONLY: simulate a hook that never saw this statement (see the
+        // missed-interception check in the event trigger).
+        if crate::config::test_skip_ctas_intercept() {
+            return Ok(false);
+        }
+
         // Resolve the target relation BEFORE PostgreSQL runs the statement (catalog
         // lookup, no SPI). `IF NOT EXISTS` on an existing relation makes PostgreSQL skip
         // the create, so nothing would consume a pending SELECT (issue #79): pass through
