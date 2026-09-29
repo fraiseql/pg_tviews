@@ -128,8 +128,9 @@ impl EntityDepGraph {
                             // follow a child FK (a deeper relationship no `tb_<child>` path
                             // covers), and whenever the classification or columns are
                             // unknown — the safe default.
-                            let is_scalar =
-                                dependency_types.get(i).is_some_and(|t| t.as_str() == "scalar");
+                            let is_scalar = dependency_types
+                                .get(i)
+                                .is_some_and(|t| t.as_str() == "scalar");
                             let reads_only_own_columns =
                                 reads_by_fk.get(fk_col).is_some_and(|cols| {
                                     !cols.is_empty() && !cols.iter().any(|c| c.starts_with("fk_"))
