@@ -105,6 +105,21 @@ SELECT pg_tviews_create('tv_user_posts',
 - Triggers are automatically created on base tables
 - Alternative DDL syntax (`CREATE TABLE tv_* AS SELECT`) also available
 
+**Indexes created on the TVIEW table** (both creation paths):
+
+| Index | Columns | Purpose |
+|---|---|---|
+| `<tv>_pkey` (primary key) | `pk_<entity>` | row identity, refresh upserts |
+| `idx_<tv>_id` | `id` | lookup by public UUID |
+| `idx_<tv>_<uuid_fk>` | each UUID FK column | filtering by related public id |
+| `idx_<tv>_<fk>_<pk>` **(required)** | `(fk_<x>, pk_<entity>)` per integer FK | cascade propagation lookup (`WHERE fk_<x> = ANY(…)`); without it every cascade step scans the whole TVIEW |
+| `idx_<tv>_data_gin` | `data` (GIN) | JSONB containment queries |
+
+The propagation indexes are required for cascade performance: don't drop them.
+Names longer than 63 bytes are shortened deterministically with a hash suffix.
+TVIEWs created before these indexes existed can be upgraded with
+[`pg_tviews_ensure_propagation_indexes()`](#pg_tviews_ensure_propagation_indexes).
+
 ### pg_tviews_drop()
 
 **Signature**:
@@ -555,6 +570,41 @@ WHERE status IN ('WARNING', 'ERROR');
 - Checks extension installation, metadata consistency, trigger health
 - Run after upgrades or when troubleshooting issues
 - Safe to run frequently (read-only operations)
+
+### pg_tviews_ensure_propagation_indexes()
+
+**Signature**:
+```sql
+pg_tviews_ensure_propagation_indexes(entity TEXT DEFAULT NULL, dry_run BOOLEAN DEFAULT false)
+RETURNS SETOF TEXT
+```
+
+**Description**:
+Creates the required `(fk_<x>, pk_<entity>)` propagation index for every integer
+`fk_*` column of a TVIEW that has no index leading with that column. Any existing
+index whose first column is the FK counts, so user-created indexes are respected.
+
+**Parameters**:
+- `entity` (TEXT): one entity (e.g. `'post'` for `tv_post`); `NULL` = all TVIEWs
+- `dry_run` (BOOLEAN): report the DDL without running it
+
+**Returns**:
+- One `CREATE INDEX IF NOT EXISTS …` statement per missing index (executed unless `dry_run`)
+
+**Example**:
+```sql
+-- After upgrading: add missing propagation indexes everywhere
+SELECT * FROM pg_tviews_ensure_propagation_indexes();
+
+-- Large TVIEWs: get the DDL, then run it by hand with CONCURRENTLY
+SELECT replace(ddl, 'CREATE INDEX', 'CREATE INDEX CONCURRENTLY')
+FROM pg_tviews_ensure_propagation_indexes(NULL, true) AS ddl;
+```
+
+**Notes**:
+- Idempotent: a second call returns no rows
+- Runs inside a transaction, so it takes a `SHARE` lock per index build; use the
+  dry-run + `CONCURRENTLY` route on busy tables
 
 ## Views
 
