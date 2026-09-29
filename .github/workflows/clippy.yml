@@ -3,31 +3,63 @@ name: Clippy Strict
 on: [push, pull_request]
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Check formatting
+        run: cargo fmt --check
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install PostgreSQL 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx --version 0.17.0
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+      - name: Run pure-Rust unit tests
+        run: |
+          # PostgreSQL symbols only resolve inside a server, so let the linker
+          # ignore them. #[pg_test]s (named pg_test_*) need a server and are
+          # covered by the SQL suites instead; skipping them also avoids pgrx
+          # reinstalling a pg_test build of the extension.
+          RUSTFLAGS="-C link-arg=-Wl,--unresolved-symbols=ignore-all" \
+            cargo test --lib --no-default-features --features pg18 -- --skip pg_test_
+
   clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Install PostgreSQL 16 (Ubuntu default)
+      # Toolchain version comes from rust-toolchain.toml (bump it in a dedicated PR).
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install PostgreSQL 18 (PGDG)
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16
-      - name: Start PostgreSQL service
-        run: |
-          sudo systemctl start postgresql
-          sudo systemctl enable postgresql
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
       - name: Run strict clippy
         run: |
           # Lint policy (clippy::all + clippy::pedantic = deny, with reviewed
           # selective allows) lives in [lints.clippy] in Cargo.toml so CI and
           # local `cargo clippy` enforce exactly the same rules.
-          cargo clippy --all-targets --no-default-features --features pg16 -- -D warnings
+          cargo clippy --all-targets --no-default-features --features pg18 -- -D warnings
       - name: Check for SQL quote-doubling anti-pattern
         run: |
           # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast

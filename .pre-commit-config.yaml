@@ -9,7 +9,7 @@ repos:
     hooks:
       - id: clippy-strict
         name: "Clippy Strict"
-        entry: cargo clippy --lib -- -D warnings
+        entry: cargo clippy --no-default-features --features pg18 --all-targets -- -D warnings
         language: system
         pass_filenames: false
         stages: [commit]
