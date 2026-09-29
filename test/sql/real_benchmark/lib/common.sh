@@ -132,6 +132,7 @@ record_env() {
       UNION ALL SELECT name, setting || coalesce(unit, '') FROM pg_settings
       WHERE name IN ('shared_buffers', 'checkpoint_timeout', 'max_wal_size', 'wal_level',
                      'full_page_writes', 'wal_compression', 'synchronous_commit', 'fsync',
+                     'data_checksums', 'wal_log_hints',
                      'autovacuum')
          OR name LIKE 'pg_tviews.%'
       UNION ALL SELECT 'ext_' || name, default_version FROM pg_available_extensions

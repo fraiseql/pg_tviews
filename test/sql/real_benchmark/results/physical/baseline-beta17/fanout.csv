@@ -1,0 +1,4 @@
+scenario,edge,parents,p50,p95,p99,max,mean
+skewed_fanout,post->comment,300000,2,6,13,1266,2.33
+skewed_fanout,user->comment,9999,27,92,206,235015,70.01
+skewed_fanout,user->post,10000,12,36,85,100000,30.00

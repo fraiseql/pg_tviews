@@ -1,0 +1,5 @@
+plan	Actual Total Time	Actual Rows	Shared Hit Blocks	Shared Read Blocks	Shared Dirtied Blocks	Shared Written Blocks	WAL Records	WAL FPI	WAL Bytes	query
+001	13.891	83.0	0	8651	1	282	1	1	7165	SELECT fk_user, pk_post FROM tv_post WHERE fk_user = ANY($1)
+002	1.902	83.0	1088	207	177	209	412	170	1016946	UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1::jsonb, $3::text[]), updated_at = now() WHERE pk_post = ANY($2) RETURNING pk_post
+003	21.96	216.0	11618	14187	0	282	0	0	0	SELECT fk_post, pk_comment FROM tv_comment WHERE fk_post = ANY($1)
+004	5.551	216.0	3098	498	396	509	1090	8	239627	UPDATE tv_comment SET data = jsonb_smart_patch_nested(data, $1::jsonb, $3::text[]), updated_at = now() WHERE pk_comment = ANY($2) RETURNING pk_comment

@@ -112,7 +112,12 @@ cost the comparison is measuring.
 | `--scales "<list>"` | `small` | Space-separated scales to run (`small`, `medium`, `large`). |
 | `--single-iters N` | `25` | Iterations for the single-row `UPDATE` op on arms A/B. |
 | `--c-iters N` | `5` | Iterations per op for arm C (each is a full `REFRESH`). |
+| `--modes "<list>"` | `unlogged logged` | TVIEW persistence modes for arms A/B (`pg_tviews.unlogged_by_default`). |
 | `--help` | — | Print the script header and exit. |
+
+Environment: `RUN_DIR` (output directory, default
+`results/physical/<timestamp>/`), `MODES` (same as `--modes`), `EXPLAIN`
+(`1` runs the auto_explain pass, `0` skips it).
 
 Insert/delete ops use 10 iterations and batch ops use 5 (fixed in the script).
 Medians are reported, so a handful of iterations is enough to be stable; raise
@@ -136,14 +141,18 @@ For each scale, `run.sh`:
 4. Runs the same sequence of `tb_product` mutations under `psql \timing`:
    `update_single`, `update_batch` (1% of rows), `insert_single`,
    `delete_single`, plus the one-time `build`. For arm C each timed statement is
-   the `REFRESH MATERIALIZED VIEW` that the change forces.
+   the `REFRESH MATERIALIZED VIEW` that the change forces. Each op group is
+   bracketed by physical-cost snapshots (see [Physical cost](#physical-cost)).
+   Arms A/B run once per mode in `--modes`.
 5. Checks the correctness gate. Arms A/B emit `RB_OK divergence=0` on success; a
    non-zero divergence emits `RB_DIVERGENCE <n>` and **fails the run**.
-6. Parses each `\timing` log, appending `scale · arm · op · ms` rows to
-   `results/raw.tsv`, and drops the scratch databases.
+6. Parses each `\timing` log, appending `scale · arm · mode · op · ms` rows to
+   `$RUN_DIR/raw.tsv`, dumps the arm's physical counters to
+   `$RUN_DIR/physical.csv`, runs the auto_explain pass, and drops the scratch
+   databases.
 
-After all scales, `aggregate.py` prints a per-operation median table and writes
-`results/summary.tsv`.
+After all scales, `aggregate.py timing` prints a per-operation median table and
+writes `$RUN_DIR/summary.tsv`; `aggregate.py physical` writes `$RUN_DIR/report.md`.
 
 Timing is `psql \timing` on autocommit statements, so every figure is the
 end-to-end, client-observed cost **including** the post-statement refresh flush
@@ -153,13 +162,15 @@ end-to-end, client-observed cost **including** the post-statement refresh flush
 
 ## Reading the results
 
-Everything lands in `test/sql/real_benchmark/results/`:
+Everything lands in the run directory (`RUN_DIR`, default
+`test/sql/real_benchmark/results/physical/<timestamp>/`):
 
 | File | Contents |
 |------|----------|
-| `raw.tsv` | One row per measured statement: `scale⇥arm⇥op⇥ms`. |
-| `summary.tsv` | Per `(scale, arm, op)` stats: `n`, `min_ms`, `median_ms`, `mean_ms`. Arms are named `pg_tviews+jsonb_delta`, `pg_tviews+native`, `full_refresh_matview`. |
-| `<scale>_<arm>.log` | The raw `psql \timing` transcript for that arm (`small_a.log`, `large_c.log`, …). Grep these for `RB_OK` / `RB_DIVERGENCE`. |
+| `raw.tsv` | One row per measured statement: `scale⇥arm⇥mode⇥op⇥ms`. |
+| `summary.tsv` | Per `(scale, arm, mode, op)` stats: `n`, `min_ms`, `median_ms`, `mean_ms`. Arms are named `pg_tviews+jsonb_delta`, `pg_tviews+native`, `full_refresh_matview`. |
+| `<scale>_<arm>_<mode>.log` | The raw `psql \timing` transcript for that arm (`small_a_unlogged.log`, `large_c_logged.log`, …). Grep these for `RB_OK` / `RB_DIVERGENCE`. |
+| `physical.csv`, `explain/`, `env.tsv`, `report.md` | Physical cost; see below. |
 
 `aggregate.py` also prints a comparison table to stdout, e.g.:
 
@@ -180,6 +191,24 @@ Everything lands in `test/sql/real_benchmark/results/`:
 For how to interpret these — flat vs linear, point vs batch, the one-time build
 cost — see [results-interpretation.md](results-interpretation.md). The published
 figures are in [results.md](results.md).
+
+---
+
+## Physical cost
+
+Latency alone can't evaluate HOT eligibility, WAL volume, dead tuples or index
+churn, so every scenario also records them per step and per relation
+(`lib/stats.sql`), in both LOGGED and UNLOGGED TVIEW mode. Beyond the product
+catalogue, `scenarios/` adds a payload-size sweep (TOAST), a skewed-fan-out
+two-hop cascade (1M rows), and no-op refreshes. Run the whole matrix with:
+
+```bash
+./run_physical.sh --scales "small medium large"
+```
+
+The column reference and method notes are in the harness
+[README](../../test/sql/real_benchmark/README.md#physical-cost). The committed
+baseline on beta.17 defaults is [physical-baseline-beta17.md](physical-baseline-beta17.md).
 
 ---
 
@@ -223,7 +252,7 @@ WHERE t.data IS DISTINCT FROM v.data;
 ```
 
 **`aggregate.py` not found / python missing.** Install `python3`; the raw
-timings are still in `results/raw.tsv` even if aggregation fails.
+timings are still in `$RUN_DIR/raw.tsv` even if aggregation fails.
 
 ---
 
@@ -231,6 +260,7 @@ timings are still in `results/raw.tsv` even if aggregation fails.
 
 - [Benchmark Overview](overview.md) — schema, operations, and methodology
 - [Results](results.md) — published figures from a measured run
+- [Physical baseline (beta.17)](physical-baseline-beta17.md) — HOT, WAL, dead tuples, sizes on shipped defaults
 - [Results Interpretation](results-interpretation.md) — how to read the numbers
 - [jsonb_delta Integration](jsonb-ivm-integration.md) — jsonb_delta's role and the parity finding
 - [`test/sql/real_benchmark/README.md`](../../test/sql/real_benchmark/README.md) — harness details
