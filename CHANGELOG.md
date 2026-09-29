@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **Refreshes no longer rewrite unchanged rows** (#72). Every refresh path (bulk
+  recompute, per-row upsert, smart patch, direct patch, DISTINCT ON, array ops)
+  now skips the write when the recomputed row equals the stored one
+  (`IS DISTINCT FROM` guard). An unchanged row gets no new tuple version, no index
+  entries and no dead tuple. On the beta.17 baseline a no-op `UPDATE` over 10 000
+  rows rewrote all 10 000 TVIEW rows (13 MB of WAL on a logged TVIEW).
+- **Breaking: `updated_at` now means "last content change"**. It moves only when
+  the row's content changes, no longer on every refresh that touched the key.
+  Code that used `updated_at` as "last refreshed" must stop doing so; code using
+  it for cache validation / ETags gets correct values now.
+
+### Added
+
+- `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
+  of refresh writes skipped because nothing changed.
+
 ## [0.1.0-beta.17] - 2026-07-24
 
 ### Fixed
