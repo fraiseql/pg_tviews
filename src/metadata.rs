@@ -114,7 +114,7 @@ BEGIN
                         ELSE obj.object_identity
                     END;
 
-                    PERFORM pg_tviews_convert_table(table_name_only);
+                    PERFORM pg_tviews_convert_table(table_name_only, obj.command_tag);
                 EXCEPTION
                     WHEN OTHERS THEN
                         -- pg_tviews_convert_table raises its own error; re-raise here.

@@ -727,10 +727,11 @@ pub fn enqueue_pending_populate(tv_table_name: &str, view_name: &str, schema_nam
 
 /// Drain and convert any TVIEW tables that weren't converted by the event trigger.
 ///
-/// This is a fallback mechanism for bulk SQL operations where event triggers don't fire.
-/// `PostgreSQL`'s event trigger system may not fire during certain bulk import operations,
-/// so we check if there are any pending TVIEWs still in the cache after the statement
-/// executes and convert them directly.
+/// Fallback for statements whose event trigger did not run (for example
+/// `SET event_triggers = off`, or the trigger missing from the database). A normal CTAS is
+/// consumed by the event trigger, so the cache is empty here. Anything still pending is
+/// converted directly, but only for a relation this statement created (see
+/// [`created_by_this_statement`]).
 fn drain_pending_unconverted_tviews() {
     // Get all pending unconverted TVIEWs
     let entries: Vec<(String, String, String)> = PENDING_TVIEW_SELECTS

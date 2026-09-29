@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   extension statements by node type, releases the guard for `DO`/`CALL`, slices the statement
   by `stmt_location`/`stmt_len`, and resets the guard and pending state when a (sub)transaction
   aborts. A plain `CREATE TABLE tv_x (cols…)` is never converted.
+- **A `CREATE TABLE tv_* AS` that pg_tviews did not intercept now fails instead of leaving a
+  silent plain table (#80).** When the hook did not see the statement (pg_tviews not in
+  `shared_preload_libraries`), the event trigger raises an error naming the table, the reason
+  and the fix. `pg_tviews_convert_table(table_name, command_tag)` gained an optional
+  `command_tag`; the new `pg_tviews.test_skip_ctas_intercept` GUC exists for tests only.
 - **`CREATE TABLE IF NOT EXISTS tv_x AS …` no longer deletes an existing `tv_x` (#79).**
   PostgreSQL skipped the create but the fallback conversion still ran
   `DROP TABLE tv_x CASCADE`, leaving `pg_tview_meta` dangling. The hook now passes an
