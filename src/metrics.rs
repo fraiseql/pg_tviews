@@ -48,6 +48,8 @@ struct DirectPatchMetrics {
     fallbacks: u64,
     /// Tview rows recomputed from the backing view (the non-fast path).
     view_recomputes: u64,
+    /// Refresh writes skipped because the row already held the result (issue #72).
+    noop_skipped: u64,
 }
 
 impl DirectPatchMetrics {
@@ -57,6 +59,7 @@ impl DirectPatchMetrics {
             applied: 0,
             fallbacks: 0,
             view_recomputes: 0,
+            noop_skipped: 0,
         }
     }
 }
@@ -226,6 +229,15 @@ pub mod metrics_api {
         });
     }
 
+    /// Record `n` refresh writes skipped because nothing changed (issue #72).
+    pub fn record_noop_skipped(n: u64) {
+        if n > 0 {
+            DIRECT_PATCH_METRICS.with(|m| {
+                m.borrow_mut().noop_skipped += n;
+            });
+        }
+    }
+
     /// Get current queue statistics
     pub fn get_queue_stats() -> QueueStats {
         // Get current queue size from state
@@ -253,6 +265,7 @@ pub mod metrics_api {
                 direct_patches_applied: dp.applied,
                 direct_patch_fallbacks: dp.fallbacks,
                 view_recomputes: dp.view_recomputes,
+                refresh_noop_skipped: dp.noop_skipped,
             }
         })
     }
@@ -309,6 +322,8 @@ pub struct QueueStats {
     pub direct_patches_applied: u64,
     pub direct_patch_fallbacks: u64,
     pub view_recomputes: u64,
+    /// Session-cumulative refresh writes skipped as no-ops (issue #72).
+    pub refresh_noop_skipped: u64,
 }
 
 impl QueueStats {

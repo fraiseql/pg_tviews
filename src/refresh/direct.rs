@@ -77,15 +77,21 @@ pub fn derive_parent_chain(
 
 /// Apply one patch chain to a set of rows of a single entity.
 ///
-/// Generates a grouped `UPDATE tv_<entity> SET data = <nested patch calls> WHERE
-/// pk = ANY($n) RETURNING pk`. Patch values are always bound as JSONB parameters
-/// — never interpolated. Returns the pks actually updated (from `RETURNING`); the
-/// caller diffs these against the input to find rows that must recompute.
+/// Generates a grouped `UPDATE tv_<entity> SET data = <nested patch calls>` over
+/// `pk = ANY($n)`, guarded by `data IS DISTINCT FROM <patched>` so a patch that
+/// changes nothing writes nothing (issue #72). Patch values are always bound as
+/// JSONB parameters — never interpolated.
+///
+/// Returns `(pk, changed)` for every **materialised** row among `pks`: the
+/// guarded UPDATE runs in a data-modifying CTE and the outer SELECT reads the
+/// statement snapshot, so unchanged rows are still reported as present. The
+/// caller diffs these against the input to find rows that must recompute (not
+/// yet materialised).
 pub fn apply_direct_patch(
     meta: &TviewMeta,
     pks: &[i64],
     chain: &[PatchEntry],
-) -> spi::Result<Vec<i64>> {
+) -> spi::Result<Vec<(i64, bool)>> {
     if pks.is_empty() || chain.is_empty() {
         return Ok(Vec::new());
     }
@@ -96,8 +102,12 @@ pub fn apply_direct_patch(
     let pk_param = chain.len() + 1;
 
     let sql = format!(
-        "UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() \
-         WHERE {pk_col} = ANY(${pk_param}) RETURNING {pk_col}"
+        "WITH changed AS ( \
+             UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() \
+             WHERE {pk_col} = ANY(${pk_param}) AND data IS DISTINCT FROM {patch_expr} \
+             RETURNING {pk_col}) \
+         SELECT t.{pk_col}, t.{pk_col} IN (SELECT {pk_col} FROM changed) \
+         FROM {tv_name} t WHERE t.{pk_col} = ANY(${pk_param})"
     );
 
     // Params (all bound, nothing interpolated): one JSONB per chain entry, then the
@@ -136,13 +146,13 @@ pub fn apply_direct_patch(
         }
 
         let rows = client.select(&sql, None, &args)?;
-        let mut updated = Vec::new();
+        let mut materialised = Vec::new();
         for row in rows {
-            if let Some(pk) = row[1].value::<i64>()? {
-                updated.push(pk);
+            if let (Some(pk), Some(changed)) = (row[1].value::<i64>()?, row[2].value::<bool>()?) {
+                materialised.push((pk, changed));
             }
         }
-        Ok(updated)
+        Ok(materialised)
     })
 }
 
@@ -168,12 +178,14 @@ pub fn apply_entity_patches(
     let mut fallback = Vec::new();
     for (chain, pks) in groups.into_values() {
         for chunk in pks.chunks(batch) {
-            let updated = apply_direct_patch(meta, chunk, &chain)?;
-            let updated_set: HashSet<i64> = updated.iter().copied().collect();
+            let materialised = apply_direct_patch(meta, chunk, &chain)?;
+            let present: HashSet<i64> = materialised.iter().map(|&(pk, _)| pk).collect();
+            let changed = materialised.iter().filter(|&&(_, c)| c).count() as u64;
 
-            crate::metrics::metrics_api::record_direct_patches_applied(updated.len() as u64);
+            crate::metrics::metrics_api::record_direct_patches_applied(changed);
+            crate::metrics::metrics_api::record_noop_skipped(materialised.len() as u64 - changed);
             for &pk in chunk {
-                if !updated_set.contains(&pk) {
+                if !present.contains(&pk) {
                     fallback.push(pk);
                 }
             }
