@@ -460,8 +460,7 @@ fn extract_and_resolve_cascade_paths(
                 // Column-aware refresh: record which columns of this path's source
                 // table the target tview actually depends on (via pg_depend on the
                 // backing view). Empty ⇒ always refresh.
-                cp.source_columns =
-                    view_source_columns(schema_name, entity_name, &jp.source_table);
+                cp.source_columns = view_source_columns(schema_name, entity_name, &jp.source_table);
                 cascade_paths.push(cp);
             }
             Err(e) => {
