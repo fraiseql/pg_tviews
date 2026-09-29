@@ -91,6 +91,78 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
+/// Create the propagation indexes `(fk_<x>, pk_<entity>)` that TVIEWs created
+/// before they became part of TVIEW creation are missing.
+///
+/// Cascade propagation looks parent rows up by their integer `fk_*` columns;
+/// without an index that lookup scans the whole TVIEW. An `fk_*` column counts
+/// as covered when **any** index on the TVIEW leads with it, so user-created
+/// indexes are respected.
+///
+/// Returns the DDL for each missing index: executed, or only reported when
+/// `dry_run` is true. Idempotent: a second call returns no rows. On large
+/// TVIEWs run the reported statements by hand with `CREATE INDEX CONCURRENTLY`
+/// (which cannot run inside a function).
+///
+/// Usage:
+///   `SELECT * FROM pg_tviews_ensure_propagation_indexes();`         -- all TVIEWs
+///   `SELECT * FROM pg_tviews_ensure_propagation_indexes('post');`   -- one entity
+///   `SELECT * FROM pg_tviews_ensure_propagation_indexes(NULL, true);` -- dry run
+///
+/// # Errors
+/// Returns error if the catalog query or an index creation fails.
+#[pg_extern]
+fn pg_tviews_ensure_propagation_indexes(
+    entity: default!(Option<&str>, "NULL"),
+    dry_run: default!(bool, false),
+) -> Result<SetOfIterator<'static, String>, TViewError> {
+    let missing = Spi::connect(|client| {
+        let args = vec![unsafe {
+            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let rows = client.select(
+            "SELECT n.nspname::text, c.relname::text, a.attname::text, 'pk_' || m.entity \
+             FROM pg_tview_meta m \
+             JOIN pg_class c ON c.oid = m.table_oid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             WHERE ($1::text IS NULL OR m.entity = $1) \
+               AND a.attname LIKE 'fk\\_%' \
+               AND a.atttypid IN ('int2'::regtype, 'int4'::regtype, 'int8'::regtype) \
+               AND a.attname <> 'pk_' || m.entity \
+               AND EXISTS (SELECT 1 FROM pg_attribute p \
+                           WHERE p.attrelid = c.oid AND p.attname = 'pk_' || m.entity \
+                             AND NOT p.attisdropped) \
+               AND NOT EXISTS (SELECT 1 FROM pg_index i \
+                               WHERE i.indrelid = c.oid AND i.indkey[0] = a.attnum) \
+             ORDER BY 1, 2, 3",
+            None,
+            &args,
+        )?;
+        let mut ddl = Vec::new();
+        for row in rows {
+            if let (Some(schema), Some(table), Some(fk), Some(pk)) = (
+                row[1].value::<String>()?,
+                row[2].value::<String>()?,
+                row[3].value::<String>()?,
+                row[4].value::<String>()?,
+            ) {
+                ddl.push(crate::ddl::create::propagation_index_ddl(
+                    &schema, &table, &fk, &pk,
+                ));
+            }
+        }
+        Ok::<_, spi::Error>(ddl)
+    })?;
+
+    if !dry_run {
+        for ddl in &missing {
+            Spi::run(ddl)?;
+        }
+    }
+    Ok(SetOfIterator::new(missing))
+}
+
 /// Refresh all TVIEWs in the database.
 /// This is a convenience function for bulk operations like schema migrations
 /// or data seeding workflows.
