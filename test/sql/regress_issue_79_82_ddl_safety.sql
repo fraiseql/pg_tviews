@@ -63,9 +63,13 @@ DO $$ BEGIN
   EXCEPTION WHEN duplicate_table THEN NULL;
   END;
 END $$;
-CREATE TABLE tv_other_ctas_probe AS SELECT 1 AS x;   -- any later statement
+-- any later successful CTAS drains the pending cache (with the stale tv_post entry)
+CREATE TABLE tb_probe (pk_probe INTEGER PRIMARY KEY, id UUID DEFAULT gen_random_uuid() NOT NULL, n int);
+CREATE TABLE tv_probe AS
+    SELECT pk_probe, id, jsonb_build_object('n', n) AS data FROM tb_probe;
 SELECT _assert('tv_post'::regclass::oid = :oid_before, '#79: stale pending entry dropped tv_post');
-DROP TABLE tv_other_ctas_probe;
+DROP TABLE tv_probe;
+DROP TABLE tb_probe;
 
 -- ── #82 case 1: unregistered tv_* table drops like a plain table ─────────────────
 CREATE TABLE tv_order (id int);

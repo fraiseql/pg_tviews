@@ -353,6 +353,16 @@ unsafe fn handle_create_table_as(
                 .to_string()
         };
 
+        // Resolve the target relation BEFORE PostgreSQL runs the statement (catalog
+        // lookup, no SPI). `IF NOT EXISTS` on an existing relation makes PostgreSQL skip
+        // the create, so nothing would consume a pending SELECT (issue #79): pass through
+        // untouched. Otherwise remember the pre-existing OID so the fallback drain can
+        // tell "created by this statement" from "was already there".
+        let pre_existing_oid = resolve_relation_oid(into.rel);
+        if ctas_ref.if_not_exists && pre_existing_oid != pg_sys::InvalidOid {
+            return Ok(false);
+        }
+
         // Extract entity name
         let entity_name = &table_name[3..]; // Remove "tv_" prefix
 
@@ -403,6 +413,7 @@ unsafe fn handle_create_table_as(
                         e
                     ));
                 }
+                record_pre_existing_oid(table_name, pre_existing_oid);
 
                 Ok(false) // Pass through - let PostgreSQL create it
             }
@@ -419,6 +430,7 @@ unsafe fn handle_create_table_as(
                 {
                     warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
                 }
+                record_pre_existing_oid(table_name, pre_existing_oid);
                 Ok(false) // Let PostgreSQL create it, event trigger will convert
             }
         }
@@ -489,6 +501,40 @@ fn store_pending_tview_select(
     Ok(())
 }
 
+/// OID the target relation had before the CTAS ran (`InvalidOid` when it didn't exist).
+///
+/// Maps: `table_name` → OID. Lets [`drain_pending_unconverted_tviews`] refuse to drop a
+/// relation that the statement did not create (issue #79).
+static PENDING_PRE_EXISTING_OIDS: LazyLock<Mutex<std::collections::HashMap<String, pg_sys::Oid>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn record_pre_existing_oid(table_name: &str, oid: pg_sys::Oid) {
+    if let Ok(mut map) = PENDING_PRE_EXISTING_OIDS.lock() {
+        map.insert(table_name.to_string(), oid);
+    }
+}
+
+/// Resolve a `RangeVar` to a relation OID without locking or raising.
+///
+/// Returns `InvalidOid` when the relation (or its schema) doesn't exist. This is a
+/// direct catalog lookup: no SPI, so it is safe inside the hook's `catch_unwind`.
+///
+/// SAFETY: `rv` must be null or a valid `RangeVar*`.
+unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys::Oid {
+    if rv.is_null() {
+        return pg_sys::InvalidOid;
+    }
+    unsafe {
+        pg_sys::RangeVarGetRelidExtended(
+            rv,
+            pg_sys::NoLock.cast_signed(),
+            pg_sys::RVROption::RVR_MISSING_OK,
+            None,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
 /// Global cache for pending TVIEW SELECT statements.
 ///
 /// Maps: `table_name` → `(schema_name, select_sql)`.
@@ -506,6 +552,9 @@ static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, (
 /// conversion.  Returns `None` if no entry was stored for this table (which means the
 /// table was created by `pg_tviews_create()` directly, not via DDL interception).
 pub fn take_pending_tview_select(table_name: &str) -> Option<(String, String)> {
+    if let Ok(mut map) = PENDING_PRE_EXISTING_OIDS.lock() {
+        map.remove(table_name);
+    }
     PENDING_TVIEW_SELECTS.lock().ok()?.remove(table_name)
 }
 
@@ -568,8 +617,21 @@ fn drain_pending_unconverted_tviews() {
         entries.len()
     );
 
+    let pre_existing: std::collections::HashMap<String, pg_sys::Oid> = PENDING_PRE_EXISTING_OIDS
+        .lock()
+        .map(|mut map| std::mem::take(&mut *map))
+        .unwrap_or_default();
+
     // Convert each TVIEW directly in this context
     for (table_name, schema_name, select_sql) in entries {
+        if !created_by_this_statement(
+            &table_name,
+            &schema_name,
+            pre_existing.get(&table_name).copied(),
+        ) {
+            continue;
+        }
+
         notice!(
             "pg_tviews: Fallback converting TVIEW table '{}' (schema: '{}')",
             table_name,
@@ -624,6 +686,52 @@ fn drain_pending_unconverted_tviews() {
             }
         }
     }
+}
+
+/// Is the relation named by a pending CTAS one this statement created, and safe to replace?
+///
+/// The fallback conversion `DROP`s the plain table PostgreSQL made and rebuilds it as a
+/// TVIEW. That is only correct for a table the statement just created. A pending entry can
+/// outlive its statement (the CTAS was skipped by `IF NOT EXISTS`, or failed with
+/// "already exists"), in which case the relation is a pre-existing table or a registered
+/// TVIEW that must never be dropped (issue #79). Returns `false` (after warning) then.
+fn created_by_this_statement(
+    table_name: &str,
+    schema_name: &str,
+    pre_existing: Option<pg_sys::Oid>,
+) -> bool {
+    let qualified = if schema_name.is_empty() {
+        crate::utils::quote_identifier(table_name)
+    } else {
+        format!(
+            "{}.{}",
+            crate::utils::quote_identifier(schema_name),
+            crate::utils::quote_identifier(table_name)
+        )
+    };
+    let current: Option<pg_sys::Oid> = Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT to_regclass($1)::oid",
+        &[qualified.as_str().into()],
+    )
+    .ok()
+    .flatten();
+
+    let Some(current) = current else {
+        warning!("pg_tviews: table '{table_name}' not found for fallback conversion, skipping");
+        return false;
+    };
+    if pre_existing == Some(current) {
+        // Relation existed before the statement: it did not create anything.
+        return false;
+    }
+    if matches!(
+        crate::catalog::TviewMeta::load_for_tview(current),
+        Ok(Some(_))
+    ) {
+        warning!("pg_tviews: '{table_name}' is a registered TVIEW, not replacing it");
+        return false;
+    }
+    true
 }
 
 /// Drain and execute all pending TVIEW population requests.
@@ -741,48 +849,32 @@ unsafe fn handle_drop_table(
         // dependents raised a dependency error that surfaced as an opaque panic.
         let cascade = drop_ref.behavior == pg_sys::DropBehavior::DROP_CASCADE;
 
-        // Collect table names and indices from DropStmt.objects.
-        // Each element in objects is a List* of String* (name parts: [schema, table] or [table]).
+        // Collect registered TVIEWs from DropStmt.objects. Each element is a List* of
+        // String* name parts ([schema, table] or [table]). A name is claimed only if it
+        // resolves (schema-aware, like PostgreSQL) to a relation registered in
+        // `pg_tview_meta`; everything else — plain `tv_*` tables, missing names, other
+        // tables — is left in the list for the standard handler (issue #82).
         let num_tables = pg_sys::list_length(objects);
-        let mut tv_entries: Vec<(i32, String)> = Vec::new(); // (index, name)
+        let mut tv_entries: Vec<(i32, String)> = Vec::new(); // (index, tv_<entity>)
         let mut has_non_tv = false;
 
         for i in 0..num_tables {
             let name_list = pg_sys::list_nth(objects, i).cast::<pg_sys::List>();
-            if name_list.is_null() {
+            if name_list.is_null() || pg_sys::list_length(name_list) == 0 {
                 has_non_tv = true;
                 continue;
             }
 
-            // The last element in the name list is the table name (unqualified)
-            let name_parts = pg_sys::list_length(name_list);
-            if name_parts == 0 {
+            let rv = pg_sys::makeRangeVarFromNameList(name_list);
+            let relid = resolve_relation_oid(rv);
+            if relid == pg_sys::InvalidOid {
                 has_non_tv = true;
                 continue;
             }
 
-            // Get the last name part (table name, ignoring schema qualification)
-            let last_part = pg_sys::list_nth(name_list, name_parts - 1).cast::<pg_sys::String>();
-            if last_part.is_null() {
-                has_non_tv = true;
-                continue;
-            }
-
-            let sval = (*last_part).sval;
-            if sval.is_null() {
-                has_non_tv = true;
-                continue;
-            }
-
-            let Ok(table_name) = CStr::from_ptr(sval).to_str() else {
-                has_non_tv = true;
-                continue;
-            };
-
-            if table_name.starts_with("tv_") {
-                tv_entries.push((i, table_name.to_string()));
-            } else {
-                has_non_tv = true;
+            match crate::catalog::TviewMeta::load_for_tview(relid) {
+                Ok(Some(meta)) => tv_entries.push((i, format!("tv_{}", meta.entity_name))),
+                _ => has_non_tv = true,
             }
         }
 
@@ -790,18 +882,9 @@ unsafe fn handle_drop_table(
             return Ok(false);
         }
 
-        // Drop each tv_* table via drop_tview
+        // Drop each registered TVIEW via drop_tview
         for (_, name) in &tv_entries {
-            match drop_tview(name, if_exists, cascade) {
-                Ok(()) => {}
-                Err(e) => {
-                    if if_exists {
-                        notice!("TVIEW '{}' does not exist, skipping", name);
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
+            drop_tview(name, if_exists, cascade)?;
         }
 
         // If there were non-tv_* tables, remove tv_* entries from the objects list
