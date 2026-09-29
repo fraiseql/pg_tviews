@@ -20,6 +20,8 @@
 //! | `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement |
 //! | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory cache |
 //! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path (issue #56) |
+//! | `pg_tviews.data_gin_index` | bool | false | GIN index on `data` for new TVIEWs |
+//! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
 //!
 //! ## Compile-time Constants
 //!
@@ -54,6 +56,8 @@ static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
 static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+static DATA_GIN_INDEX_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+static FILLFACTOR_GUC: GucSetting<i32> = GucSetting::<i32>::new(85);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -143,6 +147,29 @@ pub fn register_gucs() {
         c"Create TVIEW tables as UNLOGGED by default.",
         c"When true, new TVIEWs are created as UNLOGGED tables for better write performance.",
         &UNLOGGED_BY_DEFAULT_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.data_gin_index",
+        c"Create a GIN index on the data column of new TVIEWs.",
+        c"Off by default: nearly every refresh rewrites data, so an index on it makes \
+          every refresh a non-HOT update. Enable per TVIEW (SET LOCAL) only when \
+          top-level containment queries (data @> ...) need it.",
+        &DATA_GIN_INDEX_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_int_guc(
+        c"pg_tviews.fillfactor",
+        c"Heap fillfactor for new TVIEW tables.",
+        c"Free space kept on each page so refreshes can place the new row version on \
+          the same page (HOT update). 100 packs pages fully, for append-mostly TVIEWs.",
+        &FILLFACTOR_GUC,
+        10,  // min (PostgreSQL's own lower bound for heap fillfactor)
+        100, // max
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -269,6 +296,18 @@ pub fn audit_enabled() -> bool {
 #[must_use]
 pub fn unlogged_by_default() -> bool {
     UNLOGGED_BY_DEFAULT_GUC.get()
+}
+
+/// Whether new TVIEWs get a GIN index on `data` (default: false)
+#[must_use]
+pub fn data_gin_index() -> bool {
+    DATA_GIN_INDEX_GUC.get()
+}
+
+/// Heap fillfactor for new TVIEW tables (default: 85)
+#[must_use]
+pub fn fillfactor() -> i32 {
+    FILLFACTOR_GUC.get()
 }
 
 /// Check if trigger-based refresh is suspended (default: false)
