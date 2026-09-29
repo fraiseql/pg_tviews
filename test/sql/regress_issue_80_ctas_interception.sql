@@ -86,6 +86,16 @@ SELECT _assert(EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'note')
                AND to_regclass('v_note') IS NOT NULL, '#80 function: tv_note not converted');
 SELECT _assert((SELECT count(*) FROM tv_note) = 1, '#80 function: tv_note not populated');
 
+-- ── Shape 5: COMMIT inside a procedure keeps working (guard scoping must not change it) ─
+CREATE PROCEDURE _bump_note() LANGUAGE plpgsql AS $p$
+BEGIN
+  UPDATE tb_note SET body = 'n2';
+  COMMIT;
+  UPDATE tb_note SET body = 'n3';
+END $p$;
+CALL _bump_note();
+SELECT _assert((SELECT data->>'body' FROM tv_note) = 'n3', '#80 procedure COMMIT: tv_note stale');
+
 -- A tv_* created with a column list (not CTAS) stays a plain table.
 CREATE TABLE tv_plain (id int);
 SELECT _assert(NOT EXISTS (SELECT 1 FROM pg_tview_meta WHERE table_oid = 'tv_plain'::regclass),

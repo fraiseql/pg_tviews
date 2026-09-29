@@ -37,6 +37,10 @@ static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
 /// can corrupt state, causing a segfault in `PostgreSQL` 18.
 static mut HOOK_IN_PROGRESS: bool = false;
 
+/// Transaction nest level at which `HOOK_IN_PROGRESS` was set, so a (sub)transaction abort
+/// that unwinds past the hook can release a guard the hook never got to reset.
+static mut HOOK_GUARD_LEVEL: i32 = 0;
+
 /// Install the `ProcessUtility` hook to intercept CREATE/DROP TABLE `tv_*`
 /// Install the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 pub unsafe fn install_hook() {
@@ -97,14 +101,47 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         };
         return;
     }
-    unsafe { HOOK_IN_PROGRESS = true };
+
+    // DO blocks and CALL run arbitrary user code (which may itself issue CREATE TABLE
+    // tv_* AS, DROP TABLE tv_*, …). They are not statements this hook handles, so run them
+    // without holding the reentrancy guard: otherwise every nested user statement would
+    // take the shortcut above, meant for pg_tviews' own internal DDL (issue #80).
+    if !pstmt.is_null() && unsafe { !(*pstmt).utilityStmt.is_null() } {
+        let tag = unsafe { (*(*pstmt).utilityStmt).type_ };
+        if tag == pg_sys::NodeTag::T_DoStmt || tag == pg_sys::NodeTag::T_CallStmt {
+            unsafe {
+                call_prev_hook_or_standard(
+                    pstmt,
+                    query_string,
+                    read_only_tree,
+                    context,
+                    params,
+                    query_env,
+                    dest,
+                    qc,
+                );
+            };
+            return;
+        }
+    }
+
+    unsafe {
+        HOOK_IN_PROGRESS = true;
+        HOOK_GUARD_LEVEL = pg_sys::GetCurrentTransactionNestLevel();
+    };
 
     // Check for COMMIT/END BEFORE the catch_unwind block.
     // flush_refresh_queue() uses SPI which may trigger PostgreSQL ereport(ERROR)
     // → longjmp → pgrx panic. This MUST NOT be caught by catch_unwind because
     // that corrupts PG_exception_stack. The #[pg_guard] on this function handles
     // error propagation correctly via C-unwind.
-    if !pstmt.is_null() && unsafe { !(*pstmt).utilityStmt.is_null() } {
+    //
+    // Top level only: a COMMIT issued inside a procedure (`CALL`) has its own semantics and
+    // used to be skipped by the reentrancy guard the enclosing statement held.
+    if !pstmt.is_null()
+        && unsafe { !(*pstmt).utilityStmt.is_null() }
+        && context == pg_sys::ProcessUtilityContext::PROCESS_UTILITY_TOPLEVEL
+    {
         let utility_stmt = unsafe { (*pstmt).utilityStmt };
         if unsafe { (*utility_stmt).type_ } == pg_sys::NodeTag::T_TransactionStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → TransactionStmt* cast
@@ -142,28 +179,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
     let result = std::panic::catch_unwind(|| -> Result<bool, TViewError> {
-        let query_str = if query_string.is_null() {
-            "[NULL]".to_string()
-        } else {
-            unsafe { CStr::from_ptr(query_string) }
-                .to_string_lossy()
-                .to_string()
-        };
-
-        let query_lower = query_str.to_lowercase();
-
-        // Skip extension-related statements to avoid infinite recursion during installation
-        if query_lower.contains("create extension") || query_lower.contains("drop extension") {
-            // Invalidate the jsonb_delta availability latch first, so a backend that
-            // cached availability re-checks on its next refresh after CREATE/DROP
-            // EXTENSION jsonb_delta (issue #50). This is a pair of atomic stores — no
-            // SPI — and runs before the pass-through so the stale value cannot survive.
-            if query_lower.contains("jsonb_delta") {
-                crate::lifecycle::invalidate_jsonb_delta_cache();
-            }
-            return Ok(false); // Pass through
-        }
-
         // Safety check
         if pstmt.is_null() {
             return Ok(false); // Pass through
@@ -179,12 +194,27 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let utility_stmt = pstmt_ref.utilityStmt;
         let node_tag = unsafe { (*utility_stmt).type_ };
 
+        // Skip extension statements to avoid infinite recursion during installation. This
+        // is decided from the statement's node type, not the query text: in a multi-statement
+        // batch the text is the whole batch, so a text test would also skip every other
+        // statement in it (issue #80).
+        if let Some(extensions) = unsafe { extension_statement_names(utility_stmt) } {
+            // Invalidate the jsonb_delta availability latch first, so a backend that
+            // cached availability re-checks on its next refresh after CREATE/DROP
+            // EXTENSION jsonb_delta (issue #50). This is a pair of atomic stores — no
+            // SPI — and runs before the pass-through so the stale value cannot survive.
+            if extensions.iter().any(|e| e == "jsonb_delta") {
+                crate::lifecycle::invalidate_jsonb_delta_cache();
+            }
+            return Ok(false); // Pass through
+        }
+
         // Check for CREATE TABLE AS
         if node_tag == pg_sys::NodeTag::T_CreateTableAsStmt {
             #[allow(clippy::cast_ptr_alignment)]
             // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
-            match unsafe { handle_create_table_as(ctas, query_string) } {
+            match unsafe { handle_create_table_as(ctas, pstmt, query_string) } {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(e) => return Err(e),
@@ -305,6 +335,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 /// All pointers are validated with null checks before dereferencing.
 unsafe fn handle_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
+    pstmt: *const pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,
 ) -> Result<bool, TViewError> {
     // SAFETY: All pointer dereferences are guarded by null checks above each use.
@@ -379,25 +410,15 @@ unsafe fn handle_create_table_as(
                 "No query string provided for CREATE TABLE AS"
             ));
         } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
-            // Extract the SELECT part from "CREATE TABLE tv_X AS SELECT ..."
-            // We need to find the AS that comes after the table name, not column aliases
-            // Strategy: Find "CREATE TABLE <name> AS" pattern
-            let sql_lower = sql.to_lowercase();
-            // Find the table name position (we already know it's tv_<entity>)
-            let table_pattern = format!("{} as", table_name.to_lowercase());
-
-            if let Some(table_pos) = sql_lower.find(&table_pattern) {
-                // Found "tv_<entity> AS" - skip past it
-                let select_start = table_pos + table_pattern.len();
-                let select_part = sql[select_start..].trim();
-                // Remove trailing semicolon if present
-                select_part.trim_end_matches(';').trim().to_string()
-            } else {
-                return Err(TViewError::InvalidSelectStatement {
-                    sql: sql.to_string(),
-                    reason: format!("Could not find '{table_pattern}' in query"),
-                });
-            }
+            // `query_string` is the whole simple-query batch; slice out just this
+            // statement, then strip its `CREATE TABLE … AS` prefix (issue #95).
+            let stmt_sql = statement_text(sql, pstmt);
+            extract_ctas_select(stmt_sql, table_name).ok_or_else(|| {
+                TViewError::InvalidSelectStatement {
+                    sql: stmt_sql.to_string(),
+                    reason: format!("Could not find 'CREATE TABLE {table_name} AS' in query"),
+                }
+            })?
         } else {
             return Err(crate::internal_error!("Failed to parse query string"));
         };
@@ -434,6 +455,83 @@ unsafe fn handle_create_table_as(
                 Ok(false) // Let PostgreSQL create it, event trigger will convert
             }
         }
+    }
+}
+
+/// The text of the single statement `pstmt` covers within a (possibly multi-statement)
+/// `query_string`, using `stmt_location` / `stmt_len` (`-1` / `0` mean "unknown" and
+/// "to the end of the string"). Falls back to the whole string if the range is invalid.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt*`.
+unsafe fn statement_text(query_string: &str, pstmt: *const pg_sys::PlannedStmt) -> &str {
+    if pstmt.is_null() {
+        return query_string;
+    }
+    let (location, len) = unsafe { ((*pstmt).stmt_location, (*pstmt).stmt_len) };
+    let Ok(start) = usize::try_from(location) else {
+        return query_string;
+    };
+    let end = match usize::try_from(len) {
+        Ok(len) if len > 0 => start.saturating_add(len),
+        _ => query_string.len(),
+    };
+    query_string
+        .get(start..end.min(query_string.len()))
+        .unwrap_or(query_string)
+}
+
+/// Extract the SELECT from the text of one `CREATE TABLE [schema.]tv_x AS SELECT …`
+/// statement: everything after the `AS` that follows the table name, without a trailing `;`.
+///
+/// Anchored at the statement start so an earlier occurrence of the table name (a comment,
+/// another statement) can't be matched.
+fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<String> {
+    let re = regex::Regex::new(&format!(
+        r#"(?is)^\s*create\s+(?:[a-z]+\s+){{0,2}}?table\s+(?:if\s+not\s+exists\s+)?(?:"?[^\s."]+"?\s*\.\s*)?"?{}"?\s+as\s+"#,
+        regex::escape(table_name)
+    ))
+    .ok()?;
+    let m = re.find(stmt_sql)?;
+    let select = stmt_sql[m.end()..].trim().trim_end_matches(';').trim();
+    (!select.is_empty()).then(|| select.to_string())
+}
+
+/// If `node` is `CREATE EXTENSION` or `DROP EXTENSION`, the extension name(s) it names.
+///
+/// SAFETY: `node` must be a valid, non-null `Node*`.
+unsafe fn extension_statement_names(node: *mut pg_sys::Node) -> Option<Vec<String>> {
+    unsafe {
+        let tag = (*node).type_;
+        if tag == pg_sys::NodeTag::T_CreateExtensionStmt {
+            #[allow(clippy::cast_ptr_alignment)]
+            // Reason: PostgreSQL Node* → CreateExtensionStmt* cast
+            let stmt = node.cast::<pg_sys::CreateExtensionStmt>();
+            let name = if (*stmt).extname.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr((*stmt).extname)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            return Some(vec![name]);
+        }
+        if tag == pg_sys::NodeTag::T_DropStmt {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
+            let stmt = node.cast::<pg_sys::DropStmt>();
+            if (*stmt).removeType != pg_sys::ObjectType::OBJECT_EXTENSION {
+                return None;
+            }
+            let mut names = Vec::new();
+            let objects = (*stmt).objects;
+            for i in 0..pg_sys::list_length(objects) {
+                let item = pg_sys::list_nth(objects, i).cast::<pg_sys::String>();
+                if !item.is_null() && !(*item).sval.is_null() {
+                    names.push(CStr::from_ptr((*item).sval).to_string_lossy().into_owned());
+                }
+            }
+            return Some(names);
+        }
+        None
     }
 }
 
@@ -545,6 +643,40 @@ unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys::Oid {
 /// Cleared by: Event trigger after successful conversion
 static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, (String, String)>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Forget every pending CTAS SELECT (and its pre-existing-OID record).
+///
+/// Called on (sub)transaction abort: a pending entry only lives from the hook storing it to
+/// the event trigger consuming it within one statement, so anything left over belongs to a
+/// statement that failed and must not be applied to a later, unrelated table of the same
+/// name. Pure in-memory work — safe inside transaction callbacks (no SPI).
+pub fn discard_pending_ctas() {
+    if let Ok(mut pending) = PENDING_TVIEW_SELECTS.lock() {
+        pending.clear();
+    }
+    if let Ok(mut oids) = PENDING_PRE_EXISTING_OIDS.lock() {
+        oids.clear();
+    }
+}
+
+/// Release the reentrancy guard if the hook invocation that took it was aborted.
+///
+/// An `ereport(ERROR)` raised while the hook runs a statement (e.g. a CTAS inside a DO
+/// block failing with "already exists", caught by the block's EXCEPTION clause) longjmps
+/// past the hook before it can reset `HOOK_IN_PROGRESS`. The guard is released here when
+/// the aborting (sub)transaction is at or above the level that took it; a guard taken by an
+/// enclosing, still-running hook invocation (lower level) is left alone.
+/// `whole_xact` is true for a top-level transaction abort. No SPI: safe in callbacks.
+pub fn release_hook_guard_on_abort(whole_xact: bool) {
+    // SAFETY: single-threaded backend; plain reads/writes of process-local statics.
+    unsafe {
+        if HOOK_IN_PROGRESS
+            && (whole_xact || pg_sys::GetCurrentTransactionNestLevel() <= HOOK_GUARD_LEVEL)
+        {
+            HOOK_IN_PROGRESS = false;
+        }
+    }
+}
 
 /// Retrieve and remove a pending TVIEW `(schema_name, SELECT)` pair.
 ///
@@ -1015,5 +1147,55 @@ unsafe fn call_prev_hook_or_standard(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ctas_extraction_tests {
+    use super::extract_ctas_select;
+
+    #[test]
+    fn extracts_select_and_strips_semicolon() {
+        let sql = "CREATE TABLE tv_post AS SELECT pk_post, id, data FROM tb_post;";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("SELECT pk_post, id, data FROM tb_post")
+        );
+    }
+
+    #[test]
+    fn handles_schema_if_not_exists_and_case() {
+        let sql = "create table if not exists public.tv_post as\n  select 1";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("select 1")
+        );
+    }
+
+    #[test]
+    fn ignores_earlier_occurrences_of_the_name() {
+        let sql = "/* tv_post as */ CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
+        // Anchored at the statement start: a leading comment is not a CTAS prefix.
+        assert_eq!(extract_ctas_select(sql, "tv_post"), None);
+        let sql = "CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("SELECT 'tv_post as x' FROM t")
+        );
+    }
+
+    #[test]
+    fn does_not_match_a_different_table() {
+        let sql = "CREATE TABLE tv_post_extra AS SELECT 1";
+        assert_eq!(extract_ctas_select(sql, "tv_post"), None);
+    }
+
+    #[test]
+    fn handles_quoted_names() {
+        let sql = "CREATE TABLE \"s\".\"tv_post\" AS SELECT 1";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("SELECT 1")
+        );
     }
 }

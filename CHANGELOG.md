@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`CREATE TABLE tv_* AS` is converted in a multi-statement batch, in `DO` blocks and in
+  functions (#80), and only the statement's own SELECT is used (#95).** The hook skipped a
+  whole batch whose text mentioned `create extension`, `DO` held the internal reentrancy guard
+  for its nested statements, and the SELECT was cut from the raw batch text. It now decides
+  extension statements by node type, releases the guard for `DO`/`CALL`, slices the statement
+  by `stmt_location`/`stmt_len`, and resets the guard and pending state when a (sub)transaction
+  aborts. A plain `CREATE TABLE tv_x (cols…)` is never converted.
 - **`CREATE TABLE IF NOT EXISTS tv_x AS …` no longer deletes an existing `tv_x` (#79).**
   PostgreSQL skipped the create but the fallback conversion still ran
   `DROP TABLE tv_x CASCADE`, leaving `pg_tview_meta` dangling. The hook now passes an
