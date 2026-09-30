@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.18] - 2026-09-30
+
 ### Added
 
 - `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
