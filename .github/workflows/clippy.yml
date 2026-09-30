@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 mold
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
@@ -31,10 +31,13 @@ jobs:
       - name: Run pure-Rust unit tests
         run: |
           # PostgreSQL symbols only resolve inside a server, so let the linker
-          # ignore them. #[pg_test]s (named pg_test_*) need a server and are
-          # covered by the SQL suites instead; skipping them also avoids pgrx
-          # reinstalling a pg_test build of the extension.
-          RUSTFLAGS="-C link-arg=-Wl,--unresolved-symbols=ignore-all" \
+          # ignore them. Link with mold: GNU ld and lld keep the unresolved
+          # symbols as dynamic imports, and the test binary then fails to load
+          # ("symbol lookup error"); mold resolves them statically. #[pg_test]s
+          # (named pg_test_*) need a server and are covered by the SQL suites
+          # instead; skipping them also avoids pgrx reinstalling a pg_test build
+          # of the extension.
+          RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--unresolved-symbols=ignore-all" \
             cargo test --lib --no-default-features --features pg18 -- --skip pg_test_
 
   clippy:
