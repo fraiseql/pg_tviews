@@ -1,0 +1,83 @@
+name: confiture
+
+# confiture's TVIEW suites run against the commit under test (#135): they pin what
+# confiture relies on (tviews.registry, contract_version(), create_or_replace()), so
+# they are the conformance tests of the contract for tools. Informational on pull
+# requests; required by the release workflow before a tag is published. A failure is
+# a conversation with confiture, not necessarily a pg_tviews bug.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_call:
+
+env:
+  PG_MAJOR: "18"
+  PGRX_VERSION: "0.17.0"
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.3.0"
+  CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
+  # The confiture commit whose suites this release must pass. Empty until confiture
+  # targets the tviews schema; a release cannot be tagged while it is empty.
+  CONFITURE_REF: ""
+
+jobs:
+  confiture:
+    name: confiture TVIEW suites
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the pinned confiture ref
+        id: pin
+        run: |
+          if [ -z "${CONFITURE_REF}" ]; then
+            if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+              echo "::notice::no confiture ref pinned yet (CONFITURE_REF); skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::CONFITURE_REF is empty: pin the confiture commit this release must pass"
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up PostgreSQL, pgrx and jsonb_delta
+        if: steps.pin.outputs.skip != 'true'
+        uses: ./.github/actions/setup-postgres
+        with:
+          pg-major: ${{ env.PG_MAJOR }}
+          pgrx-version: ${{ env.PGRX_VERSION }}
+          jsonb-delta-repo: ${{ env.JSONB_DELTA_REPO }}
+          jsonb-delta-ref: ${{ env.JSONB_DELTA_REF }}
+
+      - name: Install the commit under test, preloaded
+        if: steps.pin.outputs.skip != 'true'
+        run: |
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
+          sudo -u postgres psql -p "${PGPORT}" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart
+          psql -d postgres -c "CREATE DATABASE confiture_test"
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.pin.outputs.skip != 'true'
+
+      - name: Run confiture's TVIEW suites
+        if: steps.pin.outputs.skip != 'true'
+        run: |
+          git init -q /tmp/confiture
+          cd /tmp/confiture
+          git remote add origin "${CONFITURE_REPO}"
+          git fetch -q --depth 1 origin "${CONFITURE_REF}"
+          git checkout -q FETCH_HEAD
+          uv sync --locked --extra dev
+          CONFITURE_TEST_DB_URL="postgresql://postgres@localhost:${PGPORT}/confiture_test" \
+            uv run pytest \
+              tests/integration/test_tview_live.py tests/integration/test_tview_migrate.py \
+              tests/unit/test_tview_model.py tests/unit/test_tview_ddl.py \
+              tests/unit/test_drift_tviews.py -q -rs

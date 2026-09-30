@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   TVIEW requires owning it, and no superuser is needed. Calls for one entity are
   serialized with an advisory lock (also taken by `pg_tviews_create`, `pg_tviews_drop`
   and `pg_tviews_reregister`). Works in any transaction, `DO` block or batch.
+- **confiture's TVIEW suites run in CI** (#135). `.github/workflows/confiture.yml`
+  builds the commit under test, preloads it on PostgreSQL 18 and runs confiture's
+  TVIEW suites at a pinned confiture commit: informational on pull requests,
+  required by the release workflow before a tag is published.
 - **Release tarball layout** (#137): `lib/pg_tviews.so` and `extension/` (control file,
   install and upgrade scripts), to copy into `pg_config --pkglibdir` and
   `pg_config --sharedir`/extension.
