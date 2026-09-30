@@ -225,12 +225,9 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
 static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Invalidate the OID→qualified relname cache and the extension schema.
+/// Invalidate the OID→qualified relname cache.
 /// Called when DDL creates/drops tables.
 pub fn invalidate_oid_relname_cache() {
-    *EXT_SCHEMA_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     OID_QUALIFIED_RELNAME_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -337,50 +334,18 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     Ok(qname)
 }
 
-/// Quoted schema of the `pg_tviews` extension, resolved once per backend.
-/// Invalidated with the relname caches.
-static EXT_SCHEMA_CACHE: Mutex<Option<String>> = Mutex::new(None);
+/// Schema every `pg_tviews` object lives in, fixed by the control file.
+const EXT_SCHEMA: &str = "tviews";
 
 /// `pg_tview_meta`, qualified with the extension's schema, so catalog queries do
-/// not depend on the session's `search_path`. Falls back to the bare name if the
-/// extension row cannot be read.
+/// not depend on the session's `search_path`.
 pub fn meta_table() -> String {
-    format!("{}.pg_tview_meta", ext_schema())
+    format!("{EXT_SCHEMA}.pg_tview_meta")
 }
 
-/// Quoted schema the `pg_tviews` extension is installed in (e.g. `public`).
-/// Falls back to `public`, where the extension's own SQL expects to live, if the
-/// extension row cannot be read.
-pub fn ext_schema() -> String {
-    let mut cache = EXT_SCHEMA_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(schema) = cache.as_ref() {
-        return schema.clone();
-    }
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let resolved = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT pg_catalog.quote_ident(n.nspname) \
-                 FROM pg_catalog.pg_extension e \
-                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
-                 WHERE e.extname = 'pg_tviews'",
-                None,
-                &[],
-            )?
-            .first()
-            .get_one::<String>()
-    })
-    .ok()
-    .flatten();
-    match resolved {
-        Some(schema) => {
-            *cache = Some(schema.clone());
-            schema
-        }
-        None => "public".to_string(),
-    }
+/// Schema the `pg_tviews` extension is installed in. It needs no quoting.
+pub const fn ext_schema() -> &'static str {
+    EXT_SCHEMA
 }
 
 /// Get the list of column names for a view/table by schema-qualified name. Results are cached per session.
@@ -517,6 +482,30 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
+pub const MAX_IDENTIFIER_BYTES: usize = 63;
+
+/// Fit a generated identifier into 63 bytes.
+///
+/// `PostgreSQL` silently truncates identifiers longer than 63 bytes, so two long
+/// names could collide. An over-long name is cut at a char boundary and suffixed
+/// with an FNV-1a hash of the full name, which keeps it unique and stable.
+#[must_use]
+pub fn fit_identifier(full: String) -> String {
+    if full.len() <= MAX_IDENTIFIER_BYTES {
+        return full;
+    }
+    let hash = full.bytes().fold(0x811c_9dc5_u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    });
+    let tag = format!("_{hash:08x}");
+    let mut cut = MAX_IDENTIFIER_BYTES - tag.len();
+    while !full.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{tag}", &full[..cut])
 }
 
 #[cfg(test)]

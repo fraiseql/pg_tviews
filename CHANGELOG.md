@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **The extension lives in schema `tviews`** (#136, ADR 0136). `CREATE EXTENSION
+  pg_tviews` used to install into the first schema on `search_path`, with
+  `pg_tviews_performance_summary` and the audit-log index hardcoded to `public`; every
+  object is now in `tviews`, which `CREATE EXTENSION` creates when missing. `WITH
+  SCHEMA` is refused, and so is an existing `tviews` schema owned by another role. The
+  install script no longer uses `CREATE OR REPLACE` or `IF NOT EXISTS`, so an object
+  planted under one of its names fails the install instead of being reused. Function
+  names keep their `pg_tviews_` prefix: call them as `tviews.pg_tviews_create(…)` or
+  add `tviews` to `search_path`. Nothing pg_tviews does at run time needs it there:
+  base-table and event triggers call the extension's functions qualified.
+
+### Fixed
+
+- **Long or multibyte trigger names** (#136). A base-table trigger is named
+  `trg_tview[_flush]_<entity>_on_<schema>_<table>`, which PostgreSQL truncates to 63
+  bytes: two TVIEWs whose names share their first 53 characters could not both
+  trigger on one table (`trigger … already exists`), and dropping a TVIEW over a table
+  in a schema with multibyte characters left its triggers behind, because removal cut
+  the name to 63 characters. Over-long names are now shortened with a hash, the way
+  index names are, and a TVIEW's triggers are found by their function and the entity
+  they carry as argument, so a renamed table or schema no longer hides them either.
+
+### Upgrade notes
+
+- The extension moves to schema `tviews`, and there is still no upgrade script from
+  `0.1.0`: re-create the extension as described for 0.1.0-beta.19 below. Unqualified
+  calls to `pg_tviews_*` functions then need `tviews` on `search_path` (for example
+  `ALTER DATABASE … SET search_path = "$user", public, tviews`). `DROP EXTENSION
+  pg_tviews` leaves the `tviews` schema behind, empty.
+
 ## [0.1.0-beta.19] - 2026-09-30
 
 ### Added

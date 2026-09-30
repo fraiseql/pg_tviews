@@ -83,28 +83,28 @@ SET client_min_messages TO WARNING;
 -- Cycle 1: the catalog comes back and names the restored relations
 -- ========================================================================
 DO $$ BEGIN
-  IF (SELECT count(*) FROM pg_tview_meta) <> 2 THEN
+  IF (SELECT count(*) FROM tviews.pg_tview_meta) <> 2 THEN
     RAISE EXCEPTION '#96 FAIL: pg_tview_meta has % rows after restore, expected 2',
-      (SELECT count(*) FROM pg_tview_meta);
+      (SELECT count(*) FROM tviews.pg_tview_meta);
   END IF;
-  IF (SELECT table_oid::oid FROM pg_tview_meta WHERE entity = 'author')
+  IF (SELECT table_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'author')
        IS DISTINCT FROM 'public.tv_author'::regclass::oid
-     OR (SELECT view_oid::oid FROM pg_tview_meta WHERE entity = 'author')
+     OR (SELECT view_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'author')
        IS DISTINCT FROM 'public.v_author'::regclass::oid THEN
     RAISE EXCEPTION '#96 FAIL: author catalog row does not point at the restored tv_author / v_author';
   END IF;
-  IF (SELECT table_oid::oid FROM pg_tview_meta WHERE entity = 'post')
+  IF (SELECT table_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'post')
        IS DISTINCT FROM 'app.tv_post'::regclass::oid
-     OR (SELECT view_oid::oid FROM pg_tview_meta WHERE entity = 'post')
+     OR (SELECT view_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'post')
        IS DISTINCT FROM 'app.v_post'::regclass::oid THEN
     RAISE EXCEPTION '#96 FAIL: post catalog row does not point at the restored app.tv_post / app.v_post';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_tview_meta m, unnest(m.cascade_paths) cp
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp
              WHERE m.entity = 'post'
                AND (cp::jsonb->>'source_oid')::oid <> 'public.tb_author'::regclass::oid) THEN
     RAISE EXCEPTION '#96 FAIL: post cascade path still carries the source database''s tb_author OID';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_tview_meta m, unnest(m.cascade_paths) cp,
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp,
                     jsonb_array_elements(cp::jsonb->'hops') h
              WHERE m.entity = 'post'
                AND (h->>'table_oid')::oid <> 'app.tb_post'::regclass::oid) THEN
@@ -154,7 +154,7 @@ FROM public.tb_tag;
 RESET search_path;
 
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'tag') THEN
+  IF NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'tag') THEN
     RAISE EXCEPTION '#96 FAIL: CTAS tv_tag under search_path = '''' was not registered';
   END IF;
 END $$;
