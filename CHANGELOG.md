@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   back to `pg_get_viewdef` text (with a NOTICE).
 - The per-transaction cascade-path cache was only cleared on abort, so a
   committed metadata change could be served stale paths by the same session.
+- **`pg_dump` / `pg_restore` round-trips TVIEWs** (#96). The catalog tables
+  `pg_tview_meta` and `pg_tview_helpers` are marked with
+  `pg_extension_config_dump`, so their rows are dumped; before, a restored
+  database had `tv_*`, `v_*` and the triggers but no registered TVIEW, and writes
+  to the base tables no longer reached the TVIEW. On restore, an insert trigger
+  on `pg_tview_meta` rebinds the relation OIDs stored in `cascade_paths`.
+  Databases whose extension was created on beta.18 or earlier do not get the
+  marking and must re-register their TVIEWs after a restore.
+- `CREATE TABLE tv_* AS SELECT ...` under a `search_path` without the extension
+  schema (for example `search_path = ''`, as in `pg_dump` scripts) no longer
+  fails with `function pg_tviews_convert_table(text, text) does not exist` (#96).
+- A CTAS TVIEW that joins a table in another schema no longer fails at creation
+  with `relation "<tview schema>.<table>" does not exist`.
+
+### Changed
+
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
 ## [0.1.0-beta.18] - 2026-09-30
 
