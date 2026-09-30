@@ -46,11 +46,12 @@ its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 |---|---|---|
 | `logged` | `boolean` | `pg_class.relpersistence` |
 | `fillfactor` | `integer` | the table's `fillfactor` reloption, 100 when unset |
-| `data_gin_index` | `boolean` | whether a GIN index on `data` exists |
+| `data_gin_index` | `boolean` | whether a valid GIN index on `data` with the default `jsonb_ops` operator class exists |
 | `group_keys` | `object` or `null` | the source table → group key column map of an aggregate TVIEW; `null` for a plain one |
 
 Values come from the system catalogs where they can, so the view reports the truth
-after a manual `ALTER TABLE`.
+after a manual `ALTER TABLE`. A registration whose table is gone (dropped without pg_tviews
+seeing it) stays visible, with `schema`, `logged` and `options` NULL.
 
 ## Stability rules
 

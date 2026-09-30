@@ -112,6 +112,12 @@ SELECT must(
     = ARRAY['tb_order', 'tb_user'],
     'tv_user_orders base_tables');
 
+-- A user's jsonb_path_ops GIN index on data is not pg_tviews' data_gin_index.
+CREATE INDEX tv_user_path_idx ON tv_user USING gin (data jsonb_path_ops);
+SELECT must((SELECT NOT (options->>'data_gin_index')::boolean FROM tviews.registry
+             WHERE entity = 'user'), 'jsonb_path_ops index counted as data_gin_index');
+DROP INDEX tv_user_path_idx;
+
 -- 4. needs_reregister follows the catalog.
 UPDATE tviews.pg_tview_meta SET needs_reregister = true WHERE entity = 'user';
 SELECT must((SELECT needs_reregister FROM tviews.registry WHERE entity = 'user'),
