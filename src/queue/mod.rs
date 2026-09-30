@@ -6,6 +6,7 @@
 //! - Enqueue/dequeue operations
 //! - Transaction callback registration
 
+pub mod affected;
 pub mod cache;
 pub mod graph;
 mod integration_tests;

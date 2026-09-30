@@ -134,11 +134,13 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
         XactEvent::Prepare => {
             // PREPARE TRANSACTION also goes through ProcessUtility hook.
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
         XactEvent::Abort => {
             // Auto-resume suspension on abort (discard changes)
@@ -152,6 +154,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
     }
 }
@@ -185,6 +188,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(snapshot);
                 });
+                super::affected::savepoint_start();
 
                 // Snapshot the patch map in lockstep (issue #56).
                 let patch_snapshot = super::patch::take_patch_snapshot();
@@ -211,6 +215,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
                     super::patch::replace_patch_map(patch_snapshot);
                 }
+                super::affected::savepoint_abort();
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
                 // RELEASE SAVEPOINT: just decrement depth and discard snapshot
@@ -223,6 +228,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 PATCH_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
+                super::affected::savepoint_commit();
             }
             _ => {
                 // Ignore other subtransaction events

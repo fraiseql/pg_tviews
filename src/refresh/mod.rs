@@ -85,13 +85,15 @@ pub(crate) fn upsert_conflict_action(
     format!("DO UPDATE SET {set} WHERE {stored} IS DISTINCT FROM {fresh}")
 }
 
-/// Run `INSERT INTO tv_name (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`
-/// and record the rows its `IS DISTINCT FROM` guard skipped (issue #72).
+/// Run `INSERT INTO tv_name (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
+/// record the rows its `IS DISTINCT FROM` guard skipped (issue #72) and journal the
+/// rows it inserted or updated (issue #76).
 ///
 /// The source runs once, in a CTE; the statement returns how many rows the source
-/// produced and how many were inserted or updated, and the difference is added to
-/// `refresh_noop_skipped`.
+/// produced and the `pk_<entity>` of each row written, split into inserted
+/// (`xmax = 0`) and updated. The skipped count is added to `refresh_noop_skipped`.
 pub(crate) fn run_counted_upsert(
+    entity: &str,
     tv_name: &str,
     col_list: &str,
     source_sql: &str,
@@ -99,15 +101,52 @@ pub(crate) fn run_counted_upsert(
     args: &[DatumWithOid],
 ) -> spi::Result<()> {
     let qi_tv = quote_identifier(tv_name);
+    let qi_pk = quote_identifier(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
-                     {conflict} RETURNING 1) \
-         SELECT (SELECT count(*) FROM src), (SELECT count(*) FROM written)"
+                     {conflict} RETURNING {qi_pk}::text AS k, xmax = 0 AS inserted) \
+         SELECT (SELECT count(*) FROM src), \
+                (SELECT array_agg(k) FROM written WHERE inserted), \
+                (SELECT array_agg(k) FROM written WHERE NOT inserted)"
     );
-    let (produced, written) = Spi::get_two_with_args::<i64, i64>(&sql, args)?;
-    let skipped = produced.unwrap_or(0).saturating_sub(written.unwrap_or(0));
-    crate::metrics::metrics_api::record_noop_skipped(skipped.unsigned_abs());
+    let (produced, inserted, updated) =
+        Spi::get_three_with_args::<i64, Vec<String>, Vec<String>>(&sql, args)?;
+    let inserted = inserted.unwrap_or_default();
+    let updated = updated.unwrap_or_default();
+    let written = (inserted.len() + updated.len()) as u64;
+    crate::metrics::metrics_api::record_noop_skipped(
+        produced.unwrap_or(0).unsigned_abs().saturating_sub(written),
+    );
+    for pk in inserted {
+        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Inserted);
+    }
+    for pk in updated {
+        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Updated);
+    }
+    Ok(())
+}
+
+/// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed.
+pub(crate) fn run_journaled_delete(
+    entity: &str,
+    sql: &str,
+    args: &[DatumWithOid],
+) -> spi::Result<()> {
+    let deleted = Spi::connect_mut(|client| {
+        let mut out = Vec::new();
+        for row in client.update(sql, None, args)? {
+            let pk: Option<String> = row.get(1)?;
+            let id: Option<String> = row.get(2)?;
+            if let Some(pk) = pk {
+                out.push((pk, id));
+            }
+        }
+        Ok::<_, spi::Error>(out)
+    })?;
+    for (pk, id) in deleted {
+        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Deleted(id));
+    }
     Ok(())
 }
 
