@@ -77,6 +77,73 @@ fn pg_tviews_health_check() -> TableIterator<
         ));
     }
 
+    // Catalog revision (issue #137): does this library match the installed SQL?
+    results.push(match crate::revision::installed() {
+        crate::revision::Installed::Matches => (
+            "OK".to_string(),
+            "catalog".to_string(),
+            format!(
+                "catalog revision {} matches the library",
+                crate::revision::CATALOG_REVISION
+            ),
+            "info".to_string(),
+        ),
+        crate::revision::Installed::Differs(revision) => (
+            "ERROR".to_string(),
+            "catalog".to_string(),
+            format!(
+                "library catalog revision {} does not match the installed extension ({revision}): \
+                 run ALTER EXTENSION pg_tviews UPDATE",
+                crate::revision::CATALOG_REVISION
+            ),
+            "error".to_string(),
+        ),
+        crate::revision::Installed::Unversioned => (
+            "ERROR".to_string(),
+            "catalog".to_string(),
+            "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql"
+                .to_string(),
+            "error".to_string(),
+        ),
+    });
+
+    // TVIEWs registered before a release that changed what registration derives.
+    let stale = Spi::connect(|client| {
+        client
+            .select(
+                &format!(
+                    "SELECT count(*) FROM {} WHERE needs_reregister",
+                    crate::utils::meta_table()
+                ),
+                None,
+                &[],
+            )?
+            .first()
+            .get_one::<i64>()
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(0);
+    results.push(if stale == 0 {
+        (
+            "OK".to_string(),
+            "reregister".to_string(),
+            "No TVIEW needs re-registration".to_string(),
+            "info".to_string(),
+        )
+    } else {
+        (
+            "WARNING".to_string(),
+            "reregister".to_string(),
+            format!(
+                "{stale} TVIEW{} registered by an older release: run \
+                 SELECT * FROM tviews.pg_tviews_reregister_all()",
+                if stale == 1 { "" } else { "s" }
+            ),
+            "warning".to_string(),
+        )
+    });
+
     // Check 4: pg_tviews' triggers against the tables the TVIEWs read (issue #139).
     match crate::dependency::triggers::trigger_problems() {
         Ok(p) if p.orphaned.is_empty() && p.missing.is_empty() && p.untagged.is_empty() => {

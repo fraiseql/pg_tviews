@@ -1,0 +1,139 @@
+name: Upgrade
+
+# An install of the previous release, upgraded to the commit under test, must have
+# exactly the catalog of a fresh install and keep its TVIEWs working
+# (docs/development/extension-versioning.md, ADR 0136).
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PG_MAJOR: "18"
+  PGRX_VERSION: "0.17.0"
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.3.0"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  upgrade-path:
+    name: upgrade-path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the previous release
+        id: previous
+        run: |
+          tag="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 \
+                 --json tagName -q '.[0].tagName')"
+          mkdir -p /tmp/previous
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+            -p "pg_tviews-${tag}.tar.gz" -D /tmp/previous
+          tar xzf "/tmp/previous/pg_tviews-${tag}.tar.gz" -C /tmp/previous
+          if [ ! -f /tmp/previous/extension/pg_tviews.control ]; then
+            echo "::notice::the previous release ${tag} predates versioned extension SQL; installs of it move with scripts/migrate-from-0.1.0.sql (job migrate-from-0.1.0)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          prev="$(sed -n "s/^default_version = '\(.*\)'/\1/p" /tmp/previous/extension/pg_tviews.control)"
+          cur="$(grep '^version' Cargo.toml | sed 's/.*version = "\(.*\)".*/\1/')"
+          if [ "$prev" = "$cur" ]; then
+            echo "::notice::${cur} is the released version; nothing to upgrade from"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f "sql/pg_tviews--${prev}--${cur}.sql" ]; then
+            echo "::error::no upgrade script sql/pg_tviews--${prev}--${cur}.sql"
+            exit 1
+          fi
+          echo "Upgrading ${prev} -> ${cur}"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up PostgreSQL, pgrx and jsonb_delta
+        if: steps.previous.outputs.skip != 'true'
+        uses: ./.github/actions/setup-postgres
+        with:
+          pg-major: ${{ env.PG_MAJOR }}
+          pgrx-version: ${{ env.PGRX_VERSION }}
+          jsonb-delta-repo: ${{ env.JSONB_DELTA_REPO }}
+          jsonb-delta-ref: ${{ env.JSONB_DELTA_REF }}
+
+      - name: Install the previous release from its tarball
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          pg_config="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          sudo cp /tmp/previous/lib/pg_tviews.so "$("$pg_config" --pkglibdir)/"
+          sudo cp /tmp/previous/extension/pg_tviews* "$("$pg_config" --sharedir)/extension/"
+          sudo -u postgres psql -p "${PGPORT}" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart
+
+      - name: Create fixture TVIEWs with the previous release
+        if: steps.previous.outputs.skip != 'true'
+        run: ./test/upgrade/upgrade_check.sh before
+
+      - name: Install the commit under test
+        if: steps.previous.outputs.skip != 'true'
+        run: |
+          # Overwriting a loaded library crashes the backends using it: stop first.
+          sudo pg_ctlcluster "${PG_MAJOR}" main stop
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
+          sudo pg_ctlcluster "${PG_MAJOR}" main start
+
+      - name: ALTER EXTENSION UPDATE and compare with a fresh install
+        if: steps.previous.outputs.skip != 'true'
+        run: ./test/upgrade/upgrade_check.sh after update
+
+  # Installs of 0.1.0 (every release up to v0.1.0-beta.19) cannot be updated in place.
+  # Remove this job once no supported release predates versioned extension SQL.
+  migrate-from-0-1-0:
+    name: migrate-from-0.1.0
+    runs-on: ubuntu-latest
+    env:
+      PREVIOUS: v0.1.0-beta.19
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PostgreSQL, pgrx and jsonb_delta
+        uses: ./.github/actions/setup-postgres
+        with:
+          pg-major: ${{ env.PG_MAJOR }}
+          pgrx-version: ${{ env.PGRX_VERSION }}
+          jsonb-delta-repo: ${{ env.JSONB_DELTA_REPO }}
+          jsonb-delta-ref: ${{ env.JSONB_DELTA_REF }}
+
+      - name: Install ${{ env.PREVIOUS }} from its tarball
+        run: |
+          mkdir -p /tmp/previous
+          gh release download "$PREVIOUS" -R "$GITHUB_REPOSITORY" \
+            -p "pg_tviews-${PREVIOUS}.tar.gz" -D /tmp/previous
+          # Releases before the versioned layout packed target/release/; the
+          # installable files are its pg_tviews-pg18 package.
+          pkg="target/release/pg_tviews-pg${PG_MAJOR}"
+          tar xzf "/tmp/previous/pg_tviews-${PREVIOUS}.tar.gz" -C /tmp/previous "$pkg"
+          pg_config="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          sudo cp "/tmp/previous/${pkg}$("$pg_config" --pkglibdir)/pg_tviews.so" \
+            "$("$pg_config" --pkglibdir)/"
+          sudo cp "/tmp/previous/${pkg}$("$pg_config" --sharedir)"/extension/pg_tviews* \
+            "$("$pg_config" --sharedir)/extension/"
+          sudo -u postgres psql -p "${PGPORT}" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart
+
+      - name: Create fixture TVIEWs with ${{ env.PREVIOUS }}
+        run: ./test/upgrade/upgrade_check.sh before
+
+      - name: Install the commit under test
+        run: |
+          # Overwriting a loaded library crashes the backends using it: stop first.
+          sudo pg_ctlcluster "${PG_MAJOR}" main stop
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
+          sudo pg_ctlcluster "${PG_MAJOR}" main start
+
+      - name: Migrate with scripts/migrate-from-0.1.0.sql and compare with a fresh install
+        run: ./test/upgrade/upgrade_check.sh after migrate

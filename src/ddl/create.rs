@@ -485,9 +485,10 @@ fn create_tview_inner(
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
-/// with the same analysis as [`create_tview`]. Used when a column rename has
-/// changed the text that defines `v_<entity>`; the relations themselves (and the
-/// base-table triggers) are unchanged.
+/// with the same analysis as [`create_tview`], and return the base tables its
+/// backing view reads. Used when a column rename has changed the text that
+/// defines `v_<entity>`, and by `pg_tviews_reregister()`; the relations themselves
+/// are unchanged.
 ///
 /// # Errors
 /// Returns an error if the definition cannot be analyzed or the catalog update fails.
@@ -495,7 +496,7 @@ pub fn reregister_metadata(
     entity_name: &str,
     schema_name: &str,
     definition: &str,
-) -> TViewResult<()> {
+) -> TViewResult<Vec<pg_sys::Oid>> {
     let schema = infer_schema(definition)?;
     let distinct_on_keys =
         crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
@@ -538,7 +539,55 @@ pub fn reregister_metadata(
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
-    Ok(())
+    Ok(dep_graph.base_tables)
+}
+
+/// Re-derive `entity`'s metadata from its stored definition and make its
+/// base-table triggers match what that definition reads (issue #137).
+///
+/// # Errors
+/// Returns an error if the TVIEW is not registered, the caller does not own it,
+/// or the definition cannot be analyzed.
+pub fn reregister_tview(entity: &str) -> TViewResult<()> {
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+        TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+    })?;
+    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    let (definition, schema_name) =
+        Spi::connect(|client| {
+            // SAFETY: the datum borrows `entity`, which outlives the select.
+            let args = [unsafe {
+                DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+            }];
+            client
+                .select(
+                    &format!(
+                        "SELECT m.definition, n.nspname::text \
+                     FROM {} m \
+                     JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE m.entity = $1",
+                        crate::utils::meta_table()
+                    ),
+                    None,
+                    &args,
+                )?
+                .first()
+                .get_two::<String, String>()
+        })
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Read the definition of TVIEW {entity}"),
+            pg_error: e.to_string(),
+        })?;
+    let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
+        return Err(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        });
+    };
+    let base_tables = reregister_metadata(entity, &schema_name, &definition)?;
+    crate::dependency::sync_entity_triggers(&base_tables, entity)
 }
 
 /// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
@@ -1612,8 +1661,9 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
-    // A re-registration (after a column rename) replaces every derived column but
-    // keeps created_at.
+    // A re-registration (after a column rename, or by pg_tviews_reregister)
+    // replaces every derived column, keeps created_at and graphql_typename, and
+    // clears needs_reregister.
     let on_conflict = if replace {
         "ON CONFLICT (entity) DO UPDATE SET \
             view_oid = EXCLUDED.view_oid, table_oid = EXCLUDED.table_oid, \
@@ -1626,7 +1676,8 @@ fn register_metadata(
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
-            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds"
+            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
+            needs_reregister = false"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };

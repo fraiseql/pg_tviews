@@ -57,6 +57,7 @@ fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
 /// be resolved, or the truncate/insert operations fail.
 #[pg_extern]
 fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
+    crate::revision::check();
     let (qi_tv, insert) = rebuild_statements(entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&insert)?;
@@ -130,6 +131,7 @@ fn pg_tviews_ensure_propagation_indexes(
     entity: default!(Option<&str>, "NULL"),
     dry_run: default!(bool, false),
 ) -> Result<SetOfIterator<'static, String>, TViewError> {
+    crate::revision::check();
     let missing = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -188,6 +190,7 @@ fn pg_tviews_ensure_propagation_indexes(
 /// Returns error if any TVIEW cannot be refreshed
 #[pg_extern]
 fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
+    crate::revision::check();
     let order = refresh_all_in_dependency_order()?;
     if order.is_empty() {
         info!("No TVIEWs found to refresh");
@@ -220,6 +223,7 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
 /// Raises a `PostgreSQL` ERROR if any trigger cannot be migrated.
 #[pg_extern]
 fn pg_tviews_migrate_triggers() {
+    crate::revision::check();
     if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
         error!("Failed to migrate triggers: {:?}", e);
     }
@@ -239,6 +243,7 @@ fn pg_tviews_show_cascade_path(
         name!(depends_on, String),
     ),
 > {
+    crate::revision::check();
     let results = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())

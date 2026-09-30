@@ -55,6 +55,19 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             );
             return;
         };
+        // A library installed without ALTER EXTENSION UPDATE: say so once and idle
+        // until the next start, instead of failing into the restart loop.
+        if !matches!(
+            crate::revision::installed(),
+            crate::revision::Installed::Matches
+        ) {
+            log!(
+                "pg_tviews: library catalog revision {} does not match the extension in \
+                 database \"{database}\"; not rebuilding (run ALTER EXTENSION pg_tviews UPDATE)",
+                crate::revision::CATALOG_REVISION
+            );
+            return;
+        }
         let path = format!("{}, public", crate::utils::quote_identifier(&schema));
         // SAFETY: the text datum borrows `path`, which outlives the call.
         let args = [unsafe {

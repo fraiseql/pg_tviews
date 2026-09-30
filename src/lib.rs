@@ -44,6 +44,7 @@ mod rebuild_worker;
 mod refresh;
 mod replication;
 mod report;
+mod revision;
 mod sql_parser;
 mod trigger;
 mod utils;
@@ -93,6 +94,7 @@ pub fn pg_tviews_suspend_triggers() {
 /// changed while suspended (and every TVIEW embedding one of them) is rebuilt.
 #[pg_extern]
 pub fn pg_tviews_resume_triggers() {
+    crate::revision::check();
     if let Err(e) = crate::suspend::resume() {
         error!("{}", e);
     }
@@ -107,6 +109,7 @@ pub fn pg_tviews_resume_triggers() {
 /// in which order, and how long it took.
 #[pg_extern]
 pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
+    crate::revision::check();
     if crate::suspend::is_suspended() {
         return Err("Cannot refresh: triggers are suspended".to_string());
     }

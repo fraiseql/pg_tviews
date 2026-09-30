@@ -30,6 +30,7 @@ fn pg_tviews_convert_table(
     table_name: String,
     command_tag: default!(Option<String>, "NULL"),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    crate::revision::check();
     // Log event trigger entry
     log_debug!("pg_tviews_convert_table start for table '{}'", table_name);
 

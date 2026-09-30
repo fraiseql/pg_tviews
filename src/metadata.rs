@@ -86,7 +86,11 @@ extension_sql!(
         -- Aggregate TVIEWs this one embeds (issue #126): aggregate entity -> the
         -- output column holding the aggregate's key, used to propagate aggregate
         -- changes.
-        aggregate_embeds JSONB NOT NULL DEFAULT '{}'
+        aggregate_embeds JSONB NOT NULL DEFAULT '{}',
+        -- A release changed what registration derives since this TVIEW was last
+        -- registered (issue #137): it keeps refreshing with its old metadata until
+        -- pg_tviews_reregister() re-derives it. Upgrade scripts set it.
+        needs_reregister BOOLEAN NOT NULL DEFAULT false
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -113,6 +117,14 @@ extension_sql!(
     -- view definitions, which pg_views already shows to everyone. Only the
     -- extension owner writes it.
     GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
+
+    -- Revision of this catalog (issue #137). The library refuses to work against a
+    -- catalog of another revision; an upgrade script that changes the extension SQL
+    -- redefines this function, and the library's revision::CATALOG_REVISION with it.
+    CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
+    RETURNS integer
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS 'SELECT 1';
     ",
     name = "create_metadata_tables",
 );

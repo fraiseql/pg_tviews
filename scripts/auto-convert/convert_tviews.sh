@@ -4,7 +4,7 @@
 # Helper script to automatically convert tv_* tables to TVIEWs
 #
 # Usage:
-#   ./sql/convert_tviews.sh [-d database] [-s schema] [-p]
+#   ./scripts/auto-convert/convert_tviews.sh [-d database] [-s schema] [-p]
 #
 # Options:
 #   -d, --database DB     PostgreSQL database (default: postgres)

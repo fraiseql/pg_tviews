@@ -293,10 +293,10 @@ An eligible update leaves `view_recomputes` unchanged and bumps
 
 ### Upgrade note
 
-The column→key map is extracted **at `pg_tviews_create` time**. Tviews created
-before this version have an empty map, so the fast path stays inactive for them
-until they are re-created (`pg_tviews_drop` + `pg_tviews_create`). Existing tviews
-keep working unchanged on the recompute path.
+The column→key map is extracted **when a TVIEW is registered**. TVIEWs registered by
+an older release keep working on the recompute path until
+`SELECT * FROM tviews.pg_tviews_reregister_all()` re-derives their metadata in place
+(see [Upgrading](#upgrading)).
 
 ---
 
@@ -447,6 +447,26 @@ base table, the refresh reads and writes each affected TVIEW as the owner of its
 their privileges on the base tables; grant application roles `SELECT` on the
 `tv_*` tables they read. The owner needs `SELECT` on everything its definition
 reads.
+
+#### Upgrading
+
+Each release has its own extension version (`SELECT extversion FROM pg_extension
+WHERE extname = 'pg_tviews'`) and ships upgrade scripts:
+
+1. Install the new package and restart PostgreSQL (the library is preloaded).
+2. In each database: `ALTER EXTENSION pg_tviews UPDATE;`
+3. When the release notes say so, or `tviews.pg_tviews_health_check()` reports TVIEWs
+   to re-register: `SELECT * FROM tviews.pg_tviews_reregister_all();` It re-derives
+   each TVIEW's metadata and triggers from its definition, without touching its rows.
+
+Between steps 1 and 2, writes to the TVIEWs' base tables fail with
+`pg_tviews library catalog revision … does not match the installed extension`: they
+are never served by a mismatched library.
+
+Installs of `0.1.0` (every release up to 0.1.0-beta.19) cannot be updated in place.
+After step 1, run [`scripts/migrate-from-0.1.0.sql`](scripts/migrate-from-0.1.0.sql) in
+each database instead: it moves the extension to `tviews` and re-registers every
+TVIEW, keeping their rows (not the audit log).
 
 ### Your First TVIEW
 

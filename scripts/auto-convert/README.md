@@ -58,7 +58,7 @@ Before applying changes, preview what will happen:
 
 ```sql
 -- Load the helper functions
-\i sql/auto_convert_tviews.sql
+\i scripts/auto-convert/auto_convert_tviews.sql
 
 -- Preview the conversion
 SELECT entity, base_table, backing_view FROM pg_tviews_auto_convert_plan();
@@ -86,7 +86,7 @@ Add this to your build process after creating base tables:
 psql -d mydb -f schema.sql
 
 # Auto-convert base tables to TVIEWs
-psql -d mydb -f sql/auto_convert_tviews.sql
+psql -d mydb -f scripts/auto-convert/auto_convert_tviews.sql
 psql -d mydb -c "SELECT entity, status FROM pg_tviews_auto_convert();"
 
 # Optionally verify

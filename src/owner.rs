@@ -12,6 +12,7 @@
 //! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
+use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
@@ -119,6 +120,44 @@ impl Drop for AsOwner {
             pg_sys::SetUserIdAndSecContext(self.saved_user, self.saved_context);
         }
     }
+}
+
+/// Raise `insufficient_privilege` unless the current user has the privileges of
+/// the owner of `table` (a TVIEW's `tv_*`) or of the extension's owner, as
+/// `ALTER TABLE` would require.
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
+    let allowed = Spi::connect(|client| {
+        // SAFETY: the datum copies `table`.
+        let args =
+            [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        client
+            .select(
+                "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+                     OR pg_catalog.pg_has_role(e.extowner, 'USAGE') \
+                 FROM pg_catalog.pg_class c, pg_catalog.pg_extension e \
+                 WHERE c.oid = $1 AND e.extname = 'pg_tviews'",
+                None,
+                &args,
+            )?
+            .first()
+            .get_one::<bool>()
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check ownership of {tview}"),
+        pg_error: e.to_string(),
+    })?;
+    if allowed != Some(true) {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_INSUFFICIENT_PRIVILEGE,
+            format!("must be owner of TVIEW {tview}"),
+            function_name!(),
+        )
+        .report(PgLogLevel::ERROR);
+    }
+    Ok(())
 }
 
 /// Owner of the relation `table`, from the syscache: cheap enough for the row

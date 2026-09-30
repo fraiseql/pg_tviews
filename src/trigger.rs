@@ -81,6 +81,7 @@ fn extract_distinct_on_key(
 fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    crate::revision::check();
     // Extract table OID
     let table_oid = match trigger.relation() {
         Ok(rel) => rel.oid(),
