@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `oid`, so a dump stores them as names (#96). They now print as relation names;
   cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
+### Removed
+
+- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
+  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
+
 ## [0.1.0-beta.18] - 2026-09-30
 
 ### Added
