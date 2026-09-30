@@ -43,10 +43,25 @@ struct Journal {
 
 thread_local! {
     static JOURNAL: RefCell<Journal> = RefCell::new(Journal::default());
+    /// Rows changed during the current flush, uncapped: propagation reads it to
+    /// skip parents of rows whose refresh changed nothing (issue #85).
+    static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, String)>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// A flush starts: forget the previous flush's changed rows.
+pub fn begin_flush() {
+    FLUSH_CHANGED.with(|c| c.borrow_mut().clear());
+}
+
+/// Whether `entity`'s row `pk` was inserted, updated or deleted in this flush.
+pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
+    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk.to_string())))
 }
 
 /// Record that a refresh write changed `entity`'s row `pk`.
 pub fn record(entity: &str, pk: String, change: Change) {
+    FLUSH_CHANGED.with(|c| c.borrow_mut().insert((entity.to_string(), pk.clone())));
     let cap = crate::config::report_max_tracked();
     if cap == 0 {
         return;
