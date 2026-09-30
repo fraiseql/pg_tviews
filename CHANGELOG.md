@@ -24,6 +24,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 - `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
   of refresh writes skipped because nothing changed.
+### Fixed
+
+- **`CREATE TABLE tv_* AS` is converted in a multi-statement batch, in `DO` blocks and in
+  functions (#80), and only the statement's own SELECT is used (#95).** The hook skipped a
+  whole batch whose text mentioned `create extension`, `DO` held the internal reentrancy guard
+  for its nested statements, and the SELECT was cut from the raw batch text. It now decides
+  extension statements by node type, releases the guard for `DO`/`CALL`, slices the statement
+  by `stmt_location`/`stmt_len`, and resets the guard and pending state when a (sub)transaction
+  aborts. A plain `CREATE TABLE tv_x (cols…)` is never converted.
+- **A `CREATE TABLE tv_* AS` that pg_tviews did not intercept now fails instead of leaving a
+  silent plain table (#80).** When the hook did not see the statement (pg_tviews not in
+  `shared_preload_libraries`), the event trigger raises an error naming the table, the reason
+  and the fix. `pg_tviews_convert_table(table_name, command_tag)` gained an optional
+  `command_tag`; the new `pg_tviews.test_skip_ctas_intercept` GUC exists for tests only.
+- **`CREATE TABLE IF NOT EXISTS tv_x AS …` no longer deletes an existing `tv_x` (#79).**
+  PostgreSQL skipped the create but the fallback conversion still ran
+  `DROP TABLE tv_x CASCADE`, leaving `pg_tview_meta` dangling. The hook now passes an
+  `IF NOT EXISTS` over an existing relation through untouched, and the fallback only
+  replaces a relation the statement itself created (never a pre-existing table or a
+  registered TVIEW), including after a failed `CREATE TABLE tv_x AS` that left a pending entry.
+- **`DROP TABLE [IF EXISTS] tv_x` on a `tv_*` table that isn't a registered TVIEW now
+  behaves like PostgreSQL (#82).** It was claimed by the hook and silently kept. The hook now
+  claims a name only if it resolves, schema-aware, to a relation registered in
+  `pg_tview_meta`; plain tables, missing names and mixed lists go to the standard handler.
 
 ## [0.1.0-beta.17] - 2026-07-24
 

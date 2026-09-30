@@ -374,3 +374,20 @@ rm /usr/share/postgresql/17/extension/pg_tviews*
 - **[Quick Start](quickstart.md)** - Create your first TVIEW
 - **[FraiseQL Integration](fraiseql-integration.md)** - Framework integration patterns
 - **[Monitoring](../operations/monitoring.md)** - Production monitoring setup
+## Creating TVIEWs with `CREATE TABLE tv_<entity> AS`
+
+pg_tviews intercepts `CREATE TABLE [schema.]tv_<entity> AS SELECT …` and turns it into a
+TVIEW. This works:
+
+- as a top-level statement, including in a multi-statement batch (`psql -c "…; …"`) and in the
+  same batch as `CREATE EXTENSION pg_tviews`;
+- inside `DO` blocks, functions and procedures;
+- with `IF NOT EXISTS`: over an existing TVIEW or table the statement is a no-op.
+
+`CREATE TABLE tv_<entity> (col type, …)` (a column list, no `AS SELECT`) is an ordinary table and
+is never converted. `SELECT … INTO tv_<entity>` is treated like a CTAS.
+
+Interception needs the extension's library loaded in the session, so add it to
+`shared_preload_libraries` and restart PostgreSQL. If a `tv_*` CTAS reaches the server without
+being intercepted, the statement **fails** with an error that names the table and this fix,
+instead of leaving a plain table behind. Migration tools no longer need a preflight check for it.

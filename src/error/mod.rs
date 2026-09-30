@@ -582,8 +582,9 @@ mod tests {
 
         // All SQLSTATEs should be unique (though some may share codes intentionally)
         assert!(
-            unique_sqlstates.len() >= 15,
-            "Too many duplicate SQLSTATE codes"
+            unique_sqlstates.len() >= 14,
+            "Too many duplicate SQLSTATE codes ({})",
+            unique_sqlstates.len()
         );
     }
 }

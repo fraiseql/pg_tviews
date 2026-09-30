@@ -66,7 +66,7 @@ pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(Str
 
     // 5. Classify each key/value pair.
     let mut pairs: Vec<(String, String)> = Vec::new();
-    for pair in parts.chunks_exact(2) {
+    for pair in parts.as_chunks::<2>().0 {
         let (Some(key), Some(col)) = (
             parse_key_literal(&pair[0]),
             classify_direct_value(&pair[1], base_table, alias.as_deref()),

@@ -306,10 +306,8 @@ mod tests {
     #[test]
     fn test_topological_sort() {
         // Entity graph:
-        // company (no deps)
-        // user -> company
-        // post -> user
-        // feed -> post
+        // company -> user -> post -> feed
+        // (`children[x]` lists the entities that must be refreshed after `x`)
 
         let entities: HashSet<String> = ["company", "user", "post", "feed"]
             .iter()
@@ -317,9 +315,9 @@ mod tests {
             .collect();
 
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
-        children.insert("user".to_string(), vec!["company".to_string()]);
-        children.insert("post".to_string(), vec!["user".to_string()]);
-        children.insert("feed".to_string(), vec!["post".to_string()]);
+        children.insert("company".to_string(), vec!["user".to_string()]);
+        children.insert("user".to_string(), vec!["post".to_string()]);
+        children.insert("post".to_string(), vec!["feed".to_string()]);
 
         let topo = topological_sort(&entities, &children).unwrap();
 

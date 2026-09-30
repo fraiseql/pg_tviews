@@ -206,7 +206,7 @@ mod tests {
     use pgrx::prelude::*;
 
     #[pg_test]
-    fn sanity_check() {
+    fn test_sanity_check() {
         let two: i32 = 2;
         assert_eq!(two, 1 + 1);
     }
