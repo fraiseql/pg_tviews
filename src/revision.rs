@@ -50,7 +50,7 @@ pub fn check() {
             ),
             function_name!(),
         )
-        .set_hint("run ALTER EXTENSION pg_tviews UPDATE")
+        .set_hint(remedy(revision))
         .report(PgLogLevel::ERROR),
         Installed::Unversioned => pg_sys::panic::ErrorReport::new(
             PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
@@ -66,6 +66,24 @@ pub fn check() {
         )
         .report(PgLogLevel::ERROR),
     }
+}
+
+/// What fixes a catalog of `revision` for this library.
+#[must_use]
+pub fn remedy(revision: i32) -> &'static str {
+    if revision > CATALOG_REVISION {
+        "the installed extension is newer than this library: install the pg_tviews package \
+         that matches it"
+    } else {
+        "run ALTER EXTENSION pg_tviews UPDATE"
+    }
+}
+
+/// Forget a match, so the next check compares again: after an abort (which may
+/// have rolled back an `ALTER EXTENSION pg_tviews UPDATE`) and after DDL on the
+/// extension itself.
+pub fn reset() {
+    MATCHED.set(false);
 }
 
 /// Compare the installed catalog's revision with the library's, without raising.

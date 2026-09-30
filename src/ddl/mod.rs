@@ -135,29 +135,16 @@ DECLARE
     failures INTEGER := 0;
 BEGIN
     FOR next_entity IN
-        WITH RECURSIVE reads(entity, relid) AS (
-            SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
-          UNION
-            SELECT r.entity, d.refobjid
-            FROM reads r
-            JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v'
-            JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid
-            JOIN pg_catalog.pg_depend d
-              ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
-             AND d.objid = w.oid
-             AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
-             AND d.refobjid <> v.oid
-        ),
-        edges(entity, dependency) AS (
+        WITH RECURSIVE edges(entity, dependency) AS (
             SELECT DISTINCT r.entity, m.entity
-            FROM reads r
+            FROM @extschema@.pg_tview_reads r
             JOIN @extschema@.pg_tview_meta m
               ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
             WHERE m.entity <> r.entity
         ),
         depth(entity, level) AS (
             SELECT m.entity, 0 FROM @extschema@.pg_tview_meta m
-          UNION ALL
+          UNION
             SELECT e.entity, d.level + 1
             FROM depth d JOIN edges e ON e.dependency = d.entity
             WHERE d.level < 100
@@ -182,7 +169,7 @@ END;
 $$;
     ",
     name = "reregister_all",
-    requires = [pg_tviews_reregister, "create_metadata_tables"],
+    requires = [pg_tviews_reregister, "create_metadata_tables", "tview_reads"],
 );
 
 /// SQL function: rebind the relation OIDs inside `cascade_paths` to the current

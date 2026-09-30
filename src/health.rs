@@ -52,6 +52,44 @@ fn pg_tviews_health_check() -> TableIterator<
         ));
     }
 
+    // Catalog revision (issue #137): does this library match the installed SQL?
+    let installed = crate::revision::installed();
+    let unversioned = matches!(installed, crate::revision::Installed::Unversioned);
+    results.push(match installed {
+        crate::revision::Installed::Matches => (
+            "OK".to_string(),
+            "catalog".to_string(),
+            format!(
+                "catalog revision {} matches the library",
+                crate::revision::CATALOG_REVISION
+            ),
+            "info".to_string(),
+        ),
+        crate::revision::Installed::Differs(revision) => (
+            "ERROR".to_string(),
+            "catalog".to_string(),
+            format!(
+                "library catalog revision {} does not match the installed extension ({revision}): \
+                 {}",
+                crate::revision::CATALOG_REVISION,
+                crate::revision::remedy(revision)
+            ),
+            "error".to_string(),
+        ),
+        crate::revision::Installed::Unversioned => (
+            "ERROR".to_string(),
+            "catalog".to_string(),
+            "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql"
+                .to_string(),
+            "error".to_string(),
+        ),
+    });
+
+    // A 0.1.0 catalog has none of the tables the other checks read.
+    if unversioned {
+        return TableIterator::new(results);
+    }
+
     // Check 3: Metadata consistency
     let orphaned_meta = Spi::get_one::<i64>(&format!(
         "SELECT COUNT(*) FROM {} m
@@ -76,36 +114,6 @@ fn pg_tviews_health_check() -> TableIterator<
             "info".to_string(),
         ));
     }
-
-    // Catalog revision (issue #137): does this library match the installed SQL?
-    results.push(match crate::revision::installed() {
-        crate::revision::Installed::Matches => (
-            "OK".to_string(),
-            "catalog".to_string(),
-            format!(
-                "catalog revision {} matches the library",
-                crate::revision::CATALOG_REVISION
-            ),
-            "info".to_string(),
-        ),
-        crate::revision::Installed::Differs(revision) => (
-            "ERROR".to_string(),
-            "catalog".to_string(),
-            format!(
-                "library catalog revision {} does not match the installed extension ({revision}): \
-                 run ALTER EXTENSION pg_tviews UPDATE",
-                crate::revision::CATALOG_REVISION
-            ),
-            "error".to_string(),
-        ),
-        crate::revision::Installed::Unversioned => (
-            "ERROR".to_string(),
-            "catalog".to_string(),
-            "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql"
-                .to_string(),
-            "error".to_string(),
-        ),
-    });
 
     // TVIEWs registered before a release that changed what registration derives.
     let stale = Spi::connect(|client| {

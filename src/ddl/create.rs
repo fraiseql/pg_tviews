@@ -244,6 +244,7 @@ fn create_tview_inner(
     defer_populate: bool,
     group_keys: Option<&super::aggregate::GroupKeys>,
 ) -> TViewResult<()> {
+    crate::revision::check();
     // Step 1: Check if TVIEW already exists
     let exists = tview_exists(tview_name)?;
     if exists {
@@ -587,7 +588,19 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         });
     };
     let base_tables = reregister_metadata(entity, &schema_name, &definition)?;
-    crate::dependency::sync_entity_triggers(&base_tables, entity)
+    crate::dependency::sync_entity_triggers(&base_tables, entity)?;
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    Spi::run_with_args(
+        &format!(
+            "UPDATE {} SET needs_reregister = false WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Clear needs_reregister of TVIEW {entity}"),
+        pg_error: e.to_string(),
+    })
 }
 
 /// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
@@ -1662,8 +1675,9 @@ fn register_metadata(
         .join(",");
 
     // A re-registration (after a column rename, or by pg_tviews_reregister)
-    // replaces every derived column, keeps created_at and graphql_typename, and
-    // clears needs_reregister.
+    // replaces every derived column and keeps created_at, graphql_typename and
+    // needs_reregister: only pg_tviews_reregister, which also re-installs the
+    // triggers, clears the flag.
     let on_conflict = if replace {
         "ON CONFLICT (entity) DO UPDATE SET \
             view_oid = EXCLUDED.view_oid, table_oid = EXCLUDED.table_oid, \
@@ -1676,8 +1690,7 @@ fn register_metadata(
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
-            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
-            needs_reregister = false"
+            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };

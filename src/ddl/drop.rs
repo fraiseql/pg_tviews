@@ -18,6 +18,7 @@ use pgrx::prelude::*;
 /// # Errors
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
 pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<()> {
+    crate::revision::check();
     let entity_name = tview_name.trim_start_matches("tv_");
 
     // Step 1: Check if TVIEW exists

@@ -83,6 +83,16 @@ BEGIN
        AND NOT (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass
                 AND (SELECT conrelid FROM pg_catalog.pg_constraint WHERE oid = d.objid)
                     IN (SELECT objid FROM member_relations));
+    -- Extensions that require pg_tviews would be dropped with it too.
+    SELECT pg_catalog.concat_ws(E'\n  ', dependents,
+               pg_catalog.string_agg('extension ' || e2.extname, E'\n  '))
+      INTO dependents
+      FROM pg_catalog.pg_depend d
+      JOIN pg_catalog.pg_extension e2 ON e2.oid = d.objid
+     WHERE d.classid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+       AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+       AND d.refobjid = (SELECT oid FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews');
+    dependents := NULLIF(dependents, '');
     IF dependents IS NOT NULL THEN
         RAISE EXCEPTION E'objects outside pg_tviews depend on it and would be dropped:\n  %',
             dependents

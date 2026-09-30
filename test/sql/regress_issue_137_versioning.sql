@@ -78,26 +78,43 @@ END $$;
 -- 2. The library refuses a catalog of another revision, in a fresh backend, and
 --    passes once the catalog matches again.
 CREATE TABLE saved_revision AS SELECT tviews.pg_tviews_catalog_revision() AS r;
-DO $$ BEGIN
+CREATE FUNCTION set_revision(r int) RETURNS void LANGUAGE plpgsql AS $f$
+BEGIN
     EXECUTE format('CREATE OR REPLACE FUNCTION tviews.pg_tviews_catalog_revision()
-                    RETURNS integer LANGUAGE sql IMMUTABLE AS %L', 'SELECT 999');
-END $$;
-\c
-SET client_min_messages TO WARNING;
-DO $$
+                    RETURNS integer LANGUAGE sql IMMUTABLE AS %L', 'SELECT ' || r);
+END $f$;
+-- The error and hint a base-table write raises, or NULL.
+CREATE FUNCTION write_error() RETURNS text LANGUAGE plpgsql AS $f$
 DECLARE msg text; hint text;
 BEGIN
-    BEGIN
-        UPDATE tb_user SET name = 'alicia' WHERE pk_user = 1;
-    EXCEPTION WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
-    END;
-    IF msg IS NULL
-       OR msg NOT LIKE '%library catalog revision%does not match the installed extension (999)%'
-       OR hint NOT LIKE '%ALTER EXTENSION pg_tviews UPDATE%' THEN
-        RAISE EXCEPTION '#137 FAIL: mismatched catalog not refused: % / %', msg, hint;
+    UPDATE tb_user SET name = 'alicia' WHERE pk_user = 1;
+    RETURN NULL;
+EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
+    RETURN msg || ' / ' || hint;
+END $f$;
+
+-- An older catalog: update the extension.
+SELECT set_revision(0);
+\c
+SET client_min_messages TO WARNING;
+DO $$ BEGIN
+    IF coalesce(write_error(), '') NOT LIKE
+       '%library catalog revision%does not match the installed extension (0)%ALTER EXTENSION pg_tviews UPDATE%' THEN
+        RAISE EXCEPTION '#137 FAIL: older catalog not refused: %', write_error();
     END IF;
 END $$;
+-- A newer catalog: install the matching library.
+SELECT set_revision(999);
+\c
+SET client_min_messages TO WARNING;
+DO $$ BEGIN
+    IF coalesce(write_error(), '') NOT LIKE
+       '%does not match the installed extension (999)%newer than this library%' THEN
+        RAISE EXCEPTION '#137 FAIL: newer catalog not refused: %', write_error();
+    END IF;
+END $$;
+-- Restored in the same session: only a match is remembered, so the write passes.
 DO $$ BEGIN
     EXECUTE format('CREATE OR REPLACE FUNCTION tviews.pg_tviews_catalog_revision()
                     RETURNS integer LANGUAGE sql IMMUTABLE AS %L',
@@ -121,6 +138,13 @@ BEGIN
     END;
     IF msg IS NULL OR hint NOT LIKE '%scripts/migrate-from-0.1.0.sql%' THEN
         RAISE EXCEPTION '#137 FAIL: catalog without a revision not refused: % / %', msg, hint;
+    END IF;
+END $$;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+                   WHERE component = 'catalog' AND status = 'ERROR'
+                     AND message LIKE '%migrate-from-0.1.0.sql%') THEN
+        RAISE EXCEPTION '#137 FAIL: health check does not report a 0.1.0 catalog';
     END IF;
 END $$;
 ALTER FUNCTION tviews.saved_catalog_revision() RENAME TO pg_tviews_catalog_revision;
@@ -163,6 +187,15 @@ DO $$ BEGIN
         RAISE EXCEPTION '#137 FAIL: health check does not report needs_reregister: %',
             (SELECT string_agg(component || '=' || message, '; ')
              FROM tviews.pg_tviews_health_check());
+    END IF;
+END $$;
+
+-- A column rename re-derives metadata but installs no trigger: it keeps the flag.
+ALTER TABLE tb_post RENAME COLUMN title TO headline;
+ALTER TABLE tb_post RENAME COLUMN headline TO title;
+DO $$ BEGIN
+    IF NOT (SELECT needs_reregister FROM tviews.pg_tview_meta WHERE entity = 'post') THEN
+        RAISE EXCEPTION '#137 FAIL: a column rename cleared needs_reregister';
     END IF;
 END $$;
 
