@@ -20,7 +20,7 @@ Queue is automatically cleared via `DISCARD ALL` between transactions.
 
 ### Two-Phase Commit (2PC)
 
-2PC is fully supported. Queue entries are persisted in `pg_tview_pending_refreshes` during `PREPARE TRANSACTION` and restored on `COMMIT PREPARED`.
+`PREPARE TRANSACTION` flushes the refresh queue first, as `COMMIT` does, so the TVIEW writes belong to the prepared transaction: `COMMIT PREPARED` applies them and `ROLLBACK PREPARED` discards them. No pg_tviews-specific command is involved.
 
 ## Known Limitations
 

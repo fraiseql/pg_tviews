@@ -162,7 +162,6 @@ test/sql/
 ├── 40_refresh_trigger_*.sql      # Trigger and refresh tests
 ├── 42_cascade_fk_*.sql           # Cascade functionality
 ├── 50_array_columns.sql          # Array column handling
-├── 60_2pc_support.sql            # Two-phase commit
 ├── 70_concurrent_ddl.sql         # Concurrent operations
 └── 80_edge_cases.sql             # Edge cases and error handling
 ```

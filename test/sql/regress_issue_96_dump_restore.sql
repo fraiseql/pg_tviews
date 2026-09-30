@@ -72,7 +72,7 @@ END $$;
 \! dropdb --if-exists "${PGTV_SRC}_restored" && createdb "${PGTV_SRC}_restored" && pg_dump -Fc -f "/tmp/${PGTV_SRC}.dump" "$PGTV_SRC" && pg_restore --exit-on-error -d "${PGTV_SRC}_restored" "/tmp/${PGTV_SRC}.dump"
 \if :SHELL_ERROR
   \echo '#96 FAIL: pg_dump / pg_restore round trip exited with' :SHELL_EXIT_CODE
-  \quit 3
+  DO $$ BEGIN RAISE EXCEPTION '#96 FAIL: pg_dump / pg_restore round trip failed'; END $$;
 \endif
 
 \set restored :DBNAME '_restored'

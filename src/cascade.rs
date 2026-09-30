@@ -61,21 +61,20 @@ fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
 
 /// Find all TVIEWs that have the given base table as a dependency
 fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
+    // The shared column list keeps this loader in step with `TviewMeta::from_spi_row`.
     let query = format!(
-        "SELECT m.table_oid::oid AS tview_oid, m.view_oid::oid AS view_oid, m.entity, \
-                m.fk_columns, m.uuid_fk_columns, \
-                m.dependency_types, m.dependency_paths, m.array_match_keys, \
-                m.distinct_on_keys, m.is_union, m.cascade_paths \
-         FROM pg_tview_meta m \
-         WHERE {:?} IN (
-             SELECT (cp::jsonb->>'source_oid')::oid
-             FROM unnest(m.cascade_paths) AS cp
-         )",
-        base_table_oid.to_u32()
+        "{} WHERE $1 IN (SELECT (cp::jsonb->>'source_oid')::oid FROM unnest(cascade_paths) AS cp)",
+        catalog::META_SELECT
     );
-
     Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
+        // SAFETY: the oid datum is passed by value for the duration of the select.
+        let args = [unsafe {
+            pgrx::datum::DatumWithOid::new(
+                base_table_oid,
+                PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+            )
+        }];
+        let rows = client.select(&query, None, &args)?;
         let mut result = Vec::new();
         for row in rows {
             result.push(catalog::TviewMeta::from_spi_row(&row)?);
