@@ -3,30 +3,11 @@
 ## STABLE Functions
 
 ### pg_tviews_convert_existing_table(table_name TEXT)
-**Status**: STABLE (v0.1+)
-**Last Updated**: 2025-12-13
-**Description**: Convert a regular table to a TVIEW with incremental refresh
-**Parameters**:
-- `table_name`: Schema-qualified table name (required)
-**Returns**: TEXT (success message or error)
-**Errors**:
-- Table not found
-- Already a TVIEW
-- Invalid table structure
-
-**Contract Guarantees**:
-- Behavior unchanged except for performance optimizations
-- Error codes maintained
-- All dependent views continue to work after upgrade
-- May add optional parameters in minor versions
-
-**Example**:
-```sql
-SELECT pg_tviews_convert_existing_table('public.sales');
--- Result: Table 'public.sales' converted to TVIEW successfully
-```
-
-**Breaking Changes**: None planned through v1.x
+**Status**: DEPRECATED (since v0.1.0-beta.18; removed in the next breaking release)
+**Description**: Always raises an error. It could not run on PostgreSQL 18, and its design
+replaced the table with a frozen snapshot view (no triggers, no refresh).
+**Use instead**: `pg_tviews_create('entity', 'SELECT ...')` or
+`CREATE TABLE tv_entity AS SELECT ...`.
 
 ---
 

@@ -97,9 +97,9 @@ ERROR: Circular dependency detected: tv_a -> tv_b -> tv_a
 - Triggers exist but no metadata entry
 
 **Recovery**:
-1. Re-convert TVIEW:
+1. Recreate the TVIEW from its defining SELECT:
    ```sql
-   SELECT pg_tviews_convert_existing_table('entity_name');
+   SELECT pg_tviews_create('entity_name', '<the defining SELECT>');
    ```
 2. Verify metadata:
    ```sql
@@ -144,7 +144,7 @@ prepared transaction keeps its locks until then.
    ```
 2. Recreate TVIEW to restore triggers:
    ```sql
-   SELECT pg_tviews_convert_existing_table('entity_name');
+   SELECT pg_tviews_create('entity_name', '<the defining SELECT>');
    ```
 
 **Prevention**: Avoid DDL operations on TVIEW tables.
