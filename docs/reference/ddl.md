@@ -325,7 +325,7 @@ Creating a TVIEW installs, on each table its definition reads, a row-level trigg
 (`tviews.pg_tview_trigger_handler`) that queues the affected keys, and a
 statement-level trigger (`tviews.pg_tview_flush_trigger`) that refreshes them once per
 statement. Nothing needs installing by hand. `tviews.pg_tviews_health_check()`
-reports orphaned triggers; `SELECT * FROM tviews.pg_tviews_reregister_all()`
+reports missing or orphaned triggers; `SELECT * FROM tviews.pg_tviews_reregister_all()`
 re-installs any that are missing.
 
 ## Troubleshooting
