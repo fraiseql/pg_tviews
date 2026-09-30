@@ -101,8 +101,10 @@ extension_sql!(
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    COMMENT ON TABLE @extschema@.pg_tview_meta IS 'Metadata for TVIEW materialized tables';
-    COMMENT ON TABLE @extschema@.pg_tview_helpers IS 'Tracks helper views used by TVIEWs';
+    COMMENT ON TABLE @extschema@.pg_tview_meta IS
+        'Internal TVIEW registrations; may change in any release. Tools read @extschema@.registry';
+    COMMENT ON TABLE @extschema@.pg_tview_helpers IS
+        'Internal: helper views used by TVIEWs; may change in any release';
 
     -- Indexes for catalog lookup performance (entity PK already has a unique index)
     CREATE INDEX idx_pg_tview_meta_table_oid
@@ -157,6 +159,71 @@ GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
     ",
     name = "tview_reads",
     requires = ["create_metadata_tables"],
+);
+
+// The read contract for tools (issue #133, ADR 0136 Decision 4). Plain SQL over
+// the internal tables and the system catalogs, calling no function of the library,
+// so it can be read without the library, with a mismatched one, and on a standby.
+// contract_version() covers the view's columns, the `options` keys and the
+// behaviour of pg_tviews_create_or_replace(): additions keep it, anything else
+// bumps it (docs/reference/read-contract.md).
+extension_sql!(
+    r"
+CREATE FUNCTION @extschema@.contract_version()
+RETURNS integer
+LANGUAGE sql STABLE PARALLEL SAFE
+AS 'SELECT 1';
+
+COMMENT ON FUNCTION @extschema@.contract_version() IS
+'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
+
+-- A registration whose table is gone stays visible, with NULL for what the table
+-- would tell. data_gin_index is a valid, default (jsonb_ops) GIN index on data.
+CREATE VIEW @extschema@.registry AS
+SELECT
+    n.nspname::text AS schema,
+    COALESCE(c.relname::text, 'tv_' || m.entity) AS name,
+    m.entity,
+    m.definition AS query,
+    COALESCE(
+        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
+               WHERE r.entity = m.entity) x
+         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
+         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
+        '{}') AS base_tables,
+    c.relpersistence = 'p' AS logged,
+    CASE WHEN c.oid IS NOT NULL THEN pg_catalog.jsonb_build_object(
+        'logged', c.relpersistence = 'p',
+        'fillfactor', COALESCE(
+            (SELECT o.option_value::integer
+             FROM pg_catalog.pg_options_to_table(c.reloptions) o
+             WHERE o.option_name = 'fillfactor'),
+            100),
+        'data_gin_index', EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_index i
+            JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+            JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin'
+            JOIN pg_catalog.pg_opclass oc ON oc.oid = i.indclass[0]
+             AND oc.opcname = 'jsonb_ops'
+            JOIN pg_catalog.pg_attribute a
+              ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
+            WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
+              AND i.indisvalid),
+        'group_keys', m.group_keys) END AS options,
+    m.needs_reregister
+FROM @extschema@.pg_tview_meta m
+LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
+LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace;
+
+COMMENT ON VIEW @extschema@.registry IS
+'One row per registered TVIEW; stable under contract_version()';
+
+GRANT SELECT ON @extschema@.registry TO PUBLIC;
+    ",
+    name = "read_contract",
+    requires = ["create_metadata_tables", "tview_reads"],
 );
 
 // Register event triggers for DDL interception
