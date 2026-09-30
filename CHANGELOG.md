@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **A column rename on a base table no longer leaves TVIEW metadata stale**
+  (#81). `pg_tview_meta.definition` kept the old column name. Everything derived
+  from it at creation did too, so propagation broke silently: updates to a
+  renamed joined column no longer cascaded, and a renamed FK stopped the cascade.
+  After `ALTER … RENAME COLUMN`, each TVIEW whose backing view reads the column
+  now has its definition rewritten in place: the author's text is kept and only
+  the renamed references change. A bare select item gets `AS <old name>`, so the
+  TVIEW's columns keep their names. Its metadata is then re-derived. If the
+  rewrite does not define exactly the renamed backing view, the definition falls
+  back to `pg_get_viewdef` text (with a NOTICE).
+- The per-transaction cascade-path cache was only cleared on abort, so a
+  committed metadata change could be served stale paths by the same session.
+
 ## [0.1.0-beta.18] - 2026-09-30
 
 ### Added
