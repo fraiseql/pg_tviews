@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Cascades through complex CTEs** (#60). A base table reachable only through a CTE
+  chain (a CTE reading an earlier one), a CTE body joining several tables, or a
+  UNION-bodied CTE got no cascade path, so its changes never reached the TVIEW. A
+  resolved CTE now inlines its base tables, their join edges and a per-column map into
+  the outer join graph, so each of those tables gets its own (possibly multi-hop) path.
 - **Moving a row to another parent refreshes both parents.** The row trigger followed
   cascade paths from the new row image only, so an UPDATE that changed a child's FK
   (a comment moved to another post) refreshed the new parent and left the old one still
