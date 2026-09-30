@@ -76,7 +76,7 @@ class Post: ...
 
 ## 📋 Version Status
 
-**Current Version**: `0.1.0-beta.11` (April 2026)
+**Current Version**: `0.1.0-beta.18` (September 2026)
 - **Status**: Public Beta - Feature-complete, API may change
 - **Production Use**: Suitable for evaluation, not mission-critical systems
 - **Support**: Community support via GitHub issues
@@ -327,6 +327,9 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.metrics_enabled` | bool | off | Collect refresh metrics |
 | `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
 | `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED |
+| `pg_tviews.data_gin_index` | bool | off | Create a GIN index on `data` for new TVIEWs |
+| `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEW tables (keeps refreshes HOT) |
+| `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
 | `pg_tviews.log_level` | string | info | Logging verbosity |

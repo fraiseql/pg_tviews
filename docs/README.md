@@ -130,4 +130,4 @@ We welcome contributions! See our [contributing guide](development/contributing.
 
 ---
 
-*This documentation is for pg_tviews v0.1.0-beta.1. For the latest version, see the [main README](../README.md).*"
+*For release notes and upgrade steps, see the [CHANGELOG](../CHANGELOG.md).*"
