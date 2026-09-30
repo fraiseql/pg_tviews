@@ -244,6 +244,17 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         {
             continue;
         }
+        // Issue #120: write the change into all target rows at flush time, in one
+        // statement, instead of recomputing each.
+        if let Some(changed) = &changed
+            && let Some((fanout, key, fields)) = try_capture_fanout(trigger, path, changed)
+        {
+            crate::queue::patch::record_fanout(
+                (path.entity_name.clone(), fanout.lookup_col.clone(), key),
+                fields,
+            );
+            continue;
+        }
         for tuple in &tuples {
             if let Err(e) = follow_cascade_path(path, tuple) {
                 warning!(
@@ -255,6 +266,39 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
             }
         }
     }
+}
+
+/// Capture a fan-out patch (issue #120) for an UPDATE of a cascade path's source
+/// row: the path's key and, for every changed column the target reads, the value
+/// to write into its `data` key. `None` (recompute every target row) unless the
+/// path has a fan-out patch, the join key is unchanged, and every changed column
+/// the target reads is copied unchanged and has a whitelisted type.
+fn try_capture_fanout<'p>(
+    trigger: &PgTrigger,
+    path: &'p crate::cascade_path::CascadePath,
+    changed: &[String],
+) -> Option<(
+    &'p crate::cascade_path::FanoutPatch,
+    i64,
+    serde_json::Map<String, serde_json::Value>,
+)> {
+    let fanout = path.fanout.as_ref()?;
+    if !crate::config::direct_patch_enabled()
+        || !crate::lifecycle::check_jsonb_delta_available()
+        || changed.contains(&path.initial_col)
+    {
+        return None;
+    }
+    let new_tuple = trigger.new()?;
+    let IntExtraction::Value(key) = tuple_get_i64(&new_tuple, &path.initial_col) else {
+        return None;
+    };
+    let mut fields = serde_json::Map::new();
+    for col in changed.iter().filter(|c| path.source_columns.contains(c)) {
+        let (_, data_key) = fanout.fields.iter().find(|(c, _)| c == col)?;
+        fields.insert(data_key.clone(), capture_value(&new_tuple, col)?);
+    }
+    (!fields.is_empty()).then_some((fanout, key, fields))
 }
 
 /// Follow a single cascade path to enqueue refresh(es) for the target entity.

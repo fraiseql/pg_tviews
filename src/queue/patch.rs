@@ -102,6 +102,45 @@ pub fn clear_patch_map() {
     TX_PATCH_MAP.with(|m| m.borrow_mut().clear());
 }
 
+// ── Fan-out patches (issue #120) ─────────────────────────────────────
+//
+// An UPDATE of a parent row whose changed columns every child copies unchanged
+// is written into all its children in one statement at flush time, instead of
+// enqueueing each child. Recorded per (child entity, child lookup column, parent
+// key); snapshotted, restored and cleared with the queue.
+
+/// `(entity, lookup column of tv_<entity>, key)`: the target rows of a fan-out.
+pub type FanoutKey = (String, String, i64);
+
+/// Fan-out patches: the `data` fields to write into every target row.
+pub type FanoutMap = HashMap<FanoutKey, Map<String, Value>>;
+
+thread_local! {
+    /// Transaction-local fan-out patches, beside `TX_PATCH_MAP`.
+    pub static TX_FANOUT_MAP: RefCell<FanoutMap> = RefCell::new(HashMap::new());
+}
+
+/// Record a fan-out patch, merging with an earlier one for the same targets (the
+/// later value wins per key).
+pub fn record_fanout(key: FanoutKey, fields: Map<String, Value>) {
+    TX_FANOUT_MAP.with(|m| m.borrow_mut().entry(key).or_default().extend(fields));
+}
+
+/// Take (and clear) the fan-out map: at flush time, and at savepoint start.
+pub fn take_fanout_snapshot() -> FanoutMap {
+    TX_FANOUT_MAP.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
+
+/// Replace the fan-out map wholesale — savepoint rollback restore.
+pub fn replace_fanout_map(new_map: FanoutMap) {
+    TX_FANOUT_MAP.with(|m| *m.borrow_mut() = new_map);
+}
+
+/// Clear the fan-out map — transaction abort.
+pub fn clear_fanout_map() {
+    TX_FANOUT_MAP.with(|m| m.borrow_mut().clear());
+}
+
 // ── Flush-local map operations (issue #56) ───────────────────────────
 //
 // Parent patch derivation happens against the flush's *local* snapshot map, not

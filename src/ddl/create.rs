@@ -567,7 +567,7 @@ fn stored_group_keys(entity_name: &str) -> TViewResult<Option<super::aggregate::
 fn extract_and_resolve_cascade_paths(
     select_sql: &str,
     entity_name: &str,
-    _schema: &TViewSchema,
+    schema: &TViewSchema,
     base_table_oids: &[pg_sys::Oid],
     schema_name: &str,
 ) -> TViewResult<Vec<cascade_path::CascadePath>> {
@@ -598,6 +598,7 @@ fn extract_and_resolve_cascade_paths(
                 // table the target tview actually depends on (via pg_depend on the
                 // backing view). Empty ⇒ always refresh.
                 cp.source_columns = view_source_columns(schema_name, entity_name, cp.source_oid);
+                cp.fanout = fanout_patch(select_sql, entity_name, schema, &cp);
                 cascade_paths.push(cp);
             }
             Err(e) => {
@@ -610,6 +611,49 @@ fn extract_and_resolve_cascade_paths(
     }
 
     Ok(cascade_paths)
+}
+
+/// The one-statement fan-out patch of a cascade path (issue #120): set when an
+/// UPDATE of the source row can be written into every target row it reaches
+/// instead of recomputing each.
+///
+/// Requires a path of one hop into `tb_<entity>` landing on its pk, a target row
+/// found through a projected, indexed `fk_*` column, and source columns copied
+/// unchanged into top-level `data` keys and used nowhere else in the definition.
+/// Anything else (`None`, or a column left out of `fields`) keeps the recompute.
+fn fanout_patch(
+    select_sql: &str,
+    entity_name: &str,
+    schema: &TViewSchema,
+    path: &cascade_path::CascadePath,
+) -> Option<cascade_path::FanoutPatch> {
+    let [hop] = path.hops.as_slice() else {
+        return None;
+    };
+    let own_table = format!("tb_{entity_name}");
+    if hop.table_name != own_table
+        || hop.carry_col != format!("pk_{entity_name}")
+        || path.source_columns.is_empty()
+        || crate::schema::parser::find_outer_union(&select_sql.to_lowercase(), 0).is_some()
+    {
+        return None;
+    }
+    let lookup_col = crate::sql_parser::output_column_for(select_sql, &own_table, &hop.lookup_col)?;
+    if !schema.fk_columns.contains(&lookup_col) {
+        return None;
+    }
+    let qualifier = crate::sql_parser::table_qualifier(select_sql, &path.source_table)?;
+    let outside_data = crate::schema::direct_map::columns_referenced_outside_data(select_sql)?;
+    let fields: Vec<(String, String)> =
+        crate::schema::direct_map::extract_joined_column_map(select_sql, &qualifier)
+            .into_iter()
+            .filter(|(col, _)| {
+                *col != path.initial_col
+                    && path.source_columns.contains(col)
+                    && !outside_data.contains(&col.to_lowercase())
+            })
+            .collect();
+    (!fields.is_empty()).then_some(cascade_path::FanoutPatch { lookup_col, fields })
 }
 
 /// Re-resolve the relation OIDs stored inside serialized cascade paths against
@@ -771,6 +815,7 @@ fn resolve_join_path(
         unresolvable: false,
         // Populated by the caller (which has the schema) via `view_source_columns`.
         source_columns: Vec::new(),
+        fanout: None,
     })
 }
 

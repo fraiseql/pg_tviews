@@ -85,3 +85,18 @@ reaches.
 - Re-run the survey on another production schema before extending further. The heuristic
   cannot see which fields change often, so a refresh-traffic count (instrumenting which
   class each triggering change hits) is the next measurement if C lands.
+
+## Outcome (#120)
+
+Class C for parent scalars landed as a one-statement fan-out patch: a cascade path of
+one hop into the child's base table records which parent columns the child copies into
+top-level `data` keys, and an UPDATE of those columns becomes one
+`UPDATE tv_child SET data = jsonb_smart_patch_scalar(data, …) WHERE fk = $pk` at flush.
+Embedded parent documents were already patched by #56's derived nested chains.
+
+Measured on PG 18.1, one parent, per parent update, recompute vs fan-out patch (each
+configuration in a fresh database): 10 children 3.5 → 1.3 ms, 100 children 14.1 →
+6.9 ms, 1 000 children 49.9 → 28.4 ms, 10 000 children 362 → 184 ms. The write of each
+child row is the floor. A hand-written `UPDATE … WHERE fk_user = $pk` reached 1.4,
+6.5, 21.5 and 110 ms.
+

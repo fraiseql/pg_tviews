@@ -9,7 +9,7 @@ use crate::catalog::{DependencyType, TviewMeta};
 use crate::queue::patch::PatchEntry;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
 /// Derive a parent's patch chain from a patched child's chain (issue #56).
@@ -155,6 +155,61 @@ pub fn apply_direct_patch(
         }
         Ok(materialised)
     })
+}
+
+/// Write fan-out patches (issue #120) into `tv_<entity>`: for each `(key, fields)`,
+/// merge `fields` into the `data` of every row whose `lookup_col` equals `key`,
+/// in one statement. Rows already holding those values are left alone. Returns
+/// the pks of the rows written, which are journaled and counted as applied.
+pub fn apply_fanout_patch(
+    meta: &TviewMeta,
+    lookup_col: &str,
+    rows: &[(i64, Map<String, Value>)],
+) -> spi::Result<Vec<i64>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let schema = crate::lifecycle::jsonb_delta_schema().unwrap_or_else(|| "public".to_string());
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_lookup = crate::utils::quote_identifier(lookup_col);
+    let patch = format!("{schema}.jsonb_smart_patch_scalar(t.data, f.patch)");
+    let sql = format!(
+        "UPDATE {qi_tv} t SET data = {patch}, updated_at = now() \
+         FROM jsonb_each($1) AS f(k, patch) \
+         WHERE t.{qi_lookup} = f.k::bigint AND t.data IS DISTINCT FROM {patch} \
+         RETURNING t.{qi_pk}::bigint"
+    );
+    // One JSONB object `{key: fields}` carries every target group.
+    let by_key: Map<String, Value> = rows
+        .iter()
+        .map(|(key, fields)| (key.to_string(), Value::Object(fields.clone())))
+        .collect();
+
+    let changed: Vec<i64> = Spi::connect_mut(|client| {
+        // SAFETY: DatumWithOid wraps a JSONB document built above for SPI.
+        let args = [unsafe {
+            DatumWithOid::new(
+                pgrx::JsonB(Value::Object(by_key)),
+                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+            )
+        }];
+        client
+            .update(&sql, None, &args)?
+            .map(|row| row[1].value::<i64>())
+            .filter_map(Result::transpose)
+            .collect::<spi::Result<_>>()
+    })?;
+
+    crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);
+    for &pk in &changed {
+        crate::queue::affected::record(
+            &meta.entity_name,
+            pk.to_string(),
+            crate::queue::affected::Change::Updated,
+        );
+    }
+    Ok(changed)
 }
 
 /// Apply all direct patches for one entity, grouping pks that share an identical
