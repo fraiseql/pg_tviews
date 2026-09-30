@@ -62,7 +62,7 @@ pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
 #[pg_extern]
 fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
     crate::revision::check();
-    create_only(tview_name, select_sql, replace::Options::default())
+    create_reported(tview_name, select_sql, replace::Options::default())
 }
 
 /// SQL function: create an aggregate TVIEW (issue #58).
@@ -90,11 +90,11 @@ fn pg_tviews_create_aggregate(
              '{\"tb_order\": \"fk_user\"}'"
                 .to_string()
         })?;
-    create_only(tview_name, select_sql, replace::Options::aggregate(keys))
+    create_reported(tview_name, select_sql, replace::Options::aggregate(keys))
 }
 
 /// `pg_tviews_create[_aggregate]()`: create-only, reported as text.
-fn create_only(
+fn create_reported(
     tview_name: &str,
     select_sql: &str,
     options: replace::Options,

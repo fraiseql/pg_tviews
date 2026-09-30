@@ -123,6 +123,37 @@ SELECT must(error_of($$SELECT tviews.pg_tviews_create('tv_y',
     'SELECT pk_x, id, jsonb_build_object() AS data FROM tb_x')$$) LIKE '%pk_x%',
             'pg_tviews_create with a name that does not match the key');
 
+-- 8. IF NOT EXISTS is decided first, in the schema the table would be created in:
+--    a re-run statement is skipped even with options that would be refused.
+SELECT must(error_of($$CREATE UNLOGGED TABLE IF NOT EXISTS tv_x WITH (autovacuum_enabled = false) AS
+    SELECT pk_x, id, jsonb_build_object('n', name) AS data FROM tb_x$$) IS NULL,
+            'IF NOT EXISTS before the refusals');
+CREATE SCHEMA app;
+SET search_path = app, public, tviews;
+SELECT must(error_of($$CREATE TABLE IF NOT EXISTS tv_x AS
+    SELECT pk_x, id, jsonb_build_object('n', name) AS data FROM public.tb_x$$) IS NULL,
+            'IF NOT EXISTS with the TVIEW in a later schema');
+SELECT must(to_regclass('app.tv_x') IS NULL, 'no plain table created in the first schema');
+RESET search_path;
+DROP SCHEMA app;
+SELECT tviews.pg_tviews_drop('x');
+
+-- 9. A temporary schema and a fillfactor outside 10..100 are refused.
+SELECT refused($$CREATE TABLE pg_temp.tv_x AS
+                 SELECT pk_x, id, jsonb_build_object() AS data FROM tb_x$$, 'pg_temp schema');
+SELECT refused($$CREATE TABLE tv_x WITH (fillfactor = 200) AS
+                 SELECT pk_x, id, jsonb_build_object() AS data FROM tb_x$$, 'fillfactor 200');
+SELECT must(error_of($$CREATE TABLE tv_x WITH (fillfactor = 70.5) AS
+    SELECT pk_x, id, jsonb_build_object() AS data FROM tb_x$$)
+    LIKE '%fillfactor%integer from 10 to 100%', 'fractional fillfactor');
+
+-- 10. A quoted schema name.
+CREATE SCHEMA "my-app";
+CREATE TABLE "my-app".tv_x AS SELECT pk_x, id, jsonb_build_object('name', name) AS data FROM tb_x;
+SELECT must((SELECT schema FROM tviews.registry WHERE entity = 'x') = 'my-app', 'quoted schema');
+SELECT tviews.pg_tviews_drop('"my-app".tv_x');
+DROP SCHEMA "my-app";
+
 DROP EXTENSION pg_tviews CASCADE;
 
 SELECT 'issue #134 CTAS: PASS' AS result;

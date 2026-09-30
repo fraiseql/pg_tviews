@@ -20,12 +20,14 @@
 //! - Proper error handling to avoid corrupting transactions
 //! - Thread-safe global state management
 
+use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::ffi::CStr;
 
 use crate::TViewError;
 use crate::ddl::drop_tview;
+use crate::error::TViewResult;
 
 /// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
@@ -244,19 +246,11 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         if node_tag == pg_sys::NodeTag::T_ExplainStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → ExplainStmt* cast
             let query = unsafe { (*utility_stmt.cast::<pg_sys::ExplainStmt>()).query };
-            // Parse analysis leaves the explained statement in a utility Query.
-            let query = unsafe {
-                if !query.is_null() && (*query).type_ == pg_sys::NodeTag::T_Query {
-                    #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
-                    (*query.cast::<pg_sys::Query>()).utilityStmt
-                } else {
-                    query
-                }
-            };
-            if let Some(table) = unsafe { tview_ctas_target(query) } {
-                return Ok(Intercept::Refuse(format!(
-                    "EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"
-                )));
+            if let Some(table) = unsafe { tview_ctas_target(utility_of(query)) } {
+                return Ok(Intercept::Refuse(
+                    format!("EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"),
+                    None,
+                ));
             }
         }
 
@@ -287,7 +281,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     let should_pass_through = match result {
         Ok(Ok(Intercept::PassThrough)) => true,
         Ok(Ok(Intercept::Handled)) => false,
-        Ok(Ok(Intercept::Refuse(reason))) => {
+        Ok(Ok(
+            Intercept::Refuse(_, Some(target)) | Intercept::CreateTview(Ctas { target, .. }),
+        )) if skipped_or_raise(&target) => true,
+        Ok(Ok(Intercept::Refuse(reason, _))) => {
             unsafe { HOOK_IN_PROGRESS = false };
             pg_sys::panic::ErrorReport::new(
                 PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
@@ -398,19 +395,78 @@ enum Intercept {
     DropTable(*mut pg_sys::DropStmt),
     /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation, outside `catch_unwind`.
     CreateTview(Ctas),
-    /// A statement that would create a TVIEW in a way `pg_tviews` cannot honour.
-    Refuse(String),
+    /// A statement that would create a TVIEW in a way `pg_tviews` cannot honour,
+    /// and the table it names when that is a `CREATE TABLE`.
+    Refuse(String, Option<CtasTarget>),
 }
 
 /// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n)]
 /// AS SELECT …`, read from the parse tree.
 struct Ctas {
-    /// `tv_<entity>` or `schema.tv_<entity>`.
-    name: String,
+    target: CtasTarget,
     query: String,
-    if_not_exists: bool,
     logged: Option<bool>,
     fillfactor: Option<i32>,
+}
+
+/// The table a `CREATE TABLE … AS` creates.
+struct CtasTarget {
+    /// The schema named in the statement; `None`: `current_schema()`.
+    schema: Option<String>,
+    table: String,
+    if_not_exists: bool,
+}
+
+impl CtasTarget {
+    /// The name `pg_tviews_create_or_replace()` takes: `tv_<entity>` or
+    /// `"schema".tv_<entity>`.
+    fn name(&self) -> String {
+        match &self.schema {
+            Some(schema) => format!("\"{}\".{}", schema.replace('"', "\"\""), self.table),
+            None => self.table.clone(),
+        }
+    }
+
+    /// Whether `IF NOT EXISTS` applies: a relation of that name exists in the
+    /// schema the table would be created in. `PostgreSQL` then skips the statement
+    /// with a notice. Uses SPI: call it outside `catch_unwind`.
+    fn skipped(&self) -> TViewResult<bool> {
+        if !self.if_not_exists {
+            return Ok(false);
+        }
+        let args = [
+            // SAFETY: the datums borrow `self`, which outlives the query.
+            unsafe {
+                DatumWithOid::new(
+                    self.schema.as_deref(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    self.table.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ];
+        Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE c.relname = $2 AND n.nspname = COALESCE($1, current_schema()))",
+                    None,
+                    &args,
+                )?
+                .first()
+                .get_one::<bool>()
+        })
+        .map(|exists| exists == Some(true))
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Look up {}", self.name()),
+            pg_error: e.to_string(),
+        })
+    }
 }
 
 /// Where a refused `CREATE TABLE tv_* AS` sends the user.
@@ -488,9 +544,9 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
 /// Read a `CREATE TABLE tv_* AS` into a decision, from the parse tree only (no
 /// SPI: this runs inside `catch_unwind`).
 ///
-/// Anything but a `tv_*` table target passes through. So does `IF NOT EXISTS` on an
-/// existing relation, which `PostgreSQL` skips with a notice. What a TVIEW cannot
-/// honour is refused; the rest becomes a [`Ctas`] to create after `catch_unwind`.
+/// Anything but a `tv_*` table target passes through. What a TVIEW cannot honour is
+/// refused; the rest becomes a [`Ctas`] to create after `catch_unwind`. Both carry
+/// the target, so that `IF NOT EXISTS` on an existing relation is checked first.
 ///
 /// SAFETY: the pointers come from the `ProcessUtility` hook and are null-checked.
 unsafe fn inspect_create_table_as(
@@ -512,12 +568,29 @@ unsafe fn inspect_create_table_as(
         let into = &*ctas_ref.into;
         let rel = &*into.rel;
 
-        let refuse = |reason: &str| Ok(Intercept::Refuse(reason.to_string()));
+        let schema = (!rel.schemaname.is_null()).then(|| {
+            CStr::from_ptr(rel.schemaname)
+                .to_string_lossy()
+                .into_owned()
+        });
+        let target = || CtasTarget {
+            schema: schema.clone(),
+            table: table_name.clone(),
+            if_not_exists: ctas_ref.if_not_exists,
+        };
+        let refuse = |reason: &str| Ok(Intercept::Refuse(reason.to_string(), Some(target())));
         if ctas_ref.is_select_into {
-            return refuse(&format!("SELECT … INTO {table_name} cannot create a TVIEW"));
+            return Ok(Intercept::Refuse(
+                format!("SELECT … INTO {table_name} cannot create a TVIEW"),
+                None,
+            ));
         }
         let persistence = rel.relpersistence.cast_unsigned();
-        if persistence == pg_sys::RELPERSISTENCE_TEMP {
+        if persistence == pg_sys::RELPERSISTENCE_TEMP
+            || schema
+                .as_deref()
+                .is_some_and(|schema| schema == "pg_temp" || schema.starts_with("pg_temp_"))
+        {
             return refuse(&format!("{table_name} cannot be a temporary TVIEW"));
         }
         if !into.colNames.is_null() {
@@ -552,31 +625,24 @@ unsafe fn inspect_create_table_as(
         let mut fillfactor = None;
         for i in 0..pg_sys::list_length(into.options) {
             let option = pg_sys::list_nth(into.options, i).cast::<pg_sys::DefElem>();
-            let name = if option.is_null() || (*option).defname.is_null() {
-                String::new()
-            } else {
-                CStr::from_ptr((*option).defname)
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            match (
-                name.as_str(),
-                (*option).defnamespace.is_null(),
-                option_integer(option),
-            ) {
-                ("fillfactor", true, Some(value)) => fillfactor = Some(value),
+            if option.is_null() || (*option).defname.is_null() {
+                continue;
+            }
+            let name = CStr::from_ptr((*option).defname).to_string_lossy();
+            if name != "fillfactor" || !(*option).defnamespace.is_null() {
+                return refuse(&format!(
+                    "storage parameter {name} is not supported for TVIEW {table_name}; only \
+                     fillfactor is"
+                ));
+            }
+            match option_integer(option) {
+                Some(value) if (10..=100).contains(&value) => fillfactor = Some(value),
                 _ => {
                     return refuse(&format!(
-                        "storage parameter {name} is not supported for TVIEW {table_name}; \
-                         only fillfactor is"
+                        "fillfactor for TVIEW {table_name} must be an integer from 10 to 100"
                     ));
                 }
             }
-        }
-
-        // IF NOT EXISTS on an existing relation: PostgreSQL skips it with a notice.
-        if ctas_ref.if_not_exists && resolve_relation_oid(into.rel) != pg_sys::InvalidOid {
-            return Ok(Intercept::PassThrough);
         }
 
         let sql = if query_string.is_null() {
@@ -593,18 +659,9 @@ unsafe fn inspect_create_table_as(
                 reason: format!("Could not find 'CREATE TABLE {table_name} AS' in query"),
             }
         })?;
-        let name = if rel.schemaname.is_null() {
-            table_name
-        } else {
-            format!(
-                "{}.{table_name}",
-                CStr::from_ptr(rel.schemaname).to_string_lossy()
-            )
-        };
         Ok(Intercept::CreateTview(Ctas {
-            name,
+            target: target(),
             query,
-            if_not_exists: ctas_ref.if_not_exists,
             logged: (persistence == pg_sys::RELPERSISTENCE_UNLOGGED).then_some(false),
             fillfactor,
         }))
@@ -635,25 +692,32 @@ unsafe fn tview_ctas_target(node: *mut pg_sys::Node) -> Option<String> {
     }
 }
 
-/// Whether a `CREATE TABLE … AS` query is an `EXECUTE`: raw, or as parse analysis
-/// leaves it, a utility `Query` wrapping the `ExecuteStmt`.
+/// The statement a utility `Query` wraps, as parse analysis leaves `EXECUTE` and
+/// explained statements; any other node as it is.
+///
+/// SAFETY: `node` must be null or a valid `Node*`.
+unsafe fn utility_of(node: *mut pg_sys::Node) -> *mut pg_sys::Node {
+    // SAFETY: `node` is checked for null before it is dereferenced.
+    unsafe {
+        if !node.is_null() && (*node).type_ == pg_sys::NodeTag::T_Query {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
+            let utility = (*node.cast::<pg_sys::Query>()).utilityStmt;
+            if !utility.is_null() {
+                return utility;
+            }
+        }
+        node
+    }
+}
+
+/// Whether a `CREATE TABLE … AS` query is an `EXECUTE`, raw or analyzed.
 ///
 /// SAFETY: `query` must be null or a valid `Node*`.
 unsafe fn is_execute(query: *mut pg_sys::Node) -> bool {
-    // SAFETY: every pointer is checked for null before it is dereferenced.
+    // SAFETY: `utility_of` returns null or a valid node.
     unsafe {
-        if query.is_null() {
-            return false;
-        }
-        match (*query).type_ {
-            pg_sys::NodeTag::T_ExecuteStmt => true,
-            pg_sys::NodeTag::T_Query => {
-                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
-                let utility = (*query.cast::<pg_sys::Query>()).utilityStmt;
-                !utility.is_null() && (*utility).type_ == pg_sys::NodeTag::T_ExecuteStmt
-            }
-            _ => false,
-        }
+        let node = utility_of(query);
+        !node.is_null() && (*node).type_ == pg_sys::NodeTag::T_ExecuteStmt
     }
 }
 
@@ -708,18 +772,30 @@ unsafe fn option_integer(option: *mut pg_sys::DefElem) -> Option<i32> {
     }
 }
 
+/// Whether `target` is skipped by `IF NOT EXISTS`, so the statement goes to
+/// `PostgreSQL`, which skips it with its notice. Raises if the lookup fails.
+fn skipped_or_raise(target: &CtasTarget) -> bool {
+    target.skipped().unwrap_or_else(|e| {
+        unsafe { HOOK_IN_PROGRESS = false };
+        error!("{e}")
+    })
+}
+
 /// Create the TVIEW a `CREATE TABLE tv_* AS` names, with `CREATE TABLE AS`
 /// semantics, and report its rows in the command tag (`SELECT n`), as
 /// `PostgreSQL` would. Runs outside `catch_unwind`: errors are raised as they are.
 ///
 /// SAFETY: `qc` must be null or the hook's valid `QueryCompletion*`.
 unsafe fn create_tview_from_ctas(ctas: &Ctas, qc: *mut pg_sys::QueryCompletion) {
-    crate::revision::check();
+    if !crate::revision::is_current() {
+        unsafe { HOOK_IN_PROGRESS = false };
+        crate::revision::check();
+    }
     let created = crate::ddl::replace::create_only(
-        &ctas.name,
+        &ctas.target.name(),
         &ctas.query,
         crate::ddl::replace::Options::storage(ctas.logged, ctas.fillfactor),
-        ctas.if_not_exists,
+        ctas.target.if_not_exists,
     );
     match created {
         Ok(crate::ddl::replace::Created::Rows(rows)) => {

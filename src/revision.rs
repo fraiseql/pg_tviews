@@ -68,6 +68,11 @@ pub fn check() {
     }
 }
 
+/// Whether [`check`] passes, without raising.
+pub fn is_current() -> bool {
+    MATCHED.get() || in_own_script() || matches!(installed(), Installed::Matches)
+}
+
 /// What fixes a catalog of `revision` for this library.
 #[must_use]
 pub fn remedy(revision: i32) -> &'static str {
