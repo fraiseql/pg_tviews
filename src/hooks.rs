@@ -176,6 +176,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         }
     }
 
+    // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81).
+    let column_rename = unsafe { column_rename_of(pstmt) };
+
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
     let result = std::panic::catch_unwind(|| -> Result<bool, TViewError> {
@@ -319,10 +322,75 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // ProcessUtility and there is no reentrancy issue with HOOK_IN_PROGRESS.
         drain_pending_populates();
         drain_pending_unconverted_tviews();
+
+        // Like the drains above, this runs outside catch_unwind: its SPI errors must
+        // abort the RENAME rather than leave a TVIEW with stale metadata.
+        if let Some((relid, old_name, new_name)) = column_rename.and_then(ColumnRename::resolve)
+            && let Err(e) = crate::ddl::rename::handle_column_rename(relid, &old_name, &new_name)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not follow the column rename: {e}");
+        }
     }
 
     // Release the reentrancy guard
     unsafe { HOOK_IN_PROGRESS = false };
+}
+
+/// An `ALTER … RENAME COLUMN` statement, captured before it runs.
+struct ColumnRename {
+    relation: *const pg_sys::RangeVar,
+    old_name: String,
+    new_name: String,
+}
+
+impl ColumnRename {
+    /// The renamed relation's OID and the old/new names, once the rename has run.
+    /// `None` if the relation is gone (`IF EXISTS` on a missing table).
+    fn resolve(self) -> Option<(pg_sys::Oid, String, String)> {
+        // SAFETY: `relation` points into the statement's parse tree, which lives
+        // until the utility statement finishes.
+        let relid = unsafe {
+            pg_sys::RangeVarGetRelidExtended(
+                self.relation,
+                pg_sys::NoLock.cast_signed(),
+                pg_sys::RVROption::RVR_MISSING_OK,
+                None,
+                std::ptr::null_mut(),
+            )
+        };
+        (relid != pg_sys::InvalidOid).then_some((relid, self.old_name, self.new_name))
+    }
+}
+
+/// The column rename carried by `pstmt`, if it is one.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRename> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        if (*node).type_ != pg_sys::NodeTag::T_RenameStmt {
+            return None;
+        }
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → RenameStmt* cast
+        let stmt = &*node.cast::<pg_sys::RenameStmt>();
+        if stmt.renameType != pg_sys::ObjectType::OBJECT_COLUMN
+            || stmt.relation.is_null()
+            || stmt.subname.is_null()
+            || stmt.newname.is_null()
+        {
+            return None;
+        }
+        Some(ColumnRename {
+            relation: stmt.relation,
+            old_name: CStr::from_ptr(stmt.subname).to_string_lossy().into_owned(),
+            new_name: CStr::from_ptr(stmt.newname).to_string_lossy().into_owned(),
+        })
+    }
 }
 
 /// Handle CREATE TABLE tv_* AS SELECT ...

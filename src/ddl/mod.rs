@@ -17,6 +17,7 @@
 pub mod convert;
 pub mod create;
 pub mod drop;
+pub mod rename;
 
 pub use convert::convert_existing_table_to_tview;
 pub use create::create_tview;
@@ -61,6 +62,19 @@ fn pg_tviews_drop(
         Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
         Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
     }
+}
+
+/// SQL function: rebind the relation OIDs inside `cascade_paths` to the current
+/// catalog. Called by the `pg_tview_meta` insert trigger so that rows loaded by
+/// `pg_restore` point at the restored relations; not meant to be called directly.
+#[pg_extern]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires Vec by value
+fn pg_tviews_rebind_cascade_paths(
+    view_oid: pg_sys::Oid,
+    cascade_paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    create::rebind_cascade_paths(view_oid, &cascade_paths)
+        .map_err(|e| format!("Failed to rebind cascade paths: {e}"))
 }
 
 /// SQL function: Convert existing table to TVIEW (for benchmarking/testing)

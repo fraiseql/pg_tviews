@@ -99,7 +99,7 @@ pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bo
 pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<bool> {
     // Get the table OID and view OID from pg_tview_meta
     let (table_oid_opt, view_oid_opt): (Option<Oid>, Option<Oid>) = Spi::get_two_with_args(
-        "SELECT table_oid, view_oid FROM pg_tview_meta WHERE entity = $1",
+        "SELECT table_oid::oid, view_oid::oid FROM pg_tview_meta WHERE entity = $1",
         &[unsafe {
             DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }],

@@ -115,7 +115,7 @@ pub struct TviewMeta {
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
 /// out of sync as catalog columns are added (e.g. issue #56's direct-patch map).
-const META_SELECT: &str = "SELECT table_oid AS tview_oid, view_oid, entity, \
+const META_SELECT: &str = "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, \
      fk_columns, uuid_fk_columns, \
      dependency_types, dependency_paths, array_match_keys, \
      distinct_on_keys, distinct_on_output_keys, \
