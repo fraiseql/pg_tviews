@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed
 
+- **Propagation stops at a row whose refresh changed nothing** (#85). Along an edge where a
+  parent embeds the child's computed document (a nested object or array of `v_<child>.data`),
+  parents are no longer looked up and recomputed when the child's row came out unchanged.
+  A no-op update of a user with 20 posts and 60 comments now recomputes 1 row instead of 81.
+  Scalar embeds that follow the child's FK to a deeper relationship still propagate.
+  `propagation_pruned` in `pg_tviews_queue_stats()` counts the skipped edges.
+
 - **Less fixed cost per refresh** (#91). TVIEW metadata is cached per backend and a warm
   refresh makes no catalog queries (`catalog_lookups` in `pg_tviews_queue_stats()`
   counts the misses); the per-row recompute upserts straight from the backing view,

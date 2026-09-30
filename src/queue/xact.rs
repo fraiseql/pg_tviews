@@ -294,6 +294,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     if pending.is_empty() {
         return Ok(());
     }
+    super::affected::begin_flush();
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never
     // outlives its queue entries. Keys carrying a usable `Direct` chain are patched
