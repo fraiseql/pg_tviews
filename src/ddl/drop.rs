@@ -43,8 +43,9 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     })?;
 
     // Step 2: Remove the TVIEW's triggers from its base tables. They are found by
-    // name, not through the backing view, which may already be gone when the drop
-    // follows a base table or helper view dropped with CASCADE (issue #57).
+    // their function and the entity they carry, not through the backing view, which
+    // may already be gone when the drop follows a base table or helper view dropped
+    // with CASCADE (issue #57).
     crate::dependency::remove_entity_triggers(entity_name)?;
 
     // Step 3: Drop the materialized table (schema-resolved via OID).

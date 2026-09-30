@@ -37,7 +37,8 @@ for f in "$sqldir"/regress_issue_*.sql; do
   psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
   psql -d postgres -c "CREATE DATABASE $tmpdb" >/dev/null 2>&1
   # The extension lives in schema tviews; tests call its functions unqualified.
-  psql -d postgres -c "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null 2>&1
+  psql -d postgres -qc "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null \
+    || { echo "ERROR: could not create test database $tmpdb"; exit 2; }
   if psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >/tmp/$tmpdb.out 2>&1; then
     if grep -q '^-- expect-quiet' "$f" && grep -qE 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out; then
       echo "FAIL  $name -> unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)"

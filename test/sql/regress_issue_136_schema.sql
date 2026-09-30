@@ -271,8 +271,44 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- Entity flush_y's row trigger and entity y's flush trigger on a shared table
+-- get different names.
+SET search_path TO app;
+CREATE TABLE tb_y (pk_y int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), v text);
+CREATE TABLE tb_flush_y (
+    pk_flush_y int PRIMARY KEY,
+    id         uuid NOT NULL DEFAULT gen_random_uuid(),
+    fk_y       int NOT NULL REFERENCES tb_y
+);
+INSERT INTO tb_y VALUES (1, DEFAULT, 'a');
+INSERT INTO tb_flush_y VALUES (1, DEFAULT, 1);
+SELECT tviews.pg_tviews_create('tv_y', $$
+    SELECT pk_y, id, jsonb_build_object('v', v) AS data FROM app.tb_y $$);
+SELECT tviews.pg_tviews_create('tv_flush_y', $$
+    SELECT f.pk_flush_y, f.id, f.fk_y, jsonb_build_object('v', y.v) AS data
+    FROM app.tb_flush_y f JOIN app.tb_y y ON y.pk_y = f.fk_y $$);
+DO $$ BEGIN
+    IF app.tviews_triggers_on('app.tb_y') <> 4 THEN
+        RAISE EXCEPTION '#136 FAIL: tv_y and tv_flush_y should each have two triggers on tb_y';
+    END IF;
+END $$;
+
+-- A schema whose name contains ':' (the table name lookup used to split on it).
+CREATE SCHEMA "app:v2";
+CREATE TABLE "app:v2".tb_z (pk_z int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), v text);
+SET search_path TO "app:v2";
+SELECT tviews.pg_tviews_create('tv_z', $$
+    SELECT pk_z, id, jsonb_build_object('v', v) AS data FROM "app:v2".tb_z $$);
+SELECT tviews.pg_tviews_drop('z');
+DO $$ BEGIN
+    IF app.tviews_triggers_on('"app:v2".tb_z') <> 0 THEN
+        RAISE EXCEPTION '#136 FAIL: dropping a TVIEW in schema "app:v2" left its triggers';
+    END IF;
+END $$;
+
 RESET search_path;
 DROP SCHEMA "schéma_très_long_pour_les_noms_de_déclencheurs" CASCADE;
+DROP SCHEMA "app:v2" CASCADE;
 DROP SCHEMA app CASCADE;
 DROP EXTENSION pg_tviews CASCADE;
 

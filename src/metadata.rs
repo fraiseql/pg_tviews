@@ -41,8 +41,9 @@ BEGIN
         RAISE EXCEPTION 'schema "@extschema@" already exists and is owned by role "%"',
             schema_owner
             USING HINT = 'pg_tviews installs into schema @extschema@, which must be owned '
-                         'by the role running CREATE EXTENSION. Drop the schema or '
-                         'change its owner.';
+                         'by the role running CREATE EXTENSION. Drop the schema or change '
+                         'its owner; to restore a dump, restore it as that owner or with '
+                         'pg_restore --no-owner.';
     END IF;
 END
 $$;
@@ -241,12 +242,11 @@ $$;
 -- Catalog rows loaded by pg_restore carry the source database's OIDs inside
 -- cascade_paths (JSON text; view_oid / table_oid are regclass and re-resolve on
 -- their own). Rebind them to the restored relations as each row is inserted.
--- For a row written by pg_tviews itself the rebind is the identity. The
--- search_path makes the Rust catalog lookups work under pg_restore's empty one.
+-- For a row written by pg_tviews itself the rebind is the identity.
 CREATE FUNCTION @extschema@.pg_tviews_meta_rebind()
 RETURNS trigger
 LANGUAGE plpgsql
-SET search_path = @extschema@, pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
     NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
