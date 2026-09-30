@@ -173,7 +173,6 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::revision::reset();
 
             clear_queue();
-            crate::hooks::discard_pending_ctas();
             crate::hooks::release_hook_guard_on_abort(true);
             super::patch::clear_patch_map();
             super::patch::clear_fanout_map();
@@ -233,7 +232,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
 
                 // A CTAS that failed inside this subtransaction never reached the event
                 // trigger; its pending SELECT must not leak into a later statement.
-                crate::hooks::discard_pending_ctas();
                 crate::hooks::release_hook_guard_on_abort(false);
 
                 // Restore queue from snapshot

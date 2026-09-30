@@ -23,11 +23,9 @@
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::ffi::CStr;
-use std::sync::{LazyLock, Mutex};
 
 use crate::TViewError;
 use crate::ddl::drop_tview;
-use crate::utils::log_debug;
 
 /// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
@@ -238,10 +236,27 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             #[allow(clippy::cast_ptr_alignment)]
             // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
-            match unsafe { handle_create_table_as(ctas, pstmt, query_string) } {
-                Ok(true) => return Ok(Intercept::Handled),
-                Ok(false) => {}
-                Err(e) => return Err(e),
+            return unsafe { inspect_create_table_as(ctas, pstmt, query_string) };
+        }
+
+        // EXPLAIN [ANALYZE] CREATE TABLE tv_* AS … would run the CTAS without this
+        // hook seeing it as one, nor the event trigger firing: refuse it.
+        if node_tag == pg_sys::NodeTag::T_ExplainStmt {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → ExplainStmt* cast
+            let query = unsafe { (*utility_stmt.cast::<pg_sys::ExplainStmt>()).query };
+            // Parse analysis leaves the explained statement in a utility Query.
+            let query = unsafe {
+                if !query.is_null() && (*query).type_ == pg_sys::NodeTag::T_Query {
+                    #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
+                    (*query.cast::<pg_sys::Query>()).utilityStmt
+                } else {
+                    query
+                }
+            };
+            if let Some(table) = unsafe { tview_ctas_target(query) } {
+                return Ok(Intercept::Refuse(format!(
+                    "EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"
+                )));
             }
         }
 
@@ -272,6 +287,21 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     let should_pass_through = match result {
         Ok(Ok(Intercept::PassThrough)) => true,
         Ok(Ok(Intercept::Handled)) => false,
+        Ok(Ok(Intercept::Refuse(reason))) => {
+            unsafe { HOOK_IN_PROGRESS = false };
+            pg_sys::panic::ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+                format!("pg_tviews: {reason}"),
+                function_name!(),
+            )
+            .set_hint(CTAS_HINT)
+            .report(PgLogLevel::ERROR);
+            unreachable!("ERROR does not return")
+        }
+        Ok(Ok(Intercept::CreateTview(ctas))) => {
+            unsafe { create_tview_from_ctas(&ctas, qc) };
+            false
+        }
         Ok(Ok(Intercept::DropTable(drop_stmt))) => {
             match unsafe { handle_drop_table(drop_stmt, query_string) } {
                 Ok(handled) => !handled,
@@ -344,13 +374,6 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             );
         }
 
-        // After the event trigger should have fired, drain any pending populatesand convert
-        // any TVIEWs that weren't converted by the event trigger (fallback for bulk operations).
-        // The INSERT runs via SPI (DML, not utility), so it does not re-enter
-        // ProcessUtility and there is no reentrancy issue with HOOK_IN_PROGRESS.
-        drain_pending_populates();
-        drain_pending_unconverted_tviews();
-
         // Like the drains above, this runs outside catch_unwind: its SPI errors must
         // abort the RENAME rather than leave a TVIEW with stale metadata.
         if let Some((relid, old_name, new_name)) = column_rename.and_then(ColumnRename::resolve)
@@ -373,7 +396,27 @@ enum Intercept {
     Handled,
     /// A `DROP` statement, to handle outside `catch_unwind`.
     DropTable(*mut pg_sys::DropStmt),
+    /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation, outside `catch_unwind`.
+    CreateTview(Ctas),
+    /// A statement that would create a TVIEW in a way `pg_tviews` cannot honour.
+    Refuse(String),
 }
+
+/// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n)]
+/// AS SELECT …`, read from the parse tree.
+struct Ctas {
+    /// `tv_<entity>` or `schema.tv_<entity>`.
+    name: String,
+    query: String,
+    if_not_exists: bool,
+    logged: Option<bool>,
+    fillfactor: Option<i32>,
+}
+
+/// Where a refused `CREATE TABLE tv_* AS` sends the user.
+const CTAS_HINT: &str = "Create or change the TVIEW with \
+    SELECT tviews.pg_tviews_create_or_replace('tv_<entity>', $$<query>$$, \
+    options => '{\"logged\": …, \"fillfactor\": …}').";
 
 /// An `ALTER … RENAME COLUMN` statement, captured before it runs.
 struct ColumnRename {
@@ -442,141 +485,266 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
     }
 }
 
-/// Handle CREATE TABLE tv_* AS SELECT ...
+/// Read a `CREATE TABLE tv_* AS` into a decision, from the parse tree only (no
+/// SPI: this runs inside `catch_unwind`).
 ///
-/// Returns `Ok(true)` if the hook handled the statement, `Ok(false)` if it should
-/// pass through. Returns `Err` on failures that should abort with `error!()` —
-/// the caller is responsible for resetting `HOOK_IN_PROGRESS` before raising.
+/// Anything but a `tv_*` table target passes through. So does `IF NOT EXISTS` on an
+/// existing relation, which `PostgreSQL` skips with a notice. What a TVIEW cannot
+/// honour is refused; the rest becomes a [`Ctas`] to create after `catch_unwind`.
 ///
-/// SAFETY: This function operates on raw `PostgreSQL` C pointers from the `ProcessUtility` hook.
-/// All pointers are validated with null checks before dereferencing.
-unsafe fn handle_create_table_as(
+/// SAFETY: the pointers come from the `ProcessUtility` hook and are null-checked.
+unsafe fn inspect_create_table_as(
     ctas: *mut pg_sys::CreateTableAsStmt,
     pstmt: *const pg_sys::PlannedStmt,
     query_string: *const ::std::os::raw::c_char,
-) -> Result<bool, TViewError> {
-    // SAFETY: All pointer dereferences are guarded by null checks above each use.
+) -> Result<Intercept, TViewError> {
+    // SAFETY: every pointer is checked for null before it is dereferenced.
     unsafe {
-        if ctas.is_null() {
-            return Ok(false);
-        }
-
-        let ctas_ref = &*ctas;
-
-        // Get the INTO clause which contains the table name
-        if ctas_ref.into.is_null() {
-            return Ok(false);
-        }
-
-        let into = &*ctas_ref.into;
-        if into.rel.is_null() {
-            return Ok(false);
-        }
-
-        let rel = &*into.rel;
-        if rel.relname.is_null() {
-            return Ok(false);
-        }
-
-        // Get table name
-        let Ok(table_name) = CStr::from_ptr(rel.relname).to_str() else {
-            return Ok(false);
+        let Some(table_name) = tview_ctas_target(ctas.cast()) else {
+            return Ok(Intercept::PassThrough);
         };
-
-        // Check if it starts with tv_
-        if !table_name.starts_with("tv_") {
-            return Ok(false);
-        }
-
-        // Get the explicit schema from `CREATE TABLE [schema.]tv_* AS SELECT …`.
-        // NULL means the schema was omitted — the event trigger will resolve it at
-        // runtime via `current_schema()`.  Non-NULL overrides `current_schema()` so
-        // the TVIEW lands in the schema the user actually specified.
-        let schema_name = if rel.schemaname.is_null() {
-            String::new()
-        } else {
-            CStr::from_ptr(rel.schemaname)
-                .to_str()
-                .unwrap_or("")
-                .to_string()
-        };
-
         // TEST ONLY: simulate a hook that never saw this statement (see the
         // missed-interception check in the event trigger).
         if crate::config::test_skip_ctas_intercept() {
-            return Ok(false);
+            return Ok(Intercept::PassThrough);
         }
+        let ctas_ref = &*ctas;
+        let into = &*ctas_ref.into;
+        let rel = &*into.rel;
 
-        // Resolve the target relation BEFORE PostgreSQL runs the statement (catalog
-        // lookup, no SPI). `IF NOT EXISTS` on an existing relation makes PostgreSQL skip
-        // the create, so nothing would consume a pending SELECT (issue #79): pass through
-        // untouched. Otherwise remember the pre-existing OID so the fallback drain can
-        // tell "created by this statement" from "was already there".
-        let pre_existing_oid = resolve_relation_oid(into.rel);
-        if ctas_ref.if_not_exists && pre_existing_oid != pg_sys::InvalidOid {
-            return Ok(false);
+        let refuse = |reason: &str| Ok(Intercept::Refuse(reason.to_string()));
+        if ctas_ref.is_select_into {
+            return refuse(&format!("SELECT … INTO {table_name} cannot create a TVIEW"));
         }
-
-        // Extract entity name
-        let entity_name = &table_name[3..]; // Remove "tv_" prefix
-
-        if entity_name.is_empty() {
-            return Err(TViewError::InvalidTViewName {
-                name: table_name.to_string(),
-                reason: "must be tv_<entity>".to_string(),
-            });
+        let persistence = rel.relpersistence.cast_unsigned();
+        if persistence == pg_sys::RELPERSISTENCE_TEMP {
+            return refuse(&format!("{table_name} cannot be a temporary TVIEW"));
         }
-
-        // Get the SELECT query
-        let select_sql = if query_string.is_null() {
-            return Err(crate::internal_error!(
-                "No query string provided for CREATE TABLE AS"
+        if !into.colNames.is_null() {
+            return refuse(&format!(
+                "{table_name} takes its column names from its query, not from a column list"
             ));
-        } else if let Ok(sql) = CStr::from_ptr(query_string).to_str() {
-            // `query_string` is the whole simple-query batch; slice out just this
-            // statement, then strip its `CREATE TABLE … AS` prefix (issue #95).
-            let stmt_sql = statement_text(sql, pstmt);
-            extract_ctas_select(stmt_sql, table_name).ok_or_else(|| {
-                TViewError::InvalidSelectStatement {
-                    sql: stmt_sql.to_string(),
-                    reason: format!("Could not find 'CREATE TABLE {table_name} AS' in query"),
-                }
-            })?
-        } else {
-            return Err(crate::internal_error!("Failed to parse query string"));
-        };
-
-        // Validate TVIEW SELECT statement structure
-        match validate_tview_select(&select_sql) {
-            Ok(()) => {
-                // Store SELECT + schema in cache for event trigger to use
-                if let Err(e) = store_pending_tview_select(table_name, &schema_name, &select_sql) {
-                    return Err(crate::internal_error!(
-                        "Failed to store SELECT for '{}': {}",
-                        table_name,
-                        e
+        }
+        if !into.tableSpaceName.is_null() {
+            return refuse(&format!(
+                "TABLESPACE is not supported for TVIEW {table_name}"
+            ));
+        }
+        if !into.accessMethod.is_null() {
+            return refuse(&format!("USING is not supported for TVIEW {table_name}"));
+        }
+        if into.skipData {
+            return refuse(&format!(
+                "WITH NO DATA is not supported: TVIEW {table_name} is always populated"
+            ));
+        }
+        if is_execute(ctas_ref.query) {
+            return refuse(&format!(
+                "CREATE TABLE {table_name} AS EXECUTE cannot create a TVIEW"
+            ));
+        }
+        if !ctas_ref.query.is_null() && contains_param(ctas_ref.query, std::ptr::null_mut()) {
+            return refuse(&format!(
+                "a query with parameters (such as PL/pgSQL variables) cannot define TVIEW \
+                 {table_name}"
+            ));
+        }
+        let mut fillfactor = None;
+        for i in 0..pg_sys::list_length(into.options) {
+            let option = pg_sys::list_nth(into.options, i).cast::<pg_sys::DefElem>();
+            let name = if option.is_null() || (*option).defname.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr((*option).defname)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            match (
+                name.as_str(),
+                (*option).defnamespace.is_null(),
+                option_integer(option),
+            ) {
+                ("fillfactor", true, Some(value)) => fillfactor = Some(value),
+                _ => {
+                    return refuse(&format!(
+                        "storage parameter {name} is not supported for TVIEW {table_name}; \
+                         only fillfactor is"
                     ));
                 }
-                record_pre_existing_oid(table_name, pre_existing_oid);
+            }
+        }
 
-                Ok(false) // Pass through - let PostgreSQL create it
+        // IF NOT EXISTS on an existing relation: PostgreSQL skips it with a notice.
+        if ctas_ref.if_not_exists && resolve_relation_oid(into.rel) != pg_sys::InvalidOid {
+            return Ok(Intercept::PassThrough);
+        }
+
+        let sql = if query_string.is_null() {
+            ""
+        } else {
+            CStr::from_ptr(query_string).to_str().unwrap_or("")
+        };
+        // `query_string` is the whole simple-query batch; slice out just this
+        // statement, then strip its `CREATE TABLE … AS` prefix (issue #95).
+        let stmt_sql = statement_text(sql, pstmt);
+        let query = extract_ctas_select(stmt_sql, &table_name).ok_or_else(|| {
+            TViewError::InvalidSelectStatement {
+                sql: stmt_sql.to_string(),
+                reason: format!("Could not find 'CREATE TABLE {table_name} AS' in query"),
             }
-            Err(e) => {
-                // Validation failed — still store the SELECT so the event trigger can attempt
-                // conversion and produce a proper error if the structure is truly invalid.
-                warning!(
-                    "TVIEW syntax warning for '{}': {} — attempting conversion anyway",
-                    table_name,
-                    e
-                );
-                if let Err(store_err) =
-                    store_pending_tview_select(table_name, &schema_name, &select_sql)
-                {
-                    warning!("Failed to store SELECT for '{}': {}", table_name, store_err);
+        })?;
+        let name = if rel.schemaname.is_null() {
+            table_name
+        } else {
+            format!(
+                "{}.{table_name}",
+                CStr::from_ptr(rel.schemaname).to_string_lossy()
+            )
+        };
+        Ok(Intercept::CreateTview(Ctas {
+            name,
+            query,
+            if_not_exists: ctas_ref.if_not_exists,
+            logged: (persistence == pg_sys::RELPERSISTENCE_UNLOGGED).then_some(false),
+            fillfactor,
+        }))
+    }
+}
+
+/// The `tv_*` table a `CREATE TABLE … AS` (or `SELECT … INTO`) creates, if `node`
+/// is one. A `CREATE MATERIALIZED VIEW` is left to `PostgreSQL`.
+///
+/// SAFETY: `node` must be null or a valid `Node*`.
+unsafe fn tview_ctas_target(node: *mut pg_sys::Node) -> Option<String> {
+    // SAFETY: every pointer is checked for null before it is dereferenced.
+    unsafe {
+        if node.is_null() || (*node).type_ != pg_sys::NodeTag::T_CreateTableAsStmt {
+            return None;
+        }
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
+        let ctas = &*node.cast::<pg_sys::CreateTableAsStmt>();
+        if ctas.objtype != pg_sys::ObjectType::OBJECT_TABLE
+            || ctas.into.is_null()
+            || (*ctas.into).rel.is_null()
+            || (*(*ctas.into).rel).relname.is_null()
+        {
+            return None;
+        }
+        let table = CStr::from_ptr((*(*ctas.into).rel).relname).to_str().ok()?;
+        (table.starts_with("tv_") && table.len() > 3).then(|| table.to_string())
+    }
+}
+
+/// Whether a `CREATE TABLE … AS` query is an `EXECUTE`: raw, or as parse analysis
+/// leaves it, a utility `Query` wrapping the `ExecuteStmt`.
+///
+/// SAFETY: `query` must be null or a valid `Node*`.
+unsafe fn is_execute(query: *mut pg_sys::Node) -> bool {
+    // SAFETY: every pointer is checked for null before it is dereferenced.
+    unsafe {
+        if query.is_null() {
+            return false;
+        }
+        match (*query).type_ {
+            pg_sys::NodeTag::T_ExecuteStmt => true,
+            pg_sys::NodeTag::T_Query => {
+                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
+                let utility = (*query.cast::<pg_sys::Query>()).utilityStmt;
+                !utility.is_null() && (*utility).type_ == pg_sys::NodeTag::T_ExecuteStmt
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether an analyzed query or expression contains a `Param` node.
+///
+/// SAFETY: a `tree_walker` callback over a valid parse tree.
+unsafe extern "C-unwind" fn contains_param(
+    node: *mut pg_sys::Node,
+    context: *mut std::ffi::c_void,
+) -> bool {
+    if node.is_null() {
+        return false;
+    }
+    // SAFETY: `node` is a valid node of the tree being walked.
+    unsafe {
+        match (*node).type_ {
+            pg_sys::NodeTag::T_Param => true,
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Query* cast
+            pg_sys::NodeTag::T_Query => pg_sys::query_tree_walker(
+                node.cast::<pg_sys::Query>(),
+                Some(contains_param),
+                context,
+                0,
+            ),
+            _ => pg_sys::expression_tree_walker(node, Some(contains_param), context),
+        }
+    }
+}
+
+/// The integer value of a `WITH (name = value)` option, if it is one.
+///
+/// SAFETY: `option` must be null or a valid `DefElem*`.
+unsafe fn option_integer(option: *mut pg_sys::DefElem) -> Option<i32> {
+    // SAFETY: every pointer is checked for null before it is dereferenced.
+    unsafe {
+        if option.is_null() || (*option).arg.is_null() {
+            return None;
+        }
+        let arg = (*option).arg;
+        match (*arg).type_ {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → Integer* cast
+            pg_sys::NodeTag::T_Integer => Some((*arg.cast::<pg_sys::Integer>()).ival),
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → String* cast
+            pg_sys::NodeTag::T_String => {
+                let value = (*arg.cast::<pg_sys::String>()).sval;
+                (!value.is_null())
+                    .then(|| CStr::from_ptr(value).to_str().ok()?.parse().ok())
+                    .flatten()
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Create the TVIEW a `CREATE TABLE tv_* AS` names, with `CREATE TABLE AS`
+/// semantics, and report its rows in the command tag (`SELECT n`), as
+/// `PostgreSQL` would. Runs outside `catch_unwind`: errors are raised as they are.
+///
+/// SAFETY: `qc` must be null or the hook's valid `QueryCompletion*`.
+unsafe fn create_tview_from_ctas(ctas: &Ctas, qc: *mut pg_sys::QueryCompletion) {
+    crate::revision::check();
+    let created = crate::ddl::replace::create_only(
+        &ctas.name,
+        &ctas.query,
+        crate::ddl::replace::Options::storage(ctas.logged, ctas.fillfactor),
+        ctas.if_not_exists,
+    );
+    match created {
+        Ok(crate::ddl::replace::Created::Rows(rows)) => {
+            if !qc.is_null() {
+                // SAFETY: `qc` is the hook's completion record.
+                unsafe {
+                    (*qc).commandTag = pg_sys::CommandTag::CMDTAG_SELECT;
+                    (*qc).nprocessed = rows;
                 }
-                record_pre_existing_oid(table_name, pre_existing_oid);
-                Ok(false) // Let PostgreSQL create it, event trigger will convert
             }
+        }
+        Ok(crate::ddl::replace::Created::Skipped) => {}
+        Ok(crate::ddl::replace::Created::Exists(name)) => {
+            unsafe { HOOK_IN_PROGRESS = false };
+            pg_sys::panic::ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
+                format!("TVIEW {name} already exists"),
+                function_name!(),
+            )
+            .set_hint(CTAS_HINT)
+            .report(PgLogLevel::ERROR);
+        }
+        Err(e) => {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("{e}");
         }
     }
 }
@@ -610,7 +778,7 @@ unsafe fn statement_text(query_string: &str, pstmt: *const pg_sys::PlannedStmt) 
 /// another statement) can't be matched.
 fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<String> {
     let re = regex::Regex::new(&format!(
-        r#"(?is)^\s*create\s+(?:[a-z]+\s+){{0,2}}?table\s+(?:if\s+not\s+exists\s+)?(?:"?[^\s."]+"?\s*\.\s*)?"?{}"?\s+as\s+"#,
+        r#"(?is)^\s*create\s+(?:[a-z]+\s+){{0,2}}?table\s+(?:if\s+not\s+exists\s+)?(?:"?[^\s."]+"?\s*\.\s*)?"?{}"?\s+(?:with\s*\([^)]*\)\s*)?as\s+"#,
         regex::escape(table_name)
     ))
     .ok()?;
@@ -658,83 +826,6 @@ unsafe fn extension_statement_names(node: *mut pg_sys::Node) -> Option<Vec<Strin
     }
 }
 
-/// Validate TVIEW SELECT statement structure
-fn validate_tview_select(select_sql: &str) -> Result<(), String> {
-    // Check for required patterns in SELECT
-    // This is basic validation - event trigger will do thorough validation
-    // Only require: id (UUID) + data (JSONB)
-    // Optional columns: pk_<entity>, fk_<entity>, path (LTREE), <entity>_id (UUID FKs)
-
-    let sql_lower = select_sql.to_lowercase();
-
-    // Early return for SELECT * - defer validation to event trigger
-    if let Some(pos) = sql_lower.find("select") {
-        let after = &sql_lower[pos + 6..].trim_start();
-        if after.starts_with('*') {
-            return Ok(());
-        }
-    }
-
-    // Check for id column (required) — handle both bare `id,` and qualified `alias.id,`
-    let has_id = sql_lower.contains(" as id")
-        || sql_lower.contains(" id,")
-        || sql_lower.contains(" id ")
-        || sql_lower.contains(".id,")
-        || sql_lower.contains(".id ")
-        || sql_lower.contains(".id\n")
-        || sql_lower.contains(".id::"); // cast like l1.id::text
-    if !has_id {
-        return Err("Missing required 'id' column (UUID)".to_string());
-    }
-
-    // Check for data column — jsonb_build_object or bare/qualified column
-    let has_data = sql_lower.contains("jsonb_build_object")
-        || sql_lower.contains(" as data")
-        || sql_lower.contains(" data,")
-        || sql_lower.contains(" data ");
-    if !has_data {
-        return Err("Missing required 'data' column (JSONB)".to_string());
-    }
-
-    Ok(())
-}
-
-/// Store pending TVIEW SELECT statement and target schema for event trigger to retrieve.
-///
-/// Uses a session-level in-memory cache. The event trigger reads it when it fires
-/// (safe SPI context). `schema_name` is the explicit schema from the CREATE TABLE
-/// statement (e.g. "public" for `CREATE TABLE public.tv_org AS SELECT …`), or an
-/// empty string when the schema was not specified (caller should fall back to
-/// `current_schema()` at event-trigger time).
-fn store_pending_tview_select(
-    table_name: &str,
-    schema_name: &str,
-    select_sql: &str,
-) -> Result<(), String> {
-    PENDING_TVIEW_SELECTS
-        .lock()
-        .map_err(|e| format!("Failed to lock cache: {e}"))?
-        .insert(
-            table_name.to_string(),
-            (schema_name.to_string(), select_sql.to_string()),
-        );
-
-    Ok(())
-}
-
-/// OID the target relation had before the CTAS ran (`InvalidOid` when it didn't exist).
-///
-/// Maps: `table_name` → OID. Lets [`drain_pending_unconverted_tviews`] refuse to drop a
-/// relation that the statement did not create (issue #79).
-static PENDING_PRE_EXISTING_OIDS: LazyLock<Mutex<std::collections::HashMap<String, pg_sys::Oid>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-
-fn record_pre_existing_oid(table_name: &str, oid: pg_sys::Oid) {
-    if let Ok(mut map) = PENDING_PRE_EXISTING_OIDS.lock() {
-        map.insert(table_name.to_string(), oid);
-    }
-}
-
 /// Resolve a `RangeVar` to a relation OID without locking or raising.
 ///
 /// Returns `InvalidOid` when the relation (or its schema) doesn't exist. This is a
@@ -756,32 +847,6 @@ unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys::Oid {
     }
 }
 
-/// Global cache for pending TVIEW SELECT statements.
-///
-/// Maps: `table_name` → `(schema_name, select_sql)`.
-/// `schema_name` is the explicit schema from `CREATE TABLE [schema.]tv_* AS SELECT …`,
-/// or an empty string when the schema was omitted.
-/// Written by: `ProcessUtility` hook (before table creation)
-/// Read by: Event trigger (after table creation, safe SPI context)
-/// Cleared by: Event trigger after successful conversion
-static PENDING_TVIEW_SELECTS: LazyLock<Mutex<std::collections::HashMap<String, (String, String)>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-
-/// Forget every pending CTAS SELECT (and its pre-existing-OID record).
-///
-/// Called on (sub)transaction abort: a pending entry only lives from the hook storing it to
-/// the event trigger consuming it within one statement, so anything left over belongs to a
-/// statement that failed and must not be applied to a later, unrelated table of the same
-/// name. Pure in-memory work — safe inside transaction callbacks (no SPI).
-pub fn discard_pending_ctas() {
-    if let Ok(mut pending) = PENDING_TVIEW_SELECTS.lock() {
-        pending.clear();
-    }
-    if let Ok(mut oids) = PENDING_PRE_EXISTING_OIDS.lock() {
-        oids.clear();
-    }
-}
-
 /// Release the reentrancy guard if the hook invocation that took it was aborted.
 ///
 /// An `ereport(ERROR)` raised while the hook runs a statement (e.g. a CTAS inside a DO
@@ -797,266 +862,6 @@ pub fn release_hook_guard_on_abort(whole_xact: bool) {
             && (whole_xact || pg_sys::GetCurrentTransactionNestLevel() <= HOOK_GUARD_LEVEL)
         {
             HOOK_IN_PROGRESS = false;
-        }
-    }
-}
-
-/// Retrieve and remove a pending TVIEW `(schema_name, SELECT)` pair.
-///
-/// Called by event trigger to get the original SELECT and target schema for TVIEW
-/// conversion.  Returns `None` if no entry was stored for this table (which means the
-/// table was created by `pg_tviews_create()` directly, not via DDL interception).
-pub fn take_pending_tview_select(table_name: &str) -> Option<(String, String)> {
-    if let Ok(mut map) = PENDING_PRE_EXISTING_OIDS.lock() {
-        map.remove(table_name);
-    }
-    PENDING_TVIEW_SELECTS.lock().ok()?.remove(table_name)
-}
-
-/// Pending initial-data population requests deferred from the event trigger.
-///
-/// When `create_tview` is called from the `ddl_command_end` event trigger (CTAS path),
-/// the INSERT that populates the materialized table silently loses its effects due to
-/// sub-transaction depth corruption.  Instead, `create_tview` enqueues the populate
-/// request here and the `ProcessUtility` hook drains the queue **after** the event
-/// trigger returns, in a clean SPI context.
-static PENDING_POPULATES: LazyLock<Mutex<Vec<PendingPopulate>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-
-struct PendingPopulate {
-    tv_table_name: String,
-    view_name: String,
-    schema_name: String,
-}
-
-/// Enqueue a deferred initial-data population for a TVIEW created via CTAS.
-///
-/// Called by `create_tview` when `defer_populate` is `true`.
-pub fn enqueue_pending_populate(tv_table_name: &str, view_name: &str, schema_name: &str) {
-    if let Ok(mut queue) = PENDING_POPULATES.lock() {
-        queue.push(PendingPopulate {
-            tv_table_name: tv_table_name.to_string(),
-            view_name: view_name.to_string(),
-            schema_name: schema_name.to_string(),
-        });
-    }
-}
-
-/// Drain and convert any TVIEW tables that weren't converted by the event trigger.
-///
-/// Fallback for statements whose event trigger did not run (for example
-/// `SET event_triggers = off`, or the trigger missing from the database). A normal CTAS is
-/// consumed by the event trigger, so the cache is empty here. Anything still pending is
-/// converted directly, but only for a relation this statement created (see
-/// [`created_by_this_statement`]).
-fn drain_pending_unconverted_tviews() {
-    // Get all pending unconverted TVIEWs
-    let entries: Vec<(String, String, String)> = PENDING_TVIEW_SELECTS
-        .lock()
-        .map(|mut cache| {
-            cache
-                .drain()
-                .map(|(table_name, (schema_name, select_sql))| {
-                    (table_name, schema_name, select_sql)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if entries.is_empty() {
-        return; // No unconverted TVIEWs, event trigger must have fired
-    }
-
-    // Log that we're using the fallback mechanism
-    log_debug!(
-        "pg_tviews: Event trigger did not fire for {} TVIEW(s), using fallback conversion",
-        entries.len()
-    );
-
-    let pre_existing: std::collections::HashMap<String, pg_sys::Oid> = PENDING_PRE_EXISTING_OIDS
-        .lock()
-        .map(|mut map| std::mem::take(&mut *map))
-        .unwrap_or_default();
-
-    // Convert each TVIEW directly in this context
-    for (table_name, schema_name, select_sql) in entries {
-        if !created_by_this_statement(
-            &table_name,
-            &schema_name,
-            pre_existing.get(&table_name).copied(),
-        ) {
-            continue;
-        }
-
-        log_debug!(
-            "pg_tviews: Fallback converting TVIEW table '{}' (schema: '{}')",
-            table_name,
-            if schema_name.is_empty() {
-                "(current_schema)"
-            } else {
-                &schema_name
-            }
-        );
-
-        // Resolve the target schema
-        let schema_override: Option<&str> = if schema_name.is_empty() {
-            None
-        } else {
-            Some(schema_name.as_str())
-        };
-
-        // Drop the regular table PostgreSQL created and replace it with TVIEW semantics
-        let drop_sql = match schema_override {
-            Some(s) => format!(
-                "DROP TABLE IF EXISTS {}.{} CASCADE",
-                crate::utils::quote_identifier(s),
-                crate::utils::quote_identifier(&table_name),
-            ),
-            None => format!(
-                "DROP TABLE IF EXISTS {} CASCADE",
-                crate::utils::quote_identifier(&table_name)
-            ),
-        };
-
-        if let Err(e) = Spi::run(&drop_sql) {
-            warning!(
-                "pg_tviews: Failed to drop table '{}' during fallback conversion: {e}",
-                table_name
-            );
-            continue;
-        }
-
-        // Create the proper TVIEW: backing view, materialized table, triggers
-        match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
-            Ok(()) => {
-                log_debug!(
-                    "pg_tviews: Fallback conversion SUCCEEDED for TVIEW '{}'",
-                    table_name
-                );
-            }
-            Err(e) => {
-                warning!(
-                    "pg_tviews: Fallback conversion FAILED for TVIEW '{}': {e}",
-                    table_name
-                );
-            }
-        }
-    }
-}
-
-/// Is the relation named by a pending CTAS one this statement created, and safe to replace?
-///
-/// The fallback conversion `DROP`s the plain table PostgreSQL made and rebuilds it as a
-/// TVIEW. That is only correct for a table the statement just created. A pending entry can
-/// outlive its statement (the CTAS was skipped by `IF NOT EXISTS`, or failed with
-/// "already exists"), in which case the relation is a pre-existing table or a registered
-/// TVIEW that must never be dropped (issue #79). Returns `false` (after warning) then.
-fn created_by_this_statement(
-    table_name: &str,
-    schema_name: &str,
-    pre_existing: Option<pg_sys::Oid>,
-) -> bool {
-    let qualified = if schema_name.is_empty() {
-        crate::utils::quote_identifier(table_name)
-    } else {
-        format!(
-            "{}.{}",
-            crate::utils::quote_identifier(schema_name),
-            crate::utils::quote_identifier(table_name)
-        )
-    };
-    let current: Option<pg_sys::Oid> = Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT to_regclass($1)::oid",
-        &[qualified.as_str().into()],
-    )
-    .ok()
-    .flatten();
-
-    let Some(current) = current else {
-        warning!("pg_tviews: table '{table_name}' not found for fallback conversion, skipping");
-        return false;
-    };
-    if pre_existing == Some(current) {
-        // Relation existed before the statement: it did not create anything.
-        return false;
-    }
-    if matches!(
-        crate::catalog::TviewMeta::load_for_tview(current),
-        Ok(Some(_))
-    ) {
-        warning!("pg_tviews: '{table_name}' is a registered TVIEW, not replacing it");
-        return false;
-    }
-    true
-}
-
-/// Drain and execute all pending TVIEW population requests.
-///
-/// Called by the `ProcessUtility` hook after `call_prev_hook_or_standard` returns
-/// (the event trigger has completed).  Runs the INSERT via SPI in a clean context
-/// outside the event trigger's sub-transaction scope.
-fn drain_pending_populates() {
-    let entries: Vec<PendingPopulate> = PENDING_POPULATES
-        .lock()
-        .map(|mut q| q.drain(..).collect())
-        .unwrap_or_default();
-
-    for entry in entries {
-        let view_oid = match Spi::get_one::<pg_sys::Oid>(&format!(
-            "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
-             WHERE c.relname::text = '{}' AND n.nspname::text = '{}'  AND c.relkind = 'v'",
-            entry.view_name, entry.schema_name
-        )) {
-            Ok(Some(oid)) => oid,
-            Ok(None) => {
-                error!(
-                    "pg_tviews: deferred populate failed — view {}.{} not found",
-                    entry.schema_name, entry.view_name
-                );
-            }
-            Err(e) => {
-                error!(
-                    "pg_tviews: deferred populate failed — cannot resolve view {}.{}: {e}",
-                    entry.schema_name, entry.view_name
-                );
-            }
-        };
-
-        let view_columns = match crate::utils::get_view_columns_by_oid(view_oid) {
-            Ok(cols) if !cols.is_empty() => cols,
-            Ok(_) => {
-                error!(
-                    "pg_tviews: deferred populate failed — view {}.{} has no columns",
-                    entry.schema_name, entry.view_name
-                );
-            }
-            Err(e) => {
-                error!(
-                    "pg_tviews: deferred populate failed — cannot get columns for {}.{}: {e}",
-                    entry.schema_name, entry.view_name
-                );
-            }
-        };
-
-        let qi_schema = crate::utils::quote_identifier(&entry.schema_name);
-        let qi_tview = crate::utils::quote_identifier(&entry.tv_table_name);
-        let qi_view = crate::utils::quote_identifier(&entry.view_name);
-        let col_list = view_columns
-            .iter()
-            .map(|c| crate::utils::quote_identifier(c))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let insert_sql = format!(
-            "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
-             SELECT {col_list} FROM {qi_schema}.{qi_view}"
-        );
-
-        if let Err(e) = Spi::run(&insert_sql) {
-            error!(
-                "pg_tviews: deferred populate failed for {}: {e}",
-                entry.tv_table_name
-            );
         }
     }
 }

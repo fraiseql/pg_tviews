@@ -175,46 +175,6 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
     Ok(format!("SELECT {col_list} FROM {source_qualified}"))
 }
 
-/// Create a TVIEW with atomic rollback on error
-///
-/// This is the main entry point for CREATE TABLE tv_ AS SELECT .... `PostgreSQL`'s transaction
-/// system automatically provides atomicity - if any step fails, all changes
-/// are rolled back.
-///
-/// `schema_override` is the explicit schema name extracted from the DDL statement
-/// (e.g. `"public"` for `CREATE TABLE public.tv_org AS SELECT …`).  When `None`,
-/// the target schema is resolved from `current_schema()` at call time.  Callers
-/// that intercept a schema-qualified DDL statement MUST pass the schema here so
-/// that the TVIEW lands in the correct schema even when the database's
-/// `search_path` would resolve `current_schema()` to a different schema.
-///
-/// Steps:
-/// 1. Check if TVIEW already exists
-/// 2. Expand SELECT * if needed, then infer schema from SELECT statement
-/// 3. Create backing view v_<entity>
-/// 4. Create materialized table tv_<entity>
-/// 5. Populate initial data
-/// 6. Register metadata
-/// 7. Find base table dependencies and install triggers
-///
-/// # Errors
-/// Returns error if TVIEW already exists, SQL is invalid, or trigger installation fails
-pub fn create_tview(
-    tview_name: &str,
-    select_sql: &str,
-    schema_override: Option<&str>,
-    defer_populate: bool,
-) -> TViewResult<()> {
-    create_tview_inner(
-        tview_name,
-        select_sql,
-        schema_override,
-        defer_populate,
-        None,
-        Storage::from_settings(),
-    )
-}
-
 /// Storage of a TVIEW's table (issue #134): its persistence, its fillfactor, and
 /// whether `data` has a GIN index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,7 +198,12 @@ impl Storage {
 }
 
 /// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW
-/// when `group_keys` is given (`pg_tviews_create_or_replace()`, issue #134).
+/// when `group_keys` is given, and return the number of rows it was populated
+/// with (issue #134).
+///
+/// Steps: normalize and analyze the definition; create the backing view
+/// `v_<entity>` and the table `tv_<entity>`; populate it; register it; install
+/// triggers on its base tables.
 ///
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
@@ -248,15 +213,8 @@ pub(crate) fn create_tview_in(
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-) -> TViewResult<()> {
-    create_tview_inner(
-        tview_name,
-        select_sql,
-        Some(schema_name),
-        false,
-        group_keys,
-        storage,
-    )
+) -> TViewResult<u64> {
+    create_tview_inner(tview_name, select_sql, schema_name, group_keys, storage)
 }
 
 /// The creation pipeline's normalization of a definition: `SELECT *` expanded to
@@ -278,45 +236,19 @@ pub(crate) fn normalize_definition(
     }
 }
 
-/// Create an aggregate TVIEW (issue #58): rows are the `GROUP BY` groups of the
-/// definition, keyed by `pk_<entity>`, and `group_keys` names for each source
-/// table the column whose value is the group key.
-///
-/// # Errors
-/// Returns an error if the definition cannot be maintained per group, a group key
-/// is invalid, or creation fails.
-pub fn create_aggregate_tview(
-    tview_name: &str,
-    select_sql: &str,
-    group_keys: &super::aggregate::GroupKeys,
-) -> TViewResult<()> {
-    if group_keys.is_empty() {
-        return Err(TViewError::InvalidInput {
-            parameter: "group_keys".to_string(),
-            reason: "name at least one source table and its group key column, e.g. \
-                     '{\"tb_order\": \"fk_user\"}'"
-                .to_string(),
-        });
-    }
-    create_tview_inner(
-        tview_name,
-        select_sql,
-        None,
-        false,
-        Some(group_keys),
-        Storage::from_settings(),
-    )
-}
-
 fn create_tview_inner(
     tview_name: &str,
     select_sql: &str,
-    schema_override: Option<&str>,
-    defer_populate: bool,
+    schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-) -> TViewResult<()> {
+) -> TViewResult<u64> {
     crate::revision::check();
+    log_debug!(
+        "create_tview start for '{}' in schema '{}'",
+        tview_name,
+        schema_name
+    );
     // Calls that register, change or drop one entity run one after the other.
     super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
 
@@ -374,14 +306,7 @@ fn create_tview_inner(
     //   pg_tviews_create('tv_post', ...) → tv_post
     let tv_table_name = format!("tv_{entity_name}");
 
-    // Resolve the target schema.  Prefer the caller-supplied override (extracted from
-    // the DDL statement) so that `CREATE TABLE public.tv_foo AS SELECT …` always
-    // creates in "public" even when the database default search_path resolves
-    // `current_schema()` to a different schema (e.g. "app").
-    let schema_name = match schema_override {
-        Some(s) => s.to_string(),
-        None => current_schema()?,
-    };
+    let schema_name = schema_name.to_string();
 
     // Reject WITH RECURSIVE up front (issue #51): cascade paths cannot be tracked
     // through a recursive CTE, so creating one would leave a tview that silently
@@ -431,15 +356,7 @@ fn create_tview_inner(
     )?;
 
     // Step 5: Populate initial data
-    // When called from the ddl_command_end event trigger (CTAS path), the DDL
-    // sub-transactions corrupt savepoint depth tracking and the INSERT's effects
-    // are lost.  Defer the populate to after the event trigger returns, where
-    // the ProcessUtility hook drains the queue in a clean SPI context.
-    if defer_populate {
-        crate::hooks::enqueue_pending_populate(&tv_table_name, &view_name, &schema_name);
-    } else {
-        populate_initial_data(&tv_table_name, &view_name, &final_schema, &schema_name)?;
-    }
+    let rows = populate_initial_data(&tv_table_name, &view_name, &schema_name)?;
 
     // Step 6: Find base table dependencies.
     // Pass schema_name so the view OID lookup searches in the correct schema even when
@@ -544,7 +461,7 @@ fn create_tview_inner(
         warning!("Failed to flush audit after CREATE: {}", e);
     }
 
-    Ok(())
+    Ok(rows)
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
@@ -1547,13 +1464,9 @@ fn storage_clause(fillfactor: i32) -> String {
     }
 }
 
-/// Populate the materialized table with initial data from the backing view
-fn populate_initial_data(
-    tview_name: &str,
-    view_name: &str,
-    _schema: &TViewSchema,
-    schema_name: &str,
-) -> TViewResult<()> {
+/// Populate the materialized table with initial data from the backing view, and
+/// return the number of rows.
+fn populate_initial_data(tview_name: &str, view_name: &str, schema_name: &str) -> TViewResult<u64> {
     // Get actual column names from the backing view (like pg_tviews_refresh does)
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
     let view_oid = Spi::get_one::<Oid>(&format!(
@@ -1591,12 +1504,13 @@ fn populate_initial_data(
          SELECT {col_list} FROM {qi_schema}.{qi_view}"
     );
 
-    Spi::run(&insert_sql).map_err(|e| TViewError::SpiError {
-        query: insert_sql,
-        error: e.to_string(),
-    })?;
+    let rows = Spi::connect_mut(|client| client.update(&insert_sql, None, &[]).map(|t| t.len()))
+        .map_err(|e| TViewError::SpiError {
+            query: insert_sql,
+            error: e.to_string(),
+        })?;
 
-    Ok(())
+    Ok(rows as u64)
 }
 
 /// Quote a string for use in a `PostgreSQL` array literal.
