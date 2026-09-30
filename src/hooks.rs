@@ -3,7 +3,7 @@
 //! This module implements `PostgreSQL` hooks for DDL statement interception:
 //! - **`ProcessUtility` Hook**: Intercepts CREATE TABLE `tv_*` and DROP TABLE `tv_*` statements
 //! - **Transaction Callbacks**: Handles PREPARE/COMMIT/ABORT events
-//! - **GID Capture**: Stores transaction IDs for 2PC support
+//! - **COMMIT / PREPARE TRANSACTION**: Flushes the refresh queue before the transaction ends
 //! - **DISCARD ALL**: Clears caches on connection pooling reset
 //!
 //! ## Hook Architecture
@@ -150,28 +150,25 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if !xact_stmt.is_null() {
                 let kind = unsafe { (*xact_stmt).kind };
 
-                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
+                // Flush before COMMIT and before PREPARE TRANSACTION (issue #59): the
+                // refresh writes then belong to this transaction, so a prepared
+                // transaction applies or discards them with COMMIT / ROLLBACK PREPARED.
+                let ending = if kind == pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT {
+                    Some("COMMIT")
+                } else if kind == pg_sys::TransactionStmtKind::TRANS_STMT_PREPARE {
+                    Some("PREPARE TRANSACTION")
+                } else {
+                    None
+                };
+                if let Some(stmt) = ending {
                     if let Err(e) = crate::queue::flush_refresh_queue() {
                         unsafe { HOOK_IN_PROGRESS = false };
-                        error!("TVIEW refresh failed before COMMIT: {e:?}");
+                        error!("TVIEW refresh failed before {stmt}: {e:?}");
                     }
                     if let Err(e) = crate::audit::flush_audit_buffer() {
                         unsafe { HOOK_IN_PROGRESS = false };
-                        error!("Audit flush failed before COMMIT: {e:?}");
+                        error!("Audit flush failed before {stmt}: {e:?}");
                     }
-                }
-
-                // Reject PREPARE TRANSACTION when TVIEW refreshes are pending.
-                // Full 2PC support is not implemented in 0.1.0 — the queue would
-                // be silently discarded, leaving TVIEWs stale.
-                if kind == pg_sys::TransactionStmtKind::TRANS_STMT_PREPARE
-                    && !crate::queue::is_queue_empty()
-                {
-                    unsafe { HOOK_IN_PROGRESS = false };
-                    error!(
-                        "pg_tviews: PREPARE TRANSACTION is not supported when \
-                            TVIEW refreshes are pending; commit or rollback first"
-                    );
                 }
             }
         }
