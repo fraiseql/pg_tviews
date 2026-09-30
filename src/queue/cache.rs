@@ -266,6 +266,10 @@ pub fn invalidate_all_caches() {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that mutate the process-global `TABLE_ENTITY_CACHE`;
+    /// the test harness runs tests in parallel threads.
+    static TABLE_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_graph_cache_invalidation() {
         // Test that invalidate clears the cache
@@ -276,6 +280,10 @@ mod tests {
 
     #[test]
     fn test_table_cache_invalidation() {
+        let _guard = TABLE_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
         // Add something to cache
         {
             let mut cache = TABLE_ENTITY_CACHE.lock().unwrap();
@@ -339,6 +347,10 @@ mod tests {
 
     #[test]
     fn test_negative_cache_entry() {
+        let _guard = TABLE_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
         table_cache::invalidate();
         // Insert a None entry
         TABLE_ENTITY_CACHE
