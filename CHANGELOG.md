@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
+  an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
+  TVIEW stayed empty until something wrote to its base tables. New:
+  - `pg_tviews_is_replica_readable(entity)` and
+    `pg_tviews_replication_status()` show which TVIEWs a standby can serve. Both
+    are read-only and callable on a standby.
+  - `pg_tviews_rebuild_all(only_empty DEFAULT true)` rebuilds emptied UNLOGGED
+    TVIEWs, dependencies first, and returns each entity with its row count.
+  - `pg_tviews_set_logged(entity, logged)` switches a TVIEW between LOGGED and
+    UNLOGGED.
+  - The `pg_tviews.auto_rebuild_databases` GUC (postmaster, default empty)
+    starts one background worker per listed database. The worker runs
+    `pg_tviews_rebuild_all()` whenever the server leaves recovery: at startup,
+    after a crash restart, and on promotion.
+  - `docs/operations/replication.md` states the contract.
+  - CI runs `test/replication/promote_rebuild.sh` against a real standby.
+
 ### Fixed
 
 - **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
@@ -43,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   fails with `function pg_tviews_convert_table(text, text) does not exist` (#96).
 - A CTAS TVIEW that joins a table in another schema no longer fails at creation
   with `relation "<tview schema>.<table>" does not exist`.
+- The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
+  rows.
 
 ### Changed
 

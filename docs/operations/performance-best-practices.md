@@ -93,6 +93,28 @@ CREATE TABLE tb_post (
 
 ---
 
+### Large documents with small, frequently changing fields
+
+A refresh writes a whole new `data` value. Once a document is stored out of line (TOAST,
+above about 2 KB after compression), changing one small field writes the whole document
+again: new TOAST chunks, their index entries and, on a LOGGED TVIEW, their WAL. The cost
+grows with the document, not with the change. PostgreSQL has no partial update of a
+TOASTed `jsonb`, so no pg_tviews setting avoids it (measurements and reasoning:
+[ADR 0094](../adr/0094-large-document-refresh.md)).
+
+- **Split large, rarely changing sub-documents out of the hot TVIEW.** Give a post's
+  `content` or a product's `description` its own TVIEW on the same primary key and compose
+  the two at read time. The frequently refreshed `data` then stays small and inline, and the
+  large value is only rewritten when it actually changes.
+- **Most JSON is not affected.** Realistic, compressible documents usually compress below
+  the TOAST threshold. The cost shows up with incompressible content (embedded base64,
+  hashes, already-compressed data).
+- **Storage knobs rarely help.** `ALTER TABLE tv_x ALTER COLUMN data SET STORAGE MAIN`
+  keeps a 2–8 KB value inline and cuts WAL by about a third on a LOGGED TVIEW, at the cost of
+  a larger heap. Beyond one page it changes nothing.
+- **UNLOGGED TVIEWs** (the default) write no WAL for the rewrite, but see
+  [replication](replication.md) before relying on them.
+
 ## Index Strategy
 
 ### ✅ DO: Index All Foreign Keys
