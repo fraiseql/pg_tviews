@@ -184,6 +184,28 @@ pub mod table_cache {
             Vec::new()
         };
 
+        // A base column that also feeds a projected column outside `data` must
+        // recompute: a data-only patch would leave that column stale (#98).
+        // SAFETY: DatumWithOid wraps the entity name as a TEXT parameter.
+        let args = [unsafe {
+            pgrx::datum::DatumWithOid::new(
+                name.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        }];
+        let definition: Option<String> = Spi::get_one_with_args(
+            "SELECT definition FROM pg_tview_meta WHERE entity = $1",
+            &args,
+        )
+        .unwrap_or(None);
+        match definition
+            .as_deref()
+            .and_then(crate::schema::direct_map::columns_referenced_outside_data)
+        {
+            Some(projected) => direct_map.retain(|col, _| !projected.contains(&col.to_lowercase())),
+            None => direct_map.clear(),
+        }
+
         Ok(Some(CachedEntityInfo {
             name,
             distinct_on_key: meta.distinct_on_keys.first().cloned(),

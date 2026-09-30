@@ -75,7 +75,7 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = ANY($1)");
     let conflict = format!(
         "ON CONFLICT ({qi_pk}) {}",
-        super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
+        super::upsert_conflict_action(&tv_name, &col_names, &pk_col, None)
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).

@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   as PostgreSQL does. Every refresh and propagation statement now quotes the column,
   table and key names it interpolates, so a TVIEW like `tv_Mixed` refreshes instead
   of failing on every write to its base table.
+- **Single-row refresh keeps every projected column in sync (#98).** For a TVIEW
+  that joins a parent table, a change to one base row only rewrote `data`; other
+  projected columns (`qty AS qty_alias`) stayed stale. The direct-patch fast path
+  now also declines when a changed column feeds a projected column outside `data`.
 - **Cascade propagation no longer scans the whole parent TVIEW** (#71). Propagation
   finds parent rows with `WHERE fk_<child> = ANY($1)`, but integer `fk_*` columns
   had no index. Every new TVIEW now gets a required `(fk_<x>, pk_<entity>)` btree
