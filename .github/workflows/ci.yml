@@ -77,7 +77,8 @@ jobs:
           # Required for the pg_tviews GUCs; pg_tviews must already be installed.
           # PGPORT was exported to $GITHUB_ENV by the cluster-setup step.
           sudo -u postgres psql -p "${PGPORT}" \
-            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
+            -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';" \
+            -c "ALTER SYSTEM SET max_prepared_transactions = 10;"
           sudo pg_ctlcluster "${PG_MAJOR}" main restart
 
       # PGHOST/PGPORT/PGUSER come from $GITHUB_ENV (cluster-setup step) so the

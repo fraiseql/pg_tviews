@@ -42,6 +42,7 @@ mod queue;
 mod rebuild_worker;
 mod refresh;
 mod replication;
+mod report;
 mod sql_parser;
 mod trigger;
 mod utils;

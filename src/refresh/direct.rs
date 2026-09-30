@@ -185,6 +185,13 @@ pub fn apply_entity_patches(
 
             crate::metrics::metrics_api::record_direct_patches_applied(changed);
             crate::metrics::metrics_api::record_noop_skipped(materialised.len() as u64 - changed);
+            for &(pk, _) in materialised.iter().filter(|&&(_, c)| c) {
+                crate::queue::affected::record(
+                    &meta.entity_name,
+                    pk.to_string(),
+                    crate::queue::affected::Change::Updated,
+                );
+            }
             for &pk in chunk {
                 if !present.contains(&pk) {
                     fallback.push(pk);
