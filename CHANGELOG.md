@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Quoted output columns and mixed-case entities work (#89).** `AS "order"` /
+  `AS "Label"` was recorded with its quotes, so `pg_tviews_create` built a column
+  literally named `"order"` and failed; unquoted aliases are now folded to lower case
+  as PostgreSQL does. Every refresh and propagation statement now quotes the column,
+  table and key names it interpolates, so a TVIEW like `tv_Mixed` refreshes instead
+  of failing on every write to its base table.
 - **Cascade propagation no longer scans the whole parent TVIEW** (#71). Propagation
   finds parent rows with `WHERE fk_<child> = ANY($1)`, but integer `fk_*` columns
   had no index. Every new TVIEW now gets a required `(fk_<x>, pk_<entity>)` btree
