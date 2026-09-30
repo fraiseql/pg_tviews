@@ -3,11 +3,8 @@
 use pgrx::PgBuiltInOids;
 use pgrx::PgOid;
 use pgrx::datum::DatumWithOid;
-use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::utils::quote_identifier;
 
 // Static cache for jsonb_delta availability (performance optimization)
 static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -97,78 +94,10 @@ pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bo
 /// # Returns
 /// `Ok(true)` if crash recovery is needed, `Ok(false)` if table is healthy
 pub fn detect_post_crash_truncation(entity_name: &str) -> crate::TViewResult<bool> {
-    // Get the table OID and view OID from pg_tview_meta
-    let (table_oid_opt, view_oid_opt): (Option<Oid>, Option<Oid>) = Spi::get_two_with_args(
-        "SELECT table_oid::oid, view_oid::oid FROM pg_tview_meta WHERE entity = $1",
-        &[unsafe {
-            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }],
-    )?;
-
-    let table_oid = match table_oid_opt {
-        Some(t) => t,
-        None => return Ok(false), // Entity not found
-    };
-
-    let view_oid = match view_oid_opt {
-        Some(v) => v,
-        None => return Ok(false), // Entity not found
-    };
-
-    // Check if TVIEW table is UNLOGGED
-    let is_unlogged: Option<bool> = Spi::get_one_with_args(
-        "SELECT relpersistence = 'u' FROM pg_class WHERE oid = $1 AND relkind = 'r'",
-        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
-    )?;
-
-    // If table doesn't exist or isn't UNLOGGED, no crash detection needed
-    if !is_unlogged.unwrap_or(false) {
-        return Ok(false);
+    match crate::replication::TviewRelation::load(Some(entity_name))?.first() {
+        Some(rel) => rel.needs_rebuild(),
+        None => Ok(false), // Entity not found
     }
-
-    // Get schema name for qualified queries
-    let schema: Option<String> = Spi::get_one_with_args(
-        "SELECT n.nspname::text FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
-        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
-    )?;
-
-    let schema = schema.unwrap_or_else(|| "public".to_string());
-
-    // Get table and view names
-    let tview_table: Option<String> = Spi::get_one_with_args(
-        "SELECT relname::text FROM pg_class WHERE oid = $1",
-        &[unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
-    )?;
-
-    let backing_view: Option<String> = Spi::get_one_with_args(
-        "SELECT relname::text FROM pg_class WHERE oid = $1",
-        &[unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
-    )?;
-
-    let tview_table = tview_table.unwrap_or_default();
-    let backing_view = backing_view.unwrap_or_default();
-
-    // Check if table has any rows (O(1) emptiness check)
-    let table_has_rows: Option<bool> = Spi::get_one(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {}.{} LIMIT 1)",
-        quote_identifier(&schema),
-        quote_identifier(&tview_table)
-    ))?;
-
-    // If table has data, no crash detected
-    if table_has_rows.unwrap_or(false) {
-        return Ok(false);
-    }
-
-    // Check if backing view has any data
-    let view_has_rows: Option<bool> = Spi::get_one(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {}.{} LIMIT 1)",
-        quote_identifier(&schema),
-        quote_identifier(&backing_view)
-    ))?;
-
-    // If backing view has data but table is empty, crash detected
-    Ok(view_has_rows.unwrap_or(false))
 }
 
 /// Export as SQL function for testing
@@ -192,6 +121,7 @@ pub fn invalidate_jsonb_delta_cache() {
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
+    crate::rebuild_worker::register();
 
     // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
     // registering callbacks is valid in this context.
