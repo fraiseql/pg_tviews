@@ -11,7 +11,7 @@
 //! incorrect data, because the recompute path remains the single source of truth.
 
 use crate::schema::parser::{parse_select_columns_with_expressions, split_by_top_level_comma};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// SQL keywords that can immediately follow the base table in a FROM clause,
 /// signalling that the table has no alias (`FROM tb_post WHERE …`).
@@ -78,6 +78,29 @@ pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(Str
 
     // 6. Drop ambiguous keys/columns (each must appear exactly once).
     drop_ambiguous(&pairs)
+}
+
+/// Identifiers (lower-cased) referenced by any output column other than `data`.
+///
+/// A direct patch only rewrites `data`, so a base column that also feeds another
+/// projected column (`body AS label`) must recompute instead, or that column goes
+/// stale (issue #98). Deliberately over-approximate: every identifier-like token
+/// counts, whichever relation it belongs to. `None` when the SELECT list cannot be
+/// parsed — the caller then disables the fast path.
+#[must_use]
+pub fn columns_referenced_outside_data(select_sql: &str) -> Option<HashSet<String>> {
+    let columns = parse_select_columns_with_expressions(select_sql).ok()?;
+    Some(
+        columns
+            .iter()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case("data"))
+            .flat_map(|(_, expr)| {
+                expr.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_lowercase)
+            })
+            .collect(),
+    )
 }
 
 /// If `expr` (leading-trimmed) begins with a `jsonb_build_object(` call, return the
@@ -288,6 +311,23 @@ const fn is_ident_byte(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn referenced_outside_data_includes_aliased_projections() {
+        let refs = columns_referenced_outside_data(
+            "SELECT n.pk_note, n.id, n.body AS label, upper(n.title) AS \"Title\", \
+             jsonb_build_object('body', n.body, 'extra', n.extra) AS data FROM tb_note n",
+        )
+        .unwrap();
+        assert!(refs.contains("body"));
+        assert!(refs.contains("title"));
+        assert!(!refs.contains("extra"));
+    }
+
+    #[test]
+    fn referenced_outside_data_none_when_unparseable() {
+        assert!(columns_referenced_outside_data("not a select").is_none());
+    }
 
     /// Convenience: run extraction and return an ordered `Vec` of `(col, key)`.
     fn extract(sql: &str, base: &str) -> Vec<(String, String)> {

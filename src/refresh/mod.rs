@@ -39,11 +39,27 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 /// entries, no dead tuple, and keeps its `updated_at` ("last content change").
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
 /// qualified with `tv_name` because the source relation is in scope too.
-pub(crate) fn upsert_conflict_action(tv_name: &str, col_names: &[String], key_col: &str) -> String {
-    let cols: Vec<String> = col_names
+///
+/// `data_expr` replaces `EXCLUDED.data` as the new `data` value (the smart-patch
+/// path merges into the stored document). Every other column still tracks the
+/// backing view, so no projected column is left stale (issue #98).
+pub(crate) fn upsert_conflict_action(
+    tv_name: &str,
+    col_names: &[String],
+    key_col: &str,
+    data_expr: Option<&str>,
+) -> String {
+    let cols: Vec<(String, String)> = col_names
         .iter()
         .filter(|c| c.as_str() != key_col)
-        .map(|c| quote_identifier(c))
+        .map(|c| {
+            let q = quote_identifier(c);
+            let fresh = match data_expr {
+                Some(expr) if c == "data" => expr.to_string(),
+                _ => format!("EXCLUDED.{q}"),
+            };
+            (q, fresh)
+        })
         .collect();
     if cols.is_empty() {
         return "DO NOTHING".to_string();
@@ -51,28 +67,19 @@ pub(crate) fn upsert_conflict_action(tv_name: &str, col_names: &[String], key_co
     let qi_tv = quote_identifier(tv_name);
     let set = cols
         .iter()
-        .map(|c| format!("{c} = EXCLUDED.{c}"))
+        .map(|(c, fresh)| format!("{c} = {fresh}"))
         .chain(std::iter::once("updated_at = NOW()".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
-    let (stored, fresh) = if let [c] = cols.as_slice() {
-        (format!("{qi_tv}.{c}"), format!("EXCLUDED.{c}"))
+    let (stored, fresh) = if let [(c, fresh)] = cols.as_slice() {
+        (format!("{qi_tv}.{c}"), fresh.clone())
     } else {
+        let list = |f: &dyn Fn(&(String, String)) -> String| {
+            format!("({})", cols.iter().map(f).collect::<Vec<_>>().join(", "))
+        };
         (
-            format!(
-                "({})",
-                cols.iter()
-                    .map(|c| format!("{qi_tv}.{c}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            format!(
-                "({})",
-                cols.iter()
-                    .map(|c| format!("EXCLUDED.{c}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            list(&|(c, _)| format!("{qi_tv}.{c}")),
+            list(&|(_, fresh)| fresh.clone()),
         )
     };
     format!("DO UPDATE SET {set} WHERE {stored} IS DISTINCT FROM {fresh}")
@@ -113,7 +120,12 @@ mod tests {
     #[test]
     fn conflict_action_guards_every_non_key_column() {
         assert_eq!(
-            super::upsert_conflict_action("tv_post", &cols(&["pk_post", "id", "data"]), "pk_post"),
+            super::upsert_conflict_action(
+                "tv_post",
+                &cols(&["pk_post", "id", "data"]),
+                "pk_post",
+                None
+            ),
             r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE ("tv_post"."id", "tv_post"."data") IS DISTINCT FROM (EXCLUDED."id", EXCLUDED."data")"#
         );
     }
@@ -121,7 +133,7 @@ mod tests {
     #[test]
     fn conflict_action_single_column_uses_plain_comparison() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "data"]), "pk_x"),
+            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "data"]), "pk_x", None),
             r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE "tv_x"."data" IS DISTINCT FROM EXCLUDED."data""#
         );
     }
@@ -129,8 +141,21 @@ mod tests {
     #[test]
     fn conflict_action_quotes_reserved_and_mixed_case_columns() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "order", "Label"]), "pk_x"),
+            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "order", "Label"]), "pk_x", None),
             r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE ("tv_x"."order", "tv_x"."Label") IS DISTINCT FROM (EXCLUDED."order", EXCLUDED."Label")"#
+        );
+    }
+
+    #[test]
+    fn conflict_action_data_expr_replaces_only_data() {
+        assert_eq!(
+            super::upsert_conflict_action(
+                "tv_x",
+                &cols(&["pk_x", "label", "data"]),
+                "pk_x",
+                Some("patch(\"tv_x\".data)"),
+            ),
+            r#"DO UPDATE SET "label" = EXCLUDED."label", "data" = patch("tv_x".data), updated_at = NOW() WHERE ("tv_x"."label", "tv_x"."data") IS DISTINCT FROM (EXCLUDED."label", patch("tv_x".data))"#
         );
     }
 
@@ -145,7 +170,7 @@ mod tests {
     #[test]
     fn conflict_action_key_only_does_nothing() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x"]), "pk_x"),
+            super::upsert_conflict_action("tv_x", &cols(&["pk_x"]), "pk_x", None),
             "DO NOTHING"
         );
     }

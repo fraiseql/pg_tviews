@@ -269,7 +269,7 @@ fn build_dedup_dml_components(
 ) -> (String, String) {
     (
         super::column_list(col_names),
-        super::upsert_conflict_action(tv_name, col_names, key_col),
+        super::upsert_conflict_action(tv_name, col_names, key_col, None),
     )
 }
 
@@ -475,11 +475,12 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 
     // $1 = freshly computed document (patch source for the DO UPDATE branch),
     // $2 = primary key (selects the row to insert from the backing view). In the
-    // DO UPDATE clause, bare `data` is the existing tview value being patched.
-    // The guard skips the write when the patched document equals the stored one (#72).
+    // DO UPDATE clause, `data` is patched in place while every other projected
+    // column takes the backing view's value (#98); the guard skips the write when
+    // nothing changed (#72).
     let conflict = format!(
-        "ON CONFLICT ({qi_pk}) DO UPDATE SET data = {patch_expr}, updated_at = now() \
-         WHERE {qi_tv}.data IS DISTINCT FROM {patch_expr}"
+        "ON CONFLICT ({qi_pk}) {}",
+        super::upsert_conflict_action(&tv_name, &col_names, &pk_col, Some(&patch_expr))
     );
 
     // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
@@ -636,7 +637,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
         ),
         &format!(
             "ON CONFLICT ({qi_pk}) {}",
-            super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
+            super::upsert_conflict_action(&tv_name, &col_names, &pk_col, None)
         ),
         &[unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
     )?;
