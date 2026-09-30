@@ -181,11 +181,10 @@ fn find_affected_pks_batch(
     child_pks: &[i64],
 ) -> spi::Result<HashMap<i64, Vec<i64>>> {
     let fk_col = format!("fk_{child_entity}");
-    let parent_table = format!("tv_{parent_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
     let qi_fk = quote_identifier(&fk_col);
-    let qi_parent = quote_identifier(&parent_table);
+    let qi_parent = tview_relation(parent_entity)?;
     let qi_parent_pk = quote_identifier(&parent_pk_col);
 
     // Use = ANY($1) to batch multiple child PKs into one query
@@ -221,6 +220,17 @@ fn find_affected_pks_batch(
     })
 }
 
+/// Schema-qualified, quoted `tv_<entity>` table of an entity, read from its
+/// catalog OID so parent lookups work whatever the session's `search_path`.
+fn tview_relation(entity: &str) -> spi::Result<String> {
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+        crate::TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+    })?;
+    crate::utils::qualified_relname_from_oid(meta.tview_oid)
+}
+
 /// Find all parent entities that depend on the given entity (from cached graph).
 ///
 /// Example: `find_parent_entities`("user") -> `["post", "comment"]`
@@ -243,12 +253,11 @@ fn find_affected_pks(
     child_pk: i64,
 ) -> spi::Result<Vec<i64>> {
     let fk_col = format!("fk_{child_entity}");
-    let parent_table = format!("tv_{parent_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
     // Table/column names are from pg_tview_meta (internal); child_pk is parameterized
     let qi_fk = quote_identifier(&fk_col);
-    let qi_parent = quote_identifier(&parent_table);
+    let qi_parent = tview_relation(parent_entity)?;
     let qi_parent_pk = quote_identifier(&parent_pk_col);
     let query = format!("SELECT {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = $1");
     let args = vec![unsafe {

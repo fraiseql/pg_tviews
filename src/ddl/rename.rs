@@ -29,7 +29,10 @@ use sqlparser::tokenizer::{Token, TokenWithLocation, Tokenizer};
 pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TViewResult<()> {
     for (entity, schema_name, view_oid) in affected_tviews(relid, new_name)? {
         let definition: String = Spi::get_one_with_args(
-            "SELECT definition FROM pg_tview_meta WHERE entity = $1",
+            &format!(
+                "SELECT definition FROM {} WHERE entity = $1",
+                crate::utils::meta_table()
+            ),
             &[text_arg(&entity)],
         )
         .map_err(|e| catalog_error("Read TVIEW definition", &e))?
@@ -58,8 +61,11 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
 
         // An aggregate TVIEW (issue #58) names its group key columns by name.
         Spi::run_with_args(
-            "UPDATE pg_tview_meta SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
-             WHERE entity = $1 AND group_keys->>$2 = $3",
+            &format!(
+                "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
+                 WHERE entity = $1 AND group_keys->>$2 = $3",
+                crate::utils::meta_table()
+            ),
             &[
                 text_arg(&entity),
                 text_arg(&relname),
@@ -77,22 +83,25 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
 /// TVIEWs whose backing view depends on column `column` of `relid`, from the
 /// column-level `pg_depend` entries of the view's rewrite rule.
 fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String, Oid)>> {
-    const QUERY: &str = "SELECT DISTINCT m.entity, n.nspname::text AS schema, v.oid AS view_oid \
-         FROM pg_tview_meta m \
+    let query = format!(
+        "SELECT DISTINCT m.entity, n.nspname::text AS schema, v.oid AS view_oid \
+         FROM {} m \
          JOIN pg_class v ON v.oid = m.view_oid \
          JOIN pg_namespace n ON n.oid = v.relnamespace \
          JOIN pg_rewrite r ON r.ev_class = v.oid \
          JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid \
          JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
          WHERE d.refobjid = $1 AND a.attname = $2 \
-         ORDER BY m.entity";
+         ORDER BY m.entity",
+        crate::utils::meta_table()
+    );
     Spi::connect(|client| {
         let args = [
             unsafe { DatumWithOid::new(relid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
             text_arg(column),
         ];
         let mut out = Vec::new();
-        for row in client.select(QUERY, None, &args)? {
+        for row in client.select(&query, None, &args)? {
             let entity: Option<String> = row["entity"].value()?;
             let schema: Option<String> = row["schema"].value()?;
             let view_oid: Option<Oid> = row["view_oid"].value()?;
@@ -121,7 +130,10 @@ fn relation_name(relid: Oid) -> TViewResult<String> {
 /// `pg_get_viewdef` (any error, e.g. a syntax error in the candidate, is false).
 fn defines_view(candidate: &str, view_oid: Oid) -> bool {
     Spi::get_one_with_args::<bool>(
-        "SELECT pg_tviews_defines_view($1, $2)",
+        &format!(
+            "SELECT {}.pg_tviews_defines_view($1, $2)",
+            crate::utils::ext_schema()
+        ),
         &[
             unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
             text_arg(candidate),

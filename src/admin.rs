@@ -135,8 +135,9 @@ fn pg_tviews_ensure_propagation_indexes(
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }];
         let rows = client.select(
-            "SELECT n.nspname::text, c.relname::text, a.attname::text, 'pk_' || m.entity \
-             FROM pg_tview_meta m \
+            &format!(
+                "SELECT n.nspname::text, c.relname::text, a.attname::text, 'pk_' || m.entity \
+             FROM {meta} m \
              JOIN pg_class c ON c.oid = m.table_oid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
@@ -150,6 +151,8 @@ fn pg_tviews_ensure_propagation_indexes(
                AND NOT EXISTS (SELECT 1 FROM pg_index i \
                                WHERE i.indrelid = c.oid AND i.indkey[0] = a.attnum) \
              ORDER BY 1, 2, 3",
+                meta = crate::utils::meta_table()
+            ),
             None,
             &args,
         )?;
@@ -238,13 +241,14 @@ fn pg_tviews_show_cascade_path(
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }];
         match client.select(
-            "WITH RECURSIVE dep_tree AS (
+            &format!(
+                "WITH RECURSIVE dep_tree AS (
                 SELECT
                     pg_tview_meta.entity,
                     0 as depth,
                     ARRAY[pg_tview_meta.entity] as path,
                     pg_tview_meta.entity as depends_on
-                FROM pg_tview_meta
+                FROM {meta} pg_tview_meta
                 WHERE pg_tview_meta.entity = $1
 
                 UNION ALL
@@ -255,13 +259,15 @@ fn pg_tviews_show_cascade_path(
                     dt.path || m.entity,
                     dt.entity as depends_on
                 FROM dep_tree dt
-                JOIN pg_tview_meta m ON ('fk_' || dt.entity) = ANY(m.fk_columns)
+                JOIN {meta} m ON ('fk_' || dt.entity) = ANY(m.fk_columns)
                 WHERE NOT (m.entity = ANY(dt.path))
                   AND dt.depth < 10
             )
             SELECT depth, entity AS entity_name, depends_on
             FROM dep_tree
             ORDER BY depth, entity_name",
+                meta = crate::utils::meta_table()
+            ),
             None,
             &args,
         ) {

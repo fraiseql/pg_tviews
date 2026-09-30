@@ -57,8 +57,8 @@ use pgrx::prelude::*;
 
 use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
-use crate::lifecycle::check_jsonb_delta_available;
-use crate::utils::{lookup_view_for_source, quote_identifier, relname_from_oid};
+use crate::lifecycle::jsonb_delta_schema;
+use crate::utils::{qualified_relname_from_oid, quote_identifier};
 
 /// Refresh a single TVIEW row when its source data changes.
 ///
@@ -115,9 +115,8 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// filtered out of the backing view). Removing the row here is what makes DELETE
 /// propagate to the tview instead of leaving a stale row (issue #48).
 fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
-    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
-    let qi_tv = quote_identifier(&tv_name);
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_pk} = $1 \
          RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
@@ -169,11 +168,10 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         .first()
         .unwrap_or(&meta.distinct_on_keys[0]);
     let key_col_q = quote_identifier(key_col);
-    let view_name = lookup_view_for_source(meta.view_oid)?;
-    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
+    let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
 
     // Check whether any winning row exists for this dedup key
-    let qi_view = quote_identifier(&view_name);
     let count_sql = format!("SELECT COUNT(*) FROM {qi_view} WHERE {key_col_q}::text = $1");
     let row_count: i64 = Spi::connect(|client| {
         let args = vec![unsafe {
@@ -189,7 +187,6 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
     if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
-        let qi_tv = quote_identifier(&tv_name);
         let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
         let delete_sql = format!(
             "DELETE FROM {qi_tv} WHERE {key_col_q}::text = $1 \
@@ -211,7 +208,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
             let cache = crate::utils::DEDUP_DML_CACHE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.get(&view_name).cloned()
+            cache.get(&qi_view).cloned()
         };
 
         let (col_list, do_update) = if let Some(dml) = cached_dml {
@@ -223,7 +220,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 return Ok(());
             }
 
-            let dml = build_dedup_dml_components(&tv_name, &col_names, key_col.as_str());
+            let dml = build_dedup_dml_components(&qi_tv, &col_names, key_col.as_str());
 
             // Cache the DML strings (bounded by pg_tviews.cache_size)
             {
@@ -231,7 +228,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 crate::utils::bound_cache(&mut cache);
-                cache.insert(view_name.clone(), dml.clone());
+                cache.insert(qi_view.clone(), dml.clone());
             }
 
             dml
@@ -239,7 +236,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
         super::run_counted_upsert(
             &meta.entity_name,
-            &tv_name,
+            &qi_tv,
             &col_list,
             &format!("SELECT {col_list} FROM {qi_view} WHERE {key_col_q}::text = $1 LIMIT 1"),
             &format!("ON CONFLICT ({key_col_q}) {do_update}"),
@@ -260,7 +257,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 ///
 /// # Arguments
 ///
-/// * `tv_name` - The TVIEW table (qualifies the stored columns in the guard)
+/// * `qi_tv` - The quoted TVIEW table (qualifies the stored columns in the guard)
 /// * `col_names` - Column names from the backing view
 /// * `key_col` - The dedup key column name (excluded from DO UPDATE)
 ///
@@ -268,13 +265,13 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 ///
 /// Tuple of (`col_list`, `conflict_action`)
 fn build_dedup_dml_components(
-    tv_name: &str,
+    qi_tv: &str,
     col_names: &[String],
     key_col: &str,
 ) -> (String, String) {
     (
         super::column_list(col_names),
-        super::upsert_conflict_action(tv_name, col_names, key_col, None),
+        super::upsert_conflict_action(qi_tv, col_names, key_col, None),
     )
 }
 
@@ -300,12 +297,11 @@ fn build_dedup_dml_components(
 /// -- Returns: pk_post, fk_user, data JSONB
 /// ```
 fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
-    let view_name = lookup_view_for_source(meta.view_oid)?;
+    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
     let sql = format!(
-        "SELECT 1 FROM {} WHERE {} = $1 LIMIT 2",
-        quote_identifier(&view_name),
+        "SELECT 1 FROM {qi_view} WHERE {} = $1 LIMIT 2",
         quote_identifier(&pk_col)
     );
 
@@ -401,18 +397,17 @@ fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
 /// apply_patch(&view_row, &meta)?;
 /// ```
 fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
-    let tv_name = relname_from_oid(meta.tview_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name);
 
     // Check if jsonb_delta is available (cached after first session query)
-    if !check_jsonb_delta_available() {
+    let Some(delta_schema) = jsonb_delta_schema() else {
         warning!(
             "jsonb_delta extension not installed. Smart patching disabled. \
              Install with: CREATE EXTENSION jsonb_delta; \
              Performance: Full replacement is ~2× slower for cascades."
         );
         return apply_full_replacement(meta, pk);
-    }
+    };
 
     // Parse dependencies
     let deps = meta.parse_dependencies();
@@ -444,7 +439,6 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
     // row that already exists, but an INSERT into the base table has no tview row
     // to patch yet, so an UPDATE-only statement silently drops it. Insert the full
     // row from the backing view, or smart-patch the existing row on conflict.
-    let view_name = lookup_view_for_source(meta.view_oid)?;
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
     if col_names.is_empty() {
         return apply_full_replacement(meta, pk);
@@ -452,12 +446,17 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
     let col_list = super::column_list(&col_names);
     // Qualify the target column as `{tv}.data`: the INSERT … SELECT source relation
     // is in scope inside ON CONFLICT DO UPDATE, so a bare `data` is ambiguous.
-    let qi_tv = quote_identifier(&tv_name);
-    let qi_view = quote_identifier(&view_name);
+    let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
     let qi_pk = quote_identifier(&pk_col);
     // The patch source is the freshly computed document the upsert already read
     // from the view (`EXCLUDED.data`), so the view is evaluated once (issue #91).
-    let patch_expr = build_smart_patch_expr(&deps, &format!("{qi_tv}.data"), "EXCLUDED.\"data\"");
+    let patch_expr = build_smart_patch_expr(
+        &delta_schema,
+        &deps,
+        &format!("{qi_tv}.data"),
+        "EXCLUDED.\"data\"",
+    );
 
     // $1 = primary key (selects the row to insert from the backing view). In the
     // DO UPDATE clause, `data` is patched in place while every other projected
@@ -465,13 +464,13 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
     // nothing changed (#72).
     let conflict = format!(
         "ON CONFLICT ({qi_pk}) {}",
-        super::upsert_conflict_action(&tv_name, &col_names, &pk_col, Some(&patch_expr))
+        super::upsert_conflict_action(&qi_tv, &col_names, &pk_col, Some(&patch_expr))
     );
 
     // SAFETY: DatumWithOid::new wraps the INT8 primary key for SPI parameter passing.
     super::run_counted_upsert(
         &meta.entity_name,
-        &tv_name,
+        &qi_tv,
         &col_list,
         &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $1"),
         &conflict,
@@ -484,8 +483,8 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
 /// The returned SQL expression patches the tview's existing `data` column
 /// (starting from `base_data_expr`, which the caller qualifies as `tv_<entity>.data`
 /// so it is unambiguous inside `INSERT … SELECT … ON CONFLICT DO UPDATE`) with the
-/// freshly computed document `source`. Each dependency wraps the
-/// expression in one patch call:
+/// freshly computed document `source`. Each dependency wraps the expression in
+/// one patch call, qualified with the quoted `jsonb_delta` `schema`:
 ///    - `NestedObject` → `jsonb_smart_patch_nested(expr, $1, path)`
 ///    - `Array` → `jsonb_smart_patch_array(expr, $1, path, key)`
 ///    - `Scalar` → `jsonb_smart_patch_scalar(expr, $1)`
@@ -502,7 +501,12 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
 ///     jsonb_smart_patch_array(data, $1::jsonb, ARRAY['comments'], 'id'),
 ///     $1::jsonb, ARRAY['author'])
 /// ```
-fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str, source: &str) -> String {
+fn build_smart_patch_expr(
+    schema: &str,
+    deps: &[DependencyDetail],
+    base_data_expr: &str,
+    source: &str,
+) -> String {
     // Start with the target's current data column. The caller qualifies it (e.g.
     // `tv_post.data`) because inside `INSERT … SELECT … ON CONFLICT DO UPDATE` a
     // bare `data` is ambiguous with the SELECT source relation.
@@ -518,7 +522,9 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str, sourc
                 // Kept as a safe passthrough for match exhaustiveness.
                 if let Some(path) = &dep.path {
                     let path_str = path.join(",");
-                    format!("jsonb_smart_patch_nested({patch_expr}, {source}, ARRAY['{path_str}'])")
+                    format!(
+                        "{schema}.jsonb_smart_patch_nested({patch_expr}, {source}, ARRAY['{path_str}'])"
+                    )
                 } else {
                     warning!("NestedObject dependency missing path, skipping");
                     patch_expr
@@ -534,7 +540,7 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str, sourc
             }
             DependencyType::Scalar => {
                 // Scalar = shallow merge (no nested paths affected)
-                format!("jsonb_smart_patch_scalar({patch_expr}, {source})")
+                format!("{schema}.jsonb_smart_patch_scalar({patch_expr}, {source})")
             }
         };
     }
@@ -587,12 +593,12 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str, sourc
 /// WHERE pk_entity = $2
 /// ```
 fn apply_full_replacement(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
-    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name);
     let qi_pk = quote_identifier(&pk_col);
 
-    // Resolve backing view name (use metadata instead of re-loading)
-    let view_name = lookup_view_for_source(meta.view_oid)?;
+    // Schema-qualified backing view, so the refresh works under any search_path
+    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
@@ -604,15 +610,12 @@ fn apply_full_replacement(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
     // the base table after TVIEW creation) and existing rows that need refreshing.
     super::run_counted_upsert(
         &meta.entity_name,
-        &tv_name,
+        &qi_tv,
         &col_list,
-        &format!(
-            "SELECT {col_list} FROM {} WHERE {qi_pk} = $1",
-            quote_identifier(&view_name)
-        ),
+        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $1"),
         &format!(
             "ON CONFLICT ({qi_pk}) {}",
-            super::upsert_conflict_action(&tv_name, &col_names, &pk_col, None)
+            super::upsert_conflict_action(&qi_tv, &col_names, &pk_col, None)
         ),
         &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
     )

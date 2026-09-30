@@ -26,21 +26,24 @@ pub struct TviewRelation {
 impl TviewRelation {
     /// Every registered TVIEW (or only `entity`), ordered by entity.
     pub fn load(entity: Option<&str>) -> TViewResult<Vec<Self>> {
-        const QUERY: &str = "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
+        let query = format!(
+            "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
                     v.relname::text AS view, t.relpersistence = 'u' AS unlogged \
-             FROM pg_tview_meta m \
+             FROM {} m \
              JOIN pg_class t ON t.oid = m.table_oid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
              JOIN pg_class v ON v.oid = m.view_oid \
              WHERE $1::text IS NULL OR m.entity = $1 \
-             ORDER BY m.entity";
+             ORDER BY m.entity",
+            crate::utils::meta_table()
+        );
         Spi::connect(|client| {
             // SAFETY: the text datum borrows `entity`, which outlives the select.
             let args = [unsafe {
                 DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }];
             let mut out = Vec::new();
-            for row in client.select(QUERY, None, &args)? {
+            for row in client.select(&query, None, &args)? {
                 out.push(Self {
                     entity: row["entity"].value()?.unwrap_or_default(),
                     schema: row["schema"].value()?.unwrap_or_default(),
@@ -216,7 +219,10 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             // Known empty: fill without TRUNCATE, so readers are not blocked.
             crate::admin::fill_empty_tview(&rel.entity)?;
         } else {
-            const REFRESH: &str = "SELECT pg_tviews_refresh($1)";
+            let refresh = format!(
+                "SELECT {}.pg_tviews_refresh($1)",
+                crate::utils::ext_schema()
+            );
             // SAFETY: the text datum borrows `rel.entity`, which outlives the call.
             let args = [unsafe {
                 DatumWithOid::new(
@@ -224,8 +230,8 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
                     PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
                 )
             }];
-            Spi::run_with_args(REFRESH, &args).map_err(|e| TViewError::SpiError {
-                query: REFRESH.to_string(),
+            Spi::run_with_args(&refresh, &args).map_err(|e| TViewError::SpiError {
+                query: refresh.clone(),
                 error: e.to_string(),
             })?;
         }

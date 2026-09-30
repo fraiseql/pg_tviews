@@ -64,7 +64,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
     // The shared column list keeps this loader in step with `TviewMeta::from_spi_row`.
     let query = format!(
         "{} WHERE $1 IN (SELECT (cp::jsonb->>'source_oid')::oid FROM unnest(cascade_paths) AS cp)",
-        catalog::META_SELECT
+        catalog::meta_select()
     );
     Spi::connect(|client| {
         // SAFETY: the oid datum is passed by value for the duration of the select.
@@ -96,7 +96,7 @@ fn find_affected_tview_rows(
 
     let base_entity = base_table_name.trim_start_matches("tb_");
 
-    let view_name = utils::lookup_view_for_source(tview_meta.view_oid)?;
+    let qi_view = utils::qualified_relname_from_oid(tview_meta.view_oid)?;
     let tview_pk_col = format!("pk_{}", tview_meta.entity_name);
 
     let collect_pks = |query: &str| -> spi::Result<Vec<i64>> {
@@ -114,7 +114,6 @@ fn find_affected_tview_rows(
     };
 
     let qi_pk_col = quote_identifier(&tview_pk_col);
-    let qi_view = quote_identifier(&view_name);
 
     // Case 1: Direct match
     if tview_meta.entity_name == base_entity {
@@ -139,7 +138,7 @@ fn find_affected_tview_rows(
          FROM {} \
          WHERE {} = {base_pk}",
         quote_identifier(&fk_in_base),
-        quote_identifier(&base_table_name),
+        utils::qualified_relname_from_oid(base_table_oid)?,
         quote_identifier(&pk_in_base),
     );
     let pks = collect_pks(&lookup_query)?;
@@ -148,7 +147,9 @@ fn find_affected_tview_rows(
     }
 
     // DELETE fallback: refresh all rows in the materialized TVIEW
-    let tv_table = format!("tv_{}", tview_meta.entity_name);
-    let fallback_query = format!("SELECT {qi_pk_col} FROM {}", quote_identifier(&tv_table));
+    let fallback_query = format!(
+        "SELECT {qi_pk_col} FROM {}",
+        utils::qualified_relname_from_oid(tview_meta.tview_oid)?
+    );
     collect_pks(&fallback_query)
 }

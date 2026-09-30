@@ -5,7 +5,6 @@
 
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
-use crate::utils::lookup_view_for_source;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
@@ -54,9 +53,10 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
             entity: entity.to_string(),
         })?;
 
-    // Resolve backing view + tview names and the authoritative data-column list.
-    let view_name = lookup_view_for_source(meta.view_oid)?;
-    let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
+    // Resolve the schema-qualified backing view + tview and the authoritative
+    // data-column list.
+    let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let pk_col = format!("pk_{entity}");
 
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
@@ -69,13 +69,11 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     // yet materialized are inserted rather than silently skipped — the old
     // `UPDATE … FROM unnest()` path dropped every not-yet-present row (issue #48).
     // Rows whose recomputed columns equal the stored ones are left alone (#72).
-    let qi_view = crate::utils::quote_identifier(&view_name);
-    let qi_tv = crate::utils::quote_identifier(&tv_name);
     let qi_pk = crate::utils::quote_identifier(&pk_col);
     let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = ANY($1)");
     let conflict = format!(
         "ON CONFLICT ({qi_pk}) {}",
-        super::upsert_conflict_action(&tv_name, &col_names, &pk_col, None)
+        super::upsert_conflict_action(&qi_tv, &col_names, &pk_col, None)
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
@@ -96,7 +94,7 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     for chunk in pks.chunks(batch) {
         super::run_counted_upsert(
             entity,
-            &tv_name,
+            &qi_tv,
             &col_list,
             &source_sql,
             &conflict,
