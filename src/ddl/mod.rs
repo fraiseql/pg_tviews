@@ -14,6 +14,7 @@
 //! 4. Set up triggers on base tables for change tracking
 //! 5. Create the actual view with refresh triggers
 
+pub mod aggregate;
 pub mod create;
 pub mod drop;
 pub mod rename;
@@ -41,6 +42,36 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String
         Ok(()) => Ok(format!("TVIEW '{tview_name}' created successfully")),
         Err(e) => Err(format!("Failed to create TVIEW: {e}")),
     }
+}
+
+/// SQL function: create an aggregate TVIEW (issue #58).
+///
+/// Usage:
+/// `SELECT pg_tviews_create_aggregate('tv_user_summary', $$ SELECT o.fk_user AS
+///  pk_user_summary, u.id, jsonb_build_object('orders', count(*)) AS data FROM tb_order o
+///  JOIN tb_user u ON u.pk_user = o.fk_user GROUP BY o.fk_user, u.id $$,
+///  '{"tb_order": "fk_user", "tb_user": "pk_user"}');`
+///
+/// `group_keys` maps each source table to the column whose value is the group key.
+#[pg_extern]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires JsonB by value
+fn pg_tviews_create_aggregate(
+    tview_name: &str,
+    select_sql: &str,
+    group_keys: pgrx::JsonB,
+) -> Result<String, String> {
+    crate::validation::validate_sql_identifier(tview_name, "tview_name")
+        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
+    let keys: aggregate::GroupKeys = serde_json::from_value(group_keys.0).map_err(|_| {
+        "group_keys must be a JSON object mapping source table names to column names".to_string()
+    })?;
+    // SAFETY: Called from PostgreSQL backend context, hook installation is valid.
+    unsafe {
+        crate::hooks::ensure_hook_installed();
+    }
+    create::create_aggregate_tview(tview_name, select_sql, &keys)
+        .map(|()| format!("TVIEW '{tview_name}' created successfully"))
+        .map_err(|e| format!("Failed to create aggregate TVIEW: {e}"))
 }
 
 /// SQL function: Drop a TVIEW

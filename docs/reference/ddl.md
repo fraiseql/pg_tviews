@@ -235,8 +235,10 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
   table; branches must key on disjoint `pk_<entity>` values (otherwise
   `pg_tviews.union_duplicate_policy` governs the duplicate)
-- **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body is a single
-  SELECT over one base table (aggregation / column passthrough)
+- **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body reads one or
+  several joined base tables, reads earlier CTEs, or is a UNION / UNION ALL. The
+  columns the CTE joins on must pass base columns through unchanged (a computed
+  join column cannot be traced back to a base row)
 - **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
   the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`)
 
@@ -244,9 +246,8 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 
 - **Set Operations**: INTERSECT, EXCEPT (only UNION / UNION ALL is tracked)
 - **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
-- **Complex CTEs**: multi-base-table CTE bodies, CTE-on-CTE chains, and
-  UNION-bodied CTEs — the tview is created, but base tables reachable only through
-  such a CTE do not cascade
+- **CTEs with subqueries in FROM, or INTERSECT / EXCEPT bodies**: the tview is
+  created, but base tables reachable only through such a CTE do not cascade
 - **Window Functions**: ROW_NUMBER(), RANK(), etc.
 - **Self-Joins**: May cause dependency cycles
 - **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined

@@ -273,11 +273,92 @@ pub mod cascade_cache {
     }
 }
 
+// ── Cross-backend invalidation ───────────────────────────────────────────
+//
+// Every cache here is per backend. A relcache invalidation (DDL on a watched
+// relation, or the `pg_tview_meta` statement trigger that invalidates the catalog
+// itself) bumps the generation; the next `sync_generation()` then clears them all.
+// The callback only touches a `Cell`: it can run in the middle of a catalog access,
+// so it must neither take a lock nor call SPI.
+
+thread_local! {
+    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SEEN_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WATCHED: std::cell::RefCell<std::collections::HashSet<pg_sys::Oid>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+thread_local! {
+    static CATALOG_WATCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Watch `pg_tview_meta` itself: its statement trigger invalidates it on every
+/// write, which is how other backends learn about a created, changed or dropped
+/// TVIEW. Resolved once per backend.
+fn watch_catalog() {
+    if CATALOG_WATCHED.with(std::cell::Cell::get) {
+        return;
+    }
+    crate::metrics::metrics_api::record_catalog_lookup();
+    if let Ok(Some(oid)) = Spi::connect(|client| {
+        client
+            .select("SELECT to_regclass('pg_tview_meta')::oid", None, &[])?
+            .first()
+            .get_one::<pg_sys::Oid>()
+    }) {
+        watch(&[oid]);
+        CATALOG_WATCHED.with(|w| w.set(true));
+    }
+}
+
+/// Watch relations whose DDL must invalidate the caches (TVIEW tables and views,
+/// `pg_tview_meta`).
+pub fn watch(oids: &[pg_sys::Oid]) {
+    WATCHED.with(|w| w.borrow_mut().extend(oids.iter().copied()));
+}
+
+/// Clear every cache if a relevant invalidation arrived since the last call.
+pub fn sync_generation() {
+    watch_catalog();
+    let current = GENERATION.with(std::cell::Cell::get);
+    if SEEN_GENERATION.with(std::cell::Cell::get) != current {
+        SEEN_GENERATION.with(|s| s.set(current));
+        invalidate_all_caches();
+    }
+}
+
+#[pg_guard]
+unsafe extern "C-unwind" fn relcache_callback(_arg: pg_sys::Datum, relid: pg_sys::Oid) {
+    let relevant = relid == pg_sys::InvalidOid
+        || WATCHED.with(|w| w.try_borrow().map_or(true, |w| w.contains(&relid)));
+    if relevant {
+        GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    }
+}
+
+/// Register the relcache callback. Called once from `_PG_init`.
+pub fn register_relcache_callback() {
+    // SAFETY: registers a static callback with no argument; valid in `_PG_init`.
+    unsafe {
+        pg_sys::CacheRegisterRelcacheCallback(Some(relcache_callback), pg_sys::Datum::from(0));
+    }
+}
+
+/// Invalidate the `pg_tviews` caches of every backend (and this one) once the
+/// current transaction commits, by invalidating `relid`'s relcache entry.
+#[pg_extern]
+fn pg_tviews_invalidate_caches(relid: pg_sys::Oid) {
+    // SAFETY: the caller passes an existing relation (the trigger's TG_RELID).
+    unsafe { pg_sys::CacheInvalidateRelcacheByRelid(relid) };
+}
+
 /// Combined cache invalidation for all caches
 pub fn invalidate_all_caches() {
     graph_cache::invalidate();
     table_cache::invalidate();
     cascade_cache::clear_cache();
+    crate::catalog::clear_meta_cache();
+    super::ops::clear_crash_recovery_cache();
     crate::lifecycle::invalidate_jsonb_delta_cache();
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();

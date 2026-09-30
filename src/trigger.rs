@@ -218,10 +218,16 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         return;
     }
 
-    let Some(tuple) = trigger.new().or_else(|| trigger.old()) else {
+    // An UPDATE can move the row to another parent (a changed FK): the old parent
+    // must lose it and the new one gain it, so follow each path from both images.
+    let tuples: Vec<_> = [trigger.old(), trigger.new()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if tuples.is_empty() {
         warning!("No tuple available in trigger context");
         return;
-    };
+    }
 
     // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
     // depends on NONE of the changed columns cannot alter any target row, so the
@@ -238,13 +244,15 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
         {
             continue;
         }
-        if let Err(e) = follow_cascade_path(path, &tuple) {
-            warning!(
-                "Cascade refresh failed for path {} → {}: {:?}",
-                path.source_table,
-                path.entity_name,
-                e
-            );
+        for tuple in &tuples {
+            if let Err(e) = follow_cascade_path(path, tuple) {
+                warning!(
+                    "Cascade refresh failed for path {} → {}: {:?}",
+                    path.source_table,
+                    path.entity_name,
+                    e
+                );
+            }
         }
     }
 }

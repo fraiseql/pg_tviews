@@ -83,7 +83,8 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_pk} = ANY($1) \
-           AND NOT EXISTS (SELECT 1 FROM {qi_view} v WHERE v.{qi_pk} = t.{qi_pk})"
+           AND NOT EXISTS (SELECT 1 FROM {qi_view} v WHERE v.{qi_pk} = t.{qi_pk}) \
+         RETURNING t.{qi_pk}::text, to_jsonb(t.*)->>'id'"
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
@@ -94,6 +95,7 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     let batch = crate::config::batch_size();
     for chunk in pks.chunks(batch) {
         super::run_counted_upsert(
+            entity,
             &tv_name,
             &col_list,
             &source_sql,
@@ -105,7 +107,8 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
                 )
             }],
         )?;
-        Spi::run_with_args(
+        super::run_journaled_delete(
+            entity,
             &delete_sql,
             &[unsafe {
                 DatumWithOid::new(

@@ -53,6 +53,9 @@ pub fn find_parents_for(
 
     // For each parent entity, find affected rows
     for parent_entity in parent_entities {
+        if prune_edge(graph, &key.entity, &parent_entity, key.pk) {
+            continue;
+        }
         let affected_pks = find_affected_pks(&parent_entity, &key.entity, key.pk)?;
 
         // Convert to RefreshKeys
@@ -124,6 +127,21 @@ pub fn find_parents_batch(
     Ok(result)
 }
 
+/// Whether propagation from `child`'s row `pk` to `parent` can be skipped: the
+/// parent embeds only the child's computed document, and the child's refresh in
+/// this flush changed nothing (issue #85). A scalar embed that follows the child's
+/// FK to a deeper relationship always propagates.
+fn prune_edge(graph: &crate::queue::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
+    let prune = graph
+        .document_edges
+        .contains(&(child.to_string(), parent.to_string()))
+        && !crate::queue::affected::changed_in_flush(child, pk);
+    if prune {
+        crate::metrics::metrics_api::record_propagation_pruned();
+    }
+    prune
+}
+
 /// Build batch groups for propagation query (unit-testable logic).
 ///
 /// Groups keys by (`parent_entity`, `child_entity`) to minimize queries.
@@ -140,6 +158,9 @@ fn build_batch_groups(
         let parent_entities = graph.parents.get(&key.entity).cloned().unwrap_or_default();
 
         for parent_entity in parent_entities {
+            if prune_edge(graph, &key.entity, &parent_entity, key.pk) {
+                continue;
+            }
             groups
                 .entry((parent_entity, key.entity.clone()))
                 .or_insert_with(|| Vec::with_capacity(8))

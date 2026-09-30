@@ -56,6 +56,13 @@ extension_sql!(
         ADD COLUMN IF NOT EXISTS direct_map_columns TEXT[] NOT NULL DEFAULT '{}';
     ALTER TABLE @extschema@.pg_tview_meta
         ADD COLUMN IF NOT EXISTS direct_map_keys TEXT[] NOT NULL DEFAULT '{}';
+    -- GraphQL type reported by pg_tviews_flush_and_report (issue #76); NULL means
+    -- PascalCase(entity).
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS graphql_typename TEXT;
+    -- Aggregate TVIEWs (issue #58): source table name -> group key column.
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS group_keys JSONB;
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
@@ -245,6 +252,24 @@ CREATE TRIGGER pg_tview_meta_rebind
     FOR EACH ROW
     WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0)
     EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
+
+-- Other backends cache TVIEW metadata (issue #91). Any write to the catalog
+-- invalidates its relcache entry at commit, which every backend watches.
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_meta_changed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM @extschema@.pg_tviews_invalidate_caches(TG_RELID);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS pg_tview_meta_changed ON @extschema@.pg_tview_meta;
+CREATE TRIGGER pg_tview_meta_changed
+    AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON @extschema@.pg_tview_meta
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION @extschema@.pg_tviews_meta_changed();
     ",
     name = "event_triggers",
     requires = ["create_metadata_tables"],

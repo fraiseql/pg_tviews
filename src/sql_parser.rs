@@ -48,18 +48,25 @@ struct JoinEdge {
     right_col: String,
 }
 
-/// A CTE resolved to the single base table it reads, with a map from each of its
-/// output columns to the base-table column that produces it. Only CTEs whose body
-/// is a single SELECT over one base table (no joins, no set operation, no nesting)
-/// are resolved; anything else is left unresolved so a reference to it produces no
-/// cascade path rather than a wrong one.
+/// A CTE resolved to the base tables its body reads. A reference to the CTE
+/// inlines them into the outer join graph: their tables, the join edges between
+/// them, and a map from each CTE output column to the base columns that pass it
+/// through. The body may join several base tables, read earlier CTEs, or be a
+/// UNION (issue #60); a body that cannot be resolved (a subquery, INTERSECT /
+/// EXCEPT) leaves the CTE unresolved, so a reference to it produces no cascade
+/// path rather than a wrong one.
 #[derive(Debug, Clone)]
 struct ResolvedCte {
-    base_table: String,
-    /// CTE output column name → base-table column name (passthrough columns only;
-    /// aggregates / computed projections are absent).
-    col_map: HashMap<String, String>,
+    tables: Vec<String>,
+    edges: Vec<JoinEdge>,
+    /// CTE output column → `(base_table, base_column)` for each branch that passes
+    /// it through unchanged (aggregates / computed projections are absent).
+    col_map: HashMap<String, Vec<(String, String)>>,
 }
+
+/// One output column of a resolved query body, positionally: its name (when it
+/// has one) and the base columns it passes through.
+type Outputs = Vec<(Option<String>, Vec<(String, String)>)>;
 
 /// Adjacency graph of table join relationships
 #[derive(Debug)]
@@ -183,70 +190,117 @@ pub fn extract_join_paths(select_sql: &str, root_table: &str) -> Result<Vec<Join
     Ok(dedup_join_paths(paths))
 }
 
-/// Resolve the CTEs declared in a `WITH` clause to their base tables. Only CTEs
-/// whose body is a single SELECT over exactly one base table (no joins, no set
-/// operation, and not reading another CTE) are resolved; the rest are omitted so
-/// references to them stay unresolvable (no wrong cascade path is produced).
+/// Resolve the CTEs declared in a `WITH` clause, in declaration order, so a CTE
+/// can read the ones declared before it. Unresolvable CTEs are omitted.
 fn resolve_ctes(with: &sqlparser::ast::With) -> HashMap<String, ResolvedCte> {
     let mut resolved: HashMap<String, ResolvedCte> = HashMap::new();
     for cte in &with.cte_tables {
         let name = cte.alias.name.value.clone();
-        if let Some(rc) = resolve_single_cte(cte, &resolved) {
-            resolved.insert(name, rc);
+        if let Some((tables, edges, outputs)) = resolve_body(&cte.query.body, &resolved) {
+            // WITH-declared column aliases (`WITH c(a, b) AS ...`) rename outputs
+            // positionally.
+            let declared = &cte.alias.columns;
+            let mut col_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+            for (i, (out_name, sources)) in outputs.into_iter().enumerate() {
+                let name = declared.get(i).map(|d| d.value.clone()).or(out_name);
+                if let Some(name) = name
+                    && !sources.is_empty()
+                {
+                    col_map.entry(name).or_default().extend(sources);
+                }
+            }
+            resolved.insert(
+                name,
+                ResolvedCte {
+                    tables,
+                    edges,
+                    col_map,
+                },
+            );
         }
     }
     resolved
 }
 
-/// Resolve one CTE to `(base_table, output_col -> base_col)` when its body is a
-/// single SELECT over one base table. Returns `None` for multi-table, set-op,
-/// or CTE-on-CTE bodies (out of v1 scope).
-fn resolve_single_cte(
-    cte: &sqlparser::ast::Cte,
-    already_resolved: &HashMap<String, ResolvedCte>,
-) -> Option<ResolvedCte> {
-    let SetExpr::Select(select) = &*cte.query.body else {
-        return None; // set-operation body — out of scope
-    };
-    if select.from.len() != 1 {
-        return None;
+/// Resolve a CTE body to its base tables, internal join edges and positional
+/// outputs. A SELECT resolves its FROM/JOIN graph (inlining earlier CTEs); a UNION
+/// resolves both branches and merges their outputs by position. `None` when the
+/// body cannot be resolved.
+fn resolve_body(
+    body: &SetExpr,
+    ctes: &HashMap<String, ResolvedCte>,
+) -> Option<(Vec<String>, Vec<JoinEdge>, Outputs)> {
+    match body {
+        SetExpr::Select(select) => {
+            if select.from.is_empty() {
+                return None;
+            }
+            let mut graph = JoinGraph::new();
+            for twj in &select.from {
+                build_graph_from_table_with_joins(twj, &mut graph, ctes).ok()?;
+            }
+            if let Some(where_expr) = &select.selection {
+                extract_implicit_joins(where_expr, &mut graph);
+            }
+            // A bare column is unambiguous only when the body reads one FROM item.
+            let single_from = (select.from.len() == 1 && select.from[0].joins.is_empty())
+                .then(|| extract_table_info(&select.from[0].relation).ok())
+                .flatten()
+                .map(|(name, alias)| alias.unwrap_or(name));
+            let outputs = select
+                .projection
+                .iter()
+                .map(|item| {
+                    let (name, expr) = match item {
+                        SelectItem::UnnamedExpr(e) => (expr_bare_column(e), e),
+                        SelectItem::ExprWithAlias { expr, alias } => {
+                            (Some(alias.value.clone()), expr)
+                        }
+                        _ => return (None, Vec::new()),
+                    };
+                    let sources = match expr {
+                        Expr::Identifier(ident) => single_from
+                            .as_deref()
+                            .map(|q| column_sources(q, &ident.value, &graph))
+                            .unwrap_or_default(),
+                        e => extract_col_ref(e, &graph),
+                    };
+                    (name, sources)
+                })
+                .collect();
+            let mut tables: Vec<String> = graph.tables.into_iter().collect();
+            tables.sort();
+            Some((tables, graph.edges, outputs))
+        }
+        SetExpr::SetOperation {
+            left, right, op, ..
+        } => {
+            if !matches!(op, SetOperator::Union) {
+                return None;
+            }
+            let (mut tables, mut edges, left_out) = resolve_body(left, ctes)?;
+            let (right_tables, right_edges, right_out) = resolve_body(right, ctes)?;
+            if left_out.len() != right_out.len() {
+                return None;
+            }
+            tables.extend(right_tables);
+            tables.sort();
+            tables.dedup();
+            edges.extend(right_edges);
+            // A UNION takes its column names from the leftmost branch.
+            let outputs = left_out
+                .into_iter()
+                .zip(right_out)
+                .map(|((name, mut sources), (_, more))| {
+                    sources.extend(more);
+                    (name, sources)
+                })
+                .collect();
+            Some((tables, edges, outputs))
+        }
+        SetExpr::Query(q) => resolve_body(&q.body, ctes),
+        _ => None,
     }
-    let twj = &select.from[0];
-    if !twj.joins.is_empty() {
-        return None; // multi-base body — out of scope
-    }
-    let (from_name, _) = extract_table_info(&twj.relation).ok()?;
-    if already_resolved.contains_key(&from_name) {
-        return None; // reads another CTE — out of scope (no chaining in v1)
-    }
-
-    // Build the output-column → base-column map. WITH-declared column aliases
-    // (`WITH c(a, b) AS ...`) rename outputs positionally; otherwise the output
-    // name is the projection item's own name.
-    let declared = &cte.alias.columns;
-    let mut col_map = HashMap::new();
-    for (i, item) in select.projection.iter().enumerate() {
-        let (out_name, src_col) = match item {
-            SelectItem::UnnamedExpr(e) => match expr_bare_column(e) {
-                Some(col) => (col.clone(), col),
-                None => continue, // aggregate / computed — not a passthrough
-            },
-            SelectItem::ExprWithAlias { expr, alias } => match expr_bare_column(expr) {
-                Some(col) => (alias.value.clone(), col),
-                None => continue,
-            },
-            _ => continue,
-        };
-        let out_name = declared
-            .get(i)
-            .map_or(out_name, |ident| ident.value.clone());
-        col_map.insert(out_name, src_col);
-    }
-
-    Some(ResolvedCte {
-        base_table: from_name,
-        col_map,
-    })
 }
 
 /// True if the query begins with a `WITH RECURSIVE` clause. Recursive CTEs are not
@@ -405,8 +459,11 @@ fn branch_pk_provider(
     };
     match expr {
         Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-            let table = graph.resolve(&parts[0].value);
-            Some((table, parts[1].value.clone()))
+            // Through a CTE the column must come from exactly one base column.
+            match column_sources(&parts[0].value, &parts[1].value, graph).as_slice() {
+                [single] => Some(single.clone()),
+                _ => None,
+            }
         }
         Expr::Identifier(ident) => {
             // Bare column: unambiguous only when the branch reads a single table.
@@ -513,11 +570,11 @@ fn build_graph_from_table_with_joins(
     Ok(())
 }
 
-/// Add a FROM/JOIN table to the graph, inlining a CTE reference to its base table.
+/// Add a FROM/JOIN table to the graph, inlining a CTE reference.
 ///
-/// For a CTE reference the base table becomes the graph node, and both the FROM
-/// alias and the CTE name are registered in `cte_refs` so column references
-/// (`alias.col` or `cte.col`) can be remapped to the base column in
+/// For a CTE reference its base tables and internal join edges join the graph,
+/// and both the FROM alias and the CTE name are registered in `cte_refs` so column
+/// references (`alias.col` or `cte.col`) can be remapped to the base columns in
 /// `extract_col_ref`.
 fn add_table_or_cte(
     name: &str,
@@ -526,15 +583,12 @@ fn add_table_or_cte(
     graph: &mut JoinGraph,
 ) {
     if let Some(resolved) = ctes.get(name) {
-        graph.tables.insert(resolved.base_table.clone());
-        graph
-            .aliases
-            .insert(name.to_string(), resolved.base_table.clone());
+        graph.tables.extend(resolved.tables.iter().cloned());
+        for edge in &resolved.edges {
+            graph.add_edge(edge.clone());
+        }
         graph.cte_refs.insert(name.to_string(), resolved.clone());
         if let Some(a) = alias {
-            graph
-                .aliases
-                .insert(a.to_string(), resolved.base_table.clone());
             graph.cte_refs.insert(a.to_string(), resolved.clone());
         }
     } else {
@@ -566,16 +620,21 @@ fn extract_equalities(expr: &Expr, graph: &mut JoinGraph) {
     match expr {
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::Eq => {
-                if let (Some(left_ref), Some(right_ref)) =
-                    (extract_col_ref(left, graph), extract_col_ref(right, graph))
-                    && left_ref.0 != right_ref.0
-                {
-                    graph.add_edge(JoinEdge {
-                        left_table: left_ref.0,
-                        left_col: left_ref.1,
-                        right_table: right_ref.0,
-                        right_col: right_ref.1,
-                    });
+                // A CTE column can stand for several base columns (one per UNION
+                // branch): connect every pair.
+                let lefts = extract_col_ref(left, graph);
+                let rights = extract_col_ref(right, graph);
+                for (lt, lc) in &lefts {
+                    for (rt, rc) in &rights {
+                        if lt != rt {
+                            graph.add_edge(JoinEdge {
+                                left_table: lt.clone(),
+                                left_col: lc.clone(),
+                                right_table: rt.clone(),
+                                right_col: rc.clone(),
+                            });
+                        }
+                    }
                 }
             }
             BinaryOperator::And => {
@@ -589,26 +648,29 @@ fn extract_equalities(expr: &Expr, graph: &mut JoinGraph) {
     }
 }
 
-/// Extract a `table.column` reference from an expression, resolving aliases.
-/// Returns `(resolved_table_name, column_name)`.
+/// Extract a `table.column` reference from an expression, resolving aliases, as
+/// the `(table, column)` base columns it stands for.
 ///
-/// When the qualifier is a CTE reference, the CTE output column is remapped to its
-/// underlying base column; a reference to a non-passthrough CTE output (an
-/// aggregate/computed column absent from the CTE's `col_map`) yields `None`, so no
-/// (wrong) edge is created for it.
-fn extract_col_ref(expr: &Expr, graph: &JoinGraph) -> Option<(String, String)> {
+/// A plain table column yields one entry. A CTE column yields the base columns it
+/// passes through (one per UNION branch); a non-passthrough CTE output (aggregate
+/// or computed, absent from the CTE's `col_map`) yields none, so no (wrong) edge
+/// is created for it.
+fn extract_col_ref(expr: &Expr, graph: &JoinGraph) -> Vec<(String, String)> {
     match expr {
         Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-            let qualifier = &parts[0].value;
-            let column = &parts[1].value;
-            if let Some(cte) = graph.cte_refs.get(qualifier) {
-                let base_col = cte.col_map.get(column)?;
-                return Some((cte.base_table.clone(), base_col.clone()));
-            }
-            Some((graph.resolve(qualifier), column.clone()))
+            column_sources(&parts[0].value, &parts[1].value, graph)
         }
-        _ => None,
+        Expr::Nested(inner) => extract_col_ref(inner, graph),
+        _ => Vec::new(),
     }
+}
+
+/// The base columns behind `qualifier.column` (a table, an alias or a CTE).
+fn column_sources(qualifier: &str, column: &str, graph: &JoinGraph) -> Vec<(String, String)> {
+    if let Some(cte) = graph.cte_refs.get(qualifier) {
+        return cte.col_map.get(column).cloned().unwrap_or_default();
+    }
+    vec![(graph.resolve(qualifier), column.to_string())]
 }
 
 /// Extract implicit joins from WHERE clause equality conditions
@@ -1103,5 +1165,71 @@ mod tests {
         assert!(!has_recursive_cte(
             "WITH t AS (SELECT 1) SELECT pk_x FROM tb_x"
         ));
+    }
+
+    fn sources(paths: &[JoinPath]) -> Vec<String> {
+        let mut v: Vec<String> = paths.iter().map(|p| p.source_table.clone()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn cte_chain_resolves_through_an_earlier_cte() {
+        let sql = "WITH a AS (SELECT item_id, label FROM tb_item_i18n WHERE locale = 'fr'), \
+                        b AS (SELECT item_id, upper(label) AS label FROM a) \
+                   SELECT i.pk_item, i.id, jsonb_build_object('label', b.label) AS data \
+                   FROM tb_item i LEFT JOIN b ON b.item_id = i.pk_item";
+        let paths = extract_join_paths(sql, "tb_item").unwrap();
+        assert_eq!(sources(&paths), ["tb_item_i18n"]);
+        assert_eq!(paths[0].initial_col, "item_id");
+        assert!(paths[0].steps.is_empty());
+    }
+
+    #[test]
+    fn multi_base_cte_body_yields_a_path_per_base_table() {
+        let sql = "WITH l AS (SELECT t.item_id, t.label, loc.code \
+                              FROM tb_item_i18n t JOIN tb_locale loc ON loc.pk_locale = t.fk_locale) \
+                   SELECT i.pk_item, i.id, jsonb_build_object('label', l.label, 'code', l.code) AS data \
+                   FROM tb_item i JOIN l ON l.item_id = i.pk_item";
+        let paths = extract_join_paths(sql, "tb_item").unwrap();
+        assert_eq!(sources(&paths), ["tb_item_i18n", "tb_locale"]);
+        let locale = paths
+            .iter()
+            .find(|p| p.source_table == "tb_locale")
+            .unwrap();
+        assert_eq!(locale.initial_col, "pk_locale");
+        assert_eq!(
+            locale.steps,
+            [JoinStep {
+                table_name: "tb_item_i18n".into(),
+                lookup_col: "fk_locale".into(),
+                carry_col: "item_id".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn union_bodied_cte_yields_a_path_per_branch() {
+        let sql = "WITH n AS (SELECT item_id, label FROM tb_item_i18n \
+                             UNION ALL SELECT item_id, label FROM tb_item_default) \
+                   SELECT i.pk_item, i.id, jsonb_build_object('label', n.label) AS data \
+                   FROM tb_item i JOIN n ON n.item_id = i.pk_item";
+        let paths = extract_join_paths(sql, "tb_item").unwrap();
+        assert_eq!(sources(&paths), ["tb_item_default", "tb_item_i18n"]);
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.initial_col == "item_id" && p.steps.is_empty())
+        );
+    }
+
+    #[test]
+    fn computed_cte_join_column_yields_no_path() {
+        // The join column is computed inside the CTE: no base column passes it through.
+        let sql = "WITH c AS (SELECT item_id + 0 AS item_id, label FROM tb_item_i18n) \
+                   SELECT i.pk_item, i.id, jsonb_build_object('label', c.label) AS data \
+                   FROM tb_item i JOIN c ON c.item_id = i.pk_item";
+        let paths = extract_join_paths(sql, "tb_item").unwrap();
+        assert!(paths.is_empty(), "{paths:?}");
     }
 }
