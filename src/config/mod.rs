@@ -13,7 +13,7 @@
 //! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
 //! | `pg_tviews.metrics_enabled` | bool | false | Collect refresh metrics |
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
-//! | `pg_tviews.log_level` | string | "info" | Logging verbosity |
+//! | `pg_tviews.log_level` | string | "info" | `debug` shows internal diagnostics as NOTICE |
 //! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
 //! | `pg_tviews.max_queue_size` | int | 10000 | Refresh-queue backpressure limit |
 //! | `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
@@ -111,7 +111,7 @@ pub fn register_gucs() {
     GucRegistry::define_string_guc(
         c"pg_tviews.log_level",
         c"Logging verbosity for pg_tviews operations.",
-        c"Allowed values: debug, info, warning, error.",
+        c"Set to 'debug' to show internal diagnostics (event trigger, DDL tracing) as NOTICE; otherwise they are DEBUG1 messages.",
         &LOG_LEVEL_GUC,
         GucContext::Userset,
         GucFlags::default(),

@@ -10,7 +10,7 @@
 //! The PL/pgSQL wrapper satisfies `PostgreSQL`'s type requirement and calls this C
 //! function for the actual conversion logic.
 
-use crate::utils::quote_identifier;
+use crate::utils::{log_debug, quote_identifier};
 use pgrx::prelude::*;
 
 /// Convert a `tv_*` table (just created by `CREATE TABLE tv_* AS SELECT …`) to a TVIEW.
@@ -31,10 +31,7 @@ fn pg_tviews_convert_table(
     command_tag: default!(Option<String>, "NULL"),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Log event trigger entry
-    notice!(
-        "===== EVENT TRIGGER: pg_tviews_convert_table START for table '{}' =====",
-        table_name
-    );
+    log_debug!("pg_tviews_convert_table start for table '{}'", table_name);
 
     // Retrieve (and consume) the pending (schema, SELECT) pair.
     // Empty cache = table was created by pg_tviews_create(), not DDL interception.
@@ -65,12 +62,12 @@ fn pg_tviews_convert_table(
             )
             .report(PgLogLevel::ERROR);
         }
-        notice!("DEBUG:   No pending SELECT found (likely created by pg_tviews_create, not CTAS)");
+        log_debug!("No pending SELECT found (likely created by pg_tviews_create, not CTAS)");
         return Ok(());
     };
 
-    notice!("DEBUG:   Found cached SELECT ({} chars)", select_sql.len());
-    notice!(
+    log_debug!("Found cached SELECT ({} chars)", select_sql.len());
+    log_debug!(
         "DEBUG:   Schema: '{}'",
         if schema_name.is_empty() {
             "(empty - will use current_schema())"
@@ -102,21 +99,21 @@ fn pg_tviews_convert_table(
         ),
     };
 
-    notice!("DEBUG:   Dropping existing table: {}", drop_sql);
+    log_debug!("Dropping existing table: {}", drop_sql);
     Spi::run(&drop_sql).map_err(|e| format!("Failed to drop table '{table_name}': {e}"))?;
 
     // Create the proper TVIEW: backing view, materialized table, triggers.
-    notice!("DEBUG:   Calling create_tview()...");
+    log_debug!("Calling create_tview()...");
     match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
         Ok(()) => {
-            notice!("DEBUG: ✅ create_tview() SUCCEEDED for '{}'", table_name);
-            notice!("DEBUG: ===== EVENT TRIGGER: COMPLETE =====");
+            log_debug!("create_tview() SUCCEEDED for '{}'", table_name);
+            log_debug!("pg_tviews_convert_table complete");
             Ok(())
         }
         Err(e) => {
-            notice!("DEBUG: ❌ create_tview() FAILED for '{}'", table_name);
-            notice!("DEBUG:   Error: {:#?}", e);
-            notice!("DEBUG: ===== EVENT TRIGGER: FAILED =====");
+            log_debug!("create_tview() FAILED for '{}'", table_name);
+            log_debug!("Error: {:#?}", e);
+            log_debug!("pg_tviews_convert_table failed");
             Err(format!("Failed to create TVIEW '{table_name}': {e}").into())
         }
     }

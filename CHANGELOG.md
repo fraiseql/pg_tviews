@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Normal DDL is quiet again (#92).** `CREATE TABLE tv_*`, CTAS and `pg_tviews_create` no
+  longer print `EVENT TRIGGER` banners, `DEBUG:` lines or `spi_run_ddl()` INFO output. The
+  diagnostics are `DEBUG1` messages (`client_min_messages = debug1`), or NOTICEs with
+  `SET pg_tviews.log_level = 'debug'`.
 - **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
   only the eponymous case was handled: dropping `tb_<entity>` deregistered
   `tv_<entity>`. A TVIEW that read the dropped table under another name, for
