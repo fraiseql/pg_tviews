@@ -121,6 +121,7 @@ pub fn invalidate_jsonb_delta_cache() {
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
+    crate::queue::cache::register_relcache_callback();
     crate::rebuild_worker::register();
 
     // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and

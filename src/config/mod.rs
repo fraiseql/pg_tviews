@@ -22,6 +22,7 @@
 //! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path (issue #56) |
 //! | `pg_tviews.data_gin_index` | bool | false | GIN index on `data` for new TVIEWs |
 //! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
+//! | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
 //! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
 //!
 //! ## Compile-time Constants
@@ -60,6 +61,7 @@ static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static DATA_GIN_INDEX_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static FILLFACTOR_GUC: GucSetting<i32> = GucSetting::<i32>::new(85);
+static REPORT_MAX_TRACKED_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
 
@@ -201,6 +203,18 @@ pub fn register_gucs() {
         GucFlags::default(),
     );
 
+    GucRegistry::define_int_guc(
+        c"pg_tviews.report_max_tracked",
+        c"Changed TVIEW rows journaled per transaction for pg_tviews_flush_and_report().",
+        c"Beyond it only the entity types are kept and the report is marked truncated. \
+          0 turns the journal off.",
+        &REPORT_MAX_TRACKED_GUC,
+        0,
+        10_000_000,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
     GucRegistry::define_bool_guc(
         c"pg_tviews.suspend_triggers",
         c"Suspend trigger-based refresh during bulk operations.",
@@ -281,6 +295,12 @@ pub fn auto_rebuild_databases() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Changed rows journaled per transaction (`pg_tviews.report_max_tracked`).
+#[must_use]
+pub fn report_max_tracked() -> usize {
+    usize::try_from(REPORT_MAX_TRACKED_GUC.get()).unwrap_or(0)
 }
 
 /// Check if graph caching is enabled

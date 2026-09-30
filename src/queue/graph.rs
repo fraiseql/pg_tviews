@@ -36,6 +36,11 @@ pub struct EntityDepGraph {
     /// Example: "post" -> `["user"]`
     pub children: HashMap<String, Vec<String>>,
 
+    /// `(child, parent)` edges where the parent embeds the child's computed document
+    /// (a `nested_object` or `array` embed of `v_<child>.data`). Along these, a child
+    /// row whose refresh changed nothing cannot change the parent (issue #85).
+    pub document_edges: HashSet<(String, String)>,
+
     /// Topological order (refresh from low to high dependency)
     /// Example: `["company", "user", "post", "feed"]`
     pub topo_order: Vec<String>,
@@ -55,6 +60,7 @@ impl EntityDepGraph {
         let mut parents: HashMap<String, Vec<String>> = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_entities: HashSet<String> = HashSet::new();
+        let mut document_edges: HashSet<(String, String)> = HashSet::new();
 
         Spi::connect(|client| {
             let rows = client.select(query, None, &[])?;
@@ -130,6 +136,12 @@ impl EntityDepGraph {
                             let is_scalar = dependency_types
                                 .get(i)
                                 .is_some_and(|t| t.as_str() == "scalar");
+                            if dependency_types
+                                .get(i)
+                                .is_some_and(|t| matches!(t.as_str(), "nested_object" | "array"))
+                            {
+                                document_edges.insert((parent_entity.to_string(), entity.clone()));
+                            }
                             let reads_only_own_columns =
                                 reads_by_fk.get(fk_col).is_some_and(|cols| {
                                     !cols.is_empty() && !cols.iter().any(|c| c.starts_with("fk_"))
@@ -154,6 +166,7 @@ impl EntityDepGraph {
         Ok(Self {
             parents,
             children,
+            document_edges,
             topo_order,
         })
     }
@@ -270,6 +283,7 @@ mod tests {
         let graph = EntityDepGraph {
             parents: HashMap::new(),
             children: HashMap::new(),
+            document_edges: HashSet::new(),
             topo_order: vec!["company".into(), "user".into(), "post".into()],
         };
 

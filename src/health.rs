@@ -143,7 +143,9 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
         "direct_patches_applied": stats.direct_patches_applied,
         "direct_patch_fallbacks": stats.direct_patch_fallbacks,
         "view_recomputes": stats.view_recomputes,
-        "refresh_noop_skipped": stats.refresh_noop_skipped
+        "refresh_noop_skipped": stats.refresh_noop_skipped,
+        "catalog_lookups": stats.catalog_lookups,
+        "propagation_pruned": stats.propagation_pruned
     });
 
     pgrx::JsonB(json_value)

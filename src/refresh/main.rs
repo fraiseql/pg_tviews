@@ -51,7 +51,6 @@
 //! -- Optimized: UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1, '{author}')
 //! ```
 
-use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -60,14 +59,6 @@ use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
 
 use crate::lifecycle::check_jsonb_delta_available;
 use crate::utils::{lookup_view_for_source, quote_identifier, relname_from_oid};
-
-/// Represents a materialized view row pulled from `v_entity`.
-pub struct ViewRow {
-    pub entity_name: String,
-    pub pk: i64,
-    pub tview_oid: Oid,
-    pub data: JsonB,
-}
 
 /// Refresh a single TVIEW row when its source data changes.
 ///
@@ -102,12 +93,20 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
         error!("No TVIEW metadata for source_oid: {:?}", source_oid);
     };
 
-    // 2. Recompute row from v_entity. Absent → the base row was deleted, so remove
-    //    the tview row instead of erroring (issue #48: DELETE left stale rows).
-    match recompute_view_row(&meta, pk)? {
-        Some(view_row) => apply_patch(&view_row, &meta),
-        None => delete_tview_row(&meta, pk),
+    // 2. A UNION view can return several rows for one pk: read it first so the
+    //    union_duplicate_policy applies before the upsert.
+    if meta.is_union && !view_row_exists(&meta, pk)? {
+        return delete_tview_row(&meta, pk);
     }
+
+    // 3. Upsert straight from v_entity: the view is evaluated once (issue #91). No
+    //    source row means the base row was deleted, so remove the tview row
+    //    instead of erroring (issue #48: DELETE left stale rows).
+    crate::metrics::metrics_api::record_view_recomputes(1);
+    if apply_patch(&meta, pk)? == 0 {
+        delete_tview_row(&meta, pk)?;
+    }
+    Ok(())
 }
 
 /// Delete the tview row for a pk whose backing-view row has disappeared.
@@ -118,11 +117,13 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
     let tv_name = relname_from_oid(meta.tview_oid)?;
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_tv = quote_identifier(&tv_name);
     let sql = format!(
-        "DELETE FROM {} WHERE {qi_pk} = $1",
-        quote_identifier(&tv_name)
+        "DELETE FROM {qi_tv} WHERE {qi_pk} = $1 \
+         RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
     );
-    Spi::run_with_args(
+    super::run_journaled_delete(
+        &meta.entity_name,
         &sql,
         &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
     )?;
@@ -188,11 +189,14 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
     if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
+        let qi_tv = quote_identifier(&tv_name);
+        let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
         let delete_sql = format!(
-            "DELETE FROM {} WHERE {key_col_q}::text = $1",
-            quote_identifier(&tv_name)
+            "DELETE FROM {qi_tv} WHERE {key_col_q}::text = $1 \
+             RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
         );
-        Spi::run_with_args(
+        super::run_journaled_delete(
+            &meta.entity_name,
             &delete_sql,
             &[unsafe {
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -234,6 +238,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         };
 
         super::run_counted_upsert(
+            &meta.entity_name,
             &tv_name,
             &col_list,
             &format!("SELECT {col_list} FROM {qi_view} WHERE {key_col_q}::text = $1 LIMIT 1"),
@@ -294,16 +299,12 @@ fn build_dedup_dml_components(
 /// SELECT * FROM v_post WHERE pk_post = 1
 /// -- Returns: pk_post, fk_user, data JSONB
 /// ```
-fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>> {
-    // Count the backing-view query (issue #56): the direct-patch fast path exists
-    // precisely to avoid reaching here for eligible changes.
-    crate::metrics::metrics_api::record_view_recomputes(1);
-
+fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
     let sql = format!(
-        "SELECT * FROM {} WHERE {} = $1",
+        "SELECT 1 FROM {} WHERE {} = $1 LIMIT 2",
         quote_identifier(&view_name),
         quote_identifier(&pk_col)
     );
@@ -317,9 +318,9 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>>
         // fails the view's WHERE/branch conditions). This is not an error: the
         // caller removes the corresponding tview row. Returning Ok(None) is what
         // makes DELETE propagate instead of being swallowed as an SPI failure.
-        let Some(row_data) = rows.next() else {
-            return Ok(None);
-        };
+        if rows.next().is_none() {
+            return Ok(false);
+        }
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
         if meta.is_union && rows.next().is_some() {
@@ -344,24 +345,7 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>>
             }
         }
 
-        // Extract data column
-        let data: JsonB = row_data["data"].value()?.ok_or_else(|| {
-            spi::Error::from(crate::TViewError::SpiError {
-                query: sql.clone(),
-                error: format!(
-                    "TVIEW '{}': data column is NULL for {pk_col} = {pk} in view '{view_name}'. \
-                     Ensure TVIEW definition includes a non-NULL data column.",
-                    meta.entity_name
-                ),
-            })
-        })?;
-
-        Ok(Some(ViewRow {
-            entity_name: meta.entity_name.clone(),
-            pk,
-            tview_oid: meta.tview_oid,
-            data,
-        }))
+        Ok(true)
     })
 }
 
@@ -416,9 +400,9 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>>
 /// // WHERE pk_post = $2
 /// apply_patch(&view_row, &meta)?;
 /// ```
-fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
-    let tv_name = relname_from_oid(row.tview_oid)?;
-    let pk_col = format!("pk_{}", row.entity_name);
+fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
+    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let pk_col = format!("pk_{}", meta.entity_name);
 
     // Check if jsonb_delta is available (cached after first session query)
     if !check_jsonb_delta_available() {
@@ -427,7 +411,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
              Install with: CREATE EXTENSION jsonb_delta; \
              Performance: Full replacement is ~2× slower for cascades."
         );
-        return apply_full_replacement(row, meta);
+        return apply_full_replacement(meta, pk);
     }
 
     // Parse dependencies
@@ -435,7 +419,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 
     // If no dependencies, use full replacement
     if deps.is_empty() {
-        return apply_full_replacement(row, meta);
+        return apply_full_replacement(meta, pk);
     }
 
     // Array (issue #50) and nested-object (issue #52) dependencies cannot be
@@ -453,7 +437,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
             DependencyType::Array | DependencyType::NestedObject
         )
     }) {
-        return apply_full_replacement(row, meta);
+        return apply_full_replacement(meta, pk);
     }
 
     // UPSERT rather than UPDATE (issue #48): a smart patch only makes sense for a
@@ -463,7 +447,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
     if col_names.is_empty() {
-        return apply_full_replacement(row, meta);
+        return apply_full_replacement(meta, pk);
     }
     let col_list = super::column_list(&col_names);
     // Qualify the target column as `{tv}.data`: the INSERT … SELECT source relation
@@ -471,10 +455,11 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let qi_tv = quote_identifier(&tv_name);
     let qi_view = quote_identifier(&view_name);
     let qi_pk = quote_identifier(&pk_col);
-    let patch_expr = build_smart_patch_expr(&deps, &format!("{qi_tv}.data"));
+    // The patch source is the freshly computed document the upsert already read
+    // from the view (`EXCLUDED.data`), so the view is evaluated once (issue #91).
+    let patch_expr = build_smart_patch_expr(&deps, &format!("{qi_tv}.data"), "EXCLUDED.\"data\"");
 
-    // $1 = freshly computed document (patch source for the DO UPDATE branch),
-    // $2 = primary key (selects the row to insert from the backing view). In the
+    // $1 = primary key (selects the row to insert from the backing view). In the
     // DO UPDATE clause, `data` is patched in place while every other projected
     // column takes the backing view's value (#98); the guard skips the write when
     // nothing changed (#72).
@@ -483,24 +468,15 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
         super::upsert_conflict_action(&tv_name, &col_names, &pk_col, Some(&patch_expr))
     );
 
-    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-    // The JSONB patch data and INT8 primary key are validated structured data.
+    // SAFETY: DatumWithOid::new wraps the INT8 primary key for SPI parameter passing.
     super::run_counted_upsert(
+        &meta.entity_name,
         &tv_name,
         &col_list,
-        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $2"),
+        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $1"),
         &conflict,
-        &[
-            unsafe {
-                DatumWithOid::new(
-                    JsonB(row.data.0.clone()),
-                    PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-                )
-            },
-            unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) },
-        ],
-    )?;
-    Ok(())
+        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+    )
 }
 
 /// Build the nested `jsonb_smart_patch_*()` expression for a set of dependencies.
@@ -508,7 +484,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 /// The returned SQL expression patches the tview's existing `data` column
 /// (starting from `base_data_expr`, which the caller qualifies as `tv_<entity>.data`
 /// so it is unambiguous inside `INSERT … SELECT … ON CONFLICT DO UPDATE`) with the
-/// freshly computed document bound to `$1::jsonb`. Each dependency wraps the
+/// freshly computed document `source`. Each dependency wraps the
 /// expression in one patch call:
 ///    - `NestedObject` → `jsonb_smart_patch_nested(expr, $1, path)`
 ///    - `Array` → `jsonb_smart_patch_array(expr, $1, path, key)`
@@ -526,7 +502,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
 ///     jsonb_smart_patch_array(data, $1::jsonb, ARRAY['comments'], 'id'),
 ///     $1::jsonb, ARRAY['author'])
 /// ```
-fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> String {
+fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str, source: &str) -> String {
     // Start with the target's current data column. The caller qualifies it (e.g.
     // `tv_post.data`) because inside `INSERT … SELECT … ON CONFLICT DO UPDATE` a
     // bare `data` is ambiguous with the SELECT source relation.
@@ -542,9 +518,7 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
                 // Kept as a safe passthrough for match exhaustiveness.
                 if let Some(path) = &dep.path {
                     let path_str = path.join(",");
-                    format!(
-                        "jsonb_smart_patch_nested({patch_expr}, $1::jsonb, ARRAY['{path_str}'])"
-                    )
+                    format!("jsonb_smart_patch_nested({patch_expr}, {source}, ARRAY['{path_str}'])")
                 } else {
                     warning!("NestedObject dependency missing path, skipping");
                     patch_expr
@@ -560,7 +534,7 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
             }
             DependencyType::Scalar => {
                 // Scalar = shallow merge (no nested paths affected)
-                format!("jsonb_smart_patch_scalar({patch_expr}, $1::jsonb)")
+                format!("jsonb_smart_patch_scalar({patch_expr}, {source})")
             }
         };
     }
@@ -612,9 +586,9 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
 /// SET data = $1, updated_at = now()
 /// WHERE pk_entity = $2
 /// ```
-fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
-    let tv_name = relname_from_oid(row.tview_oid)?;
-    let pk_col = format!("pk_{}", row.entity_name);
+fn apply_full_replacement(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
+    let tv_name = relname_from_oid(meta.tview_oid)?;
+    let pk_col = format!("pk_{}", meta.entity_name);
     let qi_pk = quote_identifier(&pk_col);
 
     // Resolve backing view name (use metadata instead of re-loading)
@@ -629,6 +603,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // when a column actually changed (#72). This handles both new rows (inserted into
     // the base table after TVIEW creation) and existing rows that need refreshing.
     super::run_counted_upsert(
+        &meta.entity_name,
         &tv_name,
         &col_list,
         &format!(
@@ -639,9 +614,8 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
             "ON CONFLICT ({qi_pk}) {}",
             super::upsert_conflict_action(&tv_name, &col_names, &pk_col, None)
         ),
-        &[unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
-    )?;
-    Ok(())
+        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+    )
 }
 
 #[cfg(any(test, feature = "pg_test"))]
