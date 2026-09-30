@@ -184,7 +184,11 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     }
 
     // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81).
-    let column_rename = unsafe { column_rename_of(pstmt) };
+    let column_rename = if extension_installed() {
+        unsafe { column_rename_of(pstmt) }
+    } else {
+        None
+    };
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
     // Returns true if the hook handled the statement, false if it should pass through
@@ -217,6 +221,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 crate::lifecycle::invalidate_jsonb_delta_cache();
             }
             return Ok(false); // Pass through
+        }
+
+        // The library is preloaded cluster-wide: in a database without the extension
+        // there is no catalog to consult and nothing to maintain (issue #128).
+        if !extension_installed() {
+            return Ok(false);
         }
 
         // Check for CREATE TABLE AS
@@ -367,6 +377,17 @@ impl ColumnRename {
             )
         };
         (relid != pg_sys::InvalidOid).then_some((relid, self.old_name, self.new_name))
+    }
+}
+
+/// Whether `pg_tviews` is installed in the current database. A syscache lookup:
+/// no SPI, and no catalog query that could fail when the extension is absent.
+fn extension_installed() -> bool {
+    // SAFETY: both calls only read backend state; the syscache lookup runs only
+    // inside a transaction, where it is valid.
+    unsafe {
+        pg_sys::IsTransactionState()
+            && pg_sys::get_extension_oid(c"pg_tviews".as_ptr(), true) != pg_sys::InvalidOid
     }
 }
 

@@ -94,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `pg_tview_meta.aggregate_embeds`, indexed unless it is the primary key) and
   propagation looks parent rows up by it. A definition that reads an aggregate but
   projects no column carrying its key is rejected with an explanation.
+- **DDL works in databases without the extension** (#128). The hook is loaded
+  cluster-wide through `shared_preload_libraries` and looked tables up in
+  `pg_tview_meta` even where `pg_tviews` was not installed, so `DROP TABLE` failed there
+  with `relation "pg_tview_meta" does not exist`. The hook now leaves such databases
+  alone.
 - **Refresh no longer depends on `search_path`** (#122). DML on the base table of a
   TVIEW whose schema was not on `search_path` failed with `relation "tv_post" does not
   exist`: the refresh named `tv_<entity>`, `v_<entity>` and the extension's
