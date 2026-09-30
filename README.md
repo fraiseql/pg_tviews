@@ -439,6 +439,15 @@ TVIEWs themselves (`tv_*`, `v_*`) are created in the schema you name, or in
 `current_schema()`. Nothing pg_tviews does at run time needs `tviews` on the
 `search_path`. `DROP EXTENSION pg_tviews` leaves the `tviews` schema behind, empty.
 
+#### Privileges
+
+A TVIEW is maintained by its owner, like a materialized view: when a role writes to a
+base table, the refresh reads and writes each affected TVIEW as the owner of its
+`tv_*` table, with `search_path` set to `pg_catalog, pg_temp`. Writers need only
+their privileges on the base tables; grant application roles `SELECT` on the
+`tv_*` tables they read. The owner needs `SELECT` on everything its definition
+reads.
+
 ### Your First TVIEW
 
 ```sql

@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   add `tviews` to `search_path`. Nothing pg_tviews does at run time needs it there:
   base-table and event triggers call the extension's functions qualified.
 
+- **Ordinary roles can use a database with pg_tviews** (#136, ADR 0136). Everything
+  pg_tviews did ran as the current role, so only the extension owner could write to
+  a base table (`permission denied for table pg_tview_meta`). Now:
+  - the flush reads and writes each TVIEW as the **owner of its `tv_*` table**, as
+    `REFRESH MATERIALIZED VIEW` does: in a security-restricted operation, with
+    `search_path` set to `pg_catalog, pg_temp`. A writer needs only its privileges on
+    the base tables it writes; application roles can get `SELECT` only on `tv_*`.
+    A multi-hop cascade reads the intermediate tables as the TVIEW's owner as well;
+  - `PUBLIC` gets `USAGE` on schema `tviews` and `SELECT` on `pg_tview_meta` and
+    `pg_tview_helpers` (view definitions, which `pg_views` already shows). The audit
+    log gets no grant;
+  - the `sql_drop` handler is `SECURITY DEFINER`: a `DROP … CASCADE` that takes the
+    backing view of a TVIEW another role owns deregisters that TVIEW instead of
+    aborting;
+  - audit rows are written by a `SECURITY DEFINER` function, with `performed_by` set
+    to the session user.
+
 ### Fixed
 
 - **Long or multibyte trigger names** (#136). A base-table trigger is named
@@ -38,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   calls to `pg_tviews_*` functions then need `tviews` on `search_path` (for example
   `ALTER DATABASE … SET search_path = "$user", public, tviews`). `DROP EXTENSION
   pg_tviews` leaves the `tviews` schema behind, empty.
+- A TVIEW's owner now needs `SELECT` on what its backing view reads, and write
+  access to its `tv_*` table, as it always did to create it; the roles writing to
+  base tables no longer need any privilege on TVIEWs. Creating and dropping TVIEWs
+  still requires the extension owner until `pg_tviews_create_or_replace()` lands.
 
 ## [0.1.0-beta.19] - 2026-09-30
 

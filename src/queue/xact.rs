@@ -377,6 +377,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 }
             }
 
+            // The entity is read and written as the owner of its tv_* table
+            // (issue #136), whoever wrote to the base table.
+            let _owner = crate::owner::AsOwner::of_entity(&entity)?;
+
             // Check for post-crash truncation and auto-refresh if needed
             if !is_crash_recovery_checked(&entity) {
                 mark_crash_recovery_checked(&entity);
@@ -597,7 +601,9 @@ fn apply_fanouts(
                 entity: entity.clone(),
             }
         })?;
+        let owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
         let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
+        drop(owner);
         let keys: Vec<_> = changed
             .into_iter()
             .map(|pk| super::key::RefreshKey::pk(&entity, pk))

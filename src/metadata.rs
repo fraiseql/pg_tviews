@@ -47,6 +47,9 @@ BEGIN
     END IF;
 END
 $$;
+
+-- Every role reaches the triggers, functions and catalog views (issue #136).
+GRANT USAGE ON SCHEMA @extschema@ TO PUBLIC;
     "#,
     name = "check_extension_schema",
     bootstrap
@@ -105,6 +108,11 @@ extension_sql!(
     -- dump/restore brings back tv_*, v_* and the triggers but no registered TVIEW.
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
+
+    -- The row trigger reads the catalog as the writing role (issue #136). It holds
+    -- view definitions, which pg_views already shows to everyone. Only the
+    -- extension owner writes it.
+    GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
     ",
     name = "create_metadata_tables",
 );
@@ -180,9 +188,15 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
 -- work is guarded by a defensive EXCEPTION handler.
+--
+-- SECURITY DEFINER (issue #136): the dropping role may not own the TVIEW or be able to
+-- write the catalog. PostgreSQL has already checked that it may drop what it dropped;
+-- the handler only deregisters the TVIEWs whose v_* or tv_* went with it.
 CREATE FUNCTION @extschema@.pg_tviews_handle_drop_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, @extschema@, pg_temp
 AS $$
 DECLARE
     entity_name TEXT;
@@ -304,6 +318,22 @@ CREATE TABLE @extschema@.pg_tview_audit_log (
 CREATE INDEX idx_audit_log_entity_time ON @extschema@.pg_tview_audit_log(entity, performed_at);
 
 COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
+
+-- Writes buffered audit entries for whichever role triggered them (issue #136): the
+-- log is readable and writable only by the extension owner, and performed_by is the
+-- session user, whatever role the caller has set.
+CREATE FUNCTION @extschema@.pg_tviews_audit_write(entries JSONB)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, @extschema@, pg_temp
+AS $$
+    INSERT INTO @extschema@.pg_tview_audit_log
+        (operation, entity, performed_by, rows_affected, details)
+    SELECT e->>'op', e->>'entity', SESSION_USER, (e->>'rows')::bigint,
+           CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
+    FROM jsonb_array_elements(entries) AS e;
+$$;
     ",
     name = "audit_table",
 );

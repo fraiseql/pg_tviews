@@ -197,6 +197,7 @@ fn find_affected_pks_batch(
         "SELECT {qi_fk}::bigint AS child_key, {qi_parent_pk}::bigint AS parent_key \
          FROM {qi_parent} WHERE {qi_fk} = ANY($1)"
     );
+    let _owner = crate::owner::AsOwner::of_entity(parent_entity)?;
 
     Spi::connect(|client| {
         // Convert child_pks to a PostgreSQL array datum
@@ -267,6 +268,7 @@ fn find_affected_pks(
     let qi_parent = tview_relation(parent_entity)?;
     let qi_parent_pk = quote_identifier(&parent_pk_col);
     let query = format!("SELECT {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = $1");
+    let _owner = crate::owner::AsOwner::of_entity(parent_entity)?;
     let args = vec![unsafe {
         DatumWithOid::new(child_pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value())
     }];

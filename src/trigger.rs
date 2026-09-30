@@ -330,7 +330,13 @@ fn follow_cascade_path(
         }
     };
 
-    // Step 2: Follow each intermediate hop via SPI
+    // Step 2: Follow each intermediate hop via SPI, as the owner of the target
+    // TVIEW (issue #136): its view reads these tables, the writer may not.
+    let _owner = if path.hops.is_empty() {
+        None
+    } else {
+        Some(crate::owner::AsOwner::of_entity(&path.entity_name)?)
+    };
     for hop in &path.hops {
         if current_ids.is_empty() {
             return Ok(());

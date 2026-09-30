@@ -2,12 +2,6 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::cell::RefCell;
 
-/// Return the authenticated session user (not affected by SET ROLE).
-fn session_user() -> spi::Result<String> {
-    Ok(crate::utils::spi_get_string("SELECT session_user::text")?
-        .unwrap_or_else(|| "unknown".to_string()))
-}
-
 // ── Audit entry types ───────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -92,8 +86,6 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
         return Ok(());
     }
 
-    let user = session_user()?;
-
     // Serialize all entries as a JSON array and unpack server-side.
     // This avoids delimiter-collision issues with string_to_array.
     let json_array: Vec<serde_json::Value> = entries
@@ -109,27 +101,18 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
         .collect();
     let payload = serde_json::Value::Array(json_array).to_string();
 
-    let user_ref: &str = &user;
     let payload_ref: &str = &payload;
 
+    // The log is writable only by the extension owner: a SECURITY DEFINER function
+    // inserts the entries and records the session user (issue #136).
     Spi::run_with_args(
         &format!(
-            "INSERT INTO {}.pg_tview_audit_log (operation, entity, performed_by, rows_affected, details)
-             SELECT
-                 e->>'op',
-                 e->>'entity',
-                 $2,
-                 (e->>'rows')::bigint,
-                 CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
-             FROM jsonb_array_elements($1::jsonb) AS e",
+            "SELECT {}.pg_tviews_audit_write($1::jsonb)",
             crate::utils::ext_schema()
         ),
-        &[
-            unsafe {
-                DatumWithOid::new(payload_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
-            unsafe { DatumWithOid::new(user_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        ],
+        &[unsafe {
+            DatumWithOid::new(payload_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }],
     )?;
 
     Ok(())
