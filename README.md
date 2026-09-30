@@ -299,9 +299,29 @@ keep working unchanged on the recompute path.
 - **💾 I/O Reduction**: Less disk writes for high-frequency updates
 - **🔧 Configurable**: GUC parameter controls default behavior
 
+### ⚠️ Hot standbys, promotion and crash restarts
+
+An UNLOGGED table is not replicated. **A hot standby cannot read an UNLOGGED
+TVIEW at all** (`ERROR: cannot access temporary or unlogged relations during
+recovery`), and promotion or a crash restart leaves it empty. If reads are
+routed to replicas, make those TVIEWs LOGGED:
+
+```sql
+SET pg_tviews.unlogged_by_default = off;              -- for new TVIEWs
+SELECT pg_tviews_set_logged('post', true);            -- existing TVIEW (rewrites it)
+SELECT * FROM pg_tviews_replication_status();         -- what a standby can serve
+```
+
+To repopulate emptied UNLOGGED TVIEWs as soon as a server leaves recovery, list
+the databases in `pg_tviews.auto_rebuild_databases` (needs a restart), or call
+`SELECT * FROM pg_tviews_rebuild_all();` after a failover or restore. See
+[docs/operations/replication.md](docs/operations/replication.md).
+
 ### Crash Recovery
 
-UNLOGGED tables are truncated on PostgreSQL crash, but **pg_tviews** automatically recovers:
+UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** rebuilds a
+TVIEW on the first write that touches it, and the startup worker above rebuilds
+the configured databases without waiting for a write. To check one TVIEW by hand:
 
 ```sql
 -- Check and recover after potential crash
@@ -326,7 +346,8 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.table_cache_enabled` | bool | on | Cache table→entity mappings |
 | `pg_tviews.metrics_enabled` | bool | off | Collect refresh metrics |
 | `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
-| `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED |
+| `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED (not readable on standbys) |
+| `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart required) |
 | `pg_tviews.data_gin_index` | bool | off | Create a GIN index on `data` for new TVIEWs |
 | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEW tables (keeps refreshes HOT) |
 | `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
@@ -340,9 +361,9 @@ SET pg_tviews.unlogged_by_default = true;   -- default UNLOGGED behavior
 SET pg_tviews.batch_size = 5000;            -- larger bulk-refresh chunks
 SET pg_tviews.cache_size = 50000;           -- bigger per-session caches
 
--- Alter existing TVIEWs
-ALTER TABLE tv_my_view SET UNLOGGED;
-ALTER TABLE tv_my_view SET LOGGED;  -- ⚠️ Truncates data
+-- Alter existing TVIEWs (each rewrites the table under an exclusive lock)
+SELECT pg_tviews_set_logged('my_view', false);  -- UNLOGGED
+SELECT pg_tviews_set_logged('my_view', true);   -- LOGGED, readable on standbys
 ```
 
 > GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
