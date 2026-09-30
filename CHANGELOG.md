@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   to 0.1.0-beta.19) to this release in one transaction, keeping the TVIEWs and their
   rows: it refuses when objects outside the extension depend on it, saves the
   registrations, re-creates the extension in `tviews` and re-registers every TVIEW.
+- **A read contract for tools** (#133, ADR 0136). `tviews.registry` has one row per
+  TVIEW: `schema`, `name`, `entity`, the normalized `query`, `base_tables` (every
+  table the backing view reads through views, sorted), `logged`, `options` (`logged`,
+  `fillfactor`, `data_gin_index`, `group_keys`, read from the system catalogs) and
+  `needs_reregister`. `tviews.contract_version()` (1) versions it: additions keep the
+  number, anything else bumps it. Both are plain SQL, readable by every role, on a
+  standby and without the library. `pg_tview_meta` and the other `pg_tview_*` tables
+  are documented as internal (`docs/reference/read-contract.md`).
 - **Release tarball layout** (#137): `lib/pg_tviews.so` and `extension/` (control file,
   install and upgrade scripts), to copy into `pg_config --pkglibdir` and
   `pg_config --sharedir`/extension.

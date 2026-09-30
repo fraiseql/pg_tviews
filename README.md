@@ -448,6 +448,14 @@ their privileges on the base tables; grant application roles `SELECT` on the
 `tv_*` tables they read. The owner needs `SELECT` on everything its definition
 reads.
 
+#### Reading what is registered
+
+Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
+query, base tables, options, `needs_reregister`) and check
+`tviews.contract_version()`. Both follow the stability rules in
+[docs/reference/read-contract.md](docs/reference/read-contract.md);
+`tviews.pg_tview_meta` and the other `pg_tview_*` tables are internal.
+
 #### Upgrading
 
 Each release has its own extension version (`SELECT extversion FROM pg_extension
