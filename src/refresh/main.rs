@@ -212,7 +212,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
                 return Ok(());
             }
 
-            let dml = build_dedup_dml_components(&col_names, key_col.as_str());
+            let dml = build_dedup_dml_components(&tv_name, &col_names, key_col.as_str());
 
             // Cache the DML strings (bounded by pg_tviews.cache_size)
             {
@@ -226,13 +226,11 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
             dml
         };
 
-        let upsert_sql = format!(
-            "INSERT INTO {tv_name} ({col_list}) \
-             SELECT {col_list} FROM {view_name} WHERE {key_col_q}::text = $1 LIMIT 1 \
-             ON CONFLICT ({key_col_q}) DO UPDATE SET {do_update}"
-        );
-        Spi::run_with_args(
-            &upsert_sql,
+        super::run_counted_upsert(
+            &tv_name,
+            &col_list,
+            &format!("SELECT {col_list} FROM {view_name} WHERE {key_col_q}::text = $1 LIMIT 1"),
+            &format!("ON CONFLICT ({key_col_q}) {do_update}"),
             &[unsafe {
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
@@ -242,33 +240,30 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
     Ok(())
 }
 
-/// Build DML components (`col_list`, DO UPDATE clause) for dedup key refresh.
+/// Build DML components (`col_list`, conflict action) for dedup key refresh.
 ///
-/// Constructs the column list and DO UPDATE SET clause used in UPSERT operations.
-/// Skips the dedup key column in the DO UPDATE clause since it's part of the CONFLICT key.
+/// The conflict action is the guarded `DO UPDATE` from
+/// [`super::upsert_conflict_action`]; the dedup key column is excluded from it
+/// since it's the CONFLICT key.
 ///
 /// # Arguments
 ///
+/// * `tv_name` - The TVIEW table (qualifies the stored columns in the guard)
 /// * `col_names` - Column names from the backing view
 /// * `key_col` - The dedup key column name (excluded from DO UPDATE)
 ///
 /// # Returns
 ///
-/// Tuple of (`col_list`, `do_update_clause`)
-fn build_dedup_dml_components(col_names: &[String], key_col: &str) -> (String, String) {
-    let do_update: String = {
-        let mut update_parts = Vec::with_capacity(col_names.len());
-        for c in col_names {
-            if c.as_str() != key_col {
-                update_parts.push(format!("{c} = EXCLUDED.{c}"));
-            }
-        }
-        update_parts.push("updated_at = NOW()".to_string());
-        update_parts.join(", ")
-    };
-
-    let col_list = col_names.join(", ");
-    (col_list, do_update)
+/// Tuple of (`col_list`, `conflict_action`)
+fn build_dedup_dml_components(
+    tv_name: &str,
+    col_names: &[String],
+    key_col: &str,
+) -> (String, String) {
+    (
+        col_names.join(", "),
+        super::upsert_conflict_action(tv_name, col_names, key_col),
+    )
 }
 
 /// Recompute a single row from the `v_entity` view.
@@ -467,16 +462,19 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // $1 = freshly computed document (patch source for the DO UPDATE branch),
     // $2 = primary key (selects the row to insert from the backing view). In the
     // DO UPDATE clause, bare `data` is the existing tview value being patched.
-    let sql = format!(
-        "INSERT INTO {tv_name} ({col_list}) \
-         SELECT {col_list} FROM {view_name} WHERE {pk_col} = $2 \
-         ON CONFLICT ({pk_col}) DO UPDATE SET data = {patch_expr}, updated_at = now()"
+    // The guard skips the write when the patched document equals the stored one (#72).
+    let conflict = format!(
+        "ON CONFLICT ({pk_col}) DO UPDATE SET data = {patch_expr}, updated_at = now() \
+         WHERE {tv_name}.data IS DISTINCT FROM {patch_expr}"
     );
 
     // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
     // The JSONB patch data and INT8 primary key are validated structured data.
-    Spi::run_with_args(
-        &sql,
+    super::run_counted_upsert(
+        &tv_name,
+        &col_list,
+        &format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = $2"),
+        &conflict,
         &[
             unsafe {
                 DatumWithOid::new(
@@ -609,31 +607,19 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
 
-    // Build DO UPDATE SET clause (update every non-pk column; timestamps use DEFAULT on INSERT)
-    let do_update: String = {
-        let mut update_parts = Vec::with_capacity(col_names.len());
-        for c in &col_names {
-            if c.as_str() != pk_col.as_str() {
-                update_parts.push(format!("{c} = EXCLUDED.{c}"));
-            }
-        }
-        update_parts.push("updated_at = NOW()".to_string());
-        update_parts.join(", ")
-    };
-
     let col_list = col_names.join(", ");
 
-    // UPSERT: INSERT from view (timestamps use DEFAULT NOW()), or UPDATE on conflict.
-    // This handles both new rows (inserted into base table after TVIEW creation)
-    // and existing rows that need their data refreshed.
-    let sql = format!(
-        "INSERT INTO {tv_name} ({col_list}) \
-         SELECT {col_list} FROM {view_name} WHERE {pk_col} = $1 \
-         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}"
-    );
-
-    Spi::run_with_args(
-        &sql,
+    // UPSERT: INSERT from view (timestamps use DEFAULT NOW()), or UPDATE on conflict
+    // when a column actually changed (#72). This handles both new rows (inserted into
+    // the base table after TVIEW creation) and existing rows that need refreshing.
+    super::run_counted_upsert(
+        &tv_name,
+        &col_list,
+        &format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = $1"),
+        &format!(
+            "ON CONFLICT ({pk_col}) {}",
+            super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
+        ),
         &[unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
     )?;
     Ok(())

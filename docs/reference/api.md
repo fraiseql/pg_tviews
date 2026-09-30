@@ -190,13 +190,22 @@ Returns JSONB like:
   "graph_cache_hits": 12,
   "graph_cache_misses": 2,
   "table_cache_hits": 18,
-  "table_cache_misses": 2
+  "table_cache_misses": 2,
+  "direct_patch_captured": 0,
+  "direct_patches_applied": 0,
+  "direct_patch_fallbacks": 0,
+  "view_recomputes": 23,
+  "refresh_noop_skipped": 17
 }
 ```
 
 **Notes**:
 - Safe for frequent monitoring (no performance impact)
-- All metrics are for the current transaction only
+- Queue and cache metrics are for the current transaction; the `direct_patch_*`,
+  `view_recomputes` and `refresh_noop_skipped` counters are cumulative for the session
+- `refresh_noop_skipped` counts refreshed rows that were **not** rewritten because
+  their content was unchanged; `refresh_noop_skipped / view_recomputes` is the
+  no-op share of recompute work
 - Cache hit rates indicate optimization effectiveness
 
 ### pg_tviews_debug_queue()

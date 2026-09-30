@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
+  of refresh writes skipped because nothing changed.
+- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
+  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
+- GUCs `pg_tviews.data_gin_index` (default `off`) and `pg_tviews.fillfactor`
+  (default `85`), applied at TVIEW creation.
+
 ### Changed
 
+- **Refreshes no longer rewrite unchanged rows** (#72). Every refresh path (bulk
+  recompute, per-row upsert, smart patch, direct patch, DISTINCT ON, array ops)
+  now skips the write when the recomputed row equals the stored one
+  (`IS DISTINCT FROM` guard). An unchanged row gets no new tuple version, no index
+  entries and no dead tuple. On the beta.17 baseline a no-op `UPDATE` over 10 000
+  rows rewrote all 10 000 TVIEW rows (13 MB of WAL on a logged TVIEW).
+- **Breaking: `updated_at` now means "last content change"**. It moves only when
+  the row's content changes, no longer on every refresh that touched the key.
+  Code that used `updated_at` as "last refreshed" must stop doing so; code using
+  it for cache validation / ETags gets correct values now.
 - **Default change: new TVIEWs get no GIN index on `data`, and fillfactor 85**
   (#70, #73). Nearly every refresh rewrites `data`, so the GIN made every refresh a
   non-HOT update (0 % HOT across the beta.17 physical baseline), and fillfactor 100
@@ -16,13 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   HOT on single-row refreshes. Existing TVIEWs are untouched. Opt back in per
   TVIEW with `SET LOCAL pg_tviews.data_gin_index = on` /
   `SET LOCAL pg_tviews.fillfactor = 100`.
-
-### Added
-
-- GUCs `pg_tviews.data_gin_index` (default `off`) and `pg_tviews.fillfactor`
-  (default `85`), applied at TVIEW creation.
-- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
-  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
 
 ### Fixed
 

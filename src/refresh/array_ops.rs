@@ -70,6 +70,7 @@ pub fn insert_array_element(
                 data = jsonb_array_insert_where(data, {path_array}, $1, NULL, NULL),
                 updated_at = now()
             WHERE {pk_column} = $2
+              AND data IS DISTINCT FROM jsonb_array_insert_where(data, {path_array}, $1, NULL, NULL)
             "
             )
         },
@@ -81,6 +82,7 @@ pub fn insert_array_element(
                 data = jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC'),
                 updated_at = now()
             WHERE {pk_column} = $2
+              AND data IS DISTINCT FROM jsonb_array_insert_where(data, {path_array}, $1, '{key}', 'ASC')
             "
             )
         },
@@ -137,6 +139,7 @@ pub fn delete_array_element(
             data = jsonb_array_delete_where(data, {path_array}, '{match_key}', $1),
             updated_at = now()
         WHERE {pk_column} = $2
+          AND data IS DISTINCT FROM jsonb_array_delete_where(data, {path_array}, '{match_key}', $1)
         "
     );
 

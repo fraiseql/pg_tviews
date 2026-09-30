@@ -65,25 +65,14 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     }
     let col_list = col_names.join(", ");
 
-    // DO UPDATE SET: every non-pk column tracks the backing view; refresh timestamp.
-    let do_update: String = {
-        let mut parts = Vec::with_capacity(col_names.len());
-        for c in &col_names {
-            if c.as_str() != pk_col.as_str() {
-                parts.push(format!("{c} = EXCLUDED.{c}"));
-            }
-        }
-        parts.push("updated_at = NOW()".to_string());
-        parts.join(", ")
-    };
-
     // UPSERT every requested pk that still resolves in the backing view. Rows not
     // yet materialized are inserted rather than silently skipped — the old
     // `UPDATE … FROM unnest()` path dropped every not-yet-present row (issue #48).
-    let upsert_sql = format!(
-        "INSERT INTO {tv_name} ({col_list}) \
-         SELECT {col_list} FROM {view_name} WHERE {pk_col} = ANY($1) \
-         ON CONFLICT ({pk_col}) DO UPDATE SET {do_update}"
+    // Rows whose recomputed columns equal the stored ones are left alone (#72).
+    let source_sql = format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = ANY($1)");
+    let conflict = format!(
+        "ON CONFLICT ({pk_col}) {}",
+        super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
@@ -101,8 +90,11 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     // DatumWithOid wraps the validated BIGINT[] for SPI parameter passing.
     let batch = crate::config::batch_size();
     for chunk in pks.chunks(batch) {
-        Spi::run_with_args(
-            &upsert_sql,
+        super::run_counted_upsert(
+            &tv_name,
+            &col_list,
+            &source_sql,
+            &conflict,
             &[unsafe {
                 DatumWithOid::new(
                     chunk.to_vec(),
