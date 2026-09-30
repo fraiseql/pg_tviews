@@ -1,0 +1,2 @@
+plan	Actual Total Time	Actual Rows	Shared Hit Blocks	Shared Read Blocks	Shared Dirtied Blocks	Shared Written Blocks	WAL Records	WAL FPI	WAL Bytes	query
+001	0.184	0.0	34	0	0	0	6	0	2116	INSERT INTO tv_product (id, pk_product, fk_category, data) SELECT id, pk_product, fk_category, data FROM v_product WHERE pk_product = $1 ON CONFLICT (pk_product

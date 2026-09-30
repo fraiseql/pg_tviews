@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Cascade propagation no longer scans the whole parent TVIEW** (#71). Propagation
+  finds parent rows with `WHERE fk_<child> = ANY($1)`, but integer `fk_*` columns
+  had no index. Every new TVIEW now gets a required `(fk_<x>, pk_<entity>)` btree
+  per integer FK, so the lookup is index-only. On the beta.17 baseline a p99 user
+  cascade read 8 651 / 25 805 buffers to find 83 / 216 rows.
 - **`CREATE TABLE tv_* AS` is converted in a multi-statement batch, in `DO` blocks and in
   functions (#80), and only the statement's own SELECT is used (#95).** The hook skipped a
   whole batch whose text mentioned `create extension`, `DO` held the internal reentrancy guard
@@ -49,6 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   behaves like PostgreSQL (#82).** It was claimed by the hook and silently kept. The hook now
   claims a name only if it resolves, schema-aware, to a relation registered in
   `pg_tview_meta`; plain tables, missing names and mixed lists go to the standard handler.
+
+### Added
+
+- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
+  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
+
+### Upgrade notes
+
+- TVIEWs created before this release lack the propagation indexes. After
+  upgrading, run `SELECT * FROM pg_tviews_ensure_propagation_indexes();` (or run
+  its `dry_run` output with `CREATE INDEX CONCURRENTLY` on large tables).
 
 ## [0.1.0-beta.17] - 2026-07-24
 

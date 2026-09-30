@@ -2,3 +2,6 @@
 # compact TSVs that back docs/benchmarks/results.md.
 *.log
 __pycache__/
+
+# auto_explain plans are large and regenerable; keep their summary.tsv only.
+*.json

@@ -12,6 +12,10 @@ Measured performance of pg_tviews' incremental refresh against a traditional
 > `pg_tviews.enable_tview(...)` function the shipped extension never exported and
 > so never ran against the real extension.
 
+> Latency is only part of the cost. HOT eligibility, WAL, dead tuples and index
+> churn for the same harness are in
+> [physical-baseline-beta17.md](physical-baseline-beta17.md).
+
 ## What is measured
 
 A denormalised product catalogue — one JSONB row per product joining category,
