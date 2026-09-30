@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **`pg_tviews_flush_and_report()`** (#76): flushes pending refreshes and returns the
+  TVIEW rows the transaction changed in the GraphQL Cascade shape (`updated` with
+  `__typename`, `id`, `operation` and fresh `data`; `deleted`; `truncated`;
+  `invalidated_types`). Every refresh write journals the rows it really changed, so
+  cascaded rows are included and no-op refreshes and rolled-back savepoints are not.
+  `pg_tviews_set_typename()` overrides the reported type name (new
+  `pg_tview_meta.graphql_typename` column); `pg_tviews.report_max_tracked` bounds the
+  journal. See `docs/user-guides/graphql-cascade.md`.
 - **`pg_tviews_profile(entity DEFAULT NULL, fanout_warn DEFAULT 1000)`** (#74): per-TVIEW
   physical health from the catalogs and statistics views (sizes, TOAST, HOT ratio,
   fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out

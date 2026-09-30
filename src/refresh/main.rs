@@ -118,11 +118,13 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
     let tv_name = relname_from_oid(meta.tview_oid)?;
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_tv = quote_identifier(&tv_name);
     let sql = format!(
-        "DELETE FROM {} WHERE {qi_pk} = $1",
-        quote_identifier(&tv_name)
+        "DELETE FROM {qi_tv} WHERE {qi_pk} = $1 \
+         RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
     );
-    Spi::run_with_args(
+    super::run_journaled_delete(
+        &meta.entity_name,
         &sql,
         &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
     )?;
@@ -188,11 +190,14 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
     if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
+        let qi_tv = quote_identifier(&tv_name);
+        let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
         let delete_sql = format!(
-            "DELETE FROM {} WHERE {key_col_q}::text = $1",
-            quote_identifier(&tv_name)
+            "DELETE FROM {qi_tv} WHERE {key_col_q}::text = $1 \
+             RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
         );
-        Spi::run_with_args(
+        super::run_journaled_delete(
+            &meta.entity_name,
             &delete_sql,
             &[unsafe {
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -234,6 +239,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         };
 
         super::run_counted_upsert(
+            &meta.entity_name,
             &tv_name,
             &col_list,
             &format!("SELECT {col_list} FROM {qi_view} WHERE {key_col_q}::text = $1 LIMIT 1"),
@@ -486,6 +492,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
     // The JSONB patch data and INT8 primary key are validated structured data.
     super::run_counted_upsert(
+        &meta.entity_name,
         &tv_name,
         &col_list,
         &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $2"),
@@ -629,6 +636,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // when a column actually changed (#72). This handles both new rows (inserted into
     // the base table after TVIEW creation) and existing rows that need refreshing.
     super::run_counted_upsert(
+        &row.entity_name,
         &tv_name,
         &col_list,
         &format!(

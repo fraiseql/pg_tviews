@@ -56,6 +56,10 @@ extension_sql!(
         ADD COLUMN IF NOT EXISTS direct_map_columns TEXT[] NOT NULL DEFAULT '{}';
     ALTER TABLE @extschema@.pg_tview_meta
         ADD COLUMN IF NOT EXISTS direct_map_keys TEXT[] NOT NULL DEFAULT '{}';
+    -- GraphQL type reported by pg_tviews_flush_and_report (issue #76); NULL means
+    -- PascalCase(entity).
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS graphql_typename TEXT;
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
