@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Cascades through complex CTEs** (#60). A base table reachable only through a CTE
+  chain (a CTE reading an earlier one), a CTE body joining several tables, or a
+  UNION-bodied CTE got no cascade path, so its changes never reached the TVIEW. A
+  resolved CTE now inlines its base tables, their join edges and a per-column map into
+  the outer join graph, so each of those tables gets its own (possibly multi-hop) path.
+
 - **Normal DDL is quiet again (#92).** `CREATE TABLE tv_*`, CTAS and `pg_tviews_create` no
   longer print `EVENT TRIGGER` banners, `DEBUG:` lines or `spi_run_ddl()` INFO output. The
   diagnostics are `DEBUG1` messages (`client_min_messages = debug1`), or NOTICEs with
