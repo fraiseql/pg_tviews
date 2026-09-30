@@ -86,6 +86,66 @@ fn entity_triggers(
     })
 }
 
+/// `pg_tviews` triggers that no registered TVIEW accounts for, as
+/// `<trigger> on <table>`: the entity a trigger carries is not registered, or its
+/// backing view does not read the trigger's table. A TVIEW's tables are the
+/// ordinary and partitioned tables reached from its backing view through views,
+/// other TVIEWs' tables excepted, as [`install_triggers`] was given them.
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn orphaned_triggers() -> TViewResult<Vec<String>> {
+    let query = format!(
+        "WITH RECURSIVE reads(entity, relid) AS ( \
+             SELECT m.entity, m.view_oid::oid FROM {meta} m \
+           UNION \
+             SELECT r.entity, d.refobjid \
+             FROM reads r \
+             JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v' \
+             JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
+             JOIN pg_catalog.pg_depend d \
+               ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass \
+              AND d.objid = w.oid \
+              AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND d.refobjid <> v.oid \
+         ), \
+         ours AS ( \
+             SELECT t.tgname, t.tgrelid, \
+                    CASE WHEN t.tgnargs = 1 THEN pg_catalog.convert_from( \
+                        pg_catalog.substring(t.tgargs, 1, pg_catalog.length(t.tgargs) - 1), \
+                        pg_catalog.getdatabaseencoding()) END AS entity \
+             FROM pg_catalog.pg_trigger t \
+             JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+             WHERE p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+               AND p.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}') \
+         ) \
+         SELECT pg_catalog.format('%I on %s', o.tgname, o.tgrelid::pg_catalog.regclass) \
+                AS orphan \
+         FROM ours o \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
+             WHERE r.entity = o.entity AND r.relid = o.tgrelid \
+               AND r.relid NOT IN (SELECT table_oid::oid FROM {meta})) \
+         ORDER BY 1",
+        meta = crate::utils::meta_table(),
+        schema = crate::utils::ext_schema(),
+    );
+    Spi::connect(|client| {
+        let mut orphans = Vec::new();
+        for row in client.select(&query, None, &[])? {
+            if let Some(orphan) = row["orphan"].value::<String>()? {
+                orphans.push(orphan);
+            }
+        }
+        Ok::<_, spi::Error>(orphans)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find orphaned pg_tviews triggers".to_string(),
+        pg_error: e.to_string(),
+    })
+}
+
 /// Install cascade triggers on all base tables for a TVIEW.
 ///
 /// Each base table gets a row-level `pg_tview_trigger_handler()`, which derives

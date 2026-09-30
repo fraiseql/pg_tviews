@@ -77,33 +77,32 @@ fn pg_tviews_health_check() -> TableIterator<
         ));
     }
 
-    // Check 4: Orphaned triggers
-    let orphaned_triggers = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM pg_trigger
-         WHERE tgname LIKE 'tview_%'
-           AND tgrelid NOT IN (
-             SELECT ('tb_' || entity)::regclass::oid
-             FROM {}
-           )",
-        crate::utils::meta_table()
-    ))
-    .unwrap_or(Some(0))
-    .unwrap_or(0);
-
-    if orphaned_triggers > 0 {
-        results.push((
-            "WARNING".to_string(),
-            "triggers".to_string(),
-            format!("{orphaned_triggers} orphaned triggers found"),
-            "warning".to_string(),
-        ));
-    } else {
-        results.push((
+    // Check 4: Orphaned triggers (issue #139): pg_tviews triggers that no
+    // registered TVIEW reads through.
+    match crate::dependency::triggers::orphaned_triggers() {
+        Ok(orphans) if orphans.is_empty() => results.push((
             "OK".to_string(),
             "triggers".to_string(),
             "All triggers properly linked".to_string(),
             "info".to_string(),
-        ));
+        )),
+        Ok(orphans) => results.push((
+            "WARNING".to_string(),
+            "triggers".to_string(),
+            format!(
+                "{} orphaned trigger{} found: {}",
+                orphans.len(),
+                if orphans.len() == 1 { "" } else { "s" },
+                orphans.join(", ")
+            ),
+            "warning".to_string(),
+        )),
+        Err(e) => results.push((
+            "ERROR".to_string(),
+            "triggers".to_string(),
+            format!("could not check triggers: {e}"),
+            "error".to_string(),
+        )),
     }
 
     // Check 5: TVIEW count

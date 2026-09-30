@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
+  orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
+  looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an
+  aggregate TVIEW or one reading several tables, and an error (`relation "tb_post"
+  does not exist`) for a TVIEW off the `search_path`, failing the whole call. A
+  trigger now counts when it calls a pg_tviews trigger function, and is orphaned
+  when the entity it carries is not registered or its backing view does not read the
+  trigger's table. The warning lists the orphaned triggers.
 - **Long or multibyte trigger names** (#136). A base-table trigger is named
   `trg_tview[_flush]_<entity>_on_<schema>_<table>`, which PostgreSQL truncates to 63
   bytes: two TVIEWs whose names share their first 53 characters could not both
