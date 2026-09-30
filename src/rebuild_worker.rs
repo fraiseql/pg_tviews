@@ -56,10 +56,17 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             return;
         };
         let path = format!("{}, public", crate::utils::quote_identifier(&schema));
-        if let Err(e) = Spi::run(&format!(
-            "SELECT pg_catalog.set_config('search_path', {}, true)",
-            crate::utils::quote_literal(&path)
-        )) {
+        // SAFETY: the text datum borrows `path`, which outlives the call.
+        let args = [unsafe {
+            pgrx::datum::DatumWithOid::new(
+                path.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        }];
+        if let Err(e) = Spi::run_with_args(
+            "SELECT pg_catalog.set_config('search_path', $1, true)",
+            &args,
+        ) {
             warning!("pg_tviews: could not set search_path in database \"{database}\": {e}");
             return;
         }
