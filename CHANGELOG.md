@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **`pg_tviews_profile(entity DEFAULT NULL, fanout_warn DEFAULT 1000)`** (#74): per-TVIEW
+  physical health from the catalogs and statistics views (sizes, TOAST, HOT ratio,
+  fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out
+  per `fk_*`) with a `warnings` column. Read-only and callable on a standby; the columns
+  are a stable contract (`docs/reference/profile.md`).
+
 - **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
   an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
   TVIEW stayed empty until something wrote to its base tables. New:
