@@ -123,6 +123,32 @@ Names longer than 63 bytes are shortened deterministically with a hash suffix.
 TVIEWs created before these indexes existed can be upgraded with
 [`pg_tviews_ensure_propagation_indexes()`](#pg_tviews_ensure_propagation_indexes).
 
+### pg_tviews_create_or_replace()
+
+**Signature**:
+```sql
+tviews.pg_tviews_create_or_replace(tview_name TEXT, query TEXT, options JSONB DEFAULT '{}')
+RETURNS TEXT  -- 'created' | 'unchanged' | 'altered' | 'replaced' | 'rebuilt'
+```
+
+Creates a TVIEW, or brings an existing one to `query` and `options` with the smallest
+change. Options: `logged`, `fillfactor`, `data_gin_index`, `group_keys`. See
+[the contract for tools](read-contract.md) for the rules.
+
+### pg_tviews_reregister() / pg_tviews_reregister_all()
+
+**Signatures**:
+```sql
+tviews.pg_tviews_reregister(tview_name TEXT) RETURNS TEXT
+tviews.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
+    RETURNS TABLE (entity TEXT, status TEXT)
+```
+
+Re-derive TVIEWs' metadata and base-table triggers from their stored definitions with
+the installed release's analysis, without touching their rows, and clear
+`needs_reregister`. Run `reregister_all()` after an upgrade when the release notes say
+so or `pg_tviews_health_check()` reports TVIEWs to re-register.
+
 ### pg_tviews_drop()
 
 **Signature**:
@@ -307,94 +333,10 @@ Returns JSONB with type information for each requested column.
 
 ## Two-Phase Commit (2PC)
 
-### pg_tviews_commit_prepared()
-
-**Signature**:
-```sql
-pg_tviews_commit_prepared(gid TEXT) RETURNS VOID
-```
-
-**Description**:
-Commits a prepared transaction and processes any pending TVIEW refreshes that were queued during the transaction.
-
-**Parameters**:
-- `gid` (TEXT): Global transaction identifier of the prepared transaction
-
-**Returns**:
-- `VOID`
-
-**Example**:
-```sql
--- In another session/connection:
-COMMIT PREPARED 'my-transaction-123';
-
--- Then commit the TVIEW refreshes:
-SELECT pg_tviews_commit_prepared('my-transaction-123');
-```
-
-**Notes**:
-- Must be called after `COMMIT PREPARED`
-- Processes refreshes in a new transaction
-- Required for distributed transaction support
-
-### pg_tviews_rollback_prepared()
-
-**Signature**:
-```sql
-pg_tviews_rollback_prepared(gid TEXT) RETURNS VOID
-```
-
-**Description**:
-Rolls back a prepared transaction and cleans up any pending TVIEW refresh queues.
-
-**Parameters**:
-- `gid` (TEXT): Global transaction identifier of the prepared transaction
-
-**Returns**:
-- `VOID`
-
-**Example**:
-```sql
--- Rollback the prepared transaction:
-ROLLBACK PREPARED 'my-transaction-123';
-
--- Clean up TVIEW queues:
-SELECT pg_tviews_rollback_prepared('my-transaction-123');
-```
-
-**Notes**:
-- Must be called after `ROLLBACK PREPARED`
-- Discards pending refreshes without processing
-- Required for proper cleanup in distributed transactions
-
-### pg_tviews_recover_prepared_transactions()
-
-**Signature**:
-```sql
-pg_tviews_recover_prepared_transactions() RETURNS TABLE(gid TEXT, queue_size INT, status TEXT)
-```
-
-**Description**:
-Recovers orphaned prepared transactions that have pending TVIEW refreshes. Automatically commits transactions older than 1 hour.
-
-**Parameters**:
-- None
-
-**Returns**:
-- TABLE with columns:
-  - `gid` (TEXT): Transaction identifier
-  - `queue_size` (INT): Number of pending refreshes
-  - `status` (TEXT): Recovery status ('processed' or 'error')
-
-**Example**:
-```sql
-SELECT * FROM pg_tviews_recover_prepared_transactions();
-```
-
-**Notes**:
-- Uses advisory locks to prevent concurrent recovery
-- Only processes transactions older than 1 hour
-- Useful for disaster recovery scenarios
+pg_tviews refreshes the TVIEWs before `PREPARE TRANSACTION`, so the refresh writes
+belong to the prepared transaction: `COMMIT PREPARED` applies them and
+`ROLLBACK PREPARED` discards them, with the rest of the transaction. No extra call
+is needed. Prepared transactions require `max_prepared_transactions > 0`.
 
 ## Manual Operations
 
@@ -482,69 +424,12 @@ SELECT pg_tviews_delete('tb_user'::regclass::oid, 789);
 
 ### pg_tviews_convert_table()
 
-**Signature**:
-```sql
-pg_tviews_convert_table(
-    table_name TEXT,
-    entity_name TEXT DEFAULT NULL
-) RETURNS BOOLEAN
-```
-
-**Description**:
-Converts an existing regular table to a TVIEW by analyzing its structure and creating the necessary metadata and triggers.
-
-**Parameters**:
-- `table_name TEXT`: Name of the existing table to convert (must start with `tv_`)
-- `entity_name TEXT`: Optional entity name (defaults to table name without `tv_` prefix)
-
-**Returns**:
-- `BOOLEAN`: True if conversion successful
-
-**Example**:
-```sql
--- Convert existing tv_* table to TVIEW
-SELECT pg_tviews_convert_table('tv_post', 'post');
-
--- Check conversion result
-SELECT * FROM pg_tview_meta WHERE entity = 'post';
-SELECT * FROM tv_post LIMIT 5;
-```
-
-**Notes**:
-- Table must already be named `tv_<entity>` and have `pk_<entity>` and `data` columns
-- Creates backing view and installs triggers
-- Useful for migrating existing materialized views
-
-### pg_tviews_install_stmt_triggers()
-
-**Signature**:
-```sql
-pg_tviews_install_stmt_triggers() RETURNS INTEGER
-```
-
-**Description**:
-Installs statement-level triggers on all base tables to dramatically improve bulk operation performance (100-500× faster).
-
-**Parameters**:
-- None
-
-**Returns**:
-- `INTEGER`: Number of triggers installed
-
-**Example**:
-```sql
--- Enable high-performance bulk operations
-SELECT pg_tviews_install_stmt_triggers();
--- Returns: 5 (number of triggers installed)
-
--- Verify triggers are active
-SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%tview%';
-```
-
-**Notes**:
-- Processes entire statements at once using transition tables
-- Reduces trigger overhead from N× to 1× per statement
-- Essential for high-throughput applications
+Internal: called by the `pg_tviews_ddl_end` event trigger. A `CREATE TABLE tv_* AS`
+is turned into a TVIEW by the ProcessUtility hook before PostgreSQL creates any table;
+if a plain `tv_*` table reaches the event trigger anyway (pg_tviews not in
+`shared_preload_libraries`), this function raises an error instead of leaving a table
+that looks like a TVIEW. Create TVIEWs with `pg_tviews_create_or_replace()` or
+`CREATE TABLE tv_<entity> AS SELECT …`.
 
 ### pg_tviews_health_check()
 
@@ -619,6 +504,12 @@ FROM pg_tviews_ensure_propagation_indexes(NULL, true) AS ddl;
   dry-run + `CONCURRENTLY` route on busy tables
 
 ## Views
+
+### tviews.registry and tviews.contract_version()
+
+The versioned read contract for tools: one row per TVIEW (schema, name, entity,
+normalized query, base tables, options, `needs_reregister`). See
+[the contract for tools](read-contract.md).
 
 ### pg_tviews_queue_realtime
 
@@ -716,20 +607,11 @@ SELECT pg_tviews_infer_types('tb_user', ARRAY['id', 'name']);
 
 ### Two-Phase Commit Workflow
 ```sql
--- Step 1: Begin transaction with changes
 BEGIN;
 INSERT INTO tb_post (fk_user, title) VALUES (1, 'New Post');
+PREPARE TRANSACTION 'txn-123';   -- TVIEWs refreshed as part of the transaction
 
--- Step 2: Prepare transaction (queue is persisted)
-PREPARE TRANSACTION 'txn-123';
-
--- Step 3a: Commit (in another session)
-COMMIT PREPARED 'txn-123';
-SELECT pg_tviews_commit_prepared('txn-123');
-
--- OR Step 3b: Rollback
-ROLLBACK PREPARED 'txn-123';
-SELECT pg_tviews_rollback_prepared('txn-123');
+COMMIT PREPARED 'txn-123';       -- or ROLLBACK PREPARED 'txn-123'
 ```
 
 ### Manual Refresh Operations
@@ -747,11 +629,9 @@ SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
 - `pg_tviews_debug_queue()` reads thread-local state, no performance impact
 - `pg_tviews_queue_stats()` is fast, safe for frequent monitoring
 - Manual operations (`pg_tviews_cascade`, etc.) bypass transaction queue
-- 2PC functions require careful coordination in distributed systems
 
 ### Common Pitfalls
 - Don't use manual operations in triggers (causes recursion)
-- 2PC GIDs must be unique per prepared transaction
 - `pg_tviews_analyze_select()` doesn't validate table existence
 - DDL operations require appropriate permissions
 
@@ -770,9 +650,10 @@ ERROR:  function pg_tviews_version() does not exist
 
 ### Permission Denied
 ```sql
-ERROR:  permission denied for function pg_tviews_commit_prepared
+ERROR:  must be owner of TVIEW tv_post
 ```
-**Solution**: 2PC functions require superuser or specific GRANT permissions.
+**Solution**: replacing, dropping or re-registering a TVIEW requires owning its
+`tv_*` table (or being a member of the owning role, or the extension's owner).
 
 ### Invalid TVIEW Name
 ```sql

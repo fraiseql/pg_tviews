@@ -170,9 +170,8 @@ SET last_error = NULL,
     emergency_disable_time = NULL,
     emergency_disable_reason = NULL;
 
--- Step 3: Re-enable TVIEW system
--- (If you have a system enable function)
--- SELECT pg_tviews_system_enable();
+-- Step 3: Re-install the TVIEWs' triggers if any are missing
+SELECT * FROM tviews.pg_tviews_reregister_all();
 
 -- Step 4: Test basic functionality
 SELECT pg_tviews_health_check();

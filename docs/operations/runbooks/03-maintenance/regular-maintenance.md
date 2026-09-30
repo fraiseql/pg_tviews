@@ -312,7 +312,7 @@ VALUES ('weekly_maintenance', NOW(), 'Completed vacuum, analyze, and queue clean
 ### Monitoring Integration
 ```sql
 -- Create alerts for maintenance needs
-CREATE OR REPLACE FUNCTION pg_tviews_maintenance_alerts()
+CREATE OR REPLACE FUNCTION tview_maintenance_alerts()
 RETURNS TABLE (
     alert_type TEXT,
     severity TEXT,

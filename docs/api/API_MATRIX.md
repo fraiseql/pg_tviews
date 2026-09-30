@@ -90,8 +90,7 @@ CREATE TVIEW my_view AS SELECT * FROM users;
 -- Current (v0.1):
 SELECT * FROM pg_tviews_debug_queue();
 
--- Future (v1.1) - may change:
-SELECT queue_id, entity, priority FROM pg_tviews_refresh_queue();
+-- A future release may change its output; the CHANGELOG says so.
 ```
 
 ---

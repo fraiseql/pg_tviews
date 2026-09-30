@@ -269,9 +269,10 @@ INTERSECT, EXCEPT, `WITH RECURSIVE`, and window functions are not.
 
 **Solutions**:
 
-1. **Enable statement-level triggers**:
+1. **Check the triggers and the propagation indexes**:
    ```sql
-   SELECT pg_tviews_install_stmt_triggers();
+   SELECT * FROM tviews.pg_tviews_health_check();
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('post');
    ```
 
 2. **Add indexes on TVIEWs**:
@@ -652,8 +653,8 @@ After system crash:
 -- Check system state
 SELECT * FROM pg_tviews_health_check();
 
--- Recover prepared transactions
-SELECT * FROM pg_tviews_recover_prepared_transactions();
+-- Prepared transactions carry their TVIEW refreshes: COMMIT PREPARED or
+-- ROLLBACK PREPARED them (SELECT gid FROM pg_prepared_xacts)
 
 -- Verify data consistency
 -- Run your consistency checks
@@ -698,7 +699,7 @@ flowchart TD
     D -->|No| F{Triggers installed?}
     D -->|Yes| G[Problem solved]
 
-    F -->|No| H[Run pg_tviews_install_stmt_triggers()]
+    F -->|No| H[Re-install: pg_tviews_reregister_all]
     F -->|Yes| I{Queue has items?}
 
     I -->|No| J[Manual refresh: pg_tviews_cascade()]

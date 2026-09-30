@@ -283,7 +283,7 @@ FROM pg_stat_bgwriter;
 ### Connection Health Alerts
 ```sql
 -- Create connection monitoring function
-CREATE OR REPLACE FUNCTION pg_tviews_connection_alerts()
+CREATE OR REPLACE FUNCTION tview_connection_alerts()
 RETURNS TABLE (
     alert_level TEXT,
     metric TEXT,
@@ -323,7 +323,7 @@ $$ LANGUAGE plpgsql;
 ### Automated Monitoring
 ```bash
 # Add to monitoring system
-# Example cron job: */5 * * * * psql -c "SELECT * FROM pg_tviews_connection_alerts();"
+# Example cron job: */5 * * * * psql -c "SELECT * FROM tview_connection_alerts();"
 ```
 
 ## Troubleshooting

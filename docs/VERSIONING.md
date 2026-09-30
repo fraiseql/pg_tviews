@@ -83,20 +83,20 @@ Version format: `MAJOR.MINOR.PATCH[-PRERELEASE]`
 
 **Step 1**: Announce deprecation (current version)
 ```
-Release Notes: "pg_tviews_legacy_func() deprecated, use pg_tviews_new_func() instead"
+Release Notes: "pg_tviews_<old>() deprecated, use pg_tviews_<new>() instead"
 ```
 
 **Step 2**: Add deprecation warnings (next version)
 ```sql
 -- v1.1.0
-SELECT pg_tviews_legacy_func();
--- WARNING: pg_tviews_legacy_func() is deprecated
+SELECT pg_tviews_<old>();
+-- WARNING: pg_tviews_<old>() is deprecated
 -- See: docs/migration/v1.1-upgrade-guide.md
 ```
 
 **Step 3**: Remove in next major version (major version only)
 ```
-v2.0.0: pg_tviews_legacy_func() removed
+v2.0.0: pg_tviews_<old>() removed
 ```
 
 ### Timeline Requirement
@@ -107,7 +107,7 @@ v2.0.0: pg_tviews_legacy_func() removed
 
 **Example**:
 ```
-v0.2.0 (Aug 2025): Deprecate pg_tviews_legacy_func()
+v0.2.0 (Aug 2025): Deprecate pg_tviews_<old>()
 v0.3.0 (Oct 2025): Add deprecation warning
 v1.0.0 (Apr 2026): Safe to remove (6+ months)
 ```

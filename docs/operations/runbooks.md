@@ -120,9 +120,9 @@ WHERE tv_your_entity.pk_your_entity = 1;
    CREATE INDEX idx_tv_your_entity_fk_parent ON tv_your_entity(fk_parent);
    ```
 
-3. **Enable statement-level triggers for bulk operations**
+3. **Check the propagation indexes cascades rely on**
    ```sql
-   SELECT pg_tviews_install_stmt_triggers();
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
    ```
 
 4. **Consider flattening deep dependency chains**
@@ -379,8 +379,7 @@ WHERE pg_stat_activity.state = 'active';
 2. **Reduce cascade frequency**
    ```sql
    -- Batch updates instead of individual ones
-   -- Use statement-level triggers for bulk operations
-   SELECT pg_tviews_install_stmt_triggers();
+   -- A bulk statement refreshes each affected row once, at its end
    ```
 
 3. **Scale resources**

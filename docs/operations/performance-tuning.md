@@ -170,8 +170,7 @@ ALTER SYSTEM SET wal_compression = on;
 Enable for maximum bulk performance:
 
 ```sql
--- Install statement-level triggers
-SELECT pg_tviews_install_stmt_triggers();
+-- Every TVIEW has a statement-level trigger: a bulk statement refreshes once
 
 -- Performance impact:
 -- - Single operations: Same performance (~1-2ms)

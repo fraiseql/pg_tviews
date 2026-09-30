@@ -1,5 +1,7 @@
 # Breaking Changes Planned for v2.0
 
+> **Archived.** This plan was never implemented and describes functions pg_tviews does not have; it is kept as history.
+
 ## Summary
 
 pg_tviews v2.0 (planned April 2028) will include the following breaking changes to improve API clarity, reduce complexity, and enhance maintainability:

@@ -555,9 +555,6 @@ SELECT data FROM tv_post;
 ### Enable Advanced Features
 
 ```sql
--- Install statement-level triggers for 100-500× better bulk performance
-SELECT pg_tviews_install_stmt_triggers();
-
 -- Monitor system health
 SELECT * FROM pg_tviews_health_check();
 

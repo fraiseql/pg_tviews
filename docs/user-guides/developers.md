@@ -212,9 +212,6 @@ LIMIT $3;
 Enable for 100-500× better bulk operation performance:
 
 ```sql
--- Enable for bulk operations
-SELECT pg_tviews_install_stmt_triggers();
-
 -- Your application code remains unchanged
 -- Bulk inserts/updates automatically optimized
 ```

@@ -105,8 +105,8 @@ psql -d your_db < tview_metadata_backup.sql
 -- Verify restoration
 SELECT COUNT(*) FROM pg_tview_meta;
 
--- Reinstall triggers (they may be missing)
-SELECT pg_tviews_install_stmt_triggers();
+-- Re-install triggers (they may be missing)
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
 ### Scenario 3: Extension Corruption

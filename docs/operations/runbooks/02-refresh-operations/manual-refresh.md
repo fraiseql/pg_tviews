@@ -78,13 +78,12 @@ WHERE entity_name = 'your_tview_name';
 
 ### Step 2: Refresh Specific Row
 ```sql
--- Refresh only the specific row
--- Note: This function may not be available in all versions
--- Check your pg_tviews version first
-SELECT pg_tviews_refresh_row('your_tview_name', 12345);
+-- pg_tviews refreshes rows when their base rows change: touching the base row
+-- refreshes the TVIEW rows that depend on it, at the end of the statement.
+UPDATE tb_your_entity SET pk_your_entity = pk_your_entity WHERE pk_your_entity = 12345;
 
--- Alternative: Use general refresh with filters if available
-SELECT pg_tviews_refresh('your_tview_name', 12345);
+-- Or recompute the whole TVIEW
+SELECT tviews.pg_tviews_refresh('your_entity');
 ```
 
 ### Step 3: Verify Row Update
@@ -186,10 +185,12 @@ WHERE entity_name = 'your_large_tview';
 -- For very large TVIEWs, refresh in chunks
 -- This is system-dependent - check your pg_tviews capabilities
 
--- Example: Refresh in primary key ranges
-SELECT pg_tviews_refresh_range('your_tview', 1, 10000);
+-- Example: touch the base rows in primary key ranges, one transaction each
+UPDATE tb_your_entity SET pk_your_entity = pk_your_entity
+ WHERE pk_your_entity BETWEEN 1 AND 10000;
 SELECT pg_sleep(10);  -- Allow system to recover
-SELECT pg_tviews_refresh_range('your_tview', 10001, 20000);
+UPDATE tb_your_entity SET pk_your_entity = pk_your_entity
+ WHERE pk_your_entity BETWEEN 10001 AND 20000;
 ```
 
 ### Step 3: Monitor Progress

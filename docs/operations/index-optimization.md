@@ -277,7 +277,7 @@ Use this function to get index suggestions for your TVIEWs:
 
 ```sql
 -- Trinity pattern: All TVIEWs have pk_{entity} (INT PK), id (UUID), data (JSONB)
-CREATE OR REPLACE FUNCTION pg_tviews_suggest_indexes(entity_name TEXT)
+CREATE OR REPLACE FUNCTION suggest_tview_indexes(entity_name TEXT)
 RETURNS TABLE(index_suggestion TEXT, reason TEXT, estimated_benefit TEXT) AS $$
 BEGIN
     -- Check for missing fk_* indexes (foreign keys are integers)
@@ -339,14 +339,14 @@ $$ LANGUAGE plpgsql;
 **Usage**:
 ```sql
 -- Get index suggestions for a specific TVIEW
-SELECT * FROM pg_tviews_suggest_indexes('post');
+SELECT * FROM suggest_tview_indexes('post');
 
 -- Get suggestions for all TVIEWs
 SELECT
     pg_tview_meta.entity,
     suggestions.*
 FROM pg_tview_meta
-CROSS JOIN LATERAL pg_tviews_suggest_indexes(pg_tview_meta.entity) as suggestions;
+CROSS JOIN LATERAL suggest_tview_indexes(pg_tview_meta.entity) as suggestions;
 ```
 
 ---

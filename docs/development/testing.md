@@ -215,8 +215,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO pg_tviews_test_user;
 -- Check trigger status
 SELECT tgname, tgenabled FROM pg_trigger WHERE tgname LIKE '%tview%';
 
--- Reinstall triggers
-SELECT pg_tviews_install_stmt_triggers();
+-- Re-install triggers
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
 ### Test Debugging Tools

@@ -122,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the rebuild worker it configures) now exists only when the library is preloaded; a
   lazily loaded library creates, replaces and refreshes TVIEWs. CI runs
   `test/no_preload/run.sh` on a cluster without the preload.
+- **The docs name only functions pg_tviews has** (#138). README, INTEGRATION_GUIDE and
+  `docs/` described 33 functions no release shipped (`pg_tviews_install_stmt_triggers`,
+  `pg_tviews_refresh_one`, `pg_tviews_commit_prepared`, `pg_tviews_metadata`, …). Their
+  passages now use the real functions (statement-level triggers are installed with
+  every TVIEW; two-phase commit needs no call; `tviews.registry` replaces the metadata
+  function) or are gone; the never-implemented v2.0 plans moved to `docs/archive/`.
+  `test/sql/regress_issue_138_documented_functions.sql` fails CI when a published doc
+  names a `pg_tviews_*` function that `CREATE EXTENSION` does not create.
 - **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
   orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
   looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an
