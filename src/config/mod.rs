@@ -22,6 +22,7 @@
 //! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path (issue #56) |
 //! | `pg_tviews.data_gin_index` | bool | false | GIN index on `data` for new TVIEWs |
 //! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
+//! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
 //!
 //! ## Compile-time Constants
 //!
@@ -59,6 +60,8 @@ static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static DATA_GIN_INDEX_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static FILLFACTOR_GUC: GucSetting<i32> = GucSetting::<i32>::new(85);
+static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
+    GucSetting::<Option<std::ffi::CString>>::new(None);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -156,7 +159,9 @@ pub fn register_gucs() {
     GucRegistry::define_bool_guc(
         c"pg_tviews.unlogged_by_default",
         c"Create TVIEW tables as UNLOGGED by default.",
-        c"When true, new TVIEWs are created as UNLOGGED tables for better write performance.",
+        c"When true, new TVIEWs are created as UNLOGGED tables for better write performance. \
+          A hot standby cannot read an UNLOGGED table, and promotion or a crash restart \
+          empties it: turn this off for TVIEWs served from replicas.",
         &UNLOGGED_BY_DEFAULT_GUC,
         GucContext::Userset,
         GucFlags::default(),
@@ -182,6 +187,17 @@ pub fn register_gucs() {
         10,  // min (PostgreSQL's own lower bound for heap fillfactor)
         100, // max
         GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_string_guc(
+        c"pg_tviews.auto_rebuild_databases",
+        c"Databases whose emptied UNLOGGED TVIEWs are rebuilt once recovery finishes.",
+        c"Comma-separated database names. For each one a background worker runs \
+          pg_tviews_rebuild_all() at startup, after a crash restart and on promotion. \
+          Empty (the default) starts no worker. Requires a server restart.",
+        &AUTO_REBUILD_DATABASES_GUC,
+        GucContext::Postmaster,
         GucFlags::default(),
     );
 
@@ -249,6 +265,22 @@ pub fn register_gucs() {
 #[must_use]
 pub fn max_propagation_depth() -> usize {
     MAX_PROPAGATION_DEPTH_GUC.get().unsigned_abs() as usize
+}
+
+/// Database names listed in `pg_tviews.auto_rebuild_databases`.
+#[must_use]
+pub fn auto_rebuild_databases() -> Vec<String> {
+    AUTO_REBUILD_DATABASES_GUC
+        .get()
+        .and_then(|s| s.to_str().ok().map(str::to_string))
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Check if graph caching is enabled

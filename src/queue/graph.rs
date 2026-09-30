@@ -34,7 +34,6 @@ pub struct EntityDepGraph {
 
     /// Child relationships: entity -> list of entities it depends on
     /// Example: "post" -> `["user"]`
-    #[allow(dead_code)] // Reason: public API for graph introspection; populated during load()
     pub children: HashMap<String, Vec<String>>,
 
     /// Topological order (refresh from low to high dependency)
