@@ -227,13 +227,17 @@ impl EntityDepGraph {
             groups.entry(key.entity.clone()).or_default().push(key);
         }
 
-        // Emit groups in topological order
+        // Emit groups in topological order, then any entity the graph does not
+        // know (never drop a key)
         let mut sorted_keys = Vec::new();
         for entity in &self.topo_order {
             if let Some(ks) = groups.remove(entity) {
                 sorted_keys.extend(ks);
             }
         }
+        let mut rest: Vec<_> = groups.into_iter().collect();
+        rest.sort_by(|a, b| a.0.cmp(&b.0));
+        sorted_keys.extend(rest.into_iter().flat_map(|(_, ks)| ks));
 
         sorted_keys
     }
@@ -261,54 +265,60 @@ fn source_columns_by_fk(paths: &[CascadePath]) -> HashMap<String, Vec<String>> {
     out
 }
 
-/// Topological sort using Kahn's algorithm
+/// Topological sort using Kahn's algorithm, dependencies first.
+///
+/// `depends_on[x]` lists the entities `x` reads (its `fk_<entity>` embeds); `x` is
+/// emitted after all of them. Dependencies that are not TVIEWs (an `fk_<name>` with
+/// no `<name>` TVIEW) are ignored.
 fn topological_sort(
     entities: &HashSet<String>,
-    children: &HashMap<String, Vec<String>>,
+    depends_on: &HashMap<String, Vec<String>>,
 ) -> TViewResult<Vec<String>> {
-    // Calculate in-degree for each entity
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    // In-degree: how many TVIEW dependencies each entity still waits for.
+    // `dependents[d]` lists the entities waiting on `d`.
+    let mut in_degree: HashMap<&str, usize> = entities.iter().map(|e| (e.as_str(), 0)).collect();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
     for entity in entities {
-        in_degree.insert(entity.clone(), 0);
-    }
-
-    for deps in children.values() {
+        let deps: HashSet<&str> = depends_on
+            .get(entity)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|d| entities.contains(*d))
+            .collect();
         for dep in deps {
-            *in_degree.entry(dep.clone()).or_insert(0) += 1;
+            *in_degree.entry(entity.as_str()).or_insert(0) += 1;
+            dependents.entry(dep).or_default().push(entity.as_str());
         }
     }
 
-    // Start with entities that have no dependencies
-    let mut queue: VecDeque<String> = VecDeque::new();
-    for (entity, &degree) in &in_degree {
-        if degree == 0 {
-            queue.push_back(entity.clone());
-        }
-    }
+    // Start with entities that have no dependencies (sorted: a deterministic order)
+    let mut ready: Vec<&str> = in_degree
+        .iter()
+        .filter(|&(_, &degree)| degree == 0)
+        .map(|(&e, _)| e)
+        .collect();
+    ready.sort_unstable();
+    let mut queue: VecDeque<&str> = ready.into();
 
-    let mut result = Vec::new();
-
+    let mut result = Vec::with_capacity(entities.len());
     while let Some(entity) = queue.pop_front() {
-        result.push(entity.clone());
+        result.push(entity.to_string());
 
-        // Find entities that depend on this one
-        if let Some(parents) = children.get(&entity) {
-            for parent in parents {
-                if let Some(degree) = in_degree.get_mut(parent) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push_back(parent.clone());
-                    }
+        let mut unblocked = Vec::new();
+        for &dependent in dependents.get(entity).into_iter().flatten() {
+            if let Some(degree) = in_degree.get_mut(dependent) {
+                *degree -= 1;
+                if *degree == 0 {
+                    unblocked.push(dependent);
                 }
             }
         }
+        unblocked.sort_unstable();
+        queue.extend(unblocked);
     }
 
-    // Check for cycles (only count entities in the original set;
-    // FK references to non-TVIEW entities like "user" are external and shouldn't
-    // cause cycle detection failures)
-    let result_in_set = result.iter().filter(|e| entities.contains(*e)).count();
-    if result_in_set != entities.len() {
+    if result.len() != entities.len() {
         return Err(crate::TViewError::DependencyCycle {
             entities: entities.iter().cloned().collect(),
         });
@@ -361,35 +371,90 @@ mod tests {
         assert!(first_user < first_post);
     }
 
+    fn depends_on(edges: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for (entity, dep) in edges {
+            map.entry((*entity).to_string())
+                .or_default()
+                .push((*dep).to_string());
+        }
+        map
+    }
+
+    fn entity_set(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|&s| s.to_string()).collect()
+    }
+
     #[test]
     fn test_topological_sort() {
-        // Entity graph:
-        // company -> user -> post -> feed
-        // (`children[x]` lists the entities that must be refreshed after `x`)
+        // feed reads post, post reads user, user reads company — the orientation
+        // `EntityDepGraph::load` records (`children[x]` = what `x` depends on).
+        let entities = entity_set(&["company", "user", "post", "feed"]);
+        let edges = depends_on(&[("user", "company"), ("post", "user"), ("feed", "post")]);
 
-        let entities: HashSet<String> = ["company", "user", "post", "feed"]
-            .iter()
-            .map(|&s| s.to_string())
-            .collect();
+        let topo = topological_sort(&entities, &edges).unwrap();
 
-        let mut children: HashMap<String, Vec<String>> = HashMap::new();
-        children.insert("company".to_string(), vec!["user".to_string()]);
-        children.insert("user".to_string(), vec!["post".to_string()]);
-        children.insert("post".to_string(), vec!["feed".to_string()]);
+        assert_eq!(topo, ["company", "user", "post", "feed"]);
+    }
 
-        let topo = topological_sort(&entities, &children).unwrap();
+    #[test]
+    fn topological_sort_diamond_puts_shared_dependency_first() {
+        // report reads post and comment; both read user.
+        let entities = entity_set(&["report", "post", "comment", "user"]);
+        let edges = depends_on(&[
+            ("report", "post"),
+            ("report", "comment"),
+            ("post", "user"),
+            ("comment", "user"),
+        ]);
 
-        // Valid topological orders:
-        // ["company", "user", "post", "feed"]
-        // Check that company comes before user, user before post, etc.
-        let company_idx = topo.iter().position(|e| e == "company").unwrap();
-        let user_idx = topo.iter().position(|e| e == "user").unwrap();
-        let post_idx = topo.iter().position(|e| e == "post").unwrap();
-        let feed_idx = topo.iter().position(|e| e == "feed").unwrap();
+        let topo = topological_sort(&entities, &edges).unwrap();
 
-        assert!(company_idx < user_idx);
-        assert!(user_idx < post_idx);
-        assert!(post_idx < feed_idx);
+        assert_eq!(topo, ["user", "comment", "post", "report"]);
+    }
+
+    #[test]
+    fn topological_sort_ignores_dependencies_that_are_not_tviews() {
+        // post has fk_user but there is no user TVIEW.
+        let entities = entity_set(&["post", "comment"]);
+        let edges = depends_on(&[("post", "user"), ("comment", "post")]);
+
+        let topo = topological_sort(&entities, &edges).unwrap();
+
+        assert_eq!(topo, ["post", "comment"]);
+    }
+
+    #[test]
+    fn topological_sort_rejects_cycles() {
+        let entities = entity_set(&["a", "b"]);
+        let edges = depends_on(&[("a", "b"), ("b", "a")]);
+
+        assert!(topological_sort(&entities, &edges).is_err());
+    }
+
+    #[test]
+    fn sort_keys_keeps_entities_missing_from_the_graph() {
+        let graph = EntityDepGraph {
+            parents: HashMap::new(),
+            children: HashMap::new(),
+            document_edges: HashSet::new(),
+            topo_order: vec!["user".into()],
+            lookup_columns: HashMap::new(),
+        };
+        let keys = vec![
+            super::super::key::RefreshKey::pk("unknown", 1),
+            super::super::key::RefreshKey::pk("user", 2),
+        ];
+
+        let sorted = graph.sort_keys(keys);
+
+        assert_eq!(
+            sorted,
+            [
+                super::super::key::RefreshKey::pk("user", 2),
+                super::super::key::RefreshKey::pk("unknown", 1),
+            ]
+        );
     }
 }
 

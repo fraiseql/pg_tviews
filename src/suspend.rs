@@ -101,6 +101,8 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
         queue.extend(graph.parents.get(&entity).cloned().unwrap_or_default());
         order.push(entity);
     }
+    // A TVIEW whose view reads another tv_* table is rebuilt after it.
+    order.sort_by_key(|e| graph.topo_order.iter().position(|t| t == e));
     for entity in &order {
         let args = [unsafe {
             pgrx::datum::DatumWithOid::new(

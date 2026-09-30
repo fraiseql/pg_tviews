@@ -112,6 +112,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `jsonb_smart_patch_*` calls are qualified with `jsonb_delta`'s schema, so refresh also
   works under `search_path = pg_catalog`. `pg_tviews_performance_stats()` reads each
   TVIEW through its OID (it used to fail on its own row count query).
+- **TVIEWs refresh dependencies first** (#124). `topo_order` came out dependents-first
+  and the flush regrouped keys into a hash map, so when one flush held keys of a TVIEW
+  and of a TVIEW whose view reads its `tv_*` table (e.g. an application trigger on
+  `tb_post` updating `tb_user`), the reader could be refreshed from the old row and was
+  then skipped as already processed: 2 of 8 such updates left `tv_post` stale. The
+  flush now refreshes one entity at a time in dependency order, so every key is
+  refreshed once, after everything it reads. `pg_tviews_resume_triggers()` rebuilds in
+  that order too, and so does `pg_tviews_refresh_all_entities()` (it used catalog order).
+- **`pg_tviews_refresh_all()` works** (#124). It read a `pg_tview_refresh_queue` table
+  that does not exist and always failed. It now rebuilds every TVIEW, dependencies
+  first, and returns `refreshed_count`, `order` and `duration_ms` (`queued_count` is gone).
 - **`pg_tviews_suspend_triggers()` / `pg_tviews_resume_triggers()` work** (#44). The row
   trigger only honoured the `pg_tviews.suspend_triggers` GUC, so the functions suspended
   nothing, and resuming enqueued pk 0, which refreshes nothing. Suspension now skips

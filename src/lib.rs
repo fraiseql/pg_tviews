@@ -102,6 +102,8 @@ pub fn pg_tviews_resume_triggers() {
     }
 }
 
+/// Rebuild every TVIEW, dependencies first, and report how many were rebuilt,
+/// in which order, and how long it took.
 #[pg_extern]
 pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
     if crate::suspend::is_suspended() {
@@ -109,78 +111,13 @@ pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
     }
 
     let start = std::time::Instant::now();
-
-    // Read queued entities
-    let queued_entities =
-        read_queued_entities().map_err(|e| format!("Failed to read queue: {e:?}"))?;
-    let queued_count = queued_entities.len();
-
-    if queued_count == 0 {
-        return Ok(pgrx::datum::JsonB(serde_json::json!({
-            "refreshed_count": 0,
-            "queued_count": 0,
-            "duration_ms": start.elapsed().as_millis(),
-        })));
-    }
-
-    // Load graph and sort
-    let graph = crate::queue::graph::EntityDepGraph::load()
-        .map_err(|e| format!("Failed to load dependency graph: {e:?}"))?;
-    let sorted_entities: Vec<String> = graph
-        .topo_order
-        .into_iter()
-        .filter(|e| queued_entities.contains(e))
-        .collect();
-
-    // Refresh each
-    let mut refreshed_count = 0;
-    for entity in &sorted_entities {
-        if let Err(e) = refresh_entity(entity) {
-            warning!("Failed to refresh entity {}: {:?}", entity, e);
-            continue;
-        }
-        refreshed_count += 1;
-    }
-
-    // Clear queue
-    clear_refresh_queue()?;
-
-    let duration_ms = start.elapsed().as_millis();
+    let order = crate::admin::refresh_all_in_dependency_order().map_err(|e| e.to_string())?;
 
     Ok(pgrx::datum::JsonB(serde_json::json!({
-        "refreshed_count": refreshed_count,
-        "queued_count": queued_count,
-        "duration_ms": duration_ms,
+        "refreshed_count": order.len(),
+        "order": order,
+        "duration_ms": start.elapsed().as_millis(),
     })))
-}
-
-fn read_queued_entities() -> pgrx::spi::SpiResult<std::collections::HashSet<String>> {
-    Spi::connect(|client| {
-        let rows = client.select(
-            "SELECT DISTINCT entity FROM pg_tview_refresh_queue",
-            None,
-            &[],
-        )?;
-        let mut entities = std::collections::HashSet::new();
-        for row in rows {
-            if let Some(entity) = row["entity"].value::<String>()? {
-                entities.insert(entity);
-            } else {
-                error!("entity column is NULL in pg_tview_refresh_queue");
-            }
-        }
-        Ok(entities)
-    })
-}
-
-fn refresh_entity(entity: &str) -> Result<(), String> {
-    Spi::run(&format!("SELECT pg_tviews_refresh('{entity}')"))
-        .map_err(|e| format!("Full refresh failed for {entity}: {e:?}"))
-}
-
-fn clear_refresh_queue() -> Result<(), String> {
-    Spi::run("DELETE FROM pg_tview_refresh_queue")
-        .map_err(|e| format!("Failed to clear queue: {e:?}"))
 }
 
 #[pg_extern]
@@ -389,9 +326,6 @@ mod tests {
             json.0.get("refreshed_count").is_some(),
             "Should have refreshed_count"
         );
-        assert!(
-            json.0.get("queued_count").is_some(),
-            "Should have queued_count"
-        );
+        assert!(json.0.get("order").is_some(), "Should have order");
     }
 }

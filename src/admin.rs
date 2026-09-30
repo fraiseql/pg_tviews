@@ -180,7 +180,7 @@ fn pg_tviews_ensure_propagation_indexes(
     Ok(SetOfIterator::new(missing))
 }
 
-/// Refresh all TVIEWs in the database.
+/// Refresh all TVIEWs in the database, dependencies first.
 /// This is a convenience function for bulk operations like schema migrations
 /// or data seeding workflows.
 ///
@@ -188,24 +188,27 @@ fn pg_tviews_ensure_propagation_indexes(
 /// Returns error if any TVIEW cannot be refreshed
 #[pg_extern]
 fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
-    use crate::catalog::TviewMeta;
-
-    // Get all TVIEW metadata
-    let all_tviews = TviewMeta::load_all()?;
-
-    if all_tviews.is_empty() {
+    let order = refresh_all_in_dependency_order()?;
+    if order.is_empty() {
         info!("No TVIEWs found to refresh");
-        return Ok(());
+    } else {
+        info!("Successfully refreshed {} TVIEWs", order.len());
     }
-
-    // Refresh all TVIEWs (simplified - no complex dependency ordering needed for bulk refresh)
-    for meta in &all_tviews {
-        info!("Refreshing TVIEW for entity: {}", meta.entity_name);
-        pg_tviews_refresh(&meta.entity_name)?;
-    }
-
-    info!("Successfully refreshed {} TVIEWs", all_tviews.len());
     Ok(())
+}
+
+/// Rebuild every TVIEW from its backing view in dependency order: a TVIEW whose
+/// view reads another `tv_*` table is rebuilt after it. Returns the entities in
+/// the order they were rebuilt.
+///
+/// # Errors
+/// Returns error if the dependency graph cannot be loaded or a rebuild fails.
+pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
+    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    for entity in &graph.topo_order {
+        pg_tviews_refresh(entity)?;
+    }
+    Ok(graph.topo_order)
 }
 
 /// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
