@@ -114,10 +114,10 @@ fn infer_array_element_type(array_expr: &str) -> String {
     "UUID[]".to_string()
 }
 
-/// Find the matching closing parenthesis
+/// Find the parenthesis closing an already-opened group (`s` starts just after the `(`)
 fn find_matching_paren(s: &str) -> Option<usize> {
-    let mut depth = 0;
-    for (i, c) in s.chars().enumerate() {
+    let mut depth = 1;
+    for (i, c) in s.char_indices() {
         match c {
             '(' => depth += 1,
             ')' => {

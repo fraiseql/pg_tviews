@@ -18,6 +18,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 ```
 
+The toolchain is pinned in `rust-toolchain.toml` (rustup installs it on first
+`cargo` call). Local runs and CI use the same compiler; bump the pin in a
+dedicated PR.
+
 ### 2. Install PostgreSQL
 
 **Ubuntu/Debian:**
@@ -156,8 +160,18 @@ cargo pgrx test pg17
 ### Running Tests
 
 ```bash
-# Run only Rust unit tests (no PostgreSQL required)
-cargo test --lib
+# Run the pure-Rust unit tests (what CI's `unit` job runs). PostgreSQL symbols
+# only resolve inside a server, so let the linker ignore them.
+RUSTFLAGS="-C link-arg=-Wl,--unresolved-symbols=ignore-all" \
+  cargo test --lib --no-default-features --features pg18 -- --skip pg_test_
+# Always keep `--skip pg_test_`: a matching #[pg_test] makes pgrx reinstall a
+# pg_test build of the extension, after which CREATE EXTENSION fails until you
+# re-run `cargo pgrx install`. Use a separate CARGO_TARGET_DIR to keep the main
+# build cache valid.
+
+# Lint and format (both enforced in CI)
+cargo clippy --no-default-features --features pg18 --all-targets -- -D warnings
+cargo fmt --check
 
 # Run pgrx integration tests (requires PostgreSQL)
 cargo pgrx test pg17

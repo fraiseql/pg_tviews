@@ -144,6 +144,8 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
 
             clear_queue();
+            crate::hooks::discard_pending_ctas();
+            crate::hooks::release_hook_guard_on_abort(true);
             super::patch::clear_patch_map();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
@@ -192,6 +194,11 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
                 decrement_savepoint_depth();
+
+                // A CTAS that failed inside this subtransaction never reached the event
+                // trigger; its pending SELECT must not leak into a later statement.
+                crate::hooks::discard_pending_ctas();
+                crate::hooks::release_hook_guard_on_abort(false);
 
                 // Restore queue from snapshot
                 if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
