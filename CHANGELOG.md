@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   - `docs/operations/replication.md` states the contract.
   - CI runs `test/replication/promote_rebuild.sh` against a real standby.
 
+### Changed
+
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
+
+### Deprecated
+
+- **`pg_tviews_convert_existing_table()` now raises a deprecation error** (#90). It failed
+  on PG18 with a Datum type error and, by design, replaced the table with a view over a
+  literal `VALUES` snapshot (no triggers, no refresh). Use `pg_tviews_create()` or
+  `CREATE TABLE tv_<entity> AS SELECT ...`. The function is removed in the next breaking
+  release.
+
+### Removed
+
+- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
+  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
+
 ### Fixed
 
 - **Normal DDL is quiet again (#92).** `CREATE TABLE tv_*`, CTAS and `pg_tviews_create` no
@@ -68,17 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   with `relation "<tview schema>.<table>" does not exist`.
 - The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
   rows.
-
-### Changed
-
-- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
-  `oid`, so a dump stores them as names (#96). They now print as relation names;
-  cast with `::oid` to get the number. Comparisons with an `oid` still work.
-
-### Removed
-
-- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
-  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
 
 ## [0.1.0-beta.18] - 2026-09-30
 
