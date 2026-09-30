@@ -1,0 +1,43 @@
+# Aggregate TVIEWs
+
+An aggregate TVIEW materializes the `GROUP BY` groups of its source tables: one row per
+group, keyed by `pk_<entity>`. It has no `tb_<entity>` table of its own.
+
+```sql
+SELECT pg_tviews_create_aggregate('tv_user_summary', $$
+    SELECT o.fk_user AS pk_user_summary,
+           u.id,
+           jsonb_build_object('name', u.name, 'orders', count(*), 'total', sum(o.total)) AS data
+    FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
+    GROUP BY o.fk_user, u.id, u.name
+$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+```
+
+The third argument, `group_keys`, names for each source table the column whose value
+**is** the group key: a change to a `tb_order` row affects the group `fk_user`, a change
+to a `tb_user` row the group `pk_user`. Tables not listed do not refresh the aggregate.
+
+## How it stays in sync
+
+A write to a listed source table refreshes the groups its row belongs to, before and
+after the write: an UPDATE that moves an order to another user refreshes both users.
+Each touched group is recomputed from the backing view `v_<entity>`: a group that
+appears is inserted, one that changes is updated, one that empties is deleted.
+
+The refresh narrows the aggregate with `WHERE pk_<entity> = ANY(…)`, which PostgreSQL
+pushes below the `GROUP BY`, so only the touched groups are aggregated. The cost of a
+write is therefore the cost of recomputing its group: small groups are cheap, a group
+with millions of rows is recomputed in full on every write to it
+(`pg_tviews_profile()` reports the fan-out).
+
+## Rules
+
+- The definition is a single `SELECT … GROUP BY` (no UNION).
+- `pk_<entity>` is a plain column that is also a `GROUP BY` key (not an expression).
+- No window functions (`OVER (…)`): a window spans rows of other groups, so a group
+  cannot be recomputed on its own.
+- Every table in `group_keys` must be read by the definition and have the named column.
+- Renaming a group key column keeps the aggregate maintained (`group_keys` follows).
+
+A regular TVIEW that embeds `v_<summary>.data` is not refreshed when the summary
+changes; join the source tables directly instead.

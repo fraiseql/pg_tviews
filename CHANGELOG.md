@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out
   per `fk_*`) with a `warnings` column. Read-only and callable on a standby; the columns
   are a stable contract (`docs/reference/profile.md`).
+- **Aggregate TVIEWs** (#58): `pg_tviews_create_aggregate(tview_name, select_sql,
+  group_keys)` materializes the `GROUP BY` groups of its source tables, keyed by
+  `pk_<entity>`, with no `tb_<entity>`. `group_keys` names, per source table, the column
+  whose value is the group key; each write refreshes the groups of its row (both when
+  it moves), inserting new groups and deleting emptied ones. Window functions and
+  expression keys are rejected. See `docs/user-guides/aggregate-tviews.md`.
 
 - **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
   an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
