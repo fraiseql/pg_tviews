@@ -233,7 +233,10 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
 fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
     Spi::connect(|client| {
         let rows = client.select(
-            "SELECT table_oid::oid AS table_oid FROM pg_tview_meta",
+            &format!(
+                "SELECT table_oid::oid AS table_oid FROM {}",
+                crate::utils::meta_table()
+            ),
             None,
             &[],
         )?;

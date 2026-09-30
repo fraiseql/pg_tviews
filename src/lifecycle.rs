@@ -4,11 +4,11 @@ use pgrx::PgBuiltInOids;
 use pgrx::PgOid;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
-// Static cache for jsonb_delta availability (performance optimization)
-static JSONB_IVM_AVAILABLE: AtomicBool = AtomicBool::new(false);
-static JSONB_IVM_CHECKED: AtomicBool = AtomicBool::new(false);
+/// Cached `jsonb_delta` lookup: whether it ran, and the quoted schema the
+/// extension is installed in (`None` when it is not installed).
+static JSONB_DELTA_SCHEMA: Mutex<(bool, Option<String>)> = Mutex::new((false, None));
 
 /// Get the version of the `pg_tviews` extension
 #[pg_extern]
@@ -28,32 +28,40 @@ const fn pg_tviews_hook_status() -> &'static str {
 ///
 /// This function caches the result after the first check to avoid
 /// repeated queries to `pg_extension` on every cascade operation.
+#[must_use]
 pub fn check_jsonb_delta_available() -> bool {
-    if JSONB_IVM_CHECKED.load(Ordering::Relaxed) {
-        return JSONB_IVM_AVAILABLE.load(Ordering::Relaxed);
+    jsonb_delta_schema().is_some()
+}
+
+/// Quoted schema of the `jsonb_delta` extension (cached), `None` when it is not
+/// installed. Patch calls are qualified with it so they do not depend on the
+/// session's `search_path`.
+pub fn jsonb_delta_schema() -> Option<String> {
+    let mut cache = JSONB_DELTA_SCHEMA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.0 {
+        return cache.1.clone();
     }
 
-    let result: Result<bool, spi::Error> = Spi::connect(|client| {
-        let rows = client.select(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta')",
-            None,
-            &[],
-        )?;
+    let schema = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT pg_catalog.quote_ident(n.nspname) \
+                 FROM pg_catalog.pg_extension e \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
+                 WHERE e.extname = 'jsonb_delta'",
+                None,
+                &[],
+            )?
+            .first()
+            .get_one::<String>()
+    })
+    .ok()
+    .flatten();
 
-        for row in rows {
-            if let Some(exists) = row[1].value::<bool>()? {
-                return Ok(exists);
-            }
-        }
-        Ok(false)
-    });
-
-    let is_available = result.unwrap_or(false);
-
-    JSONB_IVM_AVAILABLE.store(is_available, Ordering::Relaxed);
-    JSONB_IVM_CHECKED.store(true, Ordering::Relaxed);
-
-    is_available
+    *cache = (true, schema.clone());
+    schema
 }
 
 /// Detect and recover from post-crash truncation of UNLOGGED TVIEW tables.
@@ -72,7 +80,10 @@ pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bo
     if detect_post_crash_truncation(entity_name)? {
         // Perform full refresh of the TVIEW
         Spi::run_with_args(
-            "SELECT pg_tviews_refresh($1)",
+            &format!(
+                "SELECT {}.pg_tviews_refresh($1)",
+                crate::utils::ext_schema()
+            ),
             &[unsafe {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }],
@@ -109,8 +120,9 @@ fn pg_tviews_check_jsonb_delta() -> bool {
 /// Reset the `jsonb_delta` availability cache
 /// Called during cache invalidation when the extension is created or dropped
 pub fn invalidate_jsonb_delta_cache() {
-    JSONB_IVM_CHECKED.store(false, Ordering::Relaxed);
-    JSONB_IVM_AVAILABLE.store(false, Ordering::Relaxed);
+    *JSONB_DELTA_SCHEMA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = (false, None);
 }
 
 /// Initialize the extension

@@ -53,12 +53,11 @@ fn pg_tviews_health_check() -> TableIterator<
     }
 
     // Check 3: Metadata consistency
-    let orphaned_meta = Spi::get_one::<i64>(
-        "SELECT COUNT(*) FROM pg_tview_meta m
-         WHERE NOT EXISTS (
-           SELECT 1 FROM pg_class WHERE relname::text = 'tv_' || m.entity
-         )",
-    )
+    let orphaned_meta = Spi::get_one::<i64>(&format!(
+        "SELECT COUNT(*) FROM {} m
+         WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
+        crate::utils::meta_table()
+    ))
     .unwrap_or(Some(0))
     .unwrap_or(0);
 
@@ -79,14 +78,15 @@ fn pg_tviews_health_check() -> TableIterator<
     }
 
     // Check 4: Orphaned triggers
-    let orphaned_triggers = Spi::get_one::<i64>(
+    let orphaned_triggers = Spi::get_one::<i64>(&format!(
         "SELECT COUNT(*) FROM pg_trigger
          WHERE tgname LIKE 'tview_%'
            AND tgrelid NOT IN (
              SELECT ('tb_' || entity)::regclass::oid
-             FROM pg_tview_meta
+             FROM {}
            )",
-    )
+        crate::utils::meta_table()
+    ))
     .unwrap_or(Some(0))
     .unwrap_or(0);
 
@@ -107,9 +107,12 @@ fn pg_tviews_health_check() -> TableIterator<
     }
 
     // Check 5: TVIEW count
-    let tview_count = Spi::get_one::<i64>("SELECT COUNT(*) FROM pg_tview_meta")
-        .unwrap_or(Some(0))
-        .unwrap_or(0);
+    let tview_count = Spi::get_one::<i64>(&format!(
+        "SELECT COUNT(*) FROM {}",
+        crate::utils::meta_table()
+    ))
+    .unwrap_or(Some(0))
+    .unwrap_or(0);
 
     results.push((
         "OK".to_string(),
@@ -184,18 +187,22 @@ fn pg_tviews_performance_stats() -> TableIterator<
         name!(index_count, i32),
     ),
 > {
-    let query = "
-        SELECT
-            pg_tview_meta.entity,
-            pg_size_pretty(pg_relation_size('tv_' || pg_tview_meta.entity)) as table_size,
-            pg_size_pretty(pg_total_relation_size('tv_' || pg_tview_meta.entity)) as total_size,
-            (SELECT COUNT(*) FROM ('tv_' || pg_tview_meta.entity)::regclass) as row_count,
-            (SELECT COUNT(*)::int FROM pg_indexes WHERE tablename = 'tv_' || pg_tview_meta.entity) as index_count
-        FROM pg_tview_meta
-        ORDER BY pg_relation_size('tv_' || pg_tview_meta.entity) DESC
-    ";
+    // The TVIEW table is read through its catalog OID, so any schema works.
+    let query = format!(
+        "SELECT
+            m.entity,
+            pg_size_pretty(pg_relation_size(m.table_oid)) as table_size,
+            pg_size_pretty(pg_total_relation_size(m.table_oid)) as total_size,
+            (xpath('/row/c/text()', query_to_xml(
+                format('SELECT count(*) AS c FROM %s', m.table_oid), false, true, '')))[1]::text::bigint
+                as row_count,
+            (SELECT COUNT(*)::int FROM pg_index WHERE indrelid = m.table_oid) as index_count
+        FROM {} m
+        ORDER BY pg_relation_size(m.table_oid) DESC",
+        crate::utils::meta_table()
+    );
 
-    let results = Spi::connect(|client| match client.select(query, None, &[]) {
+    let results = Spi::connect(|client| match client.select(&query, None, &[]) {
         Ok(rows) => {
             let mut stats = Vec::new();
             for row in rows {

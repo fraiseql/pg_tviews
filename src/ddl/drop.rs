@@ -112,7 +112,10 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
         DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
     }];
     Spi::get_one_with_args::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = $1",
+        &format!(
+            "SELECT COUNT(*) > 0 FROM {} WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
         &args,
     )
     .map_err(|e| TViewError::CatalogError {
@@ -132,11 +135,13 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             },
         ];
-    Spi::run_with_args("DELETE FROM pg_tview_meta WHERE entity = $1", &args).map_err(|e| {
-        TViewError::SpiError {
-            query: "DELETE FROM pg_tview_meta WHERE entity = $1".to_string(),
-            error: e.to_string(),
-        }
+    let sql = format!(
+        "DELETE FROM {} WHERE entity = $1",
+        crate::utils::meta_table()
+    );
+    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
+        query: sql.clone(),
+        error: e.to_string(),
     })?;
 
     Ok(())

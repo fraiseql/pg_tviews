@@ -544,7 +544,10 @@ pub fn reregister_metadata(
 /// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
 fn stored_group_keys(entity_name: &str) -> TViewResult<Option<super::aggregate::GroupKeys>> {
     let stored: Option<pgrx::JsonB> = Spi::get_one_with_args(
-        "SELECT group_keys FROM pg_tview_meta WHERE entity = $1",
+        &format!(
+            "SELECT group_keys FROM {} WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
         &[unsafe {
             DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }],
@@ -828,7 +831,10 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     }];
 
     Spi::get_one_with_args::<bool>(
-        "SELECT COUNT(*) > 0 FROM pg_tview_meta WHERE entity = $1",
+        &format!(
+            "SELECT COUNT(*) > 0 FROM {} WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
         &args,
     )
     .map_err(|e| TViewError::CatalogError {
@@ -1595,8 +1601,9 @@ fn register_metadata(
     };
 
     // Insert metadata record (entity + definition parameterized; OIDs and array literals are safe internal values)
+    let meta = crate::utils::meta_table();
     let insert_meta_sql = format!(
-        "INSERT INTO pg_tview_meta (
+        "INSERT INTO {meta} (
             entity,
             view_oid,
             table_oid,

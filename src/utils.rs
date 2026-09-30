@@ -134,8 +134,7 @@ pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
 /// ## Key Functions
 ///
 /// - `extract_pk()`: Primary key extraction from trigger data
-/// - `relname_from_oid()`: Table/view name lookup by OID
-/// - `lookup_view_for_source()`: View OID resolution
+/// - `qualified_relname_from_oid()`: Schema-qualified relation name by OID
 ///
 /// ## Design Principles
 ///
@@ -221,30 +220,17 @@ pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
     }
 }
 
-/// Look up the view name from an OID
-/// Used to find the backing view (`v_entity`) for a TVIEW
-pub fn lookup_view_for_source(view_oid: Oid) -> spi::Result<String> {
-    // Simply get the relation name from pg_class
-    relname_from_oid(view_oid)
-}
-
-/// Global cache for OID → relname mappings
-/// OID→relname mappings are stable within a session (only change on DDL)
-static OID_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 /// Global cache for OID → qualified relname mappings (schema-qualified)
-/// Populated by `qualified_relname_from_oid`; invalidated alongside `OID_RELNAME_CACHE`.
+/// Populated by `qualified_relname_from_oid`; invalidated on DDL.
 static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Invalidate the OID→relname caches (both bare and schema-qualified).
+/// Invalidate the OID→qualified relname cache and the extension schema.
 /// Called when DDL creates/drops tables.
 pub fn invalidate_oid_relname_cache() {
-    OID_RELNAME_CACHE
+    *EXT_SCHEMA_CACHE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     OID_QUALIFIED_RELNAME_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -293,57 +279,6 @@ pub fn bound_cache<K, V>(cache: &mut HashMap<K, V>) {
     if cache.len() >= crate::config::cache_size() {
         cache.clear();
     }
-}
-
-/// Look up the TVIEW table name given its OID (from `pg_tview_meta`).
-/// Results are cached per session to avoid repeated `pg_class` queries.
-pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
-    // Fast path: check cache
-    {
-        let cache = OID_RELNAME_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(name) = cache.get(&oid) {
-            return Ok(name.clone());
-        }
-    }
-
-    // Slow path: query and cache
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let name: String = Spi::connect(|client| {
-        let args =
-            vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
-        let mut rows = client.select(
-            "SELECT relname::text AS relname FROM pg_class WHERE oid = $1",
-            None,
-            &args,
-        )?;
-
-        if let Some(row) = rows.next() {
-            row["relname"].value::<String>()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1"
-                        .to_string(),
-                    error: "relname column is NULL".to_string(),
-                })
-            })
-        } else {
-            Err(spi::Error::from(crate::TViewError::SpiError {
-                query: "SELECT relname::text AS relname FROM pg_class WHERE oid = $1".to_string(),
-                error: format!("No pg_class entry for oid: {oid:?}"),
-            }))
-        }
-    })?;
-
-    // Cache the result (bounded by pg_tviews.cache_size)
-    {
-        let mut cache = OID_RELNAME_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        bound_cache(&mut cache);
-        cache.insert(oid, name.clone());
-    }
-    Ok(name)
 }
 
 /// Look up the schema-qualified, properly-quoted name for a relation OID.
@@ -400,6 +335,52 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
         cache.insert(oid, qname.clone());
     }
     Ok(qname)
+}
+
+/// Quoted schema of the `pg_tviews` extension, resolved once per backend.
+/// Invalidated with the relname caches.
+static EXT_SCHEMA_CACHE: Mutex<Option<String>> = Mutex::new(None);
+
+/// `pg_tview_meta`, qualified with the extension's schema, so catalog queries do
+/// not depend on the session's `search_path`. Falls back to the bare name if the
+/// extension row cannot be read.
+pub fn meta_table() -> String {
+    format!("{}.pg_tview_meta", ext_schema())
+}
+
+/// Quoted schema the `pg_tviews` extension is installed in (e.g. `public`).
+/// Falls back to `public`, where the extension's own SQL expects to live, if the
+/// extension row cannot be read.
+pub fn ext_schema() -> String {
+    let mut cache = EXT_SCHEMA_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(schema) = cache.as_ref() {
+        return schema.clone();
+    }
+    crate::metrics::metrics_api::record_catalog_lookup();
+    let resolved = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT pg_catalog.quote_ident(n.nspname) \
+                 FROM pg_catalog.pg_extension e \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
+                 WHERE e.extname = 'pg_tviews'",
+                None,
+                &[],
+            )?
+            .first()
+            .get_one::<String>()
+    })
+    .ok()
+    .flatten();
+    match resolved {
+        Some(schema) => {
+            *cache = Some(schema.clone());
+            schema
+        }
+        None => "public".to_string(),
+    }
 }
 
 /// Get the list of column names for a view/table by schema-qualified name. Results are cached per session.
@@ -571,13 +552,13 @@ mod tests {
 
         // Populate cache with a test entry
         {
-            let mut cache = OID_RELNAME_CACHE.lock().unwrap();
+            let mut cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
             cache.insert(Oid::from(123), "test_table".to_string());
         }
 
         // Verify it's there
         {
-            let cache = OID_RELNAME_CACHE.lock().unwrap();
+            let cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
             assert!(cache.get(&Oid::from(123)).is_some());
         }
 
@@ -586,7 +567,7 @@ mod tests {
 
         // Verify it's gone
         {
-            let cache = OID_RELNAME_CACHE.lock().unwrap();
+            let cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
             assert!(cache.is_empty());
         }
     }

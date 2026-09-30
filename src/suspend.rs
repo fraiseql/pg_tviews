@@ -108,11 +108,13 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
                 pgrx::PgOid::BuiltIn(pgrx::PgBuiltInOids::TEXTOID).value(),
             )
         }];
-        pgrx::Spi::run_with_args("SELECT pg_tviews_refresh($1)", &args).map_err(|e| {
-            crate::TViewError::SpiError {
-                query: format!("pg_tviews_refresh('{entity}')"),
-                error: e.to_string(),
-            }
+        let sql = format!(
+            "SELECT {}.pg_tviews_refresh($1)",
+            crate::utils::ext_schema()
+        );
+        pgrx::Spi::run_with_args(&sql, &args).map_err(|e| crate::TViewError::SpiError {
+            query: format!("pg_tviews_refresh('{entity}')"),
+            error: e.to_string(),
         })?;
     }
     Ok(order)

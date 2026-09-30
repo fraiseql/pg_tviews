@@ -115,12 +115,17 @@ pub struct TviewMeta {
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
 /// out of sync as catalog columns are added (e.g. issue #56's direct-patch map).
-pub(crate) const META_SELECT: &str = "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, \
-     fk_columns, uuid_fk_columns, \
-     dependency_types, dependency_paths, array_match_keys, \
-     distinct_on_keys, distinct_on_output_keys, \
-     direct_map_columns, direct_map_keys, is_union, cascade_paths \
-     FROM pg_tview_meta";
+pub(crate) fn meta_select() -> String {
+    format!(
+        "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, \
+         fk_columns, uuid_fk_columns, \
+         dependency_types, dependency_paths, array_match_keys, \
+         distinct_on_keys, distinct_on_output_keys, \
+         direct_map_columns, direct_map_keys, is_union, cascade_paths \
+         FROM {}",
+        crate::utils::meta_table()
+    )
+}
 
 thread_local! {
     /// Per-backend `TviewMeta` cache (issue #91), cleared through
@@ -184,7 +189,7 @@ impl TviewMeta {
                 DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
             let mut rows = client.select(
-                &format!("{META_SELECT} WHERE view_oid = $1 OR table_oid = $1"),
+                &format!("{} WHERE view_oid = $1 OR table_oid = $1", meta_select()),
                 None,
                 &args,
             )?;
@@ -210,7 +215,7 @@ impl TviewMeta {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }];
             let mut rows =
-                client.select(&format!("{META_SELECT} WHERE entity = $1"), None, &args)?;
+                client.select(&format!("{} WHERE entity = $1", meta_select()), None, &args)?;
 
             match rows.next() {
                 Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
@@ -223,7 +228,7 @@ impl TviewMeta {
     /// Load all TVIEW metadata
     pub fn load_all() -> spi::Result<Vec<Self>> {
         Spi::connect(|client| {
-            let rows = client.select(&format!("{META_SELECT} ORDER BY entity"), None, &[])?;
+            let rows = client.select(&format!("{} ORDER BY entity", meta_select()), None, &[])?;
 
             let mut result = Vec::new();
             for row in rows {
@@ -266,8 +271,11 @@ impl TviewMeta {
             let args = vec![unsafe {
                 DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
-            let mut rows =
-                client.select(&format!("{META_SELECT} WHERE table_oid = $1"), None, &args)?;
+            let mut rows = client.select(
+                &format!("{} WHERE table_oid = $1", meta_select()),
+                None,
+                &args,
+            )?;
 
             let result = if let Some(row) = rows.next() {
                 Some(Self::from_spi_row(&row)?)
@@ -531,7 +539,10 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }];
         let mut meta_rows = client.select(
-            "SELECT entity FROM pg_tview_meta WHERE entity = $1",
+            &format!(
+                "SELECT entity FROM {} WHERE entity = $1",
+                crate::utils::meta_table()
+            ),
             Some(1),
             &args,
         )?;

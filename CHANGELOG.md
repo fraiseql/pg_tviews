@@ -87,6 +87,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Refresh no longer depends on `search_path`** (#122). DML on the base table of a
+  TVIEW whose schema was not on `search_path` failed with `relation "tv_post" does not
+  exist`: the refresh named `tv_<entity>`, `v_<entity>` and the extension's
+  `pg_tview_meta` unqualified. Every relation the refresh, propagation and catalog code
+  names is now schema-qualified through its catalog OID or the extension's schema, and
+  `jsonb_smart_patch_*` calls are qualified with `jsonb_delta`'s schema, so refresh also
+  works under `search_path = pg_catalog`. `pg_tviews_performance_stats()` reads each
+  TVIEW through its OID (it used to fail on its own row count query).
 - **`pg_tviews_suspend_triggers()` / `pg_tviews_resume_triggers()` work** (#44). The row
   trigger only honoured the `pg_tviews.suspend_triggers` GUC, so the functions suspended
   nothing, and resuming enqueued pk 0, which refreshes nothing. Suspension now skips

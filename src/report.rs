@@ -72,7 +72,10 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
         ];
         client
             .update(
-                "UPDATE pg_tview_meta SET graphql_typename = $2 WHERE entity = $1",
+                &format!(
+                    "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
+                    crate::utils::meta_table()
+                ),
                 None,
                 &args,
             )
@@ -118,12 +121,15 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
         }];
         let mut out = HashMap::new();
         for row in client.select(
-            "SELECT m.entity, m.graphql_typename, \
-                    quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
-             FROM pg_tview_meta m \
-             JOIN pg_class c ON c.oid = m.table_oid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE m.entity = ANY($1)",
+            &format!(
+                "SELECT m.entity, m.graphql_typename, \
+                        quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
+                 FROM {} m \
+                 JOIN pg_class c ON c.oid = m.table_oid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE m.entity = ANY($1)",
+                crate::utils::meta_table()
+            ),
             None,
             &args,
         )? {

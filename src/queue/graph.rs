@@ -55,7 +55,10 @@ impl EntityDepGraph {
         // decision below: `parents` (which drives flush-time entity propagation) drops a
         // scalar embed reading only the child's own columns, while `children` (which drives
         // topological refresh ordering) keeps every edge.
-        let query = "SELECT entity, fk_columns, dependency_types, cascade_paths FROM pg_tview_meta";
+        let query = format!(
+            "SELECT entity, fk_columns, dependency_types, cascade_paths FROM {}",
+            crate::utils::meta_table()
+        );
 
         let mut parents: HashMap<String, Vec<String>> = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
@@ -63,24 +66,24 @@ impl EntityDepGraph {
         let mut document_edges: HashSet<(String, String)> = HashSet::new();
 
         Spi::connect(|client| {
-            let rows = client.select(query, None, &[])?;
+            let rows = client.select(&query, None, &[])?;
 
             for row in rows {
                 let entity: String = row["entity"]
                     .value()
                     .map_err(|e| crate::TViewError::SpiError {
-                        query: query.to_string(),
+                        query: query.clone(),
                         error: format!("Failed to get entity: {e}"),
                     })?
                     .ok_or_else(|| crate::TViewError::SpiError {
-                        query: query.to_string(),
+                        query: query.clone(),
                         error: "entity column is NULL".to_string(),
                     })?;
                 let fk_columns: Option<Vec<String>> =
                     row["fk_columns"]
                         .value()
                         .map_err(|e| crate::TViewError::SpiError {
-                            query: query.to_string(),
+                            query: query.clone(),
                             error: format!("Failed to get fk_columns: {e}"),
                         })?;
                 // `dependency_types[i]` is positionally aligned with `fk_columns[i]`
@@ -88,14 +91,14 @@ impl EntityDepGraph {
                 let dependency_types: Vec<String> = row["dependency_types"]
                     .value()
                     .map_err(|e| crate::TViewError::SpiError {
-                        query: query.to_string(),
+                        query: query.clone(),
                         error: format!("Failed to get dependency_types: {e}"),
                     })?
                     .unwrap_or_default();
                 let cascade_paths_raw: Vec<String> = row["cascade_paths"]
                     .value()
                     .map_err(|e| crate::TViewError::SpiError {
-                        query: query.to_string(),
+                        query: query.clone(),
                         error: format!("Failed to get cascade_paths: {e}"),
                     })?
                     .unwrap_or_default();

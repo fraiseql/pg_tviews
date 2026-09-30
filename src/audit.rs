@@ -113,14 +113,17 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
     let payload_ref: &str = &payload;
 
     Spi::run_with_args(
-        "INSERT INTO pg_tview_audit_log (operation, entity, performed_by, rows_affected, details)
-         SELECT
-             e->>'op',
-             e->>'entity',
-             $2,
-             (e->>'rows')::bigint,
-             CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
-         FROM jsonb_array_elements($1::jsonb) AS e",
+        &format!(
+            "INSERT INTO {}.pg_tview_audit_log (operation, entity, performed_by, rows_affected, details)
+             SELECT
+                 e->>'op',
+                 e->>'entity',
+                 $2,
+                 (e->>'rows')::bigint,
+                 CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
+             FROM jsonb_array_elements($1::jsonb) AS e",
+            crate::utils::ext_schema()
+        ),
         &[
             unsafe {
                 DatumWithOid::new(payload_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())

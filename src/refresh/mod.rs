@@ -37,13 +37,14 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 /// A recomputed row that equals the stored one gets no new tuple version, no index
 /// entries, no dead tuple, and keeps its `updated_at` ("last content change").
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
-/// qualified with `tv_name` because the source relation is in scope too.
+/// qualified with `qi_tv`, the quoted (schema-qualified) TVIEW table, because the
+/// source relation is in scope too.
 ///
 /// `data_expr` replaces `EXCLUDED.data` as the new `data` value (the smart-patch
 /// path merges into the stored document). Every other column still tracks the
 /// backing view, so no projected column is left stale (issue #98).
 pub(crate) fn upsert_conflict_action(
-    tv_name: &str,
+    qi_tv: &str,
     col_names: &[String],
     key_col: &str,
     data_expr: Option<&str>,
@@ -63,7 +64,6 @@ pub(crate) fn upsert_conflict_action(
     if cols.is_empty() {
         return "DO NOTHING".to_string();
     }
-    let qi_tv = quote_identifier(tv_name);
     let set = cols
         .iter()
         .map(|(c, fresh)| format!("{c} = {fresh}"))
@@ -84,7 +84,7 @@ pub(crate) fn upsert_conflict_action(
     format!("DO UPDATE SET {set} WHERE {stored} IS DISTINCT FROM {fresh}")
 }
 
-/// Run `INSERT INTO tv_name (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
+/// Run `INSERT INTO qi_tv (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
 /// record the rows its `IS DISTINCT FROM` guard skipped (issue #72) and journal the
 /// rows it inserted or updated (issue #76).
 ///
@@ -94,13 +94,12 @@ pub(crate) fn upsert_conflict_action(
 /// Returns how many source rows there were (0: the row is gone from the view).
 pub(crate) fn run_counted_upsert(
     entity: &str,
-    tv_name: &str,
+    qi_tv: &str,
     col_list: &str,
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
 ) -> spi::Result<i64> {
-    let qi_tv = quote_identifier(tv_name);
     let qi_pk = quote_identifier(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
@@ -160,19 +159,19 @@ mod tests {
     fn conflict_action_guards_every_non_key_column() {
         assert_eq!(
             super::upsert_conflict_action(
-                "tv_post",
+                r#""app"."tv_post""#,
                 &cols(&["pk_post", "id", "data"]),
                 "pk_post",
                 None
             ),
-            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE ("tv_post"."id", "tv_post"."data") IS DISTINCT FROM (EXCLUDED."id", EXCLUDED."data")"#
+            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE ("app"."tv_post"."id", "app"."tv_post"."data") IS DISTINCT FROM (EXCLUDED."id", EXCLUDED."data")"#
         );
     }
 
     #[test]
     fn conflict_action_single_column_uses_plain_comparison() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "data"]), "pk_x", None),
+            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x", None),
             r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE "tv_x"."data" IS DISTINCT FROM EXCLUDED."data""#
         );
     }
@@ -180,7 +179,12 @@ mod tests {
     #[test]
     fn conflict_action_quotes_reserved_and_mixed_case_columns() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "order", "Label"]), "pk_x", None),
+            super::upsert_conflict_action(
+                r#""tv_x""#,
+                &cols(&["pk_x", "order", "Label"]),
+                "pk_x",
+                None
+            ),
             r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE ("tv_x"."order", "tv_x"."Label") IS DISTINCT FROM (EXCLUDED."order", EXCLUDED."Label")"#
         );
     }
@@ -189,7 +193,7 @@ mod tests {
     fn conflict_action_data_expr_replaces_only_data() {
         assert_eq!(
             super::upsert_conflict_action(
-                "tv_x",
+                r#""tv_x""#,
                 &cols(&["pk_x", "label", "data"]),
                 "pk_x",
                 Some("patch(\"tv_x\".data)"),
@@ -209,7 +213,7 @@ mod tests {
     #[test]
     fn conflict_action_key_only_does_nothing() {
         assert_eq!(
-            super::upsert_conflict_action("tv_x", &cols(&["pk_x"]), "pk_x", None),
+            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x"]), "pk_x", None),
             "DO NOTHING"
         );
     }

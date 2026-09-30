@@ -194,7 +194,10 @@ pub mod table_cache {
             )
         }];
         let definition: Option<String> = Spi::get_one_with_args(
-            "SELECT definition FROM pg_tview_meta WHERE entity = $1",
+            &format!(
+                "SELECT definition FROM {} WHERE entity = $1",
+                crate::utils::meta_table()
+            ),
             &args,
         )
         .unwrap_or(None);
@@ -302,7 +305,11 @@ fn watch_catalog() {
     crate::metrics::metrics_api::record_catalog_lookup();
     if let Ok(Some(oid)) = Spi::connect(|client| {
         client
-            .select("SELECT to_regclass('pg_tview_meta')::oid", None, &[])?
+            .select(
+                &format!("SELECT to_regclass('{}')::oid", crate::utils::meta_table()),
+                None,
+                &[],
+            )?
             .first()
             .get_one::<pg_sys::Oid>()
     }) {
