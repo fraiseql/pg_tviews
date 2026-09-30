@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 - `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
   of refresh writes skipped because nothing changed.
+
 ### Fixed
 
 - **`CREATE TABLE tv_* AS` is converted in a multi-statement batch, in `DO` blocks and in
