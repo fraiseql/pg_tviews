@@ -458,7 +458,8 @@ applied again:
 SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title) AS data
     FROM app.tb_post p $$, options => '{"logged": true, "fillfactor": 85}');
--- created | unchanged | altered (storage only, rows kept) | rebuilt
+-- created | unchanged | altered (storage only) | replaced (same columns, rows
+-- reconciled in place) | rebuilt
 ```
 
 It runs the DDL as the caller and requires owning an existing TVIEW; a role that owns

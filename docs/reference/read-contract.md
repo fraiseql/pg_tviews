@@ -60,7 +60,7 @@ seeing it) stays visible, with `schema`, `logged` and `options` NULL.
 SELECT tviews.pg_tviews_create_or_replace(
     'app.tv_post', $$SELECT …$$,
     options => '{"logged": true, "fillfactor": 85}');
--- 'created' | 'unchanged' | 'altered' | 'rebuilt'
+-- 'created' | 'unchanged' | 'altered' | 'replaced' | 'rebuilt'
 SELECT tviews.pg_tviews_drop('app.tv_post', if_exists => true);
 ```
 
@@ -96,7 +96,14 @@ under the current `search_path` does. An invalid definition raises its error. Pa
 - `altered`: only `logged`, `fillfactor` or `data_gin_index` differ; changed in place
   (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, the GIN index created or
   dropped), rows kept.
-- `rebuilt`: the definition or `group_keys` differ. The backing view, table and
+- `replaced`: the definition differs but produces the same columns (names and types,
+  in order), and `group_keys` is the same. The backing view is replaced, the TVIEW
+  re-registered (triggers added and removed), and the rows reconciled in place with
+  three statements that touch only rows that change, under `EXCLUSIVE` on the table
+  (readers go on) and `SHARE` on the tables both definitions read (writers wait). The
+  table, its indexes, privileges, comment and dependents are untouched, and the TVIEWs
+  that embed it are refreshed for the rows that changed.
+- `rebuilt`: the columns or `group_keys` differ. The backing view, table and
   registration are dropped and created again, and the rows computed. The table's and
   view's owner, privileges and comment, the GraphQL type name and the indexes a user
   added to the table are carried over; an added index that no longer applies fails the
