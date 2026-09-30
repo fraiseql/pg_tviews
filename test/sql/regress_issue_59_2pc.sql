@@ -64,10 +64,12 @@ SELECT rename_author_queued('bob') AS queued \gset
 PREPARE TRANSACTION 'pg_tviews_59_commit';
 COMMIT PREPARED 'pg_tviews_59_commit';
 
+SELECT :queued < 1 AS nothing_pending \gset
+\if :nothing_pending
+  DO $$ BEGIN RAISE EXCEPTION '#59 setup FAIL: no refresh was pending at PREPARE'; END $$;
+\endif
+
 DO $$ BEGIN
-  IF :queued < 1 THEN
-    RAISE EXCEPTION '#59 setup FAIL: no refresh was pending at PREPARE';
-  END IF;
   IF (SELECT data->>'author' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'bob' THEN
     RAISE EXCEPTION '#59 FAIL: COMMIT PREPARED did not apply the pending refresh (got %)',
       (SELECT data->>'author' FROM tv_post WHERE pk_post = 1);
@@ -105,5 +107,37 @@ DO $$ BEGIN
   END IF;
   IF (pg_tviews_queue_stats()->>'queue_size')::int <> 0 THEN
     RAISE EXCEPTION '#59 FAIL: queue not empty after the prepared transactions';
+  END IF;
+END $$;
+
+-- ========================================================================
+-- Cycle 4: the first write to an empty TVIEW does not lock readers out
+-- ========================================================================
+-- An empty UNLOGGED TVIEW whose view gains rows looks like a crash-reset table. Its
+-- repopulation used TRUNCATE, whose ACCESS EXCLUSIVE lock a prepared transaction then
+-- held until COMMIT PREPARED, blocking every reader of the TVIEW.
+CREATE TABLE tb_note (
+    pk_note BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    body    TEXT
+);
+CREATE TABLE tv_note AS
+SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM tb_note;
+
+BEGIN;
+INSERT INTO tb_note (body) VALUES ('n1');
+PREPARE TRANSACTION 'pg_tviews_59_first_write';
+SELECT EXISTS (SELECT 1 FROM pg_locks
+               WHERE pid IS NULL AND relation = 'tv_note'::regclass
+                 AND mode = 'AccessExclusiveLock') AS exclusive_held \gset
+COMMIT PREPARED 'pg_tviews_59_first_write';
+
+\if :exclusive_held
+  DO $$ BEGIN RAISE EXCEPTION '#59 FAIL: the prepared transaction held ACCESS EXCLUSIVE on tv_note'; END $$;
+\endif
+
+DO $$ BEGIN
+  IF (SELECT count(*) FROM tv_note) <> 1 THEN
+    RAISE EXCEPTION '#59 FAIL: first write to an empty TVIEW not applied';
   END IF;
 END $$;

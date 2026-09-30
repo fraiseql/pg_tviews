@@ -26,7 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   - `docs/operations/replication.md` states the contract.
   - CI runs `test/replication/promote_rebuild.sh` against a real standby.
 
+### Changed
+
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
+
 ### Fixed
+
+- **`PREPARE TRANSACTION` works with pending TVIEW refreshes** (#59). It was rejected;
+  the queue is now flushed first, as before `COMMIT`, so the TVIEW writes belong to the
+  prepared transaction and `COMMIT PREPARED` / `ROLLBACK PREPARED` apply or discard them.
+  The never-built GID queue scaffolding (`pg_tview_pending_refreshes`) is gone.
+- **The first write to an empty UNLOGGED TVIEW no longer locks out readers.** It looked like
+  a crash-reset table, and the repopulation used `TRUNCATE`, holding ACCESS EXCLUSIVE until
+  the transaction ended (until `COMMIT PREPARED` under 2PC). An empty TVIEW is now filled
+  with a plain `INSERT … SELECT`; `pg_tviews_rebuild_all()` does the same.
+- `pg_tviews_cascade()` / `pg_tviews_insert()` / `pg_tviews_delete()` failed with
+  `SpiError(NoAttribute)`: their catalog query lacked columns the loader reads.
 
 - **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
   only the eponymous case was handled: dropping `tb_<entity>` deregistered
@@ -64,12 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   with `relation "<tview schema>.<table>" does not exist`.
 - The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
   rows.
-
-### Changed
-
-- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
-  `oid`, so a dump stores them as names (#96). They now print as relation names;
-  cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
 ## [0.1.0-beta.18] - 2026-09-30
 

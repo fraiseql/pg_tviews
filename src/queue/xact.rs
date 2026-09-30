@@ -2,7 +2,6 @@ use super::ops::{
     clear_queue, is_crash_recovery_checked, mark_crash_recovery_checked, take_queue_snapshot,
 };
 use crate::TViewResult;
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::collections::HashSet;
@@ -345,16 +344,9 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 if !is_crash_recovery_checked(&entity) {
                     mark_crash_recovery_checked(&entity);
                     if crate::lifecycle::detect_post_crash_truncation(&entity)? {
-                        // TVIEW is empty but backing view has data - perform full refresh first
-                        Spi::run_with_args(
-                            "SELECT pg_tviews_refresh($1)",
-                            &[unsafe {
-                                DatumWithOid::new(
-                                    &entity,
-                                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                                )
-                            }],
-                        )?;
+                        // The TVIEW is empty but its view is not: fill it. No TRUNCATE, so
+                        // no ACCESS EXCLUSIVE lock held until the transaction ends.
+                        crate::admin::fill_empty_tview(&entity)?;
                     }
                 }
 
@@ -577,4 +569,3 @@ fn refresh_and_get_parents(
 
     Ok(parent_keys)
 }
-

@@ -212,18 +212,23 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     let mut rebuilt = Vec::with_capacity(targets.len());
     for rel in targets {
-        const REFRESH: &str = "SELECT pg_tviews_refresh($1)";
-        // SAFETY: the text datum borrows `rel.entity`, which outlives the call.
-        let args = [unsafe {
-            DatumWithOid::new(
-                rel.entity.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        }];
-        Spi::run_with_args(REFRESH, &args).map_err(|e| TViewError::SpiError {
-            query: REFRESH.to_string(),
-            error: e.to_string(),
-        })?;
+        if only_empty {
+            // Known empty: fill without TRUNCATE, so readers are not blocked.
+            crate::admin::fill_empty_tview(&rel.entity)?;
+        } else {
+            const REFRESH: &str = "SELECT pg_tviews_refresh($1)";
+            // SAFETY: the text datum borrows `rel.entity`, which outlives the call.
+            let args = [unsafe {
+                DatumWithOid::new(
+                    rel.entity.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            }];
+            Spi::run_with_args(REFRESH, &args).map_err(|e| TViewError::SpiError {
+                query: REFRESH.to_string(),
+                error: e.to_string(),
+            })?;
+        }
         crate::queue::mark_crash_recovery_checked(&rel.entity);
         let count_sql = format!("SELECT count(*) FROM {}", rel.qualified(&rel.table));
         let rows = Spi::get_one::<i64>(&count_sql)
