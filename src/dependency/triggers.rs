@@ -78,7 +78,8 @@ fn entity_triggers(
 /// # Errors
 /// Returns error if trigger creation or installation fails.
 pub fn install_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TViewResult<()> {
-    let entity_arg = format!("'{}'", tview_entity.replace('\'', "''"));
+    // A trigger argument written as a quoted identifier is stored as its name.
+    let entity_arg = quote_identifier(tview_entity);
     for &table_oid in table_oids {
         let (schema, relname) = get_table_name(table_oid)?;
         // Schema-qualified SQL reference: "schema"."table"
