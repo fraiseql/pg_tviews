@@ -24,6 +24,7 @@ fn trigger_name(tag: &str, entity: &str, schema: &str, relname: &str) -> String 
 
 /// A `pg_tviews` trigger on a base table.
 struct InstalledTrigger {
+    table_oid: pg_sys::Oid,
     /// Quoted, schema-qualified table.
     table: String,
     trigger: String,
@@ -41,7 +42,7 @@ fn entity_triggers(
 ) -> TViewResult<Vec<InstalledTrigger>> {
     let query = format!(
         "SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname), \
-                t.tgname::text, p.proname::text \
+                t.tgname::text, p.proname::text, t.tgrelid \
          FROM pg_catalog.pg_trigger t \
          JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
@@ -63,12 +64,14 @@ fn entity_triggers(
         ];
         let mut found = Vec::new();
         for row in client.select(&query, None, &args)? {
-            if let (Some(table), Some(trigger), Some(function)) = (
+            if let (Some(table), Some(trigger), Some(function), Some(table_oid)) = (
                 row.get::<String>(1)?,
                 row.get::<String>(2)?,
                 row.get::<String>(3)?,
+                row.get::<pg_sys::Oid>(4)?,
             ) {
                 found.push(InstalledTrigger {
+                    table_oid,
                     table,
                     trigger,
                     function,
@@ -137,13 +140,17 @@ pub fn install_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TView
 /// Returns an error if the catalog query or a trigger drop fails.
 pub fn remove_entity_triggers(tview_entity: &str) -> TViewResult<()> {
     for installed in entity_triggers(tview_entity, None)? {
-        drop_trigger(&installed.table, &installed.trigger)?;
+        drop_trigger(installed.table_oid, &installed.table, &installed.trigger)?;
     }
     Ok(())
 }
 
-/// `DROP TRIGGER IF EXISTS trigger ON table` (`table` quoted and qualified).
-fn drop_trigger(table: &str, trigger: &str) -> TViewResult<()> {
+/// `DROP TRIGGER IF EXISTS trigger ON table` (`table` quoted and qualified), as
+/// the table's owner: `DROP TRIGGER` needs the owner where `CREATE TRIGGER` needs
+/// only the `TRIGGER` privilege, and these are `pg_tviews`' own triggers, removed
+/// for a TVIEW the caller may drop (issue #136).
+fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_table(table_oid)?;
     let drop_sql = format!(
         "DROP TRIGGER IF EXISTS {} ON {table}",
         quote_identifier(trigger)
@@ -206,7 +213,7 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
 
     for (entity, table_oid) in pairs {
         for (table, trigger) in legacy_triggers(table_oid)? {
-            drop_trigger(&table, &trigger)?;
+            drop_trigger(table_oid, &table, &trigger)?;
         }
         install_triggers(&[table_oid], &entity)?;
     }

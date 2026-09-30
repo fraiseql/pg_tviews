@@ -37,6 +37,7 @@ mod catalog;
 mod event_trigger;
 mod hooks;
 mod metrics;
+mod owner;
 mod propagate;
 mod queue;
 mod rebuild_worker;

@@ -47,6 +47,9 @@ BEGIN
     END IF;
 END
 $$;
+
+-- Every role reaches the triggers, functions and catalog views (issue #136).
+GRANT USAGE ON SCHEMA @extschema@ TO PUBLIC;
     "#,
     name = "check_extension_schema",
     bootstrap
@@ -105,6 +108,11 @@ extension_sql!(
     -- dump/restore brings back tv_*, v_* and the triggers but no registered TVIEW.
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
+
+    -- The row trigger reads the catalog as the writing role (issue #136). It holds
+    -- view definitions, which pg_views already shows to everyone. Only the
+    -- extension owner writes it.
+    GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
     ",
     name = "create_metadata_tables",
 );
@@ -180,9 +188,13 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
 -- work is guarded by a defensive EXCEPTION handler.
+--
+-- Runs as the dropping role (issue #136): PostgreSQL authorized that role's drop, and
+-- pg_tviews_handle_dropped() does the rest without giving it more rights (see there).
 CREATE FUNCTION @extschema@.pg_tviews_handle_drop_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
+SET search_path = pg_catalog, @extschema@, pg_temp
 AS $$
 DECLARE
     entity_name TEXT;
@@ -197,13 +209,10 @@ BEGIN
           AND d.objsubid = 0
     LOOP
         BEGIN
-            PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
-            RAISE NOTICE 'pg_tviews: backing objects of tv_% dropped; deregistered it',
-                entity_name;
+            PERFORM @extschema@.pg_tviews_handle_dropped(entity_name);
         EXCEPTION WHEN OTHERS THEN
-            -- Never abort the user's DROP; at minimum clear the stale metadata row.
-            DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
-            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed (%); removed its metadata',
+            -- Never abort the user's DROP.
+            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed: %',
                 entity_name, SQLERRM;
         END;
     END LOOP;
@@ -304,6 +313,22 @@ CREATE TABLE @extschema@.pg_tview_audit_log (
 CREATE INDEX idx_audit_log_entity_time ON @extschema@.pg_tview_audit_log(entity, performed_at);
 
 COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
+
+-- Writes buffered audit entries (issue #136). Only the extension owner may call it:
+-- the library calls it as that owner, for whichever role triggered the entries, and
+-- performed_by is the session user, whatever role the caller has set.
+CREATE FUNCTION @extschema@.pg_tviews_audit_write(entries JSONB)
+RETURNS void
+LANGUAGE sql
+SET search_path = pg_catalog, @extschema@, pg_temp
+AS $$
+    INSERT INTO @extschema@.pg_tview_audit_log
+        (operation, entity, performed_by, rows_affected, details)
+    SELECT e->>'op', e->>'entity', SESSION_USER, (e->>'rows')::bigint,
+           CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
+    FROM jsonb_array_elements(entries) AS e;
+$$;
+REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
     ",
     name = "audit_table",
 );

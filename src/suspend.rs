@@ -114,6 +114,8 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
             "SELECT {}.pg_tviews_refresh($1)",
             crate::utils::ext_schema()
         );
+        // Rebuilt as the TVIEW's owner, like any refresh (issue #136).
+        let _owner = crate::owner::AsOwner::of_entity(entity)?;
         pgrx::Spi::run_with_args(&sql, &args).map_err(|e| crate::TViewError::SpiError {
             query: format!("pg_tviews_refresh('{entity}')"),
             error: e.to_string(),

@@ -74,6 +74,13 @@ fn pg_tviews_create_aggregate(
         .map_err(|e| format!("Failed to create aggregate TVIEW: {e}"))
 }
 
+/// Internal: called by the `sql_drop` event trigger for a TVIEW whose backing view
+/// or table was dropped as a dependent (see [`drop::handle_dropped`]).
+#[pg_extern]
+fn pg_tviews_handle_dropped(entity: &str) -> Result<(), String> {
+    drop::handle_dropped(entity).map_err(|e| format!("Failed to deregister TVIEW '{entity}': {e}"))
+}
+
 /// SQL function: Drop a TVIEW
 ///
 /// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);        -- true = IF EXISTS

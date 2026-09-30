@@ -75,6 +75,75 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     Ok(())
 }
 
+/// Deregister a TVIEW whose backing view or table the current statement dropped
+/// as a dependent of something else (issues #53, #57, #136). Called from the
+/// `sql_drop` event trigger only: it first checks that the event dropped the
+/// TVIEW's view or table.
+///
+/// `PostgreSQL` has authorized that drop, and no more. The TVIEW's remaining table
+/// is dropped only when the current role owns it; otherwise it is kept as a plain
+/// table. The TVIEW's base-table triggers and its registration are removed either
+/// way, as their owners.
+///
+/// # Errors
+/// Returns an error outside a `sql_drop` event trigger, or if the event did not
+/// drop the TVIEW's view or table.
+pub fn handle_dropped(entity: &str) -> TViewResult<()> {
+    let args =
+        [unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
+    let dropped = Spi::get_one_with_args::<bool>(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger_dropped_objects() d \
+             JOIN {} m ON d.objid IN (m.view_oid, m.table_oid) \
+             WHERE m.entity = $1 AND NOT d.original AND d.objsubid = 0 \
+               AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass)",
+            crate::utils::meta_table()
+        ),
+        &args,
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: "pg_event_trigger_dropped_objects()".to_string(),
+        error: e.to_string(),
+    })?;
+    if dropped != Some(true) {
+        return Err(TViewError::InvalidInput {
+            parameter: "entity".to_string(),
+            reason: format!("the current statement did not drop TVIEW {entity}'s view or table"),
+        });
+    }
+
+    // Whether the table is left, and whether the current role owns it.
+    let (table_left, table_owned) = Spi::get_two_with_args::<bool, bool>(
+        &format!(
+            "SELECT t.oid IS NOT NULL, \
+                    COALESCE(pg_catalog.pg_has_role(t.relowner, 'USAGE'), false) \
+             FROM {} m LEFT JOIN pg_catalog.pg_class t ON t.oid = m.table_oid \
+             WHERE m.entity = $1",
+            crate::utils::meta_table()
+        ),
+        &args,
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: "table of a dropped TVIEW".to_string(),
+        error: e.to_string(),
+    })?;
+    if table_owned == Some(true) {
+        return drop_tview(entity, true, true);
+    }
+
+    crate::dependency::remove_entity_triggers(entity)?;
+    drop_metadata(entity)?;
+    crate::queue::cache::invalidate_all_caches();
+    crate::audit::log_drop(entity);
+    if table_left == Some(true) {
+        notice!(
+            "pg_tviews: TVIEW {entity} deregistered; its table belongs to another role and \
+             was kept as a plain table"
+        );
+    }
+    Ok(())
+}
+
 /// Resolve a schema-qualified name from an object OID and drop it
 ///
 /// Uses `pg_class JOIN pg_namespace` to find the object's schema at runtime,
@@ -140,6 +209,8 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
         "DELETE FROM {} WHERE entity = $1",
         crate::utils::meta_table()
     );
+    // The catalog is written as the extension's owner (issue #136).
+    let _owner = crate::owner::AsOwner::of_extension()?;
     Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
         query: sql.clone(),
         error: e.to_string(),

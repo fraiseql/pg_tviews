@@ -255,6 +255,19 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
             );
             continue;
         }
+        // Hops read tables the writer may not: follow them as the target TVIEW's
+        // owner (issue #136), once per path.
+        let owner = if path.hops.is_empty() {
+            None
+        } else {
+            match crate::owner::AsOwner::of_entity(&path.entity_name) {
+                Ok(owner) => Some(owner),
+                Err(e) => {
+                    warning!("Cascade to {} skipped: {e}", path.entity_name);
+                    continue;
+                }
+            }
+        };
         for tuple in &tuples {
             if let Err(e) = follow_cascade_path(path, tuple) {
                 warning!(
@@ -265,6 +278,7 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
                 );
             }
         }
+        drop(owner);
     }
 }
 
@@ -330,7 +344,8 @@ fn follow_cascade_path(
         }
     };
 
-    // Step 2: Follow each intermediate hop via SPI
+    // Step 2: Follow each intermediate hop via SPI (as the target TVIEW's owner,
+    // switched to by the caller).
     for hop in &path.hops {
         if current_ids.is_empty() {
             return Ok(());
