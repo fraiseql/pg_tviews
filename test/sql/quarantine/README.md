@@ -13,6 +13,5 @@ supported API and moved back into `test/sql/`.
 | `98-unlogged-integration.sql` | aggregate/summary TVIEW (`user_summary`, `COUNT`/`SUM`/`GROUP BY`, no `tb_<entity>`) | #58 |
 | `99-performance-validation.sql` | window-function TVIEW (`perf_logged`, `AVG(…) OVER`, `ROW_NUMBER() OVER`) | #58 |
 | `100-multi-table-integration.sql` | aggregate `mt_*_summary` rollups over `mt_*` base tables | #58 |
-| `60_2pc_support.sql` | tests a 2PC API (`pg_tviews_commit_prepared` / `_rollback_prepared` / `_recover_prepared_transactions`) that is not implemented; also drops an internal table and needs `max_prepared_transactions>0` | #59 |
 
 Filed under the #55 test-suite health audit.

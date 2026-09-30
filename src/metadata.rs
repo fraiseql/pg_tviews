@@ -2,7 +2,6 @@
 //!
 //! This module manages the system catalog tables for TVIEW metadata:
 //! - **`pg_tview_meta`**: Core TVIEW definitions and relationships
-//! - **`pg_tview_pending_refreshes`**: 2PC transaction queue persistence
 //! - **`pg_tview_monitoring`**: Performance metrics and statistics
 //! - **Schema Management**: Automatic table creation and updates
 //!
@@ -14,12 +13,6 @@
 //! - SQL definition and dependencies
 //! - Foreign key relationships
 //! - Dependency types and paths
-//!
-//! ### `pg_tview_pending_refreshes`
-//! Persists refresh queues for 2PC transactions:
-//! - Transaction GID linkage
-//! - Serialized refresh operations
-//! - Expiration handling
 //!
 //! ## Extension Lifecycle
 //!

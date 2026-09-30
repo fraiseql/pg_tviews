@@ -136,7 +136,14 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::metrics::metrics_api::reset_metrics();
         }
         XactEvent::Prepare => {
-            // PREPARE TRANSACTION also goes through ProcessUtility hook.
+            // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
+            // the refresh writes are part of the prepared transaction. This backend's
+            // transaction ends here: drop its in-memory state (no SPI in callbacks).
+            crate::suspend::force_resume();
+            clear_queue();
+            super::patch::clear_patch_map();
+            super::ops::clear_crash_recovery_cache();
+            super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
         }
@@ -571,6 +578,3 @@ fn refresh_and_get_parents(
     Ok(parent_keys)
 }
 
-// NOTE: Full 2PC support (PREPARE TRANSACTION with queue persistence) is not
-// implemented in 0.1.0. The ProcessUtility hook rejects PREPARE TRANSACTION
-// when TVIEW refreshes are pending. See hooks.rs for the guard.

@@ -108,22 +108,24 @@ ERROR: Circular dependency detected: tv_a -> tv_b -> tv_a
 
 **Prevention**: Do not manually modify `pg_tviews_metadata` table.
 
-### Queue Persistence Corruption
+### Prepared transactions left open
 
 **Symptoms**:
-- Orphaned entries in `pg_tview_pending_refreshes`
-- 2PC transactions never committed/rolled back
+- A TVIEW does not show changes made by a transaction that ran `PREPARE TRANSACTION`
+- Locks held on `tv_*` rows or base tables
+
+**Cause**: `PREPARE TRANSACTION` flushes the refresh queue first, so the TVIEW writes are
+part of the prepared transaction. They become visible only at `COMMIT PREPARED`, and the
+prepared transaction keeps its locks until then.
 
 **Recovery**:
-1. List orphaned entries:
+1. List prepared transactions:
    ```sql
-   SELECT gid, prepared FROM pg_tview_pending_refreshes
-   WHERE age(now(), prepared) > interval '1 hour';
+   SELECT gid, prepared, owner, database FROM pg_prepared_xacts ORDER BY prepared;
    ```
-2. Manually clean up:
+2. Finish each one:
    ```sql
-   DELETE FROM pg_tview_pending_refreshes
-   WHERE gid = 'orphaned_transaction_id';
+   COMMIT PREPARED 'gid';     -- or ROLLBACK PREPARED 'gid';
    ```
 
 **Prevention**: Always commit or rollback prepared transactions promptly.
@@ -315,8 +317,8 @@ END $$;
 
 2. **Orphaned prepared transactions**:
    ```sql
-   SELECT COUNT(*) FROM pg_tview_pending_refreshes
-   WHERE age(now(), prepared_at) > interval '1 hour';
+   SELECT COUNT(*) FROM pg_prepared_xacts
+   WHERE age(now(), prepared) > interval '1 hour';
    ```
 
 3. **TVIEW consistency** (periodic check):
