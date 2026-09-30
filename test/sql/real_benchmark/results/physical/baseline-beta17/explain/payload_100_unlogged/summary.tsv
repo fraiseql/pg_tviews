@@ -1,0 +1,3 @@
+plan	Actual Total Time	Actual Rows	Shared Hit Blocks	Shared Read Blocks	Shared Dirtied Blocks	Shared Written Blocks	WAL Records	WAL FPI	WAL Bytes	query
+001	0.004	1.0	2	0	0	0	0	0	0	SELECT EXISTS(SELECT 1 FROM "public"."tv_doc" LIMIT 1)
+002	0.157	1.0	18	0	0	0	0	0	0	UPDATE tv_doc SET data = jsonb_smart_patch_scalar(data, $1::jsonb), updated_at = now() WHERE pk_doc = ANY($2) RETURNING pk_doc

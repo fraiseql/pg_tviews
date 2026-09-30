@@ -1,0 +1,22 @@
+plan	Actual Total Time	Actual Rows	Shared Hit Blocks	Shared Read Blocks	Shared Dirtied Blocks	Shared Written Blocks	WAL Records	WAL FPI	WAL Bytes	query
+001	0.067	1.0	182	0	0	0	0	0	0	SELECT EXISTS(SELECT 1 FROM "public"."tv_post" LIMIT 1)
+002	22.042	0.0	16376	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+003	6.834	0.0	2617	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+004	21.753	0.0	16443	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+005	6.636	0.0	2634	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+006	20.956	0.0	16084	0	17	17	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+007	6.417	0.0	2651	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+008	20.021	0.0	15727	0	19	19	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+009	6.334	0.0	2640	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+010	19.735	0.0	15646	0	19	19	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+011	6.395	0.0	2662	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+012	19.562	0.0	15637	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+013	6.327	0.0	2638	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+014	19.948	0.0	15596	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+015	6.494	0.0	2639	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+016	19.794	0.0	15593	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+017	6.701	0.0	2631	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+018	19.496	0.0	15547	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+019	6.749	0.0	2655	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
+020	19.569	0.0	15503	0	18	18	0	0	0	INSERT INTO tv_post (pk_post, id, fk_user, data) SELECT pk_post, id, fk_user, data FROM v_post WHERE pk_post = ANY($1) ON CONFLICT (pk_post) DO UPDATE SET id = 
+021	6.664	0.0	2637	0	0	0	0	0	0	DELETE FROM tv_post t WHERE t.pk_post = ANY($1) AND NOT EXISTS (SELECT 1 FROM v_post v WHERE v.pk_post = t.pk_post)
