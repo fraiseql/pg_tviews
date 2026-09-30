@@ -33,7 +33,7 @@ CREATE FUNCTION _assert(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS
 CREATE TABLE tv_post AS
     SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
 SELECT 'tv_post'::regclass::oid AS oid_before \gset
-SELECT table_oid AS meta_before FROM pg_tview_meta WHERE entity = 'post' \gset
+SELECT table_oid::oid AS meta_before FROM pg_tview_meta WHERE entity = 'post' \gset
 
 CREATE TABLE IF NOT EXISTS tv_post AS
     SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS tv_post AS
 SELECT _assert(to_regclass('tv_post') IS NOT NULL, '#79: tv_post was dropped');
 SELECT _assert('tv_post'::regclass::oid = :oid_before, '#79: tv_post was recreated');
 SELECT _assert((SELECT count(*) FROM tv_post) = 2, '#79: tv_post lost its rows');
-SELECT _assert((SELECT table_oid FROM pg_tview_meta WHERE entity = 'post') = :meta_before,
+SELECT _assert((SELECT table_oid::oid FROM pg_tview_meta WHERE entity = 'post') = :meta_before,
                '#79: pg_tview_meta no longer matches tv_post');
 UPDATE tb_post SET title = 'uno' WHERE pk_post = 1;
 SELECT _assert((SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'uno',

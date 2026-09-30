@@ -460,7 +460,7 @@ fn extract_and_resolve_cascade_paths(
                 // Column-aware refresh: record which columns of this path's source
                 // table the target tview actually depends on (via pg_depend on the
                 // backing view). Empty ⇒ always refresh.
-                cp.source_columns = view_source_columns(schema_name, entity_name, &jp.source_table);
+                cp.source_columns = view_source_columns(schema_name, entity_name, cp.source_oid);
                 cascade_paths.push(cp);
             }
             Err(e) => {
@@ -473,6 +473,68 @@ fn extract_and_resolve_cascade_paths(
     }
 
     Ok(cascade_paths)
+}
+
+/// Re-resolve the relation OIDs stored inside serialized cascade paths against
+/// the current catalog, using the same relname → OID map that creation built
+/// from the backing view's base tables.
+///
+/// Cascade paths carry raw OIDs inside JSON text, which `pg_dump` copies
+/// verbatim. After a restore those OIDs name nothing (or an unrelated
+/// relation), so `pg_tview_meta`'s insert trigger calls this to rebind them.
+/// For a freshly created TVIEW the result is identical to the input. A path
+/// whose table can no longer be found is marked `unresolvable` (full-refresh
+/// fallback) rather than left pointing at a stale OID.
+pub fn rebind_cascade_paths(view_oid: Oid, cascade_paths: &[String]) -> TViewResult<Vec<String>> {
+    if cascade_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let args =
+        [unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let (view_name, schema_name) = Spi::get_two_with_args::<String, String>(
+        "SELECT c.relname::text, n.nspname::text FROM pg_class c \
+         JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
+        &args,
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Resolve backing view {view_oid:?}"),
+        pg_error: e.to_string(),
+    })?;
+    let (Some(view_name), Some(schema_name)) = (view_name, schema_name) else {
+        return Err(TViewError::CatalogError {
+            operation: format!("Resolve backing view {view_oid:?}"),
+            pg_error: "view not found".to_string(),
+        });
+    };
+
+    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
+    let oid_map = build_oid_name_map(&dep_graph.base_tables)?;
+
+    cascade_paths
+        .iter()
+        .map(|json| {
+            let mut path: cascade_path::CascadePath =
+                serde_json::from_str(json).map_err(|e| TViewError::CatalogError {
+                    operation: "Parse cascade path".to_string(),
+                    pg_error: e.to_string(),
+                })?;
+            match oid_map.get(&path.source_table) {
+                Some(oid) => path.source_oid = *oid,
+                None => path.unresolvable = true,
+            }
+            for hop in &mut path.hops {
+                match oid_map.get(&hop.table_name) {
+                    Some(oid) => hop.table_oid = *oid,
+                    None => path.unresolvable = true,
+                }
+            }
+            serde_json::to_string(&path).map_err(|e| TViewError::CatalogError {
+                operation: "Serialize cascade path".to_string(),
+                pg_error: e.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Build a map from table name → OID for a set of base table OIDs.
@@ -585,32 +647,27 @@ fn resolve_join_path(
 /// dependency on `source_table` (e.g. a multi-hop cascade whose backing view
 /// references an intermediate view, not the leaf table). The caller treats an
 /// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
-fn view_source_columns(schema: &str, entity: &str, source_table: &str) -> Vec<String> {
-    // All three identifiers are bound as text parameters (no in-band SQL quoting)
-    // and cast to regnamespace/regclass by PostgreSQL.
+fn view_source_columns(schema: &str, entity: &str, source_oid: Oid) -> Vec<String> {
+    // The view and schema names are bound as text parameters (no in-band SQL
+    // quoting); the source table is matched by the OID the cascade path resolved,
+    // so a joined table in another schema is found too.
     const QUERY: &str = "SELECT a.attname::text AS col \
          FROM pg_depend d \
          JOIN pg_rewrite r ON r.oid = d.objid \
          JOIN pg_class v ON v.oid = r.ev_class \
          JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
          WHERE v.relname = $1 AND v.relnamespace = $2::regnamespace \
-           AND d.refobjid = $3::regclass AND d.refobjsubid > 0";
+           AND d.refobjid = $3 AND d.refobjsubid > 0";
     let view_name = format!("v_{entity}");
-    // Schema-qualified, identifier-quoted name for the ::regclass lookup.
-    let qi_src = format!(
-        "{}.{}",
-        quote_identifier(schema),
-        quote_identifier(source_table)
-    );
     let mut cols = Vec::new();
     let result = Spi::connect(|client| {
         // SAFETY: DatumWithOid::new wraps datum pointers for SPI parameter passing;
-        // view_name/schema/qi_src outlive this select call.
+        // view_name/schema outlive this select call.
         let text = PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value();
         let args = vec![
             unsafe { DatumWithOid::new(view_name.as_str(), text) },
             unsafe { DatumWithOid::new(schema, text) },
-            unsafe { DatumWithOid::new(qi_src.as_str(), text) },
+            unsafe { DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
         ];
         let rows = client.select(QUERY, None, &args)?;
         for row in rows {
@@ -622,7 +679,7 @@ fn view_source_columns(schema: &str, entity: &str, source_table: &str) -> Vec<St
     });
     if let Err(e) = result {
         notice!(
-            "view_source_columns({view_name}, {source_table}): {e} — cascade will always refresh"
+            "view_source_columns({view_name}, {source_oid:?}): {e} — cascade will always refresh"
         );
         return Vec::new();
     }
