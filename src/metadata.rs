@@ -203,6 +203,28 @@ CREATE EVENT TRIGGER pg_tviews_sql_drop
 COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
 'Deregisters and drops a TVIEW when its base table tb_<entity> is dropped (issue #53)';
 
+-- Whether candidate SQL defines the same view as view_oid (issue #81): a column
+-- rename rewrites a TVIEW's stored definition, and the rewrite is kept only if
+-- PostgreSQL renders it exactly like the renamed backing view. The EXCEPTION
+-- block turns any failure (syntax, unknown column) into false and discards the
+-- scratch view.
+CREATE OR REPLACE FUNCTION pg_tviews_defines_view(view_oid OID, candidate TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    same BOOLEAN;
+BEGIN
+    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' || candidate;
+    same := pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_rename_check'::regclass)
+            = pg_catalog.pg_get_viewdef(view_oid);
+    DROP VIEW pg_temp.pg_tviews_rename_check;
+    RETURN same;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END;
+$$;
+
 -- Catalog rows loaded by pg_restore carry the source database's OIDs inside
 -- cascade_paths (JSON text; view_oid / table_oid are regclass and re-resolve on
 -- their own). Rebind them to the restored relations as each row is inserted.

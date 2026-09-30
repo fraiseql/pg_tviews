@@ -17,6 +17,7 @@
 pub mod convert;
 pub mod create;
 pub mod drop;
+pub mod rename;
 
 pub use convert::convert_existing_table_to_tview;
 pub use create::create_tview;

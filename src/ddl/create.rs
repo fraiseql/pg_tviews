@@ -401,6 +401,7 @@ pub fn create_tview(
         &schema_name,
         &distinct_on_keys,
         &distinct_on_output_keys,
+        false,
     )?;
 
     // Step 8: Install triggers on base tables
@@ -419,6 +420,56 @@ pub fn create_tview(
         warning!("Failed to flush audit after CREATE: {}", e);
     }
 
+    Ok(())
+}
+
+/// Re-derive and replace the metadata of an existing TVIEW from `definition`,
+/// with the same analysis as [`create_tview`]. Used when a column rename has
+/// changed the text that defines `v_<entity>`; the relations themselves (and the
+/// base-table triggers) are unchanged.
+///
+/// # Errors
+/// Returns an error if the definition cannot be analyzed or the catalog update fails.
+pub fn reregister_metadata(
+    entity_name: &str,
+    schema_name: &str,
+    definition: &str,
+) -> TViewResult<()> {
+    let schema = infer_schema(definition)?;
+    let distinct_on_keys =
+        crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
+    let distinct_on_output_keys = if distinct_on_keys.is_empty() {
+        Vec::new()
+    } else {
+        crate::sql_parser::extract_distinct_on_output_keys(definition).map_err(|reason| {
+            TViewError::InvalidInput {
+                parameter: "DISTINCT ON key".to_string(),
+                reason,
+            }
+        })?
+    };
+    let view_name = format!("v_{entity_name}");
+    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
+    let cascade_paths = extract_and_resolve_cascade_paths(
+        definition,
+        entity_name,
+        &schema,
+        &dep_graph.base_tables,
+        schema_name,
+    )?;
+    register_metadata(
+        entity_name,
+        &view_name,
+        &format!("tv_{entity_name}"),
+        definition,
+        &schema,
+        &cascade_paths,
+        schema_name,
+        &distinct_on_keys,
+        &distinct_on_output_keys,
+        true,
+    )?;
+    crate::queue::cache::invalidate_all_caches();
     Ok(())
 }
 
@@ -1313,6 +1364,7 @@ fn register_metadata(
     schema_name: &str,
     distinct_on_keys: &[String],
     distinct_on_output_keys: &[String],
+    replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
     // CTE bodies are inside (...) so their UNION is at depth > 0 and not matched.
@@ -1444,6 +1496,24 @@ fn register_metadata(
         .collect::<Vec<_>>()
         .join(",");
 
+    // A re-registration (after a column rename) replaces every derived column but
+    // keeps created_at.
+    let on_conflict = if replace {
+        "ON CONFLICT (entity) DO UPDATE SET \
+            view_oid = EXCLUDED.view_oid, table_oid = EXCLUDED.table_oid, \
+            definition = EXCLUDED.definition, cascade_paths = EXCLUDED.cascade_paths, \
+            fk_columns = EXCLUDED.fk_columns, uuid_fk_columns = EXCLUDED.uuid_fk_columns, \
+            dependency_types = EXCLUDED.dependency_types, \
+            dependency_paths = EXCLUDED.dependency_paths, \
+            array_match_keys = EXCLUDED.array_match_keys, \
+            distinct_on_keys = EXCLUDED.distinct_on_keys, \
+            distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
+            direct_map_columns = EXCLUDED.direct_map_columns, \
+            direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union"
+    } else {
+        "ON CONFLICT (entity) DO NOTHING"
+    };
+
     // Insert metadata record (entity + definition parameterized; OIDs and array literals are safe internal values)
     let insert_meta_sql = format!(
         "INSERT INTO pg_tview_meta (
@@ -1463,7 +1533,7 @@ fn register_metadata(
             direct_map_keys,
             is_union
         ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
-        ON CONFLICT (entity) DO NOTHING",
+        {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
         cascade_paths_literal,
