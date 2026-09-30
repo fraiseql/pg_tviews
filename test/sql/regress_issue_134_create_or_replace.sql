@@ -16,6 +16,7 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 DROP SCHEMA IF EXISTS app CASCADE;
 DROP SCHEMA IF EXISTS other CASCADE;
+DROP SCHEMA IF EXISTS "Odd.Schema" CASCADE;
 DROP ROLE IF EXISTS regress_134_migrator;
 DROP ROLE IF EXISTS regress_134_reader;
 DROP ROLE IF EXISTS regress_134_stranger;
@@ -37,6 +38,7 @@ CREATE ROLE regress_134_reader;
 CREATE ROLE regress_134_stranger;
 CREATE SCHEMA app AUTHORIZATION regress_134_migrator;
 CREATE SCHEMA other AUTHORIZATION regress_134_migrator;
+CREATE SCHEMA "Odd.Schema" AUTHORIZATION regress_134_migrator;
 GRANT USAGE ON SCHEMA app, other TO regress_134_reader, regress_134_stranger;
 GRANT EXECUTE ON FUNCTION must(boolean, text), error_of(text), cor(text, text, jsonb) TO PUBLIC;
 
@@ -150,6 +152,16 @@ SELECT must(error_of($x$SELECT cor('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data
     FROM app.tb_post p $$)$x$) LIKE '%row level security%', 'RLS refused');
 ALTER TABLE app.tv_post DISABLE ROW LEVEL SECURITY;
+ALTER TABLE app.tv_post ADD CONSTRAINT tv_post_pk_positive CHECK (pk_post > 0);
+SELECT must(error_of($x$SELECT cor('app.tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data
+    FROM app.tb_post p $$)$x$) LIKE '%constraint tv_post_pk_positive%', 'user constraint refused');
+ALTER TABLE app.tv_post DROP CONSTRAINT tv_post_pk_positive;
+COMMENT ON COLUMN app.tv_post.data IS 'the post';
+SELECT must(error_of($x$SELECT cor('app.tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data
+    FROM app.tb_post p $$)$x$) LIKE '%comment on column data%', 'column comment refused');
+COMMENT ON COLUMN app.tv_post.data IS NULL;
 
 -- 6. Aggregate TVIEWs: created with group_keys, round trip, and group_keys: null
 --    turns one into a plain TVIEW (a rebuild).
@@ -223,10 +235,40 @@ SELECT must(to_regclass('app.tv_tag') IS NULL
             AND NOT EXISTS (SELECT 1 FROM tviews.registry WHERE entity = 'tag'), 'qualified drop');
 SELECT must(error_of($$SELECT tviews.pg_tviews_drop('other.tv_user')$$) IS NOT NULL,
             'drop in the wrong schema');
+
+-- 13. A double-quoted part may contain dots.
+CREATE TABLE "Odd.Schema".tb_odd (pk_odd int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), label text);
+INSERT INTO "Odd.Schema".tb_odd (pk_odd, label) VALUES (1, 'o1');
+SELECT must(cor('"Odd.Schema".tv_odd', $$
+    SELECT pk_odd, id, jsonb_build_object('l', label) AS data FROM "Odd.Schema".tb_odd $$)
+    = 'created', 'quoted schema created');
+SELECT must((SELECT schema FROM tviews.registry WHERE entity = 'odd') = 'Odd.Schema',
+            'quoted schema kept');
+SELECT must(cor('"Odd.Schema".tv_odd', $$
+    SELECT pk_odd, id, label, jsonb_build_object('l', label) AS data FROM "Odd.Schema".tb_odd $$)
+    = 'rebuilt', 'quoted schema rebuilt');
+SELECT tviews.pg_tviews_drop('"Odd.Schema".tv_odd');
+SELECT must(NOT EXISTS (SELECT 1 FROM tviews.registry WHERE entity = 'odd'), 'quoted schema drop');
+SELECT must(error_of($$SELECT cor('"app.tv_user', 'SELECT 1')$$) LIKE '%tview_name%',
+            'unterminated quote');
+RESET ROLE;
+
+-- 14. A registration whose table is gone (dropped where the hook did not run) can
+--     be dropped by the owner of what is left.
+UPDATE tviews.pg_tview_meta SET table_oid = 4000000000 WHERE entity = 'note';
+SET ROLE regress_134_stranger;
+SELECT must(error_of($$SELECT tviews.pg_tviews_drop('app.tv_note')$$) LIKE '42501:%',
+            'stranger dropped a stale registration');
+SET ROLE regress_134_migrator;
+SELECT tviews.pg_tviews_drop('app.tv_note');
+SELECT must(NOT EXISTS (SELECT 1 FROM tviews.registry WHERE entity = 'note')
+            AND to_regclass('app.v_note') IS NULL, 'stale registration dropped');
+DROP TABLE app.tv_note;
 RESET ROLE;
 
 DROP SCHEMA app CASCADE;
 DROP SCHEMA other CASCADE;
+DROP SCHEMA "Odd.Schema" CASCADE;
 DROP EXTENSION pg_tviews CASCADE;
 DROP OWNED BY regress_134_migrator, regress_134_reader, regress_134_stranger;
 DROP ROLE regress_134_migrator;

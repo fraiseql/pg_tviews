@@ -53,8 +53,10 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
             error: e.to_string(),
         }
     })?;
-    if let Some(ref m) = meta {
-        crate::owner::require_owner(m.tview_oid, &format!("tv_{entity_name}"))?;
+    if let Some(ref m) = meta
+        && let Some(owned) = owned_relation(m)?
+    {
+        crate::owner::require_owner(owned, &format!("tv_{entity_name}"))?;
     }
 
     // Step 2: Remove the TVIEW's triggers from its base tables. They are found by
@@ -208,6 +210,31 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
         pg_error: format!("{e:?}"),
     })
     .map(|opt| opt.unwrap_or(false))
+}
+
+/// The relation whose owner may drop the TVIEW: its table, or its view when the
+/// table is gone (dropped where the hook did not run). `None` when both are gone:
+/// the registration is all that is left, and any role may remove it.
+fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys::Oid>> {
+    let args = [meta.tview_oid, meta.view_oid].map(|oid| {
+        // SAFETY: the datum copies the OID.
+        unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }
+    });
+    Spi::connect(|client| {
+        client
+            .select(
+                "SELECT COALESCE((SELECT oid FROM pg_catalog.pg_class WHERE oid = $1), \
+                                 (SELECT oid FROM pg_catalog.pg_class WHERE oid = $2))",
+                None,
+                &args,
+            )?
+            .first()
+            .get_one::<pg_sys::Oid>()
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Find the relations of TVIEW {}", meta.entity_name),
+        pg_error: e.to_string(),
+    })
 }
 
 /// Drop metadata record from `pg_tview_meta`

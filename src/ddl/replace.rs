@@ -131,24 +131,74 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
 }
 
 /// Split a TVIEW name, `tv_<entity>`, `<entity>` or `schema.tv_<entity>`, into
-/// its schema (if named) and entity.
+/// its schema (if named) and entity. A part is taken as written, as the names of
+/// earlier releases were; double-quote it (`""` for a quote) to include a dot.
 ///
 /// # Errors
-/// Returns an error if a part is not a valid identifier.
+/// Returns an error if the name does not parse, or the entity is not a valid
+/// identifier.
 pub(crate) fn parse_name(name: &str) -> TViewResult<(Option<String>, String)> {
-    let (schema, table) = match name.split_once('.') {
-        Some((schema, table)) => (Some(schema), table),
-        None => (None, name),
+    let mut parts = split_identifiers(name)
+        .ok_or_else(|| invalid("tview_name", format!("{name} is not a valid TVIEW name")))?;
+    let table = parts.pop().unwrap_or_default();
+    let schema = match parts.as_slice() {
+        [] => None,
+        [schema] => Some(schema.clone()),
+        _ => {
+            return Err(invalid(
+                "tview_name",
+                format!("{name} has too many dotted parts: use schema.tv_<entity>"),
+            ));
+        }
     };
-    if let Some(schema) = schema {
-        crate::validation::validate_sql_identifier(schema, "schema")?;
-    }
-    crate::validation::validate_sql_identifier(table, "tview_name")?;
-    let entity = table.strip_prefix("tv_").unwrap_or(table);
-    Ok((schema.map(str::to_string), entity.to_string()))
+    crate::validation::validate_sql_identifier(&table, "tview_name")?;
+    let entity = table.strip_prefix("tv_").unwrap_or(&table);
+    Ok((schema, entity.to_string()))
 }
 
-/// Schema of the `tv_*` table of a registered entity.
+/// The dot-separated parts of `name`, double-quoted parts unquoted, or `None` if a
+/// part is empty or a quote is not closed.
+fn split_identifiers(name: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut chars = name.chars().peekable();
+    loop {
+        let mut part = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            loop {
+                match chars.next()? {
+                    '"' if chars.peek() == Some(&'"') => {
+                        chars.next();
+                        part.push('"');
+                    }
+                    '"' => break,
+                    c => part.push(c),
+                }
+            }
+            if !matches!(chars.peek(), None | Some('.')) {
+                return None;
+            }
+        } else {
+            while let Some(&c) = chars.peek() {
+                if c == '.' {
+                    break;
+                }
+                part.push(c);
+                chars.next();
+            }
+        }
+        if part.is_empty() {
+            return None;
+        }
+        parts.push(part);
+        if chars.next().is_none() {
+            return Some(parts);
+        }
+    }
+}
+
+/// Schema of a registered entity: that of its `tv_*` table, or of its view when
+/// the table is gone.
 ///
 /// # Errors
 /// Returns an error if the catalog query fails.
@@ -158,7 +208,9 @@ pub(crate) fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
             .select(
                 &format!(
                     "SELECT n.nspname::text FROM {} m \
-                     JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                     JOIN pg_catalog.pg_class c \
+                       ON c.oid = COALESCE((SELECT t.oid FROM pg_catalog.pg_class t \
+                                           WHERE t.oid = m.table_oid), m.view_oid) \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                      WHERE m.entity = $1",
                     crate::utils::meta_table()
@@ -235,7 +287,7 @@ pub(crate) fn create_or_replace(
     check_key(&entity, &normalized)?;
     let same_query = defines_view(meta.view_oid, &normalized_sql)?;
 
-    let current = current_storage(meta.tview_oid)?;
+    let current = current_storage(&entity)?;
     let desired = Storage {
         logged: options.logged.unwrap_or(current.logged),
         fillfactor: options.fillfactor.unwrap_or(current.fillfactor),
@@ -310,26 +362,19 @@ fn defines_view(view_oid: pg_sys::Oid, definition: &str) -> TViewResult<bool> {
     Ok(same == Some(true))
 }
 
-/// The table's actual storage, read from the catalogs as `tviews.registry` does.
-fn current_storage(table: pg_sys::Oid) -> TViewResult<Storage> {
+/// The table's actual storage, as `tviews.registry` reports it.
+fn current_storage(entity: &str) -> TViewResult<Storage> {
     let (logged, fillfactor, data_gin_index) = Spi::connect(|client| {
         client
             .select(
-                "SELECT c.relpersistence = 'p', \
-                        COALESCE((SELECT o.option_value::integer \
-                                  FROM pg_catalog.pg_options_to_table(c.reloptions) o \
-                                  WHERE o.option_name = 'fillfactor'), 100), \
-                        EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
-                                JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
-                                JOIN pg_catalog.pg_am am ON am.oid = ic.relam \
-                                 AND am.amname = 'gin' \
-                                JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
-                                 AND a.attname = 'data' AND a.attnum = i.indkey[0] \
-                                WHERE i.indrelid = c.oid AND i.indnatts = 1 \
-                                  AND i.indpred IS NULL) \
-                 FROM pg_catalog.pg_class c WHERE c.oid = $1",
+                &format!(
+                    "SELECT (options->>'logged')::boolean, (options->>'fillfactor')::integer, \
+                            (options->>'data_gin_index')::boolean \
+                     FROM {}.registry WHERE entity = $1",
+                    crate::utils::ext_schema()
+                ),
                 None,
-                &[oid(table)],
+                &[text(entity)],
             )?
             .first()
             .get_three::<bool, i32, bool>()
@@ -432,7 +477,11 @@ fn rebuild(
     .map_err(|e| catalog("Read the GraphQL type name", &e))?;
     let user_indexes = user_indexes(entity, &tv_name, meta.tview_oid)?;
 
-    super::drop::drop_tview(&format!("{schema}.{tv_name}"), false, false)?;
+    super::drop::drop_tview(
+        &format!("{}.{tv_name}", quote_identifier(schema)),
+        false,
+        false,
+    )?;
     create::create_tview_in(&tv_name, query, schema, group_keys, storage)?;
 
     let (tv, view) = (
@@ -516,6 +565,8 @@ const REBUILD_REFUSALS: &str = "\
       AND d.refobjid IN ($1, $2) AND d.deptype = 'n' \
       AND NOT (d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass \
                AND (SELECT ev_class FROM pg_catalog.pg_rewrite WHERE oid = d.objid) = $2) \
+      AND NOT (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass \
+               AND (SELECT conrelid FROM pg_catalog.pg_constraint WHERE oid = d.objid) = $1) \
   UNION ALL SELECT 'row level security is enabled' FROM pg_catalog.pg_class \
     WHERE oid = $1 AND (relrowsecurity OR relforcerowsecurity) \
   UNION ALL SELECT pg_catalog.format('policy %I', polname) FROM pg_catalog.pg_policy \
@@ -539,7 +590,14 @@ const REBUILD_REFUSALS: &str = "\
   UNION ALL SELECT pg_catalog.format('statistics object %I', stxname) \
     FROM pg_catalog.pg_statistic_ext WHERE stxrelid = $1 \
   UNION ALL SELECT 'a security label' FROM pg_catalog.pg_seclabel \
-    WHERE classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND objoid IN ($1, $2)";
+    WHERE classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND objoid IN ($1, $2) \
+  UNION ALL SELECT pg_catalog.format('constraint %I', conname) FROM pg_catalog.pg_constraint \
+    WHERE conrelid = $1 AND contype NOT IN ('p', 'n') \
+  UNION ALL SELECT pg_catalog.format('a comment on column %I', a.attname) \
+    FROM pg_catalog.pg_description d JOIN pg_catalog.pg_attribute a \
+      ON a.attrelid = d.objoid AND a.attnum = d.objsubid \
+    WHERE d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+      AND d.objoid IN ($1, $2) AND d.objsubid > 0";
 
 /// Statements that give the rebuilt table (`$1`) and view (`$2`) the owner,
 /// privileges and comment they have now, in the order to run them.
@@ -672,6 +730,31 @@ mod tests {
             (Some("app".to_string()), "post".to_string())
         );
         assert!(parse_name("app.tv post").is_err());
+    }
+
+    #[test]
+    fn test_parse_name_quoting() {
+        assert_eq!(
+            parse_name("\"Odd.Schema\".tv_post").unwrap(),
+            (Some("Odd.Schema".to_string()), "post".to_string())
+        );
+        assert_eq!(
+            parse_name("\"a\"\"b\".\"tv_post\"").unwrap(),
+            (Some("a\"b".to_string()), "post".to_string())
+        );
+        assert_eq!(
+            parse_name("App.tv_Post").unwrap(),
+            (Some("App".to_string()), "Post".to_string())
+        );
+        for bad in [
+            "\"app.tv_post",
+            "app..tv_post",
+            "a.b.tv_post",
+            "\"app\"x.tv_post",
+            "",
+        ] {
+            assert!(parse_name(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

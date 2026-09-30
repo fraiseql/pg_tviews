@@ -65,7 +65,8 @@ SELECT tviews.pg_tviews_drop('app.tv_post', if_exists => true);
 ```
 
 **Name.** `tv_post`, `post` and `app.tv_post` name the same TVIEW; an unqualified name
-resolves to `current_schema()`. The entity is unique across the database: naming
+resolves to `current_schema()`. Each part is taken as written, case included;
+double-quote a part that contains a dot: `"app.v2".tv_post`. The entity is unique across the database: naming
 `app.tv_post` while `post` is registered in another schema is an error. The name must
 match the definition's key (`pk_post`), including for `DISTINCT ON` and aggregate TVIEWs.
 
@@ -101,13 +102,20 @@ under the current `search_path` does. An invalid definition raises its error. Pa
   added to the table are carried over; an added index that no longer applies fails the
   call, naming it. A rebuild is refused, naming the reason, when an object depends on the
   table or view, or the table has row level security or policies, triggers, rules,
-  publication membership, a non-default replica identity, per-column statistics targets
-  or privileges, extended statistics, or security labels.
+  publication membership, a non-default replica identity, constraints other than the
+  primary key, per-column statistics targets, privileges or comments, extended
+  statistics, or security labels.
 
 **Who may call it.** The DDL runs as the caller: the new objects belong to it, creating
 them needs `CREATE` on the schema, the view needs `SELECT` on what it reads, and the
 base-table triggers need `TRIGGER` on each base table. Replacing or dropping an existing
 TVIEW requires owning it (or being a member of the owning role). No superuser is needed.
+A registration whose table is gone can be dropped by the owner of its view, or by anyone
+once the view is gone too.
+
+The comparison creates a temporary view, so the caller needs the `TEMPORARY` privilege
+on the database (granted to `PUBLIC` by default), and a transaction that called it on
+an existing TVIEW cannot be prepared with `PREPARE TRANSACTION`.
 
 **Serialization.** Every call that registers, changes or drops a TVIEW holds
 `pg_advisory_xact_lock(<class>, hashtext(entity))` until the transaction ends, so two
