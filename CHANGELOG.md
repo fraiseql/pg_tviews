@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `pg_tviews_set_typename()` overrides the reported type name (new
   `pg_tview_meta.graphql_typename` column); `pg_tviews.report_max_tracked` bounds the
   journal. See `docs/user-guides/graphql-cascade.md`.
+- **`pg_tviews_profile(entity DEFAULT NULL, fanout_warn DEFAULT 1000)`** (#74): per-TVIEW
+  physical health from the catalogs and statistics views (sizes, TOAST, HOT ratio,
+  fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out
+  per `fk_*`) with a `warnings` column. Read-only and callable on a standby; the columns
+  are a stable contract (`docs/reference/profile.md`).
 
 - **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
   an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
@@ -41,8 +46,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `oid`, so a dump stores them as names (#96). They now print as relation names;
   cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
+
+### Deprecated
+
+- **`pg_tviews_convert_existing_table()` now raises a deprecation error** (#90). It failed
+  on PG18 with a Datum type error and, by design, replaced the table with a view over a
+  literal `VALUES` snapshot (no triggers, no refresh). Use `pg_tviews_create()` or
+  `CREATE TABLE tv_<entity> AS SELECT ...`. The function is removed in the next breaking
+  release.
+
+### Removed
+
+- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
+  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
+
 ### Fixed
 
+- **`PREPARE TRANSACTION` works with pending TVIEW refreshes** (#59). It was rejected;
+  the queue is now flushed first, as before `COMMIT`, so the TVIEW writes belong to the
+  prepared transaction and `COMMIT PREPARED` / `ROLLBACK PREPARED` apply or discard them.
+  The never-built GID queue scaffolding (`pg_tview_pending_refreshes`) is gone.
+- **The first write to an empty UNLOGGED TVIEW no longer locks out readers.** It looked like
+  a crash-reset table, and the repopulation used `TRUNCATE`, holding ACCESS EXCLUSIVE until
+  the transaction ended (until `COMMIT PREPARED` under 2PC). An empty TVIEW is now filled
+  with a plain `INSERT … SELECT`; `pg_tviews_rebuild_all()` does the same.
+- `pg_tviews_cascade()` / `pg_tviews_insert()` / `pg_tviews_delete()` failed with
+  `SpiError(NoAttribute)`: their catalog query lacked columns the loader reads.
+
+- **Normal DDL is quiet again (#92).** `CREATE TABLE tv_*`, CTAS and `pg_tviews_create` no
+  longer print `EVENT TRIGGER` banners, `DEBUG:` lines or `spi_run_ddl()` INFO output. The
+  diagnostics are `DEBUG1` messages (`client_min_messages = debug1`), or NOTICEs with
+  `SET pg_tviews.log_level = 'debug'`.
 - **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
   only the eponymous case was handled: dropping `tb_<entity>` deregistered
   `tv_<entity>`. A TVIEW that read the dropped table under another name, for

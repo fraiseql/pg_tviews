@@ -57,38 +57,52 @@ fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
 /// be resolved, or the truncate/insert operations fail.
 #[pg_extern]
 fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
+    let (qi_tv, insert) = rebuild_statements(entity)?;
+    Spi::run(&format!("TRUNCATE {qi_tv}"))?;
+    Spi::run(&insert)?;
+    Ok(())
+}
+
+/// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`.
+///
+/// Used when a TVIEW is found empty while its view is not (an UNLOGGED table reset
+/// by a crash restart or promotion, or a TVIEW created empty). Unlike
+/// [`pg_tviews_refresh`] it takes only a ROW EXCLUSIVE lock, so readers are never
+/// blocked, even when the transaction stays prepared (2PC) for a while.
+///
+/// # Errors
+/// Returns error if the entity is not registered or the insert fails.
+pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
+    let (_, insert) = rebuild_statements(entity)?;
+    Spi::run(&insert)?;
+    Ok(())
+}
+
+/// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
+/// its backing view. The explicit column list comes from the view's own
+/// columns, which excludes the table-only `created_at`/`updated_at` columns.
+fn rebuild_statements(entity: &str) -> TViewResult<(String, String)> {
     use crate::catalog::TviewMeta;
 
     let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
         entity: entity.to_string(),
     })?;
-
-    let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
-    let view_name = crate::utils::lookup_view_for_source(meta.view_oid)?;
-
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let view_columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-
     if view_columns.is_empty() {
         return Err(TViewError::CatalogError {
-            operation: format!("Get columns for view {view_name}"),
+            operation: format!("Get columns for view {qi_view}"),
             pg_error: "View has no selectable columns".to_string(),
         });
     }
-
     let col_list = view_columns
         .iter()
         .map(|c| quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ");
-    let qi_tv = quote_identifier(&tv_name);
-    let qi_view = quote_identifier(&view_name);
-
-    Spi::run(&format!("TRUNCATE {qi_tv}"))?;
-    Spi::run(&format!(
-        "INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}"
-    ))?;
-
-    Ok(())
+    let insert = format!("INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}");
+    Ok((qi_tv, insert))
 }
 
 /// Create the propagation indexes `(fk_<x>, pk_<entity>)` that TVIEWs created

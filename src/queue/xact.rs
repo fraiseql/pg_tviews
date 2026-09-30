@@ -2,7 +2,6 @@ use super::ops::{
     clear_queue, is_crash_recovery_checked, mark_crash_recovery_checked, take_queue_snapshot,
 };
 use crate::TViewResult;
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::collections::HashSet;
@@ -137,7 +136,14 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::affected::clear();
         }
         XactEvent::Prepare => {
-            // PREPARE TRANSACTION also goes through ProcessUtility hook.
+            // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
+            // the refresh writes are part of the prepared transaction. This backend's
+            // transaction ends here: drop its in-memory state (no SPI in callbacks).
+            crate::suspend::force_resume();
+            clear_queue();
+            super::patch::clear_patch_map();
+            super::ops::clear_crash_recovery_cache();
+            super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
             super::affected::clear();
@@ -344,16 +350,9 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 if !is_crash_recovery_checked(&entity) {
                     mark_crash_recovery_checked(&entity);
                     if crate::lifecycle::detect_post_crash_truncation(&entity)? {
-                        // TVIEW is empty but backing view has data - perform full refresh first
-                        Spi::run_with_args(
-                            "SELECT pg_tviews_refresh($1)",
-                            &[unsafe {
-                                DatumWithOid::new(
-                                    &entity,
-                                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                                )
-                            }],
-                        )?;
+                        // The TVIEW is empty but its view is not: fill it. No TRUNCATE, so
+                        // no ACCESS EXCLUSIVE lock held until the transaction ends.
+                        crate::admin::fill_empty_tview(&entity)?;
                     }
                 }
 
@@ -576,7 +575,3 @@ fn refresh_and_get_parents(
 
     Ok(parent_keys)
 }
-
-// NOTE: Full 2PC support (PREPARE TRANSACTION with queue persistence) is not
-// implemented in 0.1.0. The ProcessUtility hook rejects PREPARE TRANSACTION
-// when TVIEW refreshes are pending. See hooks.rs for the guard.

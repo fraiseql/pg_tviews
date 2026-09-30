@@ -2,7 +2,6 @@
 //!
 //! This module manages the system catalog tables for TVIEW metadata:
 //! - **`pg_tview_meta`**: Core TVIEW definitions and relationships
-//! - **`pg_tview_pending_refreshes`**: 2PC transaction queue persistence
 //! - **`pg_tview_monitoring`**: Performance metrics and statistics
 //! - **Schema Management**: Automatic table creation and updates
 //!
@@ -14,12 +13,6 @@
 //! - SQL definition and dependencies
 //! - Foreign key relationships
 //! - Dependency types and paths
-//!
-//! ### `pg_tview_pending_refreshes`
-//! Persists refresh queues for 2PC transactions:
-//! - Transaction GID linkage
-//! - Serialized refresh operations
-//! - Expiration handling
 //!
 //! ## Extension Lifecycle
 //!
@@ -327,6 +320,213 @@ FROM public.pg_tview_meta
 GROUP BY entity;
     ",
     name = "monitoring_views",
+    requires = ["create_metadata_tables"]
+);
+
+// Per-TVIEW physical health report (issue #74). Pure SQL over the catalogs and the
+// statistics views, so it is read-only and callable on a hot standby.
+extension_sql!(
+    r"
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_profile(
+    p_entity    TEXT   DEFAULT NULL,
+    fanout_warn BIGINT DEFAULT 1000)
+RETURNS TABLE (
+    entity                      TEXT,
+    tview                       TEXT,
+    persistence                 TEXT,
+    replica_readable            BOOLEAN,
+    rows_estimate               BIGINT,
+    heap_bytes                  BIGINT,
+    index_bytes                 BIGINT,
+    toast_bytes                 BIGINT,
+    avg_row_width               INTEGER,
+    data_avg_width              INTEGER,
+    fillfactor                  INTEGER,
+    n_tup_upd                   BIGINT,
+    n_tup_hot_upd               BIGINT,
+    hot_ratio                   DOUBLE PRECISION,
+    n_dead_tup                  BIGINT,
+    last_vacuum                 TIMESTAMPTZ,
+    last_autovacuum             TIMESTAMPTZ,
+    all_visible_fraction        DOUBLE PRECISION,
+    unused_indexes              TEXT[],
+    missing_propagation_indexes TEXT[],
+    fanout                      JSONB,
+    warnings                    TEXT[])
+LANGUAGE plpgsql
+STABLE
+SET search_path = pg_catalog, pg_temp
+AS $$
+#variable_conflict use_column
+DECLARE
+    r            RECORD;
+    f            RECORD;
+    col          TEXT;
+    idx          TEXT;
+    vis_schema   NAME;
+    all_visible  BIGINT;
+    stats_reset  TIMESTAMPTZ := (SELECT d.stats_reset FROM pg_stat_database d
+                                 WHERE d.datname = current_database());
+BEGIN
+    vis_schema := (SELECT n.nspname FROM pg_extension e
+                   JOIN pg_namespace n ON n.oid = e.extnamespace
+                   WHERE e.extname = 'pg_visibility');
+
+    FOR r IN
+        SELECT m.entity AS ent, c.oid AS rel, n.nspname AS nsp, c.relname AS tbl,
+               c.relpersistence AS pers, c.reltuples, c.relpages, c.reltoastrelid,
+               c.reloptions
+        FROM @extschema@.pg_tview_meta m
+        JOIN pg_class c ON c.oid = m.table_oid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p_entity IS NULL OR m.entity = p_entity
+        ORDER BY m.entity
+    LOOP
+        entity           := r.ent;
+        tview            := quote_ident(r.nsp) || '.' || quote_ident(r.tbl);
+        persistence      := CASE r.pers WHEN 'u' THEN 'unlogged' ELSE 'logged' END;
+        replica_readable := r.pers = 'p';
+        rows_estimate    := CASE WHEN r.reltuples < 0 THEN NULL ELSE r.reltuples::BIGINT END;
+        heap_bytes       := pg_relation_size(r.rel);
+        index_bytes      := pg_indexes_size(r.rel);
+        toast_bytes      := CASE WHEN r.reltoastrelid = 0 THEN 0
+                                 ELSE pg_relation_size(r.reltoastrelid) END;
+
+        SELECT sum(s.avg_width)::INTEGER, max(s.avg_width) FILTER (WHERE s.attname = 'data')
+          INTO avg_row_width, data_avg_width
+          FROM pg_stats s WHERE s.schemaname = r.nsp AND s.tablename = r.tbl;
+
+        fillfactor := coalesce((SELECT split_part(o, '=', 2)::INTEGER
+                                FROM unnest(r.reloptions) o WHERE o LIKE 'fillfactor=%'), 100);
+
+        SELECT s.n_tup_upd, s.n_tup_hot_upd, s.n_dead_tup, s.last_vacuum, s.last_autovacuum
+          INTO n_tup_upd, n_tup_hot_upd, n_dead_tup, last_vacuum, last_autovacuum
+          FROM pg_stat_all_tables s WHERE s.relid = r.rel;
+        hot_ratio := CASE WHEN n_tup_upd > 0 THEN n_tup_hot_upd::FLOAT8 / n_tup_upd END;
+
+        -- The visibility map of an UNLOGGED table cannot be read during recovery.
+        all_visible_fraction := NULL;
+        IF vis_schema IS NOT NULL AND r.relpages > 0
+           AND NOT (pg_is_in_recovery() AND r.pers = 'u') THEN
+            EXECUTE format('SELECT all_visible FROM %I.pg_visibility_map_summary($1)', vis_schema)
+               INTO all_visible USING r.rel::REGCLASS;
+            all_visible_fraction := all_visible::FLOAT8 / r.relpages;
+        END IF;
+
+        -- Never-scanned indexes, except the primary key, unique indexes and the
+        -- propagation indexes cascades need (leading fk_* column).
+        unused_indexes := ARRAY(
+            SELECT quote_ident(si.indexrelname) FROM pg_index i
+            JOIN pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+            WHERE i.indrelid = r.rel AND NOT i.indisprimary AND NOT i.indisunique
+              AND si.idx_scan = 0 AND a.attname NOT LIKE 'fk\_%'
+            ORDER BY 1);
+
+        -- Integer fk_* columns that no index leads with (issue #71).
+        missing_propagation_indexes := ARRAY(
+            SELECT a.attname::TEXT FROM pg_attribute a
+            WHERE a.attrelid = r.rel AND a.attnum > 0 AND NOT a.attisdropped
+              AND a.attname LIKE 'fk\_%'
+              AND a.atttypid IN ('int2'::REGTYPE, 'int4'::REGTYPE, 'int8'::REGTYPE)
+              AND NOT EXISTS (SELECT 1 FROM pg_index i
+                              WHERE i.indrelid = r.rel AND i.indkey[0] = a.attnum)
+            ORDER BY 1);
+
+        -- Estimated rows per key of each fk_* column, from the planner statistics:
+        -- p50 = rows / distinct keys, max = top MCV, p99 = the MCV at the 1% rank
+        -- (or the average of the non-MCV keys when the MCV list is shorter).
+        fanout := (
+            SELECT jsonb_object_agg(x.attname, jsonb_build_object(
+                       'p50', round(r.reltuples / x.nd),
+                       'p99', round(CASE
+                           WHEN x.k <= coalesce(array_length(x.mcf, 1), 0)
+                               THEN x.mcf[x.k] * r.reltuples
+                           WHEN x.nd > coalesce(array_length(x.mcf, 1), 0)
+                               THEN (1 - coalesce((SELECT sum(v) FROM unnest(x.mcf) v), 0))
+                                    * r.reltuples / (x.nd - coalesce(array_length(x.mcf, 1), 0))
+                           ELSE r.reltuples / x.nd END),
+                       'max', round(coalesce(x.mcf[1], 1 / x.nd) * r.reltuples)))
+            FROM (SELECT s.attname,
+                         s.most_common_freqs AS mcf,
+                         greatest(CASE WHEN s.n_distinct < 0 THEN -s.n_distinct * r.reltuples
+                                       ELSE s.n_distinct END, 1) AS nd,
+                         greatest(floor(greatest(CASE WHEN s.n_distinct < 0
+                                                      THEN -s.n_distinct * r.reltuples
+                                                      ELSE s.n_distinct END, 1) * 0.01)::INTEGER, 1) AS k
+                  FROM pg_stats s
+                  WHERE s.schemaname = r.nsp AND s.tablename = r.tbl
+                    AND s.attname LIKE 'fk\_%' AND r.reltuples > 0) x);
+
+        warnings := ARRAY[]::TEXT[];
+        FOREACH col IN ARRAY missing_propagation_indexes LOOP
+            warnings := warnings || format(
+                '%s has no index: a cascade into %s scans the whole table. Run pg_tviews_ensure_propagation_indexes(%L)',
+                col, tview, r.ent);
+        END LOOP;
+        IF n_tup_upd > 1000 AND hot_ratio < 0.5 THEN
+            FOR idx IN
+                SELECT DISTINCT quote_ident(ic.relname) FROM pg_index i
+                JOIN pg_class ic ON ic.oid = i.indexrelid
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+                WHERE i.indrelid = r.rel AND a.attname IN ('data', 'updated_at')
+                ORDER BY 1
+            LOOP
+                warnings := warnings || format(
+                    'HOT ratio %s%%: index %s on a column every refresh changes prevents HOT updates',
+                    round(hot_ratio * 100), idx);
+            END LOOP;
+        END IF;
+        FOR idx IN
+            SELECT quote_ident(si.indexrelname) FROM pg_index i
+            JOIN pg_class ic ON ic.oid = i.indexrelid
+            JOIN pg_am am ON am.oid = ic.relam
+            JOIN pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+            WHERE i.indrelid = r.rel AND am.amname = 'gin' AND a.attname = 'data'
+              AND si.idx_scan = 0
+            ORDER BY 1
+        LOOP
+            warnings := warnings || format(
+                'GIN index %s on data never scanned since statistics reset (%s)',
+                idx, coalesce(stats_reset::TEXT, 'never'));
+        END LOOP;
+        IF fillfactor = 100 AND n_tup_upd > 0 AND n_tup_upd > coalesce(rows_estimate, 0) THEN
+            warnings := warnings ||
+                'fillfactor 100 on a frequently updated TVIEW: refreshed rows cannot stay on their page (see pg_tviews.fillfactor)'::TEXT;
+        END IF;
+        IF toast_bytes > 0 AND toast_bytes > 0.3 * (heap_bytes + toast_bytes) THEN
+            warnings := warnings || format(
+                '%s%% of the table is TOAST: each refresh rewrites whole data documents (see docs/adr/0094-large-document-refresh.md)',
+                round(100.0 * toast_bytes / (heap_bytes + toast_bytes)));
+        END IF;
+        FOR f IN SELECT key, (value->>'p99')::BIGINT AS p99 FROM jsonb_each(fanout) ORDER BY key LOOP
+            IF f.p99 > fanout_warn THEN
+                warnings := warnings || format(
+                    'p99 fan-out through %s is about %s rows per key: one parent change refreshes that many rows',
+                    f.key, f.p99);
+            END IF;
+        END LOOP;
+        IF r.pers = 'u' THEN
+            warnings := warnings ||
+                'UNLOGGED: not readable on hot standbys, empty after promotion or a crash restart (pg_tviews_set_logged)'::TEXT;
+        END IF;
+        IF rows_estimate > 0 AND n_dead_tup > 0.2 * rows_estimate THEN
+            warnings := warnings || format(
+                '%s%% dead tuples: autovacuum is behind (last autovacuum %s)',
+                round(100.0 * n_dead_tup / rows_estimate),
+                coalesce(last_autovacuum::TEXT, 'never'));
+        END IF;
+
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION @extschema@.pg_tviews_profile(TEXT, BIGINT) IS
+'Physical health of each TVIEW (sizes, HOT ratio, dead tuples, indexes, fan-out) with warnings';
+    ",
+    name = "profile_function",
     requires = ["create_metadata_tables"]
 );
 

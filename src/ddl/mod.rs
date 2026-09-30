@@ -14,12 +14,10 @@
 //! 4. Set up triggers on base tables for change tracking
 //! 5. Create the actual view with refresh triggers
 
-pub mod convert;
 pub mod create;
 pub mod drop;
 pub mod rename;
 
-pub use convert::convert_existing_table_to_tview;
 pub use create::create_tview;
 pub use drop::drop_tview;
 
@@ -77,24 +75,19 @@ fn pg_tviews_rebind_cascade_paths(
         .map_err(|e| format!("Failed to rebind cascade paths: {e}"))
 }
 
-/// SQL function: Convert existing table to TVIEW (for benchmarking/testing)
+/// SQL function: deprecated, always raises an error.
 ///
-/// Usage: SELECT `pg_tviews_convert_existing_table`('`tv_product`');
-///
-/// This function converts a table that was created with standard DDL
-/// into a proper TVIEW structure with triggers and metadata.
-///
-/// Note: Different from the internal `pg_tviews_convert_table()` which is called
-/// by event triggers during CREATE TABLE interception.
+/// It replaced `tv_x` with a view over a literal `VALUES` snapshot (no triggers,
+/// no refresh), and could not run on PG18. Use [`pg_tviews_create`] or
+/// `CREATE TABLE tv_x AS SELECT ...` instead. The function is kept only so that
+/// callers get this message; it is removed in the next breaking release.
 #[pg_extern]
 fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
     crate::validation::validate_sql_identifier(table_name, "table_name")
         .map_err(|e| format!("Invalid table name: {e}"))?;
 
-    match convert_existing_table_to_tview(table_name) {
-        Ok(()) => Ok(format!(
-            "Table '{table_name}' converted to TVIEW successfully"
-        )),
-        Err(e) => Err(format!("Failed to convert table to TVIEW: {e}")),
-    }
+    Err(format!(
+        "pg_tviews_convert_existing_table() is deprecated and no longer converts '{table_name}'; \
+         use pg_tviews_create() or CREATE TABLE tv_<entity> AS SELECT ... instead"
+    ))
 }
