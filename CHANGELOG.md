@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
+  only the eponymous case was handled: dropping `tb_<entity>` deregistered
+  `tv_<entity>`. A TVIEW that read the dropped table under another name, for
+  example through a join, lost its backing view to `CASCADE`. Its `tv_*` table,
+  its `pg_tview_meta` row and its triggers on the surviving base tables were
+  left behind. The `sql_drop` handler now matches any TVIEW whose backing view
+  or table is dropped as a dependent of a base table, a helper view or a schema.
+- `pg_tviews_drop` finds a TVIEW's triggers by name instead of through the
+  backing view. It no longer leaves them behind when the view is already gone.
 - **A column rename on a base table no longer leaves TVIEW metadata stale**
   (#81). `pg_tview_meta.definition` kept the old column name. Everything derived
   from it at creation did too, so propagation broke silently: updates to a
