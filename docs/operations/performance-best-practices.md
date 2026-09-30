@@ -115,6 +115,24 @@ TOASTed `jsonb`, so no pg_tviews setting avoids it (measurements and reasoning:
 - **UNLOGGED TVIEWs** (the default) write no WAL for the rewrite, but see
   [replication](replication.md) before relying on them.
 
+### Bulk changes: rebuild instead of refreshing row by row
+
+Refresh cost grows with the number of changed rows (about 0.02–0.035 ms each), while a
+full rebuild of a TVIEW costs a fixed amount (about 1 s per 200 000 rows of ~1 KB). Past
+roughly 15% of a TVIEW's rows, rebuilding once is faster
+([ADR 0077](../adr/0077-refresh-strategy-selection.md)):
+
+```sql
+BEGIN;
+SET LOCAL pg_tviews.suspend_triggers = on;
+UPDATE tb_post SET … ;                 -- the bulk change
+SELECT pg_tviews_refresh('post');      -- rebuild every affected TVIEW
+COMMIT;
+```
+
+The rebuild uses `TRUNCATE`, which blocks readers of that TVIEW until the transaction
+commits, so keep it for maintenance windows, migrations and backfills.
+
 ## Index Strategy
 
 ### ✅ DO: Index All Foreign Keys
