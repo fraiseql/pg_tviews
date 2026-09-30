@@ -47,8 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `pg_get_viewdef`, same options), `altered` (only `logged`, `fillfactor` or
   `data_gin_index` differ: changed in place, rows kept), `replaced` (a definition with
   the same columns: the view replaced and the rows reconciled in place, writing only
-  rows that change, dependents and indexes untouched, and the TVIEWs embedding it
-  refreshed for those rows) or `rebuilt` (other columns or `group_keys`; the table's
+  rows that change, dependents and indexes untouched; the TVIEWs reading its view are
+  re-registered and reconciled the same way, as their owners) or `rebuilt` (other columns or `group_keys`; the table's
   owner, privileges and comment, the GraphQL type name and user indexes carried over;
   refused, naming the reason, when something depends on the TVIEW or it has what a
   rebuild cannot carry). `options` keys omitted keep their current value; unknown or

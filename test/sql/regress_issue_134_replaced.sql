@@ -5,7 +5,7 @@
 -- definition produces the same columns (and group_keys), create_or_replace()
 -- replaces the backing view and reconciles the rows in place instead: only rows
 -- that change are written, the table keeps its identity, indexes, privileges and
--- dependents, and the TVIEWs that embed it follow the rows that changed.
+-- dependents, and the TVIEWs that read its view are re-registered and reconciled.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_134_replaced.sql
 
@@ -14,6 +14,7 @@ SET client_min_messages TO WARNING;
 
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+DROP ROLE IF EXISTS regress_134r_owner;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
@@ -51,7 +52,7 @@ COMMENT ON TABLE tv_post IS 'posts';
 CREATE FUNCTION assert_fresh(step text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE entity text; d bigint;
 BEGIN
-    FOREACH entity IN ARRAY ARRAY['post', 'feed'] LOOP
+    FOR entity IN SELECT m.entity FROM tviews.pg_tview_meta m LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
@@ -140,7 +141,87 @@ INSERT INTO tb_post (pk_post, fk_user, title) VALUES (4, 2, 'p4');
 INSERT INTO tb_feed (pk_feed, fk_post) VALUES (4, 4);
 SELECT assert_fresh('writes after replaces');
 
+-- 7. A TVIEW that reads v_post is re-registered and reconciled with it: its
+--    triggers follow the tables v_post reads now.
+ALTER TABLE tb_post ADD COLUMN subject text;
+UPDATE tb_post SET subject = 's' || pk_post;
+CREATE TABLE tb_headline (
+    pk_headline int PRIMARY KEY,
+    id          uuid NOT NULL DEFAULT gen_random_uuid(),
+    fk_post     int NOT NULL REFERENCES tb_post
+);
+INSERT INTO tb_headline (pk_headline, fk_post) VALUES (1, 1), (2, 2);
+SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user,
+           jsonb_build_object('title', p.title, 'author', u.name) AS data
+    FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user $$) = 'replaced', 'join added again');
+SELECT tviews.pg_tviews_create_or_replace('tv_headline', $$
+    SELECT h.pk_headline, h.id, h.fk_post, jsonb_build_object('title', v.data->>'title') AS data
+    FROM tb_headline h JOIN v_post v ON v.pk_post = h.fk_post $$);
+CREATE FUNCTION reads_users(entity text) RETURNS boolean LANGUAGE sql AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
+        WHERE t.tgrelid = 'tb_user'::regclass AND f.pronamespace = 'tviews'::regnamespace
+          AND t.tgargs = convert_to(entity, 'UTF8') || '\x00'::bytea) $$;
+SELECT must(reads_users('headline'), 'tv_headline triggers on tb_user through v_post');
+SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.subject) AS data
+    FROM tb_post p $$) = 'replaced', 'title from subject, join removed');
+SELECT assert_fresh('title from subject');
+SELECT must(NOT reads_users('headline'), 'tv_headline''s triggers on tb_user removed');
+UPDATE tb_post SET subject = 'new subject' WHERE pk_post = 1;
+SELECT assert_fresh('subject update');
+SELECT must((SELECT data->>'title' FROM tv_headline WHERE pk_headline = 1) = 'new subject',
+            'tv_headline follows the column v_post reads now');
+
+-- 8. Rows the new definition drops are deleted first, so a unique index holds
+--    throughout: row 2 takes the title row 3 gives up.
+CREATE UNIQUE INDEX tv_post_title_key ON tv_post ((data->>'title'));
+SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user,
+           jsonb_build_object('title', CASE WHEN p.pk_post = 2 THEN 's3' ELSE p.subject END) AS data
+    FROM tb_post p WHERE p.pk_post <> 3 $$) = 'replaced', 'unique value moves between rows');
+SELECT assert_fresh('unique value moved');
+DROP INDEX tv_post_title_key;
+
+-- 9. The DISTINCT ON key decides the table's key: a change to it rebuilds.
+CREATE TABLE tb_tag (pk_tag int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), label text);
+INSERT INTO tb_tag (pk_tag, label) VALUES (1, 'a'), (2, 'b');
+SELECT tviews.pg_tviews_create_or_replace('tv_tag', $$
+    SELECT t.pk_tag, t.id, jsonb_build_object('label', t.label) AS data FROM tb_tag t $$);
+SELECT must(tviews.pg_tviews_create_or_replace('tv_tag', $$
+    SELECT DISTINCT ON (t.pk_tag) t.pk_tag, t.id, jsonb_build_object('label', t.label) AS data
+    FROM tb_tag t ORDER BY t.pk_tag $$) = 'replaced', 'DISTINCT ON the same key is replaced');
+SELECT must(tviews.pg_tviews_create_or_replace('tv_tag', $$
+    SELECT DISTINCT ON (t.id) t.pk_tag, t.id, jsonb_build_object('label', t.label) AS data
+    FROM tb_tag t ORDER BY t.id $$) = 'rebuilt', 'DISTINCT ON another key rebuilds');
+SELECT must((SELECT array_agg(a.attname::text) FROM pg_index i
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+             WHERE i.indrelid = 'tv_tag'::regclass AND i.indisprimary) = '{id}',
+            'rebuilt table keyed on the DISTINCT ON key');
+SELECT assert_fresh('DISTINCT ON added');
+
+-- 10. An owner with only SELECT and TRIGGER on the base table can replace: the
+--     base table is locked as its owner.
+CREATE ROLE regress_134r_owner;
+GRANT CREATE ON SCHEMA public TO regress_134r_owner;
+CREATE TABLE tb_label (pk_label int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
+INSERT INTO tb_label (pk_label, name) VALUES (1, 'l1');
+GRANT SELECT, TRIGGER ON tb_label TO regress_134r_owner;
+SET ROLE regress_134r_owner;
+SELECT tviews.pg_tviews_create_or_replace('tv_label', $$
+    SELECT l.pk_label, l.id, jsonb_build_object('name', l.name) AS data FROM tb_label l $$);
+SELECT must(tviews.pg_tviews_create_or_replace('tv_label', $$
+    SELECT l.pk_label, l.id, jsonb_build_object('name', upper(l.name)) AS data FROM tb_label l $$)
+    = 'replaced', 'replaced by an owner without write access to the base table');
+RESET ROLE;
+SELECT assert_fresh('replaced by a non-superuser owner');
+
 DROP EXTENSION pg_tviews CASCADE;
+DROP TABLE tv_label;
+REVOKE ALL ON SCHEMA public FROM regress_134r_owner;
+DROP OWNED BY regress_134r_owner;
+DROP ROLE regress_134r_owner;
 
 SELECT 'issue #134 replaced: PASS' AS result;
 -- expect-output: issue #134 replaced: PASS
