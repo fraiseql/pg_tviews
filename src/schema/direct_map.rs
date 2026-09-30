@@ -64,20 +64,28 @@ pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(Str
     // 4. Resolve the base table's FROM-clause alias (if any).
     let alias = resolve_base_alias(select_sql, base_table);
 
-    // 5. Classify each key/value pair.
+    // 5. Classify each key/value pair, remembering the identifiers of every value
+    //    that is not a direct mapping.
     let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut other_identifiers: HashSet<String> = HashSet::new();
     for pair in parts.as_chunks::<2>().0 {
         let (Some(key), Some(col)) = (
             parse_key_literal(&pair[0]),
             classify_direct_value(&pair[1], base_table, alias.as_deref()),
         ) else {
+            other_identifiers.extend(identifiers(&pair[1]));
             continue;
         };
         pairs.push((col, key));
     }
 
-    // 6. Drop ambiguous keys/columns (each must appear exactly once).
+    // 6. Drop ambiguous keys/columns (each must appear exactly once), and any column
+    //    that also feeds another value (`'ub', upper(bio)`): patching only its own
+    //    key would leave that value stale (issue #130).
     drop_ambiguous(&pairs)
+        .into_iter()
+        .filter(|(col, _)| !other_identifiers.contains(&col.to_lowercase()))
+        .collect()
 }
 
 /// Identifiers (lower-cased) referenced by any output column other than `data`.
@@ -94,13 +102,17 @@ pub fn columns_referenced_outside_data(select_sql: &str) -> Option<HashSet<Strin
         columns
             .iter()
             .filter(|(name, _)| !name.eq_ignore_ascii_case("data"))
-            .flat_map(|(_, expr)| {
-                expr.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-                    .filter(|t| !t.is_empty())
-                    .map(str::to_lowercase)
-            })
+            .flat_map(|(_, expr)| identifiers(expr))
             .collect(),
     )
+}
+
+/// Identifier-like tokens of an expression, lower-cased. Over-approximate: function
+/// names and words inside string literals count too, which only shrinks the map.
+fn identifiers(expr: &str) -> impl Iterator<Item = String> + '_ {
+    expr.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase)
 }
 
 /// If `expr` (leading-trimmed) begins with a `jsonb_build_object(` call, return the
@@ -523,5 +535,23 @@ mod tests {
             extract(sql, "tb_post"),
             vec![("title".to_string(), "title".to_string())]
         );
+    }
+
+    #[test]
+    fn column_also_used_in_an_expression_is_not_direct() {
+        let sql = "SELECT pk_user, id, jsonb_build_object('bio', bio, 'ub', upper(bio), \
+                   'name', name) AS data FROM tb_user";
+        assert_eq!(
+            extract_direct_column_map(sql, "tb_user"),
+            vec![("name".to_string(), "name".to_string())]
+        );
+    }
+
+    #[test]
+    fn column_also_under_an_unmappable_key_is_not_direct() {
+        let sql = "SELECT pk_user, id, jsonb_build_object('bio', u.bio, 'b i o', u.bio, \
+                   'nested', jsonb_build_object('x', u.name), 'name', u.name) AS data \
+                   FROM tb_user u";
+        assert!(extract_direct_column_map(sql, "tb_user").is_empty());
     }
 }

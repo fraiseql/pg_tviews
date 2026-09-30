@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `pg_tview_meta` even where `pg_tviews` was not installed, so `DROP TABLE` failed there
   with `relation "pg_tview_meta" does not exist`. The hook now leaves such databases
   alone.
+- **Direct patch no longer leaves expression keys stale** (#130). With
+  `jsonb_build_object('bio', bio, 'ub', upper(bio))`, an update of `bio` patched only
+  `bio` and left `ub` at its old value. A column that also feeds another value of the
+  `data` builder (an expression, a nested object, a key the map cannot hold) is now
+  left out of the direct map, so an update to it recomputes the row.
 - **Refresh no longer depends on `search_path`** (#122). DML on the base table of a
   TVIEW whose schema was not on `search_path` failed with `relation "tv_post" does not
   exist`: the refresh named `tv_<entity>`, `v_<entity>` and the extension's
