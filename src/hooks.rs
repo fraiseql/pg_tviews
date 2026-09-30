@@ -190,19 +190,20 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         None
     };
 
-    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary
-    // Returns true if the hook handled the statement, false if it should pass through
-    let result = std::panic::catch_unwind(|| -> Result<bool, TViewError> {
+    // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary.
+    // A DROP TABLE is only recognised here and handled after catch_unwind: its SPI
+    // errors must propagate as PostgreSQL errors, not be caught.
+    let result = std::panic::catch_unwind(|| -> Result<Intercept, TViewError> {
         // Safety check
         if pstmt.is_null() {
-            return Ok(false); // Pass through
+            return Ok(Intercept::PassThrough);
         }
 
         let pstmt_ref = unsafe { &*pstmt };
 
         // Check if this is a utility statement
         if pstmt_ref.utilityStmt.is_null() {
-            return Ok(false); // Pass through
+            return Ok(Intercept::PassThrough);
         }
 
         let utility_stmt = pstmt_ref.utilityStmt;
@@ -223,13 +224,13 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if extensions.iter().any(|e| e == "pg_tviews") {
                 crate::revision::reset();
             }
-            return Ok(false); // Pass through
+            return Ok(Intercept::PassThrough);
         }
 
         // The library is preloaded cluster-wide: in a database without the extension
         // there is no catalog to consult and nothing to maintain (issue #128).
         if !extension_installed() {
-            return Ok(false);
+            return Ok(Intercept::PassThrough);
         }
 
         // Check for CREATE TABLE AS
@@ -238,21 +239,18 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
             let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
             match unsafe { handle_create_table_as(ctas, pstmt, query_string) } {
-                Ok(true) => return Ok(true),
+                Ok(true) => return Ok(Intercept::Handled),
                 Ok(false) => {}
                 Err(e) => return Err(e),
             }
         }
 
-        // Check for DROP TABLE
+        // DROP TABLE: handled after catch_unwind.
         if node_tag == pg_sys::NodeTag::T_DropStmt {
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
-            let drop_stmt = utility_stmt.cast::<pg_sys::DropStmt>();
-            match unsafe { handle_drop_table(drop_stmt, query_string) } {
-                Ok(true) => return Ok(true),
-                Ok(false) => {}
-                Err(e) => return Err(e),
-            }
+            return Ok(Intercept::DropTable(
+                utility_stmt.cast::<pg_sys::DropStmt>(),
+            ));
         }
 
         // Check for ALTER TABLE
@@ -260,19 +258,29 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → AlterTableStmt* cast
             let alter_stmt = utility_stmt.cast::<pg_sys::AlterTableStmt>();
             match unsafe { handle_alter_table(alter_stmt, query_string) } {
-                Ok(true) => return Ok(true),
+                Ok(true) => return Ok(Intercept::Handled),
                 Ok(false) => {}
                 Err(e) => return Err(e),
             }
         }
 
         // Not a tv_* statement - pass through
-        Ok(false)
+        Ok(Intercept::PassThrough)
     });
 
     // Check if hook handled the statement or if we need to pass through
     let should_pass_through = match result {
-        Ok(Ok(handled)) => !handled, // Pass through if hook didn't handle it
+        Ok(Ok(Intercept::PassThrough)) => true,
+        Ok(Ok(Intercept::Handled)) => false,
+        Ok(Ok(Intercept::DropTable(drop_stmt))) => {
+            match unsafe { handle_drop_table(drop_stmt, query_string) } {
+                Ok(handled) => !handled,
+                Err(e) => {
+                    unsafe { HOOK_IN_PROGRESS = false };
+                    error!("{e}");
+                }
+            }
+        }
         Ok(Err(handler_err)) => {
             // Handler returned an error — reset guard BEFORE raising error!()
             // so that subsequent statements in this session are still intercepted.
@@ -355,6 +363,16 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     // Release the reentrancy guard
     unsafe { HOOK_IN_PROGRESS = false };
+}
+
+/// What the hook does with a utility statement, decided inside `catch_unwind`.
+enum Intercept {
+    /// Run it unchanged.
+    PassThrough,
+    /// Already handled.
+    Handled,
+    /// A `DROP` statement, to handle outside `catch_unwind`.
+    DropTable(*mut pg_sys::DropStmt),
 }
 
 /// An `ALTER … RENAME COLUMN` statement, captured before it runs.

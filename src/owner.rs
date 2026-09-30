@@ -135,10 +135,10 @@ pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
             [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         client
             .select(
-                "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+                "SELECT COALESCE((SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+                                  FROM pg_catalog.pg_class c WHERE c.oid = $1), false) \
                      OR pg_catalog.pg_has_role(e.extowner, 'USAGE') \
-                 FROM pg_catalog.pg_class c, pg_catalog.pg_extension e \
-                 WHERE c.oid = $1 AND e.extname = 'pg_tviews'",
+                 FROM pg_catalog.pg_extension e WHERE e.extname = 'pg_tviews'",
                 None,
                 &args,
             )?

@@ -63,7 +63,10 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
             viewdef.trim().trim_end_matches(';').to_string()
         };
 
-        // An aggregate TVIEW (issue #58) names its group key columns by name.
+        // An aggregate TVIEW (issue #58) names its group key columns by name. The
+        // rename was authorized by PostgreSQL; the catalog is written as the
+        // extension's owner.
+        let owner = crate::owner::AsOwner::of_extension()?;
         Spi::run_with_args(
             &format!(
                 "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
@@ -78,6 +81,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
             ],
         )
         .map_err(|e| catalog_error("Rename a group key column", &e))?;
+        drop(owner);
 
         crate::ddl::create::reregister_metadata(&entity, &schema_name, &new_definition)?;
     }

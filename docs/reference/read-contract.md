@@ -1,7 +1,8 @@
-# Read contract for tools
+# Contract for tools
 
 Tools that generate migrations for TVIEWs, or read back what a database registers,
-use two objects whose behaviour is versioned:
+use objects whose behaviour is versioned: a view to read, and a function to create or
+replace. The read side:
 
 ```sql
 SELECT tviews.contract_version();   -- integer, currently 1
@@ -53,10 +54,72 @@ Values come from the system catalogs where they can, so the view reports the tru
 after a manual `ALTER TABLE`. A registration whose table is gone (dropped without pg_tviews
 seeing it) stays visible, with `schema`, `logged` and `options` NULL.
 
+## `tviews.pg_tviews_create_or_replace()`
+
+```sql
+SELECT tviews.pg_tviews_create_or_replace(
+    'app.tv_post', $$SELECT …$$,
+    options => '{"logged": true, "fillfactor": 85}');
+-- 'created' | 'unchanged' | 'altered' | 'rebuilt'
+SELECT tviews.pg_tviews_drop('app.tv_post', if_exists => true);
+```
+
+**Name.** `tv_post`, `post` and `app.tv_post` name the same TVIEW; an unqualified name
+resolves to `current_schema()`. The entity is unique across the database: naming
+`app.tv_post` while `post` is registered in another schema is an error. The name must
+match the definition's key (`pk_post`), including for `DISTINCT ON` and aggregate TVIEWs.
+
+**Options**, a JSON object; an unknown key or a wrongly typed value is an error. An
+omitted key takes its default when the TVIEW is created and **keeps its current value**
+when it exists.
+
+| key | type | default on create |
+|---|---|---|
+| `logged` | boolean | `NOT pg_tviews.unlogged_by_default` |
+| `fillfactor` | integer 10–100 | `pg_tviews.fillfactor` |
+| `data_gin_index` | boolean | `pg_tviews.data_gin_index` |
+| `group_keys` | object or `null` | `null`: a plain TVIEW; an object makes an aggregate TVIEW |
+
+**What counts as the same.** The definition goes through the creation pipeline, is
+created as a temporary view, and is the same when `pg_get_viewdef` renders it like the
+TVIEW's backing view: layout, comments and keyword case do not matter, name resolution
+under the current `search_path` does. An invalid definition raises its error. Passing
+`registry.query` back with the same options returns `unchanged`.
+
+**Results**, by the smallest change that applies:
+
+- `created`: the TVIEW did not exist.
+- `unchanged`: definition and options are the same; nothing is touched. The comparison
+  creates a temporary view, so the call cannot run on a standby or in a read-only
+  transaction.
+- `altered`: only `logged`, `fillfactor` or `data_gin_index` differ; changed in place
+  (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, the GIN index created or
+  dropped), rows kept.
+- `rebuilt`: the definition or `group_keys` differ. The backing view, table and
+  registration are dropped and created again, and the rows computed. The table's and
+  view's owner, privileges and comment, the GraphQL type name and the indexes a user
+  added to the table are carried over; an added index that no longer applies fails the
+  call, naming it. A rebuild is refused, naming the reason, when an object depends on the
+  table or view, or the table has row level security or policies, triggers, rules,
+  publication membership, a non-default replica identity, per-column statistics targets
+  or privileges, extended statistics, or security labels.
+
+**Who may call it.** The DDL runs as the caller: the new objects belong to it, creating
+them needs `CREATE` on the schema, the view needs `SELECT` on what it reads, and the
+base-table triggers need `TRIGGER` on each base table. Replacing or dropping an existing
+TVIEW requires owning it (or being a member of the owning role). No superuser is needed.
+
+**Serialization.** Every call that registers, changes or drops a TVIEW holds
+`pg_advisory_xact_lock(<class>, hashtext(entity))` until the transaction ends, so two
+calls for one entity run one after the other.
+
+It works in any transaction, `DO` block or multi-statement batch (including the one that
+runs `CREATE EXTENSION`), and in a session where the library is not preloaded.
+
 ## Stability rules
 
 `contract_version()` covers the view above, the `options` keys and their meaning, and
-the signatures, "same" rules and return values of `pg_tviews_create_or_replace()`.
+the signature, "same" rules and return values of `pg_tviews_create_or_replace()`.
 
 - **Additive changes do not bump it:** a new column (always appended), a new `options`
   key, a new function. Select columns by name and ignore keys you do not know.

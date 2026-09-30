@@ -9,6 +9,9 @@ use pgrx::prelude::*;
 /// - The backing view (`v_<entity>`)
 /// - The metadata record in `pg_tview_meta`
 ///
+/// `tview_name` is `tv_<entity>`, `<entity>` or `schema.tv_<entity>`; a qualified
+/// name must name the schema the TVIEW is in. The caller must own it (issue #134).
+///
 /// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
 /// If `cascade` is true, dependent objects are dropped too (mirrors
 /// `DROP TABLE … CASCADE`); otherwise the drop is RESTRICT and `PostgreSQL`
@@ -19,14 +22,22 @@ use pgrx::prelude::*;
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
 pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<()> {
     crate::revision::check();
-    let entity_name = tview_name.trim_start_matches("tv_");
+    let (schema, entity) = super::replace::parse_name(tview_name)?;
+    let entity_name = entity.as_str();
+    super::lock_entity(entity_name)?;
 
-    // Step 1: Check if TVIEW exists
-    let exists = tview_exists_in_metadata(entity_name)?;
+    // Step 1: Check if TVIEW exists (in the named schema, if one is named)
+    let exists = tview_exists_in_metadata(entity_name)?
+        && match &schema {
+            Some(schema) => {
+                super::replace::registered_schema(entity_name)?.as_ref() == Some(schema)
+            }
+            None => true,
+        };
 
     if !exists && !if_exists {
         return Err(TViewError::MetadataNotFound {
-            entity: entity_name.to_string(),
+            entity: tview_name.to_string(),
         });
     }
 
@@ -42,6 +53,9 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
             error: e.to_string(),
         }
     })?;
+    if let Some(ref m) = meta {
+        crate::owner::require_owner(m.tview_oid, &format!("tv_{entity_name}"))?;
+    }
 
     // Step 2: Remove the TVIEW's triggers from its base tables. They are found by
     // their function and the entity they carry, not through the backing view, which

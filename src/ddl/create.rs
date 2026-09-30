@@ -13,7 +13,7 @@ use pgrx::prelude::*;
 ///
 /// Uses `current_schema()` to respect the active `search_path`, matching
 /// standard `PostgreSQL` convention for unqualified DDL statements.
-fn current_schema() -> TViewResult<String> {
+pub(crate) fn current_schema() -> TViewResult<String> {
     crate::utils::spi_get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
@@ -211,7 +211,71 @@ pub fn create_tview(
         schema_override,
         defer_populate,
         None,
+        Storage::from_settings(),
     )
+}
+
+/// Storage of a TVIEW's table (issue #134): its persistence, its fillfactor, and
+/// whether `data` has a GIN index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Storage {
+    pub logged: bool,
+    pub fillfactor: i32,
+    pub data_gin_index: bool,
+}
+
+impl Storage {
+    /// What a new TVIEW gets unless told otherwise: `pg_tviews.unlogged_by_default`,
+    /// `pg_tviews.fillfactor` and `pg_tviews.data_gin_index`.
+    #[must_use]
+    pub fn from_settings() -> Self {
+        Self {
+            logged: !crate::config::unlogged_by_default(),
+            fillfactor: crate::config::fillfactor(),
+            data_gin_index: crate::config::data_gin_index(),
+        }
+    }
+}
+
+/// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW
+/// when `group_keys` is given (`pg_tviews_create_or_replace()`, issue #134).
+///
+/// # Errors
+/// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
+pub(crate) fn create_tview_in(
+    tview_name: &str,
+    select_sql: &str,
+    schema_name: &str,
+    group_keys: Option<&super::aggregate::GroupKeys>,
+    storage: Storage,
+) -> TViewResult<()> {
+    create_tview_inner(
+        tview_name,
+        select_sql,
+        Some(schema_name),
+        false,
+        group_keys,
+        storage,
+    )
+}
+
+/// The creation pipeline's normalization of a definition: `SELECT *` expanded to
+/// its columns, and a raw SELECT rewritten to the `pk_<entity>, id, data` shape.
+/// Its output normalizes to itself.
+///
+/// # Errors
+/// Returns an error if the definition cannot be analyzed.
+pub(crate) fn normalize_definition(
+    entity_name: &str,
+    select_sql: &str,
+) -> TViewResult<(String, TViewSchema)> {
+    let select_sql = expand_select_star_if_needed(select_sql)?;
+    let schema = infer_schema(&select_sql)?;
+    if schema.entity_name.is_none() {
+        transform_raw_select_to_tview(entity_name, &select_sql)
+    } else {
+        Ok((select_sql, schema))
+    }
 }
 
 /// Create an aggregate TVIEW (issue #58): rows are the `GROUP BY` groups of the
@@ -234,7 +298,14 @@ pub fn create_aggregate_tview(
                 .to_string(),
         });
     }
-    create_tview_inner(tview_name, select_sql, None, false, Some(group_keys))
+    create_tview_inner(
+        tview_name,
+        select_sql,
+        None,
+        false,
+        Some(group_keys),
+        Storage::from_settings(),
+    )
 }
 
 fn create_tview_inner(
@@ -243,8 +314,12 @@ fn create_tview_inner(
     schema_override: Option<&str>,
     defer_populate: bool,
     group_keys: Option<&super::aggregate::GroupKeys>,
+    storage: Storage,
 ) -> TViewResult<()> {
     crate::revision::check();
+    // Calls that register, change or drop one entity run one after the other.
+    super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
+
     // Step 1: Check if TVIEW already exists
     let exists = tview_exists(tview_name)?;
     if exists {
@@ -259,24 +334,10 @@ fn create_tview_inner(
         .strip_prefix("tv_")
         .map_or(tview_name, |stripped| stripped);
 
-    // Step 1.6: Expand SELECT * → explicit column list so infer_schema can
-    // recognise the Trinity Pattern (pk_*, id, data) even when the DDL uses
-    // `CREATE TABLE tv_foo AS SELECT * FROM v_foo_base`.
-    let select_sql = expand_select_star_if_needed(select_sql)?;
-    let select_sql = select_sql.as_str();
-
-    // Step 2: Infer schema from SELECT
-    // If SELECT doesn't have TVIEW format (pk_<entity>, id, data), create a prepared view first
-    let schema = infer_schema(select_sql)?;
-
-    // Check if we need to transform the SELECT to TVIEW format
-    let (final_select_sql, final_schema) = if schema.entity_name.is_none() {
-        // Raw SELECT - needs transformation to TVIEW format
-        transform_raw_select_to_tview(entity_name, select_sql)?
-    } else {
-        // Already in TVIEW format
-        (select_sql.to_string(), schema)
-    };
+    // Step 2: Expand SELECT * so infer_schema recognises the Trinity Pattern
+    // (pk_*, id, data) even for `CREATE TABLE tv_foo AS SELECT * FROM v_foo_base`,
+    // and rewrite a raw SELECT to that shape.
+    let (final_select_sql, final_schema) = normalize_definition(entity_name, select_sql)?;
 
     let entity_name =
         final_schema
@@ -366,6 +427,7 @@ fn create_tview_inner(
         &final_schema,
         &schema_name,
         &distinct_on_output_keys,
+        storage,
     )?;
 
     // Step 5: Populate initial data
@@ -477,7 +539,7 @@ fn create_tview_inner(
     crate::queue::cache::invalidate_all_caches();
 
     // Buffer and flush audit entry immediately (we're in SPI context)
-    crate::audit::log_create(entity_name, select_sql);
+    crate::audit::log_create(entity_name, &final_select_sql);
     if let Err(e) = crate::audit::flush_audit_buffer() {
         warning!("Failed to flush audit after CREATE: {}", e);
     }
@@ -550,6 +612,7 @@ pub fn reregister_metadata(
 /// Returns an error if the TVIEW is not registered, the caller does not own it,
 /// or the definition cannot be analyzed.
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
+    super::lock_entity(entity)?;
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
             entity: entity.to_string(),
@@ -604,7 +667,9 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 }
 
 /// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
-fn stored_group_keys(entity_name: &str) -> TViewResult<Option<super::aggregate::GroupKeys>> {
+pub(crate) fn stored_group_keys(
+    entity_name: &str,
+) -> TViewResult<Option<super::aggregate::GroupKeys>> {
     let stored: Option<pgrx::JsonB> = Spi::get_one_with_args(
         &format!(
             "SELECT group_keys FROM {} WHERE entity = $1",
@@ -1191,6 +1256,7 @@ fn create_materialized_table(
     schema: &TViewSchema,
     schema_name: &str,
     distinct_on_output_keys: &[String],
+    storage: Storage,
 ) -> TViewResult<()> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
@@ -1319,14 +1385,10 @@ fn create_materialized_table(
 
     let columns_sql = columns.join(",\n    ");
 
-    let unlogged_keyword = if crate::config::unlogged_by_default() {
-        "UNLOGGED "
-    } else {
-        ""
-    };
-    let storage = storage_clause(crate::config::fillfactor());
+    let unlogged_keyword = if storage.logged { "" } else { "UNLOGGED " };
+    let with = storage_clause(storage.fillfactor);
     let create_table_sql = format!(
-        "CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n){storage}"
+        "CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n){with}"
     );
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
@@ -1335,7 +1397,7 @@ fn create_materialized_table(
     })?;
 
     // Create indexes for performance
-    create_tview_indexes(tview_name, schema, schema_name)?;
+    create_tview_indexes(tview_name, schema, schema_name, storage.data_gin_index)?;
 
     Ok(())
 }
@@ -1367,7 +1429,7 @@ pub(crate) fn propagation_index_ddl(
 }
 
 /// `CREATE INDEX IF NOT EXISTS idx_<tview>_<suffix> ON schema.tview <method>(cols)`.
-fn index_ddl(
+pub(crate) fn index_ddl(
     schema_name: &str,
     tview_name: &str,
     suffix: &str,
@@ -1392,13 +1454,9 @@ fn create_tview_indexes(
     tview_name: &str,
     schema: &TViewSchema,
     schema_name: &str,
+    data_gin: bool,
 ) -> TViewResult<()> {
-    let ddl = tview_index_ddl(
-        tview_name,
-        schema,
-        schema_name,
-        crate::config::data_gin_index(),
-    );
+    let ddl = tview_index_ddl(tview_name, schema, schema_name, data_gin);
     for create_idx in ddl {
         crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
@@ -1406,6 +1464,34 @@ fn create_tview_indexes(
         })?;
     }
     Ok(())
+}
+
+/// Names of the indexes `pg_tviews` creates on `tview_name` for `schema` (the
+/// `data` GIN index included) and for the columns joined to the aggregate TVIEWs it
+/// embeds: the indexes a rebuild does not carry over as a user's (issue #134).
+pub(crate) fn managed_index_names(
+    tview_name: &str,
+    schema: &TViewSchema,
+    embed_columns: &[String],
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    if let Some(id) = &schema.id_column {
+        names.insert(index_name(tview_name, id));
+    }
+    for uuid_fk in &schema.uuid_fk_columns {
+        names.insert(index_name(tview_name, uuid_fk));
+    }
+    if let Some(pk) = &schema.pk_column {
+        for column in schema.fk_columns.iter().chain(embed_columns) {
+            if column != pk {
+                names.insert(index_name(tview_name, &format!("{column}_{pk}")));
+            }
+        }
+    }
+    if let Some(data) = &schema.data_column {
+        names.insert(index_name(tview_name, &format!("{data}_gin")));
+    }
+    names
 }
 
 /// DDL for every index a new TVIEW gets.
@@ -1756,6 +1842,9 @@ fn register_metadata(
             )
         },
     ];
+    // The catalog is written as the extension's owner; the caller's right to
+    // change this TVIEW was checked before (issue #134).
+    let _owner = crate::owner::AsOwner::of_extension()?;
     Spi::run_with_args(&insert_meta_sql, &args).map_err(|e| TViewError::SpiError {
         query: insert_meta_sql,
         error: e.to_string(),
