@@ -16,7 +16,7 @@ CREATE EXTENSION pg_tviews;
 
 DROP SCHEMA IF EXISTS app CASCADE;
 CREATE SCHEMA app;
-SET search_path TO app, public;
+SET search_path TO app, public, tviews;
 
 CREATE TABLE app.tb_user (
     pk_user INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

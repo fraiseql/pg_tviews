@@ -421,6 +421,24 @@ cargo pgrx install --release
 psql -d your_database -c "CREATE EXTENSION pg_tviews;"
 ```
 
+#### The `tviews` schema
+
+Every object of the extension lives in the schema `tviews`, whatever the `search_path`
+at `CREATE EXTENSION` (`CREATE EXTENSION pg_tviews SCHEMA other` is refused).
+`CREATE EXTENSION` creates the schema when it is missing and refuses one owned by
+another role. Call the functions qualified, or add `tviews` to the `search_path`:
+
+```sql
+SELECT tviews.pg_tviews_create('tv_post', $$ SELECT ... $$);
+
+ALTER DATABASE your_database SET search_path = "$user", public, tviews;
+SELECT pg_tviews_create('tv_post', $$ SELECT ... $$);
+```
+
+TVIEWs themselves (`tv_*`, `v_*`) are created in the schema you name, or in
+`current_schema()`. Nothing pg_tviews does at run time needs `tviews` on the
+`search_path`. `DROP EXTENSION pg_tviews` leaves the `tviews` schema behind, empty.
+
 ### Your First TVIEW
 
 ```sql

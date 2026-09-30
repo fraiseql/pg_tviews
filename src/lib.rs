@@ -133,7 +133,8 @@ pub mod pg_test {
     #[must_use]
     #[allow(clippy::missing_const_for_fn)] // Vec allocation is not const-stable
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec![]
+        // The extension lives in schema tviews; tests call it unqualified.
+        vec!["search_path = '\"$user\", public, tviews'"]
     }
 }
 

@@ -50,14 +50,17 @@ cargo pgrx install --release
 -- Connect to your database
 psql -d your_database
 
--- Enable the extension
+-- Enable the extension (its objects go to schema tviews)
 CREATE EXTENSION pg_tviews;
 
+-- Call its functions unqualified in this database's sessions
+ALTER DATABASE your_database SET search_path = "$user", public, tviews;
+
 -- Verify installation
-SELECT pg_tviews_version();
+SELECT tviews.pg_tviews_version();
 
 -- Check jsonb_delta status (optional performance enhancement)
-SELECT pg_tviews_check_jsonb_delta();
+SELECT tviews.pg_tviews_check_jsonb_delta();
 ```
 
 ## Optional: Install jsonb_delta for Better Performance

@@ -50,6 +50,7 @@ wait_for_rows() { # <expected> <what>
 }
 
 "$PGBIN/psql" -w -d postgres -qc "CREATE DATABASE $db"
+"$PGBIN/psql" -w -d postgres -qc "ALTER DATABASE $db SET search_path = \"\$user\", public, tviews"
 primary >/dev/null 2>&1 <<'SQL'
 SET client_min_messages TO WARNING;
 CREATE EXTENSION jsonb_delta;

@@ -1278,28 +1278,10 @@ fn create_materialized_table(
     Ok(())
 }
 
-/// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
-const MAX_IDENTIFIER_BYTES: usize = 63;
-
-/// Deterministic index name `idx_<tview>_<suffix>`.
-///
-/// `PostgreSQL` silently truncates identifiers longer than 63 bytes, so two long
-/// names could collide. An over-long name is cut at a char boundary and suffixed
-/// with an FNV-1a hash of the full name, which keeps it unique and stable.
+/// Deterministic index name `idx_<tview>_<suffix>`, fitted to 63 bytes by
+/// [`crate::utils::fit_identifier`].
 pub(crate) fn index_name(tview_name: &str, suffix: &str) -> String {
-    let full = format!("idx_{tview_name}_{suffix}");
-    if full.len() <= MAX_IDENTIFIER_BYTES {
-        return full;
-    }
-    let hash = full.bytes().fold(0x811c_9dc5_u32, |h, b| {
-        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
-    });
-    let tag = format!("_{hash:08x}");
-    let mut cut = MAX_IDENTIFIER_BYTES - tag.len();
-    while !full.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}{tag}", &full[..cut])
+    crate::utils::fit_identifier(format!("idx_{tview_name}_{suffix}"))
 }
 
 /// DDL for the required propagation index `(fk, pk)` on a TVIEW.
@@ -1993,7 +1975,7 @@ mod tests {
         let entity = "a".repeat(60);
         let a = super::index_name(&format!("tv_{entity}"), "fk_left_pk_x");
         let b = super::index_name(&format!("tv_{entity}"), "fk_right_pk_x");
-        assert_eq!(a.len(), super::MAX_IDENTIFIER_BYTES);
+        assert_eq!(a.len(), crate::utils::MAX_IDENTIFIER_BYTES);
         assert_ne!(a, b);
         assert_eq!(
             a,
@@ -2004,7 +1986,7 @@ mod tests {
     #[test]
     fn test_index_name_truncates_on_char_boundary() {
         let name = super::index_name(&format!("tv_{}", "é".repeat(40)), "fk_x_pk_y");
-        assert!(name.len() <= super::MAX_IDENTIFIER_BYTES);
+        assert!(name.len() <= crate::utils::MAX_IDENTIFIER_BYTES);
     }
 
     #[test]

@@ -20,7 +20,7 @@ CREATE EXTENSION pg_tviews;
 
 DROP SCHEMA IF EXISTS app CASCADE;
 CREATE SCHEMA app;
-SET search_path TO app, public;
+SET search_path TO app, public, tviews;
 
 CREATE TABLE app.tb_user (
     pk_user int PRIMARY KEY,
@@ -122,7 +122,7 @@ COMMIT;
 SELECT public.assert_all_122('explicit transaction, pg_catalog only');
 
 -- Full refresh and catalog functions resolve their relations too.
-SELECT public.pg_tviews_refresh('post');
+SELECT tviews.pg_tviews_refresh('post');
 SELECT public.assert_all_122('pg_tviews_refresh, pg_catalog only');
 
 RESET search_path;
