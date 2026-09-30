@@ -42,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed
 
+- **Less fixed cost per refresh** (#91). TVIEW metadata is cached per backend and a warm
+  refresh makes no catalog queries (`catalog_lookups` in `pg_tviews_queue_stats()`
+  counts the misses); the per-row recompute upserts straight from the backing view,
+  which is now evaluated once instead of twice; the UNLOGGED crash probe runs once per
+  backend and TVIEW instead of once per transaction. 2000 single-row refreshes: direct
+  patch ~665 ms → ~485 ms, per-row recompute ~1390 ms → ~605 ms. The caches follow
+  other sessions' changes: DDL on a TVIEW's table or view, and every write to
+  `pg_tview_meta`, invalidate them in every backend.
+
 - **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
   `oid`, so a dump stores them as names (#96). They now print as relation names;
   cast with `::oid` to get the number. Comparisons with an `oid` still work.

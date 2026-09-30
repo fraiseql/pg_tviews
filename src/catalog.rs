@@ -122,6 +122,31 @@ pub(crate) const META_SELECT: &str = "SELECT table_oid::oid AS tview_oid, view_o
      direct_map_columns, direct_map_keys, is_union, cascade_paths \
      FROM pg_tview_meta";
 
+thread_local! {
+    /// Per-backend `TviewMeta` cache (issue #91), cleared through
+    /// [`crate::queue::cache::sync_generation`] when the catalog or a TVIEW changes.
+    static META_CACHE: std::cell::RefCell<Vec<TviewMeta>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn cached(matches: impl Fn(&TviewMeta) -> bool) -> Option<TviewMeta> {
+    META_CACHE.with(|c| c.borrow().iter().find(|m| matches(m)).cloned())
+}
+
+/// Count the catalog query just made and cache its result.
+fn remember(loaded: Option<TviewMeta>) -> Option<TviewMeta> {
+    crate::metrics::metrics_api::record_catalog_lookup();
+    if let Some(meta) = &loaded {
+        crate::queue::cache::watch(&[meta.tview_oid, meta.view_oid]);
+        META_CACHE.with(|c| c.borrow_mut().push(meta.clone()));
+    }
+    loaded
+}
+
+/// Forget every cached `TviewMeta`.
+pub fn clear_meta_cache() {
+    META_CACHE.with(|c| c.borrow_mut().clear());
+}
+
 impl TviewMeta {
     /// Helper: Parse TEXT[] to Vec<DependencyType>
     fn parse_dependency_types(row_value: Option<Vec<String>>) -> Vec<DependencyType> {
@@ -146,11 +171,15 @@ impl TviewMeta {
             .collect()
     }
 
-    /// Look up metadata by source table OID or view OID.
+    /// Look up metadata by source table OID or view OID (cached per backend).
     pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
+        crate::queue::cache::sync_generation();
+        if let Some(meta) = cached(|m| m.tview_oid == source_oid || m.view_oid == source_oid) {
+            return Ok(Some(meta));
+        }
         // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
         // The OID is a validated PostgreSQL object identifier.
-        Spi::connect(|client| {
+        let loaded = Spi::connect(|client| -> spi::Result<Option<Self>> {
             let args = vec![unsafe {
                 DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
@@ -164,14 +193,19 @@ impl TviewMeta {
                 Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
                 None => Ok(None),
             }
-        })
+        })?;
+        Ok(remember(loaded))
     }
 
-    /// Look up metadata by entity name
+    /// Look up metadata by entity name (cached per backend).
     pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
+        crate::queue::cache::sync_generation();
+        if let Some(meta) = cached(|m| m.entity_name == entity_name) {
+            return Ok(Some(meta));
+        }
         // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
         // The entity name is validated before this call.
-        Spi::connect(|client| {
+        let loaded = Spi::connect(|client| -> spi::Result<Option<Self>> {
             let args = vec![unsafe {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }];
@@ -182,7 +216,8 @@ impl TviewMeta {
                 Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
                 None => Ok(None),
             }
-        })
+        })?;
+        Ok(remember(loaded))
     }
 
     /// Load all TVIEW metadata
