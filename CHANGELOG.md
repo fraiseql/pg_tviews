@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
+  of refresh writes skipped because nothing changed.
+- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
+  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
+
 ### Changed
 
 - **Refreshes no longer rewrite unchanged rows** (#72). Every refresh path (bulk
@@ -19,11 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the row's content changes, no longer on every refresh that touched the key.
   Code that used `updated_at` as "last refreshed" must stop doing so; code using
   it for cache validation / ETags gets correct values now.
-
-### Added
-
-- `refresh_noop_skipped` in `pg_tviews_queue_stats()`: session-cumulative count
-  of refresh writes skipped because nothing changed.
 
 ### Fixed
 
@@ -54,11 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   behaves like PostgreSQL (#82).** It was claimed by the hook and silently kept. The hook now
   claims a name only if it resolves, schema-aware, to a relation registered in
   `pg_tview_meta`; plain tables, missing names and mixed lists go to the standard handler.
-
-### Added
-
-- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
-  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
 
 ### Upgrade notes
 
