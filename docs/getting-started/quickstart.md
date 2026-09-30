@@ -44,7 +44,7 @@ Verify installation:
 
 ```sql
 SELECT pg_tviews_version();
--- Should return: '0.1.0-beta.1'
+-- Returns the installed version, e.g. '0.1.0-beta.18'
 ```
 
 ## 3. Create Your First TVIEW

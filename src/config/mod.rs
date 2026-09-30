@@ -141,7 +141,7 @@ pub fn register_gucs() {
           missed-interception error. Never enable in production.",
         &TEST_SKIP_CTAS_INTERCEPT_GUC,
         GucContext::Userset,
-        GucFlags::default(),
+        GucFlags::NO_SHOW_ALL,
     );
 
     GucRegistry::define_bool_guc(
