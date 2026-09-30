@@ -28,8 +28,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
+  only the eponymous case was handled: dropping `tb_<entity>` deregistered
+  `tv_<entity>`. A TVIEW that read the dropped table under another name, for
+  example through a join, lost its backing view to `CASCADE`. Its `tv_*` table,
+  its `pg_tview_meta` row and its triggers on the surviving base tables were
+  left behind. The `sql_drop` handler now matches any TVIEW whose backing view
+  or table is dropped as a dependent of a base table, a helper view or a schema.
+- `pg_tviews_drop` finds a TVIEW's triggers by name instead of through the
+  backing view. It no longer leaves them behind when the view is already gone.
+- **A column rename on a base table no longer leaves TVIEW metadata stale**
+  (#81). `pg_tview_meta.definition` kept the old column name. Everything derived
+  from it at creation did too, so propagation broke silently: updates to a
+  renamed joined column no longer cascaded, and a renamed FK stopped the cascade.
+  After `ALTER … RENAME COLUMN`, each TVIEW whose backing view reads the column
+  now has its definition rewritten in place: the author's text is kept and only
+  the renamed references change. A bare select item gets `AS <old name>`, so the
+  TVIEW's columns keep their names. Its metadata is then re-derived. If the
+  rewrite does not define exactly the renamed backing view, the definition falls
+  back to `pg_get_viewdef` text (with a NOTICE).
+- The per-transaction cascade-path cache was only cleared on abort, so a
+  committed metadata change could be served stale paths by the same session.
+- **`pg_dump` / `pg_restore` round-trips TVIEWs** (#96). The catalog tables
+  `pg_tview_meta` and `pg_tview_helpers` are marked with
+  `pg_extension_config_dump`, so their rows are dumped; before, a restored
+  database had `tv_*`, `v_*` and the triggers but no registered TVIEW, and writes
+  to the base tables no longer reached the TVIEW. On restore, an insert trigger
+  on `pg_tview_meta` rebinds the relation OIDs stored in `cascade_paths`.
+  Databases whose extension was created on beta.18 or earlier do not get the
+  marking and must re-register their TVIEWs after a restore.
+- `CREATE TABLE tv_* AS SELECT ...` under a `search_path` without the extension
+  schema (for example `search_path = ''`, as in `pg_dump` scripts) no longer
+  fails with `function pg_tviews_convert_table(text, text) does not exist` (#96).
+- A CTAS TVIEW that joins a table in another schema no longer fails at creation
+  with `relation "<tview schema>.<table>" does not exist`.
 - The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
   rows.
+
+### Changed
+
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
 ## [0.1.0-beta.18] - 2026-09-30
 

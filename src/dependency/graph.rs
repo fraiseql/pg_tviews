@@ -232,7 +232,11 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
 /// `find_parents_for()`, not trigger-driven.
 fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
     Spi::connect(|client| {
-        let rows = client.select("SELECT table_oid FROM pg_tview_meta", None, &[])?;
+        let rows = client.select(
+            "SELECT table_oid::oid AS table_oid FROM pg_tview_meta",
+            None,
+            &[],
+        )?;
         let mut oids = HashSet::new();
         for row in rows {
             if let Some(oid) =

@@ -34,10 +34,12 @@ use pgrx::prelude::*;
 // @extschema@ is substituted by PostgreSQL with the extension's install schema.
 extension_sql!(
     r"
+    -- view_oid / table_oid are regclass, not oid: pg_dump writes them as qualified
+    -- names, so a restored row names the restored relations (issue #96).
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
-        view_oid OID NOT NULL,
-        table_oid OID NOT NULL,
+        view_oid REGCLASS NOT NULL,
+        table_oid REGCLASS NOT NULL,
         definition TEXT NOT NULL,
         cascade_paths TEXT[] NOT NULL DEFAULT '{}',
         fk_columns TEXT[] NOT NULL DEFAULT '{}',
@@ -76,6 +78,11 @@ extension_sql!(
     -- Indexes for catalog lookup performance (entity PK already has a unique index)
     CREATE INDEX IF NOT EXISTS idx_pg_tview_meta_table_oid
         ON @extschema@.pg_tview_meta(table_oid);
+
+    -- Extension-owned tables are skipped by pg_dump unless marked: without this a
+    -- dump/restore brings back tv_*, v_* and the triggers but no registered TVIEW.
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
     ",
     name = "create_metadata_tables",
 );
@@ -97,8 +104,9 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     obj record;
+    saved_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
-    FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands()
+    FOR obj IN SELECT * FROM pg_catalog.pg_event_trigger_ddl_commands()
     LOOP
         -- Only process CTAS-style creation: a plain `CREATE TABLE tv_x (cols…)` can never
         -- carry a SELECT to convert, so it stays a plain table.
@@ -114,7 +122,16 @@ BEGIN
                         ELSE obj.object_identity
                     END;
 
-                    PERFORM pg_tviews_convert_table(table_name_only, obj.command_tag);
+                    -- The conversion's catalog queries are unqualified: under a
+                    -- search_path without the extension schema (pg_restore and
+                    -- pg_dump scripts run with search_path = '') append it for the
+                    -- duration of the call, after the caller's own schemas.
+                    IF NOT '@extschema@'::name = ANY (pg_catalog.current_schemas(false)) THEN
+                        PERFORM pg_catalog.set_config('search_path',
+                            saved_path || ', ' || pg_catalog.quote_ident('@extschema@'), true);
+                    END IF;
+                    PERFORM @extschema@.pg_tviews_convert_table(table_name_only, obj.command_tag);
+                    PERFORM pg_catalog.set_config('search_path', saved_path, true);
                 EXCEPTION
                     WHEN OTHERS THEN
                         -- pg_tviews_convert_table raises its own error; re-raise here.
@@ -136,44 +153,48 @@ CREATE EVENT TRIGGER pg_tviews_ddl_end
 COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 'Intercepts CREATE TABLE tv_* commands and converts them to TVIEWs';
 
--- Event trigger handler: deregister a TVIEW when its base table tb_<entity> is dropped
--- (issue #53).  The base-table -> tview link is not a hard PG dependency, so CASCADE
--- removes the backing view v_* and the base-table triggers but never the trigger-populated
--- tv_* table or its pg_tview_meta row.  This sql_drop handler cleans both.
+-- Event trigger handler: deregister a TVIEW whose backing view or table was dropped as
+-- a dependent of something else (issues #53, #57).  The base-table -> tview link is not
+-- a hard PG dependency, so CASCADE from a base table, a helper view or a schema removes
+-- the backing view v_* (and the base-table triggers on that table) but never the
+-- trigger-populated tv_* table, its pg_tview_meta row or its triggers on other tables.
+-- The dropped view is matched by OID, so any TVIEW reading the dropped object is found,
+-- whatever its name.
+--
+-- Only objects dropped as dependents (original = false) count: pg_tviews' own drops of
+-- v_* / tv_* (pg_tviews_drop, DROP TABLE tv_* via the ProcessUtility hook) name them
+-- directly, so they never re-enter here.
 --
 -- PL/pgSQL (not #[pg_extern]) because pgrx cannot emit RETURNS event_trigger.  It fires for
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
--- work is guarded by an existence check plus a defensive EXCEPTION handler.
+-- work is guarded by a defensive EXCEPTION handler.
 CREATE OR REPLACE FUNCTION pg_tviews_handle_drop_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    obj record;
     entity_name TEXT;
 BEGIN
-    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects()
+    FOR entity_name IN
+        SELECT DISTINCT m.entity
+        FROM pg_catalog.pg_event_trigger_dropped_objects() AS d
+        JOIN @extschema@.pg_tview_meta AS m
+          ON d.objid IN (m.view_oid, m.table_oid)
+        WHERE NOT d.original
+          AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND d.objsubid = 0
     LOOP
-        -- Only react to a dropped base table tb_*.  A directly-dropped tv_* table is
-        -- handled by the ProcessUtility hook and never matches this tb_ filter, so there
-        -- is no double-handling (and the nested tv_*/v_* drops this handler issues below
-        -- likewise never match tb_, so there is no re-entrant loop).
-        IF obj.object_type = 'table' AND left(obj.object_name, 3) = 'tb_' THEN
-            entity_name := substring(obj.object_name FROM 4);
-            IF EXISTS (SELECT 1 FROM @extschema@.pg_tview_meta WHERE entity = entity_name) THEN
-                BEGIN
-                    PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
-                    RAISE NOTICE 'pg_tviews: base table % dropped; deregistered TVIEW tv_%',
-                        obj.object_name, entity_name;
-                EXCEPTION WHEN OTHERS THEN
-                    -- Never abort the user's DROP; at minimum clear the stale metadata row.
-                    DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
-                    RAISE WARNING 'pg_tviews: cleanup after DROP TABLE % failed (%); removed stale metadata for tv_%',
-                        obj.object_name, SQLERRM, entity_name;
-                END;
-            END IF;
-        END IF;
+        BEGIN
+            PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
+            RAISE NOTICE 'pg_tviews: backing objects of tv_% dropped; deregistered it',
+                entity_name;
+        EXCEPTION WHEN OTHERS THEN
+            -- Never abort the user's DROP; at minimum clear the stale metadata row.
+            DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
+            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed (%); removed its metadata',
+                entity_name, SQLERRM;
+        END;
     END LOOP;
 END;
 $$;
@@ -184,7 +205,53 @@ CREATE EVENT TRIGGER pg_tviews_sql_drop
     EXECUTE FUNCTION pg_tviews_handle_drop_event();
 
 COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
-'Deregisters and drops a TVIEW when its base table tb_<entity> is dropped (issue #53)';
+'Deregisters a TVIEW whose backing view or table was dropped as a dependent (issues #53, #57)';
+
+-- Whether candidate SQL defines the same view as view_oid (issue #81): a column
+-- rename rewrites a TVIEW's stored definition, and the rewrite is kept only if
+-- PostgreSQL renders it exactly like the renamed backing view. The EXCEPTION
+-- block turns any failure (syntax, unknown column) into false and discards the
+-- scratch view.
+CREATE OR REPLACE FUNCTION pg_tviews_defines_view(view_oid OID, candidate TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    same BOOLEAN;
+BEGIN
+    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' || candidate;
+    same := pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_rename_check'::regclass)
+            = pg_catalog.pg_get_viewdef(view_oid);
+    DROP VIEW pg_temp.pg_tviews_rename_check;
+    RETURN same;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END;
+$$;
+
+-- Catalog rows loaded by pg_restore carry the source database's OIDs inside
+-- cascade_paths (JSON text; view_oid / table_oid are regclass and re-resolve on
+-- their own). Rebind them to the restored relations as each row is inserted.
+-- For a row written by pg_tviews itself the rebind is the identity. The
+-- search_path makes the Rust catalog lookups work under pg_restore's empty one.
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_meta_rebind()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = @extschema@, pg_catalog
+AS $$
+BEGIN
+    NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
+        NEW.view_oid::oid, NEW.cascade_paths);
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS pg_tview_meta_rebind ON @extschema@.pg_tview_meta;
+CREATE TRIGGER pg_tview_meta_rebind
+    BEFORE INSERT ON @extschema@.pg_tview_meta
+    FOR EACH ROW
+    WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0)
+    EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
     ",
     name = "event_triggers",
     requires = ["create_metadata_tables"],
@@ -268,8 +335,8 @@ pub fn create_metadata_tables() -> TViewResult<()> {
         r"
         CREATE TABLE IF NOT EXISTS pg_tview_meta (
             entity TEXT NOT NULL PRIMARY KEY,
-            view_oid OID NOT NULL,
-            table_oid OID NOT NULL,
+            view_oid REGCLASS NOT NULL,
+            table_oid REGCLASS NOT NULL,
             definition TEXT NOT NULL,
             cascade_paths TEXT[] NOT NULL DEFAULT '{}',
             fk_columns TEXT[] NOT NULL DEFAULT '{}',

@@ -277,6 +277,7 @@ pub mod cascade_cache {
 pub fn invalidate_all_caches() {
     graph_cache::invalidate();
     table_cache::invalidate();
+    cascade_cache::clear_cache();
     crate::lifecycle::invalidate_jsonb_delta_cache();
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();
