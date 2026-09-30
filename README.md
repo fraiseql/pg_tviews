@@ -262,6 +262,18 @@ The fast path engages only when **every** condition holds (otherwise recompute):
 - for a parent, its dependency on the child is `nested_object` with a path
   (array/scalar/UUID-fk parents recompute).
 
+### Copied parent columns (Issue #120)
+
+A tview that copies a column of a joined parent table into its `data`
+(`jsonb_build_object('author_name', u.name)` over `JOIN tb_user u ON u.pk_user =
+p.fk_user`) is written by **one statement** when that column changes:
+`UPDATE tv_post … WHERE fk_user = <pk>`, instead of recomputing every post of that
+user. Same rules as above, plus: the tview reads the parent through one join on its
+own base table, projects that `fk_*` column, reads the parent table only once, and
+uses the column nowhere else in its definition. Anything else recomputes the
+children. Measured with `test/sql/real_benchmark/scalar_cascade_fanout.sh … scalar`:
+1.8–2.7× faster per parent update from 10 to 10 000 children.
+
 ### Kill-switch and observability
 
 ```sql

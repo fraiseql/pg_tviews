@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **Parent columns are written into all children at once** (#120, ADR 0078 class C).
+  When a TVIEW copies a joined parent's column into its `data` (`'author_name',
+  u.name`), an UPDATE of that column is applied to every child in one statement
+  keyed by the child's `fk_*` column, instead of recomputing each child from its
+  view: 1.8–2.7× faster per parent update from 10 to 10 000 children. Controlled by
+  `pg_tviews.direct_patch_enabled`. Cascade paths record it as `fanout`, so TVIEWs
+  created before this release keep recomputing until they are re-created.
 - **`pg_tviews_flush_and_report()`** (#76): flushes pending refreshes and returns the
   TVIEW rows the transaction changed in the GraphQL Cascade shape (`updated` with
   `__typename`, `id`, `operation` and fresh `data`; `deleted`; `truncated`;

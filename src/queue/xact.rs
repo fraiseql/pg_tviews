@@ -23,6 +23,11 @@ thread_local! {
     static PATCH_SNAPSHOTS: std::cell::RefCell<
         Vec<std::collections::HashMap<super::key::RefreshKey, super::patch::PatchState>>,
     > = const { std::cell::RefCell::new(Vec::new()) };
+
+    /// Fan-out patch snapshots for each savepoint level (issue #120), in lockstep
+    /// with `QUEUE_SNAPSHOTS`.
+    static FANOUT_SNAPSHOTS: std::cell::RefCell<Vec<super::patch::FanoutMap>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Transaction event types
@@ -72,8 +77,14 @@ pub unsafe fn register_subxact_callback() {
         }
     });
 
-    // Mirror the placeholders for the patch-map snapshot stack (issue #56).
+    // Mirror the placeholders for the patch-map snapshot stacks (issues #56, #120).
     PATCH_SNAPSHOTS.with(|s| {
+        let mut snapshots = s.borrow_mut();
+        for _ in 0..(nest_level as usize).saturating_sub(1) {
+            snapshots.push(std::collections::HashMap::new());
+        }
+    });
+    FANOUT_SNAPSHOTS.with(|s| {
         let mut snapshots = s.borrow_mut();
         for _ in 0..(nest_level as usize).saturating_sub(1) {
             snapshots.push(std::collections::HashMap::new());
@@ -149,6 +160,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
             clear_queue();
             super::patch::clear_patch_map();
+            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
@@ -163,6 +175,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::hooks::discard_pending_ctas();
             crate::hooks::release_hook_guard_on_abort(true);
             super::patch::clear_patch_map();
+            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
@@ -208,6 +221,10 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 PATCH_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(patch_snapshot);
                 });
+                let fanout_snapshot = super::patch::take_fanout_snapshot();
+                FANOUT_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().push(fanout_snapshot);
+                });
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
                 // ROLLBACK TO SAVEPOINT: restore queue to snapshot
@@ -228,6 +245,9 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
                     super::patch::replace_patch_map(patch_snapshot);
                 }
+                if let Some(fanout_snapshot) = FANOUT_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
+                    super::patch::replace_fanout_map(fanout_snapshot);
+                }
                 super::affected::savepoint_abort();
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
@@ -239,6 +259,9 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                     s.borrow_mut().pop();
                 });
                 PATCH_SNAPSHOTS.with(|s| {
+                    s.borrow_mut().pop();
+                });
+                FANOUT_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
                 super::affected::savepoint_commit();
@@ -297,8 +320,9 @@ fn decrement_savepoint_depth() {
 pub fn flush_refresh_queue() -> TViewResult<()> {
     // Take initial snapshot from triggers
     let mut pending = take_queue_snapshot();
+    let fanouts = super::patch::take_fanout_snapshot();
 
-    if pending.is_empty() {
+    if pending.is_empty() && fanouts.is_empty() {
         return Ok(());
     }
     super::affected::begin_flush();
@@ -325,6 +349,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         String,
         Option<crate::catalog::TviewMeta>,
     > = std::collections::HashMap::new();
+
+    // Issue #120: write each parent change into all its children at once; the
+    // parents of every changed child join the queue.
+    apply_fanouts(fanouts, &graph, &mut patches, &mut pending, &processed)?;
 
     // Outer drain loop: after the inner loop empties `pending`, check for
     // late-enqueued items from triggers that fired during refresh (e.g.,
@@ -493,7 +521,8 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
 
         // Drain any items enqueued by triggers that fired during refresh
         let late = take_queue_snapshot();
-        if late.is_empty() {
+        let late_fanouts = super::patch::take_fanout_snapshot();
+        if late.is_empty() && late_fanouts.is_empty() {
             break;
         }
         // Merge patches captured by triggers that fired during refresh (issue #56).
@@ -501,6 +530,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
             patches.insert(k, v);
         }
         pending = late;
+        apply_fanouts(late_fanouts, &graph, &mut patches, &mut pending, &processed)?;
     }
 
     // Buffer batched audit entries: one per entity with aggregated row count.
@@ -540,6 +570,49 @@ fn load_meta_cached(
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?;
     cache.insert(entity.to_string(), meta.clone());
     Ok(meta)
+}
+
+/// Apply fan-out patches (issue #120): one UPDATE per child entity and lookup
+/// column, writing each parent's changed fields into all its children. Every
+/// child row that changed is journaled, and its own parents are queued (to
+/// recompute: they embed the child's document).
+fn apply_fanouts(
+    fanouts: super::patch::FanoutMap,
+    graph: &super::graph::EntityDepGraph,
+    patches: &mut std::collections::HashMap<super::key::RefreshKey, super::patch::PatchState>,
+    pending: &mut HashSet<super::key::RefreshKey>,
+    processed: &HashSet<super::key::RefreshKey>,
+) -> TViewResult<()> {
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<_>> =
+        std::collections::BTreeMap::new();
+    for ((entity, lookup_col, key), fields) in fanouts {
+        groups
+            .entry((entity, lookup_col))
+            .or_default()
+            .push((key, fields));
+    }
+    for ((entity, lookup_col), rows) in groups {
+        let meta = crate::catalog::TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+            crate::TViewError::MetadataNotFound {
+                entity: entity.clone(),
+            }
+        })?;
+        let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
+        let keys: Vec<_> = changed
+            .into_iter()
+            .map(|pk| super::key::RefreshKey::pk(&entity, pk))
+            .collect();
+        for parent_key in crate::propagate::find_parents_batch(&keys, graph)?
+            .into_values()
+            .flatten()
+        {
+            super::patch::poison_into(patches, parent_key.clone());
+            if !processed.contains(&parent_key) {
+                pending.insert(parent_key);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Refresh a single entity+pk and return discovered parent keys (without refreshing them)

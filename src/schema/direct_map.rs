@@ -39,6 +39,30 @@ const FROM_KEYWORDS: &[&str] = &[
 /// - duplicate keys or duplicate columns (ambiguous ⇒ recompute).
 #[must_use]
 pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(String, String)> {
+    // Resolve the base table's FROM-clause alias (if any).
+    let alias = resolve_base_alias(select_sql, base_table);
+    column_map(select_sql, |qualifier| {
+        qualifier.is_none_or(|q| {
+            q.eq_ignore_ascii_case(base_table)
+                || alias.as_deref().is_some_and(|a| q.eq_ignore_ascii_case(a))
+        })
+    })
+}
+
+/// Identity-style `(column, jsonb_key)` pairs for a table the view joins (issue
+/// #120): the top-level `data` keys holding one of its columns unchanged, written
+/// `qualifier.col` (a bare column could belong to any table, so it is not taken).
+/// Same conservative rules as [`extract_direct_column_map`].
+#[must_use]
+pub fn extract_joined_column_map(select_sql: &str, qualifier: &str) -> Vec<(String, String)> {
+    column_map(select_sql, |q| {
+        q.is_some_and(|q| q.eq_ignore_ascii_case(qualifier))
+    })
+}
+
+/// `(column, key)` pairs of the top-level `data` builder whose value is a bare
+/// column with a qualifier `accepts` (`None` for an unqualified column).
+fn column_map(select_sql: &str, accepts: impl Fn(Option<&str>) -> bool) -> Vec<(String, String)> {
     // 1. Isolate the `data` output column's full expression.
     let Ok(columns) = parse_select_columns_with_expressions(select_sql) else {
         return Vec::new();
@@ -61,17 +85,14 @@ pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(Str
         return Vec::new();
     }
 
-    // 4. Resolve the base table's FROM-clause alias (if any).
-    let alias = resolve_base_alias(select_sql, base_table);
-
-    // 5. Classify each key/value pair, remembering the identifiers of every value
+    // 4. Classify each key/value pair, remembering the identifiers of every value
     //    that is not a direct mapping.
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut other_identifiers: HashSet<String> = HashSet::new();
     for pair in parts.as_chunks::<2>().0 {
         let (Some(key), Some(col)) = (
             parse_key_literal(&pair[0]),
-            classify_direct_value(&pair[1], base_table, alias.as_deref()),
+            classify_direct_value(&pair[1], &accepts),
         ) else {
             other_identifiers.extend(identifiers(&pair[1]));
             continue;
@@ -79,7 +100,7 @@ pub fn extract_direct_column_map(select_sql: &str, base_table: &str) -> Vec<(Str
         pairs.push((col, key));
     }
 
-    // 6. Drop ambiguous keys/columns (each must appear exactly once), and any column
+    // 5. Drop ambiguous keys/columns (each must appear exactly once), and any column
     //    that also feeds another value (`'ub', upper(bio)`): patching only its own
     //    key would leave that value stale (issue #130).
     drop_ambiguous(&pairs)
@@ -173,9 +194,9 @@ fn parse_key_literal(s: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
-/// Classify a `jsonb_build_object` value expression. Returns `Some(base_column)`
-/// when the value is a bare base-table column reference; `None` otherwise.
-fn classify_direct_value(value: &str, base_table: &str, alias: Option<&str>) -> Option<String> {
+/// Classify a `jsonb_build_object` value expression. Returns `Some(column)` when
+/// the value is a bare column reference whose qualifier `accepts`; `None` otherwise.
+fn classify_direct_value(value: &str, accepts: impl Fn(Option<&str>) -> bool) -> Option<String> {
     let v = value.trim();
     if v.is_empty() {
         return None;
@@ -194,20 +215,10 @@ fn classify_direct_value(value: &str, base_table: &str, alias: Option<&str>) -> 
         }
     };
 
-    if !is_simple_ident(col) {
+    if !is_simple_ident(col) || qualifier.is_some_and(|q| !is_simple_ident(q)) {
         return None;
     }
-    if let Some(q) = qualifier {
-        if !is_simple_ident(q) {
-            return None;
-        }
-        let matches_base =
-            q.eq_ignore_ascii_case(base_table) || alias.is_some_and(|a| q.eq_ignore_ascii_case(a));
-        if !matches_base {
-            return None;
-        }
-    }
-    Some(col.to_string())
+    accepts(qualifier).then(|| col.to_string())
 }
 
 /// Resolve the FROM-clause alias of `base_table`, if the view assigns one:
@@ -553,5 +564,16 @@ mod tests {
                    'nested', jsonb_build_object('x', u.name), 'name', u.name) AS data \
                    FROM tb_user u";
         assert!(extract_direct_column_map(sql, "tb_user").is_empty());
+    }
+
+    #[test]
+    fn joined_column_map_takes_only_that_qualifier() {
+        let sql = "SELECT p.pk_post, p.id, jsonb_build_object('title', p.title, \
+                   'author_name', u.name, 'len', length(u.bio)) AS data \
+                   FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user";
+        assert_eq!(
+            extract_joined_column_map(sql, "u"),
+            vec![("name".to_string(), "author_name".to_string())]
+        );
     }
 }

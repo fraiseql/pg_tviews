@@ -82,6 +82,23 @@ pub struct CascadePath {
     /// whole-row/`.data` reference) ⇒ always refresh, the safe default.
     #[serde(default)]
     pub source_columns: Vec<String>,
+    /// Set when an UPDATE of the source row can be written into every target row
+    /// it reaches in one statement, instead of recomputing each (issue #120).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout: Option<FanoutPatch>,
+}
+
+/// How a source-row UPDATE is patched into all its target rows at once (issue
+/// #120): the target rows are those whose `lookup_col` equals the source row's
+/// `initial_col`, and each changed source column in `fields` is written to its
+/// top-level `data` key. A changed source column the target reads but that is not
+/// in `fields` means the rows must be recomputed instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanoutPatch {
+    /// Column of `tv_<entity>` holding the value of the source row's `initial_col`.
+    pub lookup_col: String,
+    /// `(source column, data key)` pairs the target copies unchanged.
+    pub fields: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -98,6 +115,7 @@ mod tests {
             hops: vec![],
             unresolvable: false,
             source_columns: vec![],
+            fanout: None,
         };
 
         let json = serde_json::to_string(&path).unwrap();
@@ -120,6 +138,7 @@ mod tests {
             }],
             unresolvable: false,
             source_columns: vec![],
+            fanout: None,
         };
 
         let json = serde_json::to_string(&path).unwrap();
@@ -134,5 +153,21 @@ mod tests {
             r#"{"source_oid":1,"source_table":"t","entity_name":"e","initial_col":"c","hops":[]}"#;
         let path: CascadePath = serde_json::from_str(json).unwrap();
         assert!(!path.unresolvable);
+    }
+
+    #[test]
+    fn test_fanout_round_trip_and_absent_by_default() {
+        let json =
+            r#"{"source_oid":1,"source_table":"t","entity_name":"e","initial_col":"c","hops":[]}"#;
+        let mut path: CascadePath = serde_json::from_str(json).unwrap();
+        assert!(path.fanout.is_none());
+        assert!(!serde_json::to_string(&path).unwrap().contains("fanout"));
+
+        path.fanout = Some(FanoutPatch {
+            lookup_col: "fk_user".to_string(),
+            fields: vec![("name".to_string(), "author_name".to_string())],
+        });
+        let json = serde_json::to_string(&path).unwrap();
+        assert_eq!(serde_json::from_str::<CascadePath>(&json).unwrap(), path);
     }
 }
