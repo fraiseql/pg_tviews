@@ -309,6 +309,7 @@ pub fn relname_from_oid(oid: Oid) -> spi::Result<String> {
     }
 
     // Slow path: query and cache
+    crate::metrics::metrics_api::record_catalog_lookup();
     let name: String = Spi::connect(|client| {
         let args =
             vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
@@ -362,6 +363,7 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     }
 
     // Slow path: resolve via pg_class + pg_namespace
+    crate::metrics::metrics_api::record_catalog_lookup();
     let qname: String = Spi::connect(|client| {
         let args =
             vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
@@ -419,6 +421,7 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
     }
 
     // Slow path: query and cache
+    crate::metrics::metrics_api::record_catalog_lookup();
     let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
         let args = vec![
             unsafe {
@@ -460,6 +463,17 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
 /// Get column names for a relation by OID. Resolves schema and name from the OID,
 /// then delegates to `get_view_columns` for caching.
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
+    // Fast path: the columns of this relation were resolved before.
+    let oid_key = format!("oid:{}", rel_oid.to_u32());
+    {
+        let cache = VIEW_COLUMNS_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cols) = cache.get(&oid_key) {
+            return Ok(cols.clone());
+        }
+    }
+    crate::metrics::metrics_api::record_catalog_lookup();
     // Get schema and table name from OID
     let (schema_name, table_name): (String, String) = Spi::connect(|client| {
         let args = vec![unsafe {
@@ -496,7 +510,12 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
         }
     })?;
 
-    get_view_columns(&schema_name, &table_name)
+    let cols = get_view_columns(&schema_name, &table_name)?;
+    VIEW_COLUMNS_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(oid_key, cols.clone());
+    Ok(cols)
 }
 
 /// Quote a SQL identifier for safe use in queries.

@@ -91,6 +91,7 @@ pub(crate) fn upsert_conflict_action(
 /// The source runs once, in a CTE; the statement returns how many rows the source
 /// produced and the `pk_<entity>` of each row written, split into inserted
 /// (`xmax = 0`) and updated. The skipped count is added to `refresh_noop_skipped`.
+/// Returns how many source rows there were (0: the row is gone from the view).
 pub(crate) fn run_counted_upsert(
     entity: &str,
     tv_name: &str,
@@ -98,7 +99,7 @@ pub(crate) fn run_counted_upsert(
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
-) -> spi::Result<()> {
+) -> spi::Result<i64> {
     let qi_tv = quote_identifier(tv_name);
     let qi_pk = quote_identifier(&format!("pk_{entity}"));
     let sql = format!(
@@ -123,7 +124,7 @@ pub(crate) fn run_counted_upsert(
     for pk in updated {
         crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Updated);
     }
-    Ok(())
+    Ok(produced.unwrap_or(0))
 }
 
 /// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed.

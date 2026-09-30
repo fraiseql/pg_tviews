@@ -50,6 +50,8 @@ struct DirectPatchMetrics {
     view_recomputes: u64,
     /// Refresh writes skipped because the row already held the result (issue #72).
     noop_skipped: u64,
+    /// Catalog queries the refresh path made on cache misses (issue #91).
+    catalog_lookups: u64,
 }
 
 impl DirectPatchMetrics {
@@ -60,6 +62,7 @@ impl DirectPatchMetrics {
             fallbacks: 0,
             view_recomputes: 0,
             noop_skipped: 0,
+            catalog_lookups: 0,
         }
     }
 }
@@ -238,6 +241,13 @@ pub mod metrics_api {
         }
     }
 
+    /// Record one catalog query made by the refresh path on a cache miss (issue #91).
+    pub fn record_catalog_lookup() {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().catalog_lookups += 1;
+        });
+    }
+
     /// Get current queue statistics
     pub fn get_queue_stats() -> QueueStats {
         // Get current queue size from state
@@ -266,6 +276,7 @@ pub mod metrics_api {
                 direct_patch_fallbacks: dp.fallbacks,
                 view_recomputes: dp.view_recomputes,
                 refresh_noop_skipped: dp.noop_skipped,
+                catalog_lookups: dp.catalog_lookups,
             }
         })
     }
@@ -324,6 +335,8 @@ pub struct QueueStats {
     pub view_recomputes: u64,
     /// Session-cumulative refresh writes skipped as no-ops (issue #72).
     pub refresh_noop_skipped: u64,
+    /// Session-cumulative catalog queries made on cache misses (issue #91).
+    pub catalog_lookups: u64,
 }
 
 impl QueueStats {

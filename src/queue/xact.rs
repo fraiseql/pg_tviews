@@ -130,7 +130,8 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
             // Clear audit buffer as safety net (should already be empty after flush).
             crate::audit::clear_audit_buffer();
-            super::ops::clear_crash_recovery_cache();
+            // The crash-recovery check stays done for this backend: an UNLOGGED
+            // TVIEW is only reset by a restart, which ends every backend.
             super::cache::cascade_cache::clear_cache();
             crate::metrics::metrics_api::reset_metrics();
             super::affected::clear();

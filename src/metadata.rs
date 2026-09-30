@@ -249,6 +249,24 @@ CREATE TRIGGER pg_tview_meta_rebind
     FOR EACH ROW
     WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0)
     EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
+
+-- Other backends cache TVIEW metadata (issue #91). Any write to the catalog
+-- invalidates its relcache entry at commit, which every backend watches.
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_meta_changed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM @extschema@.pg_tviews_invalidate_caches(TG_RELID);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS pg_tview_meta_changed ON @extschema@.pg_tview_meta;
+CREATE TRIGGER pg_tview_meta_changed
+    AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON @extschema@.pg_tview_meta
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION @extschema@.pg_tviews_meta_changed();
     ",
     name = "event_triggers",
     requires = ["create_metadata_tables"],
