@@ -1025,8 +1025,10 @@ fn create_materialized_table(
     } else {
         ""
     };
-    let create_table_sql =
-        format!("CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n)");
+    let storage = storage_clause(crate::config::fillfactor());
+    let create_table_sql = format!(
+        "CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n){storage}"
+    );
 
     crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
@@ -1110,6 +1112,33 @@ fn create_tview_indexes(
     schema: &TViewSchema,
     schema_name: &str,
 ) -> TViewResult<()> {
+    let ddl = tview_index_ddl(
+        tview_name,
+        schema,
+        schema_name,
+        crate::config::data_gin_index(),
+    );
+    for create_idx in ddl {
+        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
+            query: create_idx.clone(),
+            error: e,
+        })?;
+    }
+    Ok(())
+}
+
+/// DDL for every index a new TVIEW gets.
+///
+/// HOT invariant: refreshes rewrite `data` and `updated_at`, so neither is indexed
+/// (the `data` GIN only when `data_gin` is explicitly requested). An index on a
+/// rewritten column makes every refresh a non-HOT update: new entries in every
+/// index, a dead tuple needing index cleanup, and a cleared visibility-map bit.
+fn tview_index_ddl(
+    tview_name: &str,
+    schema: &TViewSchema,
+    schema_name: &str,
+    data_gin: bool,
+) -> Vec<String> {
     let mut ddl = Vec::new();
 
     // Trinity identifier and UUID foreign keys (filtering by public id)
@@ -1127,8 +1156,8 @@ fn create_tview_indexes(
         }
     }
 
-    // JSONB queries on the read model
-    if let Some(data) = &schema.data_column {
+    // Opt-in (pg_tviews.data_gin_index): top-level containment queries on data
+    if data_gin && let Some(data) = &schema.data_column {
         ddl.push(index_ddl(
             schema_name,
             tview_name,
@@ -1138,13 +1167,17 @@ fn create_tview_indexes(
         ));
     }
 
-    for create_idx in ddl {
-        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
-            query: create_idx.clone(),
-            error: e,
-        })?;
+    ddl
+}
+
+/// `WITH (fillfactor = N)` for a new TVIEW table; empty at 100 (the heap default),
+/// so opting out yields the same DDL as before the setting existed.
+fn storage_clause(fillfactor: i32) -> String {
+    if fillfactor < 100 {
+        format!(" WITH (fillfactor = {fillfactor})")
+    } else {
+        String::new()
     }
-    Ok(())
 }
 
 /// Populate the materialized table with initial data from the backing view
@@ -1531,6 +1564,48 @@ fn transform_raw_select_to_tview(
 #[pgrx::pg_schema]
 mod tests {
     use pgrx::prelude::*;
+
+    // ── Unit tests for index set / storage (no database required) ──────────────
+
+    fn post_schema() -> crate::schema::TViewSchema {
+        crate::schema::TViewSchema {
+            pk_column: Some("pk_post".to_string()),
+            id_column: Some("id".to_string()),
+            data_column: Some("data".to_string()),
+            fk_columns: vec!["fk_user".to_string()],
+            uuid_fk_columns: vec!["user_id".to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_index_ddl_never_indexes_rewritten_columns_by_default() {
+        let ddl = super::tview_index_ddl("tv_post", &post_schema(), "public", false);
+        assert_eq!(ddl.len(), 3, "{ddl:?}");
+        for stmt in &ddl {
+            assert!(!stmt.contains("\"data\""), "indexes data: {stmt}");
+            assert!(!stmt.contains("updated_at"), "indexes updated_at: {stmt}");
+            assert!(!stmt.contains("GIN"), "creates a GIN: {stmt}");
+        }
+    }
+
+    #[test]
+    fn test_index_ddl_gin_only_when_requested() {
+        let ddl = super::tview_index_ddl("tv_post", &post_schema(), "public", true);
+        assert_eq!(
+            ddl.iter()
+                .filter(|s| s.contains("USING GIN (\"data\")"))
+                .count(),
+            1
+        );
+        assert!(ddl.iter().all(|s| !s.contains("updated_at")));
+    }
+
+    #[test]
+    fn test_storage_clause() {
+        assert_eq!(super::storage_clause(85), " WITH (fillfactor = 85)");
+        assert_eq!(super::storage_clause(100), "");
+    }
 
     // ── Unit tests for index naming (no database required) ─────────────────────
 

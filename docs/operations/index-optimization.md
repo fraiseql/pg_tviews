@@ -9,11 +9,16 @@
 
 ## Automatic Indexes
 
-pg_tviews automatically creates:
-- **PRIMARY KEY index** on `pk_<entity>` column (B-tree, INTEGER)
-- No other indexes are created automatically
+pg_tviews automatically creates, on every new TVIEW:
+- **PRIMARY KEY** on `pk_<entity>`
+- a B-tree on `id` and on each UUID FK column
+- a **required** `(fk_<x>, pk_<entity>)` B-tree per integer FK column: cascade
+  propagation looks parent rows up by it (don't drop these; add missing ones to
+  older TVIEWs with `pg_tviews_ensure_propagation_indexes()`)
 
-**Rationale**: pg_tviews doesn't know your query patterns, so manual index creation gives you full control.
+None of them is on a column that refreshes rewrite, so refreshes stay HOT. There is
+**no** index on `data` unless `pg_tviews.data_gin_index` is on. See
+[HOT Updates and TVIEW Storage](hot-updates.md) before adding any index on `data`.
 
 ---
 
@@ -21,24 +26,18 @@ pg_tviews automatically creates:
 
 ### 1. Foreign Key Indexes
 
-**Why**: Speed up cascade updates and JOIN operations
+Created automatically (see above). Nothing to do unless the TVIEW predates them:
 
 ```sql
--- For each fk_* column in tv_* tables
--- Trinity pattern: fk_* columns are always integers
-CREATE INDEX idx_tv_post_fk_user ON tv_post(fk_user);
-CREATE INDEX idx_tv_comment_fk_post ON tv_comment(fk_post);
-CREATE INDEX idx_tv_order_fk_customer ON tv_order(fk_customer);
+SELECT * FROM pg_tviews_ensure_propagation_indexes();
 ```
 
-**When to Create**: Always create for fk_* columns used in cascades
-
-**Performance Impact**:
-- Cascade update speedup: 10-100×
-- Creation time (1M rows): ~30 seconds
-- Size overhead: +15%
-
 ### 2. JSONB GIN Indexes
+
+> **HOT cost**: any index on `data` (GIN or expression) makes **every** refresh of
+> that TVIEW a non-HOT update: every index gets a new entry and a dead tuple is left
+> for VACUUM. Add one only for queries that measurably use it
+> (`pg_stat_user_indexes.idx_scan`). See [HOT Updates and TVIEW Storage](hot-updates.md).
 
 **Why**: Enable fast JSONB queries (`WHERE data @> '{}'`)
 

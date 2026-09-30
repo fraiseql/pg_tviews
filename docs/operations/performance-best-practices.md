@@ -120,7 +120,11 @@ CREATE INDEX idx_tv_user_id ON tv_user(id);
 
 **When**: Always for API-exposed entities
 
-### ✅ DO: Use GIN Indexes for JSONB Queries
+### ✅ DO: Use GIN Indexes for JSONB Queries (only where queries use them)
+
+> Any index on `data` costs HOT on every refresh of that TVIEW, which is why new
+> TVIEWs get none by default (`pg_tviews.data_gin_index`). Check `idx_scan` before
+> keeping one. See [HOT Updates and TVIEW Storage](hot-updates.md).
 
 ```sql
 -- For containment queries (@>, ?, ?&, ?|)
