@@ -647,71 +647,79 @@ pub(crate) fn split_by_top_level_comma(s: &str) -> Vec<String> {
 }
 
 /// Extract column name from a SELECT clause part
-/// Handles: `column_name`, `table.column_name`, `expression AS alias`
+/// Handles: `column_name`, `table.column_name`, `expression AS alias`, and quoted
+/// identifiers. Returns the identifier as `PostgreSQL` stores it: quoted names keep
+/// their case with `""` unescaped, unquoted names are folded to lower case.
 fn extract_column_name(part: &str) -> Result<String, String> {
     let part_lower = part.to_lowercase();
 
     // Check for `AS` keyword (alias)
     if let Some(as_pos) = find_last_as(&part_lower) {
-        let alias_part = &part[as_pos + 2..].trim();
+        let alias_part = part[as_pos + 2..].trim();
         if alias_part.is_empty() {
             return Err("Empty alias after AS".to_string());
         }
-        return Ok((*alias_part).to_string());
+        return trailing_identifier(alias_part).ok_or_else(|| "Invalid alias after AS".to_string());
     }
 
-    // No alias - extract column name from expression
-    // This is simplified - just take the last identifier
-    let words: Vec<&str> = part.split_whitespace().collect();
-    if words.is_empty() {
-        return Err("Empty column expression".to_string());
-    }
-
-    // Take the last word (should be the column name)
-    let last_word = words
-        .last()
-        .ok_or_else(|| "Unexpected empty words vector".to_string())?;
-
-    // Remove trailing punctuation
-    let clean_name = last_word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
-
-    if clean_name.is_empty() {
-        return Err("Could not extract column name".to_string());
-    }
-
-    // Strip table alias prefix: "a.id" → "id", "schema.table.col" → "col"
-    // PostgreSQL uses the rightmost segment as the output column name when no AS alias.
-    let col = clean_name.split('.').next_back().unwrap_or(clean_name);
-
-    Ok(col.to_string())
+    // No alias: PostgreSQL names the column after the rightmost identifier
+    // ("a.id" → "id", "count(*)" → "count").
+    let expr = part.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '"');
+    trailing_identifier(expr).ok_or_else(|| "Could not extract column name".to_string())
 }
 
-/// Find the last `AS` keyword position, handling nested contexts
-fn find_last_as(sql_lower: &str) -> Option<usize> {
-    let mut last_as_pos = None;
-    let bytes = sql_lower.as_bytes();
-
-    for (i, _) in sql_lower.match_indices("as") {
-        // Word-boundary check: "as" must be preceded by whitespace or start of string
-        let preceded_by_space = i == 0 || bytes[i - 1].is_ascii_whitespace();
-        // Word-boundary check: "as" must be followed by whitespace or end of string
-        let followed_by_space = i + 2 >= sql_lower.len() || bytes[i + 2].is_ascii_whitespace();
-
-        if !preceded_by_space || !followed_by_space {
-            continue;
+/// Return the identifier value of the identifier that ends `s`, or `None` if `s`
+/// does not end with one.
+fn trailing_identifier(s: &str) -> Option<String> {
+    let s = s.trim_end();
+    if let Some(body) = s.strip_suffix('"') {
+        // Walk back to the opening quote, stepping over `""` escapes.
+        let bytes = body.as_bytes();
+        let mut end = body.len();
+        loop {
+            let quote = body[..end].rfind('"')?;
+            if quote > 0 && bytes[quote - 1] == b'"' {
+                end = quote - 1;
+            } else {
+                return Some(body[quote + 1..].replace("\"\"", "\""));
+            }
         }
+    }
 
-        // Count parentheses to handle nested expressions
-        let before = &sql_lower[..i];
-        let paren_depth = before.chars().fold(0i32, |depth, c| match c {
-            '(' => depth + 1,
-            ')' => depth.saturating_sub(1),
-            _ => depth,
-        });
+    let start = s
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .last()
+        .map(|(i, _)| i)?;
+    Some(s[start..].to_lowercase())
+}
 
-        // Only consider AS at top level (not inside parentheses)
-        if paren_depth == 0 {
-            last_as_pos = Some(i);
+/// Find the last top-level `AS` keyword position, ignoring any inside parentheses
+/// or quotes
+fn find_last_as(sql_lower: &str) -> Option<usize> {
+    let bytes = sql_lower.as_bytes();
+    let mut last_as_pos = None;
+    let mut paren_depth: i32 = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            b'"' if !in_single_quote => in_double_quote = !in_double_quote,
+            _ if in_single_quote || in_double_quote => {}
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'a' if paren_depth == 0 && bytes.get(i + 1) == Some(&b's') => {
+                // Word boundaries: whitespace (or string edge) on both sides
+                let preceded_by_space = i == 0 || bytes[i - 1].is_ascii_whitespace();
+                let followed_by_space = bytes.get(i + 2).is_none_or(u8::is_ascii_whitespace);
+                if preceded_by_space && followed_by_space {
+                    last_as_pos = Some(i);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -784,6 +792,29 @@ mod tests {
             extract_column_name("jsonb_build_object('key', 'value') AS data").unwrap(),
             "data"
         );
+    }
+
+    #[test]
+    fn test_extract_column_name_quoted_alias_is_identifier_value() {
+        assert_eq!(extract_column_name("x AS \"order\"").unwrap(), "order");
+        assert_eq!(extract_column_name("x AS \"Label\"").unwrap(), "Label");
+        assert_eq!(extract_column_name("x AS \"a\"\"b\"").unwrap(), "a\"b");
+        assert_eq!(
+            extract_column_name("x AS \"with space\"").unwrap(),
+            "with space"
+        );
+        assert_eq!(extract_column_name("x AS \"a as b\"").unwrap(), "a as b");
+    }
+
+    #[test]
+    fn test_extract_column_name_unquoted_alias_folds_to_lower_case() {
+        assert_eq!(extract_column_name("x AS Label").unwrap(), "label");
+    }
+
+    #[test]
+    fn test_extract_column_name_quoted_column_without_alias() {
+        assert_eq!(extract_column_name("\"Col\"").unwrap(), "Col");
+        assert_eq!(extract_column_name("t.\"Col Name\"").unwrap(), "Col Name");
     }
 
     #[test]

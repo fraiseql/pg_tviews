@@ -63,24 +63,27 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     if col_names.is_empty() {
         return Ok(());
     }
-    let col_list = col_names.join(", ");
+    let col_list = super::column_list(&col_names);
 
     // UPSERT every requested pk that still resolves in the backing view. Rows not
     // yet materialized are inserted rather than silently skipped — the old
     // `UPDATE … FROM unnest()` path dropped every not-yet-present row (issue #48).
     // Rows whose recomputed columns equal the stored ones are left alone (#72).
-    let source_sql = format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = ANY($1)");
+    let qi_view = crate::utils::quote_identifier(&view_name);
+    let qi_tv = crate::utils::quote_identifier(&tv_name);
+    let qi_pk = crate::utils::quote_identifier(&pk_col);
+    let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = ANY($1)");
     let conflict = format!(
-        "ON CONFLICT ({pk_col}) {}",
+        "ON CONFLICT ({qi_pk}) {}",
         super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
     // The old UPDATE-only path left these stale (issue #48).
     let delete_sql = format!(
-        "DELETE FROM {tv_name} t \
-         WHERE t.{pk_col} = ANY($1) \
-           AND NOT EXISTS (SELECT 1 FROM {view_name} v WHERE v.{pk_col} = t.{pk_col})"
+        "DELETE FROM {qi_tv} t \
+         WHERE t.{qi_pk} = ANY($1) \
+           AND NOT EXISTS (SELECT 1 FROM {qi_view} v WHERE v.{qi_pk} = t.{qi_pk})"
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a

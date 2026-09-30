@@ -117,8 +117,11 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
 /// propagate to the tview instead of leaving a stale row (issue #48).
 fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
     let tv_name = relname_from_oid(meta.tview_oid)?;
-    let pk_col = format!("pk_{}", meta.entity_name);
-    let sql = format!("DELETE FROM {tv_name} WHERE {pk_col} = $1");
+    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let sql = format!(
+        "DELETE FROM {} WHERE {qi_pk} = $1",
+        quote_identifier(&tv_name)
+    );
     Spi::run_with_args(
         &sql,
         &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
@@ -169,7 +172,8 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
     let tv_name = relname_from_oid(meta.tview_oid)?;
 
     // Check whether any winning row exists for this dedup key
-    let count_sql = format!("SELECT COUNT(*) FROM {view_name} WHERE {key_col_q}::text = $1");
+    let qi_view = quote_identifier(&view_name);
+    let count_sql = format!("SELECT COUNT(*) FROM {qi_view} WHERE {key_col_q}::text = $1");
     let row_count: i64 = Spi::connect(|client| {
         let args = vec![unsafe {
             DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -184,7 +188,10 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
 
     if row_count == 0 {
         // No winning row — remove the TVIEW row for this dedup key
-        let delete_sql = format!("DELETE FROM {tv_name} WHERE {key_col_q}::text = $1");
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE {key_col_q}::text = $1",
+            quote_identifier(&tv_name)
+        );
         Spi::run_with_args(
             &delete_sql,
             &[unsafe {
@@ -229,7 +236,7 @@ pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()>
         super::run_counted_upsert(
             &tv_name,
             &col_list,
-            &format!("SELECT {col_list} FROM {view_name} WHERE {key_col_q}::text = $1 LIMIT 1"),
+            &format!("SELECT {col_list} FROM {qi_view} WHERE {key_col_q}::text = $1 LIMIT 1"),
             &format!("ON CONFLICT ({key_col_q}) {do_update}"),
             &[unsafe {
                 DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -261,7 +268,7 @@ fn build_dedup_dml_components(
     key_col: &str,
 ) -> (String, String) {
     (
-        col_names.join(", "),
+        super::column_list(col_names),
         super::upsert_conflict_action(tv_name, col_names, key_col),
     )
 }
@@ -295,7 +302,11 @@ fn recompute_view_row(meta: &TviewMeta, pk: i64) -> spi::Result<Option<ViewRow>>
     let view_name = lookup_view_for_source(meta.view_oid)?;
     let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
-    let sql = format!("SELECT * FROM {view_name} WHERE {pk_col} = $1");
+    let sql = format!(
+        "SELECT * FROM {} WHERE {} = $1",
+        quote_identifier(&view_name),
+        quote_identifier(&pk_col)
+    );
 
     Spi::connect(|client| {
         let args =
@@ -454,18 +465,21 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     if col_names.is_empty() {
         return apply_full_replacement(row, meta);
     }
-    let col_list = col_names.join(", ");
+    let col_list = super::column_list(&col_names);
     // Qualify the target column as `{tv}.data`: the INSERT … SELECT source relation
     // is in scope inside ON CONFLICT DO UPDATE, so a bare `data` is ambiguous.
-    let patch_expr = build_smart_patch_expr(&deps, &format!("{tv_name}.data"));
+    let qi_tv = quote_identifier(&tv_name);
+    let qi_view = quote_identifier(&view_name);
+    let qi_pk = quote_identifier(&pk_col);
+    let patch_expr = build_smart_patch_expr(&deps, &format!("{qi_tv}.data"));
 
     // $1 = freshly computed document (patch source for the DO UPDATE branch),
     // $2 = primary key (selects the row to insert from the backing view). In the
     // DO UPDATE clause, bare `data` is the existing tview value being patched.
     // The guard skips the write when the patched document equals the stored one (#72).
     let conflict = format!(
-        "ON CONFLICT ({pk_col}) DO UPDATE SET data = {patch_expr}, updated_at = now() \
-         WHERE {tv_name}.data IS DISTINCT FROM {patch_expr}"
+        "ON CONFLICT ({qi_pk}) DO UPDATE SET data = {patch_expr}, updated_at = now() \
+         WHERE {qi_tv}.data IS DISTINCT FROM {patch_expr}"
     );
 
     // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
@@ -473,7 +487,7 @@ fn apply_patch(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     super::run_counted_upsert(
         &tv_name,
         &col_list,
-        &format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = $2"),
+        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $2"),
         &conflict,
         &[
             unsafe {
@@ -600,6 +614,7 @@ fn build_smart_patch_expr(deps: &[DependencyDetail], base_data_expr: &str) -> St
 fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     let tv_name = relname_from_oid(row.tview_oid)?;
     let pk_col = format!("pk_{}", row.entity_name);
+    let qi_pk = quote_identifier(&pk_col);
 
     // Resolve backing view name (use metadata instead of re-loading)
     let view_name = lookup_view_for_source(meta.view_oid)?;
@@ -607,7 +622,7 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     // Get view column names (authoritative list of data columns; excludes timestamps)
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
 
-    let col_list = col_names.join(", ");
+    let col_list = super::column_list(&col_names);
 
     // UPSERT: INSERT from view (timestamps use DEFAULT NOW()), or UPDATE on conflict
     // when a column actually changed (#72). This handles both new rows (inserted into
@@ -615,9 +630,12 @@ fn apply_full_replacement(row: &ViewRow, meta: &TviewMeta) -> spi::Result<()> {
     super::run_counted_upsert(
         &tv_name,
         &col_list,
-        &format!("SELECT {col_list} FROM {view_name} WHERE {pk_col} = $1"),
         &format!(
-            "ON CONFLICT ({pk_col}) {}",
+            "SELECT {col_list} FROM {} WHERE {qi_pk} = $1",
+            quote_identifier(&view_name)
+        ),
+        &format!(
+            "ON CONFLICT ({qi_pk}) {}",
             super::upsert_conflict_action(&tv_name, &col_names, &pk_col)
         ),
         &[unsafe { DatumWithOid::new(row.pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],

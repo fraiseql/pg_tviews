@@ -17,8 +17,19 @@ pub use main::refresh_by_dedup_key;
 // Re-export bulk functions
 pub use bulk::refresh_bulk;
 
+use crate::utils::quote_identifier;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+
+/// Quoted, comma-separated column list of a refresh upsert (`INSERT INTO tv (…)`
+/// and the matching `SELECT …`), so reserved-word and mixed-case columns work (#89).
+pub(crate) fn column_list(col_names: &[String]) -> String {
+    col_names
+        .iter()
+        .map(|c| quote_identifier(c))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>,
 /// updated_at = NOW()` guarded by `IS DISTINCT FROM` over the non-key columns
@@ -29,14 +40,15 @@ use pgrx::prelude::*;
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
 /// qualified with `tv_name` because the source relation is in scope too.
 pub(crate) fn upsert_conflict_action(tv_name: &str, col_names: &[String], key_col: &str) -> String {
-    let cols: Vec<&str> = col_names
+    let cols: Vec<String> = col_names
         .iter()
-        .map(String::as_str)
-        .filter(|c| *c != key_col)
+        .filter(|c| c.as_str() != key_col)
+        .map(|c| quote_identifier(c))
         .collect();
     if cols.is_empty() {
         return "DO NOTHING".to_string();
     }
+    let qi_tv = quote_identifier(tv_name);
     let set = cols
         .iter()
         .map(|c| format!("{c} = EXCLUDED.{c}"))
@@ -44,13 +56,13 @@ pub(crate) fn upsert_conflict_action(tv_name: &str, col_names: &[String], key_co
         .collect::<Vec<_>>()
         .join(", ");
     let (stored, fresh) = if let [c] = cols.as_slice() {
-        (format!("{tv_name}.{c}"), format!("EXCLUDED.{c}"))
+        (format!("{qi_tv}.{c}"), format!("EXCLUDED.{c}"))
     } else {
         (
             format!(
                 "({})",
                 cols.iter()
-                    .map(|c| format!("{tv_name}.{c}"))
+                    .map(|c| format!("{qi_tv}.{c}"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -79,9 +91,10 @@ pub(crate) fn run_counted_upsert(
     conflict: &str,
     args: &[DatumWithOid],
 ) -> spi::Result<()> {
+    let qi_tv = quote_identifier(tv_name);
     let sql = format!(
         "WITH src AS ({source_sql}), \
-         written AS (INSERT INTO {tv_name} ({col_list}) SELECT {col_list} FROM src \
+         written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
                      {conflict} RETURNING 1) \
          SELECT (SELECT count(*) FROM src), (SELECT count(*) FROM written)"
     );
@@ -101,8 +114,7 @@ mod tests {
     fn conflict_action_guards_every_non_key_column() {
         assert_eq!(
             super::upsert_conflict_action("tv_post", &cols(&["pk_post", "id", "data"]), "pk_post"),
-            "DO UPDATE SET id = EXCLUDED.id, data = EXCLUDED.data, updated_at = NOW() \
-             WHERE (tv_post.id, tv_post.data) IS DISTINCT FROM (EXCLUDED.id, EXCLUDED.data)"
+            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE ("tv_post"."id", "tv_post"."data") IS DISTINCT FROM (EXCLUDED."id", EXCLUDED."data")"#
         );
     }
 
@@ -110,8 +122,23 @@ mod tests {
     fn conflict_action_single_column_uses_plain_comparison() {
         assert_eq!(
             super::upsert_conflict_action("tv_x", &cols(&["pk_x", "data"]), "pk_x"),
-            "DO UPDATE SET data = EXCLUDED.data, updated_at = NOW() \
-             WHERE tv_x.data IS DISTINCT FROM EXCLUDED.data"
+            r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE "tv_x"."data" IS DISTINCT FROM EXCLUDED."data""#
+        );
+    }
+
+    #[test]
+    fn conflict_action_quotes_reserved_and_mixed_case_columns() {
+        assert_eq!(
+            super::upsert_conflict_action("tv_x", &cols(&["pk_x", "order", "Label"]), "pk_x"),
+            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE ("tv_x"."order", "tv_x"."Label") IS DISTINCT FROM (EXCLUDED."order", EXCLUDED."Label")"#
+        );
+    }
+
+    #[test]
+    fn column_list_quotes_every_column() {
+        assert_eq!(
+            super::column_list(&cols(&["pk_x", "order", "Label", "a\"b"])),
+            r#""pk_x", "order", "Label", "a""b""#
         );
     }
 
