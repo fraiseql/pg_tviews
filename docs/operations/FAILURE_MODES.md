@@ -186,7 +186,8 @@ ERROR: Circular dependency detected: tv_a -> tv_b -> tv_a
 
 **Backup** (recommended):
 ```bash
-# Full logical backup includes TVIEW definition and data
+# Full logical backup: tv_* tables, v_* views, base-table triggers and the
+# pg_tview_meta / pg_tview_helpers catalog rows
 pg_dump -Fc mydb > mydb.dump
 ```
 
@@ -195,14 +196,24 @@ pg_dump -Fc mydb > mydb.dump
 pg_restore -d mydb_restored mydb.dump
 ```
 
+The catalog rows are restored with the rest of the data. `view_oid` and
+`table_oid` are `regclass`, and the relation OIDs inside `cascade_paths` are
+rebound by an insert trigger on `pg_tview_meta`, so the restored TVIEWs point at
+the restored relations and keep propagating. Do not restore with
+`--disable-triggers`: it skips that rebind.
+
+A database whose extension was created before this catalog layout (beta.18 and
+earlier) does not mark its catalog for dumping, so its dumps carry no
+`pg_tview_meta` rows. Re-register such TVIEWs after the restore.
+
 **Verification**:
 ```sql
 -- Check all TVIEWs restored
-SELECT entity_name FROM pg_tviews_metadata;
+SELECT entity, table_oid, view_oid FROM pg_tview_meta;
 
 -- Verify refresh works
-INSERT INTO backing_table VALUES (...);
--- Check TVIEW updated
+INSERT INTO tb_<entity> VALUES (...);
+-- Check tv_<entity> updated
 ```
 
 **Caution**: Physical backups (PITR) may have consistency issues if taken during refresh.

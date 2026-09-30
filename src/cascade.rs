@@ -62,7 +62,7 @@ fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
 /// Find all TVIEWs that have the given base table as a dependency
 fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
     let query = format!(
-        "SELECT m.table_oid AS tview_oid, m.view_oid, m.entity, \
+        "SELECT m.table_oid::oid AS tview_oid, m.view_oid::oid AS view_oid, m.entity, \
                 m.fk_columns, m.uuid_fk_columns, \
                 m.dependency_types, m.dependency_paths, m.array_match_keys, \
                 m.distinct_on_keys, m.is_union, m.cascade_paths \

@@ -34,10 +34,12 @@ use pgrx::prelude::*;
 // @extschema@ is substituted by PostgreSQL with the extension's install schema.
 extension_sql!(
     r"
+    -- view_oid / table_oid are regclass, not oid: pg_dump writes them as qualified
+    -- names, so a restored row names the restored relations (issue #96).
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
-        view_oid OID NOT NULL,
-        table_oid OID NOT NULL,
+        view_oid REGCLASS NOT NULL,
+        table_oid REGCLASS NOT NULL,
         definition TEXT NOT NULL,
         cascade_paths TEXT[] NOT NULL DEFAULT '{}',
         fk_columns TEXT[] NOT NULL DEFAULT '{}',
@@ -76,6 +78,11 @@ extension_sql!(
     -- Indexes for catalog lookup performance (entity PK already has a unique index)
     CREATE INDEX IF NOT EXISTS idx_pg_tview_meta_table_oid
         ON @extschema@.pg_tview_meta(table_oid);
+
+    -- Extension-owned tables are skipped by pg_dump unless marked: without this a
+    -- dump/restore brings back tv_*, v_* and the triggers but no registered TVIEW.
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
     ",
     name = "create_metadata_tables",
 );
@@ -97,8 +104,9 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     obj record;
+    saved_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
-    FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands()
+    FOR obj IN SELECT * FROM pg_catalog.pg_event_trigger_ddl_commands()
     LOOP
         -- Only process CTAS-style creation: a plain `CREATE TABLE tv_x (cols…)` can never
         -- carry a SELECT to convert, so it stays a plain table.
@@ -114,7 +122,16 @@ BEGIN
                         ELSE obj.object_identity
                     END;
 
-                    PERFORM pg_tviews_convert_table(table_name_only, obj.command_tag);
+                    -- The conversion's catalog queries are unqualified: under a
+                    -- search_path without the extension schema (pg_restore and
+                    -- pg_dump scripts run with search_path = '') append it for the
+                    -- duration of the call, after the caller's own schemas.
+                    IF NOT '@extschema@'::name = ANY (pg_catalog.current_schemas(false)) THEN
+                        PERFORM pg_catalog.set_config('search_path',
+                            saved_path || ', ' || pg_catalog.quote_ident('@extschema@'), true);
+                    END IF;
+                    PERFORM @extschema@.pg_tviews_convert_table(table_name_only, obj.command_tag);
+                    PERFORM pg_catalog.set_config('search_path', saved_path, true);
                 EXCEPTION
                     WHEN OTHERS THEN
                         -- pg_tviews_convert_table raises its own error; re-raise here.
@@ -185,6 +202,30 @@ CREATE EVENT TRIGGER pg_tviews_sql_drop
 
 COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
 'Deregisters and drops a TVIEW when its base table tb_<entity> is dropped (issue #53)';
+
+-- Catalog rows loaded by pg_restore carry the source database's OIDs inside
+-- cascade_paths (JSON text; view_oid / table_oid are regclass and re-resolve on
+-- their own). Rebind them to the restored relations as each row is inserted.
+-- For a row written by pg_tviews itself the rebind is the identity. The
+-- search_path makes the Rust catalog lookups work under pg_restore's empty one.
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_meta_rebind()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = @extschema@, pg_catalog
+AS $$
+BEGIN
+    NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
+        NEW.view_oid::oid, NEW.cascade_paths);
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS pg_tview_meta_rebind ON @extschema@.pg_tview_meta;
+CREATE TRIGGER pg_tview_meta_rebind
+    BEFORE INSERT ON @extschema@.pg_tview_meta
+    FOR EACH ROW
+    WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0)
+    EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
     ",
     name = "event_triggers",
     requires = ["create_metadata_tables"],
@@ -268,8 +309,8 @@ pub fn create_metadata_tables() -> TViewResult<()> {
         r"
         CREATE TABLE IF NOT EXISTS pg_tview_meta (
             entity TEXT NOT NULL PRIMARY KEY,
-            view_oid OID NOT NULL,
-            table_oid OID NOT NULL,
+            view_oid REGCLASS NOT NULL,
+            table_oid REGCLASS NOT NULL,
             definition TEXT NOT NULL,
             cascade_paths TEXT[] NOT NULL DEFAULT '{}',
             fk_columns TEXT[] NOT NULL DEFAULT '{}',
