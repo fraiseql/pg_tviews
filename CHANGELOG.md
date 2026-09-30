@@ -87,6 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **A TVIEW embedding an aggregate TVIEW follows it** (#126). Propagation finds parent
+  rows by `fk_<child>`, which no parent has for an aggregate, so `tv_user LEFT JOIN
+  v_user_summary` kept the old summary after every order write (and `null` for a new
+  group). The create now records the output column joined to `pk_<aggregate>` (new
+  `pg_tview_meta.aggregate_embeds`, indexed unless it is the primary key) and
+  propagation looks parent rows up by it. A definition that reads an aggregate but
+  projects no column carrying its key is rejected with an explanation.
 - **Refresh no longer depends on `search_path`** (#122). DML on the base table of a
   TVIEW whose schema was not on `search_path` failed with `relation "tv_post" does not
   exist`: the refresh named `tv_<entity>`, `v_<entity>` and the extension's

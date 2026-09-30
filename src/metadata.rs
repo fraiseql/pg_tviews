@@ -63,6 +63,10 @@ extension_sql!(
     -- Aggregate TVIEWs (issue #58): source table name -> group key column.
     ALTER TABLE @extschema@.pg_tview_meta
         ADD COLUMN IF NOT EXISTS group_keys JSONB;
+    -- Aggregate TVIEWs this one embeds (issue #126): aggregate entity -> the output
+    -- column holding the aggregate's key, used to propagate aggregate changes.
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS aggregate_embeds JSONB NOT NULL DEFAULT '{}';
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,
