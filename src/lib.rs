@@ -87,19 +87,17 @@ pub fn pg_tviews_suspend_triggers() {
     }
 }
 
+/// Resume trigger-based refresh. When the outermost suspension ends, every TVIEW
+/// changed while suspended (and every TVIEW embedding one of them) is rebuilt.
 #[pg_extern]
 pub fn pg_tviews_resume_triggers() {
-    match crate::suspend::resume() {
-        Ok(()) =>
-        {
-            #[allow(clippy::collapsible_if)]
-            if !crate::suspend::is_suspended() {
-                if let Err(e) = crate::suspend::enqueue_suspended_changes() {
-                    error!("{}", e);
-                }
-            }
-        }
-        Err(e) => error!("{}", e),
+    if let Err(e) = crate::suspend::resume() {
+        error!("{}", e);
+    }
+    if !crate::suspend::is_suspended()
+        && let Err(e) = crate::suspend::catch_up()
+    {
+        error!("{}", e);
     }
 }
 

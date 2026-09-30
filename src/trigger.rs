@@ -91,7 +91,7 @@ fn pg_tview_trigger_handler<'a>(
     };
 
     // If triggers are suspended, record the change instead of enqueuing
-    if crate::config::suspend_triggers() {
+    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
         // Record direct entity if any
         if let Ok(Some(entity_info)) =
             crate::queue::cache::table_cache::entity_info_cached(table_oid)
@@ -510,7 +510,7 @@ fn pg_tview_flush_trigger<'a>(
     _trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     // Skip flush if triggers are suspended
-    if crate::config::suspend_triggers() {
+    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
         return Ok(None);
     }
 
