@@ -213,6 +213,20 @@ pub fn install_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TView
     Ok(())
 }
 
+/// Make `tview_entity`'s triggers exactly those on `table_oids`: install the
+/// missing ones and remove those on tables its definition no longer reads.
+///
+/// # Errors
+/// Returns an error if the catalog query, a trigger drop or an install fails.
+pub fn sync_entity_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TViewResult<()> {
+    for installed in entity_triggers(tview_entity, None)? {
+        if !table_oids.contains(&installed.table_oid) {
+            drop_trigger(installed.table_oid, &installed.table, &installed.trigger)?;
+        }
+    }
+    install_triggers(table_oids, tview_entity)
+}
+
 /// Remove every trigger installed for `tview_entity`, wherever it is. This needs
 /// no dependency walk, so it still works once the backing view is gone (a base
 /// table or helper view dropped with CASCADE).

@@ -77,6 +77,7 @@ pub fn jsonb_delta_schema() -> Option<String> {
 /// `Ok(true)` if recovery was performed, `Ok(false)` if no recovery needed
 #[pg_extern]
 pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
+    crate::revision::check();
     if detect_post_crash_truncation(entity_name)? {
         // Perform full refresh of the TVIEW
         Spi::run_with_args(

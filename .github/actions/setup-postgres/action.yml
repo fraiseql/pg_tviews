@@ -1,0 +1,68 @@
+name: Set up PostgreSQL, pgrx and jsonb_delta
+description: >
+  PGDG PostgreSQL with a started "main" cluster (PGHOST/PGPORT/PGUSER exported),
+  cargo-pgrx initialised against it, and the real jsonb_delta extension installed.
+  Mirrors the setup steps of ci.yml for the upgrade jobs.
+inputs:
+  pg-major:
+    required: true
+  pgrx-version:
+    required: true
+  jsonb-delta-repo:
+    required: true
+  jsonb-delta-ref:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install PostgreSQL (PGDG)
+      shell: bash
+      env:
+        PG_MAJOR: ${{ inputs.pg-major }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y postgresql-common
+        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+        sudo apt-get install -y "postgresql-${PG_MAJOR}" "postgresql-server-dev-${PG_MAJOR}"
+
+    - name: Configure and start PostgreSQL
+      shell: bash
+      env:
+        PG_MAJOR: ${{ inputs.pg-major }}
+      run: |
+        if ! pg_lsclusters -h | awk '{print $1"/"$2}' | grep -qx "${PG_MAJOR}/main"; then
+          sudo pg_createcluster "${PG_MAJOR}" main
+        fi
+        hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
+        sudo sed -i '1i local all all trust\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust' "$hba"
+        sudo pg_ctlcluster "${PG_MAJOR}" main start \
+          || sudo pg_ctlcluster "${PG_MAJOR}" main restart
+        port="$(pg_lsclusters -h | awk -v v="${PG_MAJOR}" '$1==v && $2=="main" {print $3}')"
+        {
+          echo "PGHOST=localhost"
+          echo "PGPORT=${port}"
+          echo "PGUSER=postgres"
+        } >> "$GITHUB_ENV"
+
+    - name: Install pgrx
+      shell: bash
+      env:
+        PG_MAJOR: ${{ inputs.pg-major }}
+        PGRX_VERSION: ${{ inputs.pgrx-version }}
+      run: |
+        cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+        cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+
+    - name: Build and install jsonb_delta
+      shell: bash
+      env:
+        PG_MAJOR: ${{ inputs.pg-major }}
+      run: |
+        git clone --depth 1 --branch "${{ inputs.jsonb-delta-ref }}" \
+          "${{ inputs.jsonb-delta-repo }}" /tmp/jsonb_delta
+        cd /tmp/jsonb_delta
+        cargo pgrx install --release \
+          --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo

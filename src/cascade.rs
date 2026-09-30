@@ -13,6 +13,7 @@ use pgrx::prelude::*;
 /// - `pk_value`: Primary key value of the changed row
 #[pg_extern]
 fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
+    crate::revision::check();
     let dependent_tviews = match find_dependent_tviews(base_table_oid) {
         Ok(tv) => tv,
         Err(e) => error!("Failed to find dependent TVIEWs: {:?}", e),
@@ -49,6 +50,7 @@ fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
 /// Called by trigger handler when rows are inserted
 #[pg_extern]
 fn pg_tviews_insert(base_table_oid: pg_sys::Oid, pk_value: i64) {
+    crate::revision::check();
     pg_tviews_cascade(base_table_oid, pk_value);
 }
 
@@ -56,6 +58,7 @@ fn pg_tviews_insert(base_table_oid: pg_sys::Oid, pk_value: i64) {
 /// Called by trigger handler when rows are deleted
 #[pg_extern]
 fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
+    crate::revision::check();
     pg_tviews_cascade(base_table_oid, pk_value);
 }
 

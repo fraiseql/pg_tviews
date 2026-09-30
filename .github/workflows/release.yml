@@ -36,11 +36,36 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      - name: Check the tag matches the release
+        run: |
+          # main carries the next version under ## [Unreleased]; a release stamps the
+          # CHANGELOG heading before it is tagged (docs/development/extension-versioning.md).
+          VERSION=$(grep "^version" Cargo.toml | sed 's/.*version = "\(.*\)".*/\1/')
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${VERSION}"
+            exit 1
+          fi
+          if ! grep -q "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${VERSION}]' heading"
+            exit 1
+          fi
+
       - name: Build extension
         run: |
           # default features already target pg18 (see Cargo.toml [features]).
-          cargo pgrx package --pg-config /usr/lib/postgresql/18/bin/pg_config
-          tar czf pg_tviews-${{ github.ref_name }}.tar.gz target/release/
+          PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+          cargo pgrx package --pg-config "$PG_CONFIG"
+          # Documented layout (docs/development/extension-versioning.md):
+          #   lib/pg_tviews.so       -> $(pg_config --pkglibdir)
+          #   extension/pg_tviews.*  -> $(pg_config --sharedir)/extension
+          # extension/ holds the control file, the install script and the upgrade
+          # scripts from sql/.
+          pkg=target/release/pg_tviews-pg18
+          mkdir -p dist/lib dist/extension
+          cp "${pkg}$("$PG_CONFIG" --pkglibdir)/pg_tviews.so" dist/lib/
+          cp "${pkg}$("$PG_CONFIG" --sharedir)"/extension/pg_tviews* dist/extension/
+          tar czf pg_tviews-${{ github.ref_name }}.tar.gz -C dist lib extension
+          tar tzf pg_tviews-${{ github.ref_name }}.tar.gz
 
       - name: Install SBOM tools
         # scripts/generate-sbom.sh calls `cargo sbom` and `cargo cyclonedx`; the

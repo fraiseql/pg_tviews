@@ -34,6 +34,7 @@ fn pg_tviews_flush_and_report(
     include_data: default!(bool, true),
     reset: default!(bool, true),
 ) -> Result<JsonB, TViewError> {
+    crate::revision::check();
     crate::queue::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
@@ -52,6 +53,7 @@ fn pg_tviews_flush_and_report(
 /// Returns an error if the entity is unknown or the name is not a GraphQL name.
 #[pg_extern]
 fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TViewError> {
+    crate::revision::check();
     if let Some(name) = typename {
         let valid = name
             .chars()

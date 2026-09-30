@@ -1,5 +1,5 @@
 comment = 'Transactional Views (TVIEWs) for PostgreSQL with automatic refresh triggers'
-default_version = '0.1.0'
+default_version = '@CARGO_VERSION@'
 module_pathname = '$libdir/pg_tviews'
 relocatable = false
 schema = tviews

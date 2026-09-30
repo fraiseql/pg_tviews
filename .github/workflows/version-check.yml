@@ -28,17 +28,23 @@ jobs:
 
       - name: Check CHANGELOG updated
         run: |
-          # For non-dev versions, CHANGELOG should be updated
+          # main carries the next, untagged version, whose changes go under
+          # ## [Unreleased]; the release PR stamps ## [<version>] before tagging, and
+          # the release workflow refuses a tag without it
+          # (docs/development/extension-versioning.md).
           VERSION=$(grep "^version" Cargo.toml | sed 's/.*version = "\(.*\)".*/\1/')
 
-          if [[ ! "$VERSION" =~ dev$ ]]; then
-              if ! grep -q "## \[$VERSION\]" CHANGELOG.md; then
-                  echo "❌ CHANGELOG.md not updated for version $VERSION"
-                  exit 1
-              fi
+          if grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+              echo "✅ CHANGELOG.md has ## [$VERSION]"
+          elif git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+              echo "❌ v$VERSION is tagged but CHANGELOG.md has no ## [$VERSION] heading"
+              exit 1
+          elif grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+              echo "✅ $VERSION is not released yet; its changes are under ## [Unreleased]"
+          else
+              echo "❌ CHANGELOG.md has neither ## [$VERSION] nor ## [Unreleased]"
+              exit 1
           fi
-
-          echo "✅ CHANGELOG.md updated"
 
       - name: Verify no duplicate versions in CHANGELOG
         run: |

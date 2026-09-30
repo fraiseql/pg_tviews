@@ -175,6 +175,7 @@ fn pg_tviews_replication_status() -> Result<
 fn pg_tviews_rebuild_all(
     only_empty: default!(bool, true),
 ) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, TViewError> {
+    crate::revision::check();
     Ok(TableIterator::new(rebuild_all(only_empty)?))
 }
 
@@ -285,6 +286,7 @@ fn dependencies_first(depends_on: &HashMap<String, Vec<String>>) -> Vec<String> 
 /// Returns an error if the entity is unknown or the `ALTER TABLE` fails.
 #[pg_extern]
 fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), TViewError> {
+    crate::revision::check();
     let rel = TviewRelation::load(Some(entity))?
         .into_iter()
         .next()

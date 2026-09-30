@@ -78,7 +78,7 @@ psql -d mydb -f schema/02_materialized_views.sql
 
 # 3. DRY RUN: Preview conversion
 echo "Preview TVIEW conversion:"
-psql -d mydb -f sql/auto_convert_tviews.sql
+psql -d mydb -f scripts/auto-convert/auto_convert_tviews.sql
 psql -d mydb -c "
     SELECT entity, base_table, backing_view 
     FROM pg_tviews_auto_convert_plan()
@@ -109,10 +109,10 @@ psql -d mydb -f schema/03_seed_data.sql
 
 ```bash
 # Show what would be converted (dry run)
-./sql/convert_tviews.sh -d mydb -s public --plan
+./scripts/auto-convert/convert_tviews.sh -d mydb -s public --plan
 
 # Execute conversion
-./sql/convert_tviews.sh -d mydb -s public
+./scripts/auto-convert/convert_tviews.sh -d mydb -s public
 ```
 
 ## Define your TVIEW Metadata
@@ -205,7 +205,7 @@ for db in development staging; do
     psql -d "$db" -f schema.sql
     
     # Convert automatically
-    ./sql/convert_tviews.sh -d "$db"
+    ./scripts/auto-convert/convert_tviews.sh -d "$db"
     
     echo "$db complete."
 done

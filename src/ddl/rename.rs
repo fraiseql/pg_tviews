@@ -27,7 +27,11 @@ use sqlparser::tokenizer::{Token, TokenWithLocation, Tokenizer};
 /// Returns an error if a catalog query fails or the re-derived definition cannot
 /// be analyzed; the caller aborts the `RENAME` so no TVIEW is left stale.
 pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TViewResult<()> {
-    for (entity, schema_name, view_oid) in affected_tviews(relid, new_name)? {
+    let affected = affected_tviews(relid, new_name)?;
+    if !affected.is_empty() {
+        crate::revision::check();
+    }
+    for (entity, schema_name, view_oid) in affected {
         let definition: String = Spi::get_one_with_args(
             &format!(
                 "SELECT definition FROM {} WHERE entity = $1",

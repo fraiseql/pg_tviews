@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- **Versioned extension SQL and upgrade scripts** (#137, ADR 0136). The extension
+  version is now the release (`0.1.0-beta.20`), where every release so far installed
+  as `0.1.0`. Each release ships `pg_tviews--<previous>--<release>.sql`, so
+  `ALTER EXTENSION pg_tviews UPDATE` upgrades a database, and CI checks that an
+  upgraded catalog equals a fresh install (`test/upgrade/`). The policy is in
+  `docs/development/extension-versioning.md`.
+- **Library/catalog guard** (#137). A library installed without `ALTER EXTENSION
+  pg_tviews UPDATE` refuses to work against the older catalog: base-table writes and
+  `pg_tviews_*` calls fail with `pg_tviews library catalog revision <n> does not match
+  the installed extension (<m>)` and the command that fixes it, instead of running
+  against a catalog it does not know. `pg_tviews_health_check()` reports it
+  (`catalog`), and the rebuild worker logs it once and idles.
+- **`pg_tviews_reregister(entity)` and `pg_tviews_reregister_all(strict => false)`**
+  (#137) re-derive TVIEWs' metadata and base-table triggers from their stored
+  definitions with the current release's analysis, in place, without touching their
+  rows, and clear the new `pg_tview_meta.needs_reregister` flag. `reregister_all` runs
+  dependencies first, one subtransaction per TVIEW, and returns each one's status.
+  TVIEWs created before #120, #126 or #130 get fan-out patches, aggregate embeds and
+  direct maps without being dropped. `pg_tviews_health_check()` reports TVIEWs to
+  re-register (`reregister`).
+- **`scripts/migrate-from-0.1.0.sql`** (#137) moves a `0.1.0` install (every release up
+  to 0.1.0-beta.19) to this release in one transaction, keeping the TVIEWs and their
+  rows: it refuses when objects outside the extension depend on it, saves the
+  registrations, re-creates the extension in `tviews` and re-registers every TVIEW.
+- **Release tarball layout** (#137): `lib/pg_tviews.so` and `extension/` (control file,
+  install and upgrade scripts), to copy into `pg_config --pkglibdir` and
+  `pg_config --sharedir`/extension.
+
 ### Changed
 
 - **The extension lives in schema `tviews`** (#136, ADR 0136). `CREATE EXTENSION
@@ -61,11 +91,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Upgrade notes
 
-- The extension moves to schema `tviews`, and there is still no upgrade script from
-  `0.1.0`: re-create the extension as described for 0.1.0-beta.19 below. Unqualified
-  calls to `pg_tviews_*` functions then need `tviews` on `search_path` (for example
-  `ALTER DATABASE … SET search_path = "$user", public, tviews`). `DROP EXTENSION
-  pg_tviews` leaves the `tviews` schema behind, empty.
+- **From 0.1.0-beta.19 or any earlier release** (all installed as `0.1.0`): install
+  the new package, restart PostgreSQL, then run `scripts/migrate-from-0.1.0.sql` in
+  each database (`psql -v ON_ERROR_STOP=1 -d <db> -f scripts/migrate-from-0.1.0.sql`).
+  It keeps the TVIEWs and their rows; the audit log is not carried over. Until it
+  runs, writes to the TVIEWs' base tables fail with the catalog revision error.
+- **From this release on**: install the new package, restart, `ALTER EXTENSION
+  pg_tviews UPDATE` in each database, and `SELECT * FROM
+  tviews.pg_tviews_reregister_all()` when the release notes say so.
+- The extension moves to schema `tviews`. Unqualified calls to `pg_tviews_*`
+  functions need `tviews` on `search_path` (for example `ALTER DATABASE … SET
+  search_path = "$user", public, tviews`). `DROP EXTENSION pg_tviews` leaves the
+  `tviews` schema behind, empty.
 - The refresh runs with `search_path = pg_catalog, pg_temp`, as `REFRESH MATERIALIZED
   VIEW` does. A function the backing view calls that names objects without a schema
   must set its own `search_path` (`ALTER FUNCTION … SET search_path = …`).

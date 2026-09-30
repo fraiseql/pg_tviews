@@ -220,6 +220,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             if extensions.iter().any(|e| e == "jsonb_delta") {
                 crate::lifecycle::invalidate_jsonb_delta_cache();
             }
+            if extensions.iter().any(|e| e == "pg_tviews") {
+                crate::revision::reset();
+            }
             return Ok(false); // Pass through
         }
 

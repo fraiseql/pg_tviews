@@ -170,6 +170,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
         XactEvent::Abort => {
             // Auto-resume suspension on abort (discard changes)
             crate::suspend::force_resume();
+            crate::revision::reset();
 
             clear_queue();
             crate::hooks::discard_pending_ctas();
@@ -325,6 +326,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     if pending.is_empty() && fanouts.is_empty() {
         return Ok(());
     }
+    crate::revision::check();
     super::affected::begin_flush();
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never
