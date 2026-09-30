@@ -66,6 +66,27 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- A TVIEW over a partitioned table: PostgreSQL copies its row trigger onto each
+-- partition, and those copies are not orphans.
+CREATE TABLE app.tb_event (
+    pk_event int NOT NULL,
+    id       uuid NOT NULL DEFAULT gen_random_uuid(),
+    kind     text NOT NULL,
+    PRIMARY KEY (pk_event, kind)
+) PARTITION BY LIST (kind);
+CREATE TABLE app.tb_event_a PARTITION OF app.tb_event FOR VALUES IN ('a');
+CREATE TABLE app.tb_event_b PARTITION OF app.tb_event FOR VALUES IN ('b');
+INSERT INTO app.tb_event (pk_event, kind) VALUES (1, 'a'), (2, 'b');
+SET search_path TO app, public, tviews;
+SELECT pg_tviews_create('tv_event', $$
+    SELECT pk_event, id, jsonb_build_object('kind', kind) AS data FROM app.tb_event $$);
+RESET search_path;
+DO $$ BEGIN
+    IF public.trigger_check() IS DISTINCT FROM 'OK: All triggers properly linked' THEN
+        RAISE EXCEPTION '#139 FAIL: partitioned base table reported %', public.trigger_check();
+    END IF;
+END $$;
+
 -- 2. A pg_tviews trigger on a table no TVIEW reads is orphaned.
 CREATE TRIGGER trg_tview_planted AFTER INSERT ON public.audit_me
     FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");
@@ -75,6 +96,33 @@ DO $$ BEGIN
     END IF;
 END $$;
 DROP TRIGGER trg_tview_planted ON public.audit_me;
+
+-- A dropped pg_tviews trigger is reported missing; one without an entity (as
+-- older releases installed them) is reported for re-registration.
+DO $$
+DECLARE t record;
+BEGIN
+    SELECT tr.tgname, tr.tgrelid::regclass AS rel INTO t
+    FROM pg_trigger tr JOIN pg_proc p ON p.oid = tr.tgfoid
+    WHERE p.proname = 'pg_tview_flush_trigger' AND tr.tgrelid = 'app.tb_order'::regclass;
+    EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
+END $$;
+DO $$ BEGIN
+    IF public.trigger_check() NOT LIKE 'WARNING: 1 missing trigger%user_orders (pg_tview_flush_trigger) on app.tb_order%' THEN
+        RAISE EXCEPTION '#139 FAIL: missing trigger not reported: %', public.trigger_check();
+    END IF;
+END $$;
+CREATE TRIGGER trg_tview_untagged AFTER INSERT ON public.audit_me
+    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler();
+DO $$ BEGIN
+    IF public.trigger_check() NOT LIKE '%1 trigger without an entity%trg_tview_untagged%' THEN
+        RAISE EXCEPTION '#139 FAIL: untagged trigger not reported: %', public.trigger_check();
+    END IF;
+END $$;
+DROP TRIGGER trg_tview_untagged ON public.audit_me;
+SET search_path TO app, public, tviews;
+SELECT pg_tviews_drop('user_orders');
+RESET search_path;
 
 -- 3. The triggers of a TVIEW whose registration is gone are orphaned: two on each
 --    of tb_post and tb_user.

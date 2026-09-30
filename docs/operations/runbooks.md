@@ -250,18 +250,21 @@ SELECT pg_tviews_version();
 
 ```sql
 -- pg_tviews triggers (those calling tviews.pg_tview_trigger_handler or
--- tviews.pg_tview_flush_trigger) that no registered TVIEW reads through
+-- tviews.pg_tview_flush_trigger) against the tables each TVIEW reads
 SELECT status, message
 FROM tviews.pg_tviews_health_check()
 WHERE component = 'triggers';
--- WARNING | 2 orphaned triggers found: trg_tview_post_on_app_tb_user on app.tb_user, ...
+-- WARNING | 1 orphaned trigger found: trg_tview_row_post_on_app_tb_user on app.tb_user
 ```
 
 **Resolution**:
 
 ```sql
--- Drop each reported trigger
-DROP TRIGGER trg_tview_post_on_app_tb_user ON app.tb_user;
+-- An orphaned trigger: drop it
+DROP TRIGGER trg_tview_row_post_on_app_tb_user ON app.tb_user;
+
+-- Missing triggers, or triggers without an entity: re-install them
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
 ---

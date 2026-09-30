@@ -47,7 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   does not exist`) for a TVIEW off the `search_path`, failing the whole call. A
   trigger now counts when it calls a pg_tviews trigger function, and is orphaned
   when the entity it carries is not registered or its backing view does not read the
-  trigger's table. The warning lists the orphaned triggers.
+  trigger's table; the copies PostgreSQL makes on partitions are not counted. The
+  check also reports missing triggers (a table a TVIEW reads without its row or flush
+  trigger) and triggers without an entity, and lists up to ten of each.
 - **Long or multibyte trigger names** (#136). A base-table trigger is named
   `trg_tview[_flush]_<entity>_on_<schema>_<table>`, which PostgreSQL truncates to 63
   bytes: two TVIEWs whose names share their first 53 characters could not both

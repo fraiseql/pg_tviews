@@ -117,6 +117,36 @@ extension_sql!(
     name = "create_metadata_tables",
 );
 
+// The relations each TVIEW's backing view reads, followed through views (issue
+// #139): the tables its triggers belong on, the dependency order of TVIEWs, and the
+// registry's base_tables. Plain SQL over the catalogs.
+extension_sql!(
+    r"
+CREATE VIEW @extschema@.pg_tview_reads AS
+WITH RECURSIVE reads(entity, relid) AS (
+    SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
+  UNION
+    SELECT r.entity, d.refobjid
+    FROM reads r
+    JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v'
+    JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid
+    JOIN pg_catalog.pg_depend d
+      ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
+     AND d.objid = w.oid
+     AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+     AND d.refobjid <> v.oid
+)
+SELECT entity, relid FROM reads;
+
+COMMENT ON VIEW @extschema@.pg_tview_reads IS
+'Internal: relations each TVIEW reads, through views; may change in any release';
+
+GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
+    ",
+    name = "tview_reads",
+    requires = ["create_metadata_tables"],
+);
+
 // Register event triggers for DDL interception
 // The PL/pgSQL `pg_tviews_handle_ddl_event()` function is defined in this SQL block.
 // It calls `pg_tviews_convert_table()`, which is a #[pg_extern] C function in event_trigger.rs.
