@@ -113,7 +113,10 @@ SELECT pg_tviews_create('tv_user_posts',
 | `idx_<tv>_id` | `id` | lookup by public UUID |
 | `idx_<tv>_<uuid_fk>` | each UUID FK column | filtering by related public id |
 | `idx_<tv>_<fk>_<pk>` **(required)** | `(fk_<x>, pk_<entity>)` per integer FK | cascade propagation lookup (`WHERE fk_<x> = ANY(…)`); without it every cascade step scans the whole TVIEW |
-| `idx_<tv>_data_gin` | `data` (GIN) | JSONB containment queries |
+| `idx_<tv>_data_gin` | `data` (GIN) | **only with `pg_tviews.data_gin_index = on`**: top-level containment queries; blocks HOT on every refresh |
+
+TVIEW tables are created `WITH (fillfactor = pg_tviews.fillfactor)` (default 85) so
+refreshes can stay heap-only; see [HOT Updates and TVIEW Storage](../operations/hot-updates.md).
 
 The propagation indexes are required for cascade performance: don't drop them.
 Names longer than 63 bytes are shortened deterministically with a hash suffix.

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **Default change: new TVIEWs get no GIN index on `data`, and fillfactor 85**
+  (#70, #73). Nearly every refresh rewrites `data`, so the GIN made every refresh a
+  non-HOT update (0 % HOT across the beta.17 physical baseline), and fillfactor 100
+  left no room for the new row version on its page. New TVIEWs now measure 100 %
+  HOT on single-row refreshes. Existing TVIEWs are untouched. Opt back in per
+  TVIEW with `SET LOCAL pg_tviews.data_gin_index = on` /
+  `SET LOCAL pg_tviews.fillfactor = 100`.
+
+### Added
+
+- GUCs `pg_tviews.data_gin_index` (default `off`) and `pg_tviews.fillfactor`
+  (default `85`), applied at TVIEW creation.
+- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
+  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
+
 ### Fixed
 
 - **Cascade propagation no longer scans the whole parent TVIEW** (#71). Propagation
@@ -37,12 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   claims a name only if it resolves, schema-aware, to a relation registered in
   `pg_tview_meta`; plain tables, missing names and mixed lists go to the standard handler.
 
-### Added
-
-- `pg_tviews_ensure_propagation_indexes(entity DEFAULT NULL, dry_run DEFAULT false)`
-  adds the missing propagation indexes to existing TVIEWs and returns the DDL.
-
 ### Upgrade notes
+
+- To move an existing TVIEW to the new defaults (see
+  `docs/operations/hot-updates.md`):
+  ```sql
+  -- GIN indexes on data that no query uses
+  SELECT indexrelid::regclass FROM pg_stat_user_indexes
+   WHERE indexrelname LIKE 'idx_tv_%_data_gin' AND idx_scan = 0;
+  DROP INDEX idx_tv_post_data_gin;             -- per unused index
+  ALTER TABLE tv_post SET (fillfactor = 85);   -- newly written pages only
+  ```
 
 - TVIEWs created before this release lack the propagation indexes. After
   upgrading, run `SELECT * FROM pg_tviews_ensure_propagation_indexes();` (or run
