@@ -414,7 +414,7 @@ Then, by the smallest change that applies:
   3. Reconcile the rows in place with three statements that touch only rows that change:
      `UPDATE … FROM v_* WHERE (tv.*) IS DISTINCT FROM (v.*)`, `INSERT` the missing keys,
      `DELETE` the keys that are gone. They work on every supported PostgreSQL version,
-     13–18; `MERGE … NOT MATCHED BY SOURCE` would need 17.
+     16–18; `MERGE … NOT MATCHED BY SOURCE` would need 17.
 
   Rows that do not change fire no triggers, so TVIEWs reading this one cascade only real
   changes. The table, its indexes, privileges, comment, foreign keys and dependents are
