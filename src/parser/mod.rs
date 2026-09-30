@@ -38,7 +38,7 @@ use std::sync::LazyLock;
 /// Cached regex for parsing CREATE TABLE tv_* AS SELECT statements
 static CREATE_TVIEW_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?ix)                          # Case-insensitive, verbose
+        r"(?six)                         # Case-insensitive, dot matches newline, verbose
         CREATE\s+TABLE\s+                # CREATE TABLE keyword
         (?:(\w+)\.)?                     # Optional schema name
         (\w+)                            # Table name (required)
