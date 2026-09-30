@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Moving a row to another parent refreshes both parents.** The row trigger followed
+  cascade paths from the new row image only, so an UPDATE that changed a child's FK
+  (a comment moved to another post) refreshed the new parent and left the old one still
+  showing the child. On UPDATE both images are now followed.
+
 - **`PREPARE TRANSACTION` works with pending TVIEW refreshes** (#59). It was rejected;
   the queue is now flushed first, as before `COMMIT`, so the TVIEW writes belong to the
   prepared transaction and `COMMIT PREPARED` / `ROLLBACK PREPARED` apply or discard them.
