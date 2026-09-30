@@ -96,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`CREATE EXTENSION pg_tviews` works without `shared_preload_libraries`** (#134).
+  Loading the library lazily defined the postmaster-level
+  `pg_tviews.auto_rebuild_databases` setting after startup, which ended the session
+  with `FATAL: cannot create PGC_POSTMASTER variables after startup`. The setting (and
+  the rebuild worker it configures) now exists only when the library is preloaded; a
+  lazily loaded library creates, replaces and refreshes TVIEWs. CI runs
+  `test/no_preload/run.sh` on a cluster without the preload.
 - **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
   orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
   looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an

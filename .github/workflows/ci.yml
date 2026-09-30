@@ -105,6 +105,12 @@ jobs:
       - name: Integration suite (test/sql/[0-9]*.sql)
         run: ./test/run_integration_tests.sh
 
+      # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
+      # pg_tviews_create_or_replace() and refresh work where the library is loaded
+      # lazily (#134).
+      - name: No-preload suite (test/no_preload/run.sh)
+        run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
+
       # A pg_basebackup standby on a spare port: UNLOGGED TVIEWs on a hot standby,
       # after promotion and after a crash restart (issue #75).
       - name: Replication suite (test/replication/promote_rebuild.sh)
