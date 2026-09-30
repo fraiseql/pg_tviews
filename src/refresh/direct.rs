@@ -97,17 +97,18 @@ pub fn apply_direct_patch(
     }
 
     let tv_name = crate::utils::relname_from_oid(meta.tview_oid)?;
-    let pk_col = format!("pk_{}", meta.entity_name);
+    let qi_tv = crate::utils::quote_identifier(&tv_name);
+    let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
     let (patch_expr, path_args) = build_direct_patch_expr(chain);
     let pk_param = chain.len() + 1;
 
     let sql = format!(
         "WITH changed AS ( \
-             UPDATE {tv_name} SET data = {patch_expr}, updated_at = now() \
-             WHERE {pk_col} = ANY(${pk_param}) AND data IS DISTINCT FROM {patch_expr} \
-             RETURNING {pk_col}) \
-         SELECT t.{pk_col}, t.{pk_col} IN (SELECT {pk_col} FROM changed) \
-         FROM {tv_name} t WHERE t.{pk_col} = ANY(${pk_param})"
+             UPDATE {qi_tv} SET data = {patch_expr}, updated_at = now() \
+             WHERE {qi_pk} = ANY(${pk_param}) AND data IS DISTINCT FROM {patch_expr} \
+             RETURNING {qi_pk}) \
+         SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed) \
+         FROM {qi_tv} t WHERE t.{qi_pk} = ANY(${pk_param})"
     );
 
     // Params (all bound, nothing interpolated): one JSONB per chain entry, then the

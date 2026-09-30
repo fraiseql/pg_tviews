@@ -11,6 +11,7 @@ use std::collections::HashMap;
 /// Used by the `PRE_COMMIT` handler (`src/queue/`) to iteratively discover
 /// and enqueue parent TVIEWs for refresh.
 use crate::queue::RefreshKey;
+use crate::utils::quote_identifier;
 
 /// Find parent keys that depend on the given entity+pk (without refreshing them)
 ///
@@ -162,9 +163,12 @@ fn find_affected_pks_batch(
     let parent_table = format!("tv_{parent_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
+    let qi_fk = quote_identifier(&fk_col);
+    let qi_parent = quote_identifier(&parent_table);
+    let qi_parent_pk = quote_identifier(&parent_pk_col);
+
     // Use = ANY($1) to batch multiple child PKs into one query
-    let query =
-        format!("SELECT {fk_col}, {parent_pk_col} FROM {parent_table} WHERE {fk_col} = ANY($1)");
+    let query = format!("SELECT {qi_fk}, {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = ANY($1)");
 
     Spi::connect(|client| {
         // Convert child_pks to a PostgreSQL array datum
@@ -222,7 +226,10 @@ fn find_affected_pks(
     let parent_pk_col = format!("pk_{parent_entity}");
 
     // Table/column names are from pg_tview_meta (internal); child_pk is parameterized
-    let query = format!("SELECT {parent_pk_col} FROM {parent_table} WHERE {fk_col} = $1");
+    let qi_fk = quote_identifier(&fk_col);
+    let qi_parent = quote_identifier(&parent_table);
+    let qi_parent_pk = quote_identifier(&parent_pk_col);
+    let query = format!("SELECT {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = $1");
     let args = vec![unsafe {
         DatumWithOid::new(child_pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value())
     }];
