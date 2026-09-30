@@ -60,6 +60,9 @@ extension_sql!(
     -- PascalCase(entity).
     ALTER TABLE @extschema@.pg_tview_meta
         ADD COLUMN IF NOT EXISTS graphql_typename TEXT;
+    -- Aggregate TVIEWs (issue #58): source table name -> group key column.
+    ALTER TABLE @extschema@.pg_tview_meta
+        ADD COLUMN IF NOT EXISTS group_keys JSONB;
 
     CREATE TABLE IF NOT EXISTS @extschema@.pg_tview_helpers (
         helper_name TEXT NOT NULL PRIMARY KEY,

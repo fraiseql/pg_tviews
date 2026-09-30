@@ -205,6 +205,45 @@ pub fn create_tview(
     schema_override: Option<&str>,
     defer_populate: bool,
 ) -> TViewResult<()> {
+    create_tview_inner(
+        tview_name,
+        select_sql,
+        schema_override,
+        defer_populate,
+        None,
+    )
+}
+
+/// Create an aggregate TVIEW (issue #58): rows are the `GROUP BY` groups of the
+/// definition, keyed by `pk_<entity>`, and `group_keys` names for each source
+/// table the column whose value is the group key.
+///
+/// # Errors
+/// Returns an error if the definition cannot be maintained per group, a group key
+/// is invalid, or creation fails.
+pub fn create_aggregate_tview(
+    tview_name: &str,
+    select_sql: &str,
+    group_keys: &super::aggregate::GroupKeys,
+) -> TViewResult<()> {
+    if group_keys.is_empty() {
+        return Err(TViewError::InvalidInput {
+            parameter: "group_keys".to_string(),
+            reason: "name at least one source table and its group key column, e.g. \
+                     '{\"tb_order\": \"fk_user\"}'"
+                .to_string(),
+        });
+    }
+    create_tview_inner(tview_name, select_sql, None, false, Some(group_keys))
+}
+
+fn create_tview_inner(
+    tview_name: &str,
+    select_sql: &str,
+    schema_override: Option<&str>,
+    defer_populate: bool,
+    group_keys: Option<&super::aggregate::GroupKeys>,
+) -> TViewResult<()> {
     // Step 1: Check if TVIEW already exists
     let exists = tview_exists(tview_name)?;
     if exists {
@@ -257,6 +296,15 @@ pub fn create_tview(
     // from infer_schema and could contain metacharacters if the user crafts a
     // malicious column alias like pk_evil'injection).
     crate::validation::validate_sql_identifier(entity_name, "entity_name")?;
+
+    if group_keys.is_some() {
+        super::aggregate::validate_definition(&final_select_sql, entity_name).map_err(
+            |reason| TViewError::InvalidInput {
+                parameter: "aggregate definition".to_string(),
+                reason,
+            },
+        )?;
+    }
 
     // Derive the canonical materialized-table name: always tv_<entity>.
     // This normalises both calling conventions:
@@ -335,14 +383,23 @@ pub fn create_tview(
     // current_schema() resolves to a different schema due to the database search_path.
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
 
-    // Step 6.5: Extract cascade paths from the SELECT SQL
-    let cascade_paths = extract_and_resolve_cascade_paths(
-        &final_select_sql,
-        entity_name,
-        &final_schema,
-        &dep_graph.base_tables,
-        &schema_name,
-    )?;
+    // Step 6.5: Cascade paths: from the SELECT's joins, or for an aggregate TVIEW
+    // one path per declared group key (issue #58).
+    let cascade_paths = match group_keys {
+        Some(keys) => super::aggregate::cascade_paths(
+            entity_name,
+            keys,
+            &dep_graph.base_tables,
+            &schema_name,
+        )?,
+        None => extract_and_resolve_cascade_paths(
+            &final_select_sql,
+            entity_name,
+            &final_schema,
+            &dep_graph.base_tables,
+            &schema_name,
+        )?,
+    };
 
     // Step 6.55: Reject a DISTINCT ON tview that also has JOIN-based cascade paths
     // (issue #51). A DISTINCT ON tview refreshes by dedup key (the trigger enqueues
@@ -374,7 +431,10 @@ pub fn create_tview(
     // their joins produce cascade paths. This runs before metadata registration and
     // trigger installation, and any objects created above roll back with the ERROR,
     // so a rejected create leaves the incumbent tview untouched.
-    if cascade_paths.is_empty() && !entity_base_table_exists(entity_name, &schema_name)? {
+    if group_keys.is_none()
+        && cascade_paths.is_empty()
+        && !entity_base_table_exists(entity_name, &schema_name)?
+    {
         return Err(TViewError::InvalidInput {
             parameter: "tview definition".to_string(),
             reason: format!(
@@ -401,6 +461,7 @@ pub fn create_tview(
         &schema_name,
         &distinct_on_keys,
         &distinct_on_output_keys,
+        group_keys,
         false,
     )?;
 
@@ -450,13 +511,19 @@ pub fn reregister_metadata(
     };
     let view_name = format!("v_{entity_name}");
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
-    let cascade_paths = extract_and_resolve_cascade_paths(
-        definition,
-        entity_name,
-        &schema,
-        &dep_graph.base_tables,
-        schema_name,
-    )?;
+    let group_keys = stored_group_keys(entity_name)?;
+    let cascade_paths = match &group_keys {
+        Some(keys) => {
+            super::aggregate::cascade_paths(entity_name, keys, &dep_graph.base_tables, schema_name)?
+        }
+        None => extract_and_resolve_cascade_paths(
+            definition,
+            entity_name,
+            &schema,
+            &dep_graph.base_tables,
+            schema_name,
+        )?,
+    };
     register_metadata(
         entity_name,
         &view_name,
@@ -467,10 +534,26 @@ pub fn reregister_metadata(
         schema_name,
         &distinct_on_keys,
         &distinct_on_output_keys,
+        group_keys.as_ref(),
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
     Ok(())
+}
+
+/// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
+fn stored_group_keys(entity_name: &str) -> TViewResult<Option<super::aggregate::GroupKeys>> {
+    let stored: Option<pgrx::JsonB> = Spi::get_one_with_args(
+        "SELECT group_keys FROM pg_tview_meta WHERE entity = $1",
+        &[unsafe {
+            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Read group_keys".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    Ok(stored.and_then(|j| serde_json::from_value(j.0).ok()))
 }
 
 /// Extract cascade paths from the view's SELECT SQL and resolve table names to OIDs.
@@ -698,7 +781,7 @@ fn resolve_join_path(
 /// dependency on `source_table` (e.g. a multi-hop cascade whose backing view
 /// references an intermediate view, not the leaf table). The caller treats an
 /// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
-fn view_source_columns(schema: &str, entity: &str, source_oid: Oid) -> Vec<String> {
+pub(crate) fn view_source_columns(schema: &str, entity: &str, source_oid: Oid) -> Vec<String> {
     // The view and schema names are bound as text parameters (no in-band SQL
     // quoting); the source table is matched by the OID the cascade path resolved,
     // so a joined table in another schema is found too.
@@ -1359,6 +1442,7 @@ fn register_metadata(
     schema_name: &str,
     distinct_on_keys: &[String],
     distinct_on_output_keys: &[String],
+    group_keys: Option<&super::aggregate::GroupKeys>,
     replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
@@ -1504,7 +1588,8 @@ fn register_metadata(
             distinct_on_keys = EXCLUDED.distinct_on_keys, \
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
-            direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union"
+            direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
+            group_keys = EXCLUDED.group_keys"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1526,8 +1611,9 @@ fn register_metadata(
             distinct_on_output_keys,
             direct_map_columns,
             direct_map_keys,
-            is_union
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {})
+            is_union,
+            group_keys
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1544,12 +1630,20 @@ fn register_metadata(
         is_union
     );
 
+    let group_keys_json =
+        group_keys.map(|keys| pgrx::JsonB(serde_json::to_value(keys).unwrap_or_default()));
     let args = [
         unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe {
             DatumWithOid::new(
                 definition_sql,
                 PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                group_keys_json,
+                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
             )
         },
     ];
