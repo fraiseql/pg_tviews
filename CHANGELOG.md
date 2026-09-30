@@ -87,6 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`pg_tviews_suspend_triggers()` / `pg_tviews_resume_triggers()` work** (#44). The row
+  trigger only honoured the `pg_tviews.suspend_triggers` GUC, so the functions suspended
+  nothing, and resuming enqueued pk 0, which refreshes nothing. Suspension now skips
+  refresh; the outermost resume, or a COMMIT while still suspended, rebuilds every TVIEW
+  the suspended writes touched and every TVIEW embedding one of them. An implicit commit
+  while suspended warns which TVIEWs are stale. Updating 10 000 of 20 000 rows: 1 493 ms
+  before (refreshed row by row), 135 ms now.
 - **Cascades through complex CTEs** (#60). A base table reachable only through a CTE
   chain (a CTE reading an earlier one), a CTE body joining several tables, or a
   UNION-bodied CTE got no cascade path, so its changes never reached the TVIEW. A

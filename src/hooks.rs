@@ -161,6 +161,15 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                     None
                 };
                 if let Some(stmt) = ending {
+                    // Still suspended at the end of the transaction: resume and rebuild
+                    // the TVIEWs the suspended writes touched.
+                    if crate::suspend::is_suspended() {
+                        crate::suspend::force_resume();
+                        if let Err(e) = crate::suspend::catch_up() {
+                            unsafe { HOOK_IN_PROGRESS = false };
+                            error!("TVIEW catch-up after suspension failed before {stmt}: {e:?}");
+                        }
+                    }
                     if let Err(e) = crate::queue::flush_refresh_queue() {
                         unsafe { HOOK_IN_PROGRESS = false };
                         error!("TVIEW refresh failed before {stmt}: {e:?}");

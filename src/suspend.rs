@@ -77,14 +77,45 @@ pub fn clear_changed_entities() {
     SUSPENSION_STATE.lock().unwrap().changed_entities.clear();
 }
 
-/// Enqueue suspended changes for refresh
-pub fn enqueue_suspended_changes() -> Result<(), String> {
-    let entities = get_changed_entities();
-    for entity in entities {
-        crate::queue::enqueue_refresh(&entity, 0);
-    }
+/// Rebuild every TVIEW changed while refresh was suspended, and every TVIEW that
+/// embeds one of them, dependencies first, then forget the recorded changes.
+/// Returns the rebuilt entities in order. Needs SPI (a function call or the
+/// `ProcessUtility` hook, never a transaction callback).
+///
+/// # Errors
+/// Returns an error if loading the dependency graph or a rebuild fails.
+pub fn catch_up() -> crate::TViewResult<Vec<String>> {
+    let changed = get_changed_entities();
     clear_changed_entities();
-    Ok(())
+    if changed.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A TVIEW embedding a rebuilt one's document (`graph.parents`) is stale too.
+    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let mut order: Vec<String> = Vec::new();
+    let mut queue: std::collections::VecDeque<String> = changed.into_iter().collect();
+    while let Some(entity) = queue.pop_front() {
+        if order.contains(&entity) {
+            continue;
+        }
+        queue.extend(graph.parents.get(&entity).cloned().unwrap_or_default());
+        order.push(entity);
+    }
+    for entity in &order {
+        let args = [unsafe {
+            pgrx::datum::DatumWithOid::new(
+                entity.as_str(),
+                pgrx::PgOid::BuiltIn(pgrx::PgBuiltInOids::TEXTOID).value(),
+            )
+        }];
+        pgrx::Spi::run_with_args("SELECT pg_tviews_refresh($1)", &args).map_err(|e| {
+            crate::TViewError::SpiError {
+                query: format!("pg_tviews_refresh('{entity}')"),
+                error: e.to_string(),
+            }
+        })?;
+    }
+    Ok(order)
 }
 
 /// Force resume (used by transaction callback)

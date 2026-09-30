@@ -117,14 +117,20 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     match xact_event {
         XactEvent::PreCommit | XactEvent::Commit => {
             #[allow(clippy::collapsible_if)]
-            // Auto-enqueue suspended changes if any
+            // Suspended without resuming: the hook caught up before an explicit
+            // COMMIT; an implicit commit ends here, where no SPI is allowed.
             if crate::suspend::is_suspended() {
-                if let Err(e) = crate::suspend::enqueue_suspended_changes() {
-                    warning!("Failed to enqueue suspended changes: {}", e);
+                let stale = crate::suspend::get_changed_entities();
+                if !stale.is_empty() {
+                    warning!(
+                        "pg_tviews: transaction committed with refresh suspended; TVIEWs {:?} \
+                         are stale until pg_tviews_refresh() is run for each",
+                        stale
+                    );
                 }
+                crate::suspend::clear_changed_entities();
             }
 
-            // Auto-resume suspension
             crate::suspend::force_resume();
 
             // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
