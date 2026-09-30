@@ -249,44 +249,22 @@ SELECT pg_tviews_version();
 **Diagnosis Steps**:
 
 ```sql
--- Find orphaned triggers
--- Trinity pattern: All base tables named tb_{entity} (singular)
-SELECT
-  pg_trigger.tgname,
-  pg_class.relname
-FROM pg_trigger
-JOIN pg_class ON pg_trigger.tgrelid = pg_class.oid
-WHERE pg_trigger.tgname LIKE 'tview_%'
-  AND NOT EXISTS (
-    SELECT 1 FROM pg_tview_meta
-    WHERE pg_class.relname = 'tb_' || pg_tview_meta.entity
-  );
+-- pg_tviews triggers (those calling tviews.pg_tview_trigger_handler or
+-- tviews.pg_tview_flush_trigger) against the tables each TVIEW reads
+SELECT status, message
+FROM tviews.pg_tviews_health_check()
+WHERE component = 'triggers';
+-- WARNING | 1 orphaned trigger found: trg_tview_row_post_on_app_tb_user on app.tb_user
 ```
 
 **Resolution**:
 
 ```sql
--- Drop orphaned triggers
--- Trinity pattern: All base tables named tb_{entity} (singular)
-DO $$
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN
-        SELECT
-          pg_trigger.tgname,
-          pg_class.relname
-        FROM pg_trigger
-        JOIN pg_class ON pg_trigger.tgrelid = pg_class.oid
-        WHERE pg_trigger.tgname LIKE 'tview_%'
-          AND NOT EXISTS (
-            SELECT 1 FROM pg_tview_meta
-            WHERE pg_class.relname = 'tb_' || pg_tview_meta.entity
-          )
-    LOOP
-        EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', r.tgname, r.relname);
-    END LOOP;
-END $$;
+-- An orphaned trigger: drop it
+DROP TRIGGER trg_tview_row_post_on_app_tb_user ON app.tb_user;
+
+-- Missing triggers, or triggers without an entity: re-install them
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
 ---

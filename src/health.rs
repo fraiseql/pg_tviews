@@ -77,33 +77,49 @@ fn pg_tviews_health_check() -> TableIterator<
         ));
     }
 
-    // Check 4: Orphaned triggers
-    let orphaned_triggers = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM pg_trigger
-         WHERE tgname LIKE 'tview_%'
-           AND tgrelid NOT IN (
-             SELECT ('tb_' || entity)::regclass::oid
-             FROM {}
-           )",
-        crate::utils::meta_table()
-    ))
-    .unwrap_or(Some(0))
-    .unwrap_or(0);
-
-    if orphaned_triggers > 0 {
-        results.push((
-            "WARNING".to_string(),
+    // Check 4: pg_tviews' triggers against the tables the TVIEWs read (issue #139).
+    match crate::dependency::triggers::trigger_problems() {
+        Ok(p) if p.orphaned.is_empty() && p.missing.is_empty() && p.untagged.is_empty() => {
+            results.push((
+                "OK".to_string(),
+                "triggers".to_string(),
+                "All triggers properly linked".to_string(),
+                "info".to_string(),
+            ));
+        }
+        Ok(p) => {
+            let parts: Vec<String> = [
+                (&p.orphaned, "orphaned trigger", "found"),
+                (
+                    &p.missing,
+                    "missing trigger",
+                    "(run pg_tviews_reregister_all())",
+                ),
+                (
+                    &p.untagged,
+                    "trigger without an entity",
+                    "(run pg_tviews_reregister_all())",
+                ),
+            ]
+            .into_iter()
+            .filter(|(list, _, _)| !list.is_empty())
+            .map(|(list, what, action)| {
+                format!("{} {action}: {}", count(list.len(), what), sample(list))
+            })
+            .collect();
+            results.push((
+                "WARNING".to_string(),
+                "triggers".to_string(),
+                parts.join("; "),
+                "warning".to_string(),
+            ));
+        }
+        Err(e) => results.push((
+            "ERROR".to_string(),
             "triggers".to_string(),
-            format!("{orphaned_triggers} orphaned triggers found"),
-            "warning".to_string(),
-        ));
-    } else {
-        results.push((
-            "OK".to_string(),
-            "triggers".to_string(),
-            "All triggers properly linked".to_string(),
-            "info".to_string(),
-        ));
+            format!("could not check triggers: {e}"),
+            "error".to_string(),
+        )),
     }
 
     // Check 5: TVIEW count
@@ -223,4 +239,29 @@ fn pg_tviews_performance_stats() -> TableIterator<
     .unwrap_or_default();
 
     TableIterator::new(results)
+}
+
+/// `1 orphaned trigger`, `2 orphaned triggers`.
+fn count(n: usize, what: &str) -> String {
+    if n == 1 {
+        format!("1 {what}")
+    } else {
+        format!("{n} {what}s")
+    }
+}
+
+/// The first ten items, and how many more there are.
+fn sample(items: &[String]) -> String {
+    const SHOWN: usize = 10;
+    let text = items
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > SHOWN {
+        format!("{text} and {} more", items.len() - SHOWN)
+    } else {
+        text
+    }
 }

@@ -86,6 +86,87 @@ fn entity_triggers(
     })
 }
 
+/// What the health check finds wrong with `pg_tviews`' triggers (issue #139), each
+/// as `<trigger or entity> on <table>`.
+#[derive(Default)]
+pub struct TriggerProblems {
+    /// Triggers whose entity is not registered or does not read their table.
+    pub orphaned: Vec<String>,
+    /// Tables a TVIEW reads that lack its row or flush trigger.
+    pub missing: Vec<String>,
+    /// `pg_tviews` triggers without an entity argument (installed by an older
+    /// release): `pg_tviews_reregister_all()` replaces them.
+    pub untagged: Vec<String>,
+}
+
+/// Check `pg_tviews`' triggers against the tables each registered TVIEW reads
+/// (`tviews.pg_tview_reads`: ordinary and partitioned tables reached from the
+/// backing view through views, other TVIEWs' tables excepted, as
+/// [`install_triggers`] was given them). The copies `PostgreSQL` makes of a
+/// partitioned table's triggers on its partitions are not counted.
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn trigger_problems() -> TViewResult<TriggerProblems> {
+    let query = format!(
+        "WITH ours AS ( \
+             SELECT t.tgname, t.tgrelid, p.proname, \
+                    CASE WHEN t.tgnargs = 1 THEN pg_catalog.convert_from( \
+                        pg_catalog.substring(t.tgargs, 1, pg_catalog.length(t.tgargs) - 1), \
+                        pg_catalog.getdatabaseencoding()) END AS entity \
+             FROM pg_catalog.pg_trigger t \
+             JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+             WHERE p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+               AND p.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}') \
+               AND t.tgparentid = 0 \
+         ), \
+         expected AS ( \
+             SELECT DISTINCT r.entity, r.relid \
+             FROM {schema}.pg_tview_reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
+             WHERE r.relid NOT IN (SELECT table_oid::oid FROM {meta}) \
+         ) \
+         SELECT 'orphaned', pg_catalog.format('%I on %s', o.tgname, \
+                                              o.tgrelid::pg_catalog.regclass) \
+         FROM ours o \
+         WHERE o.entity IS NOT NULL \
+           AND NOT EXISTS (SELECT 1 FROM expected e \
+                           WHERE e.entity = o.entity AND e.relid = o.tgrelid) \
+         UNION ALL \
+         SELECT 'missing', pg_catalog.format('%s (%s) on %s', e.entity, f.proname, \
+                                             e.relid::pg_catalog.regclass) \
+         FROM expected e \
+         CROSS JOIN (VALUES ('{ROW_HANDLER}'), ('{FLUSH_HANDLER}')) AS f(proname) \
+         WHERE NOT EXISTS (SELECT 1 FROM ours o \
+                           WHERE o.entity = e.entity AND o.tgrelid = e.relid \
+                             AND o.proname = f.proname) \
+         UNION ALL \
+         SELECT 'untagged', pg_catalog.format('%I on %s', o.tgname, \
+                                              o.tgrelid::pg_catalog.regclass) \
+         FROM ours o WHERE o.entity IS NULL \
+         ORDER BY 1, 2",
+        schema = crate::utils::ext_schema(),
+        meta = crate::utils::meta_table(),
+    );
+    Spi::connect(|client| {
+        let mut problems = TriggerProblems::default();
+        for row in client.select(&query, None, &[])? {
+            if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
+                match kind.as_str() {
+                    "orphaned" => problems.orphaned.push(what),
+                    "missing" => problems.missing.push(what),
+                    _ => problems.untagged.push(what),
+                }
+            }
+        }
+        Ok::<_, spi::Error>(problems)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Check pg_tviews triggers".to_string(),
+        pg_error: e.to_string(),
+    })
+}
+
 /// Install cascade triggers on all base tables for a TVIEW.
 ///
 /// Each base table gets a row-level `pg_tview_trigger_handler()`, which derives
