@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **`pg_tviews_flush_and_report()`** (#76): flushes pending refreshes and returns the
+  TVIEW rows the transaction changed in the GraphQL Cascade shape (`updated` with
+  `__typename`, `id`, `operation` and fresh `data`; `deleted`; `truncated`;
+  `invalidated_types`). Every refresh write journals the rows it really changed, so
+  cascaded rows are included and no-op refreshes and rolled-back savepoints are not.
+  `pg_tviews_set_typename()` overrides the reported type name (new
+  `pg_tview_meta.graphql_typename` column); `pg_tviews.report_max_tracked` bounds the
+  journal. See `docs/user-guides/graphql-cascade.md`.
+- **`pg_tviews_profile(entity DEFAULT NULL, fanout_warn DEFAULT 1000)`** (#74): per-TVIEW
+  physical health from the catalogs and statistics views (sizes, TOAST, HOT ratio,
+  fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out
+  per `fk_*`) with a `warnings` column. Read-only and callable on a standby; the columns
+  are a stable contract (`docs/reference/profile.md`).
+
 - **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
   an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
   TVIEW stayed empty until something wrote to its base tables. New:
@@ -27,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   - CI runs `test/replication/promote_rebuild.sh` against a real standby.
 
 ### Changed
+
+- **Propagation stops at a row whose refresh changed nothing** (#85). Along an edge where a
+  parent embeds the child's computed document (a nested object or array of `v_<child>.data`),
+  parents are no longer looked up and recomputed when the child's row came out unchanged.
+  A no-op update of a user with 20 posts and 60 comments now recomputes 1 row instead of 81.
+  Scalar embeds that follow the child's FK to a deeper relationship still propagate.
+  `propagation_pruned` in `pg_tviews_queue_stats()` counts the skipped edges.
+
+- **Less fixed cost per refresh** (#91). TVIEW metadata is cached per backend and a warm
+  refresh makes no catalog queries (`catalog_lookups` in `pg_tviews_queue_stats()`
+  counts the misses); the per-row recompute upserts straight from the backing view,
+  which is now evaluated once instead of twice; the UNLOGGED crash probe runs once per
+  backend and TVIEW instead of once per transaction. 2000 single-row refreshes: direct
+  patch ~665 ms → ~485 ms, per-row recompute ~1390 ms → ~605 ms. The caches follow
+  other sessions' changes: DDL on a TVIEW's table or view, and every write to
+  `pg_tview_meta`, invalidate them in every backend.
 
 - **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
   `oid`, so a dump stores them as names (#96). They now print as relation names;

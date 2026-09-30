@@ -130,9 +130,11 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
             // Clear audit buffer as safety net (should already be empty after flush).
             crate::audit::clear_audit_buffer();
-            super::ops::clear_crash_recovery_cache();
+            // The crash-recovery check stays done for this backend: an UNLOGGED
+            // TVIEW is only reset by a restart, which ends every backend.
             super::cache::cascade_cache::clear_cache();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
         XactEvent::Prepare => {
             // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
@@ -145,6 +147,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
         XactEvent::Abort => {
             // Auto-resume suspension on abort (discard changes)
@@ -158,6 +161,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::cache::cascade_cache::clear_cache();
             crate::audit::clear_audit_buffer();
             crate::metrics::metrics_api::reset_metrics();
+            super::affected::clear();
         }
     }
 }
@@ -191,6 +195,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 QUEUE_SNAPSHOTS.with(|s| {
                     s.borrow_mut().push(snapshot);
                 });
+                super::affected::savepoint_start();
 
                 // Snapshot the patch map in lockstep (issue #56).
                 let patch_snapshot = super::patch::take_patch_snapshot();
@@ -217,6 +222,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
                     super::patch::replace_patch_map(patch_snapshot);
                 }
+                super::affected::savepoint_abort();
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
                 // RELEASE SAVEPOINT: just decrement depth and discard snapshot
@@ -229,6 +235,7 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 PATCH_SNAPSHOTS.with(|s| {
                     s.borrow_mut().pop();
                 });
+                super::affected::savepoint_commit();
             }
             _ => {
                 // Ignore other subtransaction events
@@ -287,6 +294,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     if pending.is_empty() {
         return Ok(());
     }
+    super::affected::begin_flush();
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never
     // outlives its queue entries. Keys carrying a usable `Direct` chain are patched
