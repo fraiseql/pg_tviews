@@ -22,7 +22,8 @@ PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-28818}"
 PGUSER="${PGUSER:-postgres}"
 STANDBY_PORT="${STANDBY_PORT:-28819}"
-export PGHOST PGPORT PGUSER
+# Never prompt for a password: a missing trust rule should fail, not hang.
+export PGHOST PGPORT PGUSER PGCONNECT_TIMEOUT=10
 
 db="pg_tviews_repl_$$"
 standby="$(mktemp -d)/standby"
@@ -34,8 +35,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-primary() { "$PGBIN/psql" -d "$db" -qAtX -v ON_ERROR_STOP=1 "$@"; }
-node() { "$PGBIN/psql" -h localhost -p "$STANDBY_PORT" -d "$db" -qAtX "$@" 2>&1 || true; }
+primary() { "$PGBIN/psql" -w -d "$db" -qAtX -v ON_ERROR_STOP=1 "$@"; }
+node() { "$PGBIN/psql" -w -h localhost -p "$STANDBY_PORT" -d "$db" -qAtX "$@" 2>&1 || true; }
 start_node() {
   "$PGBIN/pg_ctl" -D "$standby" -l "$standby/log" -w start >/dev/null \
     || { tail -20 "$standby/log"; fail "standby did not start"; }
@@ -48,7 +49,7 @@ wait_for_rows() { # <expected> <what>
   fail "$2: tv_post has $(node -c "SELECT count(*) FROM tv_post") rows, expected $1"
 }
 
-"$PGBIN/psql" -d postgres -qc "CREATE DATABASE $db"
+"$PGBIN/psql" -w -d postgres -qc "CREATE DATABASE $db"
 primary >/dev/null 2>&1 <<'SQL'
 SET client_min_messages TO WARNING;
 CREATE EXTENSION jsonb_delta;
@@ -67,10 +68,10 @@ COMMIT;
 CHECKPOINT;
 SQL
 
-"$PGBIN/pg_basebackup" -p "$PGPORT" -D "$standby" -R -X stream
+"$PGBIN/pg_basebackup" -w -c fast -p "$PGPORT" -D "$standby" -R -X stream
 # Packaged clusters (Debian/Ubuntu) keep their config outside the data directory.
 [[ -f "$standby/postgresql.conf" ]] || : > "$standby/postgresql.conf"
-[[ -f "$standby/pg_hba.conf" ]] || printf 'local all all trust\nhost all all 127.0.0.1/32 trust\n' > "$standby/pg_hba.conf"
+[[ -f "$standby/pg_hba.conf" ]] || printf 'local all all trust\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust\n' > "$standby/pg_hba.conf"
 {
   echo "port = $STANDBY_PORT"
   echo "listen_addresses = 'localhost'"

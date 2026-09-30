@@ -109,7 +109,7 @@ jobs:
       - name: Replication suite (test/replication/promote_rebuild.sh)
         run: |
           hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
-          sudo sed -i '1i host replication all 127.0.0.1/32 trust' "$hba"
+          sudo sed -i '1i host replication all 127.0.0.1/32 trust\nhost replication all ::1/128 trust' "$hba"
           sudo pg_ctlcluster "${PG_MAJOR}" main reload
           PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" STANDBY_PORT=5499 \
             ./test/replication/promote_rebuild.sh
