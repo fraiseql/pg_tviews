@@ -6,6 +6,21 @@ use pgrx::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
+/// Emit an internal diagnostic. Silent at the default settings: it is a `DEBUG1` message
+/// (visible with `client_min_messages = debug1`), or a `NOTICE` when the session sets
+/// `pg_tviews.log_level = 'debug'`. Use it for tracing only; anything the user must act on
+/// belongs in `warning!`/`error!`.
+macro_rules! log_debug {
+    ($($arg:tt)+) => {
+        if $crate::config::log_level().eq_ignore_ascii_case("debug") {
+            ::pgrx::notice!($($arg)+);
+        } else {
+            ::pgrx::debug1!($($arg)+);
+        }
+    };
+}
+pub(crate) use log_debug;
+
 /// Execute a DDL statement via SPI in non-atomic mode.
 ///
 /// In `PostgreSQL` 18.1 compiled with assertions enabled, calling `SPI_execute()` for DDL
@@ -31,8 +46,7 @@ use std::sync::{LazyLock, Mutex};
 pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     use std::ffi::CString;
 
-    // ADD THIS: Log start of SPI DDL execution
-    info!(
+    log_debug!(
         "spi_run_ddl() called with SQL ({} chars): {}",
         sql.len(),
         &sql[..sql.len().min(200)]
@@ -89,8 +103,7 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
         }
     }
 
-    // ADD THIS: Log successful execution
-    info!("✅ spi_run_ddl() succeeded");
+    log_debug!("spi_run_ddl() succeeded");
     Ok(())
 }
 

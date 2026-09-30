@@ -4,7 +4,7 @@ use crate::schema::{
     TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
     inference::infer_schema,
 };
-use crate::utils::quote_identifier;
+use crate::utils::{log_debug, quote_identifier};
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -800,9 +800,8 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     let qi_view = quote_identifier(view_name);
     let create_view_sql = format!("CREATE VIEW {qi_schema}.{qi_view} AS {select_sql}");
 
-    // Use notice! instead of info! to ensure visibility
-    notice!(
-        "DEBUG: create_backing_view START - schema='{}', view='{}', sql_len={}",
+    log_debug!(
+        "create_backing_view START - schema='{}', view='{}', sql_len={}",
         schema_name,
         view_name,
         create_view_sql.len()
@@ -811,16 +810,12 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     match crate::utils::spi_run_ddl(&create_view_sql) {
         Ok(()) => {
             // Log successful spi_run_ddl
-            notice!(
-                "DEBUG: spi_run_ddl SUCCEEDED for {}.{}",
-                schema_name,
-                view_name
-            );
+            log_debug!("spi_run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
         }
         Err(e) => {
             // Log spi_run_ddl failure
-            notice!(
-                "DEBUG: spi_run_ddl FAILED - {}.{} - error: {}",
+            log_debug!(
+                "spi_run_ddl FAILED - {}.{} - error: {}",
                 schema_name,
                 view_name,
                 e
@@ -834,8 +829,8 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     }
 
     // Log before verification check
-    notice!(
-        "DEBUG: checking if view exists - schema='{}', view='{}' in pg_class",
+    log_debug!(
+        "checking if view exists - schema='{}', view='{}' in pg_class",
         schema_name,
         view_name
     );
@@ -854,16 +849,16 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
         Ok(result) => {
             if result.is_some() {
                 // Log successful verification
-                notice!(
-                    "DEBUG: VERIFIED - backing view {}.{} exists in pg_class",
+                log_debug!(
+                    "VERIFIED - backing view {}.{} exists in pg_class",
                     schema_name,
                     view_name
                 );
                 true
             } else {
                 // Log verification failure
-                notice!(
-                    "DEBUG: VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
+                log_debug!(
+                    "VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
                     schema_name,
                     view_name
                 );
@@ -872,8 +867,8 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
         }
         Err(e) => {
             // Log verification query failure
-            notice!(
-                "DEBUG: verification query FAILED - could not check pg_class: {}",
+            log_debug!(
+                "verification query FAILED - could not check pg_class: {}",
                 e
             );
             // Note: error!() macro diverges, so this return is unreachable but needed for type checking
