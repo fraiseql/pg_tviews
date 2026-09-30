@@ -27,6 +27,7 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::TViewError;
 use crate::ddl::drop_tview;
+use crate::utils::log_debug;
 
 /// Previous `ProcessUtility` hook (if any other extension installed one)
 static mut PREV_PROCESS_UTILITY_HOOK: pg_sys::ProcessUtility_hook_type = None;
@@ -816,7 +817,7 @@ fn drain_pending_unconverted_tviews() {
     }
 
     // Log that we're using the fallback mechanism
-    notice!(
+    log_debug!(
         "pg_tviews: Event trigger did not fire for {} TVIEW(s), using fallback conversion",
         entries.len()
     );
@@ -836,7 +837,7 @@ fn drain_pending_unconverted_tviews() {
             continue;
         }
 
-        notice!(
+        log_debug!(
             "pg_tviews: Fallback converting TVIEW table '{}' (schema: '{}')",
             table_name,
             if schema_name.is_empty() {
@@ -877,7 +878,7 @@ fn drain_pending_unconverted_tviews() {
         // Create the proper TVIEW: backing view, materialized table, triggers
         match crate::ddl::create_tview(&table_name, &select_sql, schema_override, true) {
             Ok(()) => {
-                notice!(
+                log_debug!(
                     "pg_tviews: Fallback conversion SUCCEEDED for TVIEW '{}'",
                     table_name
                 );

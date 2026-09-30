@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `oid`, so a dump stores them as names (#96). They now print as relation names;
   cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
+
+### Removed
+
+- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
+  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
+
 ### Fixed
 
 - **`PREPARE TRANSACTION` works with pending TVIEW refreshes** (#59). It was rejected;
@@ -45,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - `pg_tviews_cascade()` / `pg_tviews_insert()` / `pg_tviews_delete()` failed with
   `SpiError(NoAttribute)`: their catalog query lacked columns the loader reads.
 
+- **Normal DDL is quiet again (#92).** `CREATE TABLE tv_*`, CTAS and `pg_tviews_create` no
+  longer print `EVENT TRIGGER` banners, `DEBUG:` lines or `spi_run_ddl()` INFO output. The
+  diagnostics are `DEBUG1` messages (`client_min_messages = debug1`), or NOTICEs with
+  `SET pg_tviews.log_level = 'debug'`.
 - **Dropping any object a TVIEW reads now deregisters that TVIEW** (#57). Before,
   only the eponymous case was handled: dropping `tb_<entity>` deregistered
   `tv_<entity>`. A TVIEW that read the dropped table under another name, for

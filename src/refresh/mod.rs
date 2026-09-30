@@ -4,7 +4,6 @@
 //! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
 //! for 1.5-3× performance improvement on cascade updates.
 
-pub mod array_ops;
 pub mod main;
 
 pub mod bulk;
