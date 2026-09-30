@@ -44,6 +44,11 @@ pub struct EntityDepGraph {
     /// Topological order (refresh from low to high dependency)
     /// Example: `["company", "user", "post", "feed"]`
     pub topo_order: Vec<String>,
+
+    /// `(child, parent)` edges whose parent rows are found by a column other than
+    /// `fk_<child>`: the parent embeds an aggregate TVIEW (issue #126) and this is
+    /// the parent's column holding the aggregate's key.
+    pub lookup_columns: HashMap<(String, String), String>,
 }
 
 impl EntityDepGraph {
@@ -56,7 +61,7 @@ impl EntityDepGraph {
         // scalar embed reading only the child's own columns, while `children` (which drives
         // topological refresh ordering) keeps every edge.
         let query = format!(
-            "SELECT entity, fk_columns, dependency_types, cascade_paths FROM {}",
+            "SELECT entity, fk_columns, dependency_types, cascade_paths, aggregate_embeds FROM {}",
             crate::utils::meta_table()
         );
 
@@ -64,6 +69,7 @@ impl EntityDepGraph {
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_entities: HashSet<String> = HashSet::new();
         let mut document_edges: HashSet<(String, String)> = HashSet::new();
+        let mut lookup_columns: HashMap<(String, String), String> = HashMap::new();
 
         Spi::connect(|client| {
             let rows = client.select(&query, None, &[])?;
@@ -115,6 +121,31 @@ impl EntityDepGraph {
                 let reads_by_fk = source_columns_by_fk(&cascade_paths);
 
                 all_entities.insert(entity.clone());
+
+                // An embedded aggregate TVIEW (issue #126) is a dependency like an
+                // `fk_<entity>` one, but parent rows are found by the recorded column.
+                let aggregate_embeds: Option<pgrx::JsonB> = row["aggregate_embeds"]
+                    .value()
+                    .map_err(|e| crate::TViewError::SpiError {
+                        query: query.clone(),
+                        error: format!("Failed to get aggregate_embeds: {e}"),
+                    })?;
+                if let Some(serde_json::Value::Object(embeds)) = aggregate_embeds.map(|j| j.0) {
+                    for (aggregate, column) in embeds {
+                        let Some(column) = column.as_str() else {
+                            continue;
+                        };
+                        children
+                            .entry(entity.clone())
+                            .or_default()
+                            .push(aggregate.clone());
+                        parents
+                            .entry(aggregate.clone())
+                            .or_default()
+                            .push(entity.clone());
+                        lookup_columns.insert((aggregate, entity.clone()), column.to_string());
+                    }
+                }
 
                 if let Some(fk_cols) = fk_columns {
                     for (i, fk_col) in fk_cols.iter().enumerate() {
@@ -171,7 +202,17 @@ impl EntityDepGraph {
             children,
             document_edges,
             topo_order,
+            lookup_columns,
         })
+    }
+
+    /// Column of `tv_<parent>` holding the key of a `child` row: `fk_<child>`, or
+    /// the recorded column for an embedded aggregate (issue #126).
+    pub fn lookup_column(&self, child: &str, parent: &str) -> String {
+        self.lookup_columns
+            .get(&(child.to_string(), parent.to_string()))
+            .cloned()
+            .unwrap_or_else(|| format!("fk_{child}"))
     }
 
     /// Sort refresh keys by dependency order
@@ -288,6 +329,7 @@ mod tests {
             children: HashMap::new(),
             document_edges: HashSet::new(),
             topo_order: vec!["company".into(), "user".into(), "post".into()],
+            lookup_columns: HashMap::new(),
         };
 
         let keys = vec![

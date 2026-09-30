@@ -56,7 +56,8 @@ pub fn find_parents_for(
         if prune_edge(graph, &key.entity, &parent_entity, key.pk) {
             continue;
         }
-        let affected_pks = find_affected_pks(&parent_entity, &key.entity, key.pk)?;
+        let lookup_col = graph.lookup_column(&key.entity, &parent_entity);
+        let affected_pks = find_affected_pks(&parent_entity, &lookup_col, key.pk)?;
 
         // Convert to RefreshKeys
         for pk in affected_pks {
@@ -107,7 +108,8 @@ pub fn find_parents_batch(
 
     // Execute one query per group
     for ((parent_entity, child_entity), child_pks) in batch_groups {
-        let affected_pk_map = find_affected_pks_batch(&parent_entity, &child_entity, &child_pks)?;
+        let lookup_col = graph.lookup_column(&child_entity, &parent_entity);
+        let affected_pk_map = find_affected_pks_batch(&parent_entity, &lookup_col, &child_pks)?;
 
         // Map results back to original keys
         for key in &pk_keys {
@@ -173,22 +175,28 @@ fn build_batch_groups(
 
 /// Find all PKs in a parent TVIEW that reference any of the given child PKs (batched).
 ///
-/// This uses `PostgreSQL`'s `= ANY($1)` to check multiple FKs in one query.
-/// Returns a map from `child_pk` to the list of parent PKs referencing it.
+/// `lookup_col` is the parent column holding the child's key (`fk_<child>`, or the
+/// recorded column for an embedded aggregate). This uses `PostgreSQL`'s `= ANY($1)`
+/// to check multiple FKs in one query. Returns a map from `child_pk` to the list of
+/// parent PKs referencing it.
 fn find_affected_pks_batch(
     parent_entity: &str,
-    child_entity: &str,
+    lookup_col: &str,
     child_pks: &[i64],
 ) -> spi::Result<HashMap<i64, Vec<i64>>> {
-    let fk_col = format!("fk_{child_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
-    let qi_fk = quote_identifier(&fk_col);
+    let qi_fk = quote_identifier(lookup_col);
     let qi_parent = tview_relation(parent_entity)?;
     let qi_parent_pk = quote_identifier(&parent_pk_col);
 
-    // Use = ANY($1) to batch multiple child PKs into one query
-    let query = format!("SELECT {qi_fk}, {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = ANY($1)");
+    // Use = ANY($1) to batch multiple child PKs into one query. The lookup column
+    // can be the parent's own pk (an embedded aggregate keyed by it), so the two
+    // outputs are aliased.
+    let query = format!(
+        "SELECT {qi_fk}::bigint AS child_key, {qi_parent_pk}::bigint AS parent_key \
+         FROM {qi_parent} WHERE {qi_fk} = ANY($1)"
+    );
 
     Spi::connect(|client| {
         // Convert child_pks to a PostgreSQL array datum
@@ -206,8 +214,8 @@ fn find_affected_pks_batch(
 
         for row in rows {
             if let (Some(child_pk), Some(parent_pk)) = (
-                row[fk_col.as_str()].value::<i64>()?,
-                row[parent_pk_col.as_str()].value::<i64>()?,
+                row["child_key"].value::<i64>()?,
+                row["parent_key"].value::<i64>()?,
             ) {
                 result
                     .entry(child_pk)
@@ -243,20 +251,19 @@ fn find_parent_entities(
     Ok(graph.parents.get(child_entity).cloned().unwrap_or_default())
 }
 
-/// Find all PKs in the parent TVIEW that reference the given child PK.
+/// Find all PKs in the parent TVIEW whose `lookup_col` holds the given child PK.
 ///
-/// Example: `find_affected_pks`("post", "user", 1)
+/// Example: `find_affected_pks`("post", "`fk_user`", 1)
 /// Returns all `pk_post` values where `fk_user` = 1
 fn find_affected_pks(
     parent_entity: &str,
-    child_entity: &str,
+    lookup_col: &str,
     child_pk: i64,
 ) -> spi::Result<Vec<i64>> {
-    let fk_col = format!("fk_{child_entity}");
     let parent_pk_col = format!("pk_{parent_entity}");
 
     // Table/column names are from pg_tview_meta (internal); child_pk is parameterized
-    let qi_fk = quote_identifier(&fk_col);
+    let qi_fk = quote_identifier(lookup_col);
     let qi_parent = tview_relation(parent_entity)?;
     let qi_parent_pk = quote_identifier(&parent_pk_col);
     let query = format!("SELECT {qi_parent_pk} FROM {qi_parent} WHERE {qi_fk} = $1");

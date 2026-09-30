@@ -39,5 +39,25 @@ with millions of rows is recomputed in full on every write to it
 - Every table in `group_keys` must be read by the definition and have the named column.
 - Renaming a group key column keeps the aggregate maintained (`group_keys` follows).
 
-A regular TVIEW that embeds `v_<summary>.data` is not refreshed when the summary
-changes; join the source tables directly instead.
+## Embedding an aggregate in another TVIEW
+
+Another TVIEW can embed an aggregate by joining its `v_<entity>` (or `tv_<entity>`) with
+an equality on `pk_<entity>`:
+
+```sql
+SELECT pg_tviews_create('tv_user', $$
+    SELECT u.pk_user, u.id,
+           jsonb_build_object('name', u.name, 'summary', s.data) AS data
+    FROM tb_user u LEFT JOIN v_user_summary s ON s.pk_user_summary = u.pk_user
+$$);
+```
+
+When a group changes, the rows whose output column on the other side of that equality
+holds the group key are refreshed: here `tv_user` rows with `pk_user` equal to the group
+key, including a user whose first order just created the group. The column is recorded
+in `pg_tview_meta.aggregate_embeds` and indexed if it is not the primary key.
+
+That column must be projected (`u.pk_user` above, possibly under an alias), and the join
+must be in the `FROM` clause of a plain `SELECT` (not in a subquery or CTE). Otherwise
+`pg_tviews_create` rejects the definition, because nothing could route a group change
+to the rows embedding it. Create the aggregate before the TVIEWs that embed it.

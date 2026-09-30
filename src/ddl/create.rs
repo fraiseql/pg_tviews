@@ -1461,6 +1461,10 @@ fn register_metadata(
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
 
+    // Aggregate TVIEWs embedded through a join on their key (issue #126).
+    let aggregate_embeds = aggregate_embeds(definition_sql, entity_name)?;
+    create_embed_lookup_indexes(&aggregate_embeds, schema, tview_name, schema_name)?;
+
     // Extract the direct-patch column→key map (issue #56): base columns that map
     // identity-style to top-level keys of this entity's own `data` object. Empty
     // ⇒ the direct-patch fast path never engages for this entity.
@@ -1595,7 +1599,7 @@ fn register_metadata(
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
-            group_keys = EXCLUDED.group_keys"
+            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1619,8 +1623,9 @@ fn register_metadata(
             direct_map_columns,
             direct_map_keys,
             is_union,
-            group_keys
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3)
+            group_keys,
+            aggregate_embeds
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1653,12 +1658,110 @@ fn register_metadata(
                 PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
             )
         },
+        unsafe {
+            DatumWithOid::new(
+                pgrx::JsonB(serde_json::to_value(&aggregate_embeds).unwrap_or_default()),
+                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+            )
+        },
     ];
     Spi::run_with_args(&insert_meta_sql, &args).map_err(|e| TViewError::SpiError {
         query: insert_meta_sql,
         error: e.to_string(),
     })?;
 
+    Ok(())
+}
+
+/// The aggregate TVIEWs (issue #58) a definition embeds, each mapped to the output
+/// column that carries the value joined to the aggregate's `pk_<aggregate>`
+/// (issue #126). An aggregate has no `fk_<aggregate>` column to propagate by, so a
+/// change to group `k` refreshes the rows whose column equals `k`.
+///
+/// # Errors
+/// Rejects a definition that reads an aggregate TVIEW without projecting the
+/// column joined to its key: such a TVIEW could never be refreshed when the
+/// aggregate changes.
+fn aggregate_embeds(
+    definition_sql: &str,
+    entity_name: &str,
+) -> TViewResult<std::collections::BTreeMap<String, String>> {
+    let aggregates: Vec<String> = Spi::connect(|client| {
+        let args = [unsafe {
+            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        client
+            .select(
+                &format!(
+                    "SELECT entity FROM {} WHERE group_keys IS NOT NULL AND entity <> $1 \
+                     ORDER BY entity",
+                    crate::utils::meta_table()
+                ),
+                None,
+                &args,
+            )?
+            .map(|row| row["entity"].value::<String>())
+            .filter_map(Result::transpose)
+            .collect::<Result<_, _>>()
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "List aggregate TVIEWs".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    if aggregates.is_empty() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+
+    let lookups =
+        crate::sql_parser::embed_lookup_columns(definition_sql, &aggregates).map_err(|reason| {
+            TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason,
+            }
+        })?;
+    let mut embeds = std::collections::BTreeMap::new();
+    for (aggregate, column) in lookups {
+        let Some(column) = column else {
+            return Err(TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason: format!(
+                    "TVIEW 'tv_{entity_name}' reads aggregate TVIEW '{aggregate}' but no output \
+                     column carries the value it is joined to on pk_{aggregate}, so a change to \
+                     a '{aggregate}' group could not be routed to the rows embedding it. Join \
+                     v_{aggregate} with an equality on its key in the FROM clause (e.g. `LEFT \
+                     JOIN v_{aggregate} a ON a.pk_{aggregate} = t.pk_{entity_name}`) and \
+                     project the other side of that equality."
+                ),
+            });
+        };
+        embeds.insert(aggregate, column);
+    }
+    Ok(embeds)
+}
+
+/// Index each aggregate-embed lookup column that is neither the TVIEW's primary
+/// key nor already indexed as an `fk_*` propagation column, so propagation from
+/// the aggregate does not scan the whole TVIEW.
+fn create_embed_lookup_indexes(
+    embeds: &std::collections::BTreeMap<String, String>,
+    schema: &TViewSchema,
+    tview_name: &str,
+    schema_name: &str,
+) -> TViewResult<()> {
+    let Some(pk) = &schema.pk_column else {
+        return Ok(());
+    };
+    let columns: std::collections::BTreeSet<&String> = embeds
+        .values()
+        .filter(|c| *c != pk && !schema.fk_columns.contains(c))
+        .collect();
+    for column in columns {
+        let ddl = propagation_index_ddl(schema_name, tview_name, column, pk);
+        crate::utils::spi_run_ddl(&ddl).map_err(|e| TViewError::SpiError {
+            query: ddl.clone(),
+            error: e,
+        })?;
+    }
     Ok(())
 }
 

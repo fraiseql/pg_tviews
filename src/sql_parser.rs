@@ -874,6 +874,117 @@ fn resolve_projection_output(on_expr: &Expr, projection: &[SelectItem]) -> Optio
     None
 }
 
+/// For each entity in `entities` whose relation (`v_<entity>` or `tv_<entity>`)
+/// the definition reads, the output column carrying the value that relation is
+/// joined to on `pk_<entity>`. A change to that entity's row `k` must refresh the
+/// rows whose output column equals `k`.
+///
+/// The column is `None` when the definition reads the relation but no projected
+/// column carries its key: the join is not an equality on `pk_<entity>`, the other
+/// side is not projected, or the relation is read outside a plain `SELECT … FROM
+/// … JOIN` (a subquery, a CTE, a set operation).
+///
+/// # Errors
+///
+/// Returns `Err` if the SQL cannot be parsed.
+pub fn embed_lookup_columns(
+    select_sql: &str,
+    entities: &[String],
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let referenced = referenced_entities(select_sql, entities)?;
+    if referenced.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let stmts = Parser::new(&PostgreSqlDialect {})
+        .try_with_sql(select_sql)
+        .map_err(|e| format!("SQL init error: {e}"))?
+        .parse_statements()
+        .map_err(|e| format!("SQL parse error: {e}"))?;
+    let select = match stmts.into_iter().next() {
+        Some(Statement::Query(query)) if query.with.is_none() => match *query.body {
+            SetExpr::Select(select) => Some(select),
+            _ => None,
+        },
+        _ => None,
+    };
+    let graph = select.as_ref().and_then(|select| {
+        let mut graph = JoinGraph::new();
+        for twj in &select.from {
+            build_graph_from_table_with_joins(twj, &mut graph, &HashMap::new()).ok()?;
+        }
+        if let Some(where_expr) = &select.selection {
+            extract_implicit_joins(where_expr, &mut graph);
+        }
+        Some(graph)
+    });
+
+    Ok(referenced
+        .into_iter()
+        .map(|entity| {
+            let column = select
+                .as_ref()
+                .zip(graph.as_ref())
+                .and_then(|(select, graph)| pk_join_output(select, graph, &entity));
+            (entity, column)
+        })
+        .collect())
+}
+
+/// The entities among `entities` whose `v_<entity>` or `tv_<entity>` relation the
+/// SQL names anywhere, in `entities` order.
+fn referenced_entities(select_sql: &str, entities: &[String]) -> Result<Vec<String>, String> {
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let tokens = Tokenizer::new(&PostgreSqlDialect {}, select_sql)
+        .tokenize()
+        .map_err(|e| format!("SQL tokenize error: {e}"))?;
+    let words: HashSet<String> = tokens
+        .into_iter()
+        .filter_map(|t| match t {
+            Token::Word(w) if w.quote_style.is_none() => Some(w.value.to_lowercase()),
+            Token::Word(w) => Some(w.value),
+            _ => None,
+        })
+        .collect();
+    Ok(entities
+        .iter()
+        .filter(|e| words.contains(&format!("v_{e}")) || words.contains(&format!("tv_{e}")))
+        .cloned()
+        .collect())
+}
+
+/// The output column projecting the column that `v_<entity>` / `tv_<entity>` is
+/// joined to on `pk_<entity>`.
+fn pk_join_output(select: &Select, graph: &JoinGraph, entity: &str) -> Option<String> {
+    let pk = format!("pk_{entity}");
+    let relations = [format!("v_{entity}"), format!("tv_{entity}")];
+    let is_pk = |table: &String, col: &String| relations.contains(table) && *col == pk;
+    graph.edges.iter().find_map(|e| {
+        let (table, col) = if is_pk(&e.left_table, &e.left_col) {
+            (&e.right_table, &e.right_col)
+        } else if is_pk(&e.right_table, &e.right_col) {
+            (&e.left_table, &e.left_col)
+        } else {
+            return None;
+        };
+        select.projection.iter().find_map(|item| {
+            let (expr, name) = match item {
+                SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias.value.clone())),
+                SelectItem::UnnamedExpr(expr) => (expr, expr_bare_column(expr)),
+                _ => return None,
+            };
+            let projects = match expr {
+                Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                    graph.resolve(&parts[0].value) == *table && parts[1].value == *col
+                }
+                Expr::Identifier(ident) => ident.value == *col,
+                _ => false,
+            };
+            if projects { name } else { None }
+        })
+    })
+}
+
 /// Return the bare column name of a simple column reference (`col` or `t.col`).
 /// `None` for non-column expressions (function calls, literals, casts, etc.).
 fn expr_bare_column(expr: &Expr) -> Option<String> {
@@ -1231,5 +1342,66 @@ mod tests {
                    FROM tb_item i JOIN c ON c.item_id = i.pk_item";
         let paths = extract_join_paths(sql, "tb_item").unwrap();
         assert!(paths.is_empty(), "{paths:?}");
+    }
+
+    fn aggregates() -> Vec<String> {
+        vec!["user_summary".to_string(), "tag_count".to_string()]
+    }
+
+    #[test]
+    fn embed_lookup_through_left_join_on_own_pk() {
+        let sql = "SELECT u.pk_user, u.id, jsonb_build_object('s', s.data) AS data \
+                   FROM tb_user u LEFT JOIN v_user_summary s ON s.pk_user_summary = u.pk_user";
+        assert_eq!(
+            embed_lookup_columns(sql, &aggregates()).unwrap(),
+            vec![("user_summary".to_string(), Some("pk_user".to_string()))]
+        );
+    }
+
+    #[test]
+    fn embed_lookup_uses_the_output_alias_and_tv_relation() {
+        let sql = "SELECT p.pk_post, p.fk_author AS author, c.data AS tags \
+                   FROM tb_post p JOIN tv_tag_count c ON p.fk_author = c.pk_tag_count";
+        assert_eq!(
+            embed_lookup_columns(sql, &aggregates()).unwrap(),
+            vec![("tag_count".to_string(), Some("author".to_string()))]
+        );
+    }
+
+    #[test]
+    fn embed_lookup_through_where_equality() {
+        let sql = "SELECT u.pk_user, s.data FROM tb_user u, v_user_summary s \
+                   WHERE u.pk_user = s.pk_user_summary";
+        assert_eq!(
+            embed_lookup_columns(sql, &aggregates()).unwrap(),
+            vec![("user_summary".to_string(), Some("pk_user".to_string()))]
+        );
+    }
+
+    #[test]
+    fn embed_lookup_none_when_join_column_not_projected() {
+        let sql = "SELECT p.pk_post, s.data FROM tb_post p \
+                   JOIN v_user_summary s ON s.pk_user_summary = p.fk_user";
+        assert_eq!(
+            embed_lookup_columns(sql, &aggregates()).unwrap(),
+            vec![("user_summary".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn embed_lookup_none_inside_a_subquery() {
+        let sql = "SELECT u.pk_user, (SELECT s.data FROM v_user_summary s \
+                   WHERE s.pk_user_summary = u.pk_user) AS data FROM tb_user u";
+        assert_eq!(
+            embed_lookup_columns(sql, &aggregates()).unwrap(),
+            vec![("user_summary".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn embed_lookup_ignores_unreferenced_entities() {
+        let sql = "SELECT u.pk_user, u.data FROM tb_user u JOIN v_user_summary_extra x \
+                   ON x.pk_user = u.pk_user";
+        assert!(embed_lookup_columns(sql, &aggregates()).unwrap().is_empty());
     }
 }
