@@ -114,6 +114,41 @@ pub fn remove_triggers(table_oids: &[pg_sys::Oid], tview_entity: &str) -> TViewR
     Ok(())
 }
 
+/// Remove every trigger installed for `tview_entity`, wherever it is, found by
+/// its deterministic name (`trg_tview[_flush]_<entity>_on_<schema>_<table>`,
+/// truncated to `NAMEDATALEN` like any identifier). Unlike [`remove_triggers`]
+/// this needs no dependency walk, so it still works once the backing view is
+/// gone (a base table or helper view dropped with CASCADE).
+///
+/// # Errors
+/// Returns an error if the catalog query or a trigger drop fails.
+pub fn remove_entity_triggers(tview_entity: &str) -> TViewResult<()> {
+    const QUERY: &str = "SELECT DISTINCT c.oid AS table_oid FROM pg_trigger t \
+         JOIN pg_class c ON c.oid = t.tgrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE NOT t.tgisinternal AND t.tgname::text IN ( \
+             left('trg_tview_' || $1 || '_on_' || n.nspname || '_' || c.relname, 63), \
+             left('trg_tview_flush_' || $1 || '_on_' || n.nspname || '_' || c.relname, 63))";
+    let table_oids = Spi::connect(|client| {
+        // SAFETY: the text datum borrows `tview_entity`, which outlives the select.
+        let args = [unsafe {
+            DatumWithOid::new(tview_entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
+        }];
+        let mut oids = Vec::new();
+        for row in client.select(QUERY, None, &args)? {
+            if let Some(oid) = row["table_oid"].value::<pg_sys::Oid>()? {
+                oids.push(oid);
+            }
+        }
+        Ok::<_, spi::Error>(oids)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Find triggers of TVIEW {tview_entity}"),
+        pg_error: e.to_string(),
+    })?;
+    remove_triggers(&table_oids, tview_entity)
+}
+
 /// Migrate all existing triggers from the old PL/pgSQL `tview_trigger_handler()`
 /// to the Rust `pg_tview_trigger_handler()`.
 ///

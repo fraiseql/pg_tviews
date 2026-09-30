@@ -19,7 +19,6 @@ use pgrx::prelude::*;
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
 pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<()> {
     let entity_name = tview_name.trim_start_matches("tv_");
-    let view_name = format!("v_{entity_name}");
 
     // Step 1: Check if TVIEW exists
     let exists = tview_exists_in_metadata(entity_name)?;
@@ -43,21 +42,10 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         }
     })?;
 
-    // Step 2: Find and remove triggers from base tables.
-    // Pass None for schema — the view OID is already stored in metadata and triggers
-    // are removed by OID elsewhere; this best-effort search doesn't need to be
-    // schema-exact (failure is handled with a warning, not an error).
-    match crate::dependency::find_base_tables(&view_name, None) {
-        Ok(dep_graph) => {
-            if !dep_graph.base_tables.is_empty() {
-                crate::dependency::remove_triggers(&dep_graph.base_tables, entity_name)?;
-            }
-        }
-        Err(e) => {
-            warning!("Could not find dependencies for cleanup: {}", e);
-            // Continue with drop - triggers will be orphaned but not harmful
-        }
-    }
+    // Step 2: Remove the TVIEW's triggers from its base tables. They are found by
+    // name, not through the backing view, which may already be gone when the drop
+    // follows a base table or helper view dropped with CASCADE (issue #57).
+    crate::dependency::remove_entity_triggers(entity_name)?;
 
     // Step 3: Drop the materialized table (schema-resolved via OID).
     // Honor the caller's CASCADE/RESTRICT behavior so an explicit

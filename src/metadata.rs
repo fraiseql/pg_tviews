@@ -136,44 +136,48 @@ CREATE EVENT TRIGGER pg_tviews_ddl_end
 COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 'Intercepts CREATE TABLE tv_* commands and converts them to TVIEWs';
 
--- Event trigger handler: deregister a TVIEW when its base table tb_<entity> is dropped
--- (issue #53).  The base-table -> tview link is not a hard PG dependency, so CASCADE
--- removes the backing view v_* and the base-table triggers but never the trigger-populated
--- tv_* table or its pg_tview_meta row.  This sql_drop handler cleans both.
+-- Event trigger handler: deregister a TVIEW whose backing view or table was dropped as
+-- a dependent of something else (issues #53, #57).  The base-table -> tview link is not
+-- a hard PG dependency, so CASCADE from a base table, a helper view or a schema removes
+-- the backing view v_* (and the base-table triggers on that table) but never the
+-- trigger-populated tv_* table, its pg_tview_meta row or its triggers on other tables.
+-- The dropped view is matched by OID, so any TVIEW reading the dropped object is found,
+-- whatever its name.
+--
+-- Only objects dropped as dependents (original = false) count: pg_tviews' own drops of
+-- v_* / tv_* (pg_tviews_drop, DROP TABLE tv_* via the ProcessUtility hook) name them
+-- directly, so they never re-enter here.
 --
 -- PL/pgSQL (not #[pg_extern]) because pgrx cannot emit RETURNS event_trigger.  It fires for
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
--- work is guarded by an existence check plus a defensive EXCEPTION handler.
+-- work is guarded by a defensive EXCEPTION handler.
 CREATE OR REPLACE FUNCTION pg_tviews_handle_drop_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    obj record;
     entity_name TEXT;
 BEGIN
-    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects()
+    FOR entity_name IN
+        SELECT DISTINCT m.entity
+        FROM pg_catalog.pg_event_trigger_dropped_objects() AS d
+        JOIN @extschema@.pg_tview_meta AS m
+          ON d.objid IN (m.view_oid, m.table_oid)
+        WHERE NOT d.original
+          AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND d.objsubid = 0
     LOOP
-        -- Only react to a dropped base table tb_*.  A directly-dropped tv_* table is
-        -- handled by the ProcessUtility hook and never matches this tb_ filter, so there
-        -- is no double-handling (and the nested tv_*/v_* drops this handler issues below
-        -- likewise never match tb_, so there is no re-entrant loop).
-        IF obj.object_type = 'table' AND left(obj.object_name, 3) = 'tb_' THEN
-            entity_name := substring(obj.object_name FROM 4);
-            IF EXISTS (SELECT 1 FROM @extschema@.pg_tview_meta WHERE entity = entity_name) THEN
-                BEGIN
-                    PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
-                    RAISE NOTICE 'pg_tviews: base table % dropped; deregistered TVIEW tv_%',
-                        obj.object_name, entity_name;
-                EXCEPTION WHEN OTHERS THEN
-                    -- Never abort the user's DROP; at minimum clear the stale metadata row.
-                    DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
-                    RAISE WARNING 'pg_tviews: cleanup after DROP TABLE % failed (%); removed stale metadata for tv_%',
-                        obj.object_name, SQLERRM, entity_name;
-                END;
-            END IF;
-        END IF;
+        BEGIN
+            PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
+            RAISE NOTICE 'pg_tviews: backing objects of tv_% dropped; deregistered it',
+                entity_name;
+        EXCEPTION WHEN OTHERS THEN
+            -- Never abort the user's DROP; at minimum clear the stale metadata row.
+            DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
+            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed (%); removed its metadata',
+                entity_name, SQLERRM;
+        END;
     END LOOP;
 END;
 $$;
@@ -184,7 +188,7 @@ CREATE EVENT TRIGGER pg_tviews_sql_drop
     EXECUTE FUNCTION pg_tviews_handle_drop_event();
 
 COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
-'Deregisters and drops a TVIEW when its base table tb_<entity> is dropped (issue #53)';
+'Deregisters a TVIEW whose backing view or table was dropped as a dependent (issues #53, #57)';
     ",
     name = "event_triggers",
     requires = ["create_metadata_tables"],
