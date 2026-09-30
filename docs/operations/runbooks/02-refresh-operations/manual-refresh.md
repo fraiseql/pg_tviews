@@ -78,11 +78,7 @@ WHERE entity_name = 'your_tview_name';
 
 ### Step 2: Refresh Specific Row
 ```sql
--- pg_tviews refreshes rows when their base rows change: touching the base row
--- refreshes the TVIEW rows that depend on it, at the end of the statement.
-UPDATE tb_your_entity SET pk_your_entity = pk_your_entity WHERE pk_your_entity = 12345;
-
--- Or recompute the whole TVIEW
+-- Recompute the TVIEW from its backing view: only rows that differ are written
 SELECT tviews.pg_tviews_refresh('your_entity');
 ```
 
@@ -185,12 +181,9 @@ WHERE entity_name = 'your_large_tview';
 -- For very large TVIEWs, refresh in chunks
 -- This is system-dependent - check your pg_tviews capabilities
 
--- Example: touch the base rows in primary key ranges, one transaction each
-UPDATE tb_your_entity SET pk_your_entity = pk_your_entity
- WHERE pk_your_entity BETWEEN 1 AND 10000;
-SELECT pg_sleep(10);  -- Allow system to recover
-UPDATE tb_your_entity SET pk_your_entity = pk_your_entity
- WHERE pk_your_entity BETWEEN 10001 AND 20000;
+-- pg_tviews_refresh() recomputes the whole TVIEW in one statement; run it
+-- off-peak for a large TVIEW
+SELECT tviews.pg_tviews_refresh('your_large_entity');
 ```
 
 ### Step 3: Monitor Progress
@@ -327,5 +320,4 @@ WHERE entity_name = 'your_tview_name';"
 3. **Schedule Wisely**: Avoid peak hours for large refresh operations
 4. **Validate Results**: Always verify refresh success and data consistency
 5. **Document Changes**: Record any manual refresh operations for audit trails
-6. **Plan Dependencies**: Consider TVIEW dependency order for multi-TVIEW refreshes</content>
-<parameter name="filePath">docs/operations/runbooks/02-refresh-operations/manual-refresh.md
+6. **Plan Dependencies**: Consider TVIEW dependency order for multi-TVIEW refreshes

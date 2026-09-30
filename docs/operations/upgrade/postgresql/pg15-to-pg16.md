@@ -418,5 +418,4 @@ WHERE table_type = 'BASE TABLE'
 - [Minor Version Upgrade](minor-version-upgrade.md) - For patch-level upgrades
 - [Extension versioning](../../../development/extension-versioning.md) - For pg_tviews upgrades
 - [Troubleshooting Upgrades](troubleshooting-upgrades.md) - For upgrade issue resolution
-- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For upgrade failures</content>
-<parameter name="filePath">docs/operations/upgrade/postgresql/pg15-to-pg16.md
+- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For upgrade failures

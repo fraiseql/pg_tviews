@@ -329,5 +329,4 @@ SELECT * FROM tviews.pg_tviews_profile('your_entity');
 3. **Test Fixes**: Validate solutions in staging before production
 4. **Escalate Early**: Don't spend hours on complex issues
 5. **Document Workarounds**: Record temporary solutions for future reference
-6. **Review Patterns**: Look for systemic issues requiring code changes</content>
-<parameter name="filePath">docs/operations/runbooks/02-refresh-operations/refresh-troubleshooting.md
+6. **Review Patterns**: Look for systemic issues requiring code changes

@@ -320,5 +320,4 @@ LIMIT 5;
 4. **Test Restorations**: Regularly verify backup integrity
 5. **Learn from Incidents**: Conduct thorough post-mortems
 6. **Automate Where Possible**: Use scripts to reduce human error
-7. **Have Multiple Options**: Prepare fallback procedures</content>
-<parameter name="filePath">docs/operations/runbooks/04-incident-response/emergency-procedures.md
+7. **Have Multiple Options**: Prepare fallback procedures

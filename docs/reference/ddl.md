@@ -324,9 +324,9 @@ SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT ... -- new defini
 Creating a TVIEW installs, on each table its definition reads, a row-level trigger
 (`tviews.pg_tview_trigger_handler`) that queues the affected keys, and a
 statement-level trigger (`tviews.pg_tview_flush_trigger`) that refreshes them once per
-statement. Nothing needs installing by hand; `tviews.pg_tviews_health_check()` reports
-missing or orphaned triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()`
-re-installs them.
+statement. Nothing needs installing by hand. `tviews.pg_tviews_health_check()`
+reports orphaned triggers; `SELECT * FROM tviews.pg_tviews_reregister_all()`
+re-installs any that are missing.
 
 ## Troubleshooting
 

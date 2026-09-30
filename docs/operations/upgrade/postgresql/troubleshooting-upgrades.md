@@ -440,5 +440,4 @@ psql -d clean_db -f recovery.sql
 - **Have Fallbacks**: Multiple rollback options available
 - **Monitor Closely**: Watch systems during and after upgrade
 - **Communicate Clearly**: Keep all stakeholders informed
-- **Learn Continuously**: Document lessons for future upgrades</content>
-<parameter name="filePath">docs/operations/upgrade/postgresql/troubleshooting-upgrades.md
+- **Learn Continuously**: Document lessons for future upgrades

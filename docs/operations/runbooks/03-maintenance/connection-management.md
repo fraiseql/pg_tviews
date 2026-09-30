@@ -393,5 +393,4 @@ FROM pg_stat_bgwriter;
 4. **Use Connection Poolers**: pgbouncer or similar for high-traffic systems
 5. **Monitor Application Behavior**: Track connection usage patterns by application
 6. **Plan for Peak Usage**: Ensure capacity for peak loads
-7. **Document Incidents**: Record connection-related issues and resolutions</content>
-<parameter name="filePath">docs/operations/runbooks/03-maintenance/connection-management.md
+7. **Document Incidents**: Record connection-related issues and resolutions

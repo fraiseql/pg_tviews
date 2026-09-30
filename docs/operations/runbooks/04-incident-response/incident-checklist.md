@@ -270,5 +270,4 @@ FROM pg_stat_bgwriter;
 4. **Follow the Process**: Don't skip steps even under pressure
 5. **Learn Continuously**: Each incident improves future response
 6. **Automate Where Possible**: Use scripts and tools to reduce human error
-7. **Review Regularly**: Conduct post-mortems and implement improvements</content>
-<parameter name="filePath">docs/operations/runbooks/04-incident-response/incident-checklist.md
+7. **Review Regularly**: Conduct post-mortems and implement improvements

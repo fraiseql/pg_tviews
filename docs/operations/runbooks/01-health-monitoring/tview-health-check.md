@@ -261,5 +261,4 @@ If health checks reveal issues:
 
 - [Queue Management](queue-management.md) - For queue-specific issues
 - [Performance Monitoring](performance-monitoring.md) - For detailed performance analysis
-- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) - For refresh-specific issues</content>
-<parameter name="filePath">docs/operations/runbooks/01-health-monitoring/tview-health-check.md
+- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) - For refresh-specific issues

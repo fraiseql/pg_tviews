@@ -465,5 +465,4 @@ openssl enc -d -aes-256-cbc -in backup.dump.enc -out backup.dump -k $ENCRYPTION_
 - [Backup Frequency](backup-frequency.md) - When to perform different backup types
 - [Backup Retention](backup-retention.md) - How long to keep different backups
 - [Backup Testing](backup-testing.md) - Procedures for testing backup integrity
-- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Complete recovery procedures</content>
-<parameter name="filePath">docs/operations/disaster-recovery/backup-strategy/backup-types.md
+- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Complete recovery procedures

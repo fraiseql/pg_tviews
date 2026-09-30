@@ -355,5 +355,4 @@ FROM pg_stat_bgwriter;
 - [Major Version Upgrade](pg15-to-pg16.md) - For major PostgreSQL upgrades
 - [Extension Updates](extension-minor-update.md) - For pg_tviews extension updates
 - [Troubleshooting Upgrades](troubleshooting-upgrades.md) - For upgrade issue resolution
-- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For upgrade failures</content>
-<parameter name="filePath">docs/operations/upgrade/postgresql/minor-version-upgrade.md
+- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For upgrade failures

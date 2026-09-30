@@ -1,11 +1,12 @@
--- Regression test (#138): every function the published docs name exists.
+-- Regression test (#138): every pg_tviews object the published docs name exists.
 --
--- The docs described 36 pg_tviews_* functions that no release ever shipped
+-- The docs described 33 pg_tviews_* functions that no release ever shipped
 -- (pg_tviews_refresh_one, pg_tviews_install_stmt_triggers, ...), so a reader or a
 -- tool generating SQL from them got "function does not exist". This test extracts
--- every pg_tviews_*( and pg_tview_*( name from README.md, INTEGRATION_GUIDE.md and
--- docs/ (history excluded: docs/archive, docs/adr) and checks it against the
--- functions of a fresh CREATE EXTENSION. It runs from inside the repository.
+-- every pg_tviews_* and pg_tview_* name from README.md, INTEGRATION_GUIDE.md and
+-- docs/ (Markdown and JSON; history excluded: docs/archive, docs/adr) and checks it
+-- against the functions, relations, types, triggers and event triggers of a fresh
+-- CREATE EXTENSION. It runs from inside the repository.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_138_documented_functions.sql
 
@@ -17,10 +18,31 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
-\set documented `cd "$(git rev-parse --show-toplevel)" && git ls-files README.md INTEGRATION_GUIDE.md 'docs/*.md' | grep -v -e '^docs/archive/' -e '^docs/adr/' | xargs grep -ohE '\bpg_tviews?_[a-z0-9_]+[(]' | tr -d '(' | sort -u | paste -sd, -`
+\set documented `cd "$(git rev-parse --show-toplevel)" && git ls-files README.md INTEGRATION_GUIDE.md 'docs/*.md' 'docs/*.json' | grep -v -e '^docs/archive/' -e '^docs/adr/' | xargs grep -ohE '\bpg_tviews?_[a-z0-9_]+' | sort -u | paste -sd, -`
 
 CREATE TEMP TABLE documented AS
     SELECT unnest(string_to_array(:'documented', ',')) AS name;
+
+CREATE TEMP TABLE known AS
+    SELECT proname::text AS name FROM pg_proc WHERE pronamespace = 'tviews'::regnamespace
+    UNION SELECT relname FROM pg_class WHERE relnamespace = 'tviews'::regnamespace
+    UNION SELECT typname FROM pg_type WHERE typnamespace = 'tviews'::regnamespace
+    UNION SELECT evtname FROM pg_event_trigger
+    UNION SELECT tgname FROM pg_trigger
+          WHERE tgrelid IN (SELECT oid FROM pg_class
+                            WHERE relnamespace = 'tviews'::regnamespace)
+    -- Names the docs give to things users create: databases, roles, backups, and
+    -- the functions scripts/auto-convert/auto_convert_tviews.sql defines.
+    UNION SELECT unnest(ARRAY[
+        'pg_tviews_test', 'pg_tviews_benchmark', 'pg_tviews_recovery_test',
+        'pg_tviews_user', 'pg_tviews_admin', 'pg_tviews_test_user',
+        'pg_tview_meta_backup', 'pg_tviews_auto_convert', 'pg_tviews_auto_convert_plan'])
+    -- Relations the operations runbooks query but pg_tviews never had, until
+    -- #150 rewrites them: remove each name as it goes.
+    UNION SELECT unnest(ARRAY[
+        'pg_tviews_metadata', 'pg_tviews_queue', 'pg_tviews_queue_archive',
+        'pg_tviews_metrics', 'pg_tviews_dependencies', 'pg_tviews_maintenance_log',
+        'pg_tviews_performance_baseline', 'pg_tview_queue', 'pg_tview_meta_audit']);
 
 DO $$
 DECLARE
@@ -32,17 +54,13 @@ BEGIN
     END IF;
     SELECT string_agg(d.name, ', ' ORDER BY d.name) INTO missing
     FROM documented d
-    WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
-                      WHERE p.proname = d.name
-                        AND p.pronamespace = 'tviews'::regnamespace)
-      -- Defined by scripts/auto-convert/auto_convert_tviews.sql, documented with it.
-      AND d.name NOT IN ('pg_tviews_auto_convert', 'pg_tviews_auto_convert_plan');
+    WHERE d.name NOT IN (SELECT name FROM known);
     IF missing IS NOT NULL THEN
-        RAISE EXCEPTION '#138 FAIL: the docs name functions pg_tviews does not have: %', missing;
+        RAISE EXCEPTION '#138 FAIL: the docs name pg_tviews objects that do not exist: %', missing;
     END IF;
 END $$;
 
 DROP EXTENSION pg_tviews CASCADE;
 
-SELECT 'issue #138 documented functions: PASS' AS result;
--- expect-output: issue #138 documented functions: PASS
+SELECT 'issue #138 documented objects: PASS' AS result;
+-- expect-output: issue #138 documented objects: PASS

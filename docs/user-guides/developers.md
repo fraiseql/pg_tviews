@@ -209,7 +209,7 @@ LIMIT $3;
 
 ### Statement-Level Triggers
 
-Enable for 100-500× better bulk operation performance:
+Bulk operations need nothing special: each statement refreshes the affected rows once.
 
 ```sql
 -- Your application code remains unchanged

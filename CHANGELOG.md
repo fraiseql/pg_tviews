@@ -129,7 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   every TVIEW; two-phase commit needs no call; `tviews.registry` replaces the metadata
   function) or are gone; the never-implemented v2.0 plans moved to `docs/archive/`.
   `test/sql/regress_issue_138_documented_functions.sql` fails CI when a published doc
-  names a `pg_tviews_*` function that `CREATE EXTENSION` does not create.
+  (Markdown or JSON) names a `pg_tviews_*` / `pg_tview_*` object that `CREATE EXTENSION`
+  does not create, apart from names users choose and the relations #150 tracks.
 - **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
   orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
   looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an

@@ -210,5 +210,4 @@ LIMIT 5;
 - [Backup Types](backup-types.md) - Detailed backup method descriptions
 - [Backup Retention](backup-retention.md) - How long to keep backups
 - [Backup Testing](backup-testing.md) - Validation procedures
-- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures</content>
-<parameter name="filePath">docs/operations/disaster-recovery/backup-strategy/backup-frequency.md
+- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures

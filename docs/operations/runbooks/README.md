@@ -98,5 +98,4 @@ When updating runbooks:
 - **v1.0**: Initial comprehensive runbook set
 - Covers all major operational scenarios
 - Tested procedures with error handling
-- Supporting automation scripts included</content>
-<parameter name="filePath">docs/operations/runbooks/README.md
+- Supporting automation scripts included

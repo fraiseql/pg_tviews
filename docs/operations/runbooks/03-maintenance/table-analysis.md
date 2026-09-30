@@ -421,5 +421,4 @@ SELECT * FROM your_tview_name WHERE your_condition;
 4. **Index Maintenance**: Rebuild or drop unused indexes
 5. **Query Monitoring**: Track slow queries and optimize as needed
 6. **Storage Planning**: Monitor growth trends and plan for scaling
-7. **Document Changes**: Record all table structure changes and their rationale</content>
-<parameter name="filePath">docs/operations/runbooks/03-maintenance/table-analysis.md
+7. **Document Changes**: Record all table structure changes and their rationale

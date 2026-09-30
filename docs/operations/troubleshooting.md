@@ -272,7 +272,7 @@ INTERSECT, EXCEPT, `WITH RECURSIVE`, and window functions are not.
 1. **Check the triggers and the propagation indexes**:
    ```sql
    SELECT * FROM tviews.pg_tviews_health_check();
-   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('post');
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('post', dry_run => true);
    ```
 
 2. **Add indexes on TVIEWs**:

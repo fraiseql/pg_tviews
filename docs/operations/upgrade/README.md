@@ -189,5 +189,4 @@ All upgrade guides reference executable scripts in the `scripts/` directory:
 - **v1.0**: Initial comprehensive upgrade guides
 - Covers PostgreSQL 15-17 and extension 0.1.x upgrades
 - Includes both pg_upgrade and logical migration paths
-- Comprehensive testing and rollback procedures</content>
-<parameter name="filePath">docs/operations/upgrade/README.md
+- Comprehensive testing and rollback procedures

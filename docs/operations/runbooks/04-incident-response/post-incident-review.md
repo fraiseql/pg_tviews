@@ -381,5 +381,4 @@ Resources Needed: [Tools, budget, or help required]
 - **Training Updates**: Incorporate lessons into training programs
 - **Process Documentation**: Keep runbooks current with lessons learned
 
-Remember: The goal of post-incident reviews is not to assign blame, but to improve systems, processes, and team capabilities to prevent future incidents and respond more effectively when they do occur.</content>
-<parameter name="filePath">docs/operations/runbooks/04-incident-response/post-incident-review.md
+Remember: The goal of post-incident reviews is not to assign blame, but to improve systems, processes, and team capabilities to prevent future incidents and respond more effectively when they do occur.

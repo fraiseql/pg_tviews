@@ -179,5 +179,4 @@ All procedures reference executable scripts in the `scripts/` directory:
 - **Quarterly**: DR procedure updates and testing
 - **Annually**: Complete DR plan review and validation
 
-Remember: Disaster recovery is not just about technology - it's about minimizing business impact and maintaining customer trust. Regular testing and preparation are essential for success.</content>
-<parameter name="filePath">docs/operations/disaster-recovery/README.md
+Remember: Disaster recovery is not just about technology - it's about minimizing business impact and maintaining customer trust. Regular testing and preparation are essential for success.
