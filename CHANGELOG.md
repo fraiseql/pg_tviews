@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.19] - 2026-09-30
+
 ### Added
 
 - **Parent columns are written into all children at once** (#120, ADR 0078 class C).
@@ -70,10 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   patch ~665 ms → ~485 ms, per-row recompute ~1390 ms → ~605 ms. The caches follow
   other sessions' changes: DDL on a TVIEW's table or view, and every write to
   `pg_tview_meta`, invalidate them in every backend.
-
-- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
-  `oid`, so a dump stores them as names (#96). They now print as relation names;
-  cast with `::oid` to get the number. Comparisons with an `oid` still work.
 
 - **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
   `oid`, so a dump stores them as names (#96). They now print as relation names;
@@ -198,6 +196,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   with `relation "<tview schema>.<table>" does not exist`.
 - The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
   rows.
+
+### Upgrade notes
+
+- The extension's SQL version stays `0.1.0` and there is no upgrade script. This
+  release changes `pg_tview_meta` (`view_oid`/`table_oid` become `regclass`; new
+  `graphql_typename`, `group_keys` and `aggregate_embeds` columns) and adds SQL
+  functions, so an existing database must re-create the extension after installing
+  the new library: save each TVIEW's definition
+  (`SELECT entity, definition, group_keys FROM pg_tview_meta`), drop each TVIEW
+  (`DROP TABLE tv_<entity> CASCADE`), `DROP EXTENSION pg_tviews`, `CREATE EXTENSION
+  pg_tviews`, and re-create the TVIEWs (`pg_tviews_create` /
+  `pg_tviews_create_aggregate`), dependencies first.
+- Re-creating also records the new per-TVIEW metadata: the fan-out patch (#120), the
+  aggregate embeds (#126) and the direct map without shared columns (#130).
+- `pg_tviews_refresh_all()` returns `{refreshed_count, order, duration_ms}`;
+  `queued_count` is gone (#124).
 
 ## [0.1.0-beta.18] - 2026-09-30
 
