@@ -103,8 +103,9 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
 
     let payload_ref: &str = &payload;
 
-    // The log is writable only by the extension owner: a SECURITY DEFINER function
-    // inserts the entries and records the session user (issue #136).
+    // The log is writable only by the extension owner, which inserts the entries
+    // and records the session user (issue #136).
+    let _owner = crate::owner::AsOwner::of_extension().map_err(spi::Error::from)?;
     Spi::run_with_args(
         &format!(
             "SELECT {}.pg_tviews_audit_write($1::jsonb)",

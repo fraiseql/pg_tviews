@@ -1,4 +1,4 @@
-//! Maintain each TVIEW as its owner (issue #136).
+//! Run the work of `pg_tviews` as the role that owns it (issues #136, #134).
 //!
 //! The flush refreshes TVIEWs on behalf of whichever role wrote to a base table.
 //! As `REFRESH MATERIALIZED VIEW` does, every read and write of a `tv_*` table in
@@ -6,9 +6,14 @@
 //! and with `search_path` set to `pg_catalog, pg_temp`. The writer then needs no
 //! privilege on the TVIEW, its backing view or the tables the view reads, and
 //! cannot get the owner to run a function it planted on its `search_path`.
+//!
+//! The registration catalog is writable only by the extension's owner. A caller
+//! allowed to change a TVIEW (checked with [`require_owner`] beforehand) has its
+//! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
+use pgrx::prelude::*;
 
 /// While alive, the current user is a TVIEW's owner. Dropping it restores the
 /// previous user, security context and `search_path`. On an error, the
@@ -39,7 +44,36 @@ impl AsOwner {
     /// # Errors
     /// Returns an error if the relation does not exist.
     pub fn of_table(table: Oid) -> TViewResult<Self> {
-        let owner = relation_owner(table)?;
+        Ok(Self::role(relation_owner(table)?))
+    }
+
+    /// Switch to the owner of the `pg_tviews` extension, to write its catalog.
+    ///
+    /// # Errors
+    /// Returns an error if the extension's row cannot be read.
+    pub fn of_extension() -> TViewResult<Self> {
+        let owner = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT extowner FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews'",
+                    None,
+                    &[],
+                )?
+                .first()
+                .get_one::<Oid>()
+        })
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Look up the owner of pg_tviews".to_string(),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| TViewError::CatalogError {
+            operation: "Look up the owner of pg_tviews".to_string(),
+            pg_error: "extension pg_tviews is not installed".to_string(),
+        })?;
+        Ok(Self::role(owner))
+    }
+
+    fn role(owner: Oid) -> Self {
         let mut saved_user = pg_sys::InvalidOid;
         let mut saved_context = 0;
         // SAFETY: plain backend-global state, as REFRESH MATERIALIZED VIEW sets it;
@@ -66,11 +100,11 @@ impl AsOwner {
             );
             level
         };
-        Ok(Self {
+        Self {
             saved_user,
             saved_context,
             guc_level,
-        })
+        }
     }
 }
 

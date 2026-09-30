@@ -18,8 +18,10 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 DROP SCHEMA IF EXISTS app CASCADE;
 DROP ROLE IF EXISTS regress_136_writer;
+DROP ROLE IF EXISTS regress_136_owner2;
 DROP ROLE IF EXISTS regress_136_owner;
 CREATE ROLE regress_136_owner;
+CREATE ROLE regress_136_owner2;
 CREATE ROLE regress_136_writer;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
@@ -61,12 +63,18 @@ CREATE TABLE tb_tag (
     fk_post int NOT NULL REFERENCES tb_post,
     label   text NOT NULL
 );
+CREATE TABLE tb_card (
+    pk_card int PRIMARY KEY,
+    id      uuid NOT NULL DEFAULT gen_random_uuid(),
+    fk_user int NOT NULL REFERENCES tb_user
+);
 INSERT INTO tb_user (pk_user, name, bio) VALUES (1, 'alice', 'a'), (2, 'bob', 'b');
 INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'p1'), (2, 1, 'p2'), (3, 2, 'p3');
 INSERT INTO tb_thread (pk_thread, title) VALUES (1, 't1');
 INSERT INTO tb_comment (pk_comment, fk_thread, body) VALUES (1, 1, 'c1');
 INSERT INTO tb_order (pk_order, fk_user, total) VALUES (1, 1, 10), (2, 2, 5);
 INSERT INTO tb_tag (pk_tag, fk_post, label) VALUES (1, 1, 't1'), (2, 3, 't2');
+INSERT INTO tb_card (pk_card, fk_user) VALUES (1, 1), (2, 2);
 
 -- Own scalar columns: direct patch.
 SELECT pg_tviews_create('tv_user', $$
@@ -83,6 +91,11 @@ SELECT pg_tviews_create('tv_tag', $$
            jsonb_build_object('label', t.label, 'author', u.name) AS data
     FROM app.tb_tag t JOIN app.tb_post p ON p.pk_post = t.fk_post
     JOIN app.tb_user u ON u.pk_user = p.fk_user $$);
+-- Embeds tv_user's document, and belongs to another owner: the parent lookup
+-- reads tv_card as its owner inside tv_user's owner switch.
+SELECT pg_tviews_create('tv_card', $$
+    SELECT c.pk_card, c.id, c.fk_user, jsonb_build_object('user', u.data) AS data
+    FROM app.tb_card c JOIN app.v_user u ON u.pk_user = c.fk_user $$);
 -- Children aggregated into an array.
 SELECT pg_tviews_create('tv_thread', $$
     SELECT t.pk_thread, t.id,
@@ -102,14 +115,17 @@ $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
 
 -- The TVIEWs belong to regress_136_owner, which reads the base tables. The writer
 -- gets DML on the base tables and nothing else.
-GRANT USAGE ON SCHEMA app TO regress_136_owner, regress_136_writer;
+GRANT USAGE ON SCHEMA app TO regress_136_owner, regress_136_owner2, regress_136_writer;
+GRANT SELECT ON tb_card TO regress_136_owner2;
 GRANT CREATE ON SCHEMA app TO regress_136_writer;
 GRANT SELECT ON tb_user, tb_post, tb_thread, tb_comment, tb_order, tb_tag
     TO regress_136_owner;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tb_user, tb_post, tb_thread, tb_comment, tb_order
     TO regress_136_writer;
+GRANT SELECT ON tb_card TO regress_136_writer;
 ALTER TABLE tv_user OWNER TO regress_136_owner;
 ALTER VIEW v_user OWNER TO regress_136_owner;
+GRANT SELECT ON v_user TO regress_136_owner2;
 ALTER TABLE tv_post OWNER TO regress_136_owner;
 ALTER VIEW v_post OWNER TO regress_136_owner;
 ALTER TABLE tv_thread OWNER TO regress_136_owner;
@@ -117,13 +133,15 @@ ALTER VIEW v_thread OWNER TO regress_136_owner;
 ALTER TABLE tv_tag OWNER TO regress_136_owner;
 ALTER VIEW v_tag OWNER TO regress_136_owner;
 ALTER TABLE tv_user_orders OWNER TO regress_136_owner;
+ALTER TABLE tv_card OWNER TO regress_136_owner2;
+ALTER VIEW v_card OWNER TO regress_136_owner2;
 ALTER VIEW v_user_orders OWNER TO regress_136_owner;
 
 CREATE FUNCTION public.assert_136(step text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE entity text; d bigint;
 BEGIN
-    FOREACH entity IN ARRAY ARRAY['user', 'post', 'tag', 'thread', 'user_orders'] LOOP
+    FOREACH entity IN ARRAY ARRAY['user', 'post', 'tag', 'card', 'thread', 'user_orders'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM app.tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM app.v_%1$s)
@@ -204,8 +222,8 @@ SELECT public.assert_136('audited DML');
 SET SESSION AUTHORIZATION regress_136_writer;
 SET search_path TO app, public, tviews;
 DO $$ BEGIN
-    IF (SELECT count(*) FROM tviews.pg_tview_meta) <> 5 THEN
-        RAISE EXCEPTION '#136 FAIL: the writer does not see the five TVIEWs';
+    IF (SELECT count(*) FROM tviews.pg_tview_meta) <> 6 THEN
+        RAISE EXCEPTION '#136 FAIL: the writer does not see the six TVIEWs';
     END IF;
 END $$;
 CREATE TABLE app.unrelated (x int);
@@ -218,7 +236,8 @@ EXCEPTION WHEN insufficient_privilege THEN
 END $$;
 
 -- 5. A DROP ... CASCADE by the writer takes the backing view of a TVIEW another
---    role owns: the DROP succeeds and the TVIEW is deregistered.
+--    role owns: the DROP succeeds and the TVIEW is deregistered, but its table,
+--    which the writer could not drop, is kept as a plain table.
 CREATE TABLE app.tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
 INSERT INTO app.tb_note (pk_note, body) VALUES (1, 'n');
 GRANT SELECT ON app.tb_note TO regress_136_owner;
@@ -233,10 +252,30 @@ UPDATE app.tb_note SET body = 'm';
 DROP TABLE app.tb_note CASCADE;
 RESET SESSION AUTHORIZATION;
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'note')
-       OR to_regclass('app.tv_note') IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'note') THEN
         RAISE EXCEPTION '#136 FAIL: tv_note still registered after its base table was dropped';
     END IF;
+    IF to_regclass('app.tv_note') IS NULL THEN
+        RAISE EXCEPTION '#136 FAIL: the writer''s DROP dropped tv_note, which another role owns';
+    END IF;
+END $$;
+-- The owner of a TVIEW dropping its base table drops the TVIEW's table too.
+CREATE TABLE app.tb_memo (pk_memo int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
+SELECT pg_tviews_create('tv_memo', $$
+    SELECT pk_memo, id, jsonb_build_object('body', body) AS data FROM app.tb_memo $$);
+DROP TABLE app.tb_memo CASCADE;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'memo')
+       OR to_regclass('app.tv_memo') IS NOT NULL THEN
+        RAISE EXCEPTION '#136 FAIL: DROP ... CASCADE by the owner left tv_memo behind';
+    END IF;
+END $$;
+-- The handler's function cannot be called outside the event.
+DO $$ BEGIN
+    PERFORM tviews.pg_tviews_handle_dropped('user');
+    RAISE EXCEPTION '#136 FAIL: pg_tviews_handle_dropped ran outside a sql_drop event';
+EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM LIKE '#136 FAIL%' THEN RAISE; END IF;
 END $$;
 SELECT public.assert_136('after DROP CASCADE');
 
@@ -244,7 +283,9 @@ RESET search_path;
 DROP SCHEMA app CASCADE;
 DROP FUNCTION public.assert_136(text);
 DROP EXTENSION pg_tviews CASCADE;
+DROP OWNED BY regress_136_writer, regress_136_owner, regress_136_owner2;
 DROP ROLE regress_136_writer;
+DROP ROLE regress_136_owner2;
 DROP ROLE regress_136_owner;
 
 SELECT 'issue #136 privileges: PASS' AS result;

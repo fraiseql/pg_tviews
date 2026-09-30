@@ -189,13 +189,11 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
 -- work is guarded by a defensive EXCEPTION handler.
 --
--- SECURITY DEFINER (issue #136): the dropping role may not own the TVIEW or be able to
--- write the catalog. PostgreSQL has already checked that it may drop what it dropped;
--- the handler only deregisters the TVIEWs whose v_* or tv_* went with it.
+-- Runs as the dropping role (issue #136): PostgreSQL authorized that role's drop, and
+-- pg_tviews_handle_dropped() does the rest without giving it more rights (see there).
 CREATE FUNCTION @extschema@.pg_tviews_handle_drop_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path = pg_catalog, @extschema@, pg_temp
 AS $$
 DECLARE
@@ -211,13 +209,10 @@ BEGIN
           AND d.objsubid = 0
     LOOP
         BEGIN
-            PERFORM @extschema@.pg_tviews_drop(entity_name, true, true);
-            RAISE NOTICE 'pg_tviews: backing objects of tv_% dropped; deregistered it',
-                entity_name;
+            PERFORM @extschema@.pg_tviews_handle_dropped(entity_name);
         EXCEPTION WHEN OTHERS THEN
-            -- Never abort the user's DROP; at minimum clear the stale metadata row.
-            DELETE FROM @extschema@.pg_tview_meta WHERE entity = entity_name;
-            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed (%); removed its metadata',
+            -- Never abort the user's DROP.
+            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed: %',
                 entity_name, SQLERRM;
         END;
     END LOOP;
@@ -319,13 +314,12 @@ CREATE INDEX idx_audit_log_entity_time ON @extschema@.pg_tview_audit_log(entity,
 
 COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
 
--- Writes buffered audit entries for whichever role triggered them (issue #136): the
--- log is readable and writable only by the extension owner, and performed_by is the
--- session user, whatever role the caller has set.
+-- Writes buffered audit entries (issue #136). Only the extension owner may call it:
+-- the library calls it as that owner, for whichever role triggered the entries, and
+-- performed_by is the session user, whatever role the caller has set.
 CREATE FUNCTION @extschema@.pg_tviews_audit_write(entries JSONB)
 RETURNS void
 LANGUAGE sql
-SECURITY DEFINER
 SET search_path = pg_catalog, @extschema@, pg_temp
 AS $$
     INSERT INTO @extschema@.pg_tview_audit_log
@@ -334,6 +328,7 @@ AS $$
            CASE WHEN e->'details' = 'null'::jsonb THEN NULL ELSE e->'details' END
     FROM jsonb_array_elements(entries) AS e;
 $$;
+REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
     ",
     name = "audit_table",
 );
