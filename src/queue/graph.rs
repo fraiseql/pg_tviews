@@ -128,8 +128,9 @@ impl EntityDepGraph {
                             // follow a child FK (a deeper relationship no `tb_<child>` path
                             // covers), and whenever the classification or columns are
                             // unknown — the safe default.
-                            let is_scalar =
-                                dependency_types.get(i).is_some_and(|t| t.as_str() == "scalar");
+                            let is_scalar = dependency_types
+                                .get(i)
+                                .is_some_and(|t| t.as_str() == "scalar");
                             let reads_only_own_columns =
                                 reads_by_fk.get(fk_col).is_some_and(|cols| {
                                     !cols.is_empty() && !cols.iter().any(|c| c.starts_with("fk_"))
@@ -305,10 +306,8 @@ mod tests {
     #[test]
     fn test_topological_sort() {
         // Entity graph:
-        // company (no deps)
-        // user -> company
-        // post -> user
-        // feed -> post
+        // company -> user -> post -> feed
+        // (`children[x]` lists the entities that must be refreshed after `x`)
 
         let entities: HashSet<String> = ["company", "user", "post", "feed"]
             .iter()
@@ -316,9 +315,9 @@ mod tests {
             .collect();
 
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
-        children.insert("user".to_string(), vec!["company".to_string()]);
-        children.insert("post".to_string(), vec!["user".to_string()]);
-        children.insert("feed".to_string(), vec!["post".to_string()]);
+        children.insert("company".to_string(), vec!["user".to_string()]);
+        children.insert("user".to_string(), vec!["post".to_string()]);
+        children.insert("post".to_string(), vec!["feed".to_string()]);
 
         let topo = topological_sort(&entities, &children).unwrap();
 

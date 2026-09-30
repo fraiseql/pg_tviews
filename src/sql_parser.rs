@@ -237,7 +237,9 @@ fn resolve_single_cte(
             },
             _ => continue,
         };
-        let out_name = declared.get(i).map_or(out_name, |ident| ident.value.clone());
+        let out_name = declared
+            .get(i)
+            .map_or(out_name, |ident| ident.value.clone());
         col_map.insert(out_name, src_col);
     }
 
@@ -304,9 +306,15 @@ fn collect_paths_from_setexpr(
             Ok(())
         }
         // Parenthesized branch / subquery body — recurse into it.
-        SetExpr::Query(q) => {
-            collect_paths_from_setexpr(&q.body, root_table, pk_col, pk_position, in_set_op, ctes, out)
-        }
+        SetExpr::Query(q) => collect_paths_from_setexpr(
+            &q.body,
+            root_table,
+            pk_col,
+            pk_position,
+            in_set_op,
+            ctes,
+            out,
+        ),
         _ => Err("Unsupported query body for cascade paths".to_string()),
     }
 }

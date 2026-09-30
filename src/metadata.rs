@@ -100,8 +100,9 @@ DECLARE
 BEGIN
     FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands()
     LOOP
-        -- Only process table-creation commands
-        IF obj.command_tag IN ('CREATE TABLE', 'CREATE TABLE AS', 'SELECT INTO') THEN
+        -- Only process CTAS-style creation: a plain `CREATE TABLE tv_x (cols…)` can never
+        -- carry a SELECT to convert, so it stays a plain table.
+        IF obj.command_tag IN ('CREATE TABLE AS', 'SELECT INTO') THEN
             -- Only intercept tv_* tables
             IF obj.object_identity LIKE '%.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
                 DECLARE
@@ -113,7 +114,7 @@ BEGIN
                         ELSE obj.object_identity
                     END;
 
-                    PERFORM pg_tviews_convert_table(table_name_only);
+                    PERFORM pg_tviews_convert_table(table_name_only, obj.command_tag);
                 EXCEPTION
                     WHEN OTHERS THEN
                         -- pg_tviews_convert_table raises its own error; re-raise here.

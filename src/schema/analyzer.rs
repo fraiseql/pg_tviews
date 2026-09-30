@@ -256,7 +256,9 @@ mod tests {
 
         let deps = analyze_dependencies(sql, &fk_cols);
 
-        assert_eq!(deps.len(), 1);
+        // One FK-derived entry, then the array re-detected from the SQL text
+        // (`analyze_dependencies` does not dedupe the two).
+        assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].dep_type, DependencyType::Array);
         assert_eq!(deps[0].jsonb_path, Some(vec!["posts".to_string()]));
         assert_eq!(deps[0].array_match_key, Some("id".to_string())); // Convention
@@ -300,7 +302,8 @@ mod tests {
 
         let deps = analyze_dependencies(sql, &fk_cols);
 
-        assert_eq!(deps.len(), 3);
+        // Three FK-derived entries, then the array re-detected from the SQL text.
+        assert_eq!(deps.len(), 4);
 
         // fk_user → nested object
         assert_eq!(deps[0].dep_type, DependencyType::NestedObject);

@@ -212,9 +212,9 @@ mod tests {
     fn test_enqueue_and_snapshot() {
         clear_queue();
 
-        enqueue_refresh("user", 1);
-        enqueue_refresh("post", 2);
-        enqueue_refresh("user", 1); // duplicate
+        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap();
+        enqueue_refresh_with_limit("post", 2, usize::MAX).unwrap();
+        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap(); // duplicate
 
         let snapshot = take_queue_snapshot();
         assert_eq!(snapshot.len(), 2); // Deduplicated
@@ -228,8 +228,8 @@ mod tests {
     fn test_clear_queue() {
         clear_queue();
 
-        enqueue_refresh("user", 1);
-        enqueue_refresh("post", 2);
+        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap();
+        enqueue_refresh_with_limit("post", 2, usize::MAX).unwrap();
 
         clear_queue();
 

@@ -26,7 +26,10 @@ use pgrx::prelude::*;
 ///    the event trigger fires but the cache is empty → skip silently.
 #[pg_extern]
 #[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires String by value
-fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error::Error>> {
+fn pg_tviews_convert_table(
+    table_name: String,
+    command_tag: default!(Option<String>, "NULL"),
+) -> Result<(), Box<dyn std::error::Error>> {
     // Log event trigger entry
     notice!(
         "===== EVENT TRIGGER: pg_tviews_convert_table START for table '{}' =====",
@@ -37,6 +40,31 @@ fn pg_tviews_convert_table(table_name: String) -> Result<(), Box<dyn std::error:
     // Empty cache = table was created by pg_tviews_create(), not DDL interception.
     let Some((schema_name, select_sql)) = crate::hooks::take_pending_tview_select(&table_name)
     else {
+        // A CTAS-style command on a tv_* table always has a pending SELECT, stored by the
+        // ProcessUtility hook. Its absence means the hook never saw the statement (pg_tviews
+        // not in shared_preload_libraries, or an interception gap): the table PostgreSQL just
+        // created is a plain table. Fail loudly rather than leave one that deploy tools can't
+        // detect (issue #80). Direct callers pass no tag and keep the silent behaviour.
+        if matches!(
+            command_tag.as_deref(),
+            Some("CREATE TABLE AS" | "SELECT INTO")
+        ) {
+            pgrx::pg_sys::panic::ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+                format!(
+                    "pg_tviews: cannot convert '{table_name}' to a TVIEW: the statement was \
+                     not intercepted"
+                ),
+                function_name!(),
+            )
+            .set_detail("pg_tviews is not active in this session's ProcessUtility hook")
+            .set_hint(
+                "Add pg_tviews to shared_preload_libraries in postgresql.conf and restart \
+                 PostgreSQL; a session that only loaded the library lazily (first statement \
+                 after CREATE EXTENSION) cannot intercept.",
+            )
+            .report(PgLogLevel::ERROR);
+        }
         notice!("DEBUG:   No pending SELECT found (likely created by pg_tviews_create, not CTAS)");
         return Ok(());
     };
