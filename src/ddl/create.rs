@@ -1039,57 +1039,111 @@ fn create_materialized_table(
     Ok(())
 }
 
+/// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
+const MAX_IDENTIFIER_BYTES: usize = 63;
+
+/// Deterministic index name `idx_<tview>_<suffix>`.
+///
+/// `PostgreSQL` silently truncates identifiers longer than 63 bytes, so two long
+/// names could collide. An over-long name is cut at a char boundary and suffixed
+/// with an FNV-1a hash of the full name, which keeps it unique and stable.
+pub(crate) fn index_name(tview_name: &str, suffix: &str) -> String {
+    let full = format!("idx_{tview_name}_{suffix}");
+    if full.len() <= MAX_IDENTIFIER_BYTES {
+        return full;
+    }
+    let hash = full.bytes().fold(0x811c_9dc5_u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    });
+    let tag = format!("_{hash:08x}");
+    let mut cut = MAX_IDENTIFIER_BYTES - tag.len();
+    while !full.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{tag}", &full[..cut])
+}
+
+/// DDL for the required propagation index `(fk, pk)` on a TVIEW.
+///
+/// Cascade propagation (`src/propagate.rs`) looks up parent rows with
+/// `SELECT fk, pk FROM tv WHERE fk = ANY($1)`; this index makes that lookup
+/// index-only instead of a scan of the whole TVIEW.
+pub(crate) fn propagation_index_ddl(
+    schema_name: &str,
+    tview_name: &str,
+    fk: &str,
+    pk: &str,
+) -> String {
+    index_ddl(
+        schema_name,
+        tview_name,
+        &format!("{fk}_{pk}"),
+        "",
+        &[fk, pk],
+    )
+}
+
+/// `CREATE INDEX IF NOT EXISTS idx_<tview>_<suffix> ON schema.tview <method>(cols)`.
+fn index_ddl(
+    schema_name: &str,
+    tview_name: &str,
+    suffix: &str,
+    method: &str,
+    columns: &[&str],
+) -> String {
+    let cols = columns
+        .iter()
+        .map(|c| quote_identifier(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "CREATE INDEX IF NOT EXISTS {} ON {}.{} {method}({cols})",
+        quote_identifier(&index_name(tview_name, suffix)),
+        quote_identifier(schema_name),
+        quote_identifier(tview_name),
+    )
+}
+
 /// Create indexes on the materialized table for optimal query performance
 fn create_tview_indexes(
     tview_name: &str,
     schema: &TViewSchema,
     schema_name: &str,
 ) -> TViewResult<()> {
-    let qi_schema = quote_identifier(schema_name);
-    let qi_tview = quote_identifier(tview_name);
+    let mut ddl = Vec::new();
 
-    // Index on ID column (Trinity identifier)
+    // Trinity identifier and UUID foreign keys (filtering by public id)
     if let Some(id) = &schema.id_column {
-        let idx_name = format!("idx_{tview_name}_{id}");
-        let create_idx = format!(
-            "CREATE INDEX {} ON {qi_schema}.{qi_tview} ({})",
-            quote_identifier(&idx_name),
-            quote_identifier(id),
-        );
-        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
-            query: create_idx.clone(),
-            error: e,
-        })?;
+        ddl.push(index_ddl(schema_name, tview_name, id, "", &[id]));
     }
-
-    // Index on UUID foreign key columns
     for uuid_fk in &schema.uuid_fk_columns {
-        let idx_name = format!("idx_{tview_name}_{uuid_fk}");
-        let create_idx = format!(
-            "CREATE INDEX {} ON {qi_schema}.{qi_tview} ({})",
-            quote_identifier(&idx_name),
-            quote_identifier(uuid_fk),
-        );
-        crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
-            query: create_idx.clone(),
-            error: e,
-        })?;
+        ddl.push(index_ddl(schema_name, tview_name, uuid_fk, "", &[uuid_fk]));
     }
 
-    // Index on data column if it exists (for JSONB queries)
+    // Required propagation indexes (see `propagation_index_ddl`)
+    if let Some(pk) = &schema.pk_column {
+        for fk in schema.fk_columns.iter().filter(|fk| *fk != pk) {
+            ddl.push(propagation_index_ddl(schema_name, tview_name, fk, pk));
+        }
+    }
+
+    // JSONB queries on the read model
     if let Some(data) = &schema.data_column {
-        let idx_name = format!("idx_{tview_name}_{data}_gin");
-        let create_idx = format!(
-            "CREATE INDEX {} ON {qi_schema}.{qi_tview} USING GIN ({})",
-            quote_identifier(&idx_name),
-            quote_identifier(data),
-        );
+        ddl.push(index_ddl(
+            schema_name,
+            tview_name,
+            &format!("{data}_gin"),
+            "USING GIN ",
+            &[data],
+        ));
+    }
+
+    for create_idx in ddl {
         crate::utils::spi_run_ddl(&create_idx).map_err(|e| TViewError::SpiError {
             query: create_idx.clone(),
             error: e,
         })?;
     }
-
     Ok(())
 }
 
@@ -1477,6 +1531,44 @@ fn transform_raw_select_to_tview(
 #[pgrx::pg_schema]
 mod tests {
     use pgrx::prelude::*;
+
+    // ── Unit tests for index naming (no database required) ─────────────────────
+
+    #[test]
+    fn test_index_name_short_is_verbatim() {
+        assert_eq!(
+            super::index_name("tv_post", "fk_user_pk_post"),
+            "idx_tv_post_fk_user_pk_post"
+        );
+    }
+
+    #[test]
+    fn test_index_name_long_fits_and_stays_unique() {
+        let entity = "a".repeat(60);
+        let a = super::index_name(&format!("tv_{entity}"), "fk_left_pk_x");
+        let b = super::index_name(&format!("tv_{entity}"), "fk_right_pk_x");
+        assert_eq!(a.len(), super::MAX_IDENTIFIER_BYTES);
+        assert_ne!(a, b);
+        assert_eq!(
+            a,
+            super::index_name(&format!("tv_{entity}"), "fk_left_pk_x")
+        );
+    }
+
+    #[test]
+    fn test_index_name_truncates_on_char_boundary() {
+        let name = super::index_name(&format!("tv_{}", "é".repeat(40)), "fk_x_pk_y");
+        assert!(name.len() <= super::MAX_IDENTIFIER_BYTES);
+    }
+
+    #[test]
+    fn test_propagation_index_ddl() {
+        assert_eq!(
+            super::propagation_index_ddl("public", "tv_post", "fk_user", "pk_post"),
+            "CREATE INDEX IF NOT EXISTS \"idx_tv_post_fk_user_pk_post\" \
+             ON \"public\".\"tv_post\" (\"fk_user\", \"pk_post\")"
+        );
+    }
 
     // ── Unit tests for type resolution (no database required) ──────────────────
 
