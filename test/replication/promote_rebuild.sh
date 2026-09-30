@@ -90,7 +90,9 @@ out="$(node -c "SELECT count(*) FROM tv_post" || true)"
 status="$(node -c "SELECT string_agg(concat_ws(':', entity, persistence, replica_readable, coalesce(is_empty::text, 'null'), coalesce(needs_rebuild::text, 'null')), ',' ORDER BY entity) FROM pg_tviews_replication_status()")"
 [[ "$status" == "post:unlogged:f:null:null,tag:logged:t:false:null" ]] \
   || fail "replication_status on the standby: $status"
-echo "PASS  standby: UNLOGGED unreadable, LOGGED readable, status callable"
+profile="$(node -c "SELECT string_agg(entity || ':' || persistence, ',' ORDER BY entity) FROM pg_tviews_profile()")"
+[[ "$profile" == "post:unlogged,tag:logged" ]] || fail "pg_tviews_profile() on the standby: $profile"
+echo "PASS  standby: UNLOGGED unreadable, LOGGED readable, status and profile callable"
 
 # 2. Promotion
 "$PGBIN/pg_ctl" -D "$standby" -w promote >/dev/null

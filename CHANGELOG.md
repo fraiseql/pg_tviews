@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **`pg_tviews_profile(entity DEFAULT NULL, fanout_warn DEFAULT 1000)`** (#74): per-TVIEW
+  physical health from the catalogs and statistics views (sizes, TOAST, HOT ratio,
+  fillfactor, dead tuples, unused and missing propagation indexes, estimated fan-out
+  per `fk_*`) with a `warnings` column. Read-only and callable on a standby; the columns
+  are a stable contract (`docs/reference/profile.md`).
+
 - **Replication support for UNLOGGED TVIEWs** (#75). A hot standby cannot read
   an UNLOGGED table, and promotion or a crash restart empties it. Before, such a
   TVIEW stayed empty until something wrote to its base tables. New:
@@ -25,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
     after a crash restart, and on promotion.
   - `docs/operations/replication.md` states the contract.
   - CI runs `test/replication/promote_rebuild.sh` against a real standby.
+
+### Changed
+
+- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
+  `oid`, so a dump stores them as names (#96). They now print as relation names;
+  cast with `::oid` to get the number. Comparisons with an `oid` still work.
+
+### Removed
+
+- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
+  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
 
 ### Fixed
 
@@ -68,17 +85,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   with `relation "<tview schema>.<table>" does not exist`.
 - The README said `ALTER TABLE … SET LOGGED` truncates the TVIEW. It keeps the
   rows.
-
-### Changed
-
-- **Breaking: `pg_tview_meta.view_oid` and `table_oid` are `regclass`**, not
-  `oid`, so a dump stores them as names (#96). They now print as relation names;
-  cast with `::oid` to get the number. Comparisons with an `oid` still work.
-
-### Removed
-
-- `src/refresh/array_ops.rs` (#93): its element-level array functions had no caller since
-  array dependencies moved to full replacement (#50), and they interpolated values into SQL.
 
 ## [0.1.0-beta.18] - 2026-09-30
 
