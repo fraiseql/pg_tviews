@@ -60,7 +60,12 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         Spi::run_with_args(
             "UPDATE pg_tview_meta SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
              WHERE entity = $1 AND group_keys->>$2 = $3",
-            &[text_arg(&entity), text_arg(&relname), text_arg(old_name), text_arg(new_name)],
+            &[
+                text_arg(&entity),
+                text_arg(&relname),
+                text_arg(old_name),
+                text_arg(new_name),
+            ],
         )
         .map_err(|e| catalog_error("Rename a group key column", &e))?;
 
