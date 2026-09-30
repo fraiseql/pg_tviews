@@ -169,7 +169,11 @@ END;
 $$;
     ",
     name = "reregister_all",
-    requires = [pg_tviews_reregister, "create_metadata_tables", "tview_reads"],
+    requires = [
+        pg_tviews_reregister,
+        "create_metadata_tables",
+        "tview_reads"
+    ],
 );
 
 /// SQL function: rebind the relation OIDs inside `cascade_paths` to the current
