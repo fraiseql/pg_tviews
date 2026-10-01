@@ -178,7 +178,8 @@ COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
 
 -- A registration whose table is gone stays visible, with NULL for what the table
--- would tell. data_gin_index is a valid, default (jsonb_ops) GIN index on data.
+-- would tell; `view` is NULL once the view is gone. data_gin_index is a valid,
+-- default (jsonb_ops) GIN index on data.
 CREATE VIEW @extschema@.registry AS
 SELECT
     n.nspname::text AS schema,
@@ -212,10 +213,12 @@ SELECT
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
               AND i.indisvalid),
         'group_keys', m.group_keys) END AS options,
-    m.needs_reregister
+    m.needs_reregister,
+    v.oid::pg_catalog.regclass AS view
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
-LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace;
+LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
 
 COMMENT ON VIEW @extschema@.registry IS
 'One row per registered TVIEW; stable under contract_version()';

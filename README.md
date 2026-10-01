@@ -471,7 +471,7 @@ code with create-only semantics. See
 #### Reading what is registered
 
 Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
-query, base tables, options, `needs_reregister`) and check
+query, base tables, options, `needs_reregister`, backing view) and check
 `tviews.contract_version()`. Both follow the stability rules in
 [docs/reference/read-contract.md](docs/reference/read-contract.md);
 `tviews.pg_tview_meta` and the other `pg_tview_*` tables are internal.
