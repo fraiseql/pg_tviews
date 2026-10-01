@@ -40,10 +40,11 @@ UPDATE tb_post SET title = 'p1+' WHERE pk_post = 1;
 
 -- Columns pg_tviews never had, anywhere in the published docs.
 \set phantom `cd "$(git rev-parse --show-toplevel)" && git ls-files README.md INTEGRATION_GUIDE.md 'docs/*.md' 'docs/*.sql' 'docs/*.sh' | grep -v -e '^docs/archive/' -e '^docs/adr/' | xargs grep -lE '\b(last_refreshed|last_refresh_duration_ms|refresh_log)\b' | paste -sd, -`
-DO $$ BEGIN
-    IF :'phantom' <> '' THEN
-        RAISE EXCEPTION '#150 FAIL: docs use columns pg_tviews never had (last_refreshed, ...): %', :'phantom';
-    END IF;
-END $$;
+SELECT :'phantom' = '' AS no_phantom \gset
+\if :no_phantom
+\else
+  \echo '#150 FAIL: docs use columns pg_tviews never had (last_refreshed, ...):' :'phantom'
+  DO $$ BEGIN RAISE EXCEPTION '#150 FAIL: phantom columns in the docs (see above)'; END $$;
+\endif
 
 SELECT 'issue #150 runbook scripts: PASS' AS result;
