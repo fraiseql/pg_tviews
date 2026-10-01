@@ -47,8 +47,11 @@ after)
         psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -f "$root/scripts/migrate-from-0.1.0.sql"
         ;;
     update)
+        psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE"
+        # Until re-registered, TVIEWs keep refreshing with their old metadata.
+        psql -X -d "$upgraded" -q -f "$here/verify.sql"
+        echo "TVIEWs follow their base tables before re-registration"
         psql -X -d "$upgraded" -v ON_ERROR_STOP=1 \
-            -c "ALTER EXTENSION pg_tviews UPDATE" \
             -c "SELECT * FROM tviews.pg_tviews_reregister_all(strict => true)"
         ;;
     *) fail "usage: $0 after update|migrate" ;;

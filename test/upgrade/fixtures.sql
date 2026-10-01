@@ -63,6 +63,13 @@ SELECT pg_tviews_create('tv_post', $$
     JOIN v_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_comment c ON c.fk_post = p.pk_post
     GROUP BY p.pk_post, p.id, p.fk_user, p.title, u.data $$);
+-- Two hops: tb_user -> tb_post -> tb_comment.
+SELECT pg_tviews_create('tv_comment', $$
+    SELECT c.pk_comment, c.id, c.fk_post,
+           jsonb_build_object('body', c.body, 'author', u.name) AS data
+    FROM tb_comment c
+    JOIN tb_post p ON p.pk_post = c.fk_post
+    JOIN tb_user u ON u.pk_user = p.fk_user $$);
 -- Aggregate.
 SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id,

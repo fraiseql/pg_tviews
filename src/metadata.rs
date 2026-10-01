@@ -414,21 +414,45 @@ RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
+DECLARE
+    olds TEXT[];
+    news TEXT[];
+    e JSONB;
+    q TEXT;
+    i INT;
+    rebound JSONB := '[]';
 BEGIN
     IF pg_catalog.cardinality(NEW.cascade_paths) > 0 THEN
         NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
             NEW.view_oid::oid, NEW.cascade_paths);
     END IF;
     IF pg_catalog.jsonb_array_length(NEW.key_mappings) > 0 THEN
-        NEW.key_mappings := (
-            SELECT pg_catalog.jsonb_agg(
-                       CASE WHEN r.relid IS NULL THEN x.e
-                            ELSE pg_catalog.jsonb_set(x.e, '{relid}', pg_catalog.to_jsonb(r.relid))
-                       END ORDER BY x.n)
-            FROM pg_catalog.jsonb_array_elements(NEW.key_mappings) WITH ORDINALITY AS x(e, n)
-            CROSS JOIN LATERAL (
-                SELECT pg_catalog.to_regclass(x.e->>'table')::pg_catalog.oid::pg_catalog.int8 AS relid
-            ) r);
+        -- Each table's relid in the source database, and here (found by name).
+        SELECT pg_catalog.array_agg(x.e->>'relid' ORDER BY x.n),
+               pg_catalog.array_agg(COALESCE(
+                   pg_catalog.to_regclass(x.e->>'table')::pg_catalog.oid::pg_catalog.text,
+                   x.e->>'relid') ORDER BY x.n)
+          INTO olds, news
+          FROM pg_catalog.jsonb_array_elements(NEW.key_mappings) WITH ORDINALITY AS x(e, n);
+        FOR e IN SELECT value FROM pg_catalog.jsonb_array_elements(NEW.key_mappings) LOOP
+            -- A mapping query names relations and columns by relid: {r:<relid>},
+            -- {c:<relid>:<attnum>}. Marked first, so a new relid equal to another
+            -- table's old one is not rebound twice.
+            IF e ? 'sql' THEN
+                q := e->>'sql';
+                FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
+                    q := pg_catalog.replace(pg_catalog.replace(q,
+                             '{r:' || olds[i] || '}', '{r:#' || news[i] || '}'),
+                             '{c:' || olds[i] || ':', '{c:#' || news[i] || ':');
+                END LOOP;
+                q := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:');
+                e := pg_catalog.jsonb_set(e, '{sql}', pg_catalog.to_jsonb(q));
+            END IF;
+            i := pg_catalog.array_position(olds, e->>'relid');
+            e := pg_catalog.jsonb_set(e, '{relid}', pg_catalog.to_jsonb(news[i]::pg_catalog.int8));
+            rebound := rebound || pg_catalog.jsonb_build_array(e);
+        END LOOP;
+        NEW.key_mappings := rebound;
     END IF;
     RETURN NEW;
 END;

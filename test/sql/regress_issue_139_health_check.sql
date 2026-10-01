@@ -124,11 +124,12 @@ SET search_path TO app, public, tviews;
 SELECT pg_tviews_drop('user_orders');
 RESET search_path;
 
--- 3. The triggers of a TVIEW whose registration is gone are orphaned: two on each
---    of tb_post and tb_user.
+-- 3. The triggers of a TVIEW whose registration is gone are orphaned: row, flush and
+--    TRUNCATE on tb_post; three delta triggers, flush and TRUNCATE on tb_user, whose
+--    writes map through a query (ADR 0157).
 DELETE FROM tviews.pg_tview_meta WHERE entity = 'post';
 DO $$ BEGIN
-    IF public.trigger_check() NOT LIKE 'WARNING: 4 orphaned triggers%' THEN
+    IF public.trigger_check() NOT LIKE 'WARNING: 8 orphaned triggers%' THEN
         RAISE EXCEPTION '#139 FAIL: deregistered TVIEW''s triggers not reported: %',
             public.trigger_check();
     END IF;

@@ -62,16 +62,10 @@ SELECT pg_tviews_create('tv_invoice', $$
 -- search_path, over a temporary pg_tviews_delta.
 CREATE FUNCTION mapped_keys(e text, tbl text, cols text, rows text) RETURNS bigint[]
 LANGUAGE plpgsql AS $$
-DECLARE m jsonb; q text; keys bigint[];
+DECLARE q text; keys bigint[];
 BEGIN
-    SELECT x INTO m FROM tviews.pg_tview_meta, jsonb_array_elements(key_mappings) x
-     WHERE entity = e AND (x->>'relid')::oid = tbl::regclass::oid;
-    IF m IS NULL THEN RAISE EXCEPTION 'no mapping of % for %', tbl, e; END IF;
-    q := CASE m->>'kind'
-           WHEN 'mapped' THEN m->>'sql'
-           WHEN 'local' THEN format('SELECT DISTINCT %I FROM pg_tviews_delta', m->>'column')
-         END;
-    IF q IS NULL THEN RAISE EXCEPTION '% of % is %', tbl, e, m->>'kind'; END IF;
+    q := tviews.pg_tviews_mapping_query(e, tbl::regclass);
+    IF q IS NULL THEN RAISE EXCEPTION 'no mapping query of % for %', tbl, e; END IF;
     DROP TABLE IF EXISTS pg_tviews_delta;
     EXECUTE format('CREATE TEMP TABLE pg_tviews_delta AS SELECT * FROM %s LIMIT 0', tbl);
     EXECUTE format('INSERT INTO pg_tviews_delta (%s) VALUES %s', cols, rows);

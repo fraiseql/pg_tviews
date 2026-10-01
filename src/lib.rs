@@ -34,6 +34,7 @@ use pgrx::prelude::*;
 mod audit;
 mod cascade_path;
 mod catalog;
+mod delta;
 mod event_trigger;
 mod hooks;
 mod lineage;

@@ -27,14 +27,14 @@ pub mod walk;
 
 use std::collections::{BTreeMap, VecDeque};
 
-/// A piece of generated SQL: text, or the alias of a table occurrence.
+/// A piece of generated SQL: text, or a column of a table occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     Text(String),
-    Alias(usize),
+    Column { occ: usize, attnum: i16 },
 }
 
-/// SQL with holes for occurrence aliases, filled in when a query is assembled.
+/// SQL with holes for occurrence columns, filled in when a query is assembled.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sql(pub Vec<Piece>);
 
@@ -55,22 +55,69 @@ impl Sql {
         for piece in other.0 {
             match piece {
                 Piece::Text(t) => self.push_text(&t),
-                alias @ Piece::Alias(_) => self.0.push(alias),
+                column @ Piece::Column { .. } => self.0.push(column),
             }
         }
     }
+}
 
-    /// Render with `alias(occurrence)` for each hole.
-    #[must_use]
-    pub fn render(&self, alias: &dyn Fn(usize) -> String) -> String {
-        self.0
-            .iter()
-            .map(|p| match p {
-                Piece::Text(t) => t.clone(),
-                Piece::Alias(occ) => alias(*occ),
-            })
-            .collect()
+/// A stored mapping query is a template that names relations and columns by OID
+/// and attribute number, `{r:<relid>}` and `{c:<relid>:<attnum>}`, so that renames
+/// leave it valid; `{` and `}` of the SQL itself are doubled. [`render_template`]
+/// writes the current names in.
+#[must_use]
+pub fn escape_template(text: &str) -> String {
+    text.replace('{', "{{").replace('}', "}}")
+}
+
+/// A placeholder of a mapping-query template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placeholder {
+    Relation(u32),
+    Column(u32, i16),
+}
+
+/// Fill in a template with `name(placeholder)`; `None` if a placeholder is
+/// malformed or `name` has no name for it (a dropped relation or column).
+pub fn fill_template(
+    template: &str,
+    name: &dyn Fn(Placeholder) -> Option<String>,
+) -> Option<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(i) = rest.find(['{', '}']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        if tail.starts_with("{{") || tail.starts_with("}}") {
+            out.push_str(&tail[..1]);
+            rest = &tail[2..];
+            continue;
+        }
+        let end = tail.find('}')?;
+        let mut fields = tail[1..end].split(':');
+        let placeholder = match (fields.next()?, fields.next(), fields.next(), fields.next()) {
+            ("r", Some(relid), None, None) => Placeholder::Relation(relid.parse().ok()?),
+            ("c", Some(relid), Some(attnum), None) => {
+                Placeholder::Column(relid.parse().ok()?, attnum.parse().ok()?)
+            }
+            _ => return None,
+        };
+        out.push_str(&name(placeholder)?);
+        rest = &tail[end + 1..];
     }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// The placeholders a template uses.
+#[must_use]
+pub fn template_placeholders(template: &str) -> Vec<Placeholder> {
+    let found = std::cell::RefCell::new(Vec::new());
+    let _ = fill_template(template, &|p| {
+        found.borrow_mut().push(p);
+        Some(String::new())
+    });
+    found.into_inner()
 }
 
 /// The relation a mapping query reads the changed rows from: the old and new
@@ -87,13 +134,12 @@ pub struct Column {
 }
 
 impl Column {
-    /// `<alias>."<name>"`.
     #[must_use]
     pub fn sql(&self) -> Sql {
-        Sql(vec![
-            Piece::Alias(self.occ),
-            Piece::Text(format!(".{}", crate::utils::quote_identifier(&self.name))),
-        ])
+        Sql(vec![Piece::Column {
+            occ: self.occ,
+            attnum: self.attnum,
+        }])
     }
 }
 
@@ -168,10 +214,16 @@ pub struct TableLineage {
     pub paths: Vec<(usize, Vec<usize>)>,
     /// `mapped`: the query over [`DELTA`] returning the keys its rows can affect.
     pub sql: Option<String>,
-    /// Columns of the table the TVIEW reads; empty when unknown.
-    pub columns: Vec<String>,
+    /// Columns of the table the TVIEW reads (name, attnum); empty when unknown.
+    pub columns: Vec<(String, i16)>,
     /// Tables the mapping query joins, with the columns it looks up in each.
     pub lookups: Vec<(String, Vec<String>)>,
+    /// `mapped` through one equality onto a column of the root, `(column of this
+    /// table, column of the root)`: the TVIEW rows can be found by that column
+    /// when the TVIEW projects it (fan-out, issue #120).
+    pub hop: Option<(String, String)>,
+    /// The table whose column is the key (of a branch, under UNION).
+    pub root: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +363,17 @@ impl Graph {
         queries.join(" UNION ")
     }
 
+    /// `(column of occ, column of the root)` when `path` is one equality from `occ`
+    /// onto a column of the root other than the key.
+    fn root_hop(&self, occ: usize, path: &[usize]) -> Option<(String, String)> {
+        let root = self.root_of(occ)?;
+        let [only] = path else { return None };
+        let (x, y) = self.conjuncts[*only].equality.as_ref()?;
+        let (own, other) = if x.occ == occ { (x, y) } else { (y, x) };
+        (other.occ == root.key.occ && *other != root.key)
+            .then(|| (own.name.clone(), other.name.clone()))
+    }
+
     /// For each table a mapping query joins (not the changed one), the columns its
     /// conditions look up: what an index should cover.
     #[must_use]
@@ -395,24 +458,36 @@ impl Graph {
                 format!("o{}", chain.iter().position(|c| *c == o).unwrap_or(o))
             }
         };
+        let column = |o: usize, attnum: i16| {
+            format!("{}.{{c:{}:{attnum}}}", alias(o), self.occurrences[o].relid)
+        };
+        let render = |sql: &Sql| {
+            sql.0
+                .iter()
+                .map(|p| match p {
+                    Piece::Text(t) => escape_template(t),
+                    Piece::Column { occ, attnum } => column(*occ, *attnum),
+                })
+                .collect::<String>()
+        };
         let from = chain
             .iter()
             .map(|&o| {
                 if o == occ {
                     format!("{DELTA} d")
                 } else {
-                    format!("{} {}", self.occurrences[o].qualified, alias(o))
+                    format!("{{r:{}}} {}", self.occurrences[o].relid, alias(o))
                 }
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut sql = format!("SELECT DISTINCT {} FROM {from}", key.sql().render(&alias));
+        let mut sql = format!("SELECT DISTINCT {} FROM {from}", render(&key.sql()));
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(
                 &conditions
                     .iter()
-                    .map(|c| c.sql.render(&alias))
+                    .map(|c| render(&c.sql))
                     .collect::<Vec<_>>()
                     .join(" AND "),
             );
@@ -466,19 +541,27 @@ impl Graph {
                         TableKind::Local(columns[0].clone())
                     } else {
                         for (occ, k) in direct {
-                            paths.push((
-                                *occ,
-                                match k {
-                                    Kind::Mapped(p) => p.clone(),
-                                    _ => Vec::new(),
-                                },
-                            ));
+                            let path = match k {
+                                Kind::Mapped(p) => p.clone(),
+                                // A local occurrence other than the root reads the
+                                // key through its one equality.
+                                _ => self
+                                    .root_of(*occ)
+                                    .filter(|r| r.key.occ != *occ)
+                                    .and_then(|r| self.path(*occ, r.key.occ))
+                                    .unwrap_or_default(),
+                            };
+                            paths.push((*occ, path));
                         }
                         TableKind::Mapped
                     }
                 };
                 let sql = (kind == TableKind::Mapped).then(|| self.mapping_sql(&paths));
                 let lookups = self.lookups(&paths);
+                let hop = match paths.as_slice() {
+                    [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
+                    _ => None,
+                };
                 TableLineage {
                     relid,
                     relname: o.relname.clone(),
@@ -488,6 +571,11 @@ impl Graph {
                     sql,
                     columns: Vec::new(),
                     lookups,
+                    hop,
+                    root: self
+                        .roots
+                        .iter()
+                        .any(|r| self.occurrences[r.key.occ].relid == relid),
                 }
             })
             .collect()
@@ -503,6 +591,30 @@ pub struct Lineage {
 }
 
 impl Lineage {
+    /// Whether the TVIEW is a UNION whose branches have their own root tables.
+    #[must_use]
+    pub fn is_union(&self) -> bool {
+        self.tables.iter().filter(|t| t.root).count() > 1
+    }
+
+    /// Whether a table's writes map to keys through a query (`mapped`).
+    #[must_use]
+    pub fn has_mapped(&self) -> bool {
+        self.tables.iter().any(|t| t.kind == TableKind::Mapped)
+    }
+
+    /// The tables no cascade reaches (`all_keys`), with the reason.
+    #[must_use]
+    pub fn all_keys(&self) -> Vec<(u32, String, String)> {
+        self.tables
+            .iter()
+            .filter_map(|t| match &t.kind {
+                TableKind::AllKeys(reason) => Some((t.relid, t.qualified.clone(), reason.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// `pg_tview_meta.key_mappings`: one object per base table.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
@@ -521,9 +633,18 @@ impl Lineage {
                         TableKind::AllKeys(reason) => entry["reason"] = reason.clone().into(),
                         TableKind::Mapped => {
                             entry["sql"] = t.sql.clone().unwrap_or_default().into();
+                            if let Some((own, root)) = &t.hop {
+                                entry["hop"] = serde_json::json!([own, root]);
+                            }
                         }
                     }
-                    entry["columns"] = t.columns.clone().into();
+                    entry["columns"] = t
+                        .columns
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<_>>()
+                        .into();
+                    entry["attnums"] = t.columns.iter().map(|(_, n)| *n).collect::<Vec<_>>().into();
                     entry
                 })
                 .collect(),
@@ -649,14 +770,119 @@ pub fn analyze(
     Ok(Lineage { tables })
 }
 
+/// A mapping-query template with the current names of its relations and columns;
+/// `None` when one of them is gone.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn render_template(template: &str) -> pgrx::spi::Result<Option<String>> {
+    use pgrx::prelude::*;
+    let mut names: std::collections::HashMap<(u32, i16), Option<String>> =
+        std::collections::HashMap::new();
+    for placeholder in template_placeholders(template) {
+        let (relid, attnum) = match placeholder {
+            Placeholder::Relation(relid) => (relid, 0),
+            Placeholder::Column(relid, attnum) => (relid, attnum),
+        };
+        if names.contains_key(&(relid, attnum)) {
+            continue;
+        }
+        // SAFETY: plain OID / int2 datums.
+        let args = unsafe {
+            [
+                pgrx::datum::DatumWithOid::new(
+                    pgrx::pg_sys::Oid::from(relid),
+                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+                ),
+                pgrx::datum::DatumWithOid::new(
+                    attnum,
+                    PgOid::BuiltIn(PgBuiltInOids::INT2OID).value(),
+                ),
+            ]
+        };
+        let name = Spi::get_one_with_args::<String>(
+            "SELECT CASE WHEN $2 = 0 \
+                    THEN pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
+                    ELSE (SELECT pg_catalog.quote_ident(a.attname) FROM pg_catalog.pg_attribute a \
+                          WHERE a.attrelid = c.oid AND a.attnum = $2 AND NOT a.attisdropped) END \
+             FROM pg_catalog.pg_class c \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.oid = $1",
+            &args,
+        )?;
+        names.insert((relid, attnum), name);
+    }
+    Ok(fill_template(template, &|p| {
+        let key = match p {
+            Placeholder::Relation(relid) => (relid, 0),
+            Placeholder::Column(relid, attnum) => (relid, attnum),
+        };
+        names.get(&key).cloned().flatten()
+    }))
+}
+
+/// One table of a registered TVIEW's `key_mappings`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct KeyMapping {
+    pub relid: u32,
+    pub table: String,
+    pub kind: String,
+    #[serde(default)]
+    pub column: Option<String>,
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// `mapped`: the query template (see [`render_template`]).
+    #[serde(default)]
+    pub sql: Option<String>,
+    /// Columns of the table the TVIEW reads; empty when unknown.
+    #[serde(default)]
+    pub attnums: Vec<i16>,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// `mapped` through one equality onto a column of the root: `(this table's
+    /// column, the root's column)`.
+    #[serde(default)]
+    pub hop: Option<(String, String)>,
+    /// The column of this table whose value the fan-out patch looks up.
+    #[serde(default)]
+    pub key_col: Option<String>,
+    /// How an UPDATE is written into every TVIEW row it reaches (issue #120).
+    #[serde(default)]
+    pub fanout: Option<crate::cascade_path::FanoutPatch>,
+}
+
+impl KeyMapping {
+    /// Parse `pg_tview_meta.key_mappings`; anything malformed is skipped.
+    #[must_use]
+    pub fn parse_all(json: &serde_json::Value) -> Vec<Self> {
+        json.as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// Rows above which a sequential scan in a mapping query is worth an index.
 const LARGE_TABLE_ROWS: f64 = 1000.0;
 
 /// Plan the mapping query of `table` and say which index would avoid a
 /// sequential scan of a large table. Fails when the query does not plan: a
 /// mapping `pg_tviews` cannot run must not be registered.
-fn explain(entity: &str, table: &TableLineage, sql: &str) -> crate::TViewResult<()> {
+fn explain(entity: &str, table: &TableLineage, template: &str) -> crate::TViewResult<()> {
     use pgrx::prelude::*;
+    let sql = render_template(template)
+        .map_err(|e| crate::TViewError::CatalogError {
+            operation: format!("Name the relations of the mapping of {}", table.qualified),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| crate::TViewError::CatalogError {
+            operation: format!("Name the relations of the mapping of {}", table.qualified),
+            pg_error: "a relation or column it reads is gone".to_string(),
+        })?;
     let explain = format!(
         "EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {} LIMIT 0) {sql}",
         table.qualified
@@ -715,7 +941,10 @@ fn seq_scans(node: &serde_json::Value, out: &mut Vec<(String, f64)>) {
 
 /// The columns of table `relid` that the view `view_oid`, or a view it reads,
 /// references (`pg_depend`).
-fn referenced_columns(view_oid: pgrx::pg_sys::Oid, relid: u32) -> pgrx::spi::Result<Vec<String>> {
+fn referenced_columns(
+    view_oid: pgrx::pg_sys::Oid,
+    relid: u32,
+) -> pgrx::spi::Result<Vec<(String, i16)>> {
     use pgrx::prelude::*;
     Spi::connect(|client| {
         let mut columns = Vec::new();
@@ -751,8 +980,8 @@ fn referenced_columns(view_oid: pgrx::pg_sys::Oid, relid: u32) -> pgrx::spi::Res
                 },
             ],
         )? {
-            if let Some(name) = row.get::<String>(1)? {
-                columns.push(name);
+            if let (Some(name), Some(attnum)) = (row.get::<String>(1)?, row.get::<i16>(2)?) {
+                columns.push((name, attnum));
             }
         }
         Ok(columns)
@@ -919,7 +1148,7 @@ mod tests {
         );
         assert_eq!(
             g.mapping_sql(&[(1, vec![0])]),
-            r#"SELECT DISTINCT d."fk_order" FROM pg_tviews_delta d"#
+            "SELECT DISTINCT d.{c:2:1} FROM pg_tviews_delta d"
         );
     }
 
@@ -935,7 +1164,8 @@ mod tests {
         );
         assert_eq!(
             g.mapping_sql(&[(2, vec![1, 0])]),
-            r#"SELECT DISTINCT o1."fk_order" FROM pg_tviews_delta d, public.tb_line o1 WHERE d."pk_sku" OPERATOR(pg_catalog.=) o1."fk_sku""#
+            "SELECT DISTINCT o1.{c:2:1} FROM pg_tviews_delta d, {r:2} o1 \
+             WHERE d.{c:3:1} OPERATOR(pg_catalog.=) o1.{c:2:1}"
         );
     }
 
@@ -949,7 +1179,8 @@ mod tests {
         );
         assert_eq!(
             g.mapping_sql(&[(1, vec![0])]),
-            r#"SELECT DISTINCT o1."pk_order" FROM pg_tviews_delta d, public.tb_order o1 WHERE d."pos" OPERATOR(pg_catalog.>) o1."min_pos""#
+            "SELECT DISTINCT o1.{c:1:1} FROM pg_tviews_delta d, {r:1} o1 \
+             WHERE d.{c:2:1} OPERATOR(pg_catalog.>) o1.{c:1:1}"
         );
     }
 
@@ -963,7 +1194,61 @@ mod tests {
         );
         assert_eq!(
             g.mapping_sql(&[(0, vec![]), (1, vec![0])]),
-            r#"SELECT DISTINCT d."pk_node" FROM pg_tviews_delta d UNION SELECT DISTINCT o1."pk_node" FROM pg_tviews_delta d, public.tb_node o1 WHERE d."pk_node" OPERATOR(pg_catalog.=) o1."fk_parent""#
+            "SELECT DISTINCT d.{c:1:1} FROM pg_tviews_delta d UNION SELECT DISTINCT o1.{c:1:1} \
+             FROM pg_tviews_delta d, {r:1} o1 WHERE d.{c:1:1} OPERATOR(pg_catalog.=) o1.{c:1:1}"
+        );
+    }
+
+    #[test]
+    fn templates_round_trip_braces_and_placeholders() {
+        let template = format!(
+            "SELECT d.{{c:7:2}} FROM {{r:7}} d WHERE d.{{c:7:3}} = {}",
+            escape_template("'{r:1} }'")
+        );
+        let names = |p: Placeholder| match p {
+            Placeholder::Relation(7) => Some("public.tb_x".to_string()),
+            Placeholder::Column(7, 2) => Some("\"a\"".to_string()),
+            Placeholder::Column(7, 3) => Some("b".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            fill_template(&template, &names).as_deref(),
+            Some(r#"SELECT d."a" FROM public.tb_x d WHERE d.b = '{r:1} }'"#)
+        );
+        assert_eq!(
+            template_placeholders(&template),
+            vec![
+                Placeholder::Column(7, 2),
+                Placeholder::Relation(7),
+                Placeholder::Column(7, 3)
+            ]
+        );
+        assert_eq!(fill_template("{r:8}", &names), None);
+        assert_eq!(fill_template("{x:1}", &names), None);
+    }
+
+    #[test]
+    fn a_tree_reads_the_key_of_each_occurrence() {
+        // SELECT pk_tree, EXISTS (SELECT 1 FROM tb_tree c WHERE c.fk_parent = t.pk_tree)
+        // FROM tb_tree t: the root occurrence and a local one on another column.
+        let at = |occ: usize, name: &str, attnum: i16| Column {
+            occ,
+            attnum,
+            name: name.to_string(),
+        };
+        let g = graph(
+            vec![occ(1, "tb_tree"), occ(1, "tb_tree")],
+            vec![eq(at(1, "fk_parent", 3), at(0, "pk_tree", 1), true, false)],
+            at(0, "pk_tree", 1),
+        );
+        let tables = g.tables(NONE);
+        assert_eq!(tables[0].kind, TableKind::Mapped);
+        assert_eq!(
+            tables[0].sql.as_deref(),
+            Some(
+                "SELECT DISTINCT d.{c:1:1} FROM pg_tviews_delta d \
+                 UNION SELECT DISTINCT d.{c:1:3} FROM pg_tviews_delta d"
+            )
         );
     }
 

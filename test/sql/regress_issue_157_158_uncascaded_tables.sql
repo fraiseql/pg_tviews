@@ -9,8 +9,11 @@
 -- Both TVIEWs were created without a word about tb_line (#158 named only the
 -- view), and every write to tb_line was dropped silently.
 --
--- Correct behaviour: such a table is never dropped silently. It is named at create
--- time, recorded in tviews.registry.uncascaded_tables, and handled by the TVIEW's
+-- Correct behaviour: both cascade. The link `l.fk_order = o.pk_order` (inside the
+-- subquery, or through the view's GROUP BY key) maps a tb_line row to its order
+-- (ADR 0157). A table that nothing links to the key (an uncorrelated subquery) is
+-- never dropped silently either: it is named at create time, recorded in
+-- tviews.registry.uncascaded_tables, and handled by the TVIEW's
 -- pg_tviews.uncascaded_policy, read once at create time and stored with the TVIEW:
 --   warn          WARNING, the TVIEW is created
 --   error         ERROR, nothing is created
@@ -18,10 +21,11 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_157_158_uncascaded_tables.sql
 --
--- expect-output: writes to public.tb_line will not refresh public.tv_order
--- expect-output: writes to public.tb_invoice_line will not refresh public.tv_invoice
--- expect-output: read through view public.v_invoice_lines
+-- expect-output: writes to public.tb_flag will not refresh public.tv_report
+-- expect-output: read in a subquery, with no condition linking it to the TVIEW key
 -- expect-output: issue #157 #158 uncascaded tables: PASS
+-- reject-output: will not refresh public.tv_order
+-- reject-output: will not refresh public.tv_invoice
 -- reject-output: Cascade path from 'v_invoice_lines' unresolvable
 
 \set ON_ERROR_STOP on
@@ -105,6 +109,16 @@ SELECT pg_tviews_create_aggregate('tv_user_posts', $$
     GROUP BY p.fk_user, u.id
 $$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
 
+-- An uncorrelated subquery: nothing links tb_flag to the key (warn, the default).
+CREATE TABLE tb_flag (pk_flag bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, active boolean);
+CREATE TABLE tb_report (pk_report bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                        id uuid NOT NULL DEFAULT gen_random_uuid());
+INSERT INTO tb_report DEFAULT VALUES;
+INSERT INTO tb_flag (active) VALUES (true);
+SELECT pg_tviews_create('tv_report', $$
+    SELECT r.pk_report, r.id, jsonb_build_object('flags', (SELECT count(*) FROM tb_flag)) AS data
+    FROM tb_report r $$);
+
 -- Helpers.
 CREATE FUNCTION _diverges(entity text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE d boolean;
@@ -135,11 +149,14 @@ CREATE TABLE tb_basket_item (
 INSERT INTO tb_basket (ref) SELECT 'b' || g FROM generate_series(1, 50) g;
 INSERT INTO tb_basket_item (fk_basket, sku) SELECT 1 + g % 50, 's' || g FROM generate_series(1, 200) g;
 
+-- Each basket shows the share of all items it holds: the uncorrelated count links
+-- tb_basket_item to no key.
 SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_basket', $$
     SELECT b.pk_basket, b.id,
            jsonb_build_object('ref', b.ref,
-               'items', (SELECT count(*) FROM tb_basket_item i WHERE i.fk_basket = b.pk_basket)) AS data
+               'items', (SELECT count(*) FROM tb_basket_item i WHERE i.fk_basket = b.pk_basket),
+               'of', (SELECT count(*) FROM tb_basket_item)) AS data
     FROM tb_basket b $$);
 -- The writer's session value does not matter: the stored policy does.
 SET pg_tviews.uncascaded_policy = 'warn';
@@ -170,8 +187,7 @@ DO $$
 BEGIN
     PERFORM pg_tviews_create('tv_shelf', $q$
         SELECT s.pk_shelf, s.id,
-               jsonb_build_object('books', ARRAY(SELECT b.title FROM tb_book b
-                                                 WHERE b.fk_shelf = s.pk_shelf)) AS data
+               jsonb_build_object('books', ARRAY(SELECT b.title FROM tb_book b)) AS data
         FROM tb_shelf s $q$);
     RAISE EXCEPTION 'FAIL [error]: the TVIEW was created';
 EXCEPTION WHEN OTHERS THEN
@@ -191,11 +207,27 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- ── warn: the default leaves tb_line writes unrefreshed, as stated ──────────
+-- ── #157 and #158: writes to tb_line / tb_invoice_line refresh ───────────────
 UPDATE tb_line SET sku = 'b2' WHERE pos = 2;
+SELECT _expect_fresh('order', '#157 UPDATE');
+INSERT INTO tb_line (fk_order, pos, sku) VALUES (1, 3, 'c');
+SELECT _expect_fresh('order', '#157 INSERT');
+UPDATE tb_line SET fk_order = 2 WHERE pos = 1 AND fk_order = 1;   -- moves to order 2
+SELECT _expect_fresh('order', '#157 fk move');
+DELETE FROM tb_line WHERE sku = 'x';
+SELECT _expect_fresh('order', '#157 DELETE');
+UPDATE tb_invoice_line SET sku = 'b3' WHERE pos = 2;
+SELECT _expect_fresh('invoice', '#158 UPDATE');
+INSERT INTO tb_invoice_line (fk_invoice, pos, sku) VALUES (1, 3, 'c');
+DELETE FROM tb_invoice_line WHERE pos = 1;
+SELECT _expect_fresh('invoice', '#158 INSERT, DELETE');
+
+-- ── warn: an unlinked table's writes leave the TVIEW stale, as stated ────────
+UPDATE tb_flag SET active = false;
+INSERT INTO tb_flag (active) VALUES (true);
 DO $$ BEGIN
-    IF NOT _diverges('order') THEN
-        RAISE EXCEPTION 'FAIL [warn]: expected tv_order to stay stale under the warn policy';
+    IF NOT _diverges('report') THEN
+        RAISE EXCEPTION 'FAIL [warn]: expected tv_report to stay stale under the warn policy';
     END IF;
 END $$;
 
@@ -205,8 +237,7 @@ DECLARE r record;
 BEGIN
     FOR r IN SELECT entity, uncascaded_tables, uncascaded_policy FROM tviews.registry LOOP
         IF r.uncascaded_tables IS DISTINCT FROM (CASE r.entity
-                WHEN 'order'   THEN ARRAY['tb_line'::regclass]
-                WHEN 'invoice' THEN ARRAY['tb_invoice_line'::regclass]
+                WHEN 'report'  THEN ARRAY['tb_flag'::regclass]
                 WHEN 'basket'  THEN ARRAY['tb_basket_item'::regclass]
                 ELSE '{}'::regclass[] END) THEN
             RAISE EXCEPTION 'FAIL [registry]: % uncascaded_tables = %', r.entity, r.uncascaded_tables;
@@ -221,12 +252,12 @@ END $$;
 -- ── re-registration recomputes the set and keeps the stored policy ──────────
 SET pg_tviews.uncascaded_policy = 'error';
 SELECT pg_tviews_reregister('basket');
-SELECT pg_tviews_reregister('order');
+SELECT pg_tviews_reregister('report');
 RESET pg_tviews.uncascaded_policy;
 DO $$ BEGIN
     IF (SELECT uncascaded_policy FROM tviews.registry WHERE entity = 'basket') <> 'full_refresh'
-       OR (SELECT uncascaded_tables FROM tviews.registry WHERE entity = 'order')
-          IS DISTINCT FROM ARRAY['tb_line'::regclass]
+       OR (SELECT uncascaded_tables FROM tviews.registry WHERE entity = 'report')
+          IS DISTINCT FROM ARRAY['tb_flag'::regclass]
     THEN
         RAISE EXCEPTION 'FAIL [reregister]: the set or the stored policy changed';
     END IF;

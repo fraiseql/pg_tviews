@@ -158,17 +158,17 @@ SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
 SELECT tviews.pg_tviews_create_or_replace('tv_headline', $$
     SELECT h.pk_headline, h.id, h.fk_post, jsonb_build_object('title', v.data->>'title') AS data
     FROM tb_headline h JOIN v_post v ON v.pk_post = h.fk_post $$);
+-- tv_headline reads tb_user through v_post: refreshing tv_post (which maps it)
+-- refreshes tv_headline (ADR 0157 `propagated`).
 CREATE FUNCTION reads_users(entity text) RETURNS boolean LANGUAGE sql AS $$
-    SELECT EXISTS (
-        SELECT 1 FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
-        WHERE t.tgrelid = 'tb_user'::regclass AND f.pronamespace = 'tviews'::regnamespace
-          AND t.tgargs = convert_to(entity, 'UTF8') || '\x00'::bytea) $$;
-SELECT must(reads_users('headline'), 'tv_headline triggers on tb_user through v_post');
+    SELECT (SELECT cascade_kinds->>'tb_user' FROM tviews.registry r WHERE r.entity = $1)
+           IS NOT DISTINCT FROM 'propagated' $$;
+SELECT must(reads_users('headline'), 'tv_headline reads tb_user through v_post');
 SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.subject) AS data
     FROM tb_post p $$) = 'replaced', 'title from subject, join removed');
 SELECT assert_fresh('title from subject');
-SELECT must(NOT reads_users('headline'), 'tv_headline''s triggers on tb_user removed');
+SELECT must(NOT reads_users('headline'), 'tv_headline no longer reads tb_user');
 UPDATE tb_post SET subject = 'new subject' WHERE pk_post = 1;
 SELECT assert_fresh('subject update');
 SELECT must((SELECT data->>'title' FROM tv_headline WHERE pk_headline = 1) = 'new subject',

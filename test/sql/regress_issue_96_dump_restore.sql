@@ -55,9 +55,11 @@ FROM app.tb_post p
 JOIN public.tb_author a ON a.pk_author = p.fk_author;
 
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'post'
-                   AND cardinality(cascade_paths) > 0) THEN
-    RAISE EXCEPTION '#96 setup FAIL: tv_post has no cascade path from tb_author';
+  -- tb_author maps to tv_post keys through a query over app.tb_post (ADR 0157).
+  IF NOT EXISTS (SELECT 1 FROM pg_tview_meta, jsonb_array_elements(key_mappings) e
+                 WHERE entity = 'post' AND e->>'kind' = 'mapped'
+                   AND (e->>'relid')::oid = 'tb_author'::regclass::oid) THEN
+    RAISE EXCEPTION '#96 setup FAIL: tv_post has no mapping of tb_author';
   END IF;
   IF (SELECT count(*) FROM pg_tview_meta) <> 2 THEN
     RAISE EXCEPTION '#96 setup FAIL: expected 2 registered TVIEWs, got %',
@@ -101,14 +103,13 @@ DO $$ BEGIN
   END IF;
   IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp
              WHERE m.entity = 'post'
-               AND (cp::jsonb->>'source_oid')::oid <> 'public.tb_author'::regclass::oid) THEN
-    RAISE EXCEPTION '#96 FAIL: post cascade path still carries the source database''s tb_author OID';
+               AND (cp::jsonb->>'source_oid')::oid <> 'app.tb_post'::regclass::oid) THEN
+    RAISE EXCEPTION '#96 FAIL: post cascade path still carries a source database OID';
   END IF;
-  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp,
-                    jsonb_array_elements(cp::jsonb->'hops') h
-             WHERE m.entity = 'post'
-               AND (h->>'table_oid')::oid <> 'app.tb_post'::regclass::oid) THEN
-    RAISE EXCEPTION '#96 FAIL: post cascade hop still carries the source database''s tb_post OID';
+  -- The mapping query names app.tb_post by its relid: rebound with it.
+  IF tviews.pg_tviews_mapping_query('post', 'tb_author'::regclass) NOT LIKE '%FROM pg_tviews_delta d, app.tb_post o1%' THEN
+    RAISE EXCEPTION '#96 FAIL: the mapping of tb_author does not name the restored app.tb_post: %',
+      tviews.pg_tviews_mapping_query('post', 'tb_author'::regclass);
   END IF;
   IF (SELECT count(*) FROM tv_author) <> 2 OR (SELECT count(*) FROM app.tv_post) <> 2 THEN
     RAISE EXCEPTION '#96 FAIL: restored TVIEW rows missing';

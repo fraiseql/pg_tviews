@@ -61,7 +61,8 @@ impl EntityDepGraph {
         // scalar embed reading only the child's own columns, while `children` (which drives
         // topological refresh ordering) keeps every edge.
         let query = format!(
-            "SELECT entity, fk_columns, dependency_types, cascade_paths, aggregate_embeds FROM {}",
+            "SELECT entity, fk_columns, dependency_types, cascade_paths, aggregate_embeds, \
+             key_mappings FROM {}",
             crate::utils::meta_table()
         );
 
@@ -118,7 +119,23 @@ impl EntityDepGraph {
                     .iter()
                     .filter_map(|s| serde_json::from_str(s).ok())
                     .collect();
-                let reads_by_fk = source_columns_by_fk(&cascade_paths);
+                // A table mapped through one equality onto the root's `fk_*` column
+                // reads its columns through that relationship too (ADR 0157).
+                let key_mappings = row["key_mappings"]
+                    .value::<pgrx::JsonB>()
+                    .ok()
+                    .flatten()
+                    .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
+                    .unwrap_or_default();
+                let mut reads_by_fk = source_columns_by_fk(&cascade_paths);
+                for mapping in key_mappings.iter().filter(|m| m.kind == "mapped") {
+                    if let Some((_, root_col)) = &mapping.hop {
+                        reads_by_fk
+                            .entry(root_col.clone())
+                            .or_default()
+                            .extend(mapping.columns.iter().cloned());
+                    }
+                }
 
                 all_entities.insert(entity.clone());
 

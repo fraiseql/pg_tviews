@@ -1,9 +1,6 @@
-use crate::catalog::entity_for_table;
 use crate::queue::cache::CachedEntityInfo;
-use crate::queue::{
-    enqueue_refresh, enqueue_refresh_bulk, enqueue_refresh_dedup, enqueue_refresh_patched,
-};
-use crate::utils::{IntExtraction, quote_identifier, tuple_get_i64};
+use crate::queue::{enqueue_refresh, enqueue_refresh_dedup, enqueue_refresh_patched};
+use crate::utils::{IntExtraction, tuple_get_i64};
 use pgrx::PgTupleDesc;
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
@@ -90,9 +87,30 @@ fn pg_tview_trigger_handler<'a>(
             return Ok(None);
         }
     };
+    // The TVIEW this trigger serves (its argument; none for a trigger an older
+    // release installed, which serves every TVIEW reading the table). A table read
+    // by several TVIEWs has one trigger each.
+    let served = crate::delta::trigger_entity(trigger);
+    let serves = |entity: &str| served.as_deref().is_none_or(|e| e == entity);
+    // A row of a partition: what pg_tviews knows is its partitioned table.
+    let table_oid = match crate::delta::partition_root(table_oid) {
+        Ok(root) => root,
+        Err(e) => {
+            warning!(
+                "Failed to resolve the partition root of {:?}: {}",
+                table_oid,
+                e
+            );
+            table_oid
+        }
+    };
 
     // If triggers are suspended, record the change instead of enqueuing
     if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+        if let Some(entity) = &served {
+            crate::suspend::record_change(entity);
+            return Ok(None);
+        }
         // Record direct entity if any
         if let Ok(Some(entity_info)) =
             crate::queue::cache::table_cache::entity_info_cached(table_oid)
@@ -115,16 +133,13 @@ fn pg_tview_trigger_handler<'a>(
         for path in paths {
             crate::suspend::record_change(&path.entity_name);
         }
-        for entity in full_refresh_entities(table_oid) {
-            crate::suspend::record_change(&entity);
-        }
 
         return Ok(None);
     }
 
     // 1. Direct entity: this table IS a TVIEW source (e.g. tb_user → entity "user")
     match crate::queue::cache::table_cache::entity_info_cached(table_oid) {
-        Ok(Some(entity_info)) => {
+        Ok(Some(entity_info)) if serves(&entity_info.name) => {
             let entity = &entity_info.name;
             // Check if this is a DISTINCT ON TVIEW using cached distinct_on_key
             if let Some(key_col) = &entity_info.distinct_on_key {
@@ -181,7 +196,7 @@ fn pg_tview_trigger_handler<'a>(
             // enqueue_cascade_parents (which walks the base-table cascade paths),
             // tb_user edits leave tv_post/tv_comment author fields stale.
         }
-        Ok(None) => { /* fall through to indirect lookup */ }
+        Ok(_) => { /* fall through to indirect lookup */ }
         Err(e) => {
             warning!(
                 "Failed to resolve entity for table OID {:?}: {:?}",
@@ -194,26 +209,17 @@ fn pg_tview_trigger_handler<'a>(
 
     // 2. Indirect: this table is a dependency of one or more TVIEWs
     //    Follow cascade paths to determine which TVIEW rows need refreshing
-    enqueue_cascade_parents(trigger, table_oid);
+    enqueue_cascade_parents(trigger, table_oid, &serves);
 
-    // 3. TVIEWs that no cascade maps this table to, created under the
-    //    `full_refresh` policy: refresh them whole at flush (issues #157, #158).
-    for entity in full_refresh_entities(table_oid) {
-        crate::queue::enqueue_refresh_all(&entity);
+    // 3. A partitioned table whose writes map through a query (ADR 0157): its
+    //    partitions cannot have transition tables, so map this row.
+    if let Some(entity) = &served
+        && let Err(e) = crate::delta::map_row(trigger, entity, table_oid)
+    {
+        error!("pg_tviews: could not map the changed row to tv_{entity} keys: {e}");
     }
 
     Ok(None)
-}
-
-/// The entities refreshed in full on a write to `table_oid`; none if the catalog
-/// cannot be read (reported as a WARNING).
-fn full_refresh_entities(table_oid: pg_sys::Oid) -> Vec<String> {
-    crate::queue::cache::cascade_cache::full_refresh_entities_for_table(table_oid).unwrap_or_else(
-        |e| {
-            warning!("Failed to load full-refresh TVIEWs for table {table_oid:?}: {e:?}");
-            Vec::new()
-        },
-    )
 }
 
 /// Follow cascade paths from a base table change to enqueue parent TVIEW refreshes.
@@ -221,10 +227,14 @@ fn full_refresh_entities(table_oid: pg_sys::Oid) -> Vec<String> {
 /// When a base table (e.g. `tb_item`) changes, loads cascade paths from the
 /// transaction-scoped cache and follows each path hop-by-hop via SPI to
 /// discover which TVIEW entity rows need refreshing.
-fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
+fn enqueue_cascade_parents(
+    trigger: &PgTrigger,
+    table_oid: pg_sys::Oid,
+    serves: &dyn Fn(&str) -> bool,
+) {
     let paths: Vec<crate::cascade_path::CascadePath> =
         match crate::queue::cache::cascade_cache::cascade_paths_for_table(table_oid) {
-            Ok(p) => p,
+            Ok(p) => p.into_iter().filter(|p| serves(&p.entity_name)).collect(),
             Err(e) => {
                 warning!(
                     "Failed to load cascade paths for table {:?}: {:?}",
@@ -276,19 +286,6 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
             );
             continue;
         }
-        // Hops read tables the writer may not: follow them as the target TVIEW's
-        // owner (issue #136), once per path.
-        let owner = if path.hops.is_empty() {
-            None
-        } else {
-            match crate::owner::AsOwner::of_entity(&path.entity_name) {
-                Ok(owner) => Some(owner),
-                Err(e) => {
-                    warning!("Cascade to {} skipped: {e}", path.entity_name);
-                    continue;
-                }
-            }
-        };
         for tuple in &tuples {
             if let Err(e) = follow_cascade_path(path, tuple) {
                 warning!(
@@ -299,7 +296,6 @@ fn enqueue_cascade_parents(trigger: &PgTrigger, table_oid: pg_sys::Oid) {
                 );
             }
         }
-        drop(owner);
     }
 }
 
@@ -336,7 +332,11 @@ fn try_capture_fanout<'p>(
     (!fields.is_empty()).then_some((fanout, key, fields))
 }
 
-/// Follow a single cascade path to enqueue refresh(es) for the target entity.
+/// Enqueue the key a cascade path reads off the changed row (its `initial_col`).
+///
+/// A path with hops comes from metadata registered before ADR 0157, which mapped
+/// such tables hop by hop; until `pg_tviews_reregister()` gives the table a
+/// mapping query, its writes refresh the whole TVIEW.
 fn follow_cascade_path(
     path: &crate::cascade_path::CascadePath,
     tuple: &PgHeapTuple<AllocatedByPostgres>,
@@ -346,11 +346,22 @@ fn follow_cascade_path(
     if path.unresolvable {
         return Ok(());
     }
+    if !path.hops.is_empty() {
+        crate::utils::log_once(
+            &format!("legacy_hops:{}", path.entity_name),
+            &format!(
+                "tv_{0} was registered by an older release: writes to {1} refresh it in full \
+                 until SELECT * FROM tviews.pg_tviews_reregister_all() re-registers it",
+                path.entity_name, path.source_table
+            ),
+        );
+        crate::queue::enqueue_refresh_all(&path.entity_name);
+        return Ok(());
+    }
 
-    // Step 1: Read initial_col from the changed tuple
-    let mut current_ids = match tuple_get_i64(tuple, &path.initial_col) {
-        IntExtraction::Value(pk) => vec![pk],
-        IntExtraction::Null => return Ok(()), // FK is NULL, cascade stops
+    match tuple_get_i64(tuple, &path.initial_col) {
+        IntExtraction::Value(pk) => enqueue_refresh(&path.entity_name, pk),
+        IntExtraction::Null => {} // FK is NULL, cascade stops
         IntExtraction::Missing => {
             crate::utils::log_once(
                 &format!("initial_col:{}:{}", path.source_table, path.initial_col),
@@ -360,29 +371,8 @@ fn follow_cascade_path(
                     path.initial_col, path.source_table, path.entity_name, path.entity_name
                 ),
             );
-            return Ok(());
         }
-    };
-
-    // Step 2: Follow each intermediate hop via SPI (as the target TVIEW's owner,
-    // switched to by the caller).
-    for hop in &path.hops {
-        if current_ids.is_empty() {
-            return Ok(());
-        }
-        current_ids = crate::queue::spi_batch_lookup(
-            hop.table_oid,
-            &hop.lookup_col,
-            &hop.carry_col,
-            &current_ids,
-        )?;
     }
-
-    // Step 3: Enqueue refresh for each resulting PK
-    for pk in current_ids {
-        enqueue_refresh(&path.entity_name, pk);
-    }
-
     Ok(())
 }
 
@@ -608,132 +598,4 @@ fn pg_tview_flush_trigger<'a>(
         warning!("Audit flush failed in statement trigger: {:?}", e);
     }
     Ok(None)
-}
-
-/// Statement-level trigger handler for bulk operations
-/// This is called once per statement instead of once per row
-#[pg_trigger]
-#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
-fn pg_tview_stmt_trigger_handler<'a>(
-    trigger: &'a PgTrigger<'a>,
-) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
-    // Extract table OID
-    let table_oid = match trigger.relation() {
-        Ok(rel) => rel.oid(),
-        Err(e) => {
-            warning!("Failed to get trigger relation: {:?}", e);
-            return Ok(None);
-        }
-    };
-
-    // Map table OID → entity name
-    let entity = match entity_for_table(table_oid) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            // Table not in pg_tview_meta, skip
-            return Ok(None);
-        }
-        Err(e) => {
-            warning!(
-                "Failed to resolve entity for table OID {:?}: {:?}",
-                table_oid,
-                e
-            );
-            return Ok(None);
-        }
-    };
-
-    // Extract all changed PKs from transition table
-    let changed_pks = match extract_pks_from_transition_table(trigger) {
-        Ok(pks) => pks,
-        Err(e) => {
-            warning!("Failed to extract PKs from transition table: {:?}", e);
-            return Ok(None);
-        }
-    };
-
-    if changed_pks.is_empty() {
-        // No rows changed, nothing to do
-        return Ok(None);
-    }
-
-    // Bulk enqueue all changed PKs
-    enqueue_refresh_bulk(&entity, changed_pks);
-
-    Ok(None)
-}
-
-/// Extract primary keys from `PostgreSQL` transition tables
-/// Transition tables are special references visible only in trigger context
-fn extract_pks_from_transition_table(trigger: &PgTrigger) -> spi::Result<Vec<i64>> {
-    // Determine which transition table to use based on operation type
-    // Check which transition table is available (INSERT has NEW, DELETE has OLD, UPDATE has both)
-    let transition_table_name = if trigger.new().is_some() && trigger.old().is_none() {
-        "new_table" // INSERT
-    } else if trigger.new().is_none() && trigger.old().is_some() {
-        "old_table" // DELETE
-    } else if trigger.new().is_some() && trigger.old().is_some() {
-        "new_table" // UPDATE (use NEW for consistency)
-    } else {
-        return Ok(Vec::new()); // Unsupported event
-    };
-
-    // Get PK column name (convention: pk_<entity>)
-    let pk_column = get_pk_column_name(
-        trigger
-            .relation()
-            .map_err(|_| crate::TViewError::SpiError {
-                query: "get relation".to_string(),
-                error: "Failed to get trigger relation".to_string(),
-            })?
-            .oid(),
-    )?;
-
-    // Query transition table for all PKs
-    // IMPORTANT: Transition table references don't need quote_ident()
-    // They are special PostgreSQL identifiers visible only in trigger context
-    let query = format!(
-        "SELECT DISTINCT {} FROM {}",
-        quote_identifier(&pk_column),
-        transition_table_name // No quoting - it's a special reference
-    );
-
-    Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
-        let mut pks = Vec::new();
-
-        for row in rows {
-            if let Some(pk) = row[&pk_column as &str].value::<i64>()? {
-                pks.push(pk);
-            }
-        }
-
-        Ok(pks)
-    })
-}
-
-/// Get primary key column name for a table
-/// Uses convention: `pk_<entity>` where entity is derived from table name `tb_<entity>`
-fn get_pk_column_name(table_oid: pg_sys::Oid) -> spi::Result<String> {
-    // Get entity name from table OID
-    let entity = match entity_for_table(table_oid) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            return Err(crate::TViewError::SpiError {
-                query: "entity_for_table".to_string(),
-                error: "Table not managed by pg_tviews".to_string(),
-            }
-            .into());
-        }
-        Err(e) => {
-            return Err(crate::TViewError::SpiError {
-                query: "entity_for_table".to_string(),
-                error: format!("Failed to get entity: {e:?}"),
-            }
-            .into());
-        }
-    };
-
-    // Convention: pk_<entity>
-    Ok(format!("pk_{entity}"))
 }

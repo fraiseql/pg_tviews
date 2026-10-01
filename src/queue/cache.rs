@@ -52,9 +52,6 @@ static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, Option<CachedEnti
 thread_local! {
     static CASCADE_PATH_CACHE: std::cell::RefCell<HashMap<pg_sys::Oid, Vec<CascadePath>>> =
         std::cell::RefCell::new(HashMap::new());
-    /// Table OID → entities refreshed in full on a write to it (issues #157, #158).
-    static FULL_REFRESH_CACHE: std::cell::RefCell<HashMap<pg_sys::Oid, Vec<String>>> =
-        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Cache operations for `EntityDepGraph`
@@ -235,7 +232,7 @@ pub mod table_cache {
 
 /// Cache operations for cascade paths (transaction-scoped)
 pub mod cascade_cache {
-    use super::{CASCADE_PATH_CACHE, CascadePath, FULL_REFRESH_CACHE, pg_sys};
+    use super::{CASCADE_PATH_CACHE, CascadePath, pg_sys};
 
     /// Get cached cascade paths for a source table OID.
     /// Returns all `CascadePath` entries across all entities where `source_oid` matches.
@@ -271,33 +268,11 @@ pub mod cascade_cache {
         Ok(relevant_paths)
     }
 
-    /// The entities whose TVIEW a write to `table_oid` refreshes in full: those
-    /// created under the `full_refresh` policy that no cascade of theirs maps the
-    /// table to (issues #157, #158).
-    pub fn full_refresh_entities_for_table(
-        table_oid: pg_sys::Oid,
-    ) -> crate::TViewResult<Vec<String>> {
-        if let Some(entities) = FULL_REFRESH_CACHE.with(|c| c.borrow().get(&table_oid).cloned()) {
-            return Ok(entities);
-        }
-        let entities: Vec<String> = crate::catalog::TviewMeta::load_all()?
-            .into_iter()
-            .filter(|m| {
-                m.uncascaded_policy == crate::config::UncascadedPolicy::FullRefresh
-                    && m.uncascaded_oids.contains(&table_oid)
-            })
-            .map(|m| m.entity_name)
-            .collect();
-        FULL_REFRESH_CACHE.with(|c| c.borrow_mut().insert(table_oid, entities.clone()));
-        Ok(entities)
-    }
-
     /// Clear the cascade path cache (called on transaction end)
     pub fn clear_cache() {
         CASCADE_PATH_CACHE.with(|cache| {
             cache.borrow_mut().clear();
         });
-        FULL_REFRESH_CACHE.with(|cache| cache.borrow_mut().clear());
     }
 }
 
@@ -395,6 +370,7 @@ pub fn invalidate_all_caches() {
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();
     crate::utils::invalidate_dedup_dml_cache();
+    crate::delta::clear_caches();
 }
 
 #[cfg(test)]

@@ -20,7 +20,7 @@ pub use graph::EntityDepGraph;
 pub use key::RefreshKey;
 pub use ops::{
     enqueue_refresh, enqueue_refresh_all, enqueue_refresh_bulk, enqueue_refresh_dedup,
-    enqueue_refresh_patched, mark_crash_recovery_checked, spi_batch_lookup,
+    enqueue_refresh_patched, mark_crash_recovery_checked,
 };
 pub use state::{get_queue_contents, get_queue_size};
 pub use xact::flush_refresh_queue;
