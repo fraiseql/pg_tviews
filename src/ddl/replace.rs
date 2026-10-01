@@ -411,6 +411,7 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         schema,
         options.group_keys.or(None).as_ref(),
         storage,
+        None,
     )
 }
 
@@ -631,8 +632,9 @@ fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
 
 /// Bring the rows of a TVIEW's table to those of its backing view with three
 /// statements that touch only rows that change, journaling each change. Rows
-/// that leave go first, so a unique index holds throughout.
-fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
+/// that leave go first, so a unique index holds throughout. Returns the
+/// `pk_<entity>` of every row deleted, updated or inserted.
+pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
     use crate::queue::affected::{Change, record};
 
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
@@ -681,6 +683,7 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
         Ok::<_, spi::Error>(rows)
     })
     .map_err(|e| catalog("Delete the rows the new definition drops", &e))?;
+    let mut changed: Vec<String> = deleted.iter().map(|(key, _)| key.clone()).collect();
     for (key, id) in deleted {
         record(entity, key, Change::Deleted(id));
     }
@@ -728,6 +731,7 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
             ),
             &[],
         )? {
+            changed.push(key.clone());
             record(entity, key, Change::Updated);
         }
     }
@@ -741,9 +745,10 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
         ),
         &[],
     )? {
+        changed.push(key.clone());
         record(entity, key, Change::Inserted);
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// The table's actual storage, as `tviews.registry` reports it.
@@ -866,7 +871,14 @@ fn rebuild(
         false,
         false,
     )?;
-    create::create_tview_in(&tv_name, query, schema, group_keys, storage)?;
+    create::create_tview_in(
+        &tv_name,
+        query,
+        schema,
+        group_keys,
+        storage,
+        Some(meta.uncascaded_policy),
+    )?;
 
     let (tv, view) = (
         format!(

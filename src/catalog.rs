@@ -110,6 +110,12 @@ pub struct TviewMeta {
     /// Each path represents a sequence of hops from a source table to this TVIEW,
     /// enabling indirect dependency tracking for multi-level cascades.
     pub cascade_paths: Vec<CascadePath>,
+
+    /// Base tables this TVIEW reads whose writes no cascade maps to its keys
+    /// (issues #157, #158), and what a write to one of them does: the policy
+    /// stored when the TVIEW was created.
+    pub uncascaded_oids: Vec<Oid>,
+    pub uncascaded_policy: crate::config::UncascadedPolicy,
 }
 
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
@@ -121,7 +127,8 @@ pub(crate) fn meta_select() -> String {
          fk_columns, uuid_fk_columns, \
          dependency_types, dependency_paths, array_match_keys, \
          distinct_on_keys, distinct_on_output_keys, \
-         direct_map_columns, direct_map_keys, is_union, cascade_paths \
+         direct_map_columns, direct_map_keys, is_union, cascade_paths, \
+         uncascaded_oids::oid[] AS uncascaded_oids, uncascaded_policy \
          FROM {}",
         crate::utils::meta_table()
     )
@@ -339,6 +346,15 @@ impl TviewMeta {
             Vec::new()
         };
 
+        let uncascaded_oids: Vec<Oid> = row["uncascaded_oids"]
+            .value::<Vec<Oid>>()?
+            .unwrap_or_default();
+        let uncascaded_policy = crate::config::UncascadedPolicy::from_stored(
+            &row["uncascaded_policy"]
+                .value::<String>()?
+                .unwrap_or_default(),
+        );
+
         Ok(Self {
             tview_oid: row["tview_oid"].value()?.ok_or_else(|| {
                 spi::Error::from(crate::TViewError::SpiError {
@@ -370,6 +386,8 @@ impl TviewMeta {
             direct_map_keys,
             is_union,
             cascade_paths,
+            uncascaded_oids,
+            uncascaded_policy,
         })
     }
 
@@ -477,6 +495,8 @@ impl Default for TviewMeta {
             direct_map_keys: vec![],
             is_union: false,
             cascade_paths: vec![],
+            uncascaded_oids: vec![],
+            uncascaded_policy: crate::config::UncascadedPolicy::Warn,
         }
     }
 }
@@ -598,6 +618,7 @@ mod tests {
             direct_map_keys: vec!["bio".to_string(), "display_name".to_string()],
             is_union: false,
             cascade_paths: vec![],
+            ..TviewMeta::default()
         };
 
         assert_eq!(meta.dependency_types.len(), 1);

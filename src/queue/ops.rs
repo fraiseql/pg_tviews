@@ -80,6 +80,22 @@ pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
     super::patch::poison(RefreshKey::dedup(entity, dedup_key));
 }
 
+/// Enqueue a refresh of every row of `entity`'s TVIEW (issues #157, #158). One
+/// entry however many rows the statement changes; the flush absorbs the entity's
+/// per-key entries into it.
+pub fn enqueue_refresh_all(entity: &str) {
+    TX_REFRESH_QUEUE.with(|q| {
+        let key = RefreshKey::all(entity);
+        if q.borrow().contains(&key) {
+            return;
+        }
+        check_queue_backpressure(crate::config::max_queue_size()).unwrap_or_else(|msg| {
+            pgrx::error!("{}", msg);
+        });
+        q.borrow_mut().insert(key);
+    });
+}
+
 /// Bulk enqueue PK-based refresh requests for multiple PKs of the same entity.
 ///
 /// This is the statement-level trigger entry point.

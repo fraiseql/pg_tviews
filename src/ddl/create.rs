@@ -1,4 +1,6 @@
+use super::uncascaded::Uncascaded;
 use crate::cascade_path;
+use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{
     TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
@@ -207,14 +209,26 @@ impl Storage {
 ///
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
+///
+/// `policy` is the `uncascaded_policy` to store (a rebuilt TVIEW keeps its own);
+/// `None` reads `pg_tviews.uncascaded_policy`.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
+    policy: Option<UncascadedPolicy>,
 ) -> TViewResult<u64> {
-    create_tview_inner(tview_name, select_sql, schema_name, group_keys, storage)
+    let policy = policy.unwrap_or_else(crate::config::uncascaded_policy);
+    create_tview_inner(
+        tview_name,
+        select_sql,
+        schema_name,
+        group_keys,
+        storage,
+        policy,
+    )
 }
 
 /// The creation pipeline's normalization of a definition: `SELECT *` expanded to
@@ -242,6 +256,7 @@ fn create_tview_inner(
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
+    policy: UncascadedPolicy,
 ) -> TViewResult<u64> {
     crate::revision::check();
     log_debug!(
@@ -430,6 +445,26 @@ fn create_tview_inner(
         });
     }
 
+    // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
+    // reported under the policy; `error` aborts here, and the objects created above
+    // roll back with it.
+    let uncascaded = Uncascaded {
+        tables: find_uncascaded(
+            entity_name,
+            &final_select_sql,
+            &final_schema,
+            &dep_graph.base_tables,
+            &cascade_paths,
+            &schema_name,
+        )?,
+        policy,
+    };
+    super::uncascaded::report(
+        &crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?,
+        &uncascaded.tables,
+        policy,
+    )?;
+
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
@@ -442,6 +477,7 @@ fn create_tview_inner(
         &distinct_on_keys,
         &distinct_on_output_keys,
         group_keys,
+        &uncascaded,
         false,
     )?;
 
@@ -505,6 +541,33 @@ pub fn reregister_metadata(
             schema_name,
         )?,
     };
+    // The stored policy holds; an `error` TVIEW whose set is no longer empty
+    // aborts the re-registration (and the ALTER that caused it).
+    let policy = crate::catalog::TviewMeta::load_by_entity(entity_name)
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Read the uncascaded policy of tv_{entity_name}"),
+            pg_error: e.to_string(),
+        })?
+        .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
+    let uncascaded = Uncascaded {
+        tables: find_uncascaded(
+            entity_name,
+            definition,
+            &schema,
+            &dep_graph.base_tables,
+            &cascade_paths,
+            schema_name,
+        )?,
+        policy,
+    };
+    super::uncascaded::report(
+        &crate::utils::qualified_relname_from_oid(relation_oid(
+            schema_name,
+            &format!("tv_{entity_name}"),
+        )?)?,
+        &uncascaded.tables,
+        policy,
+    )?;
     register_metadata(
         entity_name,
         &view_name,
@@ -516,6 +579,7 @@ pub fn reregister_metadata(
         &distinct_on_keys,
         &distinct_on_output_keys,
         group_keys.as_ref(),
+        &uncascaded,
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
@@ -603,6 +667,52 @@ pub(crate) fn stored_group_keys(
     Ok(stored.and_then(|j| serde_json::from_value(j.0).ok()))
 }
 
+/// The base tables of `v_<entity>` that no cascade reaches (issues #157, #158).
+fn find_uncascaded(
+    entity_name: &str,
+    definition: &str,
+    schema: &TViewSchema,
+    base_tables: &[pg_sys::Oid],
+    cascade_paths: &[cascade_path::CascadePath],
+    schema_name: &str,
+) -> TViewResult<Vec<super::uncascaded::UncascadedTable>> {
+    let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
+    let aggregate_entities: Vec<String> = aggregate_embeds(definition, entity_name)?
+        .into_keys()
+        .collect();
+    super::uncascaded::find(
+        entity_name,
+        view_oid,
+        base_tables,
+        cascade_paths,
+        &super::uncascaded::Propagation {
+            fk_columns: &schema.fk_columns,
+            aggregate_entities: &aggregate_entities,
+        },
+    )
+}
+
+/// The OID of relation `schema.name`.
+fn relation_oid(schema: &str, name: &str) -> TViewResult<pg_sys::Oid> {
+    Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT c.oid FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relname = $2",
+        &[
+            unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        ],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Look up {schema}.{name}"),
+        pg_error: e.to_string(),
+    })?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Look up {schema}.{name}"),
+        pg_error: "relation not found".to_string(),
+    })
+}
+
 /// Extract cascade paths from the view's SELECT SQL and resolve table names to OIDs.
 ///
 /// Parses the JOIN tree to find all non-root tables, computes the hop chain
@@ -645,11 +755,10 @@ fn extract_and_resolve_cascade_paths(
                 cp.fanout = fanout_patch(select_sql, entity_name, schema, &cp);
                 cascade_paths.push(cp);
             }
+            // The tables behind a join that cannot be mapped are reported by
+            // `find_uncascaded`, which names the tables rather than the join.
             Err(e) => {
-                notice!(
-                    "Cascade path from '{}' unresolvable: {e} — changes to this table will not trigger incremental refresh of '{entity_name}'",
-                    jp.source_table
-                );
+                log_debug!("cascade path from '{}' not mapped: {e}", jp.source_table);
             }
         }
     }
@@ -1538,6 +1647,7 @@ fn register_metadata(
     distinct_on_keys: &[String],
     distinct_on_output_keys: &[String],
     group_keys: Option<&super::aggregate::GroupKeys>,
+    uncascaded: &Uncascaded,
     replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
@@ -1690,7 +1800,8 @@ fn register_metadata(
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
-            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds"
+            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
+            uncascaded_oids = EXCLUDED.uncascaded_oids"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1715,8 +1826,10 @@ fn register_metadata(
             direct_map_keys,
             is_union,
             group_keys,
-            aggregate_embeds
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4)
+            aggregate_embeds,
+            uncascaded_oids,
+            uncascaded_policy
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1753,6 +1866,18 @@ fn register_metadata(
             DatumWithOid::new(
                 pgrx::JsonB(serde_json::to_value(&aggregate_embeds).unwrap_or_default()),
                 PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.oids(),
+                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.policy.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
             )
         },
     ];

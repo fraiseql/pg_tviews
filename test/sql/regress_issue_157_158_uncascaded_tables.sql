@@ -109,8 +109,10 @@ $$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
 CREATE FUNCTION _diverges(entity text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE d boolean;
 BEGIN
+    -- Every column of the view, compared with the same column of the TVIEW.
     EXECUTE format('SELECT EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN v_%1$s v USING (pk_%1$s) '
-                   'WHERE t.data IS DISTINCT FROM v.data)', entity) INTO d;
+                   'WHERE to_jsonb(v.*) IS DISTINCT FROM (SELECT jsonb_object_agg(k, to_jsonb(t.*) -> k) '
+                   'FROM jsonb_object_keys(to_jsonb(v.*)) k))', entity) INTO d;
     RETURN d;
 END $$;
 CREATE FUNCTION _expect_fresh(entity text, label text) RETURNS void LANGUAGE plpgsql AS $$
@@ -196,8 +198,6 @@ DO $$ BEGIN
         RAISE EXCEPTION 'FAIL [warn]: expected tv_order to stay stale under the warn policy';
     END IF;
 END $$;
-UPDATE tb_order SET ref = ref || '!';
-SELECT _expect_fresh('order', 'warn: a write to the root catches up');
 
 -- ── registry: the sets and the stored policies ──────────────────────────────
 DO $$

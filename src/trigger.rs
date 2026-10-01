@@ -115,6 +115,9 @@ fn pg_tview_trigger_handler<'a>(
         for path in paths {
             crate::suspend::record_change(&path.entity_name);
         }
+        for entity in full_refresh_entities(table_oid) {
+            crate::suspend::record_change(&entity);
+        }
 
         return Ok(None);
     }
@@ -193,7 +196,24 @@ fn pg_tview_trigger_handler<'a>(
     //    Follow cascade paths to determine which TVIEW rows need refreshing
     enqueue_cascade_parents(trigger, table_oid);
 
+    // 3. TVIEWs that no cascade maps this table to, created under the
+    //    `full_refresh` policy: refresh them whole at flush (issues #157, #158).
+    for entity in full_refresh_entities(table_oid) {
+        crate::queue::enqueue_refresh_all(&entity);
+    }
+
     Ok(None)
+}
+
+/// The entities refreshed in full on a write to `table_oid`; none if the catalog
+/// cannot be read (reported as a WARNING).
+fn full_refresh_entities(table_oid: pg_sys::Oid) -> Vec<String> {
+    crate::queue::cache::cascade_cache::full_refresh_entities_for_table(table_oid).unwrap_or_else(
+        |e| {
+            warning!("Failed to load full-refresh TVIEWs for table {table_oid:?}: {e:?}");
+            Vec::new()
+        },
+    )
 }
 
 /// Follow cascade paths from a base table change to enqueue parent TVIEW refreshes.
@@ -321,13 +341,9 @@ fn follow_cascade_path(
     path: &crate::cascade_path::CascadePath,
     tuple: &PgHeapTuple<AllocatedByPostgres>,
 ) -> crate::TViewResult<()> {
+    // A path whose table is gone maps nothing; the table is reported as uncascaded
+    // when the TVIEW is re-registered.
     if path.unresolvable {
-        // Full refresh fallback — enqueue with pk=0 sentinel
-        // (the flush engine will treat this as "refresh all rows")
-        warning!(
-            "Unresolvable cascade path for entity '{}' — full refresh needed",
-            path.entity_name
-        );
         return Ok(());
     }
 

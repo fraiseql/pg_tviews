@@ -101,7 +101,16 @@ extension_sql!(
         -- A release changed what registration derives since this TVIEW was last
         -- registered (issue #137): it keeps refreshing with its old metadata until
         -- pg_tviews_reregister() re-derives it. Upgrade scripts set it.
-        needs_reregister BOOLEAN NOT NULL DEFAULT false
+        needs_reregister BOOLEAN NOT NULL DEFAULT false,
+        -- Base tables the backing view reads whose writes no cascade maps to this
+        -- TVIEW's keys (issues #157, #158). regclass, like view_oid: a dump names
+        -- them, so a restored row names the restored tables.
+        uncascaded_oids REGCLASS[] NOT NULL DEFAULT '{}',
+        -- pg_tviews.uncascaded_policy when the TVIEW was created: what a write to
+        -- one of uncascaded_oids does. The row trigger reads this, never the
+        -- writing session's setting.
+        uncascaded_policy TEXT NOT NULL DEFAULT 'warn'
+            CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh'))
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -137,7 +146,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 1';
+    AS 'SELECT 2';
     ",
     name = "create_metadata_tables",
 );
@@ -225,7 +234,9 @@ SELECT
               AND i.indisvalid),
         'group_keys', m.group_keys) END AS options,
     m.needs_reregister,
-    v.oid::pg_catalog.regclass AS view
+    v.oid::pg_catalog.regclass AS view,
+    m.uncascaded_oids AS uncascaded_tables,
+    m.uncascaded_policy
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
