@@ -72,7 +72,7 @@ SELECT must(
     (SELECT string_agg(attname || ' ' || format_type(atttypid, atttypmod), ', ' ORDER BY attnum)
      FROM pg_attribute WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0)
     = 'schema text, name text, entity text, query text, base_tables regclass[], '
-      'logged boolean, options jsonb, needs_reregister boolean',
+      'logged boolean, options jsonb, needs_reregister boolean, view regclass',
     'tviews.registry columns differ from contract 1');
 
 -- 2. One row per TVIEW, with catalog truth.

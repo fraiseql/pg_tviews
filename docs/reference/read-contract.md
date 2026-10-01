@@ -27,11 +27,16 @@ them.
 | `logged` | `boolean` | the table is LOGGED |
 | `options` | `jsonb` | the effective options, every key present (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it |
+| `view` | `regclass` | the backing view (`v_post`); NULL when the view is gone |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
 `pk_<entity>, id, data` shape, and column renames applied. It is not the author's
 original text.
+
+**`view`** is a `regclass`, like `base_tables`: it follows renames, prints
+schema-qualified and quoted as needed for the reader's `search_path`
+(`::text`), and casts to `oid` to join the system catalogs.
 
 **`base_tables`** is every relation reached from the backing view `v_<entity>` through
 its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
@@ -52,7 +57,8 @@ its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 
 Values come from the system catalogs where they can, so the view reports the truth
 after a manual `ALTER TABLE`. A registration whose table is gone (dropped without pg_tviews
-seeing it) stays visible, with `schema`, `logged` and `options` NULL.
+seeing it) stays visible, with `schema`, `logged` and `options` NULL; one whose
+view is gone has `view` NULL.
 
 ## `tviews.pg_tviews_create_or_replace()`
 

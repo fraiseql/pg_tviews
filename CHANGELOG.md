@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Added
 
+- **`tviews.registry.view`** (#151): the backing view of each TVIEW, a `regclass`
+  appended as the last column (NULL when the view is gone). An addition:
+  `contract_version()` stays 1.
 - **Versioned extension SQL and upgrade scripts** (#137, ADR 0136). The extension
   version is now the release (`0.1.0-beta.20`), where every release so far installed
   as `0.1.0`. Each release ships `pg_tviews--<previous>--<release>.sql`, so
