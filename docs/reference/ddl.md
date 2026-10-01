@@ -229,7 +229,9 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **JOINs**: INNER, LEFT, RIGHT, FULL OUTER
 - **Aggregations**: GROUP BY, HAVING, jsonb_agg(), array_agg()
 - **Expressions**: CASE, COALESCE, NULLIF, FILTER
-- **Subqueries**: In SELECT list (scalar subqueries)
+- **Subqueries in the SELECT list** (`(SELECT …)`, `ARRAY(SELECT …)`, `EXISTS`):
+  allowed, but a base table read *only* inside one is not cascaded: see
+  [Tables no cascade reaches](#tables-no-cascade-reaches)
 - **Functions**: jsonb_build_object(), jsonb_array_elements(), etc.
 - **Operators**: Standard PostgreSQL operators
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
@@ -252,6 +254,37 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **Self-Joins**: May cause dependency cycles
 - **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
   tables that would require PK-based cascade paths (rejected at create time)
+
+### Tables no cascade reaches
+
+Triggers go on every base table the backing view reads. A write refreshes the TVIEW
+when pg_tviews can map the changed row to TVIEW keys: through the TVIEW's own
+`tb_<entity>`, a join it traces (also through CTEs and UNION branches), or a TVIEW it
+embeds through `fk_<entity>`. A table read any other way is reported when the TVIEW is
+created, and listed in `tviews.registry.uncascaded_tables`. Two common shapes:
+
+- a table read only inside a subquery of the SELECT list
+  (`ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_order)`);
+- a table read only through a plain view (not a TVIEW's `v_<entity>`), for example
+  one with an aggregate (`LEFT JOIN v_order_lines v ON v.fk_order = o.pk_order`).
+
+What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
+
+| Policy | At create time | On a write to such a table |
+|---|---|---|
+| `warn` (default) | `WARNING:  writes to public.tb_line will not refresh public.tv_order (read in a subquery, or through a join pg_tviews cannot map)` | nothing: the rows stay stale until a mapped table changes |
+| `error` | `ERROR` with the same text; nothing is created | — |
+| `full_refresh` | `NOTICE` | the whole TVIEW is brought up to date at flush, once per transaction or statement; unchanged rows are not rewritten |
+
+`full_refresh` recomputes every row of the TVIEW: on a 100 000-row TVIEW that is about
+a second per flush that wrote to such a table. Use it for small TVIEWs, or rewrite the
+definition so that the table is joined on a column pg_tviews can trace.
+
+```sql
+SET pg_tviews.uncascaded_policy = 'full_refresh';
+SELECT pg_tviews_create('tv_order', $$ … $$);
+RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
+```
 
 ### Limitations
 

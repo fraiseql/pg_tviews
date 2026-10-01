@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- **`pg_tviews.uncascaded_policy`** (#157, #158): what a new TVIEW does about a base
+  table it reads whose writes no cascade maps to its keys (a table read only in a
+  subquery of the select list, or through a plain view). `warn` (default) names the
+  tables in a WARNING, `error` refuses the TVIEW, `full_refresh` refreshes the whole
+  TVIEW at flush on every write to such a table. The policy is read once at create
+  time and stored with the TVIEW; the writer's session setting never matters.
+- **`tviews.registry.uncascaded_tables` and `uncascaded_policy`** (#157, #158),
+  appended; `contract_version()` stays 1. The upgrade script marks every TVIEW for
+  re-registration (`SELECT * FROM tviews.pg_tviews_reregister_all()`), which fills
+  `uncascaded_tables`.
+
 ### Fixed
 
 - **An UPDATE of a base table no longer fails when its TVIEW projects an
@@ -17,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   (`json`, `point`) failed the same way before 0.1.0-beta.20, whatever the
   search_path. The guard, and the row comparison of `pg_tviews_create_or_replace()`,
   now compare record images (`*=`, schema-qualified), which need no per-type operator.
+
+- **Tracked tables whose writes were dropped silently are named** (#157, #158). A
+  table read only in a subquery of the select list, or through a plain view, got
+  triggers but no cascade, without a word (#158 named only the view, as if it were
+  harmless). It is now reported at create time and handled by
+  `pg_tviews.uncascaded_policy`.
 
 ### Changed
 

@@ -28,6 +28,8 @@ them.
 | `options` | `jsonb` | the effective options, every key present (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it |
 | `view` | `regclass` | the backing view (`v_post`); NULL when the view is gone |
+| `uncascaded_tables` | `regclass[]` | base tables whose writes no cascade maps to this TVIEW's keys (below); empty for most TVIEWs |
+| `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `warn`, `error` or `full_refresh`, fixed when the TVIEW was created |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
@@ -45,6 +47,15 @@ its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 - another TVIEW's `tv_*` table is a table: it is listed, and its own sources are not;
 - functions, sequences and types the view uses are not listed;
 - the list is sorted by schema name, then relation name.
+
+**`uncascaded_tables`** lists the `base_tables` that pg_tviews watches but cannot map
+to TVIEW keys: neither the TVIEW's own `tb_<entity>`, nor a join it traces, nor a
+TVIEW it embeds through `fk_<entity>` reaches them. A table read only in a subquery
+of the select list, or through a plain view with an aggregate, is the typical case.
+Under `uncascaded_policy = 'warn'` a write to one leaves the TVIEW's rows stale until
+something that is mapped changes; under `'full_refresh'` it refreshes the whole TVIEW
+at flush. `pg_tviews.uncascaded_policy` sets the policy of new TVIEWs;
+re-registration recomputes the set and keeps the policy.
 
 **`options`**:
 
