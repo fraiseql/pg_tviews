@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.20] - 2026-10-01
+
 ### Added
 
 - **`tviews.registry.view`** (#151): the backing view of each TVIEW, a `regclass`
