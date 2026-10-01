@@ -403,11 +403,11 @@ rejects a definition that satisfies neither, since it could never refresh.
 
 ```bash
 # Prerequisites
-# - PostgreSQL 16 installed
-# - Rust toolchain 1.81+
+# - PostgreSQL 16, 17 or 18 (the supported versions; CREATE EXTENSION refuses older ones)
+# - Rust toolchain (pinned in rust-toolchain.toml)
 
 # Install pgrx (must match project version)
-cargo install --locked cargo-pgrx --version 0.16.1
+cargo install --locked cargo-pgrx --version 0.17.0
 
 # Initialize pgrx
 cargo pgrx init
@@ -415,7 +415,8 @@ cargo pgrx init
 # Clone and build
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-cargo pgrx install --release
+cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
+                               # --no-default-features --features pg16 (or pg17)
 
 # Enable in your database
 psql -d your_database -c "CREATE EXTENSION pg_tviews;"

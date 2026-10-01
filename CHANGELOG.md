@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed
 
+- **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
+  are gone, CI builds, lints and runs every SQL suite on each supported version, and
+  `CREATE EXTENSION pg_tviews` on an older server fails with
+  `pg_tviews requires PostgreSQL 16 or later`.
 - **The no-op guard uses binary equality** (#156). A change that a type's `=` treats
   as equal but that changes the stored bytes is now written to the TVIEW: `citext`
   `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly

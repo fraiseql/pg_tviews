@@ -61,7 +61,7 @@ SELECT pg_tviews_debug_queue();
 3. **Check PostgreSQL version compatibility**:
    ```sql
    SELECT version();
-   -- Must be PostgreSQL 15+
+   -- Must be PostgreSQL 16, 17 or 18
    ```
 
 ### Permission Denied

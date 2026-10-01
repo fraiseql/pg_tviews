@@ -462,7 +462,7 @@ eventStore.on('PostUpdated', (event) => {
 | **Bulk Performance** | 100-500× faster | Baseline |
 | **Single Operations** | Same performance | Same performance |
 | **Memory Usage** | Higher | Lower |
-| **Compatibility** | PostgreSQL 13+ | All versions |
+| **Compatibility** | PostgreSQL 16+ | PostgreSQL 16+ |
 | **Use Case** | High-throughput | General purpose |
 
 ### JSONB vs Normalized Storage
