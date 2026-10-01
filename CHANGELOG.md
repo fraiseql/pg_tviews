@@ -41,11 +41,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   number, anything else bumps it. Both are plain SQL, readable by every role, on a
   standby and without the library. `pg_tview_meta` and the other `pg_tview_*` tables
   are documented as internal (`docs/reference/read-contract.md`).
+- **`pg_tviews_create_or_replace(name, query, options)`** (#134, ADR 0136). Creates a
+  TVIEW, or brings an existing one to the definition and options with the smallest
+  change, and says which: `created`, `unchanged` (same definition as rendered by
+  `pg_get_viewdef`, same options), `altered` (only `logged`, `fillfactor` or
+  `data_gin_index` differ: changed in place, rows kept) or `rebuilt` (the table's
+  owner, privileges and comment, the GraphQL type name and user indexes carried over;
+  refused, naming the reason, when something depends on the TVIEW or it has what a
+  rebuild cannot carry). `options` keys omitted keep their current value; unknown or
+  wrongly typed keys are errors. Names can be `tv_post`, `post` or `app.tv_post`, must
+  match the definition's key, and name one TVIEW per entity in the database. An invalid
+  definition raises its error. The DDL runs as the caller: replacing or dropping a
+  TVIEW requires owning it, and no superuser is needed. Calls for one entity are
+  serialized with an advisory lock (also taken by `pg_tviews_create`, `pg_tviews_drop`
+  and `pg_tviews_reregister`). Works in any transaction, `DO` block or batch.
 - **Release tarball layout** (#137): `lib/pg_tviews.so` and `extension/` (control file,
   install and upgrade scripts), to copy into `pg_config --pkglibdir` and
   `pg_config --sharedir`/extension.
 
 ### Changed
+
+- **`pg_tviews_drop()` accepts a schema-qualified name** (#134) and requires owning
+  the TVIEW. `DROP TABLE tv_*` is now handled outside the ProcessUtility hook's panic
+  guard, so its errors reach the client as PostgreSQL raised them.
 
 - **The extension lives in schema `tviews`** (#136, ADR 0136). `CREATE EXTENSION
   pg_tviews` used to install into the first schema on `search_path`, with
@@ -78,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`CREATE EXTENSION pg_tviews` works without `shared_preload_libraries`** (#134).
+  Loading the library lazily defined the postmaster-level
+  `pg_tviews.auto_rebuild_databases` setting after startup, which ended the session
+  with `FATAL: cannot create PGC_POSTMASTER variables after startup`. The setting (and
+  the rebuild worker it configures) now exists only when the library is preloaded; a
+  lazily loaded library creates, replaces and refreshes TVIEWs. CI runs
+  `test/no_preload/run.sh` on a cluster without the preload.
 - **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
   orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
   looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an
@@ -116,8 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   must set its own `search_path` (`ALTER FUNCTION … SET search_path = …`).
 - A TVIEW's owner now needs `SELECT` on what its backing view reads, and write
   access to its `tv_*` table, as it always did to create it; the roles writing to
-  base tables no longer need any privilege on TVIEWs. Creating and dropping TVIEWs
-  still requires the extension owner until `pg_tviews_create_or_replace()` lands.
+  base tables no longer need any privilege on TVIEWs. Replacing, dropping,
+  re-registering or renaming (`pg_tviews_set_typename`) a TVIEW requires owning it.
 
 ## [0.1.0-beta.19] - 2026-09-30
 

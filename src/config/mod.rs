@@ -192,16 +192,22 @@ pub fn register_gucs() {
         GucFlags::default(),
     );
 
-    GucRegistry::define_string_guc(
-        c"pg_tviews.auto_rebuild_databases",
-        c"Databases whose emptied UNLOGGED TVIEWs are rebuilt once recovery finishes.",
-        c"Comma-separated database names. For each one a background worker runs \
-          pg_tviews_rebuild_all() at startup, after a crash restart and on promotion. \
-          Empty (the default) starts no worker. Requires a server restart.",
-        &AUTO_REBUILD_DATABASES_GUC,
-        GucContext::Postmaster,
-        GucFlags::default(),
-    );
+    // A postmaster-level setting can only be defined while the library is preloaded;
+    // a session that loads it lazily would fail with FATAL. The rebuild worker it
+    // configures needs the preload anyway.
+    // SAFETY: reads a postmaster-owned global set before libraries are preloaded.
+    if unsafe { pgrx::pg_sys::process_shared_preload_libraries_in_progress } {
+        GucRegistry::define_string_guc(
+            c"pg_tviews.auto_rebuild_databases",
+            c"Databases whose emptied UNLOGGED TVIEWs are rebuilt once recovery finishes.",
+            c"Comma-separated database names. For each one a background worker runs \
+              pg_tviews_rebuild_all() at startup, after a crash restart and on promotion. \
+              Empty (the default) starts no worker. Requires a server restart.",
+            &AUTO_REBUILD_DATABASES_GUC,
+            GucContext::Postmaster,
+            GucFlags::default(),
+        );
+    }
 
     GucRegistry::define_int_guc(
         c"pg_tviews.report_max_tracked",

@@ -67,6 +67,13 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
             });
         }
     }
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+        TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+    })?;
+    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    let _owner = crate::owner::AsOwner::of_extension()?;
     let updated = Spi::connect_mut(|client| {
         let args = [
             unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },

@@ -18,11 +18,43 @@ pub mod aggregate;
 pub mod create;
 pub mod drop;
 pub mod rename;
+pub mod replace;
 
 pub use create::create_tview;
 pub use drop::drop_tview;
 
+use crate::error::{TViewError, TViewResult};
+use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+
+/// Advisory lock class of TVIEW registrations (`"tvie"`).
+const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
+
+/// Hold the registration lock of `entity` until the transaction ends, so that
+/// calls registering, changing or dropping one entity run one after the other
+/// (issue #134): `pg_advisory_xact_lock(<class>, hashtext(entity))`.
+///
+/// # Errors
+/// Returns an error if the lock cannot be taken.
+pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
+    Spi::run_with_args(
+        "SELECT pg_catalog.pg_advisory_xact_lock($1, pg_catalog.hashtext($2))",
+        // SAFETY: the datums copy the class and borrow `entity`, which outlives the call.
+        &[
+            unsafe {
+                DatumWithOid::new(
+                    REGISTRATION_LOCK_CLASS,
+                    PgOid::BuiltIn(PgBuiltInOids::INT4OID).value(),
+                )
+            },
+            unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        ],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Lock the registration of TVIEW {entity}"),
+        pg_error: e.to_string(),
+    })
+}
 
 /// SQL function: Create a TVIEW
 ///
@@ -83,10 +115,30 @@ fn pg_tviews_handle_dropped(entity: &str) -> Result<(), String> {
     drop::handle_dropped(entity).map_err(|e| format!("Failed to deregister TVIEW '{entity}': {e}"))
 }
 
+/// SQL function: create a TVIEW, or bring an existing one to `query` and
+/// `options` with the smallest change (issue #134). Returns `created`,
+/// `unchanged`, `altered` or `rebuilt`.
+///
+/// Usage: `SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$SELECT …$$,
+/// options => '{"logged": true, "fillfactor": 85}');`
+#[pg_extern]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires JsonB by value
+fn pg_tviews_create_or_replace(
+    tview_name: &str,
+    query: &str,
+    options: default!(pgrx::JsonB, "'{}'"),
+) -> Result<String, String> {
+    crate::revision::check();
+    replace::create_or_replace(tview_name, query, &options.0)
+        .map(str::to_string)
+        .map_err(|e| format!("Failed to create or replace TVIEW '{tview_name}': {e}"))
+}
+
 /// SQL function: Drop a TVIEW
 ///
 /// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);        -- true = IF EXISTS
 ///        SELECT `pg_tviews_drop`('`my_entity`', true, true);  -- IF EXISTS + CASCADE
+///        SELECT `pg_tviews_drop`('`app.tv_post`');            -- schema-qualified
 #[pg_extern]
 fn pg_tviews_drop(
     tview_name: &str,
@@ -94,9 +146,6 @@ fn pg_tviews_drop(
     cascade: default!(bool, false),
 ) -> Result<String, String> {
     crate::revision::check();
-    crate::validation::validate_sql_identifier(tview_name, "tview_name")
-        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
-
     match drop_tview(tview_name, if_exists, cascade) {
         Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
         Err(e) => Err(format!("Failed to drop TVIEW: {e}")),

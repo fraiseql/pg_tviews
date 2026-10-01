@@ -119,8 +119,12 @@ thing after checking its caller:
   deregisters entities whose `v_*` or `tv_*` appear in `pg_event_trigger_dropped_objects()`.
 - The audit flush calls an internal `SECURITY DEFINER` function that inserts the buffered
   rows, filling `performed_by` from `session_user`, not from the caller.
-- Registration writes (Decision 5) go through `SECURITY DEFINER` functions that require the
-  caller to own the TVIEW, as `ALTER TABLE` would.
+- Registration writes (Decision 5) require the caller to own the TVIEW, as `ALTER TABLE`
+  would. A SQL `SECURITY DEFINER` function cannot see which role called it (inside it,
+  `current_user` is the definer, and `session_user` is wrong under `SET ROLE`), so the
+  library checks ownership as the caller and then runs the catalog write itself as the
+  extension owner (`SetUserIdAndSecContext`, as for the refresh). No SQL-callable
+  function writes the catalog on a caller's behalf.
 
 `regress_issue_136_*` runs as a role with only table privileges on `tb_*`:
 - DML that cascades into two TVIEWs, with auditing off and then on;
@@ -344,8 +348,10 @@ SELECT tviews.pg_tviews_drop('app.tv_post', if_exists => true);
 - the view needs `SELECT` on what it reads;
 - installing the base-table triggers needs `TRIGGER` on each base table.
 
-Only the registration write goes through a `SECURITY DEFINER` function (Decision 2). That
-function checks that the caller owns the `tv_*` (or is a member of the owning role).
+Only the registration write runs as the extension owner (Decision 2), after the library
+has checked that the caller owns the `tv_*` (or is a member of the owning role), and so
+does removing pg_tviews' own base-table triggers, since `DROP TRIGGER` needs the base
+table's owner where `CREATE TRIGGER` needs only `TRIGGER`.
 Replacing or dropping an existing TVIEW therefore requires owning it, exactly as
 `ALTER TABLE` / `DROP TABLE` would. A migration role that owns the application schema and
 has `TRIGGER` on its tables needs no superuser.
@@ -521,3 +527,6 @@ and coverage only run for PRs into main). Each starts with a failing
 6. Upgrade scripts flag TVIEWs for re-registration; they never run it.
 7. Refresh runs as the TVIEW owner.
 8. TVIEW DDL runs as the caller, gated by ownership; no superuser needed.
+9. Registration writes: the library checks ownership as the caller and switches to the
+   extension owner for the catalog write, instead of a SQL `SECURITY DEFINER` function,
+   which cannot see its caller (decided while implementing #134).

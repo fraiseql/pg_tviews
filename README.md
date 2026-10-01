@@ -448,6 +448,23 @@ their privileges on the base tables; grant application roles `SELECT` on the
 `tv_*` tables they read. The owner needs `SELECT` on everything its definition
 reads.
 
+#### Creating TVIEWs from migrations
+
+`tviews.pg_tviews_create_or_replace(name, query, options)` creates a TVIEW, or brings an
+existing one to `query` and `options` with the smallest change, so a migration can be
+applied again:
+
+```sql
+SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title) AS data
+    FROM app.tb_post p $$, options => '{"logged": true, "fillfactor": 85}');
+-- created | unchanged | altered (storage only, rows kept) | rebuilt
+```
+
+It runs the DDL as the caller and requires owning an existing TVIEW; a role that owns
+the schema and has `TRIGGER` on the base tables needs no superuser. See
+[docs/reference/read-contract.md](docs/reference/read-contract.md).
+
 #### Reading what is registered
 
 Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
