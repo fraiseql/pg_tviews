@@ -968,7 +968,7 @@ impl Walker<'_> {
                     let mut varlena = false;
                     pg_sys::getTypeOutputInfo((*c).consttype, &raw mut output, &raw mut varlena);
                     let text = cstr(pg_sys::OidOutputFunctionCall(output, (*c).constvalue));
-                    Some(Sql::text(format!("{}::{ty}", quote_literal(&text))))
+                    Some(Sql::text(format!("{}::{ty}", quote_literal(&text)?)))
                 }
                 pg_sys::NodeTag::T_OpExpr => {
                     let op = expr.cast::<pg_sys::OpExpr>();
@@ -1282,14 +1282,11 @@ fn quote_ident(name: &str) -> String {
     cstr(unsafe { pg_sys::quote_identifier(c.as_ptr()) })
 }
 
-/// SQL string literal of `text` (`E'…'` when it holds a backslash).
-fn quote_literal(text: &str) -> String {
-    let quoted = text.replace('\'', "''");
-    if quoted.contains('\\') {
-        format!("E'{}'", quoted.replace('\\', "\\\\"))
-    } else {
-        format!("'{quoted}'")
-    }
+/// SQL string literal of `text`, quoted by PostgreSQL (`quote_literal()`).
+fn quote_literal(text: &str) -> Option<String> {
+    let c = std::ffi::CString::new(text).ok()?;
+    // SAFETY: a NUL-terminated string; the palloc'd result is copied.
+    Some(cstr(unsafe { pg_sys::quote_literal_cstr(c.as_ptr()) }))
 }
 
 // ── read-only collectors over expression trees ──────────────────────────────
