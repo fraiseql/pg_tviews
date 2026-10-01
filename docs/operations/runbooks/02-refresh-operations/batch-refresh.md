@@ -376,5 +376,4 @@ FROM pg_stat_bgwriter;
 4. **Have Fallbacks**: Know how to pause or cancel if issues arise
 5. **Document Results**: Record batch operation outcomes for future reference
 6. **Consider Dependencies**: Refresh in dependency order when possible
-7. **Size Appropriately**: Don't overwhelm system with too many concurrent refreshes</content>
-<parameter name="filePath">docs/operations/runbooks/02-refresh-operations/batch-refresh.md
+7. **Size Appropriately**: Don't overwhelm system with too many concurrent refreshes

@@ -154,11 +154,8 @@ tb_user ──┬─cascade──▶ tv_user
 
 ### Statement-Level Triggers
 
-Enable for 100-500× better bulk performance:
-
-```sql
-SELECT pg_tviews_install_stmt_triggers();
-```
+Nothing to enable: every TVIEW gets a statement-level trigger that refreshes the
+affected rows once per statement.
 
 ### Bulk Operations
 

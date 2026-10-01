@@ -9,7 +9,7 @@ This directory contains comprehensive procedures for upgrading PostgreSQL versio
 | **PostgreSQL Minor** | [Minor Version Upgrade](postgresql/minor-version-upgrade.md) | LOW | 5-15 min | Basic validation |
 | **PostgreSQL Major** | [pg15→pg16](postgresql/pg15-to-pg16.md) | HIGH | 30-120 min | Full regression testing |
 | **Extension Minor** | [Extension Updates](extension/extension-minor-update.md) | LOW | 1-5 min | Basic functionality |
-| **Extension Major** | [0.1→0.2 Migration](extension/0.1-to-0.2-migration.md) | HIGH | 15-60 min | Full migration testing |
+| **From 0.1.0** (≤ 0.1.0-beta.19) | [`scripts/migrate-from-0.1.0.sql`](../../../scripts/migrate-from-0.1.0.sql), see the README's *Upgrading* | HIGH | minutes | Full regression testing |
 
 ## Upgrade Planning
 
@@ -189,5 +189,4 @@ All upgrade guides reference executable scripts in the `scripts/` directory:
 - **v1.0**: Initial comprehensive upgrade guides
 - Covers PostgreSQL 15-17 and extension 0.1.x upgrades
 - Includes both pg_upgrade and logical migration paths
-- Comprehensive testing and rollback procedures</content>
-<parameter name="filePath">docs/operations/upgrade/README.md
+- Comprehensive testing and rollback procedures

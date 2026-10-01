@@ -424,5 +424,4 @@ ORDER BY test_date DESC;
 - [Backup Types](../backup-strategy/backup-types.md) - Different backup methods
 - [Backup Frequency](../backup-strategy/backup-frequency.md) - When backups are created
 - [Backup Retention](../backup-strategy/backup-retention.md) - How long backups are kept
-- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures</content>
-<parameter name="filePath">docs/operations/disaster-recovery/backup-strategy/backup-testing.md
+- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures

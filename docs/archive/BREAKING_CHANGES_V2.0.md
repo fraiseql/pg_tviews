@@ -1,5 +1,7 @@
 # Breaking Changes Planned for v2.0
 
+> **Archived.** This plan was never implemented and describes functions pg_tviews does not have; it is kept as history.
+
 ## Summary
 
 pg_tviews v2.0 (planned April 2028) will include the following breaking changes to improve API clarity, reduce complexity, and enhance maintainability:
@@ -442,12 +444,11 @@ A: Enterprise support includes migration assistance and custom tooling.
 ## Getting Help
 
 For migration questions:
-- **Documentation**: [docs/migration/v2.0-upgrade-guide.md](docs/migration/v2.0-upgrade-guide.md)
+- **Documentation**: [v2.0-upgrade-guide.md](v2.0-upgrade-guide.md)
 - **Community forums**: [GitHub Discussions](https://github.com/your-org/pg_tviews/discussions)
 - **Issues**: [GitHub Issues](https://github.com/your-org/pg_tviews/issues)
 - **Enterprise support**: Contact sales for migration assistance
 
 ## Decision Rationale (ADR)
 
-See [docs/adr/2025-v2-breaking-changes.md](docs/adr/2025-v2-breaking-changes.md) for detailed decision rationale and feasibility assessment.</content>
-<parameter name="filePath">docs/BREAKING_CHANGES_V2.0.md
+The decision record it cited was never written.

@@ -158,11 +158,8 @@ You should see all 3 posts with their complete author information, including the
 
 ### Statement-Level Triggers (Recommended)
 
-For better bulk operation performance, enable statement-level triggers:
-
-```sql
-SELECT pg_tviews_install_stmt_triggers();
-```
+Bulk statements need nothing special: every TVIEW gets a statement-level trigger that
+refreshes the affected rows once, at the end of each statement.
 
 ### Health Check
 

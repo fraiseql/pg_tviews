@@ -300,7 +300,7 @@ ORDER BY avg_width DESC;
 ### Monthly Analysis Script
 ```sql
 -- Create automated table analysis function
-CREATE OR REPLACE FUNCTION pg_tviews_table_analysis()
+CREATE OR REPLACE FUNCTION tview_table_analysis()
 RETURNS TABLE (
     table_name TEXT,
     issue_type TEXT,
@@ -354,7 +354,7 @@ $$ LANGUAGE plpgsql;
 ### Automated Monitoring
 ```bash
 # Monthly table analysis cron job
-# 0 2 1 * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_tviews_table_analysis();"
+# 0 2 1 * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM tview_table_analysis();"
 ```
 
 ## Troubleshooting Table Issues
@@ -421,5 +421,4 @@ SELECT * FROM your_tview_name WHERE your_condition;
 4. **Index Maintenance**: Rebuild or drop unused indexes
 5. **Query Monitoring**: Track slow queries and optimize as needed
 6. **Storage Planning**: Monitor growth trends and plan for scaling
-7. **Document Changes**: Record all table structure changes and their rationale</content>
-<parameter name="filePath">docs/operations/runbooks/03-maintenance/table-analysis.md
+7. **Document Changes**: Record all table structure changes and their rationale

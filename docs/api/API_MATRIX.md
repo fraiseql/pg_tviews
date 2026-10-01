@@ -6,11 +6,9 @@
 |----------|------|-----------|-------|----------|-----------------|
 | pg_tviews_convert_existing_table | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_version | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
-| pg_tviews_metadata | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_health_check | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_debug_queue | SQL | EVOLVING | 0.1.0-beta.1 | Debug only | ⚠️ May change |
 | pg_tviews_queue_stats | SQL | EVOLVING | 0.1.0-beta.1 | Debug only | ⚠️ May change |
-| pg_tviews_clear_queue | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Advanced | ❌ Experts only |
 | pg_tviews_performance_stats | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Advanced | ❌ Experts only |
 | pg_tviews_create | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Testing | ⚠️ Use DDL instead |
 | pg_tviews_drop | SQL | EXPERIMENTAL | 0.1.0-beta.1 | Testing | ⚠️ Use DDL instead |
@@ -64,7 +62,6 @@
 |---|---|---|---|
 | EVOLVING | STABLE | 1.1 | pg_tviews_debug_queue output schema |
 | EVOLVING | STABLE | 1.1 | pg_tviews_queue_stats format |
-| EXPERIMENTAL | Deprecated | 1.0 | pg_tviews_clear_queue (needs safer alternative) |
 | EXPERIMENTAL | STABLE | 1.0 | Advanced refresh tuning APIs |
 | EXPERIMENTAL | STABLE | 1.0 | pg_tviews_create/pg_tviews_drop (improve validation) |
 
@@ -90,8 +87,7 @@ CREATE TVIEW my_view AS SELECT * FROM users;
 -- Current (v0.1):
 SELECT * FROM pg_tviews_debug_queue();
 
--- Future (v1.1) - may change:
-SELECT queue_id, entity, priority FROM pg_tviews_refresh_queue();
+-- A future release may change its output; the CHANGELOG says so.
 ```
 
 ---

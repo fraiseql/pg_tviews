@@ -31,7 +31,7 @@ SELECT * FROM pg_tviews_cache_stats;
 
 | Symptom | Likely Cause | Quick Fix |
 |---------|-------------|-----------|
-| TVIEW not refreshing | Missing triggers | `SELECT pg_tviews_install_stmt_triggers();` |
+| TVIEW not refreshing | Missing triggers | `SELECT * FROM tviews.pg_tviews_reregister_all();` |
 | Slow performance | No jsonb_delta | `CREATE EXTENSION jsonb_delta;` |
 | Queue buildup | Long transactions | Check `pg_stat_activity` |
 | Permission errors | Missing grants | Grant permissions on TVIEW tables |
@@ -50,7 +50,7 @@ Does TVIEW show changes?
         ↓
 Check triggers installed?
 SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%tview%';
-    ├─ 0 triggers → Run: SELECT pg_tviews_install_stmt_triggers();
+    ├─ 0 triggers → Run: SELECT * FROM tviews.pg_tviews_reregister_all();
     └─ Triggers exist → Continue
         ↓
 Check queue status
@@ -282,7 +282,7 @@ SELECT pg_tviews_create('tv_post', 'SELECT tb_post.pk_post, tb_post.id, jsonb_bu
 **Common Solutions**:
 ```sql
 -- Reinstall triggers
-SELECT pg_tviews_install_stmt_triggers();
+SELECT * FROM tviews.pg_tviews_reregister_all();
 
 -- Manual refresh stuck items
 SELECT pg_tviews_cascade('table'::regclass::oid, pk_value)

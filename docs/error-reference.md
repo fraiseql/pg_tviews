@@ -577,9 +577,7 @@ SELECT pg_tviews_create('posts', 'SELECT complex_function(id) as pk_post, data F
 
 **Resolution**:
 1. Check disk space: `df -h`
-2. Clean old metrics: `SELECT pg_tviews_cleanup_metrics(30);`
-3. Check metrics table permissions
-4. Repair corrupted metrics table if needed
+2. Check the extension's health: `SELECT * FROM tviews.pg_tviews_health_check();`
 
 ### InternalError
 

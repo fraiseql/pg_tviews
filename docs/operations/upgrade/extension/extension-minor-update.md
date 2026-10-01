@@ -321,8 +321,7 @@ Minor updates may include:
 
 ## Related Guides
 
-- [Major Extension Update](0.1-to-0.2-migration.md) - For minor version upgrades
+- [Extension versioning](../../../development/extension-versioning.md) - How releases, upgrade scripts and `ALTER EXTENSION pg_tviews UPDATE` work
 - [PostgreSQL Minor Upgrade](../postgresql/minor-version-upgrade.md) - For database upgrades
 - [Troubleshooting Upgrades](../postgresql/troubleshooting-upgrades.md) - For update issue resolution
-- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For update failures</content>
-<parameter name="filePath">docs/operations/upgrade/extension/extension-minor-update.md
+- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For update failures

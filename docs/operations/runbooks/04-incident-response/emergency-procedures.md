@@ -170,9 +170,8 @@ SET last_error = NULL,
     emergency_disable_time = NULL,
     emergency_disable_reason = NULL;
 
--- Step 3: Re-enable TVIEW system
--- (If you have a system enable function)
--- SELECT pg_tviews_system_enable();
+-- Step 3: Re-install the TVIEWs' triggers if any are missing
+SELECT * FROM tviews.pg_tviews_reregister_all();
 
 -- Step 4: Test basic functionality
 SELECT pg_tviews_health_check();
@@ -321,5 +320,4 @@ LIMIT 5;
 4. **Test Restorations**: Regularly verify backup integrity
 5. **Learn from Incidents**: Conduct thorough post-mortems
 6. **Automate Where Possible**: Use scripts to reduce human error
-7. **Have Multiple Options**: Prepare fallback procedures</content>
-<parameter name="filePath">docs/operations/runbooks/04-incident-response/emergency-procedures.md
+7. **Have Multiple Options**: Prepare fallback procedures

@@ -244,9 +244,6 @@ Read Replicas
 Handle high write throughput:
 
 ```sql
--- Statement-level triggers for bulk operations
-SELECT pg_tviews_install_stmt_triggers();
-
 -- Batch writes in transactions
 BEGIN;
 INSERT INTO tb_post (title, fk_user) VALUES (...);

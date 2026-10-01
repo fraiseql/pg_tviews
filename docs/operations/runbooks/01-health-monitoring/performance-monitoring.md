@@ -366,5 +366,4 @@ ORDER BY seq_tup_read DESC;
 3. **Set Alerts**: Configure monitoring for critical thresholds
 4. **Regular Analysis**: Review performance metrics monthly
 5. **Document Changes**: Track performance impact of configuration changes
-6. **Capacity Planning**: Use performance data for scaling decisions</content>
-<parameter name="filePath">docs/operations/runbooks/01-health-monitoring/performance-monitoring.md
+6. **Capacity Planning**: Use performance data for scaling decisions

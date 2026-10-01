@@ -259,5 +259,4 @@ find /backups -name "*.dump" -printf "%T@ %Tc %p\n" | sort -n
 - [Backup Types](backup-types.md) - Different backup methods
 - [Backup Frequency](backup-frequency.md) - When backups are created
 - [Backup Testing](backup-testing.md) - Validation procedures
-- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures</content>
-<parameter name="filePath">docs/operations/disaster-recovery/backup-strategy/backup-retention.md
+- [Full Database Restore](../recovery-procedures/full-database-restore.md) - Recovery procedures

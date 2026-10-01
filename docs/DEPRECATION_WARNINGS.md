@@ -7,11 +7,11 @@
 ```sql
 -- Function deprecated in 0.2.0
 -- Will be removed in 1.0.0 (Apr 2026)
-SELECT pg_tviews_legacy_function();
+SELECT pg_tviews_<old>();
 
 -- Output includes warning:
--- WARNING: pg_tviews_legacy_function() is deprecated
--- Use: pg_tviews_new_function() instead
+-- WARNING: pg_tviews_<old>() is deprecated
+-- Use: pg_tviews_<new>() instead
 -- See: docs/migration/0.2-upgrade-guide.md
 ```
 
@@ -78,8 +78,8 @@ fn legacy_code() {
 
 ```
 v0.2.0 (Released Aug 2025)
-  ├─ ANNOUNCE: Deprecate pg_tviews_legacy_func()
-  ├─ New alternative: pg_tviews_new_func()
+  ├─ ANNOUNCE: Deprecate pg_tviews_<old>()
+  ├─ New alternative: pg_tviews_<new>()
   └─ Guide: docs/migration/0.2-upgrade.md
 
 v0.3.0 (Released Oct 2025)

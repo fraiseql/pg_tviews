@@ -312,7 +312,7 @@ VALUES ('weekly_maintenance', NOW(), 'Completed vacuum, analyze, and queue clean
 ### Monitoring Integration
 ```sql
 -- Create alerts for maintenance needs
-CREATE OR REPLACE FUNCTION pg_tviews_maintenance_alerts()
+CREATE OR REPLACE FUNCTION tview_maintenance_alerts()
 RETURNS TABLE (
     alert_type TEXT,
     severity TEXT,
@@ -401,5 +401,4 @@ ORDER BY query_start;
 3. **Test First**: Validate maintenance procedures in staging
 4. **Document Changes**: Record all maintenance activities
 5. **Regular Review**: Adjust maintenance frequency based on system needs
-6. **Backup First**: Always backup before major maintenance operations</content>
-<parameter name="filePath">docs/operations/runbooks/03-maintenance/regular-maintenance.md
+6. **Backup First**: Always backup before major maintenance operations

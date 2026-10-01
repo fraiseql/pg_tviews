@@ -307,5 +307,4 @@ VACUUM ANALYZE pg_tviews_queue;
 2. **Clean Up Weekly**: Remove stale items during maintenance windows
 3. **Alert on Growth**: Set up monitoring for unusual queue growth
 4. **Document Issues**: Track recurring queue problems and solutions
-5. **Test Procedures**: Validate cleanup procedures in staging first</content>
-<parameter name="filePath">docs/operations/runbooks/01-health-monitoring/queue-management.md
+5. **Test Procedures**: Validate cleanup procedures in staging first

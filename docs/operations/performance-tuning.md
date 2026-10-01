@@ -167,17 +167,16 @@ ALTER SYSTEM SET wal_compression = on;
 
 ### Statement-Level Triggers
 
-Enable for maximum bulk performance:
+Bulk statements are handled by the statement-level trigger every TVIEW has:
 
 ```sql
--- Install statement-level triggers
-SELECT pg_tviews_install_stmt_triggers();
+-- Every TVIEW has a statement-level trigger: a bulk statement refreshes once
 
 -- Performance impact:
 -- - Single operations: Same performance (~1-2ms)
 -- - Bulk operations: 100-500× faster (10ms vs 5 seconds for 1000 rows)
 -- - Memory usage: Slightly higher
--- - Compatibility: PostgreSQL 13+
+-- - Compatibility: PostgreSQL 16–18
 ```
 
 ### Index Optimization

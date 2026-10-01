@@ -195,9 +195,6 @@ WHERE entity_name = 'problematic_tview';
 SET work_mem = '256MB';
 SET maintenance_work_mem = '512MB';
 
--- Refresh in smaller chunks (if supported)
-SELECT pg_tviews_refresh_chunked('tview_name', 1000);  -- Hypothetical function
-
 -- Schedule during low-usage period
 -- Consider TVIEW partitioning for large datasets
 ```
@@ -302,100 +299,19 @@ COMMIT;
 
 ## Automated Diagnostics
 
-### Create Diagnostic Script
-```sql
--- Comprehensive diagnostic query
-CREATE OR REPLACE FUNCTION pg_tviews_diagnose_refresh(tview_name TEXT)
-RETURNS TABLE (
-    check_name TEXT,
-    status TEXT,
-    details TEXT,
-    recommendation TEXT
-) AS $$
-BEGIN
-    -- TVIEW exists check
-    IF NOT EXISTS (SELECT 1 FROM pg_tviews_metadata WHERE entity_name = tview_name) THEN
-        RETURN QUERY SELECT
-            'TVIEW exists'::TEXT,
-            'FAIL'::TEXT,
-            'TVIEW not found in metadata'::TEXT,
-            'Verify TVIEW name or recreate TVIEW'::TEXT;
-        RETURN;
-    END IF;
-
-    -- Permission check
-    BEGIN
-        EXECUTE 'SELECT 1 FROM ' || tview_name || ' LIMIT 1';
-        RETURN QUERY SELECT
-            'Permissions'::TEXT,
-            'PASS'::TEXT,
-            'Can access TVIEW'::TEXT,
-            'No action needed'::TEXT;
-    EXCEPTION WHEN insufficient_privilege THEN
-        RETURN QUERY SELECT
-            'Permissions'::TEXT,
-            'FAIL'::TEXT,
-            'Permission denied'::TEXT,
-            'Grant SELECT permission on TVIEW'::TEXT;
-    END;
-
-    -- Add more diagnostic checks...
-END;
-$$ LANGUAGE plpgsql;
-```
-
 ### Run Diagnostics
 ```sql
--- Use diagnostic function
-SELECT * FROM pg_tviews_diagnose_refresh('your_tview_name');
-```
+-- Extension, catalog, triggers and TVIEWs to re-register
+SELECT * FROM tviews.pg_tviews_health_check();
 
-## Prevention and Monitoring
-
-### Proactive Monitoring
-```sql
--- Set up alerts for common issues
-CREATE OR REPLACE FUNCTION pg_tviews_monitor_health()
-RETURNS TABLE (
-    alert_level TEXT,
-    issue TEXT,
-    affected_tviews TEXT
-) AS $$
-BEGIN
-    -- Check for stale TVIEWs
-    RETURN QUERY
-    SELECT
-        'WARNING'::TEXT,
-        'Stale TVIEWs detected'::TEXT,
-        string_agg(entity_name, ', ')
-    FROM pg_tviews_metadata
-    WHERE last_refreshed < NOW() - INTERVAL '2 hours'
-      AND last_error IS NULL;
-
-    -- Check for refresh errors
-    RETURN QUERY
-    SELECT
-        'ERROR'::TEXT,
-        'TVIEWs with refresh errors'::TEXT,
-        string_agg(entity_name, ', ')
-    FROM pg_tviews_metadata
-    WHERE last_error IS NOT NULL;
-
-    -- Check queue backlog
-    IF (SELECT COUNT(*) FROM pg_tviews_queue WHERE processed_at IS NULL) > 100 THEN
-        RETURN QUERY SELECT
-            'WARNING'::TEXT,
-            'Large queue backlog'::TEXT,
-            (SELECT COUNT(*)::TEXT FROM pg_tviews_queue WHERE processed_at IS NULL);
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
+-- Per-TVIEW sizes, HOT ratio, dead tuples, indexes and fan-out, with warnings
+SELECT * FROM tviews.pg_tviews_profile('your_entity');
 ```
 
 ### Regular Health Checks
 ```bash
 # Add to cron for regular monitoring
-*/15 * * * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_tviews_monitor_health();"
+*/15 * * * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';"
 ```
 
 ## Related Runbooks
@@ -413,5 +329,4 @@ $$ LANGUAGE plpgsql;
 3. **Test Fixes**: Validate solutions in staging before production
 4. **Escalate Early**: Don't spend hours on complex issues
 5. **Document Workarounds**: Record temporary solutions for future reference
-6. **Review Patterns**: Look for systemic issues requiring code changes</content>
-<parameter name="filePath">docs/operations/runbooks/02-refresh-operations/refresh-troubleshooting.md
+6. **Review Patterns**: Look for systemic issues requiring code changes

@@ -231,7 +231,7 @@ GRANT CREATE ON SCHEMA public TO pg_tviews_user;
 -- GRANT SUPERUSER TO pg_tviews_user;  -- DON'T DO THIS
 
 -- Use SECURITY DEFINER for controlled access
-CREATE FUNCTION pg_tviews_create_secure(tview_name TEXT, sql_query TEXT)
+CREATE FUNCTION create_tview_secure(tview_name TEXT, sql_query TEXT)
 RETURNS VOID AS $$
 BEGIN
     -- Add security checks here

@@ -283,7 +283,7 @@ FROM pg_stat_bgwriter;
 ### Connection Health Alerts
 ```sql
 -- Create connection monitoring function
-CREATE OR REPLACE FUNCTION pg_tviews_connection_alerts()
+CREATE OR REPLACE FUNCTION tview_connection_alerts()
 RETURNS TABLE (
     alert_level TEXT,
     metric TEXT,
@@ -323,7 +323,7 @@ $$ LANGUAGE plpgsql;
 ### Automated Monitoring
 ```bash
 # Add to monitoring system
-# Example cron job: */5 * * * * psql -c "SELECT * FROM pg_tviews_connection_alerts();"
+# Example cron job: */5 * * * * psql -c "SELECT * FROM tview_connection_alerts();"
 ```
 
 ## Troubleshooting
@@ -393,5 +393,4 @@ FROM pg_stat_bgwriter;
 4. **Use Connection Poolers**: pgbouncer or similar for high-traffic systems
 5. **Monitor Application Behavior**: Track connection usage patterns by application
 6. **Plan for Peak Usage**: Ensure capacity for peak loads
-7. **Document Incidents**: Record connection-related issues and resolutions</content>
-<parameter name="filePath">docs/operations/runbooks/03-maintenance/connection-management.md
+7. **Document Incidents**: Record connection-related issues and resolutions

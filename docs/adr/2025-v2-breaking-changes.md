@@ -263,5 +263,4 @@ The decision to implement breaking changes in v2.0 balances the need for API imp
 
 **Approved by**: Architecture Review Board
 **Date**: December 2025
-**Review Date**: December 2026 (annual review)</content>
-<parameter name="filePath">docs/adr/2025-v2-breaking-changes.md
+**Review Date**: December 2026 (annual review)

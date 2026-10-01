@@ -406,8 +406,8 @@ WHERE query LIKE '%pg_tviews%' AND state = 'active';
 
 **Solutions**:
 ```sql
--- Enable statement-level triggers for bulk operations
-SELECT pg_tviews_install_stmt_triggers();
+-- Check the propagation indexes cascades rely on
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 
 -- Check for missing indexes
 EXPLAIN ANALYZE SELECT data FROM tv_post WHERE user_id = 'uuid';
@@ -516,8 +516,7 @@ SELECT pg_tviews_cascade('tb_post'::regclass::oid, pk_value);
 CREATE TABLE tv_post_y2025 PARTITION OF tv_post
     FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
 
--- Use statement-level triggers for bulk loads
-SELECT pg_tviews_install_stmt_triggers();
+-- Bulk loads: every statement refreshes once, through the statement-level trigger
 ```
 
 ### Connection Pooling at Scale

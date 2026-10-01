@@ -21,16 +21,6 @@
       "notes": "Version reporting, always stable"
     },
     {
-      "name": "pg_tviews_metadata",
-      "type": "sql_function",
-      "stability": "STABLE",
-      "since_version": "0.1.0-beta.1",
-      "breaking_changes": [],
-      "deprecated": false,
-      "output_columns": ["entity_name", "primary_key", "created_at", "last_refreshed", "rows_cached"],
-      "notes": "Metadata introspection, stable schema"
-    },
-    {
       "name": "pg_tviews_health_check",
       "type": "sql_function",
       "stability": "STABLE",
@@ -58,15 +48,6 @@
       "target_stability_version": "1.1.0",
       "deprecated": false,
       "notes": "Queue statistics, format may evolve"
-    },
-    {
-      "name": "pg_tviews_clear_queue",
-      "type": "sql_function",
-      "stability": "EXPERIMENTAL",
-      "since_version": "0.1.0-beta.1",
-      "warning": "Advanced debugging only, not for production use",
-      "deprecated": false,
-      "notes": "Dangerous operation, may be replaced with safer alternative"
     },
     {
       "name": "pg_tviews_performance_stats",
@@ -103,24 +84,6 @@
       "warning": "Bypasses incremental refresh, testing only",
       "deprecated": false,
       "notes": "Benchmarking tool, not for production use"
-    },
-    {
-      "name": "pg_tviews_commit_prepared",
-      "type": "sql_function",
-      "stability": "EXPERIMENTAL",
-      "since_version": "0.1.0-beta.1",
-      "warning": "Advanced usage, requires 2PC knowledge",
-      "deprecated": false,
-      "notes": "2PC support, advanced usage"
-    },
-    {
-      "name": "pg_tviews_rollback_prepared",
-      "type": "sql_function",
-      "stability": "EXPERIMENTAL",
-      "since_version": "0.1.0-beta.1",
-      "warning": "Advanced usage, requires 2PC knowledge",
-      "deprecated": false,
-      "notes": "2PC support, advanced usage"
     },
     {
       "name": "refresh_pk",
@@ -164,7 +127,9 @@
       "stability": "STABLE",
       "since_version": "0.1.0-beta.1",
       "module": "error",
-      "breaking_changes": ["New variants only (never removed)"],
+      "breaking_changes": [
+        "New variants only (never removed)"
+      ],
       "variants_as_of_latest": [
         "MetadataNotFound",
         "RefreshFailed",
@@ -203,7 +168,7 @@
       "commitment": "Scheduled removal",
       "removal_version": "TBD",
       "deprecation_notice_months": 6,
-      "replacement_api": "See BREAKING_CHANGES_V2.0.md"
+      "replacement_api": "Named in the deprecation notice and the CHANGELOG"
     }
   }
 }

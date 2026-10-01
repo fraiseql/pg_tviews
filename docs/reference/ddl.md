@@ -312,41 +312,21 @@ DROP TABLE tv_post CASCADE;  -- Drops tv_post and all dependent TVIEWs
 
 ## ALTER TVIEW
 
-**Not supported in beta**. To modify a TVIEW:
+Change a TVIEW's definition or storage with `pg_tviews_create_or_replace()`, which makes
+the smallest change (`altered`, `replaced` in place, or `rebuilt`):
 
 ```sql
--- Drop and recreate
-DROP TABLE tv_post;
-CREATE TABLE tv_post AS
-SELECT ... -- new definition
-FROM ...;
+SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT ... -- new definition $$);
 ```
 
-## Statement-Level Triggers
+## Triggers
 
-### Installation
-
-```sql
--- Enable for 100-500× better bulk performance
-SELECT pg_tviews_install_stmt_triggers();
-```
-
-**Benefits**:
-- Processes entire statement at once using transition tables
-- Dramatically faster for bulk operations
-- Reduces trigger overhead from N× to 1× per statement
-
-### Uninstallation
-
-```sql
--- Revert to row-level triggers
-SELECT pg_tviews_uninstall_stmt_triggers();
-```
-
-**When to use row-level triggers**:
-- Single-row operations
-- Debugging trigger behavior
-- Compatibility requirements
+Creating a TVIEW installs, on each table its definition reads, a row-level trigger
+(`tviews.pg_tview_trigger_handler`) that queues the affected keys, and a
+statement-level trigger (`tviews.pg_tview_flush_trigger`) that refreshes them once per
+statement. Nothing needs installing by hand. `tviews.pg_tviews_health_check()`
+reports missing or orphaned triggers; `SELECT * FROM tviews.pg_tviews_reregister_all()`
+re-installs any that are missing.
 
 ## Troubleshooting
 

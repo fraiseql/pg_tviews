@@ -10,7 +10,8 @@ This is the initial beta release. No previous versions to break from.
 
 ## Planned Breaking Changes for v2.0+
 
-See [BREAKING_CHANGES_V2.0](../BREAKING_CHANGES_V2.0.md) for the full v2.0 migration roadmap.
+None are planned. An earlier, never-implemented v2.0 plan is kept as history in
+[docs/archive/BREAKING_CHANGES_V2.0.md](../archive/BREAKING_CHANGES_V2.0.md).
 
 ---
 

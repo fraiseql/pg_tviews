@@ -491,5 +491,4 @@ VACUUM FULL;
 - [Backup Types](../backup-strategy/backup-types.md) - Backup creation procedures
 - [Backup Testing](../backup-strategy/backup-testing.md) - Backup validation
 - [Point-in-Time Recovery](point-in-time-recovery.md) - Advanced recovery options
-- [TVIEW Recovery](tview-recovery.md) - TVIEW-specific recovery</content>
-<parameter name="filePath">docs/operations/disaster-recovery/recovery-procedures/full-database-restore.md
+- [TVIEW Recovery](tview-recovery.md) - TVIEW-specific recovery
