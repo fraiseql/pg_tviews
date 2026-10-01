@@ -161,10 +161,12 @@ Drops an existing transactional view and cleans up all associated metadata and t
 
 **Parameters**:
 - `tview_name` (TEXT): Name of the TVIEW to drop
-- `if_exists` (BOOLEAN, optional): If true, don't error if TVIEW doesn't exist
+- `if_exists` (BOOLEAN, optional): If true, a missing TVIEW raises a NOTICE instead
+  of an error, like `DROP TABLE IF EXISTS`
 
 **Returns**:
-- `TEXT`: Success message or error description
+- `TEXT`: what was done: `TVIEW '<name>' dropped successfully`, or with
+  `if_exists`, `TVIEW '<name>' does not exist, nothing dropped`
 
 **Example**:
 ```sql
@@ -172,7 +174,8 @@ SELECT pg_tviews_drop('tv_user_posts');
 -- Returns: 'TVIEW ''tv_user_posts'' dropped successfully'
 
 SELECT pg_tviews_drop('tv_nonexistent', true);
--- Returns: 'TVIEW ''tv_nonexistent'' dropped successfully' (no error)
+-- NOTICE:  TVIEW "tv_nonexistent" does not exist, skipping
+-- Returns: 'TVIEW ''tv_nonexistent'' does not exist, nothing dropped'
 ```
 
 **Notes**:

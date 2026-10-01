@@ -12,7 +12,8 @@ use pgrx::prelude::*;
 /// `tview_name` is `tv_<entity>`, `<entity>` or `schema.tv_<entity>`; a qualified
 /// name must name the schema the TVIEW is in. The caller must own it (issue #134).
 ///
-/// If `if_exists` is true, no error is raised if the TVIEW doesn't exist.
+/// If `if_exists` is true and the TVIEW doesn't exist, a NOTICE is raised instead
+/// of an error, like `DROP TABLE IF EXISTS`. Returns whether a TVIEW was dropped.
 /// If `cascade` is true, dependent objects are dropped too (mirrors
 /// `DROP TABLE … CASCADE`); otherwise the drop is RESTRICT and `PostgreSQL`
 /// raises a dependency error when other objects depend on the TVIEW.
@@ -20,7 +21,7 @@ use pgrx::prelude::*;
 ///
 /// # Errors
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
-pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<()> {
+pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<bool> {
     crate::revision::check();
     let (schema, entity) = super::replace::parse_name(tview_name)?;
     let entity_name = entity.as_str();
@@ -42,8 +43,8 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     }
 
     if !exists {
-        // IF EXISTS was specified and TVIEW doesn't exist - this is OK
-        return Ok(());
+        notice!("TVIEW \"{tview_name}\" does not exist, skipping");
+        return Ok(false);
     }
 
     // Load metadata to get OIDs for schema-safe drops
@@ -89,7 +90,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         warning!("Failed to flush audit after DROP: {}", e);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Deregister a TVIEW whose backing view or table the current statement dropped
@@ -145,7 +146,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
         error: e.to_string(),
     })?;
     if table_owned == Some(true) {
-        return drop_tview(entity, true, true);
+        return drop_tview(entity, true, true).map(|_| ());
     }
 
     crate::dependency::remove_entity_triggers(entity)?;
