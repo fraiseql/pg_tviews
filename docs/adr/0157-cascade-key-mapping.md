@@ -63,19 +63,30 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
 
 1. At create and re-registration time, a query-tree analyzer classifies every table the backing
    view reads:
-   - `Local(col)`: the TVIEW key is a column of the changed row (the root table, a direct fk).
-     Mapped inside the row-level trigger without SQL. The direct-patch (#56) and fan-out (#120)
-     fast paths keep working unchanged.
-   - `Mapped(sql)`: a generated key-mapping query over the changed rows.
-   - `AllKeys`: no selective predicate (global aggregate, window without `PARTITION BY`, opaque
-     correlation). Handled by `pg_tviews.uncascaded_policy` (`warn` | `error` | `full_refresh`).
-   The analyzer errors loudly on any node it does not understand. It never drops a table silently.
-2. `Mapped` tables get **one statement-level trigger** with `REFERENCING OLD TABLE … NEW TABLE …`,
-   which runs their cached mapping queries and bulk-enqueues keys. Row-level triggers stay only on
-   `Local` tables.
+   - `Local(col)`: the TVIEW key is a column of the changed row: the root table, or a table linked
+     to the key by one equality `T.col = <key>`, in a join, a correlated subquery or a view's
+     `GROUP BY` key (#157, #158). Mapped inside the row-level trigger without SQL. The
+     direct-patch (#56) fast path keeps working unchanged.
+   - `Mapped(sql)`: a generated key-mapping query over the changed rows (chains of joins,
+     non-equality correlations). A table linked by one equality onto a projected root column
+     (`u.pk_user = p.fk_user`) keeps the fan-out patch (#120).
+   - `Propagated(entity)`: read through the `v_<entity>` of a TVIEW this one embeds
+     (`fk_<entity>` or an aggregate embed) that maps the table itself. Entity propagation at flush
+     already refreshes the embedding rows, with its patch and prune optimisations; nothing more is
+     installed.
+   - `AllKeys`: no selective predicate (an uncorrelated subquery, a window function, `LIMIT`, a
+     join on a computed column). Handled by `pg_tviews.uncascaded_policy` (`warn` | `error` |
+     `full_refresh`), stored per TVIEW at create time.
+   Registration fails when the analyzer and `pg_depend` disagree on the tables the view reads.
+   A predicate the analyzer cannot write in SQL is left out, which only widens a mapping.
+2. `Mapped` and `AllKeys` tables get **statement-level triggers** with transition tables, one per
+   event (`INSERT`: `NEW TABLE`; `UPDATE`: both; `DELETE`: `OLD TABLE`), which run the cached
+   mapping query and bulk-enqueue the keys (`AllKeys` under `full_refresh`: the whole TVIEW).
+   Row-level triggers stay only on `Local` tables. Every table but a `Propagated` one also gets an
+   `AFTER TRUNCATE` trigger that refreshes the whole TVIEW.
 3. The text-based extraction, the per-hop `spi_batch_lookup` loop and the dead statement handler
-   are removed. `sqlparser` remains only for create-time text handling that has no query tree
-   (CTAS interception), if anything still needs it.
+   are removed. `sqlparser` remains for create-time text handling that has no query tree: DISTINCT
+   ON keys, the recursive-CTE check, embed lookups, fan-out field maps and column-rename rewriting.
 
 ### Constraints this relies on
 
@@ -84,7 +95,8 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
   regression suite on all three.
 - **Transition-table limits:**
   - `TRUNCATE` has no transition table. It maps to `AllKeys` for every dependent TVIEW.
-  - Partitions can't declare transition tables, so the trigger goes on the partitioned root.
+  - Partitions can't declare transition tables. A partitioned `Mapped` table therefore keeps a
+    row trigger on the root (cloned to its partitions) that runs the mapping query per row.
   - `UPDATE OF col` can't be combined with transition tables. Column-aware filtering moves into
     SQL: join OLD to NEW on the table's key and compare the referenced columns with `*=`
     (search_path-independent, as in #156).
@@ -98,8 +110,11 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
 - Bulk and multi-hop writes get cheaper. Single-row writes cost the same.
 - New `unsafe` code walks PostgreSQL nodes. It is confined to one module and covered by SQL
   regression tests on PG16, 17 and 18. It can't be unit-tested without a backend.
-- `pg_tview_meta.cascade_paths` gains a successor representation. The flush-time propagation
-  prune (`queue/graph.rs`), rename rebinding (`rebind_cascade_paths`) and fan-out read it, so
-  the upgrade re-registers every TVIEW (`pg_tviews_reregister_all`) once.
+- `pg_tview_meta.key_mappings` is the successor representation; `cascade_paths` keeps only the
+  zero-hop paths of `Local` tables, derived from it. The flush-time propagation prune
+  (`queue/graph.rs`) and fan-out read the one-hop `Mapped` entries. Mapping queries are stored as
+  templates naming relations and columns by OID and attribute number, so renames don't break them,
+  and restore rebinds them. The upgrade marks every TVIEW for re-registration
+  (`pg_tviews_reregister_all`); until then a TVIEW's stored multi-hop paths refresh it in full.
 - Tables read only inside functions the view calls stay invisible to both `pg_depend` and the
   analyzer. The analyzer warns about non-immutable function calls. Closing that gap is separate work.
