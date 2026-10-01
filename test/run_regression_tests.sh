@@ -44,9 +44,21 @@ for f in "$sqldir"/regress_issue_*.sql; do
       echo "FAIL  $name -> unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
-    want=$(sed -n 's/^-- expect-output: //p' "$f" | head -1)
-    if [[ -n "$want" ]] && ! grep -q "$want" /tmp/$tmpdb.out; then
-      echo "FAIL  $name -> expected output containing '$want'"
+    # Every `-- expect-output: <text>` line must appear in the output, and no
+    # `-- reject-output: <text>` line may.
+    missing="" unwanted=""
+    while IFS= read -r want; do
+      [[ -n "$want" ]] && ! grep -qF -- "$want" /tmp/$tmpdb.out && { missing="$want"; break; }
+    done < <(sed -n 's/^-- expect-output: //p' "$f")
+    while IFS= read -r reject; do
+      [[ -n "$reject" ]] && grep -qF -- "$reject" /tmp/$tmpdb.out && { unwanted="$reject"; break; }
+    done < <(sed -n 's/^-- reject-output: //p' "$f")
+    if [[ -n "$missing" ]]; then
+      echo "FAIL  $name -> expected output containing '$missing'"
+      fail=$((fail+1)); failed_names="$failed_names $name"; continue
+    fi
+    if [[ -n "$unwanted" ]]; then
+      echo "FAIL  $name -> unexpected output containing '$unwanted'"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
     echo "PASS  $name"; pass=$((pass+1))
