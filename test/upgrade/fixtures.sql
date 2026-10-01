@@ -1,12 +1,14 @@
 -- Fixture TVIEWs for the upgrade checks (test/upgrade/upgrade_check.sh). Created with
 -- the PREVIOUS release, so only use what every supported release offers: unqualified
--- pg_tviews_create / pg_tviews_create_aggregate on a search_path that reaches them.
+-- pg_tviews_create / pg_tviews_create_aggregate on a search_path that reaches them
+-- (schema tviews since 0.1.0-beta.20, public before).
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
 
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+SET search_path TO "$user", public, tviews;
 
 CREATE TABLE tb_user (
     pk_user int PRIMARY KEY,
@@ -69,7 +71,7 @@ SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     GROUP BY o.fk_user, u.id
 $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
 -- Off the search_path.
-SET search_path TO app, public;
+SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$
     SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM app.tb_note $$);
-RESET search_path;
+SET search_path TO "$user", public, tviews;
