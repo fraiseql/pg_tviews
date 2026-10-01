@@ -44,9 +44,12 @@ for f in "$sqldir"/regress_issue_*.sql; do
       echo "FAIL  $name -> unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
-    # Every `-- expect-output: <text>` line must appear in the output, and no
-    # `-- reject-output: <text>` line may.
+    # Every `-- expect-output: <text>` line must appear in the output, every
+    # `-- expect-once: <text>` line exactly once, and no `-- reject-output: <text>` line.
     missing="" unwanted=""
+    while IFS= read -r once; do
+      [[ -n "$once" ]] && [[ "$(grep -cF -- "$once" /tmp/$tmpdb.out)" != 1 ]] && { missing="$once (exactly once)"; break; }
+    done < <(sed -n 's/^-- expect-once: //p' "$f")
     while IFS= read -r want; do
       [[ -n "$want" ]] && ! grep -qF -- "$want" /tmp/$tmpdb.out && { missing="$want"; break; }
     done < <(sed -n 's/^-- expect-output: //p' "$f")
