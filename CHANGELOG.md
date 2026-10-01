@@ -13,13 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   table it reads that nothing links to its key (an uncorrelated subquery, a window
   function). `warn` (default) names the tables in a WARNING, `error` refuses the
   TVIEW, `full_refresh` refreshes the whole TVIEW at flush on every write to such a
-  table. The policy is read once at create
-  time and stored with the TVIEW; the writer's session setting never matters.
+  table. The policy is read once at create time and stored with the TVIEW; the
+  writer's session setting never matters.
 - **`tviews.registry.uncascaded_tables` and `uncascaded_policy`** (#157, #158),
   appended; `contract_version()` stays 1. The upgrade script marks every TVIEW for
   re-registration (`SELECT * FROM tviews.pg_tviews_reregister_all()`), which fills
   `uncascaded_tables`.
-
 - **`tviews.registry.cascade_kinds`** (ADR 0157): how a write to each base table maps
   to TVIEW keys (`local`, `mapped`, `propagated`, `all_keys`), read from PostgreSQL's
   query tree of the backing view (views, CTEs, subqueries and `UNION` branches
@@ -42,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   (`json`, `point`) failed the same way before 0.1.0-beta.20, whatever the
   search_path. The guard, and the row comparison of `pg_tviews_create_or_replace()`,
   now compare record images (`*=`, schema-qualified), which need no per-type operator.
-
 - **Writes to a table read in a subquery or through a view refresh the TVIEW**
   (#157, #158). A table read only by `ARRAY(SELECT … WHERE l.fk_order = o.pk_order)`,
   or through a plain view with `GROUP BY`, got triggers but no cascade, and its writes
@@ -50,7 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   through the condition that links them (ADR 0157); a table nothing links to the key
   is named at create time instead of being dropped silently.
 - **TRUNCATE of a base table refreshes its TVIEWs**: it left them stale.
-
 - **No WARNING on every write without jsonb_delta** (#159). Each refresh that would
   have used smart patching sent `WARNING: jsonb_delta extension not installed` to the
   client. Each backend now writes it once to the server log (`LOG`), `CREATE
