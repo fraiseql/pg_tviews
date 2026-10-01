@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   harmless). It is now reported at create time and handled by
   `pg_tviews.uncascaded_policy`.
 
+- **No WARNING on every write without jsonb_delta** (#159). Each refresh that would
+  have used smart patching sent `WARNING: jsonb_delta extension not installed` to the
+  client. Each backend now writes it once to the server log (`LOG`), `CREATE
+  EXTENSION pg_tviews` warns once when jsonb_delta is absent, and
+  `pg_tviews_health_check()` reports it as before. The `union_duplicate_policy =
+  'first'` duplicate-row message and the "initial column not found" cascade message,
+  also sent on every write, are logged once per backend the same way.
+
 ### Changed
 
 - **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features

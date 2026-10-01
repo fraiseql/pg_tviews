@@ -6,6 +6,9 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::sync::Mutex;
 
+/// [`crate::utils::log_once`] key of "`jsonb_delta` is not installed" (issue #159).
+pub const JSONB_DELTA_MISSING: &str = "jsonb_delta_missing";
+
 /// Cached `jsonb_delta` lookup: whether it ran, and the quoted schema the
 /// extension is installed in (`None` when it is not installed).
 static JSONB_DELTA_SCHEMA: Mutex<(bool, Option<String>)> = Mutex::new((false, None));
@@ -124,6 +127,7 @@ pub fn invalidate_jsonb_delta_cache() {
     *JSONB_DELTA_SCHEMA
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = (false, None);
+    crate::utils::forget_logged(JSONB_DELTA_MISSING);
 }
 
 /// Initialize the extension

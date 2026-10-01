@@ -352,10 +352,13 @@ fn follow_cascade_path(
         IntExtraction::Value(pk) => vec![pk],
         IntExtraction::Null => return Ok(()), // FK is NULL, cascade stops
         IntExtraction::Missing => {
-            warning!(
-                "Initial column '{}' not found on tuple for cascade to '{}'",
-                path.initial_col,
-                path.entity_name
+            crate::utils::log_once(
+                &format!("initial_col:{}:{}", path.source_table, path.initial_col),
+                &format!(
+                    "column '{}' of {} is gone: its writes no longer cascade to tv_{}; \
+                     re-register it with pg_tviews_reregister('{}')",
+                    path.initial_col, path.source_table, path.entity_name, path.entity_name
+                ),
             );
             return Ok(());
         }

@@ -130,6 +130,8 @@ CREATE EXTENSION pg_tviews;
 ```
 
 Without `jsonb_delta`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
+`CREATE EXTENSION pg_tviews` says so once, with a WARNING; after that each backend notes it
+once in the server log, and `pg_tviews_health_check()` reports it. Writes send no message.
 
 ---
 

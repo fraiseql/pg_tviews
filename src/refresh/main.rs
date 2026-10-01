@@ -322,11 +322,14 @@ fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
         if meta.is_union && rows.next().is_some() {
             let policy = crate::config::union_duplicate_policy();
             if policy == "first" {
-                warning!(
-                    "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}; \
-                     taking first row (union_duplicate_policy=first)",
-                    meta.entity_name,
-                    pk
+                crate::utils::log_once(
+                    &format!("union_duplicate:{}", meta.entity_name),
+                    &format!(
+                        "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}; \
+                         taking the first row (union_duplicate_policy=first). Reported once \
+                         per backend.",
+                        meta.entity_name, pk
+                    ),
                 );
             } else {
                 return Err(spi::Error::from(crate::TViewError::SpiError {
@@ -401,10 +404,10 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
 
     // Check if jsonb_delta is available (cached after first session query)
     let Some(delta_schema) = jsonb_delta_schema() else {
-        warning!(
-            "jsonb_delta extension not installed. Smart patching disabled. \
-             Install with: CREATE EXTENSION jsonb_delta; \
-             Performance: Full replacement is ~2× slower for cascades."
+        crate::utils::log_once(
+            crate::lifecycle::JSONB_DELTA_MISSING,
+            "jsonb_delta is not installed: smart JSONB patching is disabled and cascades \
+             replace whole documents (about 2x slower). CREATE EXTENSION jsonb_delta to enable it.",
         );
         return apply_full_replacement(meta, pk);
     };

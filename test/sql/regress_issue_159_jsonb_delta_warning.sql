@@ -7,11 +7,12 @@
 --
 -- Correct behaviour: writes send nothing about jsonb_delta to the client. Each
 -- backend logs the degraded mode once, at LOG (server log only). CREATE EXTENSION
--- pg_tviews says it once, as a NOTICE, and the health check reports it.
+-- pg_tviews says it once (a WARNING: an install script's NOTICEs are hidden), and
+-- the health check reports it.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_159_jsonb_delta_warning.sql
 --
--- expect-output: smart JSONB patching is disabled: jsonb_delta is not installed
+-- expect-once: WARNING:  smart JSONB patching is disabled: jsonb_delta is not installed
 -- expect-once: LOG:  pg_tviews: jsonb_delta is not installed
 -- expect-output: issue #159 jsonb_delta warning: PASS
 -- reject-output: WARNING:  jsonb_delta

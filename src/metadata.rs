@@ -61,6 +61,19 @@ $$;
 
 -- Every role reaches the triggers, functions and catalog views (issue #136).
 GRANT USAGE ON SCHEMA @extschema@ TO PUBLIC;
+
+-- Say once, here, that refreshes run without jsonb_delta (issue #159); the
+-- refresh path itself only writes it to the server log. A WARNING, because
+-- CREATE EXTENSION hides an install script's NOTICEs.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'jsonb_delta') THEN
+        RAISE WARNING 'smart JSONB patching is disabled: jsonb_delta is not installed'
+            USING HINT = 'CREATE EXTENSION jsonb_delta enables it; cascades then patch '
+                         'documents instead of replacing them.';
+    END IF;
+END
+$$;
     "#,
     name = "check_extension_schema",
     bootstrap

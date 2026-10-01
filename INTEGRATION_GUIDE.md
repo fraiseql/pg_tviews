@@ -69,7 +69,9 @@ CREATE TABLE tv_comment (
 ```bash
 #!/bin/bash
 
-# 1. Create extension
+# 1. Create extensions (jsonb_delta is optional; without it CREATE EXTENSION
+#    pg_tviews warns once that smart JSONB patching is disabled)
+psql -d mydb -c "CREATE EXTENSION IF NOT EXISTS jsonb_delta;"
 psql -d mydb -c "CREATE EXTENSION IF NOT EXISTS pg_tviews;"
 
 # 2. Apply base schema
