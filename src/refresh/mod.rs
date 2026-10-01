@@ -31,8 +31,16 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 }
 
 /// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>,
-/// updated_at = NOW()` guarded by `IS DISTINCT FROM` over the non-key columns
-/// (issue #72).
+/// updated_at = NOW()` guarded by a comparison of the non-key columns (issue #72).
+///
+/// The guard compares record images ([`rows_differ`]), with the operator and type
+/// qualified. The flush runs under the owner's
+/// `search_path = pg_catalog, pg_temp` (#141), so a per-type `=` installed elsewhere
+/// (ltree, citext, hstore) would not be found, and some types (json, point) have no
+/// `=` at all (#156). `*=` needs neither. The `::record` casts stop the parser from
+/// expanding `ROW(..) op ROW(..)` into one per-column `*=`. Equality is binary: NULL
+/// equals NULL, but citext `'A'` vs `'a'` or numeric `1.0` vs `1.00` count as changes,
+/// which is what a materialized copy should record.
 ///
 /// A recomputed row that equals the stored one gets no new tuple version, no index
 /// entries, no dead tuple, and keeps its `updated_at` ("last content change").
@@ -70,22 +78,26 @@ pub(crate) fn upsert_conflict_action(
         .chain(std::iter::once("updated_at = NOW()".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
-    let (stored, fresh) = if let [(c, fresh)] = cols.as_slice() {
-        (format!("{qi_tv}.{c}"), fresh.clone())
-    } else {
-        let list = |f: &dyn Fn(&(String, String)) -> String| {
-            format!("({})", cols.iter().map(f).collect::<Vec<_>>().join(", "))
-        };
-        (
-            list(&|(c, _)| format!("{qi_tv}.{c}")),
-            list(&|(_, fresh)| fresh.clone()),
-        )
-    };
-    format!("DO UPDATE SET {set} WHERE {stored} IS DISTINCT FROM {fresh}")
+    let stored: Vec<String> = cols.iter().map(|(c, _)| format!("{qi_tv}.{c}")).collect();
+    let fresh: Vec<String> = cols.iter().map(|(_, fresh)| fresh.clone()).collect();
+    format!("DO UPDATE SET {set} WHERE {}", rows_differ(&stored, &fresh))
+}
+
+/// `NOT (ROW(<stored>)::record *= ROW(<fresh>)::record)`: true when the two column
+/// lists differ, compared as record images (see [`upsert_conflict_action`]).
+///
+/// Safe under the owner's `search_path = pg_catalog, pg_temp` for any column type,
+/// including types whose `=` lives outside `pg_catalog` or that have none (#156).
+pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
+    format!(
+        "NOT (ROW({})::pg_catalog.record OPERATOR(pg_catalog.*=) ROW({})::pg_catalog.record)",
+        stored.join(", "),
+        fresh.join(", ")
+    )
 }
 
 /// Run `INSERT INTO qi_tv (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
-/// record the rows its `IS DISTINCT FROM` guard skipped (issue #72) and journal the
+/// record the rows its no-op guard skipped (issue #72) and journal the
 /// rows it inserted or updated (issue #76).
 ///
 /// The source runs once, in a CTE; the statement returns how many rows the source
@@ -164,15 +176,15 @@ mod tests {
                 "pk_post",
                 None
             ),
-            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE ("app"."tv_post"."id", "app"."tv_post"."data") IS DISTINCT FROM (EXCLUDED."id", EXCLUDED."data")"#
+            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
     #[test]
-    fn conflict_action_single_column_uses_plain_comparison() {
+    fn conflict_action_single_column_compares_one_column_records() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x", None),
-            r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE "tv_x"."data" IS DISTINCT FROM EXCLUDED."data""#
+            r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
@@ -185,7 +197,7 @@ mod tests {
                 "pk_x",
                 None
             ),
-            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE ("tv_x"."order", "tv_x"."Label") IS DISTINCT FROM (EXCLUDED."order", EXCLUDED."Label")"#
+            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
         );
     }
 
@@ -198,7 +210,15 @@ mod tests {
                 "pk_x",
                 Some("patch(\"tv_x\".data)"),
             ),
-            r#"DO UPDATE SET "label" = EXCLUDED."label", "data" = patch("tv_x".data), updated_at = NOW() WHERE ("tv_x"."label", "tv_x"."data") IS DISTINCT FROM (EXCLUDED."label", patch("tv_x".data))"#
+            r#"DO UPDATE SET "label" = EXCLUDED."label", "data" = patch("tv_x".data), updated_at = NOW() WHERE NOT (ROW("tv_x"."label", "tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."label", patch("tv_x".data))::pg_catalog.record)"#
+        );
+    }
+
+    #[test]
+    fn rows_differ_compares_record_images_qualified() {
+        assert_eq!(
+            super::rows_differ(&cols(&["t.a", "t.b"]), &cols(&["v.a", "v.b"])),
+            "NOT (ROW(t.a, t.b)::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(v.a, v.b)::pg_catalog.record)"
         );
     }
 

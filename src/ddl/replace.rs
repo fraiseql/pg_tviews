@@ -646,13 +646,13 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
          WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
         &[oid(meta.tview_oid)],
     )?;
-    let list = |columns: &[&String], prefix: &str| {
+    let prefixed = |columns: &[&String], prefix: &str| -> Vec<String> {
         columns
             .iter()
             .map(|c| format!("{prefix}{}", quote_identifier(c)))
-            .collect::<Vec<_>>()
-            .join(", ")
+            .collect()
     };
+    let list = |columns: &[&String], prefix: &str| prefixed(columns, prefix).join(", ");
     let key_columns: Vec<&String> = keys.iter().collect();
     let value_columns: Vec<&String> = columns.iter().filter(|c| !keys.contains(c)).collect();
     let all_columns: Vec<&String> = columns.iter().collect();
@@ -685,6 +685,34 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
         record(entity, key, Change::Deleted(id));
     }
     if !value_columns.is_empty() {
+        // A stored column can have another type than the view's (an unmapped user type
+        // is stored as text): compare against the value the UPDATE would assign.
+        let stored_types = strings(
+            "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) \
+             FROM pg_catalog.unnest($2::text[]) WITH ORDINALITY AS c(name, n) \
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = $1 AND a.attname = c.name \
+             ORDER BY c.n",
+            &[
+                oid(meta.tview_oid),
+                texts(
+                    &value_columns
+                        .iter()
+                        .map(|c| (*c).clone())
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )?;
+        if stored_types.len() != value_columns.len() {
+            return Err(TViewError::CatalogError {
+                operation: format!("Compare the rows of {qualified_tv} with its view"),
+                pg_error: "a view column is missing from the TVIEW's table".to_string(),
+            });
+        }
+        let fresh: Vec<String> = prefixed(&value_columns, "v.")
+            .into_iter()
+            .zip(&stored_types)
+            .map(|(v, ty)| format!("{v}::{ty}"))
+            .collect();
         let set = value_columns
             .iter()
             .map(|c| format!("{0} = v.{0}", quote_identifier(c)))
@@ -694,10 +722,9 @@ fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
             &format!(
                 "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
                  FROM {qualified_view} v \
-                 WHERE {same_key} AND ({}) IS DISTINCT FROM ({}) \
+                 WHERE {same_key} AND {} \
                  RETURNING t.{pk}::text",
-                list(&value_columns, "t."),
-                list(&value_columns, "v.")
+                crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh)
             ),
             &[],
         )? {

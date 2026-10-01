@@ -82,7 +82,7 @@ BEGIN
            OR t.path::text IS DISTINCT FROM v.path::text
            OR t.name::text IS DISTINCT FROM v.name::text
            OR t.attrs::text IS DISTINCT FROM v.attrs::text
-           OR t.mood IS DISTINCT FROM v.mood
+           OR t.mood::text IS DISTINCT FROM v.mood::text
            OR t.tag::text IS DISTINCT FROM v.tag::text
            OR t.doc::text IS DISTINCT FROM v.doc::text
            OR t.pos::text IS DISTINCT FROM v.pos::text)
@@ -178,5 +178,15 @@ END $$;
 UPDATE tb_node SET label = 'root2' WHERE path = 'a';
 UPDATE tb_node SET path = 'a.z' WHERE label = 'other';
 SELECT _check('view operator');
+
+-- ── 7. create_or_replace reconciles the stored rows with the same guard ─────
+SELECT pg_tviews_create_or_replace('tv_item', $TV$
+    SELECT pk_item, id, path, name, attrs, mood, tag, doc, pos,
+           jsonb_build_object('id', id, 'label', upper(label)) AS data
+    FROM tb_item
+$TV$);
+SELECT _check('create_or_replace');
+UPDATE tb_item SET path = 'a.r' WHERE pk_item = 1;
+SELECT _check('after create_or_replace');
 
 \echo 'PASS regress_issue_156_extension_typed_columns'

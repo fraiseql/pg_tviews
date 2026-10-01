@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **An UPDATE of a base table no longer fails when its TVIEW projects an
+  extension-typed column** (#156, regression in 0.1.0-beta.20). The refresh's no-op
+  guard compared rows with `IS DISTINCT FROM`, which looks `=` up by name; under the
+  owner's `search_path = pg_catalog, pg_temp` (#141) the `=` of `ltree`, `citext`,
+  `hstore` or a domain over them was not found. Columns of a type with no `=` at all
+  (`json`, `point`) failed the same way before 0.1.0-beta.20, whatever the
+  search_path. The guard, and the row comparison of `pg_tviews_create_or_replace()`,
+  now compare record images (`*=`, schema-qualified), which need no per-type operator.
+
+### Changed
+
+- **The no-op guard uses binary equality** (#156). A change that a type's `=` treats
+  as equal but that changes the stored bytes is now written to the TVIEW: `citext`
+  `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly
+  what its view returns. NULL still equals NULL.
+
 ## [0.1.0-beta.20] - 2026-10-01
 
 ### Added
