@@ -47,6 +47,25 @@ enum GroupKeysOption {
     Aggregate(GroupKeys),
 }
 
+impl Options {
+    /// Options of a `CREATE [UNLOGGED] TABLE tv_* [WITH (fillfactor = n)] AS`.
+    pub(crate) fn storage(logged: Option<bool>, fillfactor: Option<i32>) -> Self {
+        Self {
+            logged,
+            fillfactor,
+            ..Self::default()
+        }
+    }
+
+    /// Options of `pg_tviews_create_aggregate()`.
+    pub(crate) fn aggregate(group_keys: GroupKeys) -> Self {
+        Self {
+            group_keys: GroupKeysOption::Aggregate(group_keys),
+            ..Self::default()
+        }
+    }
+}
+
 impl GroupKeysOption {
     /// The group keys asked for, `current` when omitted.
     fn or(self, current: Option<GroupKeys>) -> Option<GroupKeys> {
@@ -248,21 +267,7 @@ pub(crate) fn create_or_replace(
     let tv_name = format!("tv_{entity}");
 
     let Some(meta) = TviewMeta::load_by_entity(&entity)? else {
-        let (_, normalized) = create::normalize_definition(&entity, query)?;
-        check_key(&entity, &normalized)?;
-        let defaults = Storage::from_settings();
-        let storage = Storage {
-            logged: options.logged.unwrap_or(defaults.logged),
-            fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
-            data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
-        };
-        create::create_tview_in(
-            &tv_name,
-            query,
-            &schema,
-            options.group_keys.or(None).as_ref(),
-            storage,
-        )?;
+        create_new(&entity, &schema, query, options)?;
         return Ok("created");
     };
 
@@ -347,6 +352,66 @@ pub(crate) fn create_or_replace(
         desired_keys.as_ref(),
     )?;
     Ok("rebuilt")
+}
+
+/// What [`create_only`] found.
+pub(crate) enum Created {
+    /// Created, with this many rows.
+    Rows(u64),
+    /// The TVIEW existed and `IF NOT EXISTS` was given: nothing was done.
+    Skipped,
+    /// The TVIEW exists.
+    Exists(String),
+}
+
+/// Create `name` from `query` with `CREATE TABLE AS` semantics: an existing TVIEW
+/// is not replaced (issue #134). `pg_tviews_create()`, `pg_tviews_create_aggregate()`
+/// and an intercepted `CREATE TABLE tv_* AS` run this code, which is the create
+/// path of [`create_or_replace`].
+///
+/// # Errors
+/// Returns an error for an invalid name, a definition that does not analyze or is
+/// keyed on another entity, or a failed creation.
+pub(crate) fn create_only(
+    name: &str,
+    query: &str,
+    options: Options,
+    if_not_exists: bool,
+) -> TViewResult<Created> {
+    let (schema, entity) = parse_name(name)?;
+    super::lock_entity(&entity)?;
+    if TviewMeta::load_by_entity(&entity)?.is_some() {
+        return Ok(if if_not_exists {
+            notice!("TVIEW tv_{entity} already exists, skipping");
+            Created::Skipped
+        } else {
+            Created::Exists(format!("tv_{entity}"))
+        });
+    }
+    let schema = match schema {
+        Some(schema) => schema,
+        None => create::current_schema()?,
+    };
+    create_new(&entity, &schema, query, options).map(Created::Rows)
+}
+
+/// Create `entity`'s TVIEW in `schema`: storage options default to the settings.
+fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TViewResult<u64> {
+    let (_, normalized) = create::normalize_definition(entity, query)?;
+    check_key(entity, &normalized)?;
+    let defaults = Storage::from_settings();
+    let storage = Storage {
+        logged: options.logged.unwrap_or(defaults.logged),
+        fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
+        data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
+    };
+    create::create_tview_in(
+        &format!("tv_{entity}"),
+        query,
+        schema,
+        options.group_keys.or(None).as_ref(),
+        storage,
+    )
 }
 
 /// The TVIEW's name must match the key its definition produces.

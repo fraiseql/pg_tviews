@@ -233,10 +233,10 @@ GRANT SELECT ON @extschema@.registry TO PUBLIC;
 // generates RETURNS VOID instead of the required RETURNS event_trigger pseudo-type.
 extension_sql!(
     r"
--- Event trigger handler: PL/pgSQL wrapper that calls the Rust C function pg_tviews_convert_table().
--- Using PL/pgSQL (not a direct C function) because pgrx cannot generate RETURNS event_trigger
--- for #[pg_extern] functions — it always emits RETURNS VOID, which PostgreSQL rejects for
--- event trigger handlers.  The Rust logic lives in src/event_trigger.rs::handle_ddl_event_internal.
+-- Event trigger handler: the ProcessUtility hook turns CREATE TABLE tv_* AS into a TVIEW
+-- before PostgreSQL creates anything, so a tv_* table created this way means the hook did
+-- not see the statement. pg_tviews_convert_table() (src/event_trigger.rs) reports that
+-- as an error. PL/pgSQL because pgrx cannot declare RETURNS event_trigger.
 CREATE FUNCTION @extschema@.pg_tviews_handle_ddl_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
@@ -246,8 +246,8 @@ DECLARE
 BEGIN
     FOR obj IN SELECT * FROM pg_catalog.pg_event_trigger_ddl_commands()
     LOOP
-        -- Only process CTAS-style creation: a plain `CREATE TABLE tv_x (cols…)` can never
-        -- carry a SELECT to convert, so it stays a plain table.
+        -- Only CTAS-style creation: a plain `CREATE TABLE tv_x (cols…)` has no query to
+        -- make a TVIEW of, so it stays a plain table.
         IF obj.command_tag IN ('CREATE TABLE AS', 'SELECT INTO') THEN
             -- Only intercept tv_* tables
             IF obj.object_identity LIKE '%.tv_%' OR obj.object_identity LIKE 'tv_%' THEN
@@ -279,7 +279,7 @@ CREATE EVENT TRIGGER pg_tviews_ddl_end
     EXECUTE FUNCTION @extschema@.pg_tviews_handle_ddl_event();
 
 COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
-'Intercepts CREATE TABLE tv_* commands and converts them to TVIEWs';
+'Fails a CREATE TABLE tv_* AS that the pg_tviews hook did not turn into a TVIEW';
 
 -- Event trigger handler: deregister a TVIEW whose backing view or table was dropped as
 -- a dependent of something else (issues #53, #57).  The base-table -> tview link is not

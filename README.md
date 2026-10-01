@@ -463,7 +463,9 @@ SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$
 ```
 
 It runs the DDL as the caller and requires owning an existing TVIEW; a role that owns
-the schema and has `TRIGGER` on the base tables needs no superuser. See
+the schema and has `TRIGGER` on the base tables needs no superuser. `CREATE TABLE
+tv_post AS SELECT …` (optionally `UNLOGGED`, `WITH (fillfactor = n)`) runs the same
+code with create-only semantics. See
 [docs/reference/read-contract.md](docs/reference/read-contract.md).
 
 #### Reading what is registered

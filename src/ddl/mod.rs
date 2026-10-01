@@ -20,7 +20,6 @@ pub mod drop;
 pub mod rename;
 pub mod replace;
 
-pub use create::create_tview;
 pub use drop::drop_tview;
 
 use crate::error::{TViewError, TViewResult};
@@ -56,25 +55,14 @@ pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
     })
 }
 
-/// SQL function: Create a TVIEW
+/// SQL function: create a TVIEW. An existing one is an error; use
+/// [`pg_tviews_create_or_replace`] to change it.
 ///
-/// Usage: SELECT `pg_tviews_create`('`my_entity`', 'SELECT id, name FROM users WHERE active = true');
+/// Usage: `SELECT tviews.pg_tviews_create('tv_post', 'SELECT pk_post, id, … AS data FROM tb_post');`
 #[pg_extern]
 fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
     crate::revision::check();
-    crate::validation::validate_sql_identifier(tview_name, "tview_name")
-        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
-
-    // Ensure ProcessUtility hook is installed for DDL syntax support.
-    // SAFETY: Called from PostgreSQL backend context, hook installation is valid.
-    unsafe {
-        crate::hooks::ensure_hook_installed();
-    }
-
-    match create_tview(tview_name, select_sql, None, false) {
-        Ok(()) => Ok(format!("TVIEW '{tview_name}' created successfully")),
-        Err(e) => Err(format!("Failed to create TVIEW: {e}")),
-    }
+    create_reported(tview_name, select_sql, replace::Options::default())
 }
 
 /// SQL function: create an aggregate TVIEW (issue #58).
@@ -94,18 +82,37 @@ fn pg_tviews_create_aggregate(
     group_keys: pgrx::JsonB,
 ) -> Result<String, String> {
     crate::revision::check();
-    crate::validation::validate_sql_identifier(tview_name, "tview_name")
-        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
-    let keys: aggregate::GroupKeys = serde_json::from_value(group_keys.0).map_err(|_| {
-        "group_keys must be a JSON object mapping source table names to column names".to_string()
-    })?;
-    // SAFETY: Called from PostgreSQL backend context, hook installation is valid.
+    let keys: aggregate::GroupKeys = serde_json::from_value(group_keys.0)
+        .ok()
+        .filter(|keys: &aggregate::GroupKeys| !keys.is_empty())
+        .ok_or_else(|| {
+            "group_keys must be a JSON object mapping source table names to column names, e.g. \
+             '{\"tb_order\": \"fk_user\"}'"
+                .to_string()
+        })?;
+    create_reported(tview_name, select_sql, replace::Options::aggregate(keys))
+}
+
+/// `pg_tviews_create[_aggregate]()`: create-only, reported as text.
+fn create_reported(
+    tview_name: &str,
+    select_sql: &str,
+    options: replace::Options,
+) -> Result<String, String> {
+    // A session that loaded the library lazily gets the ProcessUtility hook now.
+    // SAFETY: called from a backend function, where installing the hook is valid.
     unsafe {
         crate::hooks::ensure_hook_installed();
     }
-    create::create_aggregate_tview(tview_name, select_sql, &keys)
-        .map(|()| format!("TVIEW '{tview_name}' created successfully"))
-        .map_err(|e| format!("Failed to create aggregate TVIEW: {e}"))
+    match replace::create_only(tview_name, select_sql, options, false) {
+        Ok(replace::Created::Rows(_) | replace::Created::Skipped) => {
+            Ok(format!("TVIEW '{tview_name}' created successfully"))
+        }
+        Ok(replace::Created::Exists(name)) => Err(format!(
+            "TVIEW {name} already exists; pg_tviews_create_or_replace() changes an existing TVIEW"
+        )),
+        Err(e) => Err(format!("Failed to create TVIEW: {e}")),
+    }
 }
 
 /// Internal: called by the `sql_drop` event trigger for a TVIEW whose backing view

@@ -64,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed
 
+- **`CREATE TABLE tv_* AS SELECT` runs the shared create code** (#134). The
+  ProcessUtility hook used to let PostgreSQL create a plain table, drop it from the
+  event trigger, rebuild it as a TVIEW and populate it after the statement; it now
+  creates the TVIEW itself before PostgreSQL creates anything, with the code behind
+  `pg_tviews_create_or_replace()` and `CREATE TABLE AS` semantics: an existing TVIEW
+  is an error, `IF NOT EXISTS` makes it a notice, and the command tag reports the rows
+  (`SELECT n`). `CREATE UNLOGGED TABLE` and `WITH (fillfactor = n)` are honoured.
+  What a TVIEW cannot honour is refused with a hint to `pg_tviews_create_or_replace()`:
+  `SELECT … INTO`, `TEMP`, a column list, `TABLESPACE`, `USING`, other storage
+  parameters, `WITH NO DATA`, `AS EXECUTE`, a query with parameters (PL/pgSQL
+  variables), and `EXPLAIN [ANALYZE] CREATE TABLE tv_* AS`. `CREATE MATERIALIZED VIEW
+  tv_*` is left to PostgreSQL. The statement is only inspected inside the hook's panic
+  guard; the creation runs outside it.
+- **`pg_tviews_create()` and `pg_tviews_create_aggregate()` share that code** (#134):
+  they are create-only, and the name must match the definition's key (they used to
+  name the table after the definition's `pk_*` column, whatever the name passed).
 - **`pg_tviews_drop()` accepts a schema-qualified name** (#134) and requires owning
   the TVIEW. `DROP TABLE tv_*` is now handled outside the ProcessUtility hook's panic
   guard, so its errors reach the client as PostgreSQL raised them.
