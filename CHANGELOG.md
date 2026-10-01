@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 ### Added
 
 - **`pg_tviews.uncascaded_policy`** (#157, #158): what a new TVIEW does about a base
-  table it reads whose writes no cascade maps to its keys (a table read only in a
-  subquery of the select list, or through a plain view). `warn` (default) names the
-  tables in a WARNING, `error` refuses the TVIEW, `full_refresh` refreshes the whole
-  TVIEW at flush on every write to such a table. The policy is read once at create
+  table it reads that nothing links to its key (an uncorrelated subquery, a window
+  function). `warn` (default) names the tables in a WARNING, `error` refuses the
+  TVIEW, `full_refresh` refreshes the whole TVIEW at flush on every write to such a
+  table. The policy is read once at create
   time and stored with the TVIEW; the writer's session setting never matters.
 - **`tviews.registry.uncascaded_tables` and `uncascaded_policy`** (#157, #158),
   appended; `contract_version()` stays 1. The upgrade script marks every TVIEW for
@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   turns changed rows into keys (schema-qualified names and operators, so it resolves
   nothing through `search_path`). A mapping query that would scan a large table
   sequentially is reported at create time with the index to add.
+  `tviews.pg_tviews_mapping_query(tview, base_table)` shows the query.
 
 ### Fixed
 
@@ -42,11 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   search_path. The guard, and the row comparison of `pg_tviews_create_or_replace()`,
   now compare record images (`*=`, schema-qualified), which need no per-type operator.
 
-- **Tracked tables whose writes were dropped silently are named** (#157, #158). A
-  table read only in a subquery of the select list, or through a plain view, got
-  triggers but no cascade, without a word (#158 named only the view, as if it were
-  harmless). It is now reported at create time and handled by
-  `pg_tviews.uncascaded_policy`.
+- **Writes to a table read in a subquery or through a view refresh the TVIEW**
+  (#157, #158). A table read only by `ARRAY(SELECT … WHERE l.fk_order = o.pk_order)`,
+  or through a plain view with `GROUP BY`, got triggers but no cascade, and its writes
+  were dropped without a word (#158 named only the view). Writes now map to the keys
+  through the condition that links them (ADR 0157); a table nothing links to the key
+  is named at create time instead of being dropped silently.
+- **TRUNCATE of a base table refreshes its TVIEWs**: it left them stale.
 
 - **No WARNING on every write without jsonb_delta** (#159). Each refresh that would
   have used smart patching sent `WARNING: jsonb_delta extension not installed` to the
@@ -58,6 +61,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed
 
+- **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The
+  cascade paths re-parsed from the definition's SQL text are replaced by an analysis
+  of the backing view's query tree. A table whose key is a column of the changed row
+  keeps its row trigger (and the direct-patch and fan-out fast paths). Any other
+  table gets statement-level triggers that map all the rows a statement changed with
+  one query over its transition tables, instead of one lookup per row and hop.
+  Single-row writes cost the same; a single-row write two hops away is about 30%
+  faster (`test/sql/real_benchmark/results/adr_0157`).
+- **After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW and
+  installs the new triggers. Until then, a TVIEW keeps its old triggers, and a write
+  its old metadata maps through more than one hop refreshes it in full (logged once
+  per backend).
 - **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
   are gone, CI builds, lints and runs every SQL suite on each supported version, and
   `CREATE EXTENSION pg_tviews` on an older server fails with

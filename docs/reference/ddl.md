@@ -229,9 +229,11 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **JOINs**: INNER, LEFT, RIGHT, FULL OUTER
 - **Aggregations**: GROUP BY, HAVING, jsonb_agg(), array_agg()
 - **Expressions**: CASE, COALESCE, NULLIF, FILTER
-- **Subqueries in the SELECT list** (`(SELECT …)`, `ARRAY(SELECT …)`, `EXISTS`):
-  allowed, but a base table read *only* inside one is not cascaded: see
-  [Tables no cascade reaches](#tables-no-cascade-reaches)
+- **Subqueries** in the SELECT list or WHERE (`(SELECT …)`, `ARRAY(SELECT …)`,
+  `EXISTS`, `IN (SELECT …)`), `LATERAL`, and plain views (with `GROUP BY` too):
+  writes to the tables they read cascade when a condition links them to the TVIEW
+  key (`l.fk_order = o.pk_order`, `l.pos > o.min_pos`). An uncorrelated subquery
+  links nothing: see [Tables no cascade reaches](#tables-no-cascade-reaches)
 - **Functions**: jsonb_build_object(), jsonb_array_elements(), etc.
 - **Operators**: Standard PostgreSQL operators
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
@@ -271,24 +273,42 @@ NOTICE:  writes to public.tb_sku map to tv_order keys with a sequential scan of 
          (about 20000 rows); an index on tb_line (fk_sku) would make them cheaper
 ```
 
+`tviews.pg_tviews_mapping_query('tv_order', 'tb_sku')` returns the query.
+
+The triggers follow the kind of each table:
+
+| Kind | Triggers on the base table (per TVIEW) | What a write does |
+|---|---|---|
+| `local` | row trigger | the key is read off each changed row (and its old image) |
+| `mapped`, `all_keys` | three statement triggers with transition tables (`INSERT`, `UPDATE`, `DELETE`) | one mapping query over the statement's changed rows; under `full_refresh` an `all_keys` write refreshes the whole TVIEW |
+| `propagated` | none | refreshing the embedded TVIEW refreshes this one |
+
+Every table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
+refreshes the whole TVIEW. An `UPDATE` that changes none of the columns the TVIEW
+reads from a `mapped` table maps nothing (rows are matched to their old image by
+primary key). A partitioned `mapped` table maps each row from a row trigger, since
+partitions cannot have transition tables.
+
+**Limitation:** statement triggers on a partitioned table do not fire for a
+statement that targets one of its partitions directly. In an autocommit statement
+such a write is refreshed at the next flush (the next write to a base table, or an
+explicit `COMMIT`). Write through the partitioned table, or inside a transaction.
+
 ### Tables no cascade reaches
 
-Triggers go on every base table the backing view reads. A write refreshes the TVIEW
-when pg_tviews can map the changed row to TVIEW keys: through the TVIEW's own
-`tb_<entity>`, a join it traces (also through CTEs and UNION branches), or a TVIEW it
-embeds through `fk_<entity>`. A table read any other way is reported when the TVIEW is
-created, and listed in `tviews.registry.uncascaded_tables`. Two common shapes:
+A table classified `all_keys` has no condition linking its rows to the TVIEW key,
+so a write to it could change any row. It is reported when the TVIEW is created and
+listed in `tviews.registry.uncascaded_tables`. Common shapes:
 
-- a table read only inside a subquery of the SELECT list
-  (`ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_order)`);
-- a table read only through a plain view (not a TVIEW's `v_<entity>`), for example
-  one with an aggregate (`LEFT JOIN v_order_lines v ON v.fk_order = o.pk_order`).
+- an uncorrelated subquery (`(SELECT count(*) FROM tb_flag)` in every row);
+- a subquery or view whose rows are not passed through to the key: under a window
+  function, `LIMIT`/`OFFSET`, `GROUPING SETS`, or a join on a computed column.
 
 What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
 
 | Policy | At create time | On a write to such a table |
 |---|---|---|
-| `warn` (default) | `WARNING:  writes to public.tb_line will not refresh public.tv_order (read in a subquery, or through a join pg_tviews cannot map)` | nothing: the rows stay stale until a mapped table changes |
+| `warn` (default) | `WARNING:  writes to public.tb_flag will not refresh public.tv_report (read in a subquery, with no condition linking it to the TVIEW key)` | nothing: the rows stay stale until a mapped table changes |
 | `error` | `ERROR` with the same text; nothing is created | — |
 | `full_refresh` | `NOTICE` | the whole TVIEW is brought up to date at flush, once per transaction or statement; unchanged rows are not rewritten |
 
