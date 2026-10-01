@@ -11,7 +11,12 @@ permissions:
   attestations: write   # Required for actions/attest-build-provenance to persist the attestation
 
 jobs:
+  # confiture's TVIEW suites must pass at the pinned confiture ref (#135).
+  confiture:
+    uses: ./.github/workflows/confiture.yml
+
   build-and-sign:
+    needs: confiture
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
