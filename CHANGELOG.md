@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   re-registration (`SELECT * FROM tviews.pg_tviews_reregister_all()`), which fills
   `uncascaded_tables`.
 
+- **`tviews.registry.cascade_kinds`** (ADR 0157): how a write to each base table maps
+  to TVIEW keys (`local`, `mapped`, `propagated`, `all_keys`), read from PostgreSQL's
+  query tree of the backing view (views, CTEs, subqueries and `UNION` branches
+  followed) rather than from the SQL text. Registration fails when that analysis and
+  `pg_depend` disagree on the tables the view reads, and warns about non-immutable
+  functions the view calls (the tables they read are not tracked). Stored in the new
+  `pg_tview_meta.key_mappings`.
+
 ### Fixed
 
 - **An UPDATE of a base table no longer fails when its TVIEW projects an

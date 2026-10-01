@@ -113,6 +113,14 @@ DO $$ BEGIN
   IF (SELECT count(*) FROM tv_author) <> 2 OR (SELECT count(*) FROM app.tv_post) <> 2 THEN
     RAISE EXCEPTION '#96 FAIL: restored TVIEW rows missing';
   END IF;
+  -- The lineage (ADR 0157) names each table by relid: rebound like cascade_paths.
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.key_mappings) e
+             WHERE (e->>'relid')::oid IS DISTINCT FROM to_regclass(e->>'table')::oid)
+     OR NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.key_mappings) e
+                    WHERE m.entity = 'post')
+  THEN
+    RAISE EXCEPTION '#96 FAIL: key_mappings still carry the source database''s relids';
+  END IF;
 END $$;
 
 -- ========================================================================

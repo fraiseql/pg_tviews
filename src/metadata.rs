@@ -123,7 +123,11 @@ extension_sql!(
         -- one of uncascaded_oids does. The row trigger reads this, never the
         -- writing session's setting.
         uncascaded_policy TEXT NOT NULL DEFAULT 'warn'
-            CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh'))
+            CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh')),
+        -- How a write to each base table maps to this TVIEW's keys (ADR 0157), read
+        -- from the backing view's query tree: one object per table with its name,
+        -- relid and kind (local, mapped, propagated, all_keys).
+        key_mappings JSONB NOT NULL DEFAULT '[]'
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -249,7 +253,13 @@ SELECT
     m.needs_reregister,
     v.oid::pg_catalog.regclass AS view,
     m.uncascaded_oids AS uncascaded_tables,
-    m.uncascaded_policy
+    m.uncascaded_policy,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(
+                    (e->>'relid')::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text,
+                    e->>'kind')
+         FROM pg_catalog.jsonb_array_elements(m.key_mappings) e),
+        '{}') AS cascade_kinds
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -396,17 +406,30 @@ END;
 $$;
 
 -- Catalog rows loaded by pg_restore carry the source database's OIDs inside
--- cascade_paths (JSON text; view_oid / table_oid are regclass and re-resolve on
--- their own). Rebind them to the restored relations as each row is inserted.
--- For a row written by pg_tviews itself the rebind is the identity.
+-- cascade_paths (JSON text) and key_mappings (view_oid / table_oid are regclass
+-- and re-resolve on their own). Rebind them to the restored relations as each row
+-- is inserted. For a row written by pg_tviews itself the rebind is the identity.
 CREATE FUNCTION @extschema@.pg_tviews_meta_rebind()
 RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-    NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
-        NEW.view_oid::oid, NEW.cascade_paths);
+    IF pg_catalog.cardinality(NEW.cascade_paths) > 0 THEN
+        NEW.cascade_paths := @extschema@.pg_tviews_rebind_cascade_paths(
+            NEW.view_oid::oid, NEW.cascade_paths);
+    END IF;
+    IF pg_catalog.jsonb_array_length(NEW.key_mappings) > 0 THEN
+        NEW.key_mappings := (
+            SELECT pg_catalog.jsonb_agg(
+                       CASE WHEN r.relid IS NULL THEN x.e
+                            ELSE pg_catalog.jsonb_set(x.e, '{relid}', pg_catalog.to_jsonb(r.relid))
+                       END ORDER BY x.n)
+            FROM pg_catalog.jsonb_array_elements(NEW.key_mappings) WITH ORDINALITY AS x(e, n)
+            CROSS JOIN LATERAL (
+                SELECT pg_catalog.to_regclass(x.e->>'table')::pg_catalog.oid::pg_catalog.int8 AS relid
+            ) r);
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -414,7 +437,8 @@ $$;
 CREATE TRIGGER pg_tview_meta_rebind
     BEFORE INSERT ON @extschema@.pg_tview_meta
     FOR EACH ROW
-    WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0)
+    WHEN (pg_catalog.cardinality(NEW.cascade_paths) > 0
+          OR pg_catalog.jsonb_array_length(NEW.key_mappings) > 0)
     EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
 
 -- Other backends cache TVIEW metadata (issue #91). Any write to the catalog

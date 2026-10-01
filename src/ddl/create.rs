@@ -448,6 +448,14 @@ fn create_tview_inner(
     // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
     // reported under the policy; `error` aborts here, and the objects created above
     // roll back with it.
+    let lineage = analyze_lineage(
+        entity_name,
+        &final_select_sql,
+        &final_schema,
+        &dep_graph.base_tables,
+        &cascade_paths,
+        &schema_name,
+    )?;
     let uncascaded = Uncascaded {
         tables: find_uncascaded(
             entity_name,
@@ -478,6 +486,7 @@ fn create_tview_inner(
         &distinct_on_output_keys,
         group_keys,
         &uncascaded,
+        &lineage.to_json(),
         false,
     )?;
 
@@ -549,6 +558,14 @@ pub fn reregister_metadata(
             pg_error: e.to_string(),
         })?
         .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
+    let lineage = analyze_lineage(
+        entity_name,
+        definition,
+        &schema,
+        &dep_graph.base_tables,
+        &cascade_paths,
+        schema_name,
+    )?;
     let uncascaded = Uncascaded {
         tables: find_uncascaded(
             entity_name,
@@ -580,6 +597,7 @@ pub fn reregister_metadata(
         &distinct_on_output_keys,
         group_keys.as_ref(),
         &uncascaded,
+        &lineage.to_json(),
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
@@ -667,7 +685,57 @@ pub(crate) fn stored_group_keys(
     Ok(stored.and_then(|j| serde_json::from_value(j.0).ok()))
 }
 
-/// The base tables of `v_<entity>` that no cascade reaches (issues #157, #158).
+/// The lineage of `v_<entity>` read from its query tree (ADR 0157). In debug
+/// mode, report where it disagrees with the cascade paths the SQL text gave.
+fn analyze_lineage(
+    entity_name: &str,
+    definition: &str,
+    schema: &TViewSchema,
+    base_tables: &[pg_sys::Oid],
+    cascade_paths: &[cascade_path::CascadePath],
+    schema_name: &str,
+) -> TViewResult<crate::lineage::Lineage> {
+    let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
+    let mut embeds: Vec<String> = aggregate_embeds(definition, entity_name)?
+        .into_keys()
+        .collect();
+    embeds.extend(
+        schema
+            .fk_columns
+            .iter()
+            .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
+    );
+    let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    if crate::config::log_level().eq_ignore_ascii_case("debug") {
+        for path in cascade_paths.iter().filter(|p| !p.unresolvable) {
+            let kind = lineage
+                .tables
+                .iter()
+                .find(|t| t.relid == path.source_oid.to_u32())
+                .map(|t| &t.kind);
+            let agrees = match kind {
+                Some(crate::lineage::TableKind::Local(col)) => {
+                    path.hops.is_empty() && *col == path.initial_col
+                }
+                Some(crate::lineage::TableKind::Mapped) => !path.hops.is_empty(),
+                _ => false,
+            };
+            if !agrees {
+                log_debug!(
+                    "lineage of tv_{entity_name}: {} has a {}-hop cascade path from {} but is {:?}",
+                    path.source_table,
+                    path.hops.len(),
+                    path.initial_col,
+                    kind
+                );
+            }
+        }
+    }
+    Ok(lineage)
+}
+
+/// The base tables of `v_<entity>` that no cascade the refresh runs reaches
+/// (issues #157, #158).
 fn find_uncascaded(
     entity_name: &str,
     definition: &str,
@@ -1648,6 +1716,7 @@ fn register_metadata(
     distinct_on_output_keys: &[String],
     group_keys: Option<&super::aggregate::GroupKeys>,
     uncascaded: &Uncascaded,
+    key_mappings: &serde_json::Value,
     replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
@@ -1801,7 +1870,7 @@ fn register_metadata(
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
             group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
-            uncascaded_oids = EXCLUDED.uncascaded_oids"
+            uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1828,8 +1897,9 @@ fn register_metadata(
             group_keys,
             aggregate_embeds,
             uncascaded_oids,
-            uncascaded_policy
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6)
+            uncascaded_policy,
+            key_mappings
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1878,6 +1948,12 @@ fn register_metadata(
             DatumWithOid::new(
                 uncascaded.policy.as_str(),
                 PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                pgrx::JsonB(key_mappings.clone()),
+                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
             )
         },
     ];

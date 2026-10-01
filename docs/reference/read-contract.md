@@ -30,6 +30,7 @@ them.
 | `view` | `regclass` | the backing view (`v_post`); NULL when the view is gone |
 | `uncascaded_tables` | `regclass[]` | base tables whose writes no cascade maps to this TVIEW's keys (below); empty for most TVIEWs |
 | `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `warn`, `error` or `full_refresh`, fixed when the TVIEW was created |
+| `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
@@ -56,6 +57,16 @@ Under `uncascaded_policy = 'warn'` a write to one leaves the TVIEW's rows stale 
 something that is mapped changes; under `'full_refresh'` it refreshes the whole TVIEW
 at flush. `pg_tviews.uncascaded_policy` sets the policy of new TVIEWs;
 re-registration recomputes the set and keeps the policy.
+
+**`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
+registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)):
+
+| kind | meaning |
+|---|---|
+| `local` | the key is a column of the changed row: the TVIEW's own table, or a table linked by `col = <key>` (in a join, a subquery or a view) |
+| `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition) |
+| `propagated` | read through the `v_<entity>` of a TVIEW this one embeds by `fk_<entity>`: refreshing that TVIEW refreshes this one |
+| `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function) |
 
 **`options`**:
 
