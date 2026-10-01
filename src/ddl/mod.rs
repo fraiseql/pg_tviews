@@ -154,7 +154,10 @@ fn pg_tviews_drop(
 ) -> Result<String, String> {
     crate::revision::check();
     match drop_tview(tview_name, if_exists, cascade) {
-        Ok(()) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
+        Ok(true) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
+        Ok(false) => Ok(format!(
+            "TVIEW '{tview_name}' does not exist, nothing dropped"
+        )),
         Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
     }
 }

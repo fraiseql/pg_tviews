@@ -134,6 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `test/sql/regress_issue_138_documented_functions.sql` fails CI when a published doc
   (Markdown or JSON) names a `pg_tviews_*` / `pg_tview_*` object that `CREATE EXTENSION`
   does not create, apart from names users choose and the relations #150 tracks.
+- **`pg_tviews_drop(name, if_exists => true)` on a missing TVIEW** (#152) returned
+  "dropped successfully". It now raises `NOTICE: TVIEW "<name>" does not exist,
+  skipping`, like `DROP TABLE IF EXISTS`, and returns `TVIEW '<name>' does not exist,
+  nothing dropped`.
 - **`pg_tviews_health_check()` checks pg_tviews' own triggers** (#139). Its
   orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named, and
   looked each TVIEW's base table up as `('tb_' || entity)::regclass`: wrong for an
