@@ -30,6 +30,17 @@ use pgrx::prelude::*;
 // IF NOT EXISTS, so an object planted under one of its names is an error too.
 extension_sql!(
     r#"
+-- Supported PostgreSQL versions: 16, 17, 18. Refuse older servers here, before
+-- anything loads the library, with a message instead of a load error.
+DO $$
+BEGIN
+    IF pg_catalog.current_setting('server_version_num')::int < 160000 THEN
+        RAISE EXCEPTION 'pg_tviews requires PostgreSQL 16 or later (this server is %)',
+            pg_catalog.current_setting('server_version');
+    END IF;
+END
+$$;
+
 DO $$
 DECLARE
     schema_owner NAME;
