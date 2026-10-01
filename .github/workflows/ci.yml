@@ -108,7 +108,7 @@ jobs:
 
       # These scripts create a throwaway database per test and exit non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
-      - name: Regression suite (test/sql/regress_issue_*.sql)
+      - name: Regression suite (test/sql/regress_*.sql)
         run: ./test/run_regression_tests.sh
 
       - name: Integration suite (test/sql/[0-9]*.sql)

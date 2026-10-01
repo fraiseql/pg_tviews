@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the pg_tviews open-issue regression suite (test/sql/regress_issue_*.sql).
+# Run the pg_tviews regression suite (test/sql/regress_*.sql).
 #
 # Each test runs in a throwaway database. Tests that require the real jsonb_delta
 # extension are skipped (not failed) when it is not installed in the cluster, so
@@ -28,7 +28,7 @@ have_jsonb_delta=$(psql -d postgres -tAc \
   "SELECT count(*) FROM pg_available_extensions WHERE name='jsonb_delta'" 2>/dev/null || echo 0)
 
 pass=0 fail=0 skip=0 failed_names=""
-for f in "$sqldir"/regress_issue_*.sql; do
+for f in "$sqldir"/regress_*.sql; do
   name="$(basename "$f")"
   # The fallback test deliberately runs without jsonb_delta; everything else needs it.
   if [[ "$name" != *fallback* && "$have_jsonb_delta" == "0" ]]; then
