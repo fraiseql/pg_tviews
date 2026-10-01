@@ -19,9 +19,9 @@ env:
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
   JSONB_DELTA_REF: "v0.3.0"
   CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
-  # The confiture commit whose suites this release must pass. Empty until confiture
-  # targets the tviews schema; a release cannot be tagged while it is empty.
-  CONFITURE_REF: ""
+  # The confiture commit whose suites this release must pass (a full SHA: fetching
+  # by commit needs all 40 characters). A release cannot be tagged while it is empty.
+  CONFITURE_REF: "5789941f35681d10e9383942d44acd4b85d46db3"
 
 jobs:
   confiture:
