@@ -6,7 +6,10 @@
 //! - **unchanged**: the definition and the options passed match what exists.
 //! - **altered**: only `logged`, `fillfactor` or `data_gin_index` differ; changed in
 //!   place, rows kept.
-//! - **rebuilt**: the definition or `group_keys` differ; the TVIEW is dropped and
+//! - **replaced**: the definition differs but produces the same columns, and
+//!   `group_keys` is the same; the backing view is replaced and the rows reconciled
+//!   in place, touching only rows that change.
+//! - **rebuilt**: the columns or `group_keys` differ; the TVIEW is dropped and
 //!   created again, with its owner, privileges, comment, GraphQL type name and user
 //!   indexes carried over. Refused when something depends on it or it has what a
 //!   rebuild cannot carry.
@@ -285,7 +288,7 @@ pub(crate) fn create_or_replace(
 
     let (normalized_sql, normalized) = create::normalize_definition(&entity, query)?;
     check_key(&entity, &normalized)?;
-    let same_query = defines_view(meta.view_oid, &normalized_sql)?;
+    let comparison = compare_definition(meta.view_oid, &normalized_sql)?;
 
     let current = current_storage(&entity)?;
     let desired = Storage {
@@ -296,7 +299,7 @@ pub(crate) fn create_or_replace(
     let current_keys = create::stored_group_keys(&entity)?;
     let desired_keys = options.group_keys.or(current_keys.clone());
 
-    if same_query && desired_keys == current_keys {
+    if comparison.same_view && desired_keys == current_keys {
         if desired == current {
             return Ok("unchanged");
         }
@@ -309,6 +312,30 @@ pub(crate) fn create_or_replace(
             desired,
         )?;
         return Ok("altered");
+    }
+    if comparison.same_columns
+        && desired_keys == current_keys
+        && same_table_key(meta.tview_oid, &normalized_sql, &normalized)?
+    {
+        replace_in_place(
+            &entity,
+            &schema,
+            &meta,
+            &qualified_view,
+            &normalized_sql,
+            &comparison.base_tables,
+        )?;
+        if desired != current {
+            alter_storage(
+                &qualified_tv,
+                &tv_name,
+                &schema,
+                meta.tview_oid,
+                current,
+                desired,
+            )?;
+        }
+        return Ok("replaced");
     }
 
     rebuild(
@@ -339,27 +366,292 @@ fn check_key(entity: &str, normalized: &TViewSchema) -> TViewResult<()> {
     }
 }
 
-/// Whether `definition` defines the same view as `view_oid`: both rendered by
-/// `pg_get_viewdef`, which ignores layout, comments and keyword case and sees name
-/// resolution. An invalid definition raises its error.
-fn defines_view(view_oid: pg_sys::Oid, definition: &str) -> TViewResult<bool> {
+/// Whether `definition` keys the table on the column its primary key is on now:
+/// the first `DISTINCT ON` key, or `pk_<entity>`.
+fn same_table_key(
+    table: pg_sys::Oid,
+    definition: &str,
+    normalized: &TViewSchema,
+) -> TViewResult<bool> {
+    let distinct_on =
+        crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
+    let key = if distinct_on.is_empty() {
+        normalized.pk_column.clone()
+    } else {
+        crate::sql_parser::extract_distinct_on_output_keys(definition)
+            .ok()
+            .and_then(|keys| keys.into_iter().next())
+    };
+    let current = strings(
+        "SELECT a.attname::text FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
+          AND a.attnum = ANY (i.indkey) \
+         WHERE i.indrelid = $1 AND i.indisprimary",
+        &[oid(table)],
+    )?;
+    Ok(key.is_some_and(|key| current == [key]))
+}
+
+/// How a new definition compares with a TVIEW's backing view.
+struct Comparison {
+    /// Rendered by `pg_get_viewdef` like the backing view: layout, comments and
+    /// keyword case ignored, name resolution seen.
+    same_view: bool,
+    /// Same column names and types, in the same order.
+    same_columns: bool,
+    /// Ordinary and partitioned tables the new definition reads, through views.
+    base_tables: Vec<pg_sys::Oid>,
+}
+
+/// Compare `definition` with the backing view `view_oid` through a temporary view.
+/// An invalid definition raises its error.
+fn compare_definition(view_oid: pg_sys::Oid, definition: &str) -> TViewResult<Comparison> {
     run(&format!(
         "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
     ))?;
-    let same = Spi::connect(|client| {
+    let (same_view, same_columns) = Spi::connect(|client| {
         client
             .select(
-                "SELECT pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_candidate'::pg_catalog.regclass) \
-                      = pg_catalog.pg_get_viewdef($1)",
+                "WITH candidate AS (SELECT 'pg_temp.pg_tviews_candidate'::pg_catalog.regclass AS c) \
+                 SELECT pg_catalog.pg_get_viewdef(c) = pg_catalog.pg_get_viewdef($1), \
+                        (SELECT pg_catalog.array_agg(a.attname::text || ' ' \
+                                || pg_catalog.format_type(a.atttypid, a.atttypmod) ORDER BY a.attnum) \
+                         FROM pg_catalog.pg_attribute a \
+                         WHERE a.attrelid = c AND a.attnum > 0 AND NOT a.attisdropped) \
+                      = (SELECT pg_catalog.array_agg(a.attname::text || ' ' \
+                                || pg_catalog.format_type(a.atttypid, a.atttypmod) ORDER BY a.attnum) \
+                         FROM pg_catalog.pg_attribute a \
+                         WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped) \
+                 FROM candidate",
                 None,
                 &[oid(view_oid)],
             )?
             .first()
-            .get_one::<bool>()
+            .get_two::<bool, bool>()
     })
     .map_err(|e| catalog("Compare TVIEW definitions", &e))?;
+    let base_tables = oids(
+        &format!(
+            "{BASE_TABLES} FROM reads r JOIN pg_catalog.pg_class c ON c.oid = r.relid \
+             AND c.relkind IN ('r', 'p')"
+        ),
+        &[text("pg_temp.pg_tviews_candidate")],
+    )?;
     run("DROP VIEW pg_temp.pg_tviews_candidate")?;
-    Ok(same == Some(true))
+    Ok(Comparison {
+        same_view: same_view == Some(true),
+        same_columns: same_columns == Some(true),
+        base_tables,
+    })
+}
+
+/// The relations a view (`$1`, a regclass name) reads, followed through views, as
+/// `reads(relid)`; the caller completes the `SELECT … FROM reads`.
+const BASE_TABLES: &str = "\
+    WITH RECURSIVE reads(relid) AS ( \
+        SELECT $1::pg_catalog.regclass::oid \
+      UNION \
+        SELECT d.refobjid FROM reads r \
+        JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v' \
+        JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
+        JOIN pg_catalog.pg_depend d \
+          ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
+         AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+         AND d.refobjid <> v.oid) \
+    SELECT c.oid";
+
+/// Replace the backing view with `definition`, which has its columns, and bring
+/// the TVIEW and the TVIEWs that read its view to it in place: each is
+/// re-registered and its rows reconciled, as its owner, writing only rows that
+/// change. The tables, their indexes, privileges and dependents stay.
+fn replace_in_place(
+    entity: &str,
+    schema: &str,
+    meta: &TviewMeta,
+    qualified_view: &str,
+    definition: &str,
+    new_base_tables: &[pg_sys::Oid],
+) -> TViewResult<()> {
+    let dependents = dependents(entity, meta.view_oid)?;
+
+    // Writers lock a base table, then the TVIEW tables their flush writes: take
+    // the same order. SHARE on every table read, before or after, holds writers
+    // off until the transaction ends; EXCLUSIVE on the TVIEW tables lets readers
+    // go on. Each as the table's owner: SHARE needs more than SELECT.
+    let mut entities = vec![entity.to_string()];
+    entities.extend(dependents.iter().map(|(dependent, _)| dependent.clone()));
+    let tv_tables: Vec<pg_sys::Oid> = std::iter::once(meta.tview_oid)
+        .chain(dependents.iter().map(|&(_, table)| table))
+        .collect();
+    let mut read_tables = oids(
+        &format!(
+            "SELECT DISTINCT r.relid FROM {}.pg_tview_reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
+             WHERE r.entity = ANY ($1)",
+            crate::utils::ext_schema()
+        ),
+        &[texts(&entities)],
+    )?;
+    read_tables.extend_from_slice(new_base_tables);
+    read_tables.retain(|table| !tv_tables.contains(table));
+    read_tables.sort_unstable_by_key(|table| table.to_u32());
+    read_tables.dedup();
+    for &table in &read_tables {
+        lock_as_owner(table, "SHARE")?;
+    }
+    for &table in &tv_tables {
+        lock_as_owner(table, "EXCLUSIVE")?;
+    }
+
+    run(&format!(
+        "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
+    ))?;
+    let reads = create::reregister_metadata(entity, schema, definition)?;
+    crate::dependency::sync_entity_triggers(&reads, entity)?;
+    reconcile(entity, meta)?;
+
+    for (dependent, table) in &dependents {
+        let _owner = crate::owner::AsOwner::of_table(*table)?;
+        create::reregister_tview(dependent)?;
+        let meta =
+            TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::MetadataNotFound {
+                entity: dependent.clone(),
+            })?;
+        reconcile(dependent, &meta)?;
+    }
+    Ok(())
+}
+
+/// The TVIEWs whose view reads `view_oid`, directly or through views, as
+/// `(entity, table)`, each after the others it reads.
+fn dependents(entity: &str, view_oid: pg_sys::Oid) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
+    let (meta_table, reads) = (
+        crate::utils::meta_table(),
+        format!("{}.pg_tview_reads", crate::utils::ext_schema()),
+    );
+    // A TVIEW reads everything the TVIEWs it reads do, and their views: it reads
+    // more of the others' views than any of them.
+    Spi::connect(|client| {
+        let mut dependents = Vec::new();
+        for row in client.select(
+            &format!(
+                "SELECT m.entity::text, m.table_oid FROM {meta_table} m \
+                 JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                 WHERE m.entity <> $1 \
+                   AND EXISTS (SELECT 1 FROM {reads} r WHERE r.entity = m.entity AND r.relid = $2) \
+                 ORDER BY (SELECT count(*) FROM {reads} r JOIN {meta_table} o \
+                           ON o.view_oid = r.relid AND o.entity <> r.entity \
+                           WHERE r.entity = m.entity), m.entity"
+            ),
+            None,
+            &[text(entity), oid(view_oid)],
+        )? {
+            if let (Some(dependent), Some(table)) =
+                (row.get::<String>(1)?, row.get::<pg_sys::Oid>(2)?)
+            {
+                dependents.push((dependent, table));
+            }
+        }
+        Ok::<_, spi::Error>(dependents)
+    })
+    .map_err(|e| catalog("Find the TVIEWs reading a replaced one", &e))
+}
+
+/// `LOCK TABLE` in `mode`, as the table's owner.
+fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
+    let qualified = crate::utils::qualified_relname_from_oid(table)?;
+    let _owner = crate::owner::AsOwner::of_table(table)?;
+    run(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
+}
+
+/// Bring the rows of a TVIEW's table to those of its backing view with three
+/// statements that touch only rows that change, journaling each change. Rows
+/// that leave go first, so a unique index holds throughout.
+fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<()> {
+    use crate::queue::affected::{Change, record};
+
+    let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+
+    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    let keys = strings(
+        "SELECT a.attname::text FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
+          AND a.attnum = ANY (i.indkey) \
+         WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
+        &[oid(meta.tview_oid)],
+    )?;
+    let list = |columns: &[&String], prefix: &str| {
+        columns
+            .iter()
+            .map(|c| format!("{prefix}{}", quote_identifier(c)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let key_columns: Vec<&String> = keys.iter().collect();
+    let value_columns: Vec<&String> = columns.iter().filter(|c| !keys.contains(c)).collect();
+    let all_columns: Vec<&String> = columns.iter().collect();
+    let same_key = format!(
+        "({}) = ({})",
+        list(&key_columns, "t."),
+        list(&key_columns, "v.")
+    );
+    let pk = quote_identifier(&format!("pk_{entity}"));
+
+    let deleted = Spi::connect_mut(|client| {
+        let mut rows = Vec::new();
+        for row in client.update(
+            &format!(
+                "DELETE FROM {qualified_tv} t \
+                 WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
+                 RETURNING t.{pk}::text, pg_catalog.to_jsonb(t.*)->>'id'"
+            ),
+            None,
+            &[],
+        )? {
+            if let Some(key) = row.get::<String>(1)? {
+                rows.push((key, row.get::<String>(2)?));
+            }
+        }
+        Ok::<_, spi::Error>(rows)
+    })
+    .map_err(|e| catalog("Delete the rows the new definition drops", &e))?;
+    for (key, id) in deleted {
+        record(entity, key, Change::Deleted(id));
+    }
+    if !value_columns.is_empty() {
+        let set = value_columns
+            .iter()
+            .map(|c| format!("{0} = v.{0}", quote_identifier(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for key in strings(
+            &format!(
+                "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
+                 FROM {qualified_view} v \
+                 WHERE {same_key} AND ({}) IS DISTINCT FROM ({}) \
+                 RETURNING t.{pk}::text",
+                list(&value_columns, "t."),
+                list(&value_columns, "v.")
+            ),
+            &[],
+        )? {
+            record(entity, key, Change::Updated);
+        }
+    }
+    for key in strings(
+        &format!(
+            "INSERT INTO {qualified_tv} ({columns}) \
+             SELECT {columns} FROM {qualified_view} v \
+             WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
+             RETURNING {pk}::text",
+            columns = list(&all_columns, "")
+        ),
+        &[],
+    )? {
+        record(entity, key, Change::Inserted);
+    }
+    Ok(())
 }
 
 /// The table's actual storage, as `tviews.registry` reports it.
@@ -559,7 +851,8 @@ fn rebuild(
 /// Why a TVIEW (`$1` its table, `$2` its backing view) cannot be rebuilt: objects
 /// that depend on it, and table properties a rebuild would drop.
 const REBUILD_REFUSALS: &str = "\
-    SELECT pg_catalog.pg_describe_object(d.classid, d.objid, d.objsubid) || ' depends on it' \
+    SELECT DISTINCT pg_catalog.pg_describe_object(d.classid, d.objid, d.objsubid) \
+           || ' depends on it' \
     FROM pg_catalog.pg_depend d \
     WHERE d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
       AND d.refobjid IN ($1, $2) AND d.deptype = 'n' \
@@ -698,6 +991,29 @@ fn strings(query: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<String>> {
         Ok::<_, spi::Error>(values)
     })
     .map_err(|e| catalog("Read the TVIEW's catalog entries", &e))
+}
+
+fn oids(query: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<pg_sys::Oid>> {
+    Spi::connect(|client| {
+        let mut oids = Vec::new();
+        for row in client.select(query, None, args)? {
+            if let Some(oid) = row.get::<pg_sys::Oid>(1)? {
+                oids.push(oid);
+            }
+        }
+        Ok::<_, spi::Error>(oids)
+    })
+    .map_err(|e| catalog("Read the tables a TVIEW reads", &e))
+}
+
+fn texts(values: &[String]) -> DatumWithOid<'static> {
+    // SAFETY: the datum copies the strings.
+    unsafe {
+        DatumWithOid::new(
+            values.to_vec(),
+            PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
+        )
+    }
 }
 
 fn text(value: &str) -> DatumWithOid<'_> {

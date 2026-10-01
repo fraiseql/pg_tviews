@@ -169,9 +169,9 @@ DECLARE t record;
 BEGIN
     FOR t IN SELECT tr.tgname, tr.tgrelid::regclass AS rel
              FROM pg_trigger tr JOIN pg_proc p ON p.oid = tr.tgfoid
-             WHERE p.pronamespace = 'tviews'::regnamespace AND tr.tgnargs = 1
-               AND convert_from(substring(tr.tgargs, 1, length(tr.tgargs) - 1), 'UTF8')
-                   IN ('post', 'user_orders')
+             WHERE p.pronamespace = 'tviews'::regnamespace
+               AND tr.tgargs IN (convert_to('post', 'UTF8') || '\x00'::bytea,
+                                 convert_to('user_orders', 'UTF8') || '\x00'::bytea)
     LOOP
         EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
     END LOOP;
