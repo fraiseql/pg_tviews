@@ -41,28 +41,33 @@ jobs:
             cargo test --lib --no-default-features --features pg18 -- --skip pg_test_
 
   clippy:
+    name: clippy (pg${{ matrix.pg }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["16", "17", "18"]
     steps:
       - uses: actions/checkout@v4
       # Toolchain version comes from rust-toolchain.toml (bump it in a dedicated PR).
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Install PostgreSQL 18 (PGDG)
+      - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+          sudo apt-get install -y "postgresql-${{ matrix.pg }}" "postgresql-server-dev-${{ matrix.pg }}"
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+          cargo pgrx init "--pg${{ matrix.pg }}" "/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config"
       - name: Run strict clippy
         run: |
           # Lint policy (clippy::all + clippy::pedantic = deny, with reviewed
           # selective allows) lives in [lints.clippy] in Cargo.toml so CI and
           # local `cargo clippy` enforce exactly the same rules.
-          cargo clippy --all-targets --no-default-features --features pg18 -- -D warnings
+          cargo clippy --all-targets --no-default-features --features "pg${{ matrix.pg }}" -- -D warnings
       - name: Check for SQL quote-doubling anti-pattern
         run: |
           # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast

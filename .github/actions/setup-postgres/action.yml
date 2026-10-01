@@ -64,5 +64,5 @@ runs:
         git clone --depth 1 --branch "${{ inputs.jsonb-delta-ref }}" \
           "${{ inputs.jsonb-delta-repo }}" /tmp/jsonb_delta
         cd /tmp/jsonb_delta
-        cargo pgrx install --release \
+        cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
           --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
