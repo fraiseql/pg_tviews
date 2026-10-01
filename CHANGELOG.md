@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   followed) rather than from the SQL text. Registration fails when that analysis and
   `pg_depend` disagree on the tables the view reads, and warns about non-immutable
   functions the view calls (the tables they read are not tracked). Stored in the new
-  `pg_tview_meta.key_mappings`.
+  `pg_tview_meta.key_mappings`, with, for each `mapped` table, the generated query that
+  turns changed rows into keys (schema-qualified names and operators, so it resolves
+  nothing through `search_path`). A mapping query that would scan a large table
+  sequentially is reported at create time with the index to add.
 
 ### Fixed
 

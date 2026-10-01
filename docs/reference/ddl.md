@@ -255,6 +255,22 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
   tables that would require PK-based cascade paths (rejected at create time)
 
+### How a write finds the TVIEW rows to refresh
+
+When a TVIEW is created, pg_tviews reads PostgreSQL's query tree of its backing view
+(views, CTEs, subqueries and `UNION` branches included) and records, per base table,
+how a changed row maps to TVIEW keys (`tviews.registry.cascade_kinds`): the key is a
+column of the row (`local`), a generated query over the changed rows finds it
+(`mapped`, for chains of joins and non-equality conditions), a TVIEW it embeds
+refreshes it (`propagated`), or nothing selective links them (`all_keys`). A `mapped`
+query that would scan a large table sequentially is reported at create time with
+the index that avoids it:
+
+```
+NOTICE:  writes to public.tb_sku map to tv_order keys with a sequential scan of tb_line
+         (about 20000 rows); an index on tb_line (fk_sku) would make them cheaper
+```
+
 ### Tables no cascade reaches
 
 Triggers go on every base table the backing view reads. A write refreshes the TVIEW
