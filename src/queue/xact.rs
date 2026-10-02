@@ -149,49 +149,40 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // must never run under another transaction's snapshot, and a patch
             // carries values read in this one.
             warn_unflushed();
-            clear_queue();
-            super::patch::clear_patch_map();
-            super::patch::clear_fanout_map();
-
-            // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
-            // Clear audit buffer as safety net (should already be empty after flush).
-            crate::audit::clear_audit_buffer();
             // The crash-recovery check stays done for this backend: an UNLOGGED
             // TVIEW is only reset by a restart, which ends every backend.
-            super::cache::cascade_cache::clear_cache();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
         XactEvent::Prepare => {
             // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
             // the refresh writes are part of the prepared transaction. This backend's
             // transaction ends here: drop its in-memory state (no SPI in callbacks).
             crate::suspend::force_resume();
-            clear_queue();
-            super::patch::clear_patch_map();
-            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
-            super::cache::cascade_cache::clear_cache();
-            crate::audit::clear_audit_buffer();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
         XactEvent::Abort => {
             // Auto-resume suspension on abort (discard changes)
             crate::suspend::force_resume();
             crate::revision::reset();
-
-            clear_queue();
             crate::hooks::release_hook_guard_on_abort(true);
-            super::patch::clear_patch_map();
-            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
-            super::cache::cascade_cache::clear_cache();
-            crate::audit::clear_audit_buffer();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
     }
+}
+
+/// Drop everything a transaction kept in memory: the refresh queue, the direct
+/// and fan-out patches, the cascade cache, the audit buffer, the metrics and the
+/// affected-rows report. Run when the transaction ends, however it ends.
+fn clear_transaction_state() {
+    clear_queue();
+    super::patch::clear_patch_map();
+    super::patch::clear_fanout_map();
+    super::cache::cascade_cache::clear_cache();
+    crate::audit::clear_audit_buffer();
+    crate::metrics::metrics_api::reset_metrics();
+    super::affected::clear();
 }
 
 /// The WARNING for refresh work still queued when a transaction commits, once

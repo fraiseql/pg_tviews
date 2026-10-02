@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   "not managed by pg_tviews" WARNING: the row trigger PostgreSQL clones onto each
   partition looked the entity up by the partition. It now uses the partition root.
 
+- **Refresh work no longer carries over into the next transaction**. `COMMIT` cleared
+  neither the refresh queue nor the recorded patches (`PREPARE` and `ROLLBACK` did), so
+  work a transaction queued without flushing ran in whichever transaction wrote
+  next. It is now dropped at `COMMIT`, with a WARNING (once per backend) naming the
+  TVIEWs, so a missing flush shows up at once.
+- **`pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()` refresh
+  before returning in autocommit**. Outside a transaction block they queued the work
+  and nothing flushed it. Inside one they still queue it for the transaction's next
+  flush.
+
 ### Changed
 
 - **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The
