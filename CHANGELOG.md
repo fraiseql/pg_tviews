@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.22] - 2026-10-02
+
 ### Fixed
 
 - **Two READ COMMITTED transactions refreshing the same TVIEW row no longer lose a
