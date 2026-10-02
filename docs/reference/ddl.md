@@ -248,7 +248,8 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   key (`l.fk_order = o.pk_order`, `l.pos > o.min_pos`). An uncorrelated subquery
   links nothing: see [Tables no cascade reaches](#tables-no-cascade-reaches)
 - **Outer joins**: a table on the preserved side of a `LEFT`/`RIGHT JOIN` is linked
-  through the nullable side when the path goes on from it by an equality (a view
+  through the nullable side when the key is on that side or the path goes on from it
+  by an equality (a view
   `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` exposing `o.id AS
   order_id`, read by the TVIEW with `v.order_id = t.id`): a row with no match yields
   NULLs there and matches no key

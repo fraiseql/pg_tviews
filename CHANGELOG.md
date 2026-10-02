@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   cascades** (#165). `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` in a
   view, then `v.order_id = o.id`, left `tb_line` reported as uncascaded. A line with
   no matching order yields NULLs there and matches no key, so the link is followed
-  when the path goes on from the nullable side.
+  when the path then ends at the key or goes on by an equality (a TVIEW keyed on the
+  nullable side included).
 - **A table that feeds only view columns a TVIEW never reads is no longer tracked**
   (#166). Every write to it mapped its rows to TVIEW keys and recomputed them for
   nothing: on a real schema a 2,163-row insert took 646 ms instead of 104 ms. A view,
