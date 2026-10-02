@@ -305,8 +305,9 @@ pub(crate) fn create_or_replace(
     let desired_keys = options.group_keys.or(current_keys.clone());
 
     if comparison.same_view && desired_keys == current_keys {
+        let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         if desired == current {
-            return Ok("unchanged");
+            return Ok(if retyped { "altered" } else { "unchanged" });
         }
         alter_storage(
             &qualified_tv,
@@ -330,6 +331,7 @@ pub(crate) fn create_or_replace(
             &normalized_sql,
             &comparison.base_tables,
         )?;
+        retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         if desired != current {
             alter_storage(
                 &qualified_tv,
@@ -352,6 +354,43 @@ pub(crate) fn create_or_replace(
         desired_keys.as_ref(),
     )?;
     Ok("rebuilt")
+}
+
+/// Give each column of the TVIEW the type of its backing view's column where the
+/// two differ (a TVIEW created before its columns kept the view's types stored
+/// enums, domains and composites as `text` and dropped typmods). The convention
+/// columns, whose fixed types are by design, are left alone. Each column is
+/// converted with a cast; one that fails aborts the replace, naming the column.
+/// Returns whether a column changed.
+fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) -> TViewResult<bool> {
+    let stored: std::collections::HashMap<String, String> =
+        crate::utils::column_types(meta.tview_oid)?
+            .into_iter()
+            .collect();
+    let pk = format!("pk_{entity}");
+    let mut retyped = false;
+    for (column, view_type) in crate::utils::column_types(meta.view_oid)? {
+        if column == pk
+            || column == "id"
+            || column == "data"
+            || meta.fk_columns.contains(&column)
+            || stored.get(&column).is_none_or(|t| *t == view_type)
+        {
+            continue;
+        }
+        let qi = quote_identifier(&column);
+        run(&format!(
+            "ALTER TABLE {qualified_tv} ALTER COLUMN {qi} TYPE {view_type} USING {qi}::{view_type}"
+        ))
+        .map_err(|e| {
+            invalid(
+                "query",
+                format!("cannot convert column {column} of {qualified_tv} to {view_type}: {e}"),
+            )
+        })?;
+        retyped = true;
+    }
+    Ok(retyped)
 }
 
 /// What [`create_only`] found.
@@ -690,21 +729,14 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     if !value_columns.is_empty() {
         // A stored column can have another type than the view's (an unmapped user type
         // is stored as text): compare against the value the UPDATE would assign.
-        let stored_types = strings(
-            "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) \
-             FROM pg_catalog.unnest($2::text[]) WITH ORDINALITY AS c(name, n) \
-             JOIN pg_catalog.pg_attribute a ON a.attrelid = $1 AND a.attname = c.name \
-             ORDER BY c.n",
-            &[
-                oid(meta.tview_oid),
-                texts(
-                    &value_columns
-                        .iter()
-                        .map(|c| (*c).clone())
-                        .collect::<Vec<_>>(),
-                ),
-            ],
-        )?;
+        let stored: std::collections::HashMap<String, String> =
+            crate::utils::column_types(meta.tview_oid)?
+                .into_iter()
+                .collect();
+        let stored_types: Vec<String> = value_columns
+            .iter()
+            .filter_map(|c| stored.get(c.as_str()).cloned())
+            .collect();
         if stored_types.len() != value_columns.len() {
             return Err(TViewError::CatalogError {
                 operation: format!("Compare the rows of {qualified_tv} with its view"),
