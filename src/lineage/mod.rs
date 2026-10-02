@@ -260,7 +260,11 @@ impl Graph {
     pub fn classify(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
         let Some(root) = self.root_of(occ) else {
-            return Kind::AllKeys("the TVIEW key is not a column of a base table".to_string());
+            // A top level whose rows a write changes beyond its own (a window
+            // function, LIMIT…) has no root; say why.
+            return Kind::AllKeys(o.opaque_level.clone().unwrap_or_else(|| {
+                "the TVIEW key is not a column of a base table".to_string()
+            }));
         };
         if root.key.occ == occ {
             return Kind::Local(root.key.name.clone());

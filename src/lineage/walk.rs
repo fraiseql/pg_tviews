@@ -215,8 +215,18 @@ impl Walker<'_> {
                 .iter()
                 .position(|tle| cstr((**tle).resname) == self.ctx.key_column);
             if (*query).setOperations.is_null() {
-                let outputs = self.level(query, flags, Link::Top)?;
-                if let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p)) {
+                // A window function, LIMIT/OFFSET, a set-returning function or
+                // GROUPING SETS here change rows other than the written one: no
+                // row maps to its own key, so nothing gets a key root.
+                let opaque = top_opaque_reason(query);
+                let flags = Flags {
+                    opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
+                    ..flags.clone()
+                };
+                let outputs = self.level(query, &flags, Link::Top)?;
+                if opaque.is_none()
+                    && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
+                {
                     self.graph.roots.push(Root {
                         branch: flags.branch,
                         key: key.clone(),
@@ -224,6 +234,8 @@ impl Walker<'_> {
                 }
                 return Ok(());
             }
+            // LIMIT/OFFSET over the whole set operation applies to every branch.
+            let whole = top_opaque_reason(query);
             // UNION: each leaf is a branch with its own root. The leaves sit in
             // the rtable as subqueries, referenced from the set-operation tree.
             self.levels.push(Level {
@@ -240,12 +252,18 @@ impl Walker<'_> {
                     else {
                         continue;
                     };
+                    let opaque = whole
+                        .clone()
+                        .or_else(|| top_opaque_reason((*rte).subquery));
                     let leaf_flags = Flags {
                         branch,
+                        opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
                         ..flags.clone()
                     };
                     let outputs = self.level((*rte).subquery, &leaf_flags, Link::Top)?;
-                    if let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p)) {
+                    if opaque.is_none()
+                        && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
+                    {
                         self.graph.roots.push(Root {
                             branch,
                             key: key.clone(),
@@ -1191,6 +1209,14 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
             None
         }
     }
+}
+
+/// [`opaque_reason`] for a level whose output is the TVIEW itself.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn top_opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
+    // SAFETY: forwarded.
+    unsafe { opaque_reason(query) }.map(|why| format!("{why} in the top-level SELECT"))
 }
 
 /// Whether sort/group reference `sortref` appears in a GROUP BY / DISTINCT clause.
