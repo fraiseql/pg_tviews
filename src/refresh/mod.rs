@@ -138,6 +138,30 @@ pub(crate) fn run_counted_upsert(
     Ok(produced.unwrap_or(0))
 }
 
+/// Lock the existing rows of `pks` in `qi_tv` (in key order) before recomputing
+/// them. Under READ COMMITTED a concurrent writer recomputing one of these rows
+/// is then waited for here, and the recompute that follows, a new statement,
+/// sees what it committed; without the lock it waited inside its own upsert and
+/// wrote a document computed before that commit. Under REPEATABLE READ and
+/// SERIALIZABLE the upsert already fails on such a row (SQLSTATE 40001).
+pub(crate) fn lock_rows(qi_tv: &str, pk_col: &str, pks: &[i64]) -> spi::Result<()> {
+    // SAFETY: reads the backend's isolation level.
+    let transaction_snapshot =
+        unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
+    if transaction_snapshot || pks.is_empty() {
+        return Ok(());
+    }
+    let qi_pk = quote_identifier(pk_col);
+    Spi::run_with_args(
+        &format!(
+            "SELECT 1 FROM {qi_tv} WHERE {qi_pk} OPERATOR(pg_catalog.=) ANY($1) \
+             ORDER BY {qi_pk} FOR UPDATE"
+        ),
+        // SAFETY: the array datum borrows `pks`, which outlives the call.
+        &[unsafe { DatumWithOid::new(pks.to_vec(), pgrx::PgBuiltInOids::INT8ARRAYOID.value()) }],
+    )
+}
+
 /// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed.
 pub(crate) fn run_journaled_delete(
     entity: &str,
