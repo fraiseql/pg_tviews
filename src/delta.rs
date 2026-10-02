@@ -177,7 +177,7 @@ fn pg_tviews_mapping_query(tview: &str, base_table: pg_sys::Oid) -> Option<Strin
             "SELECT DISTINCT {} FROM {DELTA}",
             crate::utils::quote_identifier(mapping.column.as_deref()?)
         )),
-        "mapped" => rendered(entity, mapping).ok()?,
+        "mapped" | "all_keys" if mapping.sql.is_some() => rendered(entity, mapping).ok()?,
         _ => None,
     }
 }
@@ -196,9 +196,30 @@ fn map_statement(
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         return refresh_all(entity, "its mapping of a written table is unknown");
     };
+    let full_refresh = meta.uncascaded_policy == UncascadedPolicy::FullRefresh;
     match mapping.kind.as_str() {
-        "mapped" => {
-            if event == Event::Update && fan_out(trigger, entity, table_oid, mapping)? {
+        "all_keys" if full_refresh => {
+            let table = if event == Event::Delete {
+                OLD_TABLE
+            } else {
+                NEW_TABLE
+            };
+            let changed = run_with_transition_tables(
+                trigger,
+                entity,
+                &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
+            )?;
+            if !changed.is_empty() {
+                crate::queue::enqueue_refresh_all(entity);
+            }
+        }
+        // An `all_keys` table outside `full_refresh` still maps the reads of it
+        // that can be traced (#162).
+        "mapped" | "all_keys" if mapping.sql.is_some() => {
+            if mapping.kind == "mapped"
+                && event == Event::Update
+                && fan_out(trigger, entity, table_oid, mapping)?
+            {
                 return Ok(());
             }
             let Some(keys_sql) = rendered(entity, mapping)? else {
@@ -215,21 +236,6 @@ fn map_statement(
             )?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
-            }
-        }
-        "all_keys" if meta.uncascaded_policy == UncascadedPolicy::FullRefresh => {
-            let table = if event == Event::Delete {
-                OLD_TABLE
-            } else {
-                NEW_TABLE
-            };
-            let changed = run_with_transition_tables(
-                trigger,
-                entity,
-                &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
-            )?;
-            if !changed.is_empty() {
-                crate::queue::enqueue_refresh_all(entity);
             }
         }
         _ => {}
@@ -324,8 +330,15 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
     let Some(mapping) = meta.key_mapping(table_oid, Some(root)) else {
         return Ok(false);
     };
+    let full_refresh = meta.uncascaded_policy == UncascadedPolicy::FullRefresh;
     match mapping.kind.as_str() {
-        "mapped" => {
+        "all_keys" if full_refresh => {
+            crate::queue::enqueue_refresh_all(entity);
+            Ok(true)
+        }
+        // An `all_keys` table outside `full_refresh` still maps the reads of it
+        // that can be traced (#162).
+        "mapped" | "all_keys" if mapping.sql.is_some() => {
             let Some(keys_sql) = rendered(entity, mapping)? else {
                 refresh_all(entity, "a relation its mapping reads is gone")?;
                 return Ok(true);
@@ -372,12 +385,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
             }
             Ok(true)
         }
-        "all_keys" => {
-            if meta.uncascaded_policy == UncascadedPolicy::FullRefresh {
-                crate::queue::enqueue_refresh_all(entity);
-            }
-            Ok(true)
-        }
+        "all_keys" => Ok(true),
         _ => Ok(false),
     }
 }

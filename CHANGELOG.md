@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two READ COMMITTED transactions refreshing the same TVIEW row no longer lose a
+  change.** The second writer waited on the first's row lock inside its own refresh,
+  then wrote the document it had computed before the first committed. The refresh now
+  locks the existing rows it recomputes before it reads the view, so the recompute
+  sees the other writer's commit. REPEATABLE READ and SERIALIZABLE are unchanged
+  (the second writer gets SQLSTATE `40001`).
+- **A table linked to the TVIEW key through the nullable side of an outer join
+  cascades** (#165). `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` in a
+  view, then `v.order_id = o.id`, left `tb_line` reported as uncascaded. A line with
+  no matching order yields NULLs there and matches no key, so the link is followed
+  when the path then ends at the key or goes on by an equality (a TVIEW keyed on the
+  nullable side included).
+- **A table that feeds only view columns a TVIEW never reads is no longer tracked**
+  (#166). Every write to it mapped its rows to TVIEW keys and recomputed them for
+  nothing: on a real schema a 2,163-row insert took 646 ms instead of 104 ms. A view,
+  subquery or CTE is now walked only for the columns the level above reads (a
+  column used for sorting, grouping or `DISTINCT`, or returning a set, always
+  counts), and the tables behind the others get no trigger.
+- **A `DISTINCT ON` TVIEW keyed on `pk_<entity>` can read tables through joins
+  again** (#164, regression in 0.1.0-beta.21). Every `DISTINCT ON` TVIEW with a table
+  mapped through a join was refused, with a count of the wrong tables. Keyed on
+  `pk_<entity>`, or on a unique NOT NULL column of its own table (the TVIEW then gets
+  a unique index on `pk_<entity>`), those tables now map to its rows. Keyed on
+  anything else, it is refused with the tables named, unless
+  `pg_tviews.uncascaded_policy` is `full_refresh`, which refreshes it in full on
+  writes to them.
+- **A write to a TVIEW's own table refreshes its row again when another read of the
+  table can't be traced** (#162, regression in 0.1.0-beta.21). One untraceable read
+  of a table (here, inside a `DISTINCT ON` view) made the whole table `all_keys`, and
+  under the default `warn` policy its writes refreshed nothing, the written row
+  included. The reads that can be traced now keep refreshing the rows they reach;
+  only the rest is left to `pg_tviews.uncascaded_policy`, and the WARNING says so.
+  The repro's view itself now maps entirely: a `GROUP BY` or `DISTINCT ON` view
+  column equal to the key through a join (`DISTINCT ON (l.fk_order) o.pk_order` with
+  `l.fk_order = o.pk_order`) passes through like the key.
+- **A view whose CTEs read each other three or more deep, or that defines a CTE it
+  never uses, is accepted again** (#163, regression in 0.1.0-beta.21). The analyzer
+  counted a CTE body's references from the level it was walking instead of the level
+  that defines the CTE, so a third CTE in a chain lost its table and the create was
+  refused ("not found in the view's query"). An unused CTE's tables are now known but
+  not tracked: nothing they hold can change the TVIEW.
+
+### Upgrade notes
+
+- **After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW with
+  the fixes above (a TVIEW's own table refreshing again, unused CTEs and unread view
+  columns no longer tracked, outer-join links, `DISTINCT ON`). The update marks every
+  TVIEW for it.
+
 ## [0.1.0-beta.21] - 2026-10-02
 
 ### Added

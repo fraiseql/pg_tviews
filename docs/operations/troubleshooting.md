@@ -123,7 +123,9 @@ are supported. A window function, `LIMIT`/`OFFSET`, a set-returning function or
 **Warning**: `writes to public.tb_flag will not refresh public.tv_report (...)`
 
 The definition reads a table with no condition linking its rows to the TVIEW key.
-Writes to it leave the TVIEW stale under the default `warn` policy:
+Writes to it leave the TVIEW stale under the default `warn` policy, except for the
+rows its other reads reach when the reason ends with `the rows its other reads reach
+are still refreshed`:
 
 ```sql
 SELECT name, uncascaded_tables, uncascaded_policy

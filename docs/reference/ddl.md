@@ -247,6 +247,21 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   writes to the tables they read cascade when a condition links them to the TVIEW
   key (`l.fk_order = o.pk_order`, `l.pos > o.min_pos`). An uncorrelated subquery
   links nothing: see [Tables no cascade reaches](#tables-no-cascade-reaches)
+- **Outer joins**: a table on the preserved side of a `LEFT`/`RIGHT JOIN` is linked
+  through the nullable side when the key is on that side or the path goes on from it
+  by an equality (a view
+  `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` exposing `o.id AS
+  order_id`, read by the TVIEW with `v.order_id = t.id`): a row with no match yields
+  NULLs there and matches no key
+- **`GROUP BY` / `DISTINCT ON` views**: a view column passes through when it is a
+  grouping or `DISTINCT ON` key, or equal to one through a join condition
+  (`DISTINCT ON (l.fk_order) o.pk_order` with `l.fk_order = o.pk_order`): its value
+  is the key's on every row that can match
+- **View columns the TVIEW doesn't read**: a view, subquery or CTE is followed only
+  for the columns read from it (in the select list, `WHERE`, joins, or through a
+  whole-row reference). The tables behind the other columns get no trigger, so
+  writes to them cost nothing. A column used for sorting, grouping or `DISTINCT`,
+  or returning a set, always counts
 - **Functions**: jsonb_build_object(), jsonb_array_elements(), etc.
 - **Operators**: Standard PostgreSQL operators
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
@@ -256,22 +271,28 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   recomputes the view's row for each changed key, and both operators compare whole
   rows, key included, so a row enters or leaves the TVIEW as the set operation says
 - **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body reads one or
-  several joined base tables, reads earlier CTEs or subqueries in its `FROM`, or is
-  a set operation. The columns the CTE joins on must pass base columns through
-  unchanged (a computed join column cannot be traced back to a base row)
+  several joined base tables, reads earlier CTEs (a chain of any length) or
+  subqueries in its `FROM`, or is a set operation. The columns the CTE joins on must
+  pass base columns through unchanged (a computed join column cannot be traced back
+  to a base row). A CTE the view defines but never uses is accepted; the tables it
+  reads get no trigger
 - **Window functions, `LIMIT`/`OFFSET`, set-returning functions, `GROUPING SETS`**:
   accepted, but a write to a table read under one of them can change rows other
   than its own, so the table is `all_keys` and the TVIEW's `uncascaded_policy`
   decides (see [Tables no cascade reaches](#tables-no-cascade-reaches))
 - **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
-  the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`)
+  the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`).
+  Tables read through joins are followed when the DISTINCT ON key is
+  `pk_<entity>`, or a unique NOT NULL column of the TVIEW's own table that no other
+  table it reads has (the TVIEW then gets a unique index on `pk_<entity>`); with
+  another key the create is refused, naming them, unless
+  `pg_tviews.uncascaded_policy` is `full_refresh`, which refreshes the TVIEW in full
+  on writes to them
 
 #### ❌ Not Supported
 
 - **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
 - **Self-Joins**: May cause dependency cycles
-- **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
-  tables that would require PK-based cascade paths (rejected at create time)
 
 ### How a write finds the TVIEW rows to refresh
 
@@ -333,6 +354,11 @@ listed in `tviews.registry.uncascaded_tables`. Common shapes:
   the reason reads `read under a window function in the top-level SELECT`;
 - a subquery or view whose rows are not passed through to the key: under the same
   shapes, or a join on a computed column.
+
+A table read in several places is `all_keys` when one of them can't be traced, but
+its other reads keep refreshing the rows they reach (a TVIEW's own table always
+refreshes its rows): the reason then ends with `the rows its other reads reach are
+still refreshed`, and the policy decides only about the rest.
 
 What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
 

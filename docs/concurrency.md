@@ -1,8 +1,7 @@
 # Concurrency
 
 How TVIEW refreshes behave when several transactions write at once: when the refresh
-runs, what it locks, what each isolation level gives you, and what to do about the one
-case READ COMMITTED gets wrong.
+runs, what it locks, and what each isolation level gives you.
 
 ## When a TVIEW is refreshed
 
@@ -26,7 +25,7 @@ dropped with a WARNING naming the TVIEWs (it means a flush trigger is missing; s
 
 | What | Lock | Held until |
 |---|---|---|
-| A refresh of some rows (every write) | row locks on the `tv_<entity>` rows it inserts, updates or deletes | end of the writer's transaction |
+| A refresh of some rows (every write) | row locks on the `tv_<entity>` rows it recomputes (taken before it reads the view, under `READ COMMITTED`), inserts, updates or deletes | end of the writer's transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | row locks on the rows that differ (it reconciles the TVIEW with its view) | end of transaction |
 | `pg_tviews_refresh(entity)` | `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
@@ -41,33 +40,24 @@ in different orders can deadlock. PostgreSQL detects it and aborts one of them w
 
 ## Isolation levels
 
-Every isolation level works. They differ in one case: **two concurrent transactions
-whose writes both refresh the same TVIEW row** (a writer renames a user while another
-edits one of the user's posts, and `tv_post` embeds the author).
+Every isolation level works. They differ when **two concurrent transactions write
+rows that feed the same TVIEW row** (a writer renames a user while another edits one
+of the user's posts, and `tv_post` embeds the author).
 
 | Isolation level | What happens to the second writer | The TVIEW row |
 |---|---|---|
-| `SERIALIZABLE`, `REPEATABLE READ` | fails with `could not serialize access due to concurrent update` (SQLSTATE `40001`) | correct once the application retries the transaction |
-| `READ COMMITTED` (PostgreSQL's default) | waits for the first, then writes the row it computed **before** the first committed | **can miss the first writer's change** until the row is refreshed again |
+| `READ COMMITTED` (PostgreSQL's default) | waits for the first, then recomputes the row with a snapshot that sees the first one's commit | carries both changes |
+| `REPEATABLE READ`, `SERIALIZABLE` | fails with `could not serialize access due to concurrent update` (SQLSTATE `40001`) | correct once the application retries the transaction, as for any read-modify-write |
 
-Under `READ COMMITTED`, the second writer computes the TVIEW row from its view, finds
-the row locked by the first writer, waits, and then writes what it computed, which
-does not include the first writer's change. A change applied as a direct patch (an
-`UPDATE` of a column copied as-is into `data`) is not affected: it writes only the
-changed keys.
+Under `READ COMMITTED`, the refresh locks the existing TVIEW rows it is about to
+recompute (`SELECT … FOR UPDATE`, in key order) before it reads the view: a second
+writer waits there, and the recompute that follows sees the first writer's change.
 
-What to do:
-
-- If concurrent transactions often change rows that feed the same TVIEW row, run them
-  at `REPEATABLE READ` and retry on SQLSTATE `40001`, as you would for any
-  read-modify-write:
-
-  ```sql
-  ALTER DATABASE mydb SET default_transaction_isolation TO 'repeatable read';
-  ```
-
-- Otherwise, a row left stale this way is repaired by the next write that refreshes
-  it, or at once with `SELECT tviews.pg_tviews_refresh('post');`.
+One case remains: two transactions that **create** the same TVIEW row at once (the row
+does not exist yet, so there is nothing to lock). The second waits on the unique
+index, then writes the row it computed. It needs both writers to insert rows that
+feed one key that no transaction has materialized yet; the next write to that row,
+or `SELECT tviews.pg_tviews_refresh('…')`, repairs it.
 
 ## Suspended refresh
 

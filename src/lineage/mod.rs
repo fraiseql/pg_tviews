@@ -169,11 +169,24 @@ pub struct Conjunct {
     pub sql: Sql,
     pub a: usize,
     pub b: usize,
-    /// It must hold for a contributing row of `a`, so it maps `a` toward `b`.
-    pub a_to_b: bool,
-    pub b_to_a: bool,
+    /// Whether it maps a row of `a` toward `b`.
+    pub a_to_b: Maps,
+    pub b_to_a: Maps,
     /// Set when the predicate is `a.col = b.col` with `=`.
     pub equality: Option<(Column, Column)>,
+}
+
+/// Whether a predicate maps a changed row of one occurrence to the rows of another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Maps {
+    No,
+    /// It must hold for every contributing row of the first occurrence.
+    Yes,
+    /// An outer join's equality toward its nullable side: it holds for a row that
+    /// has a match. A row with no match yields NULLs there, which no key and no
+    /// further equality matches, so a path may take it and then end at the key or
+    /// go on by an equality (#165).
+    IfMatched,
 }
 
 /// The TVIEW key in one UNION branch: a column of the root occurrence.
@@ -191,6 +204,9 @@ pub struct Graph {
     pub roots: Vec<Root>,
     /// Functions the view calls that may read tables `pg_tviews` does not see.
     pub untracked_functions: Vec<String>,
+    /// Tables read only where the output never depends on them (a CTE the view
+    /// does not use): not tracked.
+    pub unread_tables: std::collections::BTreeSet<u32>,
 }
 
 /// How a write to one occurrence maps to keys.
@@ -212,7 +228,8 @@ pub struct TableLineage {
     pub kind: TableKind,
     /// Mapped occurrences, each with its predicate chain (for the mapping query).
     pub paths: Vec<(usize, Vec<usize>)>,
-    /// `mapped`: the query over [`DELTA`] returning the keys its rows can affect.
+    /// `mapped`, and `all_keys` when some reads can be traced: the query over
+    /// [`DELTA`] returning the keys its rows can affect.
     pub sql: Option<String>,
     /// Columns of the table the TVIEW reads (name, attnum); empty when unknown.
     pub columns: Vec<(String, i16)>,
@@ -287,13 +304,20 @@ impl Graph {
 
     /// The shortest chain of usable predicates from `from` to `to`.
     fn path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
-        let mut previous: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-        let mut queue = VecDeque::from([from]);
-        while let Some(at) = queue.pop_front() {
+        // A state is an occurrence, and whether it was reached through an
+        // `IfMatched` step. From there the path ends at the key (a row with no
+        // match has a NULL key) or goes on by an equality, which fails on the
+        // NULLs of a row with no match; any other predicate might hold for them.
+        type State = (usize, bool);
+        let mut previous: BTreeMap<State, (State, usize)> = BTreeMap::new();
+        let start: State = (from, false);
+        let mut queue = VecDeque::from([start]);
+        while let Some(state) = queue.pop_front() {
+            let (at, pending) = state;
             if at == to {
                 let mut path = Vec::new();
-                let mut cur = to;
-                while cur != from {
+                let mut cur = state;
+                while cur != start {
                     let (prev, conjunct) = previous[&cur];
                     path.push(conjunct);
                     cur = prev;
@@ -307,15 +331,18 @@ impl Graph {
             order.sort_by_key(|&i| self.conjuncts[i].equality.is_none());
             for i in order {
                 let c = &self.conjuncts[i];
-                let next = if c.a == at && c.a_to_b {
-                    c.b
-                } else if c.b == at && c.b_to_a {
-                    c.a
+                if pending && c.equality.is_none() {
+                    continue;
+                }
+                let next = if c.a == at && c.a_to_b != Maps::No {
+                    (c.b, c.a_to_b == Maps::IfMatched)
+                } else if c.b == at && c.b_to_a != Maps::No {
+                    (c.a, c.b_to_a == Maps::IfMatched)
                 } else {
                     continue;
                 };
-                if next != from && !previous.contains_key(&next) {
-                    previous.insert(next, (at, i));
+                if next.0 != from && !previous.contains_key(&next) {
+                    previous.insert(next, (state, i));
                     queue.push_back(next);
                 }
             }
@@ -501,9 +528,25 @@ impl Graph {
         Some(sql)
     }
 
+    /// The predicate chain from a `Local` or `Mapped` occurrence to its root's key
+    /// (empty for the root itself).
+    fn occurrence_path(&self, occ: usize, kind: &Kind) -> Vec<usize> {
+        match kind {
+            Kind::Mapped(p) => p.clone(),
+            // A local occurrence other than the root reads the key through its one
+            // equality.
+            _ => self
+                .root_of(occ)
+                .filter(|r| r.key.occ != occ)
+                .and_then(|r| self.path(occ, r.key.occ))
+                .unwrap_or_default(),
+        }
+    }
+
     /// Classify every base table, combining the kinds of its occurrences: any
-    /// `AllKeys` wins; occurrences propagation covers need nothing more; the rest
-    /// are `Local` when they all read the key from the same column, else `Mapped`.
+    /// `AllKeys` wins, keeping the mapping of the occurrences that can be traced;
+    /// occurrences propagation covers need nothing more; the rest are `Local` when
+    /// they all read the key from the same column, else `Mapped`.
     #[must_use]
     pub fn tables(&self, propagates: &dyn Fn(&str, u32) -> bool) -> Vec<TableLineage> {
         let mut by_table: Vec<(u32, Vec<(usize, Kind)>)> = Vec::new();
@@ -523,6 +566,13 @@ impl Graph {
                     Kind::AllKeys(r) => Some(r.clone()),
                     _ => None,
                 }) {
+                    // The reads that can be traced keep refreshing; only the rest
+                    // is left to the TVIEW's uncascaded_policy (#162).
+                    for (occ, k) in &kinds {
+                        if matches!(k, Kind::Local(_) | Kind::Mapped(_)) {
+                            paths.push((*occ, self.occurrence_path(*occ, k)));
+                        }
+                    }
                     TableKind::AllKeys(reason)
                 } else {
                     let direct: Vec<&(usize, Kind)> = kinds
@@ -547,22 +597,16 @@ impl Graph {
                         TableKind::Local(columns[0].clone())
                     } else {
                         for (occ, k) in direct {
-                            let path = match k {
-                                Kind::Mapped(p) => p.clone(),
-                                // A local occurrence other than the root reads the
-                                // key through its one equality.
-                                _ => self
-                                    .root_of(*occ)
-                                    .filter(|r| r.key.occ != *occ)
-                                    .and_then(|r| self.path(*occ, r.key.occ))
-                                    .unwrap_or_default(),
-                            };
-                            paths.push((*occ, path));
+                            paths.push((*occ, self.occurrence_path(*occ, k)));
                         }
                         TableKind::Mapped
                     }
                 };
-                let sql = (kind == TableKind::Mapped).then(|| self.mapping_sql(&paths));
+                let sql = match kind {
+                    TableKind::Mapped => Some(self.mapping_sql(&paths)),
+                    TableKind::AllKeys(_) if !paths.is_empty() => Some(self.mapping_sql(&paths)),
+                    _ => None,
+                };
                 let lookups = self.lookups(&paths);
                 let hop = match paths.as_slice() {
                     [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
@@ -594,6 +638,8 @@ impl Graph {
 #[derive(Debug, Clone)]
 pub struct Lineage {
     pub tables: Vec<TableLineage>,
+    /// Tables the view reads only where its output cannot depend on them.
+    pub unread: Vec<u32>,
 }
 
 impl Lineage {
@@ -609,13 +655,22 @@ impl Lineage {
         self.tables.iter().any(|t| t.kind == TableKind::Mapped)
     }
 
-    /// The tables no cascade reaches (`all_keys`), with the reason.
+    /// The tables no cascade reaches (`all_keys`), with the reason, which says when
+    /// some reads of the table still refresh the rows they reach.
     #[must_use]
     pub fn all_keys(&self) -> Vec<(u32, String, String)> {
         self.tables
             .iter()
             .filter_map(|t| match &t.kind {
-                TableKind::AllKeys(reason) => Some((t.relid, t.qualified.clone(), reason.clone())),
+                TableKind::AllKeys(reason) => Some((
+                    t.relid,
+                    t.qualified.clone(),
+                    if t.sql.is_some() {
+                        format!("{reason}; the rows its other reads reach are still refreshed")
+                    } else {
+                        reason.clone()
+                    },
+                )),
                 _ => None,
             })
             .collect()
@@ -636,7 +691,12 @@ impl Lineage {
                     match &t.kind {
                         TableKind::Local(column) => entry["column"] = column.clone().into(),
                         TableKind::Propagated(entity) => entry["entity"] = entity.clone().into(),
-                        TableKind::AllKeys(reason) => entry["reason"] = reason.clone().into(),
+                        TableKind::AllKeys(reason) => {
+                            entry["reason"] = reason.clone().into();
+                            if let Some(sql) = &t.sql {
+                                entry["sql"] = sql.clone().into();
+                            }
+                        }
                         TableKind::Mapped => {
                             entry["sql"] = t.sql.clone().unwrap_or_default().into();
                             if let Some((own, root)) = &t.hop {
@@ -732,7 +792,12 @@ pub fn analyze(
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
     // pg_depend and the query tree must agree on the tables.
-    let found: HashSet<u32> = graph.occurrences.iter().map(|o| o.relid).collect();
+    let found: HashSet<u32> = graph
+        .occurrences
+        .iter()
+        .map(|o| o.relid)
+        .chain(graph.unread_tables.iter().copied())
+        .collect();
     let expected: HashSet<u32> = base_tables.iter().map(|o| o.to_u32()).collect();
     if found != expected {
         let name = |relid: &u32| {
@@ -773,7 +838,13 @@ pub fn analyze(
             explain(entity, table, sql)?;
         }
     }
-    Ok(Lineage { tables })
+    let unread = graph
+        .unread_tables
+        .iter()
+        .copied()
+        .filter(|relid| tables.iter().all(|t| t.relid != *relid))
+        .collect();
+    Ok(Lineage { tables, unread })
 }
 
 /// A mapping-query template with the current names of its relations and columns;
@@ -837,7 +908,8 @@ pub struct KeyMapping {
     pub column: Option<String>,
     #[serde(default)]
     pub entity: Option<String>,
-    /// `mapped`: the query template (see [`render_template`]).
+    /// `mapped` (and `all_keys` for its traceable reads): the query template (see
+    /// [`render_template`]).
     #[serde(default)]
     pub sql: Option<String>,
     /// Columns of the table the TVIEW reads; empty when unknown.
@@ -1027,8 +1099,8 @@ mod tests {
             sql,
             a: a.occ,
             b: b.occ,
-            a_to_b,
-            b_to_a,
+            a_to_b: if a_to_b { Maps::Yes } else { Maps::No },
+            b_to_a: if b_to_a { Maps::Yes } else { Maps::No },
             equality: Some((a, b)),
         }
     }
@@ -1039,6 +1111,7 @@ mod tests {
             conjuncts,
             roots: vec![Root { branch: 0, key }],
             untracked_functions: vec![],
+            unread_tables: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1086,6 +1159,58 @@ mod tests {
         assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));
     }
 
+    /// `l.fk_order = o2.pk_order` from `tb_line l LEFT JOIN tb_order o2`: it holds
+    /// for rows of `o2`, and toward `o2` only for a line that has a match.
+    fn outer_on(l: usize, o2: usize) -> Conjunct {
+        let mut c = eq(col(l, "fk_order"), col(o2, "pk_order"), false, true);
+        c.a_to_b = Maps::IfMatched;
+        c
+    }
+
+    #[test]
+    fn a_nullable_step_is_taken_when_the_path_goes_on() {
+        // tv over o, reading v_line (l LEFT JOIN o2) where v.order_id = o.id (#165).
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(2, 1), eq(col(1, "id"), col(0, "id"), true, false)],
+            col(0, "pk_order"),
+        );
+        assert_eq!(g.classify(2, NONE), Kind::Mapped(vec![0, 1]));
+    }
+
+    #[test]
+    fn a_nullable_step_may_end_at_the_key() {
+        // tb_line l LEFT JOIN tb_order o, keyed on o: a line with no order has a
+        // NULL key, which is no TVIEW row; one with an order maps to it.
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(1, 0)],
+            col(0, "pk_order"),
+        );
+        assert_eq!(g.classify(1, NONE), Kind::Local("fk_order".into()));
+    }
+
+    #[test]
+    fn a_nullable_step_goes_on_only_by_an_equality() {
+        // After l → o2 (nullable), only an equality is known to fail on o2's NULLs.
+        let mut sql = Sql::default();
+        sql.push_text("COALESCE(o2.id, 0) IS NOT DISTINCT FROM o.id");
+        let loose = Conjunct {
+            sql,
+            a: 1,
+            b: 0,
+            a_to_b: Maps::Yes,
+            b_to_a: Maps::No,
+            equality: None,
+        };
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(2, 1), loose],
+            col(0, "pk_order"),
+        );
+        assert!(matches!(g.classify(2, NONE), Kind::AllKeys(_)));
+    }
+
     #[test]
     fn an_unlinked_subquery_is_all_keys_with_the_reason() {
         let mut line = occ(2, "tb_line");
@@ -1110,6 +1235,7 @@ mod tests {
             conjuncts: vec![],
             roots: vec![],
             untracked_functions: vec![],
+            unread_tables: std::collections::BTreeSet::new(),
         };
         assert_eq!(
             g.classify(0, NONE),
@@ -1289,6 +1415,18 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].kind, TableKind::Mapped);
         assert_eq!(tables[0].paths, vec![(0, vec![]), (1, vec![0])]);
+    }
+
+    #[test]
+    fn an_all_keys_table_keeps_the_mapping_of_its_traceable_reads() {
+        // tb_order is the root, and read again in a subquery nothing links (#162).
+        let mut again = occ(1, "tb_order");
+        again.in_sublink = true;
+        let g = graph(vec![occ(1, "tb_order"), again], vec![], col(0, "pk_order"));
+        let tables = g.tables(NONE);
+        assert!(matches!(tables[0].kind, TableKind::AllKeys(_)));
+        assert_eq!(tables[0].paths, vec![(0, vec![])]);
+        assert!(tables[0].sql.is_some());
     }
 
     #[test]

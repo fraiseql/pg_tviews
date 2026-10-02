@@ -93,6 +93,13 @@ pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
         error!("No TVIEW metadata for source_oid: {:?}", source_oid);
     };
 
+    // Wait for a concurrent writer of this row before reading the view.
+    super::lock_rows(
+        &qualified_relname_from_oid(meta.tview_oid)?,
+        &format!("pk_{}", meta.entity_name),
+        &[pk],
+    )?;
+
     // 2. A UNION view can return several rows for one pk: read it first so the
     //    union_duplicate_policy applies before the upsert.
     if meta.is_union && !view_row_exists(&meta, pk)? {

@@ -92,6 +92,8 @@ pub fn refresh_bulk(entity: &str, pks: &[i64]) -> TViewResult<()> {
     // DatumWithOid wraps the validated BIGINT[] for SPI parameter passing.
     let batch = crate::config::batch_size();
     for chunk in pks.chunks(batch) {
+        // Wait for concurrent writers of these rows before reading the view.
+        super::lock_rows(&qi_tv, &pk_col, chunk)?;
         super::run_counted_upsert(
             entity,
             &qi_tv,

@@ -80,7 +80,14 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
      `LIMIT`/`OFFSET`, a set-returning function or `GROUPING SETS` in the backing view's own
      SELECT (or a set-operation branch): such a level gets no key root, since a write changes rows
      other than its own (`count(*) OVER ()`, the rows a `LIMIT` keeps).
-   Registration fails when the analyzer and `pg_depend` disagree on the tables the view reads.
+   A table is `AllKeys` when any read of it is, but its traceable reads keep their mapping query,
+   which runs under every policy but `full_refresh` (#162). An outer join's equality maps a
+   preserved row toward the nullable side; the path then ends at the key or goes on by an equality
+   (#165). In a `GROUP BY` or `DISTINCT ON` level, a column equal to a key column through such an
+   equality passes through like the key (#162).
+   Registration fails when the analyzer and `pg_depend` disagree on the tables the view reads;
+   tables read only by an unused CTE or behind view columns nothing reads are accepted and not
+   tracked (#163, #166).
    A predicate the analyzer cannot write in SQL is left out, which only widens a mapping.
 2. `Mapped` and `AllKeys` tables get **statement-level triggers** with transition tables, one per
    event (`INSERT`: `NEW TABLE`; `UPDATE`: both; `DELETE`: `OLD TABLE`), which run the cached
