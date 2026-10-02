@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **Two READ COMMITTED transactions refreshing the same TVIEW row no longer lose a
+  change.** The second writer waited on the first's row lock inside its own refresh,
+  then wrote the document it had computed before the first committed. The refresh now
+  locks the existing rows it recomputes before it reads the view, so the recompute
+  sees the other writer's commit. REPEATABLE READ and SERIALIZABLE are unchanged
+  (the second writer gets SQLSTATE `40001`).
 - **A table linked to the TVIEW key through the nullable side of an outer join
   cascades** (#165). `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` in a
   view, then `v.order_id = o.id`, left `tb_line` reported as uncascaded. A line with
