@@ -40,6 +40,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         catalog: CatalogNames::default(),
         cte_parent: None,
         read_ctes: HashSet::new(),
+        wanted: None,
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -155,6 +156,9 @@ struct Walker<'c> {
     cte_parent: Option<usize>,
     /// `(defining query, name)` of every CTE walked, by reference or as unread.
     read_ctes: HashSet<(usize, String)>,
+    /// The output columns the level above reads from the next level entered
+    /// (`None`: every column).
+    wanted: Option<HashSet<i16>>,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -295,6 +299,7 @@ impl Walker<'_> {
         flags: &Flags,
         link: Link,
     ) -> TViewResult<Vec<Resolved>> {
+        let wanted = self.wanted.take();
         if self.levels.len() >= MAX_DEPTH {
             return Err(TViewError::InvalidInput {
                 parameter: "tview definition".to_string(),
@@ -315,7 +320,7 @@ impl Walker<'_> {
             };
             self.push_level(query, Vec::new(), link);
             let result = self
-                .level_body(query, &flags, link, opaque.is_some())
+                .level_body(query, &flags, link, opaque.is_some(), wanted.as_ref())
                 .and_then(|outputs| self.unread_ctes(&flags).map(|()| outputs));
             self.levels.pop();
             result
@@ -329,32 +334,68 @@ impl Walker<'_> {
         flags: &Flags,
         link: Link,
         opaque: bool,
+        wanted: Option<&HashSet<i16>>,
     ) -> TViewResult<Vec<Resolved>> {
         // SAFETY: fields of a valid Query; RTEs and expressions belong to it.
         unsafe {
-            for rte in elements::<pg_sys::RangeTblEntry>((*query).rtable) {
-                let info = self.rte(rte, flags)?;
-                self.current().rtes.push(info);
+            // A view, subquery or CTE in FROM is walked only for the columns this
+            // level reads of it (#166).
+            let read = referenced_columns(query);
+            for (i, rte) in elements::<pg_sys::RangeTblEntry>((*query).rtable)
+                .into_iter()
+                .enumerate()
+            {
+                self.wanted = match read.get(&(i + 1)) {
+                    Some(Some(columns)) => Some(columns.clone()),
+                    Some(None) => None,
+                    None => Some(HashSet::new()),
+                };
+                let info = self.rte(rte, flags);
+                self.wanted = None;
+                self.current().rtes.push(info?);
             }
             let jointree = (*query).jointree;
             if !jointree.is_null() {
                 self.join_item(jointree.cast(), flags)?;
             }
-            // Subquery expressions anywhere else in this level.
-            for tle in elements::<pg_sys::TargetEntry>((*query).targetList) {
-                self.sublinks((*tle).expr.cast(), flags, false)?;
+            // Subquery expressions anywhere else in this level. Those of an output
+            // column nothing above reads cannot change the TVIEW: their tables are
+            // only recorded (#166).
+            let unread = Flags {
+                unread: true,
+                ..flags.clone()
+            };
+            let skipped: Vec<bool> = elements::<pg_sys::TargetEntry>((*query).targetList)
+                .iter()
+                .map(|tle| {
+                    wanted.is_some_and(|w| !w.contains(&(**tle).resno))
+                        && (**tle).ressortgroupref == 0
+                        && !pg_sys::expression_returns_set((**tle).expr.cast())
+                })
+                .collect();
+            for (tle, skip) in elements::<pg_sys::TargetEntry>((*query).targetList)
+                .into_iter()
+                .zip(&skipped)
+            {
+                let tle_flags = if *skip { &unread } else { flags };
+                self.sublinks((*tle).expr.cast(), tle_flags, false)?;
             }
             self.sublinks((*query).havingQual, flags, false)?;
             self.note_functions(query.cast());
 
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
             let mut outputs = Vec::new();
-            for tle in elements::<pg_sys::TargetEntry>((*query).targetList) {
-                let pass_through = link == Link::Top
-                    || (!opaque
-                        && (!grouped || in_clause((*tle).ressortgroupref, (*query).groupClause))
-                        && (!(*query).hasDistinctOn
-                            || in_clause((*tle).ressortgroupref, (*query).distinctClause)));
+            for (tle, skip) in elements::<pg_sys::TargetEntry>((*query).targetList)
+                .into_iter()
+                .zip(skipped)
+            {
+                let pass_through = !skip
+                    && (link == Link::Top
+                        || (!opaque
+                            && (!grouped
+                                || in_clause((*tle).ressortgroupref, (*query).groupClause))
+                            && (!(*query).hasDistinctOn
+                                || in_clause((*tle).ressortgroupref, (*query).distinctClause))));
                 outputs.push(if pass_through {
                     self.resolve_expr((*tle).expr.cast())
                 } else {
@@ -1383,6 +1424,121 @@ fn quote_literal(text: &str) -> Option<String> {
 }
 
 // ── read-only collectors over expression trees ──────────────────────────────
+
+/// The columns `query` reads from each of its range table entries, by rtindex:
+/// `Some(columns)`, or `None` when it reads the whole row. An entry it doesn't
+/// read is absent. Vars of nested subqueries that point at this level count; a
+/// reference through a join alias counts as one to the columns behind it.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn referenced_columns(query: *mut pg_sys::Query) -> HashMap<usize, Option<HashSet<i16>>> {
+    struct Refs {
+        depth: u32,
+        vars: Vec<(usize, i16)>,
+    }
+    unsafe extern "C-unwind" fn walker(
+        node: *mut pg_sys::Node,
+        ctx: *mut std::ffi::c_void,
+    ) -> bool {
+        // SAFETY: `ctx` is the Refs passed below; `node` is valid.
+        unsafe {
+            let refs = &mut *ctx.cast::<Refs>();
+            match tag(node) {
+                None => false,
+                Some(pg_sys::NodeTag::T_Var) => {
+                    let var = node.cast::<pg_sys::Var>();
+                    if (*var).varlevelsup == refs.depth {
+                        refs.vars.push(((*var).varno as usize, (*var).varattno));
+                    }
+                    false
+                }
+                Some(pg_sys::NodeTag::T_Query) => {
+                    refs.depth += 1;
+                    let done = pg_sys::query_tree_walker(node.cast(), Some(walker), ctx, 0);
+                    refs.depth -= 1;
+                    done
+                }
+                Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
+            }
+        }
+    }
+    let mut refs = Refs {
+        depth: 0,
+        vars: Vec::new(),
+    };
+    // Join aliases (and PostgreSQL 18 GROUP entries) are resolved below, not
+    // walked: they name every column of the join.
+    #[cfg(feature = "pg18")]
+    let flags = pg_sys::QTW_IGNORE_JOINALIASES | pg_sys::QTW_IGNORE_GROUPEXPRS;
+    #[cfg(not(feature = "pg18"))]
+    let flags = pg_sys::QTW_IGNORE_JOINALIASES;
+    // SAFETY: a read-only walk of a valid Query.
+    unsafe {
+        pg_sys::query_tree_walker(
+            query,
+            Some(walker),
+            std::ptr::from_mut(&mut refs).cast(),
+            flags.cast_signed(),
+        );
+    }
+    // SAFETY: the range table of a valid Query.
+    let rtable = unsafe { elements::<pg_sys::RangeTblEntry>((*query).rtable) };
+    let mut read: HashMap<usize, Option<HashSet<i16>>> = HashMap::new();
+    let mut pending = refs.vars;
+    let mut seen: HashSet<(usize, i16)> = HashSet::new();
+    while let Some((varno, attno)) = pending.pop() {
+        if !seen.insert((varno, attno)) {
+            continue;
+        }
+        let Some(&rte) = rtable.get(varno.wrapping_sub(1)) else {
+            continue;
+        };
+        // SAFETY: fields of a valid RTE of this level.
+        let behind = unsafe {
+            match (*rte).rtekind {
+                pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
+                #[cfg(feature = "pg18")]
+                pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
+                _ => None,
+            }
+        };
+        if let Some(list) = behind {
+            // SAFETY: the alias expressions of the entry; Vars there point at
+            // this level.
+            let exprs = unsafe { elements::<pg_sys::Node>(list) };
+            let chosen: Vec<*mut pg_sys::Node> = if attno == 0 {
+                exprs
+            } else {
+                exprs
+                    .get(usize::try_from(attno - 1).unwrap_or(usize::MAX))
+                    .copied()
+                    .into_iter()
+                    .collect()
+            };
+            for expr in chosen {
+                let mut vars = Vec::new();
+                // SAFETY: a valid expression.
+                unsafe { collect_vars(expr, &mut vars) };
+                for var in vars {
+                    // SAFETY: a Var collected above.
+                    unsafe {
+                        if (*var).varlevelsup == 0 {
+                            pending.push(((*var).varno as usize, (*var).varattno));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        let entry = read.entry(varno).or_insert_with(|| Some(HashSet::new()));
+        if attno == 0 {
+            *entry = None;
+        } else if let Some(columns) = entry {
+            columns.insert(attno);
+        }
+    }
+    read
+}
 
 /// The Vars of an expression, in walk order, not descending into subqueries.
 ///
