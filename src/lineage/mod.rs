@@ -260,7 +260,13 @@ impl Graph {
     pub fn classify(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
         let Some(root) = self.root_of(occ) else {
-            return Kind::AllKeys("the TVIEW key is not a column of a base table".to_string());
+            // A top level whose rows a write changes beyond its own (a window
+            // function, LIMIT…) has no root; say why.
+            return Kind::AllKeys(
+                o.opaque_level
+                    .clone()
+                    .unwrap_or_else(|| "the TVIEW key is not a column of a base table".to_string()),
+            );
         };
         if root.key.occ == occ {
             return Kind::Local(root.key.name.clone());
@@ -1090,6 +1096,24 @@ mod tests {
             Kind::AllKeys(
                 "read in a subquery, with no condition linking it to the TVIEW key".into()
             )
+        );
+    }
+
+    #[test]
+    fn an_opaque_top_level_without_a_root_is_all_keys_with_the_reason() {
+        // SELECT pk_win, … count(*) OVER () FROM tb_win: the walker gives the
+        // opaque top level no root and stamps its occurrences.
+        let mut win = occ(1, "tb_win");
+        win.opaque_level = Some("read under a window function in the top-level SELECT".into());
+        let g = Graph {
+            occurrences: vec![win],
+            conjuncts: vec![],
+            roots: vec![],
+            untracked_functions: vec![],
+        };
+        assert_eq!(
+            g.classify(0, NONE),
+            Kind::AllKeys("read under a window function in the top-level SELECT".into())
         );
     }
 

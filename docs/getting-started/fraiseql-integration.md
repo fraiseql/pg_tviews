@@ -276,17 +276,16 @@ FROM tb_post p;
 SELECT * FROM pg_tviews_health_check();
 ```
 
-### Performance Metrics
+### Size and Row Counts
 
 ```sql
-SELECT * FROM pg_tviews_performance_summary
-WHERE hour > now() - interval '24 hours';
+SELECT * FROM pg_tviews_performance_stats();
 ```
 
-### Queue Monitoring
+### Queue Statistics (this session's transaction)
 
 ```sql
-SELECT * FROM pg_tviews_queue_realtime;
+SELECT pg_tviews_queue_stats();
 ```
 
 ## Troubleshooting
@@ -304,11 +303,11 @@ SELECT * FROM pg_tviews_health_check();
 
 **Performance degradation:**
 ```sql
--- Check cascade depth
-SELECT * FROM pg_tviews_cache_stats;
+-- Check what a write to tb_user refreshes
+SELECT * FROM pg_tviews_show_cascade_path('user');
 
--- Monitor queue size
-SELECT count(*) FROM pg_tviews_queue_realtime;
+-- Size and indexes of each TVIEW
+SELECT * FROM pg_tviews_performance_stats();
 ```
 
 **JSONB too large:**

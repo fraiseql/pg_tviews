@@ -60,6 +60,16 @@ SELECT pg_tviews_create('tv_item', $TV$
     FROM tb_item
 $TV$);
 
+-- The TVIEW keeps the view's column types (they were stored as text before beta.21).
+DO $$ BEGIN
+    IF (SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+        WHERE attrelid = 'tv_item'::regclass AND attname = 'mood') <> 'app.mood' THEN
+        RAISE EXCEPTION 'FAIL #156: tv_item.mood is %, view has app.mood',
+            (SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+             WHERE attrelid = 'tv_item'::regclass AND attname = 'mood');
+    END IF;
+END $$;
+
 -- A view that itself uses an extension operator: it is stored parsed, so the
 -- owner's search_path does not matter for it.
 CREATE TABLE tb_node (

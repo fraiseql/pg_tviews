@@ -149,6 +149,14 @@ RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS 'SELECT 2';
 
+-- Placeholder monitoring objects returned constant values: dropped. Their real
+-- counterparts are pg_tviews_queue_stats(), pg_tviews_health_check() and
+-- pg_tviews_performance_stats().
+DROP VIEW @extschema@.pg_tviews_queue_realtime;
+DROP VIEW @extschema@.pg_tviews_cache_stats;
+DROP VIEW @extschema@.pg_tviews_performance_summary;
+DROP FUNCTION @extschema@.pg_tviews_hook_status();
+
 -- Registration derives more than before: re-derive every TVIEW with
 -- pg_tviews_reregister_all() after the update.
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

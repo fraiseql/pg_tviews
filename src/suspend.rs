@@ -90,38 +90,8 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
     if changed.is_empty() {
         return Ok(Vec::new());
     }
-    // A TVIEW embedding a rebuilt one's document (`graph.parents`) is stale too.
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
-    let mut order: Vec<String> = Vec::new();
-    let mut queue: std::collections::VecDeque<String> = changed.into_iter().collect();
-    while let Some(entity) = queue.pop_front() {
-        if order.contains(&entity) {
-            continue;
-        }
-        queue.extend(graph.parents.get(&entity).cloned().unwrap_or_default());
-        order.push(entity);
-    }
-    // A TVIEW whose view reads another tv_* table is rebuilt after it.
-    order.sort_by_key(|e| graph.topo_order.iter().position(|t| t == e));
-    for entity in &order {
-        let args = [unsafe {
-            pgrx::datum::DatumWithOid::new(
-                entity.as_str(),
-                pgrx::PgOid::BuiltIn(pgrx::PgBuiltInOids::TEXTOID).value(),
-            )
-        }];
-        let sql = format!(
-            "SELECT {}.pg_tviews_refresh($1)",
-            crate::utils::ext_schema()
-        );
-        // Rebuilt as the TVIEW's owner, like any refresh (issue #136).
-        let _owner = crate::owner::AsOwner::of_entity(entity)?;
-        pgrx::Spi::run_with_args(&sql, &args).map_err(|e| crate::TViewError::SpiError {
-            query: format!("pg_tviews_refresh('{entity}')"),
-            error: e.to_string(),
-        })?;
-    }
-    Ok(order)
+    // A TVIEW whose view reads a rebuilt one is stale too.
+    crate::admin::rebuild_with_dependents(&changed, false)
 }
 
 /// Force resume (used by transaction callback)

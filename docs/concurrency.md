@@ -1,452 +1,92 @@
-# Concurrency Model for pg_tviews
+# Concurrency
 
-**Version:** 1.0
-**Status:** Implemented
-**Date:** 2025-12-09
+How TVIEW refreshes behave when several transactions write at once: when the refresh
+runs, what it locks, what each isolation level gives you, and what to do about the one
+case READ COMMITTED gets wrong.
 
----
+## When a TVIEW is refreshed
 
-## Overview
+A write to a base table is refreshed **inside the writer's transaction**:
 
-pg_tviews implements a **strict concurrency model** to ensure data consistency during TVIEW refresh operations. This document describes the isolation requirements, locking strategy, and best practices for concurrent operations.
+- at the end of each statement (a statement-level flush trigger), so an autocommit
+  statement is refreshed before it returns;
+- before `COMMIT` and before `PREPARE TRANSACTION` (the `ProcessUtility` hook), so the
+  refresh writes belong to the transaction.
 
----
+The refresh writes are ordinary row writes to `tv_<entity>`: other sessions see them
+when the writer commits, exactly like its base-table writes, and a rollback discards
+both. The refresh runs as the TVIEW's owner with `search_path = pg_catalog, pg_temp`,
+whoever the writer is.
 
-## Transaction Isolation Requirements
+Nothing is queued across transactions: work left queued when a transaction commits is
+dropped with a WARNING naming the TVIEWs (it means a flush trigger is missing; see
+`pg_tviews_health_check()`).
 
-### ⚠️ CRITICAL: REPEATABLE READ Required
+## Locks
 
-**All databases using pg_tviews MUST use REPEATABLE READ or SERIALIZABLE isolation level.**
+| What | Lock | Held until |
+|---|---|---|
+| A refresh of some rows (every write) | row locks on the `tv_<entity>` rows it inserts, updates or deletes | end of the writer's transaction |
+| A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | row locks on the rows that differ (it reconciles the TVIEW with its view) | end of transaction |
+| `pg_tviews_refresh(entity)` | `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
+| Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
 
-### Why This Matters
+So two transactions whose writes refresh the same TVIEW row run one after the other
+on that row: the second waits for the first to commit or roll back. Readers are never
+blocked, except by `pg_tviews_refresh()`.
 
-When a trigger fires to refresh a TVIEW:
-1. Trigger reads from backing view: `SELECT * FROM v_post WHERE pk_post = 1`
-2. Without REPEATABLE READ, this could see **dirty reads** from other concurrent transactions
-3. Could materialize **inconsistent state** in `tv_*` tables
-4. Violates TVIEW's consistency guarantees
+Like any workload that locks rows, two transactions refreshing overlapping TVIEW rows
+in different orders can deadlock. PostgreSQL detects it and aborts one of them with
+`deadlock detected` (SQLSTATE `40P01`); retry it.
 
-### How to Configure
+## Isolation levels
 
-**Option 1: Database-wide (RECOMMENDED)**
+Every isolation level works. They differ in one case: **two concurrent transactions
+whose writes both refresh the same TVIEW row** (a writer renames a user while another
+edits one of the user's posts, and `tv_post` embeds the author).
 
-```sql
-ALTER DATABASE mydb SET default_transaction_isolation TO 'repeatable read';
-```
+| Isolation level | What happens to the second writer | The TVIEW row |
+|---|---|---|
+| `SERIALIZABLE`, `REPEATABLE READ` | fails with `could not serialize access due to concurrent update` (SQLSTATE `40001`) | correct once the application retries the transaction |
+| `READ COMMITTED` (PostgreSQL's default) | waits for the first, then writes the row it computed **before** the first committed | **can miss the first writer's change** until the row is refreshed again |
 
-**Option 2: Session-level**
+Under `READ COMMITTED`, the second writer computes the TVIEW row from its view, finds
+the row locked by the first writer, waits, and then writes what it computed, which
+does not include the first writer's change. A change applied as a direct patch (an
+`UPDATE` of a column copied as-is into `data`) is not affected: it writes only the
+changed keys.
 
-```sql
--- At session start
-SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-```
+What to do:
 
-**Option 3: Transaction-level**
+- If concurrent transactions often change rows that feed the same TVIEW row, run them
+  at `REPEATABLE READ` and retry on SQLSTATE `40001`, as you would for any
+  read-modify-write:
 
-```sql
-BEGIN;
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
--- ... your operations ...
-COMMIT;
-```
+  ```sql
+  ALTER DATABASE mydb SET default_transaction_isolation TO 'repeatable read';
+  ```
 
-### Verification
+- Otherwise, a row left stale this way is repaired by the next write that refreshes
+  it, or at once with `SELECT tviews.pg_tviews_refresh('post');`.
 
-Check current isolation level:
+## Suspended refresh
 
-```sql
-SHOW transaction_isolation;
--- Expected: 'repeatable read' or 'serializable'
-```
+`pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`
+or the end of the transaction, whichever comes first: suspension never outlives the
+transaction that started it. Resuming rebuilds the TVIEWs that changed and those that
+embed them (each with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does). The
+`pg_tviews.suspend_triggers` setting suspends for the session, records nothing, and
+leaves the TVIEWs stale until they are refreshed.
 
-Check database default:
+## Settings
 
-```sql
-SELECT name, setting
-FROM pg_settings
-WHERE name = 'default_transaction_isolation';
--- Expected: 'repeatable read'
-```
+The settings are listed in the [README's Configuration table](../README.md#configuration).
+The ones that bear on concurrent writers:
 
----
+- `pg_tviews.max_queue_size`: refreshes one transaction may queue before it fails;
+- `pg_tviews.direct_patch_enabled`: the direct-patch fast path (on by default);
+- `pg_tviews.suspend_triggers`: see above.
 
-## Advisory Lock Strategy
-
-pg_tviews uses **PostgreSQL advisory locks** to prevent concurrent refreshes of the same TVIEW row.
-
-### Lock Namespace
-
-- **Lock Class:** `hashtext('pg_tviews')` - Unique namespace for all pg_tviews locks
-- **Lock Key:** `hashtext(entity || ':' || pk_value)` - Per-row granularity
-
-### Lock Hierarchy
-
-| Level | Lock Type | Purpose | Example |
-|-------|-----------|---------|---------|
-| **Metadata** | Advisory (session) | Prevent concurrent CREATE/DROP TABLE tv_* | During DDL operations |
-| **Row** | Advisory (transaction) | Prevent concurrent refresh of same row | `pg_advisory_xact_lock(hash('post:42'))` |
-| **Cascade** | _(Future)_ | Prevent cascade storms | Batch optimization |
-
-### Lock Lifecycle
-
-1. **Acquisition:** At start of `refresh_tview_row()`
-2. **Type:** Transaction-scoped (`pg_advisory_xact_lock`)
-3. **Release:** Automatic at transaction end (COMMIT/ROLLBACK)
-4. **Timeout:** 5 seconds (configurable via `pg_tviews.lock_timeout_ms`)
-
-### Example
-
-```sql
--- Internally, pg_tviews does this:
-SELECT pg_advisory_xact_lock(
-    hashtext('pg_tviews'),          -- Namespace
-    hashtext('post:42')              -- Entity:PK
-);
-
--- Refresh tv_post row 42
-UPDATE tv_post SET data = ... WHERE pk_post = 42;
-
--- Lock released at COMMIT
-```
-
----
-
-## Deadlock Prevention
-
-### The Problem
-
-Concurrent transactions updating different base tables could create circular dependencies:
-
-```
-Transaction A: UPDATE tb_user (locks user:1, then tries to lock post:10)
-Transaction B: UPDATE tb_post (locks post:10, then tries to lock user:1)
-→ DEADLOCK
-```
-
-### The Solution: Deterministic Lock Ordering
-
-pg_tviews acquires locks in **sorted order** (alphabetically by entity name, then numerically by PK):
-
-```rust
-// Internal implementation
-let mut entities_to_refresh = vec![
-    ("post", 10),
-    ("user", 1),
-];
-
-// Sort by entity name, then PK
-entities_to_refresh.sort();
-
-// Lock in order: user:1, then post:10
-for (entity, pk) in entities_to_refresh {
-    lock_tview_row(entity, pk)?;
-    refresh_tview_row(entity, pk)?;
-}
-```
-
-### Deadlock Detection
-
-PostgreSQL's built-in deadlock detector will still trigger if:
-- Non-pg_tviews code holds conflicting locks
-- Circular dependencies in user application code
-
-**Resolution:** Review application code for lock ordering consistency.
-
----
-
-## Performance Impact
-
-### Advisory Lock Overhead
-
-| Operation | Without Locks | With Locks | Overhead |
-|-----------|--------------|------------|----------|
-| Single row refresh | 3.5ms | 3.6ms | **+0.1ms (3%)** |
-| 10-row cascade | 25ms | 26ms | **+1ms (4%)** |
-| 100-row cascade | 180ms | 185ms | **+5ms (3%)** |
-
-**Conclusion:** Advisory locks add **minimal overhead** (~3%) for strong consistency guarantees.
-
-### Lock Contention Scenarios
-
-#### Low Contention (typical)
-- Different rows updated concurrently: **No blocking**
-- Different entities updated concurrently: **No blocking**
-
-#### High Contention (rare)
-- **Same row** updated by multiple transactions: **Serializes** (one waits)
-- Example: 10 concurrent updates to `tv_post` row 42
-  - First transaction: locks immediately
-  - Others: wait up to 5s (timeout), then retry
-
-#### Mitigation
-- Use batch updates where possible
-- Increase `pg_tviews.lock_timeout_ms` if needed
-- Monitor `pg_stat_activity` for lock waits
-
----
-
-## Configuration Options
-
-### GUC Parameters
-
-```sql
--- Maximum cascade depth (default: 10)
-SET pg_tviews.max_cascade_depth = 20;
-
--- Lock timeout in milliseconds (default: 5000)
-SET pg_tviews.lock_timeout_ms = 10000;
-
--- Enable debug logging (default: false)
-SET pg_tviews.debug_refresh = true;
-
--- Enable verbose trigger logging (default: false)
-SET pg_tviews.debug_triggers = true;
-```
-
-### Recommended Settings
-
-**Development:**
-```sql
-SET pg_tviews.debug_refresh = true;
-SET pg_tviews.debug_triggers = true;
-SET client_min_messages = DEBUG1;
-```
-
-**Production:**
-```sql
-SET pg_tviews.max_cascade_depth = 10;      -- Strict limit
-SET pg_tviews.lock_timeout_ms = 5000;      -- 5s timeout
-SET pg_tviews.debug_refresh = false;       -- Reduce log noise
-SET pg_tviews.debug_triggers = false;
-```
-
----
-
-## Monitoring & Troubleshooting
-
-### Check Active Locks
-
-```sql
--- View active pg_tviews locks
-SELECT
-    locktype,
-    classid,
-    objid,
-    mode,
-    granted,
-    pid,
-    query
-FROM pg_locks l
-JOIN pg_stat_activity a ON a.pid = l.pid
-WHERE locktype = 'advisory'
-  AND classid = hashtext('pg_tviews');
-```
-
-### Check Lock Waits
-
-```sql
--- Find transactions waiting on pg_tviews locks
-SELECT
-    a.pid,
-    a.query,
-    a.wait_event_type,
-    a.wait_event,
-    age(now(), a.query_start) AS wait_time
-FROM pg_stat_activity a
-WHERE wait_event = 'Lock'
-  AND query LIKE '%pg_tviews%';
-```
-
-### Check Isolation Level
-
-```sql
--- Current session
-SHOW transaction_isolation;
-
--- All active sessions
-SELECT
-    pid,
-    usename,
-    application_name,
-    current_setting('transaction_isolation') AS isolation
-FROM pg_stat_activity
-WHERE state = 'active';
-```
-
-### Common Issues
-
-#### Issue 1: Isolation Level Warning
-
-```
-WARNING: pg_tviews requires REPEATABLE READ isolation. Current: read committed
-```
-
-**Solution:**
-```sql
-ALTER DATABASE mydb SET default_transaction_isolation TO 'repeatable read';
--- Reconnect sessions
-```
-
-#### Issue 2: Lock Timeout
-
-```
-ERROR: Lock timeout on TVIEW post row 42 (timeout: 5000ms)
-```
-
-**Solution:**
-```sql
--- Increase timeout
-SET pg_tviews.lock_timeout_ms = 10000;
-
--- Or identify blocking transaction
-SELECT * FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%tv_post%';
-```
-
-#### Issue 3: Deadlock Detected
-
-```
-ERROR: deadlock detected
-DETAIL: Process 1234 waits for ShareLock on transaction 5678
-```
-
-**Solution:**
-- Review application code for lock ordering
-- Check for custom triggers that might hold locks
-- Ensure all code uses pg_tviews functions (not direct updates)
-
----
-
-## Best Practices
-
-### ✅ DO
-
-1. **Set REPEATABLE READ at database level**
-   ```sql
-   ALTER DATABASE mydb SET default_transaction_isolation TO 'repeatable read';
-   ```
-
-2. **Use short transactions**
-   - Minimize time between UPDATE and COMMIT
-   - Reduces lock contention
-
-3. **Batch related updates**
-   ```sql
-   BEGIN;
-   UPDATE tb_company SET name = 'New Name' WHERE pk_company = 1;
-   UPDATE tb_user SET role = 'admin' WHERE pk_user = 5;
-   COMMIT;
-   -- Single transaction = single cascade pass
-   ```
-
-4. **Monitor lock contention in production**
-   - Set up alerts for long-running locks
-   - Track cascade duration metrics
-
-### ❌ DON'T
-
-1. **Don't use READ COMMITTED**
-   - Will cause dirty reads
-   - Violates consistency guarantees
-
-2. **Don't hold long-running transactions**
-   - Blocks other refreshes
-   - Can cause timeout errors
-
-3. **Don't manually UPDATE tv_* tables**
-   - Bypasses concurrency controls
-   - Breaks consistency model
-   - Use base table updates only
-
-4. **Don't nest transactions manually**
-   - pg_tviews handles nesting internally
-   - Manual nesting can cause deadlocks
-
----
-
-## Performance Optimization
-
-### Batch Updates
-
-**Instead of:**
-```sql
--- 100 individual transactions
-FOR i IN 1..100 LOOP
-    UPDATE tb_post SET status = 'published' WHERE pk_post = i;
-END LOOP;
-```
-
-**Do this:**
-```sql
--- Single transaction (faster cascade)
-BEGIN;
-UPDATE tb_post SET status = 'published' WHERE pk_post BETWEEN 1 AND 100;
-COMMIT;
-```
-
-**Why:** Single transaction = one cascade pass through all affected TVIEWs.
-
-### Reduce Cascade Depth
-
-**Design TVIEWs with minimal nesting:**
-- ✅ Good: 3-4 levels (company → user → post)
-- ⚠️ Acceptable: 5-7 levels (with performance monitoring)
-- ❌ Avoid: 8+ levels (high cascade overhead)
-
-### Use Appropriate Indexes
-
-```sql
--- Index FK columns for faster cascade lookups
-CREATE INDEX idx_post_fk_user ON tb_post(fk_user);
-CREATE INDEX idx_user_fk_company ON tb_user(fk_company);
-
--- Index UUID columns for FraiseQL queries
-CREATE INDEX idx_post_user_id ON tv_post((data->>'user_id'));
-```
-
----
-
-## Future Enhancements
-
-### Planned Enhancements
-
-1. **Batch Lock Optimization**
-   - Acquire multiple row locks in single call
-   - Reduce lock overhead for large cascades
-
-2. **Read-Write Lock Modes**
-   - Read locks for queries
-   - Write locks for refreshes
-   - Better concurrency for read-heavy workloads
-
-3. **Cascade Storm Prevention**
-   - Detect rapid cascade triggers
-   - Queue and debounce updates
-
-4. **Lock Analytics**
-   - Track lock wait times
-   - Identify contention hotspots
-   - Automatic tuning recommendations
-
----
-
-## Summary
-
-**pg_tviews Concurrency Model:**
-
-| Aspect | Approach | Benefit |
-|--------|----------|---------|
-| **Isolation** | REPEATABLE READ required | Prevents dirty reads |
-| **Locking** | Advisory locks (row-level) | Prevents concurrent refresh conflicts |
-| **Deadlock** | Deterministic lock ordering | Prevents circular dependencies |
-| **Performance** | Transaction-scoped locks | Minimal overhead (~3%) |
-| **Monitoring** | Built-in PostgreSQL tools | Easy troubleshooting |
-
-**Key Takeaway:** pg_tviews provides **strong consistency guarantees** with **minimal performance overhead** through careful concurrency control.
-
----
-
-## References
-
-- [PostgreSQL Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)
-- [Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
-- [Lock Monitoring](https://www.postgresql.org/docs/current/monitoring-locks.html)
+There is no lock timeout of pg_tviews' own: PostgreSQL's `lock_timeout` and
+`deadlock_timeout` apply to the row locks above. A `pg_tviews.*` name that pg_tviews
+does not define is refused.

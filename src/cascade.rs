@@ -44,6 +44,16 @@ fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
             queue::enqueue_refresh(&tview_meta.entity_name, affected_pk);
         }
     }
+
+    // Outside a transaction block no flush trigger follows this statement and the
+    // commit drops what is queued: refresh now. Inside one, the work stays queued
+    // for the next flush (a later statement, COMMIT or PREPARE TRANSACTION).
+    // SAFETY: reads the backend's transaction state.
+    if !unsafe { pg_sys::IsTransactionBlock() }
+        && let Err(e) = queue::flush_refresh_queue()
+    {
+        error!("TVIEW refresh failed in pg_tviews_cascade: {e:?}");
+    }
 }
 
 /// Handle INSERT operations on base tables

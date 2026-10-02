@@ -93,11 +93,14 @@ with the smallest change
 
 ---
 
-### pg_tviews_refresh(tview_name TEXT)
-**Status**: EXPERIMENTAL
-**Description**: Force refresh a TVIEW (benchmarking only)
-**Warning**: Bypasses incremental refresh, use for testing only
-**Returns**: Success/error message
+### pg_tviews_refresh(entity TEXT)
+**Status**: STABLE
+**Description**: Rebuild a TVIEW from its view, then every TVIEW that embeds it,
+directly or transitively, in dependency order. The repair for a TVIEW left stale
+by a change its triggers did not see.
+**Warning**: Each rebuilt TVIEW is truncated and refilled, under an ACCESS
+EXCLUSIVE lock held until the transaction ends
+**Returns**: VOID
 
 ---
 

@@ -24,8 +24,8 @@ Need to design CQRS systems with pg_tviews?
 1. **[Architect Guide](user-guides/architects.md)** - CQRS design patterns and decisions
 2. **[Running Benchmarks](benchmarks/running-benchmarks.md)** - Execute performance tests
 3. **[Performance Analysis](benchmarks/overview.md)** - Scaling characteristics and limits
-4. **[Architecture Deep Dive](development/architecture-deep-dive.md)** - Technical implementation details
-5. **[Configuration Reference](reference/configuration.md)** - Tuning and optimization options
+4. **[Architecture](../architecture.md)** - Technical implementation details
+5. **[Configuration Reference](../README.md#configuration)** - GUC settings
 
 #### 🛠️ **I'm a Database Operator**
 Responsible for production deployment and monitoring?
@@ -38,9 +38,9 @@ Responsible for production deployment and monitoring?
 #### 🧪 **I'm a Developer/Contributor**
 Want to contribute to pg_tviews development?
 
-1. **[Contributing](development/contributing.md)** - Development setup and guidelines
+1. **[Development](development.md)** - Development setup
 2. **[Testing](development/testing.md)** - Testing patterns and procedures
-3. **[Architecture Deep Dive](development/architecture-deep-dive.md)** - Code structure and design
+3. **[Architecture](../architecture.md)** - Code structure and design
 
 ## 📚 Documentation Sections
 
@@ -63,8 +63,8 @@ Technical reference materials:
 
 - **[API Reference](reference/api.md)** - Complete function reference with examples
 - **[DDL Reference](reference/ddl.md)** - CREATE TABLE tv_* / DROP TABLE tv_* syntax and options
-- **[Error Reference](reference/errors.md)** - Error types, causes, and solutions
-- **[Configuration](reference/configuration.md)** - Configuration options and parameters
+- **[Error Reference](error-reference.md)** - Error types, causes, and solutions
+- **[Configuration](../README.md#configuration)** - GUC settings
 
 ### Operations
 Production operations and maintenance:
@@ -85,9 +85,9 @@ Performance testing and validation:
 ### Development
 For contributors and advanced users:
 
-- **[Contributing](development/contributing.md)** - Development setup, coding standards, and contribution process
+- **[Development](development.md)** - Development setup and coding standards
 - **[Testing](development/testing.md)** - Testing patterns, procedures, and quality assurance
-- **[Architecture Deep Dive](development/architecture-deep-dive.md)** - Technical architecture and implementation details
+- **[Architecture](../architecture.md)** - Technical architecture and implementation details
 
 ## 🔗 Quick Links
 
@@ -98,8 +98,8 @@ For contributors and advanced users:
 
 ### Related Files
 - **[CHANGELOG](https://github.com/fraiseql/pg_tviews/blob/main/CHANGELOG.md)** - Version history and release notes
-- **[ARCHITECTURE](ARCHITECTURE.md)** - High-level system architecture
-- **[DEVELOPMENT](DEVELOPMENT.md)** - Development environment setup
+- **[Architecture](../architecture.md)** - High-level system architecture
+- **[Development](development.md)** - Development environment setup
 
 ## 📞 Support & Community
 
@@ -109,7 +109,7 @@ For contributors and advanced users:
 - **FraiseQL Community**: Connect with other FraiseQL users for integration questions
 
 ### Contributing
-We welcome contributions! See our [contributing guide](development/contributing.md) to get started.
+We welcome contributions! See [the development guide](development.md) to get started.
 
 ---
 

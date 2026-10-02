@@ -144,45 +144,71 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 
             crate::suspend::force_resume();
 
-            // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
-            // Clear audit buffer as safety net (should already be empty after flush).
-            crate::audit::clear_audit_buffer();
+            // Every path that enqueues flushes before the commit (statement
+            // trigger, ProcessUtility hook). Work still queued here is dropped: it
+            // must never run under another transaction's snapshot, and a patch
+            // carries values read in this one.
+            warn_unflushed();
             // The crash-recovery check stays done for this backend: an UNLOGGED
             // TVIEW is only reset by a restart, which ends every backend.
-            super::cache::cascade_cache::clear_cache();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
         XactEvent::Prepare => {
             // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
             // the refresh writes are part of the prepared transaction. This backend's
             // transaction ends here: drop its in-memory state (no SPI in callbacks).
             crate::suspend::force_resume();
-            clear_queue();
-            super::patch::clear_patch_map();
-            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
-            super::cache::cascade_cache::clear_cache();
-            crate::audit::clear_audit_buffer();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
         XactEvent::Abort => {
             // Auto-resume suspension on abort (discard changes)
             crate::suspend::force_resume();
             crate::revision::reset();
-
-            clear_queue();
             crate::hooks::release_hook_guard_on_abort(true);
-            super::patch::clear_patch_map();
-            super::patch::clear_fanout_map();
             super::ops::clear_crash_recovery_cache();
-            super::cache::cascade_cache::clear_cache();
-            crate::audit::clear_audit_buffer();
-            crate::metrics::metrics_api::reset_metrics();
-            super::affected::clear();
+            clear_transaction_state();
         }
     }
+}
+
+/// Drop everything a transaction kept in memory: the refresh queue, the direct
+/// and fan-out patches, the cascade cache, the audit buffer, the metrics and the
+/// affected-rows report. Run when the transaction ends, however it ends.
+fn clear_transaction_state() {
+    clear_queue();
+    super::patch::clear_patch_map();
+    super::patch::clear_fanout_map();
+    super::cache::cascade_cache::clear_cache();
+    crate::audit::clear_audit_buffer();
+    crate::metrics::metrics_api::reset_metrics();
+    super::affected::clear();
+}
+
+/// The WARNING for refresh work still queued when a transaction commits, once
+/// per backend (no SPI: this runs in the transaction callback).
+fn warn_unflushed() {
+    let queued = super::state::get_queue_contents();
+    if queued.is_empty() || !crate::utils::first_time("commit with queued refreshes") {
+        return;
+    }
+    let entities: std::collections::BTreeSet<&str> =
+        queued.iter().map(|k| k.entity.as_str()).collect();
+    pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_WARNING,
+        format!(
+            "pg_tviews: transaction committed with {} queued refreshes for {:?}; they were \
+             not applied (missing flush trigger?)",
+            queued.len(),
+            entities
+        ),
+        function_name!(),
+    )
+    .set_hint(
+        "Run tviews.pg_tviews_health_check() to find missing triggers, and \
+         tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",
+    )
+    .report(PgLogLevel::WARNING);
 }
 
 /// Subtransaction callback handler (invoked by `PostgreSQL` for savepoints)
@@ -325,6 +351,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         return Ok(());
     }
     crate::revision::check();
+    crate::config::warn_deprecated_settings();
     super::affected::begin_flush();
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never

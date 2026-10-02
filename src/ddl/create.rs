@@ -840,7 +840,7 @@ fn fanout_patch(
     if hop.table_name != own_table
         || hop.carry_col != format!("pk_{entity_name}")
         || path.source_columns.is_empty()
-        || crate::schema::parser::find_outer_union(&select_sql.to_lowercase(), 0).is_some()
+        || crate::schema::parser::find_outer_set_operation(&select_sql.to_lowercase(), 0).is_some()
     {
         return None;
     }
@@ -1161,103 +1161,27 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     Ok(())
 }
 
-/// Map a scalar `PostgreSQL` type name to an uppercase SQL type string for CREATE TABLE.
-///
-/// Handles both `information_schema.data_type` values (e.g. `"boolean"`, `"uuid"`) and
-/// `udt_name` values for extension types (e.g. `"ltree"`, `"geometry"`).
-/// Unknown names fall back to `TEXT`.
-fn scalar_pg_type_to_sql(pg_type: &str) -> &'static str {
-    match pg_type {
-        // ── Boolean ───────────────────────────────────────────────────────────
-        "boolean" => "BOOLEAN",
-        // ── UUID ──────────────────────────────────────────────────────────────
-        "uuid" => "UUID",
-        // ── JSON / JSONB ───────────────────────────────────────────────────────
-        "jsonb" => "JSONB",
-        "json" => "JSON",
-        // ── Exact numerics ────────────────────────────────────────────────────
-        "bigint" | "int8" => "BIGINT",
-        "integer" | "int4" | "int" => "INTEGER",
-        "smallint" | "int2" => "SMALLINT",
-        "numeric" | "decimal" => "NUMERIC",
-        // ── Floating point ────────────────────────────────────────────────────
-        "real" | "float4" => "REAL",
-        "double precision" | "float8" => "DOUBLE PRECISION",
-        // ── Date / time ───────────────────────────────────────────────────────
-        "timestamp with time zone" | "timestamptz" => "TIMESTAMPTZ",
-        "timestamp without time zone" | "timestamp" => "TIMESTAMP",
-        "date" => "DATE",
-        "time with time zone" | "timetz" => "TIMETZ",
-        "time without time zone" | "time" => "TIME",
-        "interval" => "INTERVAL",
-        // ── Network / binary ─────────────────────────────────────────────────
-        "inet" => "INET",
-        "cidr" => "CIDR",
-        "macaddr" => "MACADDR",
-        "macaddr8" => "MACADDR8",
-        "bytea" => "BYTEA",
-        // ── Text search ───────────────────────────────────────────────────────
-        "tsvector" => "TSVECTOR",
-        "tsquery" => "TSQUERY",
-        // ── Range types ───────────────────────────────────────────────────────
-        "int4range" => "INT4RANGE",
-        "int8range" => "INT8RANGE",
-        "numrange" => "NUMRANGE",
-        "tsrange" => "TSRANGE",
-        "tstzrange" => "TSTZRANGE",
-        "daterange" => "DATERANGE",
-        // ── Built-in geometric ────────────────────────────────────────────────
-        "point" => "POINT",
-        "line" => "LINE",
-        "lseg" => "LSEG",
-        "box" => "BOX",
-        "path" => "PATH",
-        "polygon" => "POLYGON",
-        "circle" => "CIRCLE",
-        // ── Extension / user-defined types (udt_name, e.g. ltree, geometry) ──
-        // Known extension types — resolved via PostgreSQL search_path at runtime.
-        "ltree" => "LTREE",
-        "lquery" => "LQUERY",
-        "ltxtquery" => "LTXTQUERY",
-        "geometry" => "GEOMETRY",
-        "geography" => "GEOGRAPHY",
-        "hstore" => "HSTORE",
-        "citext" => "CITEXT",
-        // ── Other ─────────────────────────────────────────────────────────────
-        "money" => "MONEY",
-        "bit" => "BIT",
-        "bit varying" => "BIT VARYING",
-        "xml" => "XML",
-        // text, character varying, character, unknown → TEXT
-        _ => "TEXT",
-    }
-}
-
-/// Resolve an `information_schema.columns` row (`data_type` + `udt_name`) to a SQL type
-/// string suitable for a CREATE TABLE column definition.
-///
-/// Handles the three cases `PostgreSQL` presents:
-/// - Built-in scalar: `data_type` is the canonical name, `udt_name` is redundant.
-/// - Extension / user-defined: `data_type = "USER-DEFINED"`, `udt_name` is the type name.
-/// - Array: `data_type = "ARRAY"`, `udt_name` is `_<element_udt_name>` (e.g. `_uuid`).
-fn resolve_pg_column_type(data_type: &str, udt_name: Option<&str>) -> String {
-    match data_type {
-        "USER-DEFINED" => {
-            // udt_name holds the extension type name (ltree, geometry, hstore, citext, …)
-            udt_name.map_or_else(
-                || "TEXT".to_string(),
-                |u| scalar_pg_type_to_sql(u).to_string(),
+/// The OID of view `schema.view`.
+fn view_oid(schema: &str, view: &str) -> TViewResult<pg_sys::Oid> {
+    let qualified = format!("{}.{}", quote_identifier(schema), quote_identifier(view));
+    // SAFETY: the text datum borrows `qualified`, which outlives the select.
+    Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT pg_catalog.to_regclass($1)::pg_catalog.oid",
+        &[unsafe {
+            DatumWithOid::new(
+                qualified.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
             )
-        }
-        "ARRAY" => {
-            // udt_name is "_<element>" (e.g. "_uuid" → UUID[], "_ltree" → LTREE[])
-            let element_sql = udt_name
-                .and_then(|u| u.strip_prefix('_'))
-                .map_or("TEXT", scalar_pg_type_to_sql);
-            format!("{element_sql}[]")
-        }
-        other => scalar_pg_type_to_sql(other).to_string(),
-    }
+        }],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Find view {qualified}"),
+        pg_error: e.to_string(),
+    })?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Find view {qualified}"),
+        pg_error: "the view does not exist".to_string(),
+    })
 }
 
 /// Create the materialized table with proper schema inferred from the backing view
@@ -1302,9 +1226,29 @@ fn create_materialized_table(
         }
     }
 
+    // Every other column takes the backing view's type, typmod included and
+    // schema-qualified (an enum, a domain, a composite, `numeric(6,2)`, `bit(4)`).
+    // The convention columns above keep their fixed types: the key is BIGINT,
+    // `id` UUID, `data` JSONB and `fk_*` BIGINT whatever the view computes them as.
+    let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
+    let view_types: std::collections::HashMap<String, String> =
+        crate::utils::column_types(view_oid(schema_name, &format!("v_{entity}"))?)?
+            .into_iter()
+            .collect();
+    let view_type = |col: &str, fallback: &str| {
+        view_types
+            .get(col)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    };
+
     // Identifier column (optional Trinity identifier)
     if let Some(identifier) = &schema.identifier_column {
-        columns.push(format!("{} TEXT", quote_identifier(identifier)));
+        columns.push(format!(
+            "{} {}",
+            quote_identifier(identifier),
+            view_type(identifier, "TEXT")
+        ));
     }
 
     // Data column (JSONB read model)
@@ -1317,71 +1261,18 @@ fn create_materialized_table(
         columns.push(format!("{} BIGINT", quote_identifier(fk)));
     }
 
-    // Fetch actual column types from the backing view to guard against name-based
-    // type mismatches. A column ending in `_id` is inferred as UUID by infer_schema,
-    // but it may actually be TEXT (e.g. customer_contract_id, provider_contract_id).
-    let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
-    let view_name_for_types = format!("v_{entity}");
-    let actual_col_types: std::collections::HashMap<String, String> = {
-        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-        // The view/schema names are validated before this point.
-        let args = vec![
-            unsafe {
-                DatumWithOid::new(
-                    view_name_for_types.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
-            unsafe {
-                DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
-        ];
-        Spi::connect(|client| {
-            let rows = client.select(
-                "SELECT column_name::text, data_type::text, udt_name::text \
-                 FROM information_schema.columns \
-                 WHERE table_name = $1 AND table_schema = $2",
-                None,
-                &args,
-            )?;
-            let mut map = std::collections::HashMap::new();
-            for row in rows {
-                let name = row[1].value::<String>()?;
-                let data_type = row[2].value::<String>()?;
-                let udt_name = row[3].value::<String>()?;
-                if let Some(n) = name {
-                    // Resolve to the final SQL type string immediately so call sites
-                    // can use the value directly without further translation.
-                    let sql_type = resolve_pg_column_type(
-                        data_type.as_deref().unwrap_or("text"),
-                        udt_name.as_deref(),
-                    );
-                    map.insert(n, sql_type);
-                }
-            }
-            Ok::<std::collections::HashMap<String, String>, pgrx::spi::Error>(map)
-        })
-        .unwrap_or_default()
-    };
-
-    // UUID foreign key columns (for filtering)
-    // Verify the actual view column type — a column ending in _id may be TEXT
-    // (e.g. customer_contract_id, provider_contract_id stored as TEXT, not UUID).
+    // UUID foreign key columns (for filtering): a column named `*_id` may be TEXT.
     for uuid_fk in &schema.uuid_fk_columns {
-        let sql_type = actual_col_types
-            .get(uuid_fk.as_str())
-            .map_or("UUID", String::as_str); // if not found, trust name-based inference
-        columns.push(format!("{} {sql_type}", quote_identifier(uuid_fk)));
+        columns.push(format!(
+            "{} {}",
+            quote_identifier(uuid_fk),
+            view_type(uuid_fk, "UUID")
+        ));
     }
 
-    // Additional columns: prefer the actual view column type over name-based inference.
-    // Fixes mismatches like BOOLEAN inferred as TEXT, DATE inferred as TEXT, UUID[]
-    // inferred as TEXT, LTREE inferred as TEXT, etc.
     for (col_name, col_type) in &schema.additional_columns_with_types {
-        let effective_type = actual_col_types
-            .get(col_name.as_str())
-            .map_or(col_type.as_str(), String::as_str);
         let qi_col = quote_identifier(col_name);
+        let effective_type = view_type(col_name, col_type);
         if first_dedup == Some(col_name.as_str()) {
             columns.push(format!("{qi_col} {effective_type} PRIMARY KEY"));
         } else {
@@ -1635,11 +1526,12 @@ fn register_metadata(
     key_mappings: &serde_json::Value,
     replace: bool,
 ) -> TViewResult<()> {
-    // Detect whether the definition is a UNION / UNION ALL query.
-    // CTE bodies are inside (...) so their UNION is at depth > 0 and not matched.
+    // Detect whether the definition is a set operation (UNION, INTERSECT, EXCEPT):
+    // its rows are recomputed, never patched. CTE bodies are inside (...) so their
+    // set operations are at depth > 0 and not matched.
     let is_union = {
         let sql_lower = definition_sql.to_lowercase();
-        crate::schema::parser::find_outer_union(&sql_lower, 0).is_some()
+        crate::schema::parser::find_outer_set_operation(&sql_lower, 0).is_some()
     };
 
     // Analyze dependencies to populate type/path/match_key info
@@ -2179,163 +2071,6 @@ mod tests {
             super::propagation_index_ddl("public", "tv_post", "fk_user", "pk_post"),
             "CREATE INDEX IF NOT EXISTS \"idx_tv_post_fk_user_pk_post\" \
              ON \"public\".\"tv_post\" (\"fk_user\", \"pk_post\")"
-        );
-    }
-
-    // ── Unit tests for type resolution (no database required) ──────────────────
-
-    #[test]
-    fn test_scalar_pg_type_boolean() {
-        assert_eq!(super::scalar_pg_type_to_sql("boolean"), "BOOLEAN");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_uuid() {
-        assert_eq!(super::scalar_pg_type_to_sql("uuid"), "UUID");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_numeric() {
-        assert_eq!(super::scalar_pg_type_to_sql("bigint"), "BIGINT");
-        assert_eq!(super::scalar_pg_type_to_sql("int8"), "BIGINT");
-        assert_eq!(super::scalar_pg_type_to_sql("integer"), "INTEGER");
-        assert_eq!(super::scalar_pg_type_to_sql("int4"), "INTEGER");
-        assert_eq!(super::scalar_pg_type_to_sql("smallint"), "SMALLINT");
-        assert_eq!(super::scalar_pg_type_to_sql("numeric"), "NUMERIC");
-        assert_eq!(super::scalar_pg_type_to_sql("decimal"), "NUMERIC");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_floating_point() {
-        assert_eq!(super::scalar_pg_type_to_sql("real"), "REAL");
-        assert_eq!(super::scalar_pg_type_to_sql("float4"), "REAL");
-        assert_eq!(
-            super::scalar_pg_type_to_sql("double precision"),
-            "DOUBLE PRECISION"
-        );
-        assert_eq!(super::scalar_pg_type_to_sql("float8"), "DOUBLE PRECISION");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_temporal() {
-        assert_eq!(
-            super::scalar_pg_type_to_sql("timestamp with time zone"),
-            "TIMESTAMPTZ"
-        );
-        assert_eq!(
-            super::scalar_pg_type_to_sql("timestamp without time zone"),
-            "TIMESTAMP"
-        );
-        assert_eq!(super::scalar_pg_type_to_sql("date"), "DATE");
-        assert_eq!(super::scalar_pg_type_to_sql("time"), "TIME");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_json() {
-        assert_eq!(super::scalar_pg_type_to_sql("jsonb"), "JSONB");
-        assert_eq!(super::scalar_pg_type_to_sql("json"), "JSON");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_extensions() {
-        assert_eq!(super::scalar_pg_type_to_sql("ltree"), "LTREE");
-        assert_eq!(super::scalar_pg_type_to_sql("lquery"), "LQUERY");
-        assert_eq!(super::scalar_pg_type_to_sql("geometry"), "GEOMETRY");
-        assert_eq!(super::scalar_pg_type_to_sql("geography"), "GEOGRAPHY");
-        assert_eq!(super::scalar_pg_type_to_sql("hstore"), "HSTORE");
-        assert_eq!(super::scalar_pg_type_to_sql("citext"), "CITEXT");
-    }
-
-    #[test]
-    fn test_scalar_pg_type_unknown_fallback() {
-        assert_eq!(super::scalar_pg_type_to_sql("unknown_type"), "TEXT");
-        assert_eq!(super::scalar_pg_type_to_sql(""), "TEXT");
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_builtin_scalar() {
-        assert_eq!(super::resolve_pg_column_type("boolean", None), "BOOLEAN");
-        assert_eq!(super::resolve_pg_column_type("uuid", None), "UUID");
-        assert_eq!(super::resolve_pg_column_type("bigint", None), "BIGINT");
-        assert_eq!(super::resolve_pg_column_type("text", None), "TEXT");
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_user_defined() {
-        assert_eq!(
-            super::resolve_pg_column_type("USER-DEFINED", Some("ltree")),
-            "LTREE"
-        );
-        assert_eq!(
-            super::resolve_pg_column_type("USER-DEFINED", Some("geometry")),
-            "GEOMETRY"
-        );
-        assert_eq!(
-            super::resolve_pg_column_type("USER-DEFINED", Some("hstore")),
-            "HSTORE"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_user_defined_unknown() {
-        // Unknown USER-DEFINED type falls back to TEXT
-        assert_eq!(
-            super::resolve_pg_column_type("USER-DEFINED", Some("custom_type")),
-            "TEXT"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_user_defined_missing_udt_name() {
-        // USER-DEFINED without udt_name falls back to TEXT
-        assert_eq!(super::resolve_pg_column_type("USER-DEFINED", None), "TEXT");
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_uuid() {
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", Some("_uuid")),
-            "UUID[]"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_text() {
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", Some("_text")),
-            "TEXT[]"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_integer() {
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", Some("_int4")),
-            "INTEGER[]"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_ltree() {
-        // Array of extension types: _ltree → LTREE[]
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", Some("_ltree")),
-            "LTREE[]"
-        );
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_missing_udt_name() {
-        // ARRAY without udt_name falls back to TEXT[]
-        assert_eq!(super::resolve_pg_column_type("ARRAY", None), "TEXT[]");
-    }
-
-    #[test]
-    fn test_resolve_pg_column_type_array_unknown_element() {
-        // Array of unknown type: _unknown → TEXT[]
-        assert_eq!(
-            super::resolve_pg_column_type("ARRAY", Some("_unknown")),
-            "TEXT[]"
         );
     }
 

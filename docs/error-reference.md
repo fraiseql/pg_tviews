@@ -166,8 +166,8 @@ CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('
 
 **Common Causes**:
 - Syntax errors in SQL
-- Unsupported SQL features (INTERSECT/EXCEPT, `WITH RECURSIVE`, window functions;
-  UNION / UNION ALL, simple CTEs, and DISTINCT ON *are* supported)
+- Unsupported SQL features (`WITH RECURSIVE`; set operations, CTEs, window
+  functions and DISTINCT ON *are* accepted)
 - Missing required columns (pk_*, data)
 
 **Example**:
@@ -655,5 +655,5 @@ $$;
 ## See Also
 
 - [Debugging Guide](operations/debugging.md) - Troubleshooting procedures
-- [API Reference](API_REFERENCE.md) - Function documentation
-- [Monitoring Guide](MONITORING.md) - Health checking and metrics
+- [API Reference](reference/api.md) - Function documentation
+- [Monitoring Guide](operations/monitoring.md) - Health checking and metrics

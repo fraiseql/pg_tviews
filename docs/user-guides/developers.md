@@ -498,11 +498,10 @@ SELECT pg_tviews_debug_queue();
 -- Large queues may indicate refresh backlog
 ```
 
-**Check for memory leaks:**
+**Check the size of each TVIEW:**
 ```sql
-SELECT * FROM pg_tviews_performance_summary
-WHERE hour > now() - interval '1 hour';
--- Look for increasing memory usage patterns
+SELECT * FROM pg_tviews_performance_stats();
+-- A TVIEW growing faster than its base tables is worth a look
 ```
 
 ## Best Practices

@@ -40,24 +40,79 @@ fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
     }
 }
 
-/// Force a full refresh of all rows in a TVIEW from its backing view.
+/// Rebuild a TVIEW from its backing view, then every TVIEW whose view reads it,
+/// directly or through others, in dependency order: a manual repair leaves
+/// nothing stale.
 ///
-/// Rebuilds the materialized table by truncating and re-inserting from the
-/// backing view using an explicit column list. The explicit list is derived
-/// from the view's own columns via `pg_attribute`, which excludes the
-/// table-only `created_at`/`updated_at` columns (they carry `DEFAULT NOW()`
-/// and must not appear in the `SELECT *` projection of the view).
-///
-/// This avoids the column-count mismatch that a naive
-/// `INSERT INTO tv_entity SELECT * FROM v_entity` would produce when the
-/// materialized table has extra timestamp columns the view does not.
+/// Each rebuild is a `TRUNCATE` and an `INSERT … SELECT` with an explicit column
+/// list (the view's own columns, so not the table-only `created_at`/`updated_at`),
+/// and holds an ACCESS EXCLUSIVE lock on that TVIEW until the transaction ends.
+/// `entity` is rebuilt with the caller's privileges; the TVIEWs that read it are
+/// rebuilt as their owners, as a write's cascade is (issue #136).
 ///
 /// # Errors
-/// Returns error if the entity is not registered, the view/table OIDs cannot
-/// be resolved, or the truncate/insert operations fail.
+/// Returns error if the entity is not registered, the dependency graph cannot be
+/// loaded, or a rebuild fails.
 #[pg_extern]
 fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     crate::revision::check();
+    rebuild_with_dependents(&[entity.to_string()], true)?;
+    Ok(())
+}
+
+/// Rebuild `entities` and every TVIEW whose view reads one of them, transitively
+/// (the readers of a TVIEW come from the complete dependency relation, not the
+/// pruned one flush-time propagation follows), dependencies first. Readers are
+/// rebuilt as their owners; `entities` too unless `requested_as_caller`. Returns
+/// the rebuilt entities in order.
+///
+/// # Errors
+/// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
+pub fn rebuild_with_dependents(
+    entities: &[String],
+    requested_as_caller: bool,
+) -> TViewResult<Vec<String>> {
+    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for (reader, read) in &graph.children {
+        for entity in read {
+            readers.entry(entity).or_default().push(reader);
+        }
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut pending: std::collections::VecDeque<&str> =
+        entities.iter().map(String::as_str).collect();
+    while let Some(entity) = pending.pop_front() {
+        if order.iter().any(|e| e == entity) {
+            continue;
+        }
+        pending.extend(readers.get(entity).into_iter().flatten());
+        order.push(entity.to_string());
+    }
+    order.sort_by_key(|e| {
+        graph
+            .topo_order
+            .iter()
+            .position(|t| t == e)
+            .unwrap_or(usize::MAX)
+    });
+    for entity in &order {
+        if requested_as_caller && entities.contains(entity) {
+            rebuild_one(entity)?;
+        } else {
+            let _owner = crate::owner::AsOwner::of_entity(entity)?;
+            rebuild_one(entity)?;
+        }
+    }
+    Ok(order)
+}
+
+/// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), with
+/// the current role's privileges, and nothing that reads it.
+///
+/// # Errors
+/// Returns error if the entity is not registered or the truncate/insert fails.
+pub fn rebuild_one(entity: &str) -> TViewResult<()> {
     let (qi_tv, insert) = rebuild_statements(entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&insert)?;
@@ -68,7 +123,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
 ///
 /// Used when a TVIEW is found empty while its view is not (an UNLOGGED table reset
 /// by a crash restart or promotion, or a TVIEW created empty). Unlike
-/// [`pg_tviews_refresh`] it takes only a ROW EXCLUSIVE lock, so readers are never
+/// [`rebuild_one`] it takes only a ROW EXCLUSIVE lock, so readers are never
 /// blocked, even when the transaction stays prepared (2PC) for a while.
 ///
 /// # Errors
@@ -209,7 +264,7 @@ fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
     let graph = crate::queue::graph::EntityDepGraph::load()?;
     for entity in &graph.topo_order {
-        pg_tviews_refresh(entity)?;
+        rebuild_one(entity)?;
     }
     Ok(graph.topo_order)
 }

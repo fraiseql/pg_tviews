@@ -171,15 +171,9 @@ let array_pattern = r"'(\w+)',\s*(?:coalesce\s*\()?\s*jsonb_agg\s*\(\s*v_(\w+)\.
 
 ### Trigger Operations
 
-INSERT/DELETE operations are routed appropriately:
-
-```sql
--- INSERT operations
-SELECT pg_tviews_insert(TG_RELID, NEW.id);
-
--- DELETE operations
-SELECT pg_tviews_delete(TG_RELID, OLD.id);
-```
+`pg_tviews_create()` installs the triggers on every table the TVIEW reads: an
+INSERT or DELETE of an array element's row refreshes the parent's array like any
+other write. There is nothing to write by hand.
 
 ## Testing
 
@@ -269,4 +263,4 @@ Array handling is a key feature of pg_tviews. Contributions welcome for:
 - Performance optimizations
 - Additional array type support
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
+See [the development guide](development.md) for development guidelines.

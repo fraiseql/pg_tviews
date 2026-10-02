@@ -112,9 +112,10 @@ SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ ... $$);
 ### Unsupported SQL Features
 
 `WITH RECURSIVE` and definitions that cannot be refreshed are rejected at create time.
-INTERSECT, EXCEPT and window functions are accepted, but writes to the tables they
-read may not reach the TVIEW keys. UNION / UNION ALL, CTEs, subqueries, `LATERAL`
-and DISTINCT ON are supported. Full list:
+Set operations (UNION, INTERSECT, EXCEPT), CTEs, subqueries, `LATERAL` and DISTINCT ON
+are supported. A window function, `LIMIT`/`OFFSET`, a set-returning function or
+`GROUPING SETS` is accepted, and the tables read under it go through
+`pg_tviews.uncascaded_policy` (next section). Full list:
 [Supported SQL Features](../reference/ddl.md#supported-sql-features).
 
 ### Tables No Cascade Reaches

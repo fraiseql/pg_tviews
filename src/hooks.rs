@@ -85,6 +85,15 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // PostgreSQL internals — all pointer dereferences and static accesses are
     // inherently unsafe FFI operations.
 
+    // Number every TRUNCATE, nested ones included, so its truncate triggers
+    // refresh each TVIEW once (one fires per truncated partition).
+    if !pstmt.is_null()
+        && unsafe { !(*pstmt).utilityStmt.is_null() }
+        && unsafe { (*(*pstmt).utilityStmt).type_ } == pg_sys::NodeTag::T_TruncateStmt
+    {
+        crate::delta::begin_truncate();
+    }
+
     // Reentrancy guard: if we're already inside the hook (e.g., processing DDL triggered
     // internally by pg_tviews_create via Spi::run), skip interception and pass through.
     if unsafe { HOOK_IN_PROGRESS } {
@@ -183,11 +192,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         }
     }
 
-    // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81).
-    let column_rename = if extension_installed() {
-        unsafe { column_rename_of(pstmt) }
+    // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81),
+    // and a partition added or removed gets or loses its triggers.
+    let (column_rename, partition_ddl) = if extension_installed() {
+        unsafe { (column_rename_of(pstmt), partition_ddl_of(pstmt)) }
     } else {
-        None
+        (None, None)
     };
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary.
@@ -379,6 +389,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             unsafe { HOOK_IN_PROGRESS = false };
             error!("pg_tviews: could not follow the column rename: {e}");
         }
+        if let Some(ddl) = partition_ddl
+            && let Err(e) = unsafe { ddl.apply() }
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not update the triggers of a partition: {e}");
+        }
     }
 
     // Release the reentrancy guard
@@ -537,6 +553,99 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
             relation: stmt.relation,
             old_name: CStr::from_ptr(stmt.subname).to_string_lossy().into_owned(),
             new_name: CStr::from_ptr(stmt.newname).to_string_lossy().into_owned(),
+        })
+    }
+}
+
+/// The tables a `CREATE TABLE … PARTITION OF`, `ALTER TABLE … ATTACH PARTITION` or
+/// `… DETACH PARTITION` (also `CONCURRENTLY` and `FINALIZE`) adds to or removes
+/// from a partition tree, resolved once `PostgreSQL` has run the statement.
+struct PartitionDdl {
+    tables: Vec<*mut pg_sys::RangeVar>,
+    /// The partitioned table an `ATTACH` or `DETACH` changes the rows of.
+    changed_rows_of: Option<*mut pg_sys::RangeVar>,
+}
+
+impl PartitionDdl {
+    /// Give each added partition the triggers its tree's TVIEWs need, and take
+    /// ours off each removed one.
+    ///
+    /// SAFETY: the `RangeVar`s come from the statement's parse tree, which outlives
+    /// the statement.
+    unsafe fn apply(self) -> TViewResult<()> {
+        // Partition roots are cached per backend.
+        crate::delta::clear_caches();
+        for rv in self.tables {
+            // SAFETY: see above.
+            let oid = unsafe { resolve_relation_oid(rv) };
+            if oid != pg_sys::InvalidOid {
+                crate::dependency::triggers::ensure_partition_triggers(oid)?;
+            }
+        }
+        // The rows of an attached or detached partition enter or leave the
+        // partitioned table with no row written: refresh its TVIEWs in full.
+        // SAFETY: see above.
+        let parent = self
+            .changed_rows_of
+            .map_or(pg_sys::InvalidOid, |rv| unsafe { resolve_relation_oid(rv) });
+        if parent != pg_sys::InvalidOid {
+            crate::delta::refresh_tviews_over(parent)?;
+        }
+        Ok(())
+    }
+}
+
+/// The partition change carried by `pstmt`, if it is one.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Option<PartitionDdl> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        let mut tables = Vec::new();
+        let mut changed_rows_of = None;
+        match (*node).type_ {
+            pg_sys::NodeTag::T_CreateStmt => {
+                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateStmt* cast
+                let stmt = &*node.cast::<pg_sys::CreateStmt>();
+                if !stmt.partbound.is_null() && !stmt.relation.is_null() {
+                    tables.push(stmt.relation);
+                }
+            }
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                #[allow(clippy::cast_ptr_alignment)]
+                // Reason: PostgreSQL Node* → AlterTableStmt* cast
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                for i in 0..pg_sys::list_length(stmt.cmds) {
+                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    if cmd.is_null()
+                        || !matches!(
+                            (*cmd).subtype,
+                            pg_sys::AlterTableType::AT_AttachPartition
+                                | pg_sys::AlterTableType::AT_DetachPartition
+                                | pg_sys::AlterTableType::AT_DetachPartitionFinalize
+                        )
+                        || (*cmd).def.is_null()
+                    {
+                        continue;
+                    }
+                    #[allow(clippy::cast_ptr_alignment)]
+                    // Reason: PostgreSQL Node* → PartitionCmd* cast
+                    let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
+                    if !partition.name.is_null() {
+                        tables.push(partition.name);
+                        changed_rows_of = Some(stmt.relation);
+                    }
+                }
+            }
+            _ => {}
+        }
+        (!tables.is_empty()).then_some(PartitionDdl {
+            tables,
+            changed_rows_of,
         })
     }
 }

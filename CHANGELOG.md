@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`pg_tviews_performance_stats()` works on a server built without libxml**. It
+  counted rows through `xpath(query_to_xml(…))`, which fails there ("unsupported XML
+  feature"). It now counts each TVIEW directly; a TVIEW the caller cannot read gets a
+  NULL `row_count` and a NOTICE.
 - **An UPDATE of a base table no longer fails when its TVIEW projects an
   extension-typed column** (#156, regression in 0.1.0-beta.20). The refresh's no-op
   guard compared rows with `IS DISTINCT FROM`, which looks `=` up by name; under the
@@ -56,6 +60,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   'first'` duplicate-row message and the "initial column not found" cascade message,
   also sent on every write, are logged once per backend the same way.
 
+- **A TVIEW whose own table is partitioned refreshes on writes**. Every write to a
+  partitioned `tb_<entity>`, through the root or to a partition, was dropped with a
+  "not managed by pg_tviews" WARNING: the row trigger PostgreSQL clones onto each
+  partition looked the entity up by the partition. It now uses the partition root.
+
+- **Refresh work no longer carries over into the next transaction**. `COMMIT` cleared
+  neither the refresh queue nor the recorded patches (`PREPARE` and `ROLLBACK` did), so
+  work a transaction queued without flushing ran in whichever transaction wrote
+  next. It is now dropped at `COMMIT`, with a WARNING (once per backend) naming the
+  TVIEWs, so a missing flush shows up at once.
+- **`pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()` refresh
+  before returning in autocommit**. Outside a transaction block they queued the work
+  and nothing flushed it. Inside one they still queue it for the transaction's next
+  flush.
+
+- **A TVIEW with a `bit(n)` column (n > 1) can be created**: the column was created
+  as `bit(1)` and the create failed.
+- **Writes and `TRUNCATE` that target a partition directly refresh the TVIEW;
+  partitions created or attached later are covered**. Only the partitioned table
+  had the flush and `TRUNCATE` triggers, so in autocommit a statement naming a
+  partition left the TVIEW stale until a later write, and `TRUNCATE` of a partition
+  until a full refresh. Every partition now gets them, including partitions created
+  (also from a partition manager's function) or attached after the TVIEW; a
+  detached one loses them, and `ATTACH`/`DETACH` refresh the TVIEWs over the table.
+  `TRUNCATE` of the partitioned table refreshes each TVIEW once.
+  `pg_tviews_health_check()` reports a missing partition trigger, and no longer
+  reports one of ours on a partition as orphaned. Existing TVIEWs get the triggers
+  from `pg_tviews_reregister_all()`, which the upgrade already asks for.
+- **A refresh that fails after `TRUNCATE` aborts the `TRUNCATE`**: it only warned,
+  leaving the TVIEW stale.
+
+- **A window function, `LIMIT`/`OFFSET`, a set-returning function or `GROUPING SETS`
+  in a TVIEW's top-level SELECT now goes through `uncascaded_policy`**. It was
+  treated as row-local: a write refreshed only its own row, while `count(*) OVER ()`,
+  a rank or a `LIMIT` changes others, and the TVIEW went stale with no WARNING, under
+  `full_refresh` too. Its tables are now `all_keys`, named at create time with the
+  reason. Re-registering an existing TVIEW of that shape reports them the same way.
+- **An `INTERSECT` or `EXCEPT` TVIEW stays equal to its view on `UPDATE`**. A change to
+  a column copied into `data` was patched straight into the TVIEW, even when the set
+  operation no longer returned the row. Set operations of every kind are now
+  recomputed, as `UNION` ones were.
+
 ### Changed
 
 - **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The
@@ -68,9 +114,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   faster (`test/sql/real_benchmark/results/adr_0157`).
 - **After `ALTER EXTENSION pg_tviews UPDATE`, run
   `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW and
-  installs the new triggers. Until then, a TVIEW keeps its old triggers, and a write
+  installs the new triggers, including the flush and `TRUNCATE` triggers on every
+  partition of a partitioned base table, and reclassifies the shapes this release
+  maps differently (a top-level window function or `LIMIT`, INTERSECT/EXCEPT).
+  Until then, a TVIEW keeps its old triggers, and a write
   its old metadata maps through more than one hop refreshes it in full (logged once
   per backend).
+- **`pg_tviews_refresh(entity)` also rebuilds the TVIEWs that embed it**, in
+  dependency order. It rebuilt only the one TVIEW, so a manual repair left every
+  TVIEW embedding it stale until each was refreshed by hand. The requested TVIEW is
+  rebuilt with the caller's privileges, the TVIEWs embedding it as their owners.
+  `pg_tviews_refresh_all()` still rebuilds each TVIEW once.
+- **New TVIEWs keep the backing view's column types** (enums, domains, composites,
+  arrays of them, types in other schemas, typmods such as `varchar(5)` or
+  `numeric(6,2)`). They were stored as `text`, or lost their typmod, so ordering by an
+  enum, comparing with the enum type, reading a composite's field or a domain's check
+  did not work on the TVIEW. Existing TVIEWs keep their types until
+  `pg_tviews_create_or_replace()` is run with their definition: it converts each such
+  column in place and returns `altered`. Tools that read TVIEW column types see the
+  real types.
 - **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
   are gone, CI builds, lints and runs every SQL suite on each supported version, and
   `CREATE EXTENSION pg_tviews` on an older server fails with
@@ -80,8 +142,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly
   what its view returns. NULL still equals NULL.
 
+- **An unknown `pg_tviews.*` setting is refused**. The `pg_tviews` prefix is reserved,
+  so `SET pg_tviews.<name>` for a name pg_tviews does not define raises an error
+  instead of being accepted and ignored. A setting copied from the old concurrency
+  page (`pg_tviews.lock_timeout_ms`, `debug_refresh`, `max_cascade_depth`, which
+  never existed) now fails: remove it.
+
+### Deprecated
+
+- **`pg_tviews.metrics_enabled`** has no effect: refresh metrics are always
+  collected (`pg_tviews_queue_stats()`). Setting it still works and logs once per
+  backend; it will be removed in a later release.
+
+### Removed
+
+- **The views `pg_tviews_queue_realtime`, `pg_tviews_cache_stats` and
+  `pg_tviews_performance_summary`, and the function `pg_tviews_hook_status()`**.
+  They returned fixed placeholder values. Use `pg_tviews_queue_stats()`,
+  `pg_tviews_health_check()` and `pg_tviews_performance_stats()`. A view or function
+  of yours that depends on one of them makes `ALTER EXTENSION pg_tviews UPDATE` fail
+  with a dependency error: drop it first.
+
 ### Documentation
 
+- **The concurrency page describes what pg_tviews does.** It documented per-row
+  advisory locks, a `pg_tviews.lock_timeout_ms` setting, a required REPEATABLE READ
+  "to avoid dirty reads" and debug settings, none of which exist. It now describes
+  the refresh inside the writer's transaction, the row locks, the registration lock,
+  and the one case READ COMMITTED gets wrong: two transactions refreshing the same
+  TVIEW row at once through a full recompute can leave it stale; use REPEATABLE READ
+  and retry, or `pg_tviews_refresh()`.
+- **Every relative link in the README and `docs/` resolves**, and a regression test
+  keeps it that way (49 pointed at pages that never existed or had moved).
+- **The DDL reference matches what ships**: INTERSECT/EXCEPT are maintained, window
+  functions and `LIMIT` go through `uncascaded_policy`, partitions are covered, no
+  10-table limit. The API reference documents every public function
+  (`pg_tviews_refresh`, suspension, change reports, aggregates, replication) and lists
+  the internal ones; the README lists `pg_tviews.report_max_tracked`.
 - **The operations runbooks query only what pg_tviews has** (#150). The runbooks,
   their scripts and `docs/TROUBLESHOOTING.md` queried relations and columns that never
   existed (`pg_tviews_metadata`, `pg_tviews_queue`, `last_refreshed`, …). They now use

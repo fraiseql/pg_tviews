@@ -1,24 +1,18 @@
 //! Metrics Collection: Performance Monitoring and Statistics
 //!
-//! This module tracks performance metrics for TVIEW operations:
-//! - **Refresh Statistics**: Count and timing of view updates
-//! - **Cache Performance**: Hit rates for prepared statements and graphs
-//! - **Propagation Metrics**: Dependency chain analysis
-//! - **Thread-local Storage**: Per-transaction metrics without contention
+//! This module tracks performance metrics for TVIEW operations, read with
+//! `pg_tviews_queue_stats()`:
+//! - **Refresh Statistics**: count and timing of refreshes
+//! - **Cache Performance**: hit rates of the graph and table caches
+//! - **Propagation Metrics**: iterations per flush
+//! - **Direct patches** (issue #56): captured, applied, fallen back
 //!
 //! ## Architecture
 //!
-//! Metrics use thread-local storage to avoid synchronization overhead:
-//! - Each transaction gets its own metrics instance
-//! - Metrics reset at transaction boundaries
-//! - Optional collection (disabled by default for performance)
-//!
-//! ## Key Metrics
-//!
-//! - Refresh count and timing per transaction
-//! - Cache hit/miss ratios
-//! - Propagation depth statistics
-//! - Error rates and failure patterns
+//! Metrics live in thread-local storage, so collecting them costs a counter
+//! increment and needs no synchronization. They are always collected:
+//! - the refresh and cache counters belong to the transaction and reset when it ends;
+//! - the direct-patch counters are cumulative for the session.
 
 use crate::queue::key::RefreshKey;
 
@@ -89,14 +83,6 @@ struct QueueMetrics {
     table_cache_hits: u64,
     /// Table cache misses
     table_cache_misses: u64,
-    /// Prepared statement cache hits
-    prepared_stmt_cache_hits: u64,
-    /// Prepared statement cache misses
-    prepared_stmt_cache_misses: u64,
-    /// Bulk refresh operations performed
-    bulk_refresh_count: u64,
-    /// Individual refresh operations performed
-    individual_refresh_count: u64,
 }
 
 impl QueueMetrics {
@@ -110,10 +96,6 @@ impl QueueMetrics {
             graph_cache_misses: 0,
             table_cache_hits: 0,
             table_cache_misses: 0,
-            prepared_stmt_cache_hits: 0,
-            prepared_stmt_cache_misses: 0,
-            bulk_refresh_count: 0,
-            individual_refresh_count: 0,
         }
     }
 }
@@ -168,42 +150,6 @@ pub mod metrics_api {
     pub fn record_table_cache_miss() {
         METRICS.with(|m| {
             m.borrow_mut().table_cache_misses += 1;
-        });
-    }
-
-    /// Record prepared statement cache hit
-    #[allow(dead_code)] // Reason: metrics for prepared stmt cache — not yet wired
-    pub fn record_prepared_stmt_cache_hit() {
-        METRICS.with(|m| {
-            m.borrow_mut().prepared_stmt_cache_hits += 1;
-        });
-    }
-
-    /// Record prepared statement cache miss
-    #[allow(dead_code)] // Reason: metrics for prepared stmt cache — not yet wired
-    pub fn record_prepared_stmt_cache_miss() {
-        METRICS.with(|m| {
-            m.borrow_mut().prepared_stmt_cache_misses += 1;
-        });
-    }
-
-    /// Record bulk refresh operation
-    #[allow(dead_code)] // Reason: metrics for bulk refresh — not yet wired
-    pub fn record_bulk_refresh(count: usize) {
-        METRICS.with(|m| {
-            let mut metrics = m.borrow_mut();
-            metrics.bulk_refresh_count += 1;
-            metrics.total_refreshes += count as u64;
-        });
-    }
-
-    /// Record individual refresh operation
-    #[allow(dead_code)] // Reason: metrics for individual refresh — not yet wired
-    pub fn record_individual_refresh() {
-        METRICS.with(|m| {
-            let mut metrics = m.borrow_mut();
-            metrics.individual_refresh_count += 1;
-            metrics.total_refreshes += 1;
         });
     }
 
@@ -277,10 +223,6 @@ pub mod metrics_api {
                 graph_cache_misses: metrics.graph_cache_misses,
                 table_cache_hits: metrics.table_cache_hits,
                 table_cache_misses: metrics.table_cache_misses,
-                prepared_stmt_cache_hits: metrics.prepared_stmt_cache_hits,
-                prepared_stmt_cache_misses: metrics.prepared_stmt_cache_misses,
-                bulk_refresh_count: metrics.bulk_refresh_count,
-                individual_refresh_count: metrics.individual_refresh_count,
                 direct_patch_captured: dp.captured,
                 direct_patches_applied: dp.applied,
                 direct_patch_fallbacks: dp.fallbacks,
@@ -335,10 +277,6 @@ pub struct QueueStats {
     pub graph_cache_misses: u64,
     pub table_cache_hits: u64,
     pub table_cache_misses: u64,
-    pub prepared_stmt_cache_hits: u64,
-    pub prepared_stmt_cache_misses: u64,
-    pub bulk_refresh_count: u64,
-    pub individual_refresh_count: u64,
     /// Session-cumulative direct-patch counters (issue #56).
     pub direct_patch_captured: u64,
     pub direct_patches_applied: u64,

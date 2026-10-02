@@ -264,9 +264,10 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
     pgrx::JsonB(serde_json::json!(json_contents))
 }
 
-/// Get performance statistics for all TVIEWs
+/// Size, row count and index count of each TVIEW, largest first.
 ///
-/// Returns size, row count, and index information for each TVIEW
+/// The row count is a `count(*)` of each TVIEW run with the caller's privileges;
+/// a TVIEW the caller cannot read gets a NULL count and a NOTICE.
 #[pg_extern]
 fn pg_tviews_performance_stats() -> TableIterator<
     'static,
@@ -274,46 +275,61 @@ fn pg_tviews_performance_stats() -> TableIterator<
         name!(entity, String),
         name!(table_size, String),
         name!(total_size, String),
-        name!(row_count, i64),
+        name!(row_count, Option<i64>),
         name!(index_count, i32),
     ),
 > {
     // The TVIEW table is read through its catalog OID, so any schema works.
     let query = format!(
-        "SELECT
-            m.entity,
-            pg_size_pretty(pg_relation_size(m.table_oid)) as table_size,
-            pg_size_pretty(pg_total_relation_size(m.table_oid)) as total_size,
-            (xpath('/row/c/text()', query_to_xml(
-                format('SELECT count(*) AS c FROM %s', m.table_oid), false, true, '')))[1]::text::bigint
-                as row_count,
-            (SELECT COUNT(*)::int FROM pg_index WHERE indrelid = m.table_oid) as index_count
-        FROM {} m
-        ORDER BY pg_relation_size(m.table_oid) DESC",
+        "SELECT m.entity, m.table_oid::pg_catalog.regclass::pg_catalog.text AS tview,
+                pg_catalog.pg_size_pretty(pg_catalog.pg_relation_size(m.table_oid)) AS table_size,
+                pg_catalog.pg_size_pretty(pg_catalog.pg_total_relation_size(m.table_oid))
+                    AS total_size,
+                (SELECT pg_catalog.count(*)::int FROM pg_catalog.pg_index
+                 WHERE indrelid = m.table_oid) AS index_count
+         FROM {} m
+         ORDER BY pg_catalog.pg_relation_size(m.table_oid) DESC",
         crate::utils::meta_table()
     );
-
-    let results = Spi::connect(|client| match client.select(&query, None, &[]) {
-        Ok(rows) => {
-            let mut stats = Vec::new();
-            for row in rows {
-                let entity = row["entity"].value::<String>()?.unwrap_or_default();
-                let table_size = row["table_size"].value::<String>()?.unwrap_or_default();
-                let total_size = row["total_size"].value::<String>()?.unwrap_or_default();
-                let row_count = row["row_count"].value::<i64>()?.unwrap_or(0);
-                let index_count = row["index_count"].value::<i32>()?.unwrap_or(0);
-                stats.push((entity, table_size, total_size, row_count, index_count));
-            }
-            Ok::<_, spi::Error>(stats)
+    let tviews = Spi::connect(|client| {
+        let mut out = Vec::new();
+        for row in client.select(&query, None, &[])? {
+            out.push((
+                row["entity"].value::<String>()?.unwrap_or_default(),
+                row["tview"].value::<String>()?.unwrap_or_default(),
+                row["table_size"].value::<String>()?.unwrap_or_default(),
+                row["total_size"].value::<String>()?.unwrap_or_default(),
+                row["index_count"].value::<i32>()?.unwrap_or(0),
+            ));
         }
-        Err(e) => {
-            warning!("Failed to query performance stats: {}", e);
-            Ok(Vec::new())
-        }
+        Ok::<_, spi::Error>(out)
     })
-    .unwrap_or_default();
+    .unwrap_or_else(|e| error!("pg_tviews: could not read the TVIEW list: {e}"));
 
-    TableIterator::new(results)
+    let stats: Vec<_> = tviews
+        .into_iter()
+        .map(|(entity, tview, table_size, total_size, index_count)| {
+            let row_count = row_count(&tview);
+            (entity, table_size, total_size, row_count, index_count)
+        })
+        .collect();
+    TableIterator::new(stats)
+}
+
+/// `count(*)` of `tview` (a regclass text, already quoted), or `None` with a
+/// NOTICE when the caller may not read it.
+fn row_count(tview: &str) -> Option<i64> {
+    // SAFETY: the text datum borrows `tview`, which outlives the select.
+    let readable = Spi::get_one_with_args::<bool>(
+        "SELECT pg_catalog.has_table_privilege($1::pg_catalog.regclass, 'SELECT')",
+        &[unsafe { pgrx::datum::DatumWithOid::new(tview, pgrx::PgBuiltInOids::TEXTOID.value()) }],
+    );
+    if readable != Ok(Some(true)) {
+        notice!("pg_tviews: no row count for {tview}: permission denied");
+        return None;
+    }
+    Spi::get_one::<i64>(&format!("SELECT pg_catalog.count(*) FROM {tview}"))
+        .unwrap_or_else(|e| error!("pg_tviews: could not count the rows of {tview}: {e}"))
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.

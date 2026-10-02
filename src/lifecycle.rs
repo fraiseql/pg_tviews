@@ -1,8 +1,5 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
-use pgrx::PgBuiltInOids;
-use pgrx::PgOid;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::sync::Mutex;
 
@@ -18,12 +15,6 @@ static JSONB_DELTA_SCHEMA: Mutex<(bool, Option<String>)> = Mutex::new((false, No
 #[allow(clippy::missing_const_for_fn)] // pgrx #[pg_extern] is incompatible with const fn
 fn pg_tviews_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// Debug function to check if `ProcessUtility` hook is installed
-#[pg_extern]
-const fn pg_tviews_hook_status() -> &'static str {
-    "Extension loaded - hook installation attempted in _PG_init"
 }
 
 /// Check if `jsonb_delta` extension is available at runtime (cached)
@@ -82,16 +73,8 @@ pub fn jsonb_delta_schema() -> Option<String> {
 pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
     crate::revision::check();
     if detect_post_crash_truncation(entity_name)? {
-        // Perform full refresh of the TVIEW
-        Spi::run_with_args(
-            &format!(
-                "SELECT {}.pg_tviews_refresh($1)",
-                crate::utils::ext_schema()
-            ),
-            &[unsafe {
-                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }],
-        )?;
+        // Only this TVIEW was reset; what reads it is unchanged.
+        crate::admin::rebuild_one(entity_name)?;
         Ok(true)
     } else {
         Ok(false)

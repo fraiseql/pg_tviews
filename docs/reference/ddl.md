@@ -222,6 +222,19 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 6. **Initial Population**: Fills TVIEW with current data
 7. **Metadata Registration**: Records TVIEW in system catalogs
 
+**Column types.** Every column of `tv_<entity>` has the type of the backing view's
+column, typmod included: an enum, a domain, a composite, an array of them, a type in
+another schema, `varchar(5)`, `numeric(6,2)`, `bit(4)`. Only the convention columns
+have fixed types: `pk_<entity>` and `fk_*` are `BIGINT`, `id` is `UUID`, `data` is
+`JSONB`. A TVIEW created before 0.1.0-beta.21 stored enums, domains and composites as
+`text` and dropped typmods; it keeps those types until
+`pg_tviews_create_or_replace()` is run with its definition, which converts each such
+column in place and returns `altered`.
+
+Because the backing view's columns depend on their types, `DROP TYPE … CASCADE` of a
+type the view returns drops the view, and pg_tviews then drops the whole TVIEW (its
+table, triggers and registration), as when a base table is dropped with `CASCADE`.
+
 ### Supported SQL Features
 
 #### ✅ Supported
@@ -239,20 +252,23 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
   table; branches must key on disjoint `pk_<entity>` values (otherwise
   `pg_tviews.union_duplicate_policy` governs the duplicate)
+- **INTERSECT / EXCEPT**: maintained branch by branch like UNION. A refresh
+  recomputes the view's row for each changed key, and both operators compare whole
+  rows, key included, so a row enters or leaves the TVIEW as the set operation says
 - **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body reads one or
-  several joined base tables, reads earlier CTEs, or is a UNION / UNION ALL. The
-  columns the CTE joins on must pass base columns through unchanged (a computed
-  join column cannot be traced back to a base row)
+  several joined base tables, reads earlier CTEs or subqueries in its `FROM`, or is
+  a set operation. The columns the CTE joins on must pass base columns through
+  unchanged (a computed join column cannot be traced back to a base row)
+- **Window functions, `LIMIT`/`OFFSET`, set-returning functions, `GROUPING SETS`**:
+  accepted, but a write to a table read under one of them can change rows other
+  than its own, so the table is `all_keys` and the TVIEW's `uncascaded_policy`
+  decides (see [Tables no cascade reaches](#tables-no-cascade-reaches))
 - **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
   the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`)
 
 #### ❌ Not Supported
 
-- **Set Operations**: INTERSECT, EXCEPT (only UNION / UNION ALL is tracked)
 - **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
-- **CTEs with subqueries in FROM, or INTERSECT / EXCEPT bodies**: the tview is
-  created, but base tables reachable only through such a CTE do not cascade
-- **Window Functions**: ROW_NUMBER(), RANK(), etc.
 - **Self-Joins**: May cause dependency cycles
 - **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
   tables that would require PK-based cascade paths (rejected at create time)
@@ -286,13 +302,23 @@ The triggers follow the kind of each table:
 Every table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
 refreshes the whole TVIEW. An `UPDATE` that changes none of the columns the TVIEW
 reads from a `mapped` table maps nothing (rows are matched to their old image by
-primary key). A partitioned `mapped` table maps each row from a row trigger, since
-partitions cannot have transition tables.
+primary key).
 
-**Limitation:** statement triggers on a partitioned table do not fire for a
-statement that targets one of its partitions directly. In an autocommit statement
-such a write is refreshed at the next flush (the next write to a base table, or an
-explicit `COMMIT`). Write through the partitioned table, or inside a transaction.
+**Partitioned tables.** A partitioned table of any kind but `propagated` gets the
+row trigger, which PostgreSQL copies onto every partition, and maps each changed row
+from it: the transition tables of a statement trigger on the partitioned table would
+miss the rows of a statement that names a partition. Every partition, leaf or middle
+level, also gets the flush and `AFTER TRUNCATE` triggers, because a statement
+trigger fires only on the table the statement names. So a write or a `TRUNCATE` that
+targets a partition directly refreshes the TVIEW like one through the partitioned
+table, and a `TRUNCATE` of the partitioned table refreshes it once.
+
+Partitions created (`CREATE TABLE … PARTITION OF`, also from a function such as a
+partition manager's) or attached after the TVIEW get the same triggers, and a
+detached one loses them. `ATTACH` and `DETACH` move rows in or out with no row
+trigger firing, so each refreshes the TVIEWs over that table in full.
+`pg_tviews_health_check()` reports a partition whose triggers are missing, and
+`pg_tviews_reregister_all()` puts them back.
 
 ### Tables no cascade reaches
 
@@ -301,8 +327,12 @@ so a write to it could change any row. It is reported when the TVIEW is created 
 listed in `tviews.registry.uncascaded_tables`. Common shapes:
 
 - an uncorrelated subquery (`(SELECT count(*) FROM tb_flag)` in every row);
-- a subquery or view whose rows are not passed through to the key: under a window
-  function, `LIMIT`/`OFFSET`, `GROUPING SETS`, or a join on a computed column.
+- a window function, `LIMIT`/`OFFSET`, a set-returning function in the select list,
+  or `GROUPING SETS`, in the backing view's own SELECT (`count(*) OVER ()` changes
+  every row when one is inserted; `ORDER BY … LIMIT 10` changes which rows are in):
+  the reason reads `read under a window function in the top-level SELECT`;
+- a subquery or view whose rows are not passed through to the key: under the same
+  shapes, or a join on a computed column.
 
 What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
 
@@ -324,7 +354,6 @@ RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
 
 ### Limitations
 
-- **Maximum Source Tables**: 10 tables per TVIEW (configurable)
 - **Dependency Depth**: Performance degrades with >5 cascade levels
 - **Circular Dependencies**: Automatically detected and rejected
 - **Column Name Conflicts**: Must resolve ambiguous column names
@@ -426,17 +455,6 @@ jsonb_build_object(...) as json  -- ❌ Wrong name
 ```sql
 -- Fix: Restructure to avoid circular dependencies
 -- TVIEW A references TVIEW B which references TVIEW A
-```
-
-**"INTERSECT/EXCEPT set operations are not supported for cascade paths"**
-```sql
--- UNION / UNION ALL are supported and cascade to every branch.
--- INTERSECT and EXCEPT are not (their set-difference semantics are not tracked).
-SELECT ... FROM table1
-INTERSECT                -- ❌ Not supported
-SELECT ... FROM table2
-
--- Alternative: Use separate TVIEWs or application logic
 ```
 
 ### DROP TABLE tv_* Errors

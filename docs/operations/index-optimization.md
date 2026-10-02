@@ -463,4 +463,4 @@ ORDER BY COUNT(*) DESC;
 
 - [Resource Limits](../reference/limits.md) - Capacity planning and scaling
 - [Troubleshooting](troubleshooting.md) - Performance debugging
-- [Monitoring](../../MONITORING.md) - Track index performance
+- [Monitoring](monitoring.md) - Track index performance

@@ -178,30 +178,16 @@ pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) ->
     }
 }
 
-/// Extracts a `pk_*` integer from `NEW` or `OLD` tuple by convention.
+/// Extracts `pk_<entity>` from the trigger's `NEW` or `OLD` tuple.
 ///
-/// Derives the PK column name dynamically from the triggering table OID.
-/// Convention: `tb_<entity>` → `pk_<entity>` (e.g. `tb_user` → `pk_user`).
-pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
+/// The caller passes the entity it resolved from the table, or from the
+/// partitioned table when the trigger fired on a partition (a partition has the
+/// same columns, but it is not `tb_<entity>`).
+pub fn extract_pk(trigger: &PgTrigger, entity: &str) -> spi::Result<i64> {
     let tuple = trigger
         .new()
         .or_else(|| trigger.old())
         .expect("Row must exist for AFTER trigger");
-
-    let table_oid = trigger
-        .relation()
-        .map_err(|_| crate::TViewError::SpiError {
-            query: "get trigger relation".to_string(),
-            error: "Failed to get trigger relation".to_string(),
-        })?
-        .oid();
-
-    let entity = crate::catalog::entity_for_table(table_oid)?.ok_or_else(|| {
-        crate::TViewError::SpiError {
-            query: "entity_for_table".to_string(),
-            error: format!("Table OID {table_oid:?} not managed by pg_tviews"),
-        }
-    })?;
 
     let pk_column = format!("pk_{entity}");
 
@@ -334,6 +320,63 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     Ok(qname)
 }
 
+/// The SQL name of type `typid` with modifier `typmod` (`numeric(6,2)`, `bit(4)`),
+/// schema-qualified unless it is one of the SQL-standard names, so it means the
+/// same type whatever the `search_path` (`app.mood`, `"Other"."Weird Type"`,
+/// `pg_catalog.text`). No SPI.
+#[must_use]
+pub fn qualified_type_name(typid: Oid, typmod: i32) -> String {
+    #[allow(clippy::cast_possible_truncation)] // Reason: the flags are 1 and 4, bits16 holds them
+    const FLAGS: u16 =
+        (pg_sys::FORMAT_TYPE_TYPEMOD_GIVEN | pg_sys::FORMAT_TYPE_FORCE_QUALIFY) as u16;
+    // SAFETY: format_type_extended returns a palloc'd C string (it raises on an
+    // unknown type), copied before it is freed.
+    unsafe {
+        let name = pg_sys::format_type_extended(typid, typmod, FLAGS);
+        let out = std::ffi::CStr::from_ptr(name)
+            .to_string_lossy()
+            .into_owned();
+        pg_sys::pfree(name.cast());
+        out
+    }
+}
+
+/// Each column of relation `relid` with its [`qualified_type_name`], in order.
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn column_types(relid: Oid) -> crate::TViewResult<Vec<(String, String)>> {
+    Spi::connect(|client| {
+        // SAFETY: the datum copies `relid`.
+        let args =
+            [
+                unsafe {
+                    pgrx::datum::DatumWithOid::new(relid, pgrx::PgBuiltInOids::OIDOID.value())
+                },
+            ];
+        let mut out = Vec::new();
+        for row in client.select(
+            "SELECT attname::pg_catalog.text, atttypid, atttypmod FROM pg_catalog.pg_attribute \
+             WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped ORDER BY attnum",
+            None,
+            &args,
+        )? {
+            if let (Some(name), Some(typid), Some(typmod)) = (
+                row.get::<String>(1)?,
+                row.get::<Oid>(2)?,
+                row.get::<i32>(3)?,
+            ) {
+                out.push((name, qualified_type_name(typid, typmod)));
+            }
+        }
+        Ok::<_, pgrx::spi::Error>(out)
+    })
+    .map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Read the column types of relation {relid:?}"),
+        pg_error: e.to_string(),
+    })
+}
+
 /// Schema every `pg_tviews` object lives in, fixed by the control file.
 const EXT_SCHEMA: &str = "tviews";
 
@@ -347,9 +390,15 @@ thread_local! {
 /// the condition `key`; later calls are silent (issue #159). For conditions a
 /// normal workload hits on every write, where a client WARNING would be noise.
 pub fn log_once(key: &str, message: &str) {
-    if LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string())) {
+    if first_time(key) {
         log!("pg_tviews: {message}");
     }
+}
+
+/// True the first time this backend sees the condition `key`, false afterwards
+/// (until [`forget_logged`]).
+pub fn first_time(key: &str) -> bool {
+    LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string()))
 }
 
 /// Let [`log_once`] report `key` again, after the condition may have changed.

@@ -358,7 +358,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory metadata cache |
 | `pg_tviews.graph_cache_enabled` | bool | on | Cache dependency graphs |
 | `pg_tviews.table_cache_enabled` | bool | on | Cache table→entity mappings |
-| `pg_tviews.metrics_enabled` | bool | off | Collect refresh metrics |
+| `pg_tviews.metrics_enabled` | bool | off | Deprecated, has no effect (metrics are always collected); will be removed |
 | `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
 | `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED (not readable on standbys) |
 | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart required) |
@@ -367,6 +367,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
+| `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.uncascaded_policy` | enum | warn | `warn`, `error` or `full_refresh`: what a new TVIEW does about base tables no cascade reaches. Read at create time and stored with the TVIEW; `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
 | `pg_tviews.log_level` | string | info | Logging verbosity |
 
@@ -562,8 +563,8 @@ SELECT data FROM tv_post;
 -- Monitor system health
 SELECT * FROM pg_tviews_health_check();
 
--- View real-time metrics
-SELECT * FROM pg_tviews_queue_realtime;
+-- Size, rows and indexes of each TVIEW
+SELECT * FROM pg_tviews_performance_stats();
 ```
 
 ---
@@ -605,6 +606,7 @@ or `pg_tviews_refresh_all()`.
 
 - `pg_tviews_suspend_triggers()` - Start suspension (supports nesting)
 - `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
+- `pg_tviews_refresh(entity)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
 - `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
 - `pg_tviews_is_suspended()` - Check current suspension state
 - `pg_tviews_suspended_entities()` - List entities that changed during suspension
@@ -720,13 +722,13 @@ COMMIT;
 - **[API Reference](docs/reference/api.md)** - Complete function reference
 - **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TABLE syntax
 - **[Syntax Comparison](docs/getting-started/syntax-comparison.md)** - TVIEW creation methods
-- **[Error Reference](docs/reference/errors.md)** - Error types and solutions
-- **[Configuration](docs/reference/configuration.md)** - Configuration options
+- **[Error Reference](docs/error-reference.md)** - Error types and solutions
+- **[Configuration](#configuration)** - GUC settings
 
 ### Operations
 - **[Monitoring](docs/operations/monitoring.md)** - Metrics and health checks
 - **[Troubleshooting](docs/operations/troubleshooting.md)** - Debugging procedures
-- **[Performance](docs/operations/performance.md)** - 📊 Complete performance guide (index)
+- **[Performance](docs/operations/performance-tuning.md)** - 📊 Performance tuning
   - [Performance Best Practices](docs/operations/performance-best-practices.md) - Essential patterns
   - [Performance Analysis](docs/operations/performance-analysis.md) - Diagnostic tools
   - [Index Optimization](docs/operations/index-optimization.md) - Index strategies
@@ -745,9 +747,9 @@ COMMIT;
 - **[jsonb_delta Integration](docs/benchmarks/jsonb-ivm-integration.md)** - jsonb_delta's role and the parity finding
 
 ### Development
-- **[Contributing](docs/development/contributing.md)** - Development setup and contribution guidelines
+- **[Development](docs/development.md)** - Development setup
 - **[Testing](docs/development/testing.md)** - Testing patterns and procedures
-- **[Architecture Deep Dive](docs/development/architecture-deep-dive.md)** - Technical architecture details
+- **[Architecture](architecture.md)** - Technical architecture
 
 ---
 
@@ -780,7 +782,7 @@ Contributions welcome! This is a portfolio project, but I'm happy to collaborate
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-**Development Setup**: See [DEVELOPMENT.md](DEVELOPMENT.md)
+**Development Setup**: See [docs/development.md](docs/development.md)
 
 ---
 

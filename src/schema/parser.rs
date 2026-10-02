@@ -36,8 +36,8 @@ fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
         .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
 
-    // Bound the FROM search to the first branch of any UNION ALL / UNION
-    let union_bound = find_outer_union(&sql_lower, select_start).unwrap_or(sql_lower.len());
+    // Bound the FROM search to the first branch of any UNION / INTERSECT / EXCEPT
+    let union_bound = find_outer_set_operation(&sql_lower, select_start).unwrap_or(sql_lower.len());
 
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
     let from_start =
@@ -127,19 +127,21 @@ fn find_outer_from(sql_lower: &str, after_pos: usize, end_bound: usize) -> Optio
     None
 }
 
-/// Find the first occurrence of the `UNION` keyword at paren depth 0.
+/// Find the first set operator (`UNION`, `INTERSECT`, `EXCEPT`) at paren depth 0.
 ///
-/// Returns the byte position of the `u` in `union` (lowercased), or `None` if
-/// no outer UNION is found.  Both `UNION ALL` and `UNION` (deduplicated) are
+/// Returns the byte position of its first letter (lowercased), or `None` if the
+/// statement has no outer set operation. `ALL` and deduplicating forms are both
 /// detected; the caller uses the returned position as an upper bound for FROM
 /// scanning so only the first branch's `FROM` is returned.
 ///
 /// Public so callers outside this module (e.g. `ddl/create.rs`) can detect
-/// whether a SQL statement is a UNION query for metadata purposes.
+/// whether a SQL statement is a set operation for metadata purposes: a row of
+/// one may be dropped or duplicated by another branch, so it is never patched
+/// in place.
 ///
 /// `sql_lower` must already be lowercased. Scans from `start`.
 #[must_use]
-pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
+pub fn find_outer_set_operation(sql_lower: &str, start: usize) -> Option<usize> {
     let bytes = sql_lower.as_bytes();
     let len = bytes.len();
     let mut depth: i32 = 0;
@@ -176,14 +178,18 @@ pub fn find_outer_union(sql_lower: &str, start: usize) -> Option<usize> {
                 }
             }
             _ => {
-                // Check for "union" at word boundary, only at depth 0
-                if depth == 0 && i + 5 <= len && &bytes[i..i + 5] == b"union" {
-                    let before_ok =
-                        i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
-                    let after_ok = i + 5 >= len
-                        || (!bytes[i + 5].is_ascii_alphanumeric() && bytes[i + 5] != b'_');
-                    if before_ok && after_ok {
-                        return Some(i);
+                // A set operator at word boundary, only at depth 0.
+                if depth == 0 {
+                    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+                    for op in [&b"union"[..], b"intersect", b"except"] {
+                        let end = i + op.len();
+                        if end <= len
+                            && &bytes[i..end] == op
+                            && (i == 0 || !word(bytes[i - 1]))
+                            && (end >= len || !word(bytes[end]))
+                        {
+                            return Some(i);
+                        }
                     }
                 }
                 i += 1;
@@ -550,8 +556,8 @@ fn extract_columns_with_expressions_regex(sql: &str) -> Result<Vec<(String, Stri
         .map(|p| p + cte_offset)
         .ok_or("No SELECT keyword found")?;
 
-    // Bound the FROM search to the first branch of any UNION ALL / UNION
-    let union_bound = find_outer_union(&sql_lower, select_start).unwrap_or(sql_lower.len());
+    // Bound the FROM search to the first branch of any UNION / INTERSECT / EXCEPT
+    let union_bound = find_outer_set_operation(&sql_lower, select_start).unwrap_or(sql_lower.len());
 
     // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
     let from_start =
@@ -1086,6 +1092,28 @@ mod tests {
         let sql = "SELECT pk_post, id, 'UNION ALL rocks' AS label FROM tb_post";
         let cols = parse_select_columns(sql).unwrap();
         assert_eq!(cols, vec!["pk_post", "id", "label"]);
+    }
+
+    #[test]
+    fn test_outer_set_operation_finds_intersect_and_except() {
+        for (sql, op) in [
+            ("select a from tb_a union all select a from tb_b", "union"),
+            (
+                "select a from tb_a intersect select a from tb_b",
+                "intersect",
+            ),
+            ("select a from tb_a except select a from tb_b", "except"),
+        ] {
+            let at = find_outer_set_operation(sql, 0).unwrap();
+            assert!(sql[at..].starts_with(op), "{sql}");
+        }
+        for sql in [
+            "select exceptional, intersection from tb_a",
+            "select a from tb_a where a in (select a from tb_b except select a from tb_c)",
+            "select 'x intersect y' as a from tb_a",
+        ] {
+            assert_eq!(find_outer_set_operation(sql, 0), None, "{sql}");
+        }
     }
 
     #[test]
