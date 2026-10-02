@@ -169,11 +169,23 @@ pub struct Conjunct {
     pub sql: Sql,
     pub a: usize,
     pub b: usize,
-    /// It must hold for a contributing row of `a`, so it maps `a` toward `b`.
-    pub a_to_b: bool,
-    pub b_to_a: bool,
+    /// Whether it maps a row of `a` toward `b`.
+    pub a_to_b: Maps,
+    pub b_to_a: Maps,
     /// Set when the predicate is `a.col = b.col` with `=`.
     pub equality: Option<(Column, Column)>,
+}
+
+/// Whether a predicate maps a changed row of one occurrence to the rows of another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Maps {
+    No,
+    /// It must hold for every contributing row of the first occurrence.
+    Yes,
+    /// An outer join's equality toward its nullable side: it holds for a row that
+    /// has a match, so a path may take it only to go on from the nullable side (a
+    /// row with no match yields NULLs there, which nothing beyond matches, #165).
+    IfMatched,
 }
 
 /// The TVIEW key in one UNION branch: a column of the root occurrence.
@@ -291,13 +303,18 @@ impl Graph {
 
     /// The shortest chain of usable predicates from `from` to `to`.
     fn path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
-        let mut previous: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-        let mut queue = VecDeque::from([from]);
-        while let Some(at) = queue.pop_front() {
-            if at == to {
+        // A state is an occurrence, and whether it was reached through a nullable
+        // step that the path must go on from.
+        type State = (usize, bool);
+        let mut previous: BTreeMap<State, (State, usize)> = BTreeMap::new();
+        let start: State = (from, false);
+        let mut queue = VecDeque::from([start]);
+        while let Some(state) = queue.pop_front() {
+            let (at, pending) = state;
+            if at == to && !pending {
                 let mut path = Vec::new();
-                let mut cur = to;
-                while cur != from {
+                let mut cur = state;
+                while cur != start {
                     let (prev, conjunct) = previous[&cur];
                     path.push(conjunct);
                     cur = prev;
@@ -311,15 +328,15 @@ impl Graph {
             order.sort_by_key(|&i| self.conjuncts[i].equality.is_none());
             for i in order {
                 let c = &self.conjuncts[i];
-                let next = if c.a == at && c.a_to_b {
-                    c.b
-                } else if c.b == at && c.b_to_a {
-                    c.a
+                let next = if c.a == at && c.a_to_b != Maps::No {
+                    (c.b, c.a_to_b == Maps::IfMatched)
+                } else if c.b == at && c.b_to_a != Maps::No {
+                    (c.a, c.b_to_a == Maps::IfMatched)
                 } else {
                     continue;
                 };
-                if next != from && !previous.contains_key(&next) {
-                    previous.insert(next, (at, i));
+                if next.0 != from && !previous.contains_key(&next) {
+                    previous.insert(next, (state, i));
                     queue.push_back(next);
                 }
             }
@@ -1076,8 +1093,8 @@ mod tests {
             sql,
             a: a.occ,
             b: b.occ,
-            a_to_b,
-            b_to_a,
+            a_to_b: if a_to_b { Maps::Yes } else { Maps::No },
+            b_to_a: if b_to_a { Maps::Yes } else { Maps::No },
             equality: Some((a, b)),
         }
     }
@@ -1131,6 +1148,36 @@ mod tests {
         let g = graph(
             vec![occ(1, "tb_order"), occ(2, "tb_line")],
             vec![eq(col(0, "pk_order"), col(1, "fk_order"), true, false)],
+            col(0, "pk_order"),
+        );
+        assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));
+    }
+
+    /// `l.fk_order = o2.pk_order` from `tb_line l LEFT JOIN tb_order o2`: it holds
+    /// for rows of `o2`, and toward `o2` only for a line that has a match.
+    fn outer_on(l: usize, o2: usize) -> Conjunct {
+        let mut c = eq(col(l, "fk_order"), col(o2, "pk_order"), false, true);
+        c.a_to_b = Maps::IfMatched;
+        c
+    }
+
+    #[test]
+    fn a_nullable_step_is_taken_when_the_path_goes_on() {
+        // tv over o, reading v_line (l LEFT JOIN o2) where v.order_id = o.id (#165).
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(2, 1), eq(col(1, "id"), col(0, "id"), true, false)],
+            col(0, "pk_order"),
+        );
+        assert_eq!(g.classify(2, NONE), Kind::Mapped(vec![0, 1]));
+    }
+
+    #[test]
+    fn a_nullable_step_does_not_end_a_path() {
+        // The key is on the nullable side itself: the path would end there.
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(1, 0)],
             col(0, "pk_order"),
         );
         assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));

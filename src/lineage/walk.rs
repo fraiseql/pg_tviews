@@ -7,7 +7,7 @@
 
 #![allow(clippy::cast_ptr_alignment)] // Reason: `Node *` is cast to the node type its tag names, as PostgreSQL does; palloc aligns every node for its own type.
 
-use super::{Column, Conjunct, Graph, Occurrence, Root, Sql};
+use super::{Column, Conjunct, Graph, Maps, Occurrence, Root, Sql};
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
@@ -917,6 +917,18 @@ impl Walker<'_> {
             };
             // SAFETY: the same expression.
             let equality = unsafe { equality(expr, &chosen) };
+            // Only an equality is known to fail on the NULLs of an unmatched row.
+            let checked = |m: Maps| {
+                if m == Maps::IfMatched && equality.is_none() {
+                    Maps::No
+                } else {
+                    m
+                }
+            };
+            let (a_to_b, b_to_a) = (checked(a_to_b), checked(b_to_a));
+            if a_to_b == Maps::No && b_to_a == Maps::No {
+                continue;
+            }
             self.graph.conjuncts.push(Conjunct {
                 sql,
                 a,
@@ -937,7 +949,7 @@ impl Walker<'_> {
         b: usize,
         origin: Origin<'_>,
         outer_to_inner: bool,
-    ) -> Option<(bool, bool)> {
+    ) -> Option<(Maps, Maps)> {
         // The level of each occurrence relative to the predicate's: 0 here, n above,
         // usize::MAX below (a subquery's output).
         let level_of = |occ: usize| {
@@ -960,16 +972,26 @@ impl Walker<'_> {
         // A predicate always holds for rows of the deeper occurrence; for rows of
         // the outer one only if every level in between must find a row.
         let outer_ok = |outer_levelsup: i64| outer_to_inner && self.levels_required(outer_levelsup);
-        let (mut a_to_b, mut b_to_a) = match da.cmp(&db) {
+        let (a_to_b, b_to_a) = match da.cmp(&db) {
             std::cmp::Ordering::Equal => (true, true),
             std::cmp::Ordering::Less => (true, outer_ok(db)),
             std::cmp::Ordering::Greater => (outer_ok(da), true),
         };
-        if let Origin::Outer { nullable } = origin {
-            a_to_b &= nullable.contains(&a);
-            b_to_a &= nullable.contains(&b);
-        }
-        (a_to_b || b_to_a).then_some((a_to_b, b_to_a))
+        // An outer join's condition holds only for rows of its nullable side. Toward
+        // that side it still maps a row that has a match (#165).
+        let maps = |holds: bool, from: usize, to: usize| match origin {
+            Origin::Outer { nullable } if holds && !nullable.contains(&from) => {
+                if nullable.contains(&to) {
+                    Maps::IfMatched
+                } else {
+                    Maps::No
+                }
+            }
+            _ if holds => Maps::Yes,
+            _ => Maps::No,
+        };
+        let (a_to_b, b_to_a) = (maps(a_to_b, a, b), maps(b_to_a, b, a));
+        (a_to_b != Maps::No || b_to_a != Maps::No).then_some((a_to_b, b_to_a))
     }
 
     /// Whether a row of the level `outer` levels above the innermost one exists
