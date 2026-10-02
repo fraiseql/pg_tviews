@@ -384,18 +384,36 @@ impl Walker<'_> {
             self.note_functions(query.cast());
 
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
+            let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
+            // The columns of a GROUP BY or DISTINCT ON key, and whether an output
+            // column is one of them or equal to one on every row it can match
+            // (#162): `DISTINCT ON (l.fk_order) o.pk_order` with
+            // `l.fk_order = o.pk_order`.
+            let key_columns = |clause: *mut pg_sys::List| -> Vec<Column> {
+                tles.iter()
+                    .filter(|tle| in_clause((***tle).ressortgroupref, clause))
+                    .filter_map(|tle| match self.resolve_expr((**tle).expr.cast()) {
+                        Resolved::Col(c) => Some(c),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let group_keys = key_columns((*query).groupClause);
+            let distinct_keys = key_columns((*query).distinctClause);
+            let keyed =
+                |tle: *mut pg_sys::TargetEntry, clause: *mut pg_sys::List, keys: &[Column]| {
+                    in_clause((*tle).ressortgroupref, clause)
+                        || matches!(self.resolve_expr((*tle).expr.cast()),
+                                Resolved::Col(c) if self.equal_to_key(&c, keys))
+                };
             let mut outputs = Vec::new();
-            for (tle, skip) in elements::<pg_sys::TargetEntry>((*query).targetList)
-                .into_iter()
-                .zip(skipped)
-            {
+            for (&tle, skip) in tles.iter().zip(skipped) {
                 let pass_through = !skip
                     && (link == Link::Top
                         || (!opaque
-                            && (!grouped
-                                || in_clause((*tle).ressortgroupref, (*query).groupClause))
+                            && (!grouped || keyed(tle, (*query).groupClause, &group_keys))
                             && (!(*query).hasDistinctOn
-                                || in_clause((*tle).ressortgroupref, (*query).distinctClause))));
+                                || keyed(tle, (*query).distinctClause, &distinct_keys))));
                 outputs.push(if pass_through {
                     self.resolve_expr((*tle).expr.cast())
                 } else {
@@ -404,6 +422,25 @@ impl Walker<'_> {
             }
             Ok(outputs)
         }
+    }
+
+    /// Whether an equality of the graph makes `column` equal to one of `keys` on
+    /// every row of `column`'s occurrence that contributes (a WHERE or inner join
+    /// condition, or an outer join's with `column` on the nullable side: NULL where
+    /// it has no match).
+    fn equal_to_key(&self, column: &Column, keys: &[Column]) -> bool {
+        self.graph.conjuncts.iter().any(|c| {
+            c.equality.as_ref().is_some_and(|(x, y)| {
+                let (toward, key) = if x == column {
+                    (if c.a == x.occ { c.a_to_b } else { c.b_to_a }, y)
+                } else if y == column {
+                    (if c.a == y.occ { c.a_to_b } else { c.b_to_a }, x)
+                } else {
+                    return false;
+                };
+                toward == Maps::Yes && keys.contains(key)
+            })
+        })
     }
 
     /// The outputs of a UNION subquery: each column stands for the matching column

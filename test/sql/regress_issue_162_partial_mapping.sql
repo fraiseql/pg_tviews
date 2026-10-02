@@ -1,6 +1,6 @@
 -- Regression test for issue #162: a write to a TVIEW's own table stopped
--- refreshing its row when a second read of the same table (inside a DISTINCT ON
--- view) could not be traced to the key. One untraceable read made the whole table
+-- refreshing its row when a second read of the same table could not be traced
+-- to the key. One untraceable read made the whole table
 -- `all_keys`, and under the default `warn` policy nothing refreshed. The traceable
 -- reads now keep refreshing; only the rest is left to uncascaded_policy.
 --
@@ -24,14 +24,13 @@ CREATE TABLE tb_line (pk_line bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 INSERT INTO tb_order (ref) VALUES ('o1'), ('o2');
 INSERT INTO tb_line (fk_order, sku) VALUES (1, 'a'), (1, 'b'), (2, 'c');
 
--- ── #162's repro: the own table is also read inside a DISTINCT ON view ───────
-CREATE VIEW v_last_line AS
-  SELECT DISTINCT ON (l.fk_order) o.pk_order AS order_pk, l.sku
-  FROM tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order
-  ORDER BY l.fk_order, l.pk_line DESC;
+-- ── the own table is read again where nothing links it to the key ──────────
+-- (#162's repro itself, a DISTINCT ON view keyed on l.fk_order, now maps
+-- entirely: see regress_distinct_on_key_equality.sql.)
 SELECT pg_tviews_create('tv_order', $$
-  SELECT o.pk_order, o.id, o.ref, jsonb_build_object('ref', o.ref, 'last', v.sku) AS data
-  FROM tb_order o LEFT JOIN v_last_line v ON v.order_pk = o.pk_order $$);
+  SELECT o.pk_order, o.id, o.ref,
+         jsonb_build_object('ref', o.ref, 'orders', (SELECT count(*) FROM tb_order)) AS data
+  FROM tb_order o $$);
 
 UPDATE tb_order SET ref = 'o1-new' WHERE pk_order = 1;
 DO $$ BEGIN
@@ -51,7 +50,7 @@ END $$;
 -- The untraceable read is still reported, and still not mapped under warn.
 DO $$ BEGIN
     IF (SELECT cascade_kinds->>'tb_order' FROM tviews.registry WHERE entity = 'order') <> 'all_keys'
-       OR (SELECT uncascaded_tables::text FROM tviews.registry WHERE entity = 'order') NOT LIKE '%tb_line%' THEN
+       OR (SELECT uncascaded_tables::text FROM tviews.registry WHERE entity = 'order') NOT LIKE '%tb_order%' THEN
         RAISE EXCEPTION '#162 FAIL: the untraceable reads are no longer reported: %',
             (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'order');
     END IF;
@@ -81,14 +80,15 @@ END $$;
 DROP TABLE tv_order;
 SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_order', $$
-  SELECT o.pk_order, o.id, o.ref, jsonb_build_object('ref', o.ref, 'last', v.sku) AS data
-  FROM tb_order o LEFT JOIN v_last_line v ON v.order_pk = o.pk_order $$);
+  SELECT o.pk_order, o.id, o.ref,
+         jsonb_build_object('ref', o.ref, 'orders', (SELECT count(*) FROM tb_order)) AS data
+  FROM tb_order o $$);
 RESET pg_tviews.uncascaded_policy;
-INSERT INTO tb_line (fk_order, sku) VALUES (2, 'z');
+INSERT INTO tb_order (ref) VALUES ('o4');
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN v_order v USING (pk_order)
                WHERE t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION '#162 FAIL: full_refresh no longer refreshes on a tb_line write';
+        RAISE EXCEPTION '#162 FAIL: full_refresh no longer refreshes every row on a tb_order write';
     END IF;
 END $$;
 
