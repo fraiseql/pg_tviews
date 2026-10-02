@@ -396,5 +396,5 @@ WHERE data @> '{"status": "published"}';
 
 - [Index Optimization](index-optimization.md) - Detailed index strategies
 - [Resource Limits](../reference/limits.md) - Capacity planning
-- [Monitoring](../../MONITORING.md) - Production monitoring
+- [Monitoring](monitoring.md) - Production monitoring
 - [Troubleshooting](troubleshooting.md) - Debug performance issues

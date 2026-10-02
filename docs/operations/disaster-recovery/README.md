@@ -18,13 +18,12 @@ This directory contains comprehensive disaster recovery procedures for pg_tviews
 
 | Scenario | Primary Procedure | RTO | RPO | Difficulty |
 |----------|-------------------|-----|-----|------------|
-| **Data Corruption** | [Data Corruption Checklist](runbooks/data-corruption-checklist.md) | 30-60 min | 0-15 min | Medium |
-| **Hardware Failure** | [Hardware Failure Response](runbooks/hardware-failure-response.md) | 15-60 min | 0-5 min | High |
-| **Network Partition** | [Network Partition Response](runbooks/network-partition-response.md) | 5-30 min | 0 min | Low |
-| **Ransomware** | [Ransomware Response](runbooks/ransomware-response.md) | 60-240 min | 0-60 min | Critical |
+| **Data Corruption** | [Incident Checklist](../runbooks/04-incident-response/incident-checklist.md) | 30-60 min | 0-15 min | Medium |
+| **Hardware Failure** | [Emergency Procedures](../runbooks/04-incident-response/emergency-procedures.md) | 15-60 min | 0-5 min | High |
+| **Primary Lost** | [Replication and Failover](../replication.md) | 5-30 min | 0 min | Medium |
 | **Full Database Loss** | [Full Database Restore](recovery-procedures/full-database-restore.md) | 30-120 min | 0-15 min | High |
-| **Point-in-Time Recovery** | [Point-in-Time Recovery](recovery-procedures/point-in-time-recovery.md) | 60-180 min | Custom | High |
-| **TVIEW Corruption** | [TVIEW Recovery](recovery-procedures/tview-recovery.md) | 10-30 min | 0 min | Medium |
+| **Point-in-Time Recovery** | [PostgreSQL PITR](https://www.postgresql.org/docs/current/continuous-archiving.html), then [Full Database Restore](recovery-procedures/full-database-restore.md) from step 4 | 60-180 min | Custom | High |
+| **TVIEW Corruption** | [Manual Refresh](../runbooks/02-refresh-operations/manual-refresh.md) | 10-30 min | 0 min | Medium |
 
 ## Backup Strategy Overview
 
@@ -49,26 +48,23 @@ This directory contains comprehensive disaster recovery procedures for pg_tviews
 ## Recovery Procedures
 
 ### Database Recovery
-1. **[Full Database Restore](recovery-procedures/full-database-restore.md)**: Complete cluster recovery
-2. **[Point-in-Time Recovery](recovery-procedures/point-in-time-recovery.md)**: Recover to specific transaction
-3. **[Partial Recovery](recovery-procedures/partial-recovery.md)**: Restore specific tables/schemas
+- **[Full Database Restore](recovery-procedures/full-database-restore.md)**: Complete cluster recovery
+- **Point-in-time recovery** is PostgreSQL's
+  ([continuous archiving](https://www.postgresql.org/docs/current/continuous-archiving.html));
+  pg_tviews needs nothing more than its catalog restored with the rest.
 
 ### TVIEW-Specific Recovery
-1. **[TVIEW Recovery](recovery-procedures/tview-recovery.md)**: Rebuild corrupted TVIEWs
-2. **[Metadata Recovery](recovery-procedures/metadata-recovery.md)**: Restore TVIEW configurations
+- **[Manual Refresh](../runbooks/02-refresh-operations/manual-refresh.md)**: Rebuild a stale or
+  corrupted TVIEW and the TVIEWs that embed it
 
 ### High Availability
-1. **[Planned Failover](failover-procedures/planned-failover.md)**: Scheduled primary switch
-2. **[Unplanned Failover](failover-procedures/unplanned-failover.md)**: Emergency primary switch
-3. **[Failback Procedure](failover-procedures/failback-procedure.md)**: Return to original primary
+- **[Replication and Failover](../replication.md)**: Standbys, promotion and the TVIEW rebuild after it
 
 ## Incident Response Runbooks
 
-### Detection and Assessment
-- **[Data Corruption Checklist](runbooks/data-corruption-checklist.md)**: Identify and assess data issues
-- **[Hardware Failure Response](runbooks/hardware-failure-response.md)**: Server/storage failures
-- **[Network Partition Response](runbooks/network-partition-response.md)**: Connectivity issues
-- **[Ransomware Response](runbooks/ransomware-response.md)**: Security incident procedures
+- **[Incident Checklist](../runbooks/04-incident-response/incident-checklist.md)**: Identify and assess the issue
+- **[Emergency Procedures](../runbooks/04-incident-response/emergency-procedures.md)**: Contain and recover
+- **[Post-Incident Review](../runbooks/04-incident-response/post-incident-review.md)**: Lessons learned
 
 ### Response Framework
 Each runbook follows a structured approach:

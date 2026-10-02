@@ -655,5 +655,5 @@ $$;
 ## See Also
 
 - [Debugging Guide](operations/debugging.md) - Troubleshooting procedures
-- [API Reference](API_REFERENCE.md) - Function documentation
-- [Monitoring Guide](MONITORING.md) - Health checking and metrics
+- [API Reference](reference/api.md) - Function documentation
+- [Monitoring Guide](operations/monitoring.md) - Health checking and metrics

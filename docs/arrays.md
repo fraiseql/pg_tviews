@@ -269,4 +269,4 @@ Array handling is a key feature of pg_tviews. Contributions welcome for:
 - Performance optimizations
 - Additional array type support
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
+See [the development guide](development.md) for development guidelines.

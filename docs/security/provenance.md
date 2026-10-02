@@ -287,7 +287,7 @@ Track provenance effectiveness:
 - [SLSA Framework](https://slsa.dev/)
 - [SLSA Verifier Documentation](https://github.com/slsa-framework/slsa-verifier)
 - [GitHub Attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
-- [pg_tviews Reproducible Builds](./reproducible-builds.md)
+- [pg_tviews Reproducible Builds](../development/reproducible-builds.md)
 
 ---
 

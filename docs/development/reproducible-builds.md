@@ -361,7 +361,7 @@ When changing `Dockerfile.build`:
 - [Reproducible Builds Project](https://reproducible-builds.org/)
 - [SLSA Framework](https://slsa.dev/)
 - [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
-- [pg_tviews Provenance](./provenance.md)
+- [pg_tviews Provenance](../security/provenance.md)
 
 ---
 

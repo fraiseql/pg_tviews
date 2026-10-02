@@ -615,5 +615,5 @@ random_page_cost = 1.1  # For SSD
 - [Index Optimization](index-optimization.md) - Detailed indexing strategies
 - [Performance Analysis](performance-analysis.md) - Tools and diagnostics
 - [Resource Limits](../reference/limits.md) - Capacity planning
-- [Monitoring](../../MONITORING.md) - Production monitoring setup
+- [Monitoring](monitoring.md) - Production monitoring setup
 - [Troubleshooting](troubleshooting.md) - Debug performance issues

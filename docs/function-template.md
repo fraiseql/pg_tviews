@@ -45,10 +45,13 @@ expected_result
 - **ErrorName**: When this error occurs and how to resolve it
 - **AnotherError**: Another possible error scenario
 
-**See Also**:
+**See Also** (links relative to the page, e.g. a page in `docs/reference/`):
+
+```markdown
 - [Related Function](related-function.md)
-- [Usage Guide](../guides/usage.md)
+- [Usage Guide](../user-guides/developers.md)
 - [Troubleshooting](../operations/troubleshooting.md#function-name)
+```
 
 ---
 
@@ -133,9 +136,9 @@ TVIEW 'tv_post' created successfully
 - **TViewAlreadyExists**: A TVIEW with this name already exists
 
 **See Also**:
-- [DROP TABLE tv_*](ddl.md#drop-table-tv_)
-- [TVIEW Creation Guide](../getting-started/quickstart.md)
-- [Troubleshooting](../operations/troubleshooting.md#creation-fails)
+- [DROP TABLE tv_*](reference/ddl.md#drop-table-tv_)
+- [TVIEW Creation Guide](getting-started/quickstart.md)
+- [Troubleshooting](operations/troubleshooting.md#creation-fails)
 
 ---
 

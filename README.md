@@ -721,13 +721,13 @@ COMMIT;
 - **[API Reference](docs/reference/api.md)** - Complete function reference
 - **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TABLE syntax
 - **[Syntax Comparison](docs/getting-started/syntax-comparison.md)** - TVIEW creation methods
-- **[Error Reference](docs/reference/errors.md)** - Error types and solutions
-- **[Configuration](docs/reference/configuration.md)** - Configuration options
+- **[Error Reference](docs/error-reference.md)** - Error types and solutions
+- **[Configuration](#configuration)** - GUC settings
 
 ### Operations
 - **[Monitoring](docs/operations/monitoring.md)** - Metrics and health checks
 - **[Troubleshooting](docs/operations/troubleshooting.md)** - Debugging procedures
-- **[Performance](docs/operations/performance.md)** - 📊 Complete performance guide (index)
+- **[Performance](docs/operations/performance-tuning.md)** - 📊 Performance tuning
   - [Performance Best Practices](docs/operations/performance-best-practices.md) - Essential patterns
   - [Performance Analysis](docs/operations/performance-analysis.md) - Diagnostic tools
   - [Index Optimization](docs/operations/index-optimization.md) - Index strategies
@@ -746,9 +746,9 @@ COMMIT;
 - **[jsonb_delta Integration](docs/benchmarks/jsonb-ivm-integration.md)** - jsonb_delta's role and the parity finding
 
 ### Development
-- **[Contributing](docs/development/contributing.md)** - Development setup and contribution guidelines
+- **[Development](docs/development.md)** - Development setup
 - **[Testing](docs/development/testing.md)** - Testing patterns and procedures
-- **[Architecture Deep Dive](docs/development/architecture-deep-dive.md)** - Technical architecture details
+- **[Architecture](architecture.md)** - Technical architecture
 
 ---
 
@@ -781,7 +781,7 @@ Contributions welcome! This is a portfolio project, but I'm happy to collaborate
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-**Development Setup**: See [DEVELOPMENT.md](DEVELOPMENT.md)
+**Development Setup**: See [docs/development.md](docs/development.md)
 
 ---
 

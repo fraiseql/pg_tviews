@@ -313,6 +313,6 @@ ORDER BY total_time DESC;
 
 ## See Also
 
-- [Development Guide](../DEVELOPMENT.md) - General development setup
+- [Development Guide](../development.md) - General development setup
 - [Performance Tuning](../operations/performance-tuning.md) - Performance testing
 - [Troubleshooting](../operations/troubleshooting.md) - Debugging production issues
