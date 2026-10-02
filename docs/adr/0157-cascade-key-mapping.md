@@ -76,7 +76,10 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
      installed.
    - `AllKeys`: no selective predicate (an uncorrelated subquery, a window function, `LIMIT`, a
      join on a computed column). Handled by `pg_tviews.uncascaded_policy` (`warn` | `error` |
-     `full_refresh`), stored per TVIEW at create time.
+     `full_refresh`), stored per TVIEW at create time. This includes a window function,
+     `LIMIT`/`OFFSET`, a set-returning function or `GROUPING SETS` in the backing view's own
+     SELECT (or a set-operation branch): such a level gets no key root, since a write changes rows
+     other than its own (`count(*) OVER ()`, the rows a `LIMIT` keeps).
    Registration fails when the analyzer and `pg_depend` disagree on the tables the view reads.
    A predicate the analyzer cannot write in SQL is left out, which only widens a mapping.
 2. `Mapped` and `AllKeys` tables get **statement-level triggers** with transition tables, one per
@@ -95,8 +98,12 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
   regression suite on all three.
 - **Transition-table limits:**
   - `TRUNCATE` has no transition table. It maps to `AllKeys` for every dependent TVIEW.
-  - Partitions can't declare transition tables. A partitioned `Mapped` table therefore keeps a
-    row trigger on the root (cloned to its partitions) that runs the mapping query per row.
+  - PostgreSQL copies only row triggers onto partitions (a trigger with transition tables is
+    not copied), and a statement trigger fires only on the table the statement names: the root's
+    transition tables miss a statement that names a partition. A partitioned `Mapped` table
+    therefore keeps a row trigger on the root (copied to its partitions) that runs the mapping
+    query per row, and every partition gets the flush and `TRUNCATE` triggers of its own,
+    including partitions created or attached later (the `ProcessUtility` hook).
   - `UPDATE OF col` can't be combined with transition tables. Column-aware filtering moves into
     SQL: join OLD to NEW on the table's key and compare the referenced columns with `*=`
     (search_path-independent, as in #156).

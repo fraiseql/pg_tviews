@@ -114,7 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   faster (`test/sql/real_benchmark/results/adr_0157`).
 - **After `ALTER EXTENSION pg_tviews UPDATE`, run
   `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW and
-  installs the new triggers. Until then, a TVIEW keeps its old triggers, and a write
+  installs the new triggers, including the flush and `TRUNCATE` triggers on every
+  partition of a partitioned base table, and reclassifies the shapes this release
+  maps differently (a top-level window function or `LIMIT`, INTERSECT/EXCEPT).
+  Until then, a TVIEW keeps its old triggers, and a write
   its old metadata maps through more than one hop refreshes it in full (logged once
   per backend).
 - **`pg_tviews_refresh(entity)` also rebuilds the TVIEWs that embed it**, in
