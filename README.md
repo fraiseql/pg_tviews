@@ -562,8 +562,8 @@ SELECT data FROM tv_post;
 -- Monitor system health
 SELECT * FROM pg_tviews_health_check();
 
--- View real-time metrics
-SELECT * FROM pg_tviews_queue_realtime;
+-- Size, rows and indexes of each TVIEW
+SELECT * FROM pg_tviews_performance_stats();
 ```
 
 ---

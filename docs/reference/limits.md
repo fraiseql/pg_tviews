@@ -168,12 +168,12 @@ WHERE name = 'work_mem';
 ```sql
 -- Quick health assessment
 SELECT
-    CASE WHEN queue_size > 100 THEN 'WARNING' ELSE 'OK' END as queue_status,
+    CASE WHEN unhealthy > 0 THEN 'WARNING' ELSE 'OK' END as tview_status,
     CASE WHEN memory_usage > 0.8 THEN 'WARNING' ELSE 'OK' END as memory_status,
     CASE WHEN error_count > 0 THEN 'ERROR' ELSE 'OK' END as error_status
 FROM (
     SELECT
-        (SELECT queue_size FROM pg_tviews_queue_realtime LIMIT 1) as queue_size,
+        (SELECT count(*) FROM pg_tviews_health_check() WHERE status <> 'OK') as unhealthy,
         (SELECT sum(total_bytes) / (SELECT setting::bigint * 1024 * 1024
                                    FROM pg_settings WHERE name = 'shared_buffers')
          FROM pg_backend_memory_contexts) as memory_usage,

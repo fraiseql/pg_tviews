@@ -196,7 +196,7 @@ CREATE TABLE tview_metrics (
 CREATE OR REPLACE FUNCTION collect_tview_metrics()
 RETURNS void AS $$
 BEGIN
-    INSERT INTO tview_metrics (queue_stats, cache_stats, performance_summary)
+    INSERT INTO tview_metrics (queue_stats, cache_stats, performance_stats)
     VALUES (
         pg_tviews_queue_stats(),
         (SELECT jsonb_object_agg(table_name, cache_info)
@@ -208,8 +208,7 @@ BEGIN
              WHERE n.nspname = 'public' AND c.relname LIKE 'tv_%'
          ) cache_info),
         (SELECT jsonb_agg(row_to_json(ps))
-         FROM pg_tviews_performance_summary ps
-         WHERE hour > now() - interval '1 hour')
+         FROM pg_tviews_performance_stats() ps)
     );
 END;
 $$ LANGUAGE plpgsql;
@@ -426,9 +425,8 @@ SELECT name, setting, unit
 FROM pg_settings
 WHERE name IN ('shared_buffers', 'work_mem', 'maintenance_work_mem');
 
--- Check for memory leaks in TVIEW processes
-SELECT * FROM pg_tviews_performance_summary
-ORDER BY collected_at DESC LIMIT 10;
+-- Size of each TVIEW, largest first
+SELECT * FROM pg_tviews_performance_stats();
 ```
 
 **Solutions**:

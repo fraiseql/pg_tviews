@@ -94,14 +94,14 @@ DROP SCHEMA tviews;
 DROP ROLE regress_136_other;
 
 CREATE SCHEMA tviews;
-CREATE VIEW tviews.pg_tviews_cache_stats AS SELECT 1 AS planted;
+CREATE VIEW tviews.registry AS SELECT 1 AS planted;
 DO $$ BEGIN
     BEGIN
         CREATE EXTENSION pg_tviews;
     EXCEPTION WHEN duplicate_table THEN
         RETURN;
     END;
-    RAISE EXCEPTION '#136 FAIL: install reused a pre-existing tviews.pg_tviews_cache_stats';
+    RAISE EXCEPTION '#136 FAIL: install reused a pre-existing tviews.registry';
 END $$;
 DROP SCHEMA tviews CASCADE;
 CREATE EXTENSION pg_tviews;

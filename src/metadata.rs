@@ -528,45 +528,6 @@ REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
     name = "audit_table",
 );
 
-// Monitoring views for production observability
-extension_sql!(
-    r"
--- Queue monitoring view
-CREATE VIEW @extschema@.pg_tviews_queue_realtime AS
-SELECT
-    current_setting('application_name') as session,
-    pg_backend_pid() as backend_pid,
-    txid_current() as transaction_id,
-    0 as queue_size,
-    ARRAY[]::TEXT[] as entities,
-    NOW() as last_enqueued;
-
--- Cache statistics view
-CREATE VIEW @extschema@.pg_tviews_cache_stats AS
-SELECT
-    'graph_cache' as cache_type,
-    0::BIGINT as entries,
-    '0 bytes' as estimated_size
-UNION ALL
-SELECT
-    'table_cache' as cache_type,
-    0::BIGINT as entries,
-    '0 bytes' as estimated_size;
-
--- Performance summary view
-CREATE VIEW @extschema@.pg_tviews_performance_summary AS
-SELECT
-    entity,
-    COUNT(*) as total_refreshes,
-    0.0 as avg_refresh_ms,
-    NOW() as last_refresh
-FROM @extschema@.pg_tview_meta
-GROUP BY entity;
-    ",
-    name = "monitoring_views",
-    requires = ["create_metadata_tables"]
-);
-
 // Per-TVIEW physical health report (issue #74). Pure SQL over the catalogs and the
 // statistics views, so it is read-only and callable on a hot standby.
 extension_sql!(

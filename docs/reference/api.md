@@ -497,67 +497,9 @@ The versioned read contract for tools: one row per TVIEW (schema, name, entity,
 normalized query, base tables, options, `needs_reregister`). See
 [the contract for tools](read-contract.md).
 
-### pg_tviews_queue_realtime
-
-**Description**:
-Real-time view of the current refresh queue state.
-
-**Columns**:
-- `queue_size INTEGER`: Number of pending refresh operations
-- `oldest_entry TIMESTAMPTZ`: When the oldest queue entry was created
-- `newest_entry TIMESTAMPTZ`: When the newest queue entry was created
-
-**Example**:
-```sql
--- Monitor queue in real-time
-SELECT * FROM pg_tviews_queue_realtime;
-
--- Alert on queue buildup
-SELECT CASE
-    WHEN queue_size > 1000 THEN 'CRITICAL'
-    WHEN queue_size > 100 THEN 'WARNING'
-    ELSE 'OK'
-END as queue_status
-FROM pg_tviews_queue_realtime;
-```
-
-**Notes**:
-- Updated in real-time as operations are queued/dequeued
-- Useful for monitoring and alerting
-- Very fast (no table scans)
-
-### pg_tviews_cache_stats
-
-**Description**:
-Statistics about internal caching performance.
-
-**Columns**:
-- `cache_name TEXT`: Name of the cache
-- `entries INTEGER`: Number of cached entries
-- `hit_rate NUMERIC`: Cache hit rate (0.0 to 1.0)
-- `last_accessed TIMESTAMPTZ`: When cache was last accessed
-
-**Example**:
-```sql
--- Check cache performance
-SELECT * FROM pg_tviews_cache_stats;
-
--- Monitor cache efficiency
-SELECT
-    cache_name,
-    hit_rate * 100 as hit_percentage,
-    CASE
-        WHEN hit_rate > 0.9 THEN 'EXCELLENT'
-        WHEN hit_rate > 0.7 THEN 'GOOD'
-        ELSE 'NEEDS_ATTENTION'
-    END as performance
-FROM pg_tviews_cache_stats;
-```
-
-**Notes**:
-- Tracks prepared statements and graph cache performance
-- Useful for performance tuning
-- Reset on extension reload
+The queue and cache counters are per transaction and per backend; read them with
+`pg_tviews_queue_stats()`. `pg_tviews_health_check()` and
+`pg_tviews_performance_stats()` cover the server-wide picture.
 
 ## Common Usage Patterns
 

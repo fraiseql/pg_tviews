@@ -5,10 +5,6 @@
 SELECT * FROM pg_tviews_queue_info();
 -- Expected: (0, {}) - empty queue initially
 
--- Test 2: Queue monitoring view
-SELECT * FROM pg_tviews_queue_realtime;
--- Should show session info with empty queue
-
 -- Create test table and TVIEW
 CREATE TABLE test_queue_monitor (
     pk_test_queue_monitor BIGINT PRIMARY KEY,
@@ -31,9 +27,6 @@ BEGIN;
     -- Check queue status
     SELECT * FROM pg_tviews_queue_info();
     -- Expected: (3, {queue_monitor}) - 3 items for queue_monitor entity
-
-    SELECT * FROM pg_tviews_queue_realtime;
-    -- Should show current session with queue_size = 3
 
     -- Insert more data for same entity
     INSERT INTO test_queue_monitor VALUES (4, 'test_data_4');

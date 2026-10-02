@@ -94,10 +94,6 @@ they are not server-wide, so do not poll them from a monitoring connection.
 SELECT tviews.pg_tviews_queue_stats();
 ```
 
-The views `tviews.pg_tviews_performance_summary`, `tviews.pg_tviews_cache_stats` and
-`tviews.pg_tviews_queue_realtime` return fixed placeholder values; do not build
-monitoring on them.
-
 ## Availability
 
 ```sql

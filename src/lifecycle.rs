@@ -17,12 +17,6 @@ fn pg_tviews_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Debug function to check if `ProcessUtility` hook is installed
-#[pg_extern]
-const fn pg_tviews_hook_status() -> &'static str {
-    "Extension loaded - hook installation attempted in _PG_init"
-}
-
 /// Check if `jsonb_delta` extension is available at runtime (cached)
 /// Returns true if extension is installed, false otherwise
 ///
