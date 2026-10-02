@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **`pg_tviews_performance_stats()` works on a server built without libxml**. It
+  counted rows through `xpath(query_to_xml(…))`, which fails there ("unsupported XML
+  feature"). It now counts each TVIEW directly; a TVIEW the caller cannot read gets a
+  NULL `row_count` and a NOTICE.
 - **An UPDATE of a base table no longer fails when its TVIEW projects an
   extension-typed column** (#156, regression in 0.1.0-beta.20). The refresh's no-op
   guard compared rows with `IS DISTINCT FROM`, which looks `=` up by name; under the
@@ -124,6 +128,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   as equal but that changes the stored bytes is now written to the TVIEW: `citext`
   `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly
   what its view returns. NULL still equals NULL.
+
+- **An unknown `pg_tviews.*` setting is refused**. The `pg_tviews` prefix is reserved,
+  so `SET pg_tviews.<name>` for a name pg_tviews does not define raises an error
+  instead of being accepted and ignored. A setting copied from the old concurrency
+  page (`pg_tviews.lock_timeout_ms`, `debug_refresh`, `max_cascade_depth`, which
+  never existed) now fails: remove it.
+
+### Deprecated
+
+- **`pg_tviews.metrics_enabled`** has no effect: refresh metrics are always
+  collected (`pg_tviews_queue_stats()`). Setting it still works and logs once per
+  backend; it will be removed in a later release.
+
+### Removed
+
+- **The views `pg_tviews_queue_realtime`, `pg_tviews_cache_stats` and
+  `pg_tviews_performance_summary`, and the function `pg_tviews_hook_status()`**.
+  They returned fixed placeholder values. Use `pg_tviews_queue_stats()`,
+  `pg_tviews_health_check()` and `pg_tviews_performance_stats()`. A view or function
+  of yours that depends on one of them makes `ALTER EXTENSION pg_tviews UPDATE` fail
+  with a dependency error: drop it first.
 
 ### Documentation
 
