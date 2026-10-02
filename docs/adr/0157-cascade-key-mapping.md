@@ -82,7 +82,9 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
      other than its own (`count(*) OVER ()`, the rows a `LIMIT` keeps).
    A table is `AllKeys` when any read of it is, but its traceable reads keep their mapping query,
    which runs under every policy but `full_refresh` (#162). An outer join's equality maps a
-   preserved row toward the nullable side only when the path goes on from there (#165).
+   preserved row toward the nullable side; the path then ends at the key or goes on by an equality
+   (#165). In a `GROUP BY` or `DISTINCT ON` level, a column equal to a key column through such an
+   equality passes through like the key (#162).
    Registration fails when the analyzer and `pg_depend` disagree on the tables the view reads;
    tables read only by an unused CTE or behind view columns nothing reads are accepted and not
    tracked (#163, #166).
