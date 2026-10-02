@@ -320,6 +320,63 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
     Ok(qname)
 }
 
+/// The SQL name of type `typid` with modifier `typmod` (`numeric(6,2)`, `bit(4)`),
+/// schema-qualified unless it is one of the SQL-standard names, so it means the
+/// same type whatever the `search_path` (`app.mood`, `"Other"."Weird Type"`,
+/// `pg_catalog.text`). No SPI.
+#[must_use]
+pub fn qualified_type_name(typid: Oid, typmod: i32) -> String {
+    #[allow(clippy::cast_possible_truncation)] // Reason: the flags are 1 and 4, bits16 holds them
+    const FLAGS: u16 =
+        (pg_sys::FORMAT_TYPE_TYPEMOD_GIVEN | pg_sys::FORMAT_TYPE_FORCE_QUALIFY) as u16;
+    // SAFETY: format_type_extended returns a palloc'd C string (it raises on an
+    // unknown type), copied before it is freed.
+    unsafe {
+        let name = pg_sys::format_type_extended(typid, typmod, FLAGS);
+        let out = std::ffi::CStr::from_ptr(name)
+            .to_string_lossy()
+            .into_owned();
+        pg_sys::pfree(name.cast());
+        out
+    }
+}
+
+/// Each column of relation `relid` with its [`qualified_type_name`], in order.
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn column_types(relid: Oid) -> crate::TViewResult<Vec<(String, String)>> {
+    Spi::connect(|client| {
+        // SAFETY: the datum copies `relid`.
+        let args =
+            [
+                unsafe {
+                    pgrx::datum::DatumWithOid::new(relid, pgrx::PgBuiltInOids::OIDOID.value())
+                },
+            ];
+        let mut out = Vec::new();
+        for row in client.select(
+            "SELECT attname::pg_catalog.text, atttypid, atttypmod FROM pg_catalog.pg_attribute \
+             WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped ORDER BY attnum",
+            None,
+            &args,
+        )? {
+            if let (Some(name), Some(typid), Some(typmod)) = (
+                row.get::<String>(1)?,
+                row.get::<Oid>(2)?,
+                row.get::<i32>(3)?,
+            ) {
+                out.push((name, qualified_type_name(typid, typmod)));
+            }
+        }
+        Ok::<_, pgrx::spi::Error>(out)
+    })
+    .map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Read the column types of relation {relid:?}"),
+        pg_error: e.to_string(),
+    })
+}
+
 /// Schema every `pg_tviews` object lives in, fixed by the control file.
 const EXT_SCHEMA: &str = "tviews";
 
