@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   refused ("not found in the view's query"). An unused CTE's tables are now known but
   not tracked: nothing they hold can change the TVIEW.
 
+### Upgrade notes
+
+- **After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW with
+  the fixes above (a TVIEW's own table refreshing again, unused CTEs and unread view
+  columns no longer tracked, outer-join links, `DISTINCT ON`). The update marks every
+  TVIEW for it.
+
 ## [0.1.0-beta.21] - 2026-10-02
 
 ### Added
