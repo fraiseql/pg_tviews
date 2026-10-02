@@ -252,20 +252,23 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
   table; branches must key on disjoint `pk_<entity>` values (otherwise
   `pg_tviews.union_duplicate_policy` governs the duplicate)
+- **INTERSECT / EXCEPT**: maintained branch by branch like UNION. A refresh
+  recomputes the view's row for each changed key, and both operators compare whole
+  rows, key included, so a row enters or leaves the TVIEW as the set operation says
 - **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body reads one or
-  several joined base tables, reads earlier CTEs, or is a UNION / UNION ALL. The
-  columns the CTE joins on must pass base columns through unchanged (a computed
-  join column cannot be traced back to a base row)
+  several joined base tables, reads earlier CTEs or subqueries in its `FROM`, or is
+  a set operation. The columns the CTE joins on must pass base columns through
+  unchanged (a computed join column cannot be traced back to a base row)
+- **Window functions, `LIMIT`/`OFFSET`, set-returning functions, `GROUPING SETS`**:
+  accepted, but a write to a table read under one of them can change rows other
+  than its own, so the table is `all_keys` and the TVIEW's `uncascaded_policy`
+  decides (see [Tables no cascade reaches](#tables-no-cascade-reaches))
 - **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
   the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`)
 
 #### ❌ Not Supported
 
-- **Set Operations**: INTERSECT, EXCEPT (only UNION / UNION ALL is tracked)
 - **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
-- **CTEs with subqueries in FROM, or INTERSECT / EXCEPT bodies**: the tview is
-  created, but base tables reachable only through such a CTE do not cascade
-- **Window Functions**: ROW_NUMBER(), RANK(), etc.
 - **Self-Joins**: May cause dependency cycles
 - **DISTINCT ON + cascade join**: a DISTINCT ON tview cannot also depend on joined
   tables that would require PK-based cascade paths (rejected at create time)
@@ -324,8 +327,12 @@ so a write to it could change any row. It is reported when the TVIEW is created 
 listed in `tviews.registry.uncascaded_tables`. Common shapes:
 
 - an uncorrelated subquery (`(SELECT count(*) FROM tb_flag)` in every row);
-- a subquery or view whose rows are not passed through to the key: under a window
-  function, `LIMIT`/`OFFSET`, `GROUPING SETS`, or a join on a computed column.
+- a window function, `LIMIT`/`OFFSET`, a set-returning function in the select list,
+  or `GROUPING SETS`, in the backing view's own SELECT (`count(*) OVER ()` changes
+  every row when one is inserted; `ORDER BY … LIMIT 10` changes which rows are in):
+  the reason reads `read under a window function in the top-level SELECT`;
+- a subquery or view whose rows are not passed through to the key: under the same
+  shapes, or a join on a computed column.
 
 What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
 
@@ -347,7 +354,6 @@ RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
 
 ### Limitations
 
-- **Maximum Source Tables**: 10 tables per TVIEW (configurable)
 - **Dependency Depth**: Performance degrades with >5 cascade levels
 - **Circular Dependencies**: Automatically detected and rejected
 - **Column Name Conflicts**: Must resolve ambiguous column names
@@ -449,17 +455,6 @@ jsonb_build_object(...) as json  -- ❌ Wrong name
 ```sql
 -- Fix: Restructure to avoid circular dependencies
 -- TVIEW A references TVIEW B which references TVIEW A
-```
-
-**"INTERSECT/EXCEPT set operations are not supported for cascade paths"**
-```sql
--- UNION / UNION ALL are supported and cascade to every branch.
--- INTERSECT and EXCEPT are not (their set-difference semantics are not tracked).
-SELECT ... FROM table1
-INTERSECT                -- ❌ Not supported
-SELECT ... FROM table2
-
--- Alternative: Use separate TVIEWs or application logic
 ```
 
 ### DROP TABLE tv_* Errors
