@@ -78,4 +78,34 @@ SELECT check_fresh('an INSERT into tb_line (full_refresh)');
 UPDATE tb_order SET ref = 'y' WHERE pk_order = 2;
 SELECT check_fresh('an UPDATE of tb_order (full_refresh)');
 
+-- ── keyed on a unique NOT NULL column of the root table: accepted under warn ─
+DROP TABLE tv_order;
+ALTER TABLE tb_order ADD COLUMN code text;
+UPDATE tb_order SET code = 'C' || pk_order;
+ALTER TABLE tb_order ALTER COLUMN code SET NOT NULL, ADD CONSTRAINT tb_order_code_key UNIQUE (code);
+DO $$ BEGIN
+    PERFORM tviews.pg_tviews_create('tv_order', $q$
+        SELECT DISTINCT ON (o.code) o.pk_order, o.id, o.code, jsonb_build_object('n', v.n) AS data
+        FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.code $q$);
+EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION '#164 FAIL: DISTINCT ON a unique NOT NULL column is refused: %', SQLERRM;
+END $$;
+INSERT INTO tb_line (fk_order, sku) VALUES (2, 'f');
+SELECT check_fresh('an INSERT into tb_line (DISTINCT ON a unique column)');
+DELETE FROM tb_line WHERE sku = 'f';
+SELECT check_fresh('a DELETE from tb_line (DISTINCT ON a unique column)');
+UPDATE tb_order SET ref = 'z' WHERE pk_order = 1;
+SELECT check_fresh('an UPDATE of tb_order (DISTINCT ON a unique column)');
+INSERT INTO tb_order (ref, code) VALUES ('o3', 'C3');
+SELECT check_fresh('an INSERT into tb_order (DISTINCT ON a unique column)');
+DO $$ BEGIN
+    IF (SELECT cascade_kinds::text FROM tviews.registry WHERE entity = 'order') LIKE '%all_keys%' THEN
+        RAISE EXCEPTION '#164 FAIL: a table read through the join is all_keys: %',
+            (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'order');
+    END IF;
+END $$;
+SELECT count(*) FROM pg_tviews_reregister_all();
+INSERT INTO tb_line (fk_order, sku) VALUES (3, 'g');
+SELECT check_fresh('an INSERT into tb_line after re-registration');
+
 \echo 'issue #164 DISTINCT ON with mapped tables: PASS'
