@@ -20,7 +20,8 @@ DECLARE
     tv TEXT;
     diverging BIGINT;
 BEGIN
-    FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.user_orders', 'app.note'] LOOP
+    FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.comment', 'public.user_orders',
+                              'app.note'] LOOP
         EXECUTE pg_catalog.format(
             'SELECT count(*) FROM ((SELECT pk_%2$s, data FROM %1$I.tv_%2$s
                                     EXCEPT SELECT pk_%2$s, data FROM %1$I.v_%2$s)

@@ -1,4 +1,6 @@
+use super::uncascaded::Uncascaded;
 use crate::cascade_path;
+use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{
     TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
@@ -207,14 +209,26 @@ impl Storage {
 ///
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
+///
+/// `policy` is the `uncascaded_policy` to store (a rebuilt TVIEW keeps its own);
+/// `None` reads `pg_tviews.uncascaded_policy`.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
+    policy: Option<UncascadedPolicy>,
 ) -> TViewResult<u64> {
-    create_tview_inner(tview_name, select_sql, schema_name, group_keys, storage)
+    let policy = policy.unwrap_or_else(crate::config::uncascaded_policy);
+    create_tview_inner(
+        tview_name,
+        select_sql,
+        schema_name,
+        group_keys,
+        storage,
+        policy,
+    )
 }
 
 /// The creation pipeline's normalization of a definition: `SELECT *` expanded to
@@ -242,6 +256,7 @@ fn create_tview_inner(
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
+    policy: UncascadedPolicy,
 ) -> TViewResult<u64> {
     crate::revision::check();
     log_debug!(
@@ -363,23 +378,21 @@ fn create_tview_inner(
     // current_schema() resolves to a different schema due to the database search_path.
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
 
-    // Step 6.5: Cascade paths: from the SELECT's joins, or for an aggregate TVIEW
-    // one path per declared group key (issue #58).
-    let cascade_paths = match group_keys {
-        Some(keys) => super::aggregate::cascade_paths(
-            entity_name,
-            keys,
-            &dep_graph.base_tables,
-            &schema_name,
-        )?,
-        None => extract_and_resolve_cascade_paths(
-            &final_select_sql,
-            entity_name,
-            &final_schema,
-            &dep_graph.base_tables,
-            &schema_name,
-        )?,
-    };
+    // Step 6.5: How a write to each base table maps to keys, from the view's query
+    // tree (ADR 0157), and the cascade paths of its local tables (for an aggregate
+    // TVIEW, one per declared group key, issue #58).
+    let Derivation {
+        lineage,
+        key_mappings,
+        cascade_paths,
+    } = derive(
+        entity_name,
+        &final_select_sql,
+        &final_schema,
+        group_keys,
+        &dep_graph.base_tables,
+        &schema_name,
+    )?;
 
     // Step 6.55: Reject a DISTINCT ON tview that also has JOIN-based cascade paths
     // (issue #51). A DISTINCT ON tview refreshes by dedup key (the trigger enqueues
@@ -387,7 +400,7 @@ fn create_tview_inner(
     // `refresh_pk` looks up by `pk_<entity>`. When the dedup key is aliased the two
     // are different values, so mixing them would refresh the wrong row silently.
     // The dedup and PK refresh paths are mutually exclusive by design.
-    if !distinct_on_keys.is_empty() && !cascade_paths.is_empty() {
+    if !distinct_on_keys.is_empty() && (!cascade_paths.is_empty() || lineage.has_mapped()) {
         return Err(TViewError::InvalidInput {
             parameter: "tview definition".to_string(),
             reason: format!(
@@ -413,6 +426,7 @@ fn create_tview_inner(
     // so a rejected create leaves the incumbent tview untouched.
     if group_keys.is_none()
         && cascade_paths.is_empty()
+        && !lineage.has_mapped()
         && !entity_base_table_exists(entity_name, &schema_name)?
     {
         return Err(TViewError::InvalidInput {
@@ -430,6 +444,19 @@ fn create_tview_inner(
         });
     }
 
+    // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
+    // reported under the policy; `error` aborts here, and the objects created above
+    // roll back with it.
+    let uncascaded = Uncascaded {
+        tables: uncascaded_tables(&lineage),
+        policy,
+    };
+    super::uncascaded::report(
+        &crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?,
+        &uncascaded.tables,
+        policy,
+    )?;
+
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
@@ -442,14 +469,19 @@ fn create_tview_inner(
         &distinct_on_keys,
         &distinct_on_output_keys,
         group_keys,
+        &uncascaded,
+        &key_mappings,
         false,
     )?;
 
-    // Step 8: Install triggers on base tables
+    // Step 8: Install triggers on base tables, as their lineage needs them.
     if dep_graph.base_tables.is_empty() {
         warning!("No base table dependencies found for {}", tv_table_name);
     } else {
-        crate::dependency::install_triggers(&dep_graph.base_tables, entity_name)?;
+        crate::dependency::install_triggers(
+            &crate::dependency::trigger_plan(&dep_graph.base_tables, &lineage)?,
+            entity_name,
+        )?;
     }
 
     // Invalidate caches since new TVIEW was created
@@ -476,7 +508,7 @@ pub fn reregister_metadata(
     entity_name: &str,
     schema_name: &str,
     definition: &str,
-) -> TViewResult<Vec<pg_sys::Oid>> {
+) -> TViewResult<crate::dependency::TriggerPlan> {
     let schema = infer_schema(definition)?;
     let distinct_on_keys =
         crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
@@ -493,18 +525,38 @@ pub fn reregister_metadata(
     let view_name = format!("v_{entity_name}");
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
     let group_keys = stored_group_keys(entity_name)?;
-    let cascade_paths = match &group_keys {
-        Some(keys) => {
-            super::aggregate::cascade_paths(entity_name, keys, &dep_graph.base_tables, schema_name)?
-        }
-        None => extract_and_resolve_cascade_paths(
-            definition,
-            entity_name,
-            &schema,
-            &dep_graph.base_tables,
-            schema_name,
-        )?,
+    let Derivation {
+        lineage,
+        key_mappings,
+        cascade_paths,
+    } = derive(
+        entity_name,
+        definition,
+        &schema,
+        group_keys.as_ref(),
+        &dep_graph.base_tables,
+        schema_name,
+    )?;
+    // The stored policy holds; an `error` TVIEW whose set is no longer empty
+    // aborts the re-registration (and the ALTER that caused it).
+    let policy = crate::catalog::TviewMeta::load_by_entity(entity_name)
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Read the uncascaded policy of tv_{entity_name}"),
+            pg_error: e.to_string(),
+        })?
+        .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
+    let uncascaded = Uncascaded {
+        tables: uncascaded_tables(&lineage),
+        policy,
     };
+    super::uncascaded::report(
+        &crate::utils::qualified_relname_from_oid(relation_oid(
+            schema_name,
+            &format!("tv_{entity_name}"),
+        )?)?,
+        &uncascaded.tables,
+        policy,
+    )?;
     register_metadata(
         entity_name,
         &view_name,
@@ -516,10 +568,13 @@ pub fn reregister_metadata(
         &distinct_on_keys,
         &distinct_on_output_keys,
         group_keys.as_ref(),
+        &uncascaded,
+        &key_mappings,
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
-    Ok(dep_graph.base_tables)
+    crate::queue::cache::invalidate_all_caches();
+    crate::dependency::trigger_plan(&dep_graph.base_tables, &lineage)
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
@@ -567,8 +622,8 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
             entity: entity.to_string(),
         });
     };
-    let base_tables = reregister_metadata(entity, &schema_name, &definition)?;
-    crate::dependency::sync_entity_triggers(&base_tables, entity)?;
+    let plan = reregister_metadata(entity, &schema_name, &definition)?;
+    crate::dependency::sync_entity_triggers(&plan, entity)?;
     let _owner = crate::owner::AsOwner::of_extension()?;
     Spi::run_with_args(
         &format!(
@@ -603,58 +658,165 @@ pub(crate) fn stored_group_keys(
     Ok(stored.and_then(|j| serde_json::from_value(j.0).ok()))
 }
 
-/// Extract cascade paths from the view's SELECT SQL and resolve table names to OIDs.
-///
-/// Parses the JOIN tree to find all non-root tables, computes the hop chain
-/// from each back to the root (= the TVIEW's own base table), then resolves
-/// table names to OIDs and validates that all referenced columns exist.
-fn extract_and_resolve_cascade_paths(
-    select_sql: &str,
+/// What registration derives from a definition: how a write to each base table
+/// maps to keys (stored as `key_mappings`), and the cascade paths the row trigger
+/// follows for local tables.
+struct Derivation {
+    lineage: crate::lineage::Lineage,
+    key_mappings: serde_json::Value,
+    cascade_paths: Vec<cascade_path::CascadePath>,
+}
+
+/// Analyze `v_<entity>` (ADR 0157) and derive the cascade paths of its local
+/// tables, or for an aggregate TVIEW one per declared group key (issue #58).
+fn derive(
     entity_name: &str,
+    definition: &str,
     schema: &TViewSchema,
-    base_table_oids: &[pg_sys::Oid],
+    group_keys: Option<&super::aggregate::GroupKeys>,
+    base_tables: &[pg_sys::Oid],
     schema_name: &str,
-) -> TViewResult<Vec<cascade_path::CascadePath>> {
-    let root_table = format!("tb_{entity_name}");
-
-    // Step 1: Parse JOIN tree to extract unresolved paths
-    let join_paths = match crate::sql_parser::extract_join_paths(select_sql, &root_table) {
-        Ok(paths) => paths,
-        Err(e) => {
-            notice!("Could not parse JOIN tree for cascade paths: {e}");
-            return Ok(vec![]);
-        }
+) -> TViewResult<Derivation> {
+    let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
+    let mut embeds: Vec<String> = aggregate_embeds(definition, entity_name)?
+        .into_keys()
+        .collect();
+    embeds.extend(
+        schema
+            .fk_columns
+            .iter()
+            .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
+    );
+    let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    let cascade_paths = match group_keys {
+        Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
+        None => local_cascade_paths(entity_name, definition, schema, &lineage),
     };
+    let mut key_mappings = lineage.to_json();
+    add_fanout_patches(&mut key_mappings, entity_name, definition, schema, &lineage);
+    Ok(Derivation {
+        lineage,
+        key_mappings,
+        cascade_paths,
+    })
+}
 
-    if join_paths.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Step 2: Build OID lookup map for base tables: relname → OID
-    let oid_map = build_oid_name_map(base_table_oids)?;
-
-    // Step 3: Resolve each join path to a CascadePath with OIDs
-    let mut cascade_paths = Vec::new();
-    for jp in &join_paths {
-        match resolve_join_path(jp, entity_name, &oid_map) {
-            Ok(mut cp) => {
-                // Column-aware refresh: record which columns of this path's source
-                // table the target tview actually depends on (via pg_depend on the
-                // backing view). Empty ⇒ always refresh.
-                cp.source_columns = view_source_columns(schema_name, entity_name, cp.source_oid);
-                cp.fanout = fanout_patch(select_sql, entity_name, schema, &cp);
-                cascade_paths.push(cp);
-            }
-            Err(e) => {
-                notice!(
-                    "Cascade path from '{}' unresolvable: {e} — changes to this table will not trigger incremental refresh of '{entity_name}'",
-                    jp.source_table
-                );
-            }
+/// A `mapped` table linked to `tb_<entity>` by one equality onto a column the
+/// TVIEW projects gets the fan-out patch of issue #120: an UPDATE of its columns
+/// copied into `data` is written into every TVIEW row with that column's value.
+fn add_fanout_patches(
+    key_mappings: &mut serde_json::Value,
+    entity_name: &str,
+    definition: &str,
+    schema: &TViewSchema,
+    lineage: &crate::lineage::Lineage,
+) {
+    let root = format!("tb_{entity_name}");
+    let Some(entries) = key_mappings.as_array_mut() else {
+        return;
+    };
+    for table in &lineage.tables {
+        let Some((own, root_col)) = &table.hop else {
+            continue;
+        };
+        // The shape `fanout_patch` reads: one hop into tb_<entity> on `root_col`.
+        let path = cascade_path::CascadePath {
+            source_oid: pg_sys::Oid::from(table.relid),
+            source_table: table.relname.clone(),
+            entity_name: entity_name.to_string(),
+            initial_col: own.clone(),
+            hops: vec![cascade_path::CascadeHop {
+                table_oid: pg_sys::Oid::INVALID,
+                table_name: root.clone(),
+                lookup_col: root_col.clone(),
+                carry_col: format!("pk_{entity_name}"),
+            }],
+            unresolvable: false,
+            source_columns: table.columns.iter().map(|(name, _)| name.clone()).collect(),
+            fanout: None,
+        };
+        let Some(fanout) = fanout_patch(definition, entity_name, schema, &path) else {
+            continue;
+        };
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|e| e["relid"].as_u64() == Some(u64::from(table.relid)))
+        {
+            entry["key_col"] = own.clone().into();
+            entry["fanout"] = serde_json::to_value(&fanout).unwrap_or_default();
         }
     }
+}
 
-    Ok(cascade_paths)
+/// One cascade path per local table other than `tb_<entity>` (whose own row
+/// trigger finds the key): the key is the table's `column`, read off the changed
+/// row; an UPDATE that touches none of the columns the TVIEW reads is skipped.
+/// The table holding the key gets one only as a UNION branch: a single-root TVIEW
+/// over another entity's table is refused (issue #49).
+fn local_cascade_paths(
+    entity_name: &str,
+    definition: &str,
+    schema: &TViewSchema,
+    lineage: &crate::lineage::Lineage,
+) -> Vec<cascade_path::CascadePath> {
+    let root = format!("tb_{entity_name}");
+    lineage
+        .tables
+        .iter()
+        .filter_map(|t| match &t.kind {
+            crate::lineage::TableKind::Local(column)
+                if t.relname != root && (!t.root || lineage.is_union()) =>
+            {
+                let mut path = cascade_path::CascadePath {
+                    source_oid: pg_sys::Oid::from(t.relid),
+                    source_table: t.relname.clone(),
+                    entity_name: entity_name.to_string(),
+                    initial_col: column.clone(),
+                    hops: Vec::new(),
+                    unresolvable: false,
+                    source_columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
+                    fanout: None,
+                };
+                path.fanout = fanout_patch(definition, entity_name, schema, &path);
+                Some(path)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The tables of `lineage` no cascade reaches, as the policy reports them.
+fn uncascaded_tables(lineage: &crate::lineage::Lineage) -> Vec<super::uncascaded::UncascadedTable> {
+    lineage
+        .all_keys()
+        .into_iter()
+        .map(|(relid, name, reason)| super::uncascaded::UncascadedTable {
+            oid: pg_sys::Oid::from(relid),
+            name,
+            reason,
+        })
+        .collect()
+}
+
+/// The OID of relation `schema.name`.
+fn relation_oid(schema: &str, name: &str) -> TViewResult<pg_sys::Oid> {
+    Spi::get_one_with_args::<pg_sys::Oid>(
+        "SELECT c.oid FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relname = $2",
+        &[
+            unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        ],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Look up {schema}.{name}"),
+        pg_error: e.to_string(),
+    })?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Look up {schema}.{name}"),
+        pg_error: "relation not found".to_string(),
+    })
 }
 
 /// The one-statement fan-out patch of a cascade path (issue #120): set when an
@@ -792,75 +954,6 @@ fn build_oid_name_map(
     })?;
 
     Ok(map)
-}
-
-/// Resolve a `JoinPath` (table names only) to a `CascadePath` (with OIDs).
-fn resolve_join_path(
-    jp: &crate::sql_parser::JoinPath,
-    entity_name: &str,
-    oid_map: &std::collections::HashMap<String, pg_sys::Oid>,
-) -> TViewResult<cascade_path::CascadePath> {
-    let source_oid = *oid_map
-        .get(&jp.source_table)
-        .ok_or_else(|| TViewError::CatalogError {
-            operation: "resolve cascade path".to_string(),
-            pg_error: format!(
-                "Table '{}' not found in base table dependencies",
-                jp.source_table
-            ),
-        })?;
-
-    let mut hops = Vec::with_capacity(jp.steps.len());
-    for step in &jp.steps {
-        let table_oid = *oid_map
-            .get(&step.table_name)
-            .ok_or_else(|| TViewError::CatalogError {
-                operation: "resolve cascade path hop".to_string(),
-                pg_error: format!(
-                    "Intermediate table '{}' not found in base table dependencies",
-                    step.table_name
-                ),
-            })?;
-
-        hops.push(cascade_path::CascadeHop {
-            table_oid,
-            table_name: step.table_name.clone(),
-            lookup_col: step.lookup_col.clone(),
-            carry_col: step.carry_col.clone(),
-        });
-    }
-
-    // Check if the path terminates at the entity PK. If root_join_col is
-    // NOT pk_{entity}, the incoming IDs are foreign keys on the root table
-    // (not entity PKs), so we need a reverse-lookup hop through the root.
-    let pk_col = format!("pk_{entity_name}");
-    if jp.root_join_col != pk_col {
-        let root_table = format!("tb_{entity_name}");
-        let root_oid = *oid_map
-            .get(&root_table)
-            .ok_or_else(|| TViewError::CatalogError {
-                operation: "resolve cascade path reverse-lookup hop".to_string(),
-                pg_error: format!("Root table '{root_table}' not found in base table dependencies"),
-            })?;
-        hops.push(cascade_path::CascadeHop {
-            table_oid: root_oid,
-            table_name: root_table,
-            lookup_col: jp.root_join_col.clone(),
-            carry_col: pk_col,
-        });
-    }
-
-    Ok(cascade_path::CascadePath {
-        source_oid,
-        source_table: jp.source_table.clone(),
-        entity_name: entity_name.to_string(),
-        initial_col: jp.initial_col.clone(),
-        hops,
-        unresolvable: false,
-        // Populated by the caller (which has the schema) via `view_source_columns`.
-        source_columns: Vec::new(),
-        fanout: None,
-    })
 }
 
 /// Columns of `source_table` that the backing view `v_<entity>` depends on,
@@ -1538,6 +1631,8 @@ fn register_metadata(
     distinct_on_keys: &[String],
     distinct_on_output_keys: &[String],
     group_keys: Option<&super::aggregate::GroupKeys>,
+    uncascaded: &Uncascaded,
+    key_mappings: &serde_json::Value,
     replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a UNION / UNION ALL query.
@@ -1690,7 +1785,8 @@ fn register_metadata(
             distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
-            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds"
+            group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
+            uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1715,8 +1811,11 @@ fn register_metadata(
             direct_map_keys,
             is_union,
             group_keys,
-            aggregate_embeds
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4)
+            aggregate_embeds,
+            uncascaded_oids,
+            uncascaded_policy,
+            key_mappings
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1752,6 +1851,24 @@ fn register_metadata(
         unsafe {
             DatumWithOid::new(
                 pgrx::JsonB(serde_json::to_value(&aggregate_embeds).unwrap_or_default()),
+                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.oids(),
+                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.policy.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                pgrx::JsonB(key_mappings.clone()),
                 PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
             )
         },

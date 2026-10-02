@@ -337,6 +337,26 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
 /// Schema every `pg_tviews` object lives in, fixed by the control file.
 const EXT_SCHEMA: &str = "tviews";
 
+thread_local! {
+    /// Keys of the conditions [`log_once`] already reported in this backend.
+    static LOGGED_ONCE: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Write `message` to the server log (`LOG`) the first time this backend sees
+/// the condition `key`; later calls are silent (issue #159). For conditions a
+/// normal workload hits on every write, where a client WARNING would be noise.
+pub fn log_once(key: &str, message: &str) {
+    if LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string())) {
+        log!("pg_tviews: {message}");
+    }
+}
+
+/// Let [`log_once`] report `key` again, after the condition may have changed.
+pub fn forget_logged(key: &str) {
+    LOGGED_ONCE.with(|seen| seen.borrow_mut().remove(key));
+}
+
 /// `pg_tview_meta`, qualified with the extension's schema, so catalog queries do
 /// not depend on the session's `search_path`.
 pub fn meta_table() -> String {

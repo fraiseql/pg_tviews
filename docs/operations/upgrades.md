@@ -1,253 +1,112 @@
 # Upgrade & Migration Guide
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
-
-## Overview
-
-This guide provides procedures for upgrading pg_tviews and migrating data between versions. All upgrades follow a safe, rollback-capable process.
+Short version of the upgrade procedures. Step-by-step guides are in
+[upgrade/](upgrade/README.md); how releases and upgrade scripts are built is in
+[Extension versioning](../development/extension-versioning.md).
 
 ## Pre-Upgrade Checklist
 
-Before any upgrade:
-
 ```bash
-# 1. Backup your database
-pg_dump -Fc your_database > backup_$(date +%Y%m%d_%H%M%S).dump
+# 1. Back up each database with pg_tviews (the dump includes the TVIEW registrations)
+pg_dump -Fc -f backup_$(date +%Y%m%d_%H%M%S).dump your_database
 
-# 2. Check current version
-psql -d your_database -c "SELECT pg_tviews_version();"
+# 2. Check versions, health and blockers
+PGDATABASE=your_database docs/operations/upgrade/scripts/pre-upgrade-checks.sh
 
-# 3. Review breaking changes in CHANGELOG.md
-# 4. Test upgrade in staging environment first
-# 5. Schedule maintenance window
+# 3. Read the CHANGELOG for every release you skip
+# 4. Rehearse on a copy of production
 ```
 
-## Upgrade Procedures
-
-### Minor Version Upgrades (0.x.y → 0.x.z)
-
-Safe upgrades with no breaking changes:
-
-```bash
-# 1. Stop application (optional for minor versions)
-# 2. Upgrade extension
-psql -d your_database -c "ALTER EXTENSION pg_tviews UPDATE;"
-
-# 3. Verify version
-psql -d your_database -c "SELECT pg_tviews_version();"
-
-# 4. Run health check
-psql -d your_database -c "SELECT * FROM pg_tviews_health_check();"
-```
-
-### Major Version Upgrades (0.x → 0.y)
-
-May include breaking changes:
-
-```bash
-# 1. Stop application
-# 2. Backup database (extra careful)
-# 3. Drop extension
-psql -d your_database -c "DROP EXTENSION pg_tviews;"
-
-# 4. Install new version
-# (Follow installation instructions for new version)
-
-# 5. Recreate extension
-psql -d your_database -c "CREATE EXTENSION pg_tviews;"
-
-# 6. Recreate TVIEWs (they are dropped with extension)
-# (Run your TVIEW creation scripts)
-
-# 7. Verify functionality
-psql -d your_database -c "SELECT * FROM pg_tviews_health_check();"
-```
-
-## Rollback Procedures
-
-### Immediate Rollback (Extension Still Works)
-
-If issues discovered immediately after upgrade:
-
-```bash
-# 1. Stop application
-# 2. Restore from backup
-pg_restore -d your_database backup_file.dump
-
-# 3. Verify rollback
-psql -d your_database -c "SELECT pg_tviews_version();"
-```
-
-### Delayed Rollback (Extension Modified Data)
-
-If TVIEWs have been modified since upgrade:
-
-```bash
-# 1. Export current TVIEW data
-psql -d your_database -c "
-  \COPY (SELECT * FROM tv_table1) TO 'tv_table1_backup.csv' CSV HEADER
-  \COPY (SELECT * FROM tv_table2) TO 'tv_table2_backup.csv' CSV HEADER
-"
-
-# 2. Restore from backup
-pg_restore -d your_database backup_file.dump
-
-# 3. Recreate TVIEWs
-# (Run TVIEW creation scripts)
-
-# 4. Reimport modified data if needed
-# (Careful: may cause conflicts)
-```
-
-## Data Migration
-
-### Schema Changes Between Versions
-
-When upgrading between versions with schema changes:
-
+Versions by hand:
 ```sql
--- Example: Adding new metadata columns
-ALTER TABLE pg_tview_meta ADD COLUMN IF NOT EXISTS version_created TEXT;
-UPDATE pg_tview_meta SET version_created = '0.1.0' WHERE version_created IS NULL;
+SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';  -- catalog in this database
+SELECT tviews.pg_tviews_version();                                -- library loaded by the server
 ```
 
-### TVIEW Recreation
+## Upgrading pg_tviews
 
-After schema changes that affect TVIEWs:
+Each release has its own extension version and ships an upgrade script from the
+previous one.
 
+1. Install the new package and restart PostgreSQL (the library is preloaded).
+2. In each database with pg_tviews:
+   ```sql
+   ALTER EXTENSION pg_tviews UPDATE;
+   SELECT * FROM tviews.pg_tviews_reregister_all();
+   ```
+   `pg_tviews_reregister_all()` re-derives each TVIEW's metadata and triggers from its
+   definition, without touching its rows. It is needed when the release notes say so or
+   the health check reports TVIEWs to re-register, and harmless otherwise.
+3. Validate:
+   ```bash
+   psql -X -v ON_ERROR_STOP=1 -d your_database -f docs/operations/upgrade/scripts/post-upgrade-validation.sql
+   ```
+
+Between steps 1 and 2, writes to the TVIEWs' base tables fail with
+`pg_tviews library catalog revision … does not match the installed extension`: they are
+never served by a mismatched library.
+
+Installs of `0.1.0` (every release up to 0.1.0-beta.19) cannot be updated in place.
+After step 1, run `scripts/migrate-from-0.1.0.sql` in each database instead: it moves the
+extension to the schema `tviews` and re-registers every TVIEW, keeping their rows (not
+the audit log).
+
+Details: [Extension Updates](upgrade/extension/extension-minor-update.md).
+
+## Upgrading PostgreSQL
+
+- Minor versions: install and restart; nothing to do in the databases.
+  [Minor Version Upgrade](upgrade/postgresql/minor-version-upgrade.md).
+- Major versions: pg_upgrade or pg_dump/pg_restore with the same pg_tviews release
+  installed for the new major version, then update pg_tviews. pg_tviews supports
+  PostgreSQL 16, 17 and 18; a server on 15 moves first
+  ([Upgrading from PostgreSQL 15](upgrade/postgresql/pg15-to-pg16.md)).
+
+After any restart that was not a clean shutdown, or a physical restore, UNLOGGED TVIEWs
+are empty:
 ```sql
--- 1. Export TVIEW definitions (if available)
--- 2. Drop TVIEWs
-SELECT pg_tviews_drop(entity, true) FROM pg_tview_meta;
-
--- 3. Recreate with updated definitions
--- (Run updated TVIEW creation scripts)
-
--- 4. Verify data integrity
-SELECT COUNT(*) FROM tv_table;
-SELECT COUNT(*) FROM v_table;
+SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
-## Version Compatibility Matrix
+## Rollback
 
-| Current Version | Target Version | Upgrade Path | Notes |
-|----------------|----------------|--------------|-------|
-| 0.1.0-alpha | 0.1.0-beta.1 | Direct | Safe, no data migration |
-| 0.1.0-beta.1 | 0.1.0-rc.1 | Direct | Test in staging first |
-| 0.1.0-rc.1 | 1.0.0 | Migration required | Breaking changes possible |
+There are no downgrade scripts. To roll back pg_tviews: stop the applications,
+reinstall the previous package, restart PostgreSQL, and restore the backup into a new
+database ([Full Database Restore](disaster-recovery/recovery-procedures/full-database-restore.md)).
 
-## Troubleshooting Upgrades
-
-### Extension Won't Load
-
-```bash
-# Check PostgreSQL logs
-tail -f /var/log/postgresql/postgresql-*.log
-
-# Verify shared library
-ls -la $(pg_config --pkglibdir)/pg_tviews.so
-
-# Check dependencies
-ldd $(pg_config --pkglibdir)/pg_tviews.so
-```
-
-### TVIEWs Not Working After Upgrade
-
-```sql
--- Check extension is loaded
-SELECT * FROM pg_extension WHERE extname = 'pg_tviews';
-
--- Verify functions exist
-SELECT proname FROM pg_proc WHERE proname LIKE 'pg_tviews_%';
-
--- Check TVIEW metadata
-SELECT * FROM pg_tview_meta;
-
--- Recreate TVIEWs if needed
-SELECT pg_tviews_drop(entity, true) FROM pg_tview_meta;
--- Then recreate manually
-```
-
-### Performance Issues After Upgrade
-
-```sql
--- Check for missing indexes
-SELECT schemaname, tablename, indexname
-FROM pg_indexes
-WHERE tablename LIKE 'tv_%' AND indexname NOT LIKE 'idx_tv_%';
-
--- Rebuild statistics
-ANALYZE;
-
--- Check for query plan changes
-EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tv_table LIMIT 1;
-```
+Never use `DROP EXTENSION pg_tviews` as part of an upgrade or a rollback: it removes
+every TVIEW registration.
 
 ## Post-Upgrade Verification
 
-After any upgrade:
-
 ```sql
--- 1. Version check
-SELECT pg_tviews_version();
+-- 1. Library and catalog agree
+SELECT tviews.pg_tviews_version(),
+       (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 
--- 2. Health check
-SELECT * FROM pg_tviews_health_check();
+-- 2. Health check: nothing above info
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check()
+WHERE severity <> 'info';
 
--- 3. TVIEW integrity
-SELECT
-    entity,
-    (SELECT COUNT(*) FROM pg_class WHERE relname = 'tv_' || entity) as tv_exists,
-    (SELECT COUNT(*) FROM pg_class WHERE relname = 'v_' || entity) as v_exists
-FROM pg_tview_meta;
+-- 3. Registered TVIEWs, none waiting for re-registration
+SELECT schema, name, view, needs_reregister
+FROM tviews.registry
+ORDER BY schema, name;
 
--- 4. Data consistency (spot check)
-SELECT COUNT(*) FROM tv_table;
-SELECT COUNT(*) FROM v_table;
-
--- 5. Trigger verification
-SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%tview%';
-
--- 6. Performance test
-EXPLAIN (ANALYZE) SELECT * FROM tv_table LIMIT 10;
+-- 4. Triggers installed on base tables
+SELECT tgrelid::regclass AS base_table, count(*) AS trigger_count
+FROM pg_trigger
+WHERE tgname LIKE 'trg_tview_%'
+GROUP BY tgrelid
+ORDER BY 1;
 ```
+`post-upgrade-validation.sql` also compares each TVIEW with its view.
 
-## Emergency Procedures
+## Troubleshooting
 
-### Complete Extension Reset
-
-If everything goes wrong:
-
-```sql
--- 1. Disconnect all users
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE datname = current_database() AND pid != pg_backend_pid();
-
--- 2. Drop extension (cascades TVIEWs)
-DROP EXTENSION pg_tviews CASCADE;
-
--- 3. Clean up any remaining objects
-DROP TABLE IF EXISTS pg_tview_meta;
-DROP TABLE IF EXISTS pg_tviews_metrics;
--- (Check for other extension tables)
-
--- 4. Restore from backup
--- pg_restore -d your_database backup_file.dump
-
--- 5. Reinstall and recreate TVIEWs
-```
-
-## Best Practices
-
-1. **Always backup before upgrading**
-2. **Test upgrades in staging first**
-3. **Have rollback plan ready**
-4. **Schedule maintenance windows**
-5. **Monitor after upgrade for 24-48 hours**
-6. **Keep multiple backup versions**
-7. **Document custom TVIEWs for recreation**
+See [Troubleshooting Upgrades](upgrade/postgresql/troubleshooting-upgrades.md).
 
 ## See Also
 

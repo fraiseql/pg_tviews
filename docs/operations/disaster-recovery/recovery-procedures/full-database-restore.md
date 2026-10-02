@@ -1,494 +1,176 @@
 # Full Database Restore Procedure
 
 ## Purpose
-Restore an entire PostgreSQL database from backup, including all TVIEWs and associated data, following data loss or corruption incidents.
+Restore a PostgreSQL database that uses pg_tviews from backup, after data loss,
+corruption, or to move it to new infrastructure.
 
-## When to Use
-- **Complete Database Loss**: Server failure, storage corruption, or disaster
-- **Major Data Corruption**: Widespread data integrity issues
-- **Testing**: Validating backup integrity and recovery procedures
-- **Migration**: Moving database to new infrastructure
+What is specific to pg_tviews:
+
+- A `pg_dump` contains the pg_tviews catalog (`tviews.pg_tview_meta`), so a
+  `pg_restore` gives back registered TVIEWs that keep propagating. There is nothing to
+  recreate by hand.
+- A physical restore (base backup, PITR) leaves UNLOGGED TVIEWs (the default) empty;
+  they are rebuilt from their views with `tviews.pg_tviews_rebuild_all()`.
 
 ## Prerequisites
-- **Valid Backup**: Tested backup file available and accessible
-- **Clean Environment**: Target PostgreSQL instance ready for restore
-- **Permissions**: Database superuser access
-- **Storage**: Sufficient disk space (3x backup size minimum)
-- **Time Window**: Scheduled maintenance window for restore duration
-
-## Impact Assessment
-
-### Downtime
-- **Logical Restore (pg_restore)**: 30-120 minutes depending on database size
-- **Physical Restore (pg_basebackup)**: 15-60 minutes
-- **Testing**: Additional 30-60 minutes for validation
-
-### Data Loss
-- **RPO Dependent**: Based on backup frequency and WAL archiving
-- **Target**: < 15 minutes for critical systems
-- **Recovery**: Point-in-time recovery available if WAL archived
-
-### Resource Requirements
-- **CPU**: High during restore operations
-- **Memory**: 2-4x normal database memory
-- **Storage**: 3x database size for restore operations
-- **Network**: Fast access to backup files
+- A tested backup ([Backup Testing](../backup-strategy/backup-testing.md))
+- Target server with the same PostgreSQL major version (for a physical restore) and the
+  same pg_tviews release installed (`pg_tviews.control`, `pg_tviews--*.sql`,
+  `pg_tviews.so`), plus `jsonb_delta` if the source database uses it
+- `shared_preload_libraries = 'pg_tviews'` in `postgresql.conf` on the target
+- Superuser access and enough disk space for the restored database
 
 ## Pre-Restore Preparation
 
-### Step 1: Environment Assessment
+### Step 1: Check the backup
 ```bash
-# Check available resources
-echo "=== Environment Assessment ==="
-echo "CPU Cores: $(nproc)"
-echo "Memory: $(free -h | grep '^Mem:' | awk '{print $2}')"
-echo "Disk Space: $(df -h /var/lib/postgresql | tail -1 | awk '{print $4}')"
-
-# Check PostgreSQL status
-sudo systemctl status postgresql
-psql -c "SELECT version();"
+BACKUP_FILE=/backups/mydb-recent.dump
+ls -lh "$BACKUP_FILE"
+pg_restore --list "$BACKUP_FILE" | grep 'tviews pg_tview_meta'
 ```
 
-### Step 2: Backup Verification
+### Step 2: Check the target server
 ```bash
-# Verify backup file integrity
-BACKUP_FILE="/backups/mydb-recent.dump"
+psql -X -d postgres -c "SELECT version();"
+psql -X -d postgres -c "SELECT name, default_version FROM pg_available_extensions WHERE name IN ('pg_tviews', 'jsonb_delta');"
+psql -X -d postgres -c "SHOW shared_preload_libraries;"
+```
+`default_version` of `pg_tviews` must match the release the backup was taken with (see
+`extversion` in the source database's `pg_extension`). To restore into a newer release,
+restore into the old release first, then follow
+[Extension Updates](../../upgrade/extension/extension-minor-update.md).
 
-echo "=== Backup Verification ==="
-ls -lh $BACKUP_FILE
-
-# Test backup readability
-sudo -u postgres pg_restore --list $BACKUP_FILE | head -10
-
-# Check backup age
-echo "Backup created: $(stat -c %y $BACKUP_FILE)"
-echo "Backup age: $(($(date +%s) - $(stat -c %Y $BACKUP_FILE))) seconds"
+### Step 3: Stop writers and create the target database
+```bash
+TARGET_DB=mydb_restored
+createdb "$TARGET_DB"
 ```
 
-### Step 3: Target Database Preparation
+## Logical Restore (pg_restore)
+
+### Step 1: Restore
 ```bash
-# Stop applications
-echo "Stopping dependent applications..."
-# sudo systemctl stop your-app your-api
-
-# Create restore database (if needed)
-TARGET_DB="mydb_restored"
-sudo -u postgres createdb $TARGET_DB
-
-# Verify database creation
-psql -l | grep $TARGET_DB
+RESTORE_LOG=/var/log/pg_restore_$(date +%Y%m%d_%H%M%S).log
+pg_restore --exit-on-error --jobs=4 --dbname="$TARGET_DB" "$BACKUP_FILE" 2>&1 | tee "$RESTORE_LOG"
 ```
+Run it as one `pg_restore` (or by `--section`), without `--disable-triggers`. With
+`--disable-triggers` the health check afterwards reports orphaned triggers until you run
+`SELECT * FROM tviews.pg_tviews_reregister_all();`.
 
-## Logical Restore Procedure (pg_restore)
-
-### Step 1: Initial Restore Setup
-```bash
-# Set restore parameters
-export PGHOST=localhost
-export PGUSER=postgres
-export PGDATABASE=$TARGET_DB
-export BACKUP_FILE=/backups/mydb-recent.dump
-
-# Create restore log
-RESTORE_LOG="/var/log/pg_restore_$(date +%Y%m%d_%H%M%S).log"
-echo "Starting restore at $(date)" > $RESTORE_LOG
-```
-
-### Step 2: Schema-Only Restore
-```bash
-echo "=== Phase 1: Schema Restore ==="
-
-# Restore schema only first
-sudo -u postgres pg_restore \
-    --verbose \
-    --schema-only \
-    --no-owner \
-    --no-privileges \
-    --dbname=$TARGET_DB \
-    $BACKUP_FILE \
-    2>&1 | tee -a $RESTORE_LOG
-
-# Verify schema creation
-psql -d $TARGET_DB -c "
-SELECT schemaname, COUNT(*) as objects
-FROM pg_tables
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-GROUP BY schemaname
-ORDER BY schemaname;
-"
-```
-
-### Step 3: Data Restore
-```bash
-echo "=== Phase 2: Data Restore ==="
-
-# Restore data with parallel processing
-sudo -u postgres pg_restore \
-    --verbose \
-    --data-only \
-    --no-owner \
-    --no-privileges \
-    --disable-triggers \
-    --jobs=4 \
-    --dbname=$TARGET_DB \
-    $BACKUP_FILE \
-    2>&1 | tee -a $RESTORE_LOG
-
-# Check for restore errors
-if grep -i "error\|failed\|fatal" $RESTORE_LOG; then
-    echo "⚠️  Errors detected in restore log - review manually"
-fi
-```
-
-### Step 4: Index and Constraint Restore
-```bash
-echo "=== Phase 3: Indexes and Constraints ==="
-
-# Create indexes (if not included in data restore)
-# Note: pg_restore typically handles this, but verify
-psql -d $TARGET_DB -c "
-SELECT schemaname, tablename,
-       COUNT(*) as indexes_expected
-FROM pg_indexes
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-GROUP BY schemaname, tablename
-ORDER BY schemaname, tablename;
-"
-
-# Re-enable triggers
-psql -d $TARGET_DB -c "ALTER TABLE your_table ENABLE TRIGGER ALL;"  # Repeat for each table
-```
-
-### Step 5: Permission and Ownership Restore
-```bash
-echo "=== Phase 4: Permissions and Ownership ==="
-
-# Restore ownership (if using custom roles)
-# Note: This depends on your backup method
-psql -d $TARGET_DB -c "
--- Example ownership restoration
--- ALTER TABLE your_table OWNER TO your_owner;
--- GRANT SELECT ON your_table TO your_user;
-"
-
-# Verify permissions
-psql -d $TARGET_DB -c "
-SELECT schemaname, tablename, tableowner
-FROM pg_tables
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-ORDER BY schemaname, tablename;
-"
-```
-
-## Physical Restore Procedure (pg_basebackup)
-
-### Step 1: Base Backup Restore
-```bash
-# Stop PostgreSQL
-sudo systemctl stop postgresql
-
-# Backup current data directory
-sudo mv /var/lib/postgresql/16/main /var/lib/postgresql/16/main.backup
-
-# Extract base backup
-sudo tar -xzf /backups/base-recent.tar.gz -C /var/lib/postgresql/16/
-
-# Fix permissions
-sudo chown -R postgres:postgres /var/lib/postgresql/16/main
-```
-
-### Step 2: WAL Recovery (if applicable)
-```bash
-# Copy required WAL files
-sudo mkdir -p /var/lib/postgresql/16/main/pg_wal
-sudo cp /backups/wal/* /var/lib/postgresql/16/main/pg_wal/
-
-# Create recovery.conf for PITR if needed
-sudo vi /var/lib/postgresql/16/main/recovery.conf
-# restore_command = 'cp /backups/wal/%f %p'
-# recovery_target_time = '2025-12-13 10:00:00'
-```
-
-### Step 3: Start PostgreSQL
-```bash
-# Start PostgreSQL (will perform recovery)
-sudo systemctl start postgresql
-
-# Monitor recovery progress
-tail -f /var/log/postgresql/postgresql-16-main.log
-
-# Verify recovery completion
-psql -c "SELECT pg_is_in_recovery();"
-```
-
-## TVIEW-Specific Restore Steps
-
-### Step 1: TVIEW Extension Installation
+### Step 2: If the dump skipped UNLOGGED data
+When the dump was taken with `--no-unlogged-table-data`, the TVIEW tables are empty:
 ```sql
--- Install pg_tviews extension
-CREATE EXTENSION pg_tviews;
-
--- Verify extension
-SELECT pg_tviews_version();
+SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
-### Step 2: TVIEW Recreation
+## Physical Restore (base backup and WAL)
+
+### Step 1: Restore the data directory
+Follow the PostgreSQL documentation for your backup tool: stop the server, move the old
+data directory aside, extract the base backup, and for point-in-time recovery set
+`restore_command` (and `recovery_target_time`) in `postgresql.conf` and create
+`recovery.signal` in the data directory. `recovery.conf` no longer exists since
+PostgreSQL 12.
+
+### Step 2: Start and wait for recovery to end
+```bash
+psql -X -d mydb -c "SELECT pg_is_in_recovery();"   # false once recovery ended
+```
+
+### Step 3: Rebuild UNLOGGED TVIEWs
 ```sql
--- Recreate TVIEWs from backup metadata
--- This assumes TVIEW definitions were backed up separately
-
--- Example TVIEW recreation (adjust for your schema)
-SELECT pg_tviews_convert_existing_table('public.sales');
-SELECT pg_tviews_convert_existing_table('public.inventory');
--- Add more TVIEWs as needed
-
--- Verify TVIEWs are functional
-SELECT
-    COUNT(*) as tviews_created,
-    COUNT(*) FILTER (WHERE last_error IS NULL) as healthy_tviews
-FROM pg_tviews_metadata;
+SELECT * FROM tviews.pg_tviews_replication_status();  -- is_empty / needs_rebuild
+SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
-
-### Step 3: TVIEW Data Validation
-```sql
--- Test TVIEW functionality
-SELECT pg_tviews_health_check();
-
--- Test refresh operations
-SELECT pg_tviews_refresh('your_test_tview');
-
--- Verify data consistency
-SELECT
-    'Data validation' as check,
-    (SELECT COUNT(*) FROM your_source_table) as source_count,
-    (SELECT COUNT(*) FROM your_tview) as tview_count,
-    CASE
-        WHEN (SELECT COUNT(*) FROM your_source_table) = (SELECT COUNT(*) FROM your_tview)
-        THEN 'CONSISTENT'
-        ELSE 'INCONSISTENT'
-    END as status;
-```
+With `pg_tviews.auto_rebuild_databases` listing the database, a background worker runs
+this rebuild when recovery ends; check `needs_rebuild = false` instead. Until the
+rebuild, readers of an emptied UNLOGGED TVIEW see an empty table. See
+[Replication](../../replication.md).
 
 ## Post-Restore Validation
 
-### Step 1: Database Integrity Checks
+### Step 1: pg_tviews health
+```bash
+psql -X -v ON_ERROR_STOP=1 -d "$TARGET_DB" -f docs/operations/runbooks/scripts/health-check.sql
+```
+Or the essentials:
 ```sql
--- Run comprehensive integrity checks
-VACUUM VERBOSE;  -- Check for corruption
+SELECT tviews.pg_tviews_version() AS library,
+       (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 
--- Verify foreign key constraints
-SELECT
-    conname,
-    conrelid::regclass,
-    confrelid::regclass
-FROM pg_constraint
-WHERE contype = 'f'
-LIMIT 5;
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check()
+WHERE severity <> 'info';
 
--- Check for orphaned records
--- Add custom checks based on your schema
+SELECT schema, name, view, base_tables, needs_reregister
+FROM tviews.registry
+ORDER BY schema, name;
 ```
 
-### Step 2: Performance Validation
+### Step 2: TVIEW contents
+A TVIEW must equal its view. For each TVIEW (here `post`):
 ```sql
--- Test query performance
-EXPLAIN ANALYZE SELECT COUNT(*) FROM your_largest_table;
+SELECT count(*) AS differing_rows
+FROM (
+    (SELECT pk_post, data FROM public.v_post EXCEPT SELECT pk_post, data FROM public.tv_post)
+    UNION ALL
+    (SELECT pk_post, data FROM public.tv_post EXCEPT SELECT pk_post, data FROM public.v_post)
+) d;
+```
+If a TVIEW differs, rebuild it from its view:
+```sql
+SELECT tviews.pg_tviews_refresh('post');
+```
 
--- Check index usage
-SELECT
-    schemaname,
-    tablename,
-    idx_scan,
-    seq_scan
-FROM pg_stat_user_tables
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-ORDER BY seq_scan DESC;
+### Step 3: Propagation
+```sql
+BEGIN;
+UPDATE public.tb_post SET title = title || ' (restore check)' WHERE pk_post = 1;
+SELECT data->>'title' FROM public.tv_post WHERE pk_post = 1;  -- shows the new title
+ROLLBACK;
+```
 
--- Update statistics
+### Step 4: Statistics
+```sql
 ANALYZE;
 ```
 
-### Step 3: Application Testing
-```bash
-# Test application connectivity
-curl -f http://your-app/health
-
-# Test database operations
-psql -c "SELECT 1;"
-
-# Run application integration tests
-# npm test  # or your test command
-```
+### Step 5: Applications
+Point the applications at the restored database and run their health checks.
 
 ## Success Criteria
+- [ ] PostgreSQL is out of recovery and accepts connections
+- [ ] `tviews.pg_tviews_health_check()` reports no warning or error
+- [ ] Every expected TVIEW is in `tviews.registry`, none is empty unexpectedly
+- [ ] TVIEWs equal their views; a test write propagates
+- [ ] Applications work
 
-### Technical Success
-- [ ] PostgreSQL starts successfully
-- [ ] All databases accessible
-- [ ] pg_tviews extension functional
-- [ ] TVIEWs present and operational
-- [ ] Data integrity verified
-- [ ] Performance within acceptable ranges
-
-### Application Success
-- [ ] Applications connect successfully
-- [ ] Core functionality working
-- [ ] User operations functional
-- [ ] Error rates normal
-- [ ] Response times acceptable
-
-### Business Success
-- [ ] Systems operational within RTO
-- [ ] Data recovered within RPO
-- [ ] Business processes resumed
-- [ ] Stakeholder communication completed
-- [ ] Incident documented
-
-## Rollback Procedures
-
-### Immediate Rollback (< 15 minutes)
-If restore introduces new issues:
-
-```bash
-# Stop applications
-sudo systemctl stop your-applications
-
-# Drop restored database
-sudo -u postgres dropdb $TARGET_DB
-
-# Restore from original backup if needed
-# (Keep original database running during testing)
-
-# Restart applications
-sudo systemctl start your-applications
-```
-
-### Complete Environment Rollback (< 60 minutes)
-If full rollback required:
-
-```bash
-# Stop PostgreSQL
-sudo systemctl stop postgresql
-
-# Restore original data directory
-sudo rm -rf /var/lib/postgresql/16/main
-sudo mv /var/lib/postgresql/16/main.backup /var/lib/postgresql/16/main
-
-# Start PostgreSQL
-sudo systemctl start postgresql
-
-# Verify rollback
-psql -c "SELECT current_database();"
-```
-
-## Monitoring During Restore
-
-### Progress Monitoring
-```bash
-# Monitor restore progress
-watch -n 30 "psql -c 'SELECT phase, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_progress_copy;'"
-
-# Monitor system resources
-watch -n 10 "free -h && df -h /var/lib/postgresql"
-```
-
-### Alert Thresholds
-- **Duration**: Alert if restore takes > 2x expected time
-- **Errors**: Alert on any restore errors
-- **Resources**: Alert if disk space < 10% or memory < 20%
-- **Connections**: Monitor application connection attempts
+## Rollback
+For a logical restore into a new database, the original database is untouched: drop
+the restored one (`dropdb "$TARGET_DB"`) and point applications back. For a physical
+restore, stop the server and move the saved data directory back.
 
 ## Troubleshooting
 
-### Common Restore Issues
+### `could not open extension control file ".../pg_tviews.control"`
+pg_tviews is not installed on the target server. Install the release the backup was
+taken with (see `docs/development/extension-versioning.md`, "Release tarball").
 
-#### Permission Errors
-```sql
-# Fix ownership
-sudo chown -R postgres:postgres /var/lib/postgresql/16/main
+### `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`
+The installed library is a different release from the restored extension catalog. Run
+`ALTER EXTENSION pg_tviews UPDATE;` then `SELECT * FROM tviews.pg_tviews_reregister_all();`
+(see [Extension Updates](../../upgrade/extension/extension-minor-update.md)).
 
-# Check file permissions
-ls -la /var/lib/postgresql/16/main/
-```
+### A TVIEW is empty after the restore
+It is UNLOGGED and the restore did not carry its rows (physical restore, crash, or
+`--no-unlogged-table-data`). Run `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
 
-#### Out of Disk Space
-```sql
-# Check space usage
-df -h /var/lib/postgresql
-
-# Clean up space if needed
-sudo find /var/lib/postgresql -name "*.log" -mtime +7 -delete
-
-# Or add more disk space
-```
-
-#### Extension Installation Failures
-```sql
-# Check extension files
-ls -la /usr/share/postgresql/16/extension/pg_tviews*
-
-# Reinstall extension
-cd /path/to/pg_tviews && make install
-
-# Try extension creation again
-CREATE EXTENSION pg_tviews;
-```
-
-#### TVIEW Recreation Issues
-```sql
--- Check source table exists
-SELECT schemaname, tablename FROM pg_tables WHERE tablename = 'source_table';
-
--- Verify table structure
-SELECT column_name, data_type FROM information_schema.columns
-WHERE table_name = 'source_table'
-ORDER BY ordinal_position;
-```
-
-## Performance Optimization
-
-### Restore Performance Tuning
-```bash
-# Use parallel restore
-pg_restore --jobs=8 --dbname=$TARGET_DB $BACKUP_FILE
-
-# Disable synchronous commit during restore
-psql -c "ALTER SYSTEM SET synchronous_commit = off;"
-
-# Re-enable after restore
-psql -c "ALTER SYSTEM SET synchronous_commit = on;"
-```
-
-### Post-Restore Optimization
-```sql
--- Update statistics
-ANALYZE;
-
--- Rebuild indexes if needed
-REINDEX DATABASE CONCURRENTLY $TARGET_DB;
-
--- Vacuum for space optimization
-VACUUM FULL;
-```
-
-## Documentation Requirements
-
-### Restore Record
-- [ ] Date and time of restore
-- [ ] Backup file used
-- [ ] Duration and issues encountered
-- [ ] Success verification results
-- [ ] Performance impact assessment
-
-### Incident Documentation
-- [ ] Root cause of data loss
-- [ ] Restore procedure followed
-- [ ] Issues encountered and resolutions
-- [ ] Lessons learned and improvements
+### A TVIEW is not in `tviews.registry`
+The restore did not include the rows of `tviews.pg_tview_meta`, for example a
+`--schema-only` dump. Restore from a full dump, or
+recreate the TVIEW from your schema migrations.
 
 ## Related Documentation
-
-- [Backup Types](../backup-strategy/backup-types.md) - Backup creation procedures
-- [Backup Testing](../backup-strategy/backup-testing.md) - Backup validation
-- [Point-in-Time Recovery](point-in-time-recovery.md) - Advanced recovery options
-- [TVIEW Recovery](tview-recovery.md) - TVIEW-specific recovery
+- [Backup Types](../backup-strategy/backup-types.md)
+- [Backup Testing](../backup-strategy/backup-testing.md)
+- [Replication and UNLOGGED TVIEWs](../../replication.md)

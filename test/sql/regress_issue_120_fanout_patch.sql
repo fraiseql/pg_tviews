@@ -160,9 +160,10 @@ SELECT assert_fresh('direct_patch_enabled off');
 DO $$
 DECLARE fanout jsonb;
 BEGIN
-    SELECT cp::jsonb->'fanout' INTO fanout
-    FROM pg_tview_meta, unnest(cascade_paths) cp
-    WHERE entity = 'post' AND cp::jsonb->>'source_table' = 'tb_user';
+    -- Recorded with the table's key mapping (ADR 0157).
+    SELECT e->'fanout' INTO fanout
+    FROM pg_tview_meta, jsonb_array_elements(key_mappings) e
+    WHERE entity = 'post' AND (e->>'relid')::oid = 'tb_user'::regclass::oid;
     IF fanout IS DISTINCT FROM
        '{"lookup_col": "fk_user", "fields": [["name", "author_name"], ["score", "author_score"]]}' THEN
         RAISE EXCEPTION '#120 FAIL: recorded fan-out is %', fanout;

@@ -31,12 +31,12 @@ RESET search_path;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#151 FAIL: %', what; END IF; END $$;
 
--- 1. `view` is the last column, a regclass; the contract version is unchanged.
+-- 1. `view` is a regclass appended after the contract-1 columns (later additions
+-- come after it); the contract version is unchanged.
 SELECT must(
     (SELECT attname || ' ' || format_type(atttypid, atttypmod) FROM pg_attribute
-     WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0
-     ORDER BY attnum DESC LIMIT 1) = 'view regclass',
-    'the last registry column is not view regclass');
+     WHERE attrelid = 'tviews.registry'::regclass AND attnum = 9) = 'view regclass',
+    'the ninth registry column is not view regclass');
 SELECT must(tviews.contract_version() = 1, 'contract_version() changed');
 
 -- 2. It names the backing view, in the TVIEW's schema.

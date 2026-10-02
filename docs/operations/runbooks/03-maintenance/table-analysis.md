@@ -1,424 +1,142 @@
 # Table Analysis Runbook
 
 ## Purpose
-Analyze TVIEW table statistics, identify performance issues, and optimize storage and query performance for pg_tviews.
+Inspect the size, statistics, indexes and query plans of TVIEW tables (`tv_*`), and of
+the refresh work that keeps them current.
 
 ## When to Use
-- **Monthly Analysis**: Regular table health assessment
-- **Performance Issues**: When queries against TVIEWs are slow
-- **Storage Alerts**: When disk usage grows unexpectedly
-- **After Bulk Operations**: Following large data imports or updates
-- **Query Optimization**: Before tuning slow TVIEW queries
+- Reads from a TVIEW are slow
+- Writes to base tables became slow (each write refreshes the affected TVIEW rows)
+- Disk usage of TVIEW tables grows unexpectedly
+- After bulk loads
 
 ## Prerequisites
-- PostgreSQL analysis permissions (`ANALYZE`, `VACUUM`)
-- Access to `pg_stat_user_tables` and `pg_stat_user_indexes`
-- Understanding of PostgreSQL table statistics
-- Backup recommended before major changes
+- Access to `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_stats`
+- Optional: `pg_stat_statements` for statement timings
 
-## Table Statistics Analysis (20 minutes)
+## Table Statistics Analysis
 
-### Step 1: TVIEW Table Inventory
+### Step 1: Inventory
 ```sql
--- Get comprehensive TVIEW table statistics
-SELECT
-    t.entity_name,
-    pg_size_pretty(pg_total_relation_size(t.entity_name)) as total_size,
-    pg_size_pretty(pg_relation_size(t.entity_name)) as table_size,
-    pg_size_pretty(pg_total_relation_size(t.entity_name) - pg_relation_size(t.entity_name)) as index_size,
-    t.last_refreshed,
-    t.last_refresh_duration_ms / 1000 as last_refresh_seconds
-FROM pg_tviews_metadata t
-ORDER BY pg_total_relation_size(t.entity_name) DESC;
+SELECT schema, name, entity, logged, base_tables
+FROM tviews.registry
+ORDER BY schema, name;
 ```
 
-### Step 2: Table Health Metrics
+### Step 2: Physical health per TVIEW
 ```sql
--- Analyze table health and maintenance status
-SELECT
-    schemaname,
-    tablename,
-    n_tup_ins as inserts,
-    n_tup_upd as updates,
-    n_tup_del as deletes,
-    n_live_tup as live_rows,
-    n_dead_tup as dead_rows,
-    ROUND(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2) as bloat_ratio,
-    last_vacuum,
-    last_autovacuum,
-    last_analyze,
-    last_autoanalyze,
-    CASE
-        WHEN n_dead_tup > n_live_tup * 0.5 THEN 'HIGH_BLOAT'
-        WHEN n_dead_tup > n_live_tup * 0.2 THEN 'MEDIUM_BLOAT'
-        WHEN last_analyze < NOW() - INTERVAL '7 days' THEN 'STALE_STATS'
-        ELSE 'HEALTHY'
-    END as health_status
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY n_dead_tup DESC;
+SELECT entity, tview, persistence, rows_estimate,
+       pg_size_pretty(heap_bytes)  AS heap,
+       pg_size_pretty(index_bytes) AS indexes,
+       pg_size_pretty(toast_bytes) AS toast,
+       avg_row_width, data_avg_width, fillfactor,
+       n_tup_upd, n_tup_hot_upd, round(hot_ratio::numeric, 2) AS hot_ratio,
+       n_dead_tup, last_vacuum, last_autovacuum,
+       round(all_visible_fraction::numeric, 2) AS all_visible,
+       warnings
+FROM tviews.pg_tviews_profile()
+ORDER BY heap_bytes DESC;
 ```
+`warnings` summarizes what the other columns show (low HOT ratio, many dead tuples,
+missing indexes, high fan-out). Pass an entity to inspect one TVIEW:
+`SELECT * FROM tviews.pg_tviews_profile('post');`.
 
-### Step 3: Index Effectiveness Analysis
+### Step 3: Statistics freshness
 ```sql
--- Evaluate index usage and effectiveness
-SELECT
-    schemaname,
-    tablename,
-    indexname,
-    idx_scan as index_scans,
-    idx_tup_read as tuples_read_via_index,
-    idx_tup_fetch as tuples_fetched_via_index,
-    pg_size_pretty(pg_relation_size(indexrelid)) as index_size,
-    CASE
-        WHEN idx_scan = 0 THEN 'UNUSED'
-        WHEN idx_scan < 100 THEN 'LOW_USAGE'
-        WHEN idx_scan < 1000 THEN 'MODERATE_USAGE'
-        ELSE 'HIGH_USAGE'
-    END as usage_category
-FROM pg_stat_user_indexes
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY idx_scan DESC, pg_relation_size(indexrelid) DESC;
+SELECT s.schemaname, s.relname, s.n_live_tup, s.n_dead_tup,
+       s.n_mod_since_analyze, s.last_analyze, s.last_autoanalyze
+FROM pg_stat_user_tables s
+JOIN tviews.registry r ON r.schema = s.schemaname AND r.name = s.relname
+ORDER BY s.n_mod_since_analyze DESC;
 ```
+Run `ANALYZE` on a TVIEW whose statistics are stale (see
+[Regular Maintenance](regular-maintenance.md) for all TVIEWs at once).
 
-## Performance Optimization Procedures
-
-### Step 1: Statistics Update
+### Step 4: Index usage
 ```sql
--- Update statistics for all TVIEW tables
-DO $$
-DECLARE
-    tview_record RECORD;
-BEGIN
-    FOR tview_record IN
-        SELECT entity_name FROM pg_tviews_metadata
-    LOOP
-        BEGIN
-            EXECUTE 'ANALYZE ' || tview_record.entity_name;
-            RAISE NOTICE 'Updated statistics for TVIEW: %', tview_record.entity_name;
-        EXCEPTION WHEN OTHERS THEN
-            RAISE NOTICE 'Failed to analyze TVIEW %: %', tview_record.entity_name, SQLERRM;
-        END;
-    END LOOP;
-END $$;
-
--- Verify statistics are current
-SELECT
-    schemaname,
-    tablename,
-    last_analyze,
-    CASE
-        WHEN last_analyze > NOW() - INTERVAL '1 hour' THEN 'CURRENT'
-        WHEN last_analyze > NOW() - INTERVAL '1 day' THEN 'RECENT'
-        ELSE 'STALE'
-    END as stats_status
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%';
+SELECT i.schemaname, i.relname, i.indexrelname, i.idx_scan,
+       pg_size_pretty(pg_relation_size(i.indexrelid)) AS index_size
+FROM pg_stat_user_indexes i
+JOIN tviews.registry r ON r.schema = i.schemaname AND r.name = i.relname
+ORDER BY i.idx_scan, pg_relation_size(i.indexrelid) DESC;
 ```
-
-### Step 2: Bloat Assessment and Cleanup
+Before dropping an index with `idx_scan = 0`, check that it is not used by refreshes:
+indexes on `fk_*` columns serve cascades from parent entities, and statistics reset on
+a crash or `pg_stat_reset()`. `pg_tviews_profile()` lists indexes it considers unused in
+`unused_indexes`, and missing cascade indexes in `missing_propagation_indexes`:
 ```sql
--- Identify tables needing vacuum
-SELECT
-    schemaname,
-    tablename,
-    n_dead_tup,
-    n_live_tup,
-    ROUND(n_dead_tup::numeric / NULLIF(n_live_tup + n_dead_tup, 0) * 100, 2) as bloat_percent,
-    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) as total_size
-FROM pg_stat_user_tables
-WHERE (schemaname LIKE '%tview%' OR tablename LIKE '%tview%')
-  AND n_dead_tup > n_live_tup * 0.1
-ORDER BY n_dead_tup DESC;
-
--- Vacuum tables with high bloat
-DO $$
-DECLARE
-    table_record RECORD;
-BEGIN
-    FOR table_record IN
-        SELECT schemaname, tablename
-        FROM pg_stat_user_tables
-        WHERE (schemaname LIKE '%tview%' OR tablename LIKE '%tview%')
-          AND n_dead_tup > n_live_tup * 0.2
-    LOOP
-        BEGIN
-            EXECUTE 'VACUUM ' || table_record.schemaname || '.' || table_record.tablename;
-            RAISE NOTICE 'Vacuumed table: %.%', table_record.schemaname, table_record.tablename;
-        EXCEPTION WHEN OTHERS THEN
-            RAISE NOTICE 'Failed to vacuum %.%: %', table_record.schemaname, table_record.tablename, SQLERRM;
-        END;
-    END LOOP;
-END $$;
-```
-
-### Step 3: Index Optimization
-```sql
--- Identify potentially redundant or unused indexes
-WITH index_usage AS (
-    SELECT
-        schemaname,
-        tablename,
-        indexname,
-        idx_scan,
-        pg_relation_size(indexrelid) as index_size_bytes
-    FROM pg_stat_user_indexes
-    WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-)
-SELECT
-    iu.schemaname,
-    iu.tablename,
-    iu.indexname,
-    iu.idx_scan,
-    pg_size_pretty(iu.index_size_bytes) as index_size,
-    CASE
-        WHEN iu.idx_scan = 0 AND iu.index_size_bytes > 10000000 THEN 'CONSIDER_DROP_LARGE_UNUSED'
-        WHEN iu.idx_scan = 0 THEN 'CONSIDER_DROP_UNUSED'
-        WHEN iu.idx_scan < 10 THEN 'LOW_USAGE_MONITOR'
-        ELSE 'ACTIVE'
-    END as recommendation
-FROM index_usage iu
-ORDER BY iu.index_size_bytes DESC;
-
--- Reindex indexes with high usage (if needed)
--- REINDEX INDEX CONCURRENTLY index_name;
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 ```
 
 ## Query Performance Analysis
 
-### Step 1: Slow Query Identification
+### Reads from a TVIEW
 ```sql
--- Find slow queries involving TVIEWs
-SELECT
-    query,
-    calls,
-    total_time / 1000 as total_time_seconds,
-    mean_time / 1000 as mean_time_seconds,
-    rows,
-    LEFT(query, 100) as query_preview
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT data FROM public.tv_post WHERE fk_user = 1;
+```
+TVIEW tables are ordinary tables: add indexes for your read patterns with
+`CREATE INDEX CONCURRENTLY`. `pg_tviews.data_gin_index` creates a GIN index on `data`
+for new TVIEWs.
+
+### Refresh cost
+A refresh recomputes affected rows from the backing view `v_<entity>` by key. Its cost
+is the cost of that query:
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM public.v_post WHERE pk_post = 1;
+```
+Sequential scans here usually mean a missing index on a base-table join or
+foreign-key column.
+
+How many TVIEW rows one write touches (fan-out):
+```sql
+SELECT entity, fanout FROM tviews.pg_tviews_profile();
+```
+
+Refresh counters of the current session (compare before and after a write in the same
+session):
+```sql
+SELECT tviews.pg_tviews_queue_stats();
+```
+
+Statement timings, if `pg_stat_statements` is installed (PostgreSQL 13+ column names):
+```sql
+SELECT calls, round(mean_exec_time::numeric, 2) AS mean_ms,
+       round(total_exec_time::numeric, 2) AS total_ms, left(query, 100) AS query
 FROM pg_stat_statements
-WHERE (query LIKE '%tview%' OR query LIKE '%refresh%')
-  AND mean_time > 1000  -- Queries taking > 1 second on average
-ORDER BY mean_time DESC
+WHERE query ILIKE '%tv\_%' OR query ILIKE '%pg_tviews%'
+ORDER BY mean_exec_time DESC
 LIMIT 10;
 ```
 
-### Step 2: Query Plan Analysis
+## Storage
+
+Size breakdown, including TOAST (the `data` jsonb column is usually stored there):
 ```sql
--- Analyze query plans for TVIEW tables
--- Replace 'your_tview_name' with actual TVIEW name
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT * FROM your_tview_name
-WHERE updated_at > NOW() - INTERVAL '1 day'
-ORDER BY id
-LIMIT 100;
-
--- Look for:
--- - Sequential scans on large tables
--- - Missing index usage
--- - High buffer usage
+SELECT format('%I.%I', r.schema, r.name) AS tview,
+       pg_size_pretty(pg_table_size(format('%I.%I', r.schema, r.name)))    AS table_with_toast,
+       pg_size_pretty(pg_indexes_size(format('%I.%I', r.schema, r.name)))  AS indexes,
+       pg_size_pretty(pg_total_relation_size(format('%I.%I', r.schema, r.name))) AS total
+FROM tviews.registry r
+ORDER BY pg_total_relation_size(format('%I.%I', r.schema, r.name)) DESC;
 ```
 
-### Step 3: Index Recommendations
-```sql
--- Suggest indexes based on query patterns
-SELECT
-    schemaname,
-    tablename,
-    attname,
-    n_distinct,
-    correlation,
-    CASE
-        WHEN n_distinct > 1000 AND correlation > 0.9 THEN 'EXCELLENT_INDEX_CANDIDATE'
-        WHEN n_distinct > 1000 AND correlation > 0.5 THEN 'GOOD_INDEX_CANDIDATE'
-        WHEN n_distinct > 100 THEN 'MODERATE_INDEX_CANDIDATE'
-        ELSE 'POOR_INDEX_CANDIDATE'
-    END as index_potential
-FROM pg_stats
-WHERE schemaname LIKE '%tview%'
-  AND attname NOT IN ('id', 'created_at', 'updated_at')  -- Common already-indexed columns
-ORDER BY n_distinct DESC, correlation DESC;
-```
+## Troubleshooting
 
-## Storage Optimization
+### High bloat
+Check that autovacuum keeps up (`last_autovacuum`, `n_dead_tup` above). If the table
+stays bloated, `VACUUM FULL public.tv_post;` rewrites it under an `ACCESS EXCLUSIVE`
+lock; run it in a maintenance window.
 
-### Step 1: Table Size Analysis
-```sql
--- Detailed table size breakdown
-SELECT
-    schemaname,
-    tablename,
-    pg_size_pretty(pg_relation_size(schemaname || '.' || tablename)) as table_size,
-    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename) - pg_relation_size(schemaname || '.' || tablename)) as index_size,
-    pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) as total_size,
-    n_live_tup as live_rows,
-    ROUND(pg_total_relation_size(schemaname || '.' || tablename)::numeric / NULLIF(n_live_tup, 0), 0) as bytes_per_row
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC;
-```
-
-### Step 2: Partitioning Assessment
-```sql
--- Assess if large TVIEWs would benefit from partitioning
-SELECT
-    t.entity_name,
-    pg_size_pretty(pg_total_relation_size(t.entity_name)) as size,
-    t.last_refresh_duration_ms / 1000 as refresh_time_seconds,
-    CASE
-        WHEN pg_total_relation_size(t.entity_name) > 10000000000 THEN 'CONSIDER_PARTITIONING_VERY_LARGE'  -- > 10GB
-        WHEN pg_total_relation_size(t.entity_name) > 1000000000 THEN 'CONSIDER_PARTITIONING_LARGE'     -- > 1GB
-        WHEN t.last_refresh_duration_ms > 300000 THEN 'CONSIDER_PARTITIONING_SLOW_REFRESH'         -- > 5min
-        ELSE 'PARTITIONING_NOT_NEEDED'
-    END as partitioning_recommendation
-FROM pg_tviews_metadata t
-ORDER BY pg_total_relation_size(t.entity_name) DESC;
-```
-
-### Step 3: Compression Opportunities
-```sql
--- Check for compression opportunities
-SELECT
-    schemaname,
-    tablename,
-    attname,
-    n_distinct,
-    avg_width,
-    CASE
-        WHEN avg_width > 100 AND n_distinct > 1000 THEN 'CONSIDER_COMPRESSION'
-        WHEN avg_width > 500 THEN 'HIGH_COMPRESSION_CANDIDATE'
-        ELSE 'COMPRESSION_NOT_NEEDED'
-    END as compression_recommendation
-FROM pg_stats
-WHERE schemaname LIKE '%tview%'
-  AND attname NOT LIKE '%id%'
-ORDER BY avg_width DESC;
-```
-
-## Maintenance Automation
-
-### Monthly Analysis Script
-```sql
--- Create automated table analysis function
-CREATE OR REPLACE FUNCTION tview_table_analysis()
-RETURNS TABLE (
-    table_name TEXT,
-    issue_type TEXT,
-    severity TEXT,
-    recommendation TEXT,
-    estimated_impact TEXT
-) AS $$
-BEGIN
-    -- Bloat detection
-    RETURN QUERY
-    SELECT
-        schemaname || '.' || tablename,
-        'BLOAT'::TEXT,
-        CASE WHEN n_dead_tup > n_live_tup * 0.5 THEN 'HIGH' ELSE 'MEDIUM' END,
-        'Run VACUUM to reclaim space'::TEXT,
-        pg_size_pretty(n_dead_tup * 100)::TEXT || ' estimated savings'
-    FROM pg_stat_user_tables
-    WHERE (schemaname LIKE '%tview%' OR tablename LIKE '%tview%')
-      AND n_dead_tup > n_live_tup * 0.2;
-
-    -- Stale statistics
-    RETURN QUERY
-    SELECT
-        schemaname || '.' || tablename,
-        'STALE_STATISTICS'::TEXT,
-        'MEDIUM'::TEXT,
-        'Run ANALYZE to update statistics'::TEXT,
-        'Query performance degradation'::TEXT
-    FROM pg_stat_user_tables
-    WHERE (schemaname LIKE '%tview%' OR tablename LIKE '%tview%')
-      AND last_analyze < NOW() - INTERVAL '7 days';
-
-    -- Unused indexes
-    RETURN QUERY
-    SELECT
-        schemaname || '.' || tablename,
-        'UNUSED_INDEX'::TEXT,
-        'LOW'::TEXT,
-        'Consider dropping unused index'::TEXT,
-        pg_size_pretty(pg_relation_size(indexrelid))::TEXT || ' space savings'
-    FROM pg_stat_user_indexes
-    WHERE (schemaname LIKE '%tview%' OR tablename LIKE '%tview%')
-      AND idx_scan = 0
-      AND pg_relation_size(indexrelid) > 1000000;  -- > 1MB
-
-    RETURN;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-### Automated Monitoring
-```bash
-# Monthly table analysis cron job
-# 0 2 1 * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM tview_table_analysis();"
-```
-
-## Troubleshooting Table Issues
-
-### High Bloat Resolution
-```sql
--- For tables with > 50% bloat, consider full vacuum
--- WARNING: This locks the table and may take time
-
--- Check current bloat
-SELECT
-    schemaname || '.' || tablename as full_table_name,
-    ROUND(n_dead_tup::numeric / (n_live_tup + n_dead_tup) * 100, 2) as bloat_percent
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-  AND n_dead_tup > n_live_tup * 0.5;
-
--- Perform full vacuum during maintenance window
-VACUUM FULL your_bloated_tview;
-
--- Alternative: Concurrent reindex and vacuum
-REINDEX TABLE CONCURRENTLY your_bloated_tview;
-VACUUM your_bloated_tview;
-```
-
-### Index Performance Issues
-```sql
--- For indexes with poor performance
-ANALYZE your_tview_name;  -- Update statistics
-
--- Check if index needs rebuilding
-REINDEX INDEX CONCURRENTLY your_index_name;
-
--- Consider index changes based on query patterns
--- CREATE INDEX CONCURRENTLY new_index_name ON your_tview_name (column_name);
--- DROP INDEX CONCURRENTLY old_index_name;
-```
-
-### Query Optimization
-```sql
--- For slow TVIEW queries, analyze execution plan
-EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
-SELECT * FROM your_tview_name WHERE your_condition;
-
--- Common optimizations:
--- 1. Add missing indexes
--- 2. Rewrite queries to use indexed columns
--- 3. Update table statistics
--- 4. Consider query restructuring
-```
+### Low HOT ratio
+Updates are not HOT when an indexed column changes or the page has no free space.
+Drop indexes on columns that change often if reads do not need them, and keep a
+fillfactor below 100 (`ALTER TABLE ... SET (fillfactor = 85)` applies to new pages;
+`VACUUM FULL` applies it to the whole table).
 
 ## Related Runbooks
-
-- [Regular Maintenance](regular-maintenance.md) - Overall maintenance procedures
-- [Performance Monitoring](../01-health-monitoring/performance-monitoring.md) - Performance trend analysis
-- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) - Query performance issues
-- [Connection Management](connection-management.md) - Connection-related table issues
-
-## Best Practices
-
-1. **Regular Analysis**: Run table analysis monthly
-2. **Monitor Bloat**: Keep bloat under 20% through regular vacuuming
-3. **Update Statistics**: Ensure statistics are current for good query planning
-4. **Index Maintenance**: Rebuild or drop unused indexes
-5. **Query Monitoring**: Track slow queries and optimize as needed
-6. **Storage Planning**: Monitor growth trends and plan for scaling
-7. **Document Changes**: Record all table structure changes and their rationale
+- [Regular Maintenance](regular-maintenance.md)
+- [Performance Monitoring](../01-health-monitoring/performance-monitoring.md)
+- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md)
+- [Connection Management](connection-management.md)

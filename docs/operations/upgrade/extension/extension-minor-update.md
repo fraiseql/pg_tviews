@@ -1,327 +1,142 @@
-# pg_tviews Extension Minor Update
+# pg_tviews Extension Update
 
 ## Scope
-Upgrading pg_tviews extension within the same major version (e.g., 0.1.0 → 0.1.1, 0.2.3 → 0.2.4)
+Updating pg_tviews from one release to a later one (for example `0.1.0-beta.20` to
+`0.1.0-beta.21`) on the same PostgreSQL major version. Each release has its own
+extension version and ships an upgrade script from the previous release; PostgreSQL
+chains them, so `ALTER EXTENSION pg_tviews UPDATE` moves across several releases at
+once. How releases and upgrade scripts work:
+[Extension versioning](../../../development/extension-versioning.md).
 
-## Risk Level
-**LOW** - Minor updates are backward compatible and usually safe
+Installs of `0.1.0` (every release up to `0.1.0-beta.19`) cannot be updated in place:
+use `scripts/migrate-from-0.1.0.sql` instead of step 3 below (see the README,
+"Upgrading").
+
+## What to expect
+- The library (`pg_tviews.so`) is shared by every database of the server and is
+  preloaded (`shared_preload_libraries`), so installing it needs a PostgreSQL restart.
+- From the restart until `ALTER EXTENSION pg_tviews UPDATE` has run in a database, the
+  library refuses to work with that database's older catalog: writes to TVIEW base
+  tables and `pg_tviews_*` calls fail with
+  `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`
+  and the hint `run ALTER EXTENSION pg_tviews UPDATE`. Reads of `tv_*` tables keep
+  working. Plan the window so that the update runs right after the restart.
+- There are no downgrade scripts. Rolling back means reinstalling the previous package
+  and restoring the backup taken before the update.
 
 ## Prerequisites
-- pg_tviews extension currently installed and functional
-- Database backup completed (recommended for safety)
-- Maintenance window scheduled (5-15 minutes)
-- Application can tolerate brief TVIEW unavailability
-- New extension version downloaded and available
+- A `pg_dump -Fc` backup of every database that has pg_tviews, taken just before
+- The new release built or downloaded for your PostgreSQL major version
+- The release notes (CHANGELOG) read for the versions you skip over
 
-## Impact Assessment
-
-### Downtime
-- **Planned**: 1-5 minutes for extension update
-- **Unplanned**: 10-15 minutes if rollback needed
-
-### TVIEW Impact
-- **Data**: No changes required
-- **Functionality**: Fully backward compatible
-- **Performance**: May include performance improvements
-- **API**: No breaking changes
-
-### Compatibility
-- **Applications**: No code changes required
-- **Existing TVIEWs**: All continue to work
-- **Configuration**: No changes needed
-- **Dependencies**: No additional requirements
-
-## Pre-Update Checklist
-
-### Environment Verification
-- [ ] Current pg_tviews version confirmed (`SELECT pg_tviews_version();`)
-- [ ] All TVIEWs functioning normally (no errors in metadata)
-- [ ] Recent backup available and tested
-- [ ] New extension version downloaded and verified
-- [ ] Application teams notified of brief maintenance
-
-### Health Check
-```sql
--- Verify system is ready for update
-SELECT
-    'Pre-update health check' as check_type,
-    (SELECT COUNT(*) FROM pg_tviews_metadata) as total_tviews,
-    (SELECT COUNT(*) FROM pg_tviews_metadata WHERE last_error IS NOT NULL) as tviews_with_errors,
-    (SELECT COUNT(*) FROM pg_tviews_queue WHERE processed_at IS NULL) as pending_refreshes,
-    (SELECT pg_tviews_version()) as current_version
-FROM pg_stat_bgwriter;
-```
-
-## Step-by-Step Update Procedure
-
-### Phase 1: Preparation (5 minutes)
-
-#### Step 1: Download and Verify New Version
+## Pre-Update Checks
+In each database that has pg_tviews:
 ```bash
-# Download the new extension version
-# Adjust URL and version as needed
-wget https://github.com/your-org/pg_tviews/releases/download/v0.1.1/pg_tviews-0.1.1.tar.gz
-tar -xzf pg_tviews-0.1.1.tar.gz
-
-# Verify download integrity
-sha256sum pg_tviews-0.1.1.tar.gz
-
-# Build the extension
-cd pg_tviews-0.1.1
-make clean && make
-
-# Verify build success
-ls -la pg_tviews.so
+PGDATABASE=mydb docs/operations/upgrade/scripts/pre-upgrade-checks.sh
+```
+It checks the PostgreSQL version (16, 17 or 18), the installed and available
+extension versions, health-check errors and prepared transactions. The essentials by
+hand:
+```sql
+SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
+SELECT tviews.pg_tviews_version();
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check()
+WHERE severity <> 'info';
+SELECT gid, prepared FROM pg_prepared_xacts WHERE database = current_database();
 ```
 
-#### Step 2: Backup Current State
-```sql
--- Document current state for rollback reference
-CREATE TABLE pre_update_backup AS
-SELECT
-    entity_name,
-    last_refreshed,
-    last_refresh_duration_ms,
-    last_error,
-    pg_tviews_version() as extension_version,
-    NOW() as backup_timestamp
-FROM pg_tviews_metadata;
+## Update Procedure
+
+### Step 1: Back up
+```bash
+pg_dump -Fc -f /backups/mydb-before-pg_tviews-update.dump mydb
 ```
 
-### Phase 2: Update Execution (2 minutes)
+### Step 2: Install the new package and restart
+From a release tarball (`pg_tviews-v<version>.tar.gz`):
+```bash
+cp lib/pg_tviews.so            "$(pg_config --pkglibdir)/"
+cp extension/pg_tviews.control "$(pg_config --sharedir)/extension/"
+cp extension/pg_tviews--*.sql  "$(pg_config --sharedir)/extension/"
+```
+Or from source: `cargo pgrx install --release --pg-config "$(which pg_config)"`
+(add `--no-default-features --features pg16` or `pg17` for those versions).
 
-#### Step 3: Update Extension
+Then restart PostgreSQL. Check that the new version is available:
 ```sql
--- Update the extension (this is usually safe for minor versions)
-ALTER EXTENSION pg_tviews UPDATE TO '0.1.1';
-
--- Verify update success
-SELECT pg_tviews_version();
+SELECT name, default_version, installed_version
+FROM pg_available_extensions WHERE name = 'pg_tviews';
 ```
 
-#### Step 4: Verify Extension Loading
+### Step 3: Update the extension, in each database
 ```sql
--- Check that extension is properly loaded
-SELECT * FROM pg_extension WHERE extname = 'pg_tviews';
-
--- Verify all functions are available
-SELECT
-    proname,
-    pg_get_function_identity_arguments(oid) as arguments
-FROM pg_proc
-WHERE proname LIKE 'pg_tviews%'
-ORDER BY proname;
+ALTER EXTENSION pg_tviews UPDATE;
+SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
+SELECT tviews.pg_tviews_version();
 ```
+The two versions must now be equal.
 
-### Phase 3: Post-Update Validation (3 minutes)
-
-#### Step 5: Test TVIEW Functionality
+### Step 4: Re-register TVIEWs
+An upgrade script that changes what registration derives marks every TVIEW
+`needs_reregister`; upgrade scripts never re-derive metadata themselves. Re-derive it
+(rows are not touched):
 ```sql
--- Basic functionality test
-SELECT pg_tviews_health_check();
-
--- Test a simple refresh operation
-SELECT pg_tviews_refresh('test_tview_name');
+SELECT schema, name FROM tviews.registry WHERE needs_reregister;
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
+Running it when nothing needs it is harmless. Each TVIEW's `status` is `reregistered`
+or the error that stopped it; `pg_tviews_reregister_all(strict => true)` also raises
+at the end when any TVIEW failed. One TVIEW:
+`SELECT tviews.pg_tviews_reregister('tv_post');`.
 
-#### Step 6: Verify Data Integrity
-```sql
--- Ensure all TVIEWs are still present and functional
-SELECT
-    'Post-update validation' as check_type,
-    COUNT(*) as tviews_present,
-    COUNT(*) FILTER (WHERE last_error IS NOT NULL) as tviews_with_errors,
-    COUNT(*) FILTER (WHERE last_refreshed > NOW() - INTERVAL '1 hour') as recently_refreshed
-FROM pg_tviews_metadata;
+### Step 5: Validate
+```bash
+psql -X -v ON_ERROR_STOP=1 -d mydb -f docs/operations/upgrade/scripts/post-upgrade-validation.sql
 ```
-
-#### Step 7: Performance Check
+It shows the versions, the catalog comparison, remaining re-registrations, the full
+health check, and compares each TVIEW with its backing view (expect 0 differing rows).
+Finally, make a test write in a transaction you roll back and check that the TVIEW
+follows:
 ```sql
--- Quick performance validation
-SELECT
-    entity_name,
-    last_refresh_duration_ms,
-    CASE
-        WHEN last_refresh_duration_ms < 1000 THEN 'FAST'
-        WHEN last_refresh_duration_ms < 5000 THEN 'NORMAL'
-        WHEN last_refresh_duration_ms < 30000 THEN 'SLOW'
-        ELSE 'VERY_SLOW'
-    END as performance_status
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '1 hour'
-ORDER BY last_refresh_duration_ms DESC
-LIMIT 5;
+BEGIN;
+UPDATE public.tb_post SET title = title || ' (update check)' WHERE pk_post = 1;
+SELECT data->>'title' FROM public.tv_post WHERE pk_post = 1;
+ROLLBACK;
 ```
 
 ## Success Criteria
+- [ ] `extversion` equals `tviews.pg_tviews_version()` in every database
+- [ ] The health check's `catalog` component is OK and nothing needs re-registration
+- [ ] No health-check warning or error
+- [ ] TVIEWs equal their views; a test write propagates
 
-### Technical Success
-- [ ] Extension updated to new version
-- [ ] All TVIEWs remain functional
-- [ ] No new errors introduced
-- [ ] Performance maintained or improved
-- [ ] Extension functions accessible
-
-### Application Success
-- [ ] Application continues to work normally
-- [ ] TVIEW queries return expected results
-- [ ] No application errors related to TVIEWs
-- [ ] Response times acceptable
-
-## Rollback Procedure
-
-### Immediate Rollback (< 5 minutes)
-If issues discovered immediately after update:
-
-```sql
--- Downgrade extension to previous version
-ALTER EXTENSION pg_tviews UPDATE TO '0.1.0';
-
--- Verify rollback success
-SELECT pg_tviews_version();
-```
-
-### Complete Rollback (< 15 minutes)
-If major issues require full rollback:
-
-```sql
--- Stop application services
--- (Application-specific commands)
-
--- Restore from backup if needed
--- (Use your backup restoration procedure)
-
--- Reinstall previous extension version
-ALTER EXTENSION pg_tviews UPDATE TO '0.1.0';
-
--- Restart application services
--- (Application-specific commands)
-```
+## Rollback
+1. Stop the applications.
+2. Reinstall the previous release's package and restart PostgreSQL.
+3. Restore each database from the backup of Step 1 into a fresh database
+   ([Full Database Restore](../../disaster-recovery/recovery-procedures/full-database-restore.md)),
+   then swap it in.
 
 ## Troubleshooting
 
-### Extension Won't Update
-```sql
--- Check for blocking operations
-SELECT * FROM pg_stat_activity WHERE query LIKE '%tview%';
+### `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`
+The library was updated but this database's extension was not: run Step 3 and Step 4
+in it. If the hint names `scripts/migrate-from-0.1.0.sql`, the database still has a
+`0.1.0` install: run that script instead.
 
--- Check extension dependencies
-SELECT * FROM pg_depend WHERE objid = (SELECT oid FROM pg_extension WHERE extname = 'pg_tviews');
+### `extension "pg_tviews" has no update path from version "X" to version "Y"`
+The upgrade scripts for some intermediate release are missing from
+`$(pg_config --sharedir)/extension/`. Copy every `pg_tviews--*.sql` from the release
+tarball.
 
--- Force update if needed (use with caution)
-DROP EXTENSION pg_tviews;
-CREATE EXTENSION pg_tviews VERSION '0.1.1';
-```
-
-### Functions Not Available
-```sql
--- Check if extension is properly installed
-SELECT * FROM pg_extension WHERE extname = 'pg_tviews';
-
--- Reload PostgreSQL configuration
-SELECT pg_reload_conf();
-
--- Check function existence
-SELECT proname FROM pg_proc WHERE proname LIKE 'pg_tviews%';
-```
-
-### Performance Issues
-```sql
--- Compare before/after performance
-SELECT
-    entity_name,
-    last_refresh_duration_ms as current_duration,
-    (SELECT last_refresh_duration_ms FROM pre_update_backup pub WHERE pub.entity_name = m.entity_name) as previous_duration
-FROM pg_tviews_metadata m
-WHERE last_refreshed > NOW() - INTERVAL '1 hour';
-```
-
-## Automated Update Process
-
-### For Regular Maintenance
-```bash
-# Example automated update script
-#!/bin/bash
-
-# Pre-update checks
-psql -c "SELECT pg_tviews_health_check();" > /tmp/pre_update_health.txt
-
-# Update extension
-psql -c "ALTER EXTENSION pg_tviews UPDATE TO '$NEW_VERSION';"
-
-# Post-update validation
-psql -c "SELECT pg_tviews_health_check();" > /tmp/post_update_health.txt
-
-# Compare results
-diff /tmp/pre_update_health.txt /tmp/post_update_health.txt || echo "Differences detected - manual review required"
-```
-
-### Monitoring Integration
-```sql
--- Create monitoring for extension updates
-CREATE OR REPLACE FUNCTION monitor_extension_updates()
-RETURNS TABLE (
-    check_time TIMESTAMP,
-    extension_name TEXT,
-    current_version TEXT,
-    expected_version TEXT,
-    status TEXT
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT
-        NOW() as check_time,
-        'pg_tviews'::TEXT as extension_name,
-        pg_tviews_version() as current_version,
-        '0.1.1'::TEXT as expected_version,
-        CASE
-            WHEN pg_tviews_version() = '0.1.1' THEN 'UP_TO_DATE'
-            WHEN pg_tviews_version() LIKE '0.1.%' THEN 'UPDATE_AVAILABLE'
-            ELSE 'VERSION_MISMATCH'
-        END as status;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-## Version Compatibility
-
-### Supported Upgrade Paths
-- ✅ 0.1.0 → 0.1.1 (patch update)
-- ✅ 0.1.1 → 0.1.2 (patch update)
-- ✅ 0.2.0 → 0.2.1 (patch update within minor)
-- ⚠️ 0.1.x → 0.2.x (minor version - see major update guide)
-- ❌ 0.x → 1.x (major version - requires migration)
-
-### Feature Additions in Minor Updates
-Minor updates may include:
-- Performance improvements
-- Bug fixes
-- New optional parameters
-- Enhanced error messages
-- Monitoring improvements
-
-## Documentation Updates
-
-### Post-Update Tasks
-- [ ] Update internal documentation with new version
-- [ ] Notify application teams of update completion
-- [ ] Update monitoring dashboards if needed
-- [ ] Document any new features or improvements
-- [ ] Schedule next regular update
-
-### Change Log Review
-```sql
--- Review what changed in the update
--- Check the extension changelog or release notes for:
--- - Bug fixes included
--- - Performance improvements
--- - New features (if any)
--- - Known issues or limitations
-```
+### `pg_tviews_reregister_all()` shows an error as a TVIEW's status
+Its definition no longer registers with the new release (see the error and the release
+notes). Fix the definition and recreate it with
+`tviews.pg_tviews_create_or_replace(name, query, options)`.
 
 ## Related Guides
-
-- [Extension versioning](../../../development/extension-versioning.md) - How releases, upgrade scripts and `ALTER EXTENSION pg_tviews UPDATE` work
-- [PostgreSQL Minor Upgrade](../postgresql/minor-version-upgrade.md) - For database upgrades
-- [Troubleshooting Upgrades](../postgresql/troubleshooting-upgrades.md) - For update issue resolution
-- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For update failures
+- [Extension versioning](../../../development/extension-versioning.md)
+- [PostgreSQL Minor Upgrade](../postgresql/minor-version-upgrade.md)
+- [Troubleshooting Upgrades](../postgresql/troubleshooting-upgrades.md)
+- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md)

@@ -143,10 +143,10 @@ cargo pgrx install --release
 # Run all tests for PostgreSQL 17
 cargo pgrx test pg17
 
-# Run tests for multiple versions
-cargo pgrx test pg15
+# Run tests for every supported version (16, 17, 18)
 cargo pgrx test pg16
 cargo pgrx test pg17
+cargo pgrx test pg18
 ```
 
 ## Testing

@@ -143,16 +143,12 @@ v1.0.6 (security patch, same day if possible)
 
 ## PostgreSQL Version Support by pg_tviews Version
 
-| pg_tviews | pg13 | pg14 | pg15 | pg16 | pg17 | pg18 |
-|-----------|------|------|------|------|------|------|
-| 0.1.x | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 1.0.x | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 1.5.x | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 2.0.x | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| pg_tviews | pg13–pg15 | pg16 | pg17 | pg18 |
+|-----------|-----------|------|------|------|
+| 0.1.x | ❌ | ✅ | ✅ | ✅ |
 
-- **✅**: Fully supported and tested
-- **⚠️**: May work but not tested
-- **❌**: Not supported, upgrade required
+- **✅**: Supported, built and tested in CI (clippy, regression and integration suites)
+- **❌**: Not supported: `CREATE EXTENSION pg_tviews` refuses to install
 
 ## Version Checking in Code
 

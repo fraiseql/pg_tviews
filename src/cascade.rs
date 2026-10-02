@@ -66,7 +66,9 @@ fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
 fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
     // The shared column list keeps this loader in step with `TviewMeta::from_spi_row`.
     let query = format!(
-        "{} WHERE $1 IN (SELECT (cp::jsonb->>'source_oid')::oid FROM unnest(cascade_paths) AS cp)",
+        "{} WHERE $1 IN (SELECT (cp::jsonb->>'source_oid')::oid FROM unnest(cascade_paths) AS cp) \
+            OR $1 IN (SELECT (e->>'relid')::oid FROM jsonb_array_elements(key_mappings) AS e \
+                      WHERE e->>'kind' IN ('local', 'mapped'))",
         catalog::meta_select()
     );
     Spi::connect(|client| {

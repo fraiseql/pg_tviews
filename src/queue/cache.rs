@@ -370,6 +370,7 @@ pub fn invalidate_all_caches() {
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();
     crate::utils::invalidate_dedup_dml_cache();
+    crate::delta::clear_caches();
 }
 
 #[cfg(test)]

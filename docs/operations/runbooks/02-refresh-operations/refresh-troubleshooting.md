@@ -1,332 +1,173 @@
 # Refresh Troubleshooting Runbook
 
 ## Purpose
-Diagnose and resolve issues with TVIEW refresh operations, from slow performance to complete failures.
+Diagnose writes that fail because of TVIEW refresh, TVIEWs whose rows are stale,
+and refreshes that are slow.
 
-## When to Use
-- **Refresh Failures**: When TVIEW refresh operations return errors
-- **Slow Performance**: When refreshes take longer than expected
-- **Data Inconsistencies**: When TVIEW data doesn't match source tables
-- **Stuck Refreshes**: When refresh operations appear to hang
-- **Queue Issues**: When refresh queue processing stops working
+## How refresh works (what can go wrong)
+Triggers on the base tables queue TVIEW keys in memory during the writing
+transaction; the queue is flushed at the end of each statement and on `COMMIT`.
+There is no queue table, no background job and no record of refresh errors. So:
 
-## Prerequisites
-- PostgreSQL monitoring access (`pg_stat_*` views, logs)
-- Database credentials with full access to TVIEW metadata
-- System monitoring tools (CPU, memory, disk I/O)
-- Access to PostgreSQL error logs
-- Understanding of TVIEW refresh mechanics
+- A refresh **error** surfaces as an error of the writing statement, which rolls
+  back. Nothing is left half-applied, and nothing records the error except the
+  client and the PostgreSQL log.
+- A TVIEW can only be **stale** if a write was not mapped to its keys: refresh
+  suspended in that session, a table no cascade reaches, triggers missing after an
+  upgrade, or a write outside the triggers.
 
 ## Initial Assessment (5 minutes)
 
-### Step 1: Check TVIEW Status
 ```sql
--- Get comprehensive status for affected TVIEW
-SELECT
-    entity_name,
-    last_refreshed,
-    last_refresh_duration_ms,
-    last_error,
-    CASE
-        WHEN last_error IS NOT NULL THEN 'ERROR'
-        WHEN last_refresh_duration_ms > 30000 THEN 'SLOW'
-        WHEN last_refreshed < NOW() - INTERVAL '1 hour' THEN 'STALE'
-        ELSE 'HEALTHY'
-    END as status
-FROM pg_tviews_metadata
-WHERE entity_name = 'your_problematic_tview';
+-- Problems pg_tviews can detect (triggers, catalog, re-registration, jsonb_delta)
+SELECT component, severity, message
+FROM tviews.pg_tviews_health_check()
+WHERE severity <> 'info';
+
+-- How writes to each base table reach each TVIEW
+SELECT name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
+       needs_reregister
+FROM tviews.registry
+ORDER BY name;
 ```
 
-### Step 2: Check Queue Status
+For the full picture run
+[refresh-status.sql](../scripts/refresh-status.sql).
+
+## Issue 1: A write fails with a refresh error
+
+**Symptoms**: an `INSERT`/`UPDATE`/`DELETE` on a base table, or a `COMMIT`, fails
+with an error whose `CONTEXT` is a statement on `v_<entity>` / `tv_<entity>`, or with
+`TVIEW refresh failed before COMMIT: ...`.
+
+**Diagnosis**: the error is the view query failing on the new data (for example
+`division by zero`, a cast error, a uniqueness violation on the TVIEW key), or a
+limit:
+
+| Message | Cause | Action |
+|---------|-------|--------|
+| error from the view's expressions | The definition fails on the new rows | Fix the data, or the definition with `pg_tviews_create_or_replace` |
+| `refresh queue backpressure: queue size (...) would exceed max_queue_size (...)` | One statement queued more keys than `pg_tviews.max_queue_size` | Split the statement, or raise the GUC for the session ([Batch Refresh](batch-refresh.md)) |
+| `permission denied ...` | The TVIEW owner cannot read a table the view reads | Grant the owner access |
+| lock timeout / deadlock on `tv_*` | Concurrent writers refreshing the same TVIEW rows | Retry; keep transactions short |
+
+Reproduce outside the write by querying the view for the affected key:
+
 ```sql
--- Examine refresh queue for the TVIEW
-SELECT
-    COUNT(*) as queued_items,
-    COUNT(*) FILTER (WHERE processed_at IS NULL) as pending_items,
-    COUNT(*) FILTER (WHERE error_message IS NOT NULL) as failed_items,
-    MIN(created_at) as oldest_pending,
-    MAX(created_at) as newest_pending
-FROM pg_tviews_queue
-WHERE entity_name = 'your_problematic_tview';
+SELECT * FROM public.v_user WHERE pk_user = 1;
 ```
 
-### Step 3: System Resource Check
+To unblock writers while the cause is fixed, a session can suspend refresh
+([emergency-disable.sql](../scripts/emergency-disable.sql)); refresh the TVIEWs
+afterwards.
+
+## Issue 2: Stale rows
+
+**Symptoms**: a TVIEW row does not match its view.
+
+**Diagnosis**: compare the TVIEW with its view. For every TVIEW, run step 4 of
+[post-upgrade-validation.sql](../../upgrade/scripts/post-upgrade-validation.sql);
+for one TVIEW:
+
 ```sql
--- Check system resources during issue
-SELECT
-    (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active') as active_connections,
-    (SELECT * FROM pg_stat_bgwriter) as bgwriter_stats,
-    (SELECT sum(blks_hit) + sum(blks_read) FROM pg_stat_database WHERE datname = current_database()) as recent_io
-FROM pg_stat_database
-WHERE datname = current_database();
+(SELECT 'only in tv' AS side, pk_user, data FROM public.tv_user
+ EXCEPT SELECT 'only in tv', pk_user, data FROM public.v_user)
+UNION ALL
+(SELECT 'only in view', pk_user, data FROM public.v_user
+ EXCEPT SELECT 'only in view', pk_user, data FROM public.tv_user);
 ```
 
-## Common Refresh Issues and Solutions
+Then find why the write was not mapped:
 
-### Issue 1: "TVIEW not found" Error
+1. **Tables no cascade reaches**: `uncascaded_tables` lists base tables whose writes
+   cannot be mapped to TVIEW keys. Under `uncascaded_policy = 'warn'` writes to them
+   leave the TVIEW stale. Rewrite the definition so the table joins on a column
+   pg_tviews can trace, or recreate the TVIEW with
+   `pg_tviews.uncascaded_policy = 'full_refresh'` (see
+   [DDL reference](../../../reference/ddl.md#tables-no-cascade-reaches)).
+   ```sql
+   SELECT name, uncascaded_tables, uncascaded_policy
+   FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
+   ```
+2. **Re-registration pending**: after an extension upgrade, TVIEWs with
+   `needs_reregister` may lack the current triggers.
+   ```sql
+   SELECT schema, name FROM tviews.registry WHERE needs_reregister;
+   SELECT * FROM tviews.pg_tviews_reregister_all();
+   ```
+3. **Suspended writes**: a session that wrote with `pg_tviews.suspend_triggers = on`
+   (records nothing), or committed implicitly while suspended (logs a `WARNING`
+   naming the stale TVIEWs).
+4. **How a table's writes map to keys**: `pg_tviews_mapping_query` returns the query
+   that turns a statement's changed rows of a `mapped` table into TVIEW keys (empty
+   when the key is read off the row). Run its plan to see whether it finds the keys
+   you expect:
+   ```sql
+   SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
+   ```
+5. **Triggers disabled** on a base table (`ALTER TABLE ... DISABLE TRIGGER`, or
+   `session_replication_role = replica` during a load):
+   ```sql
+   SELECT tgrelid::regclass AS base_table, tgname, tgenabled
+   FROM pg_trigger WHERE tgname LIKE 'trg_tview_%' AND tgenabled = 'D';
+   ```
 
-**Symptoms**: `ERROR: TVIEW 'name' does not exist`
+**Fix the rows**: `SELECT tviews.pg_tviews_refresh('user');`, then the TVIEWs that
+embed it, or `SELECT tviews.pg_tviews_refresh_all();` ([Manual Refresh](manual-refresh.md)).
+
+## Issue 3: Slow writes (slow refresh)
+
+**Symptoms**: writes to base tables take longer since TVIEWs were added.
 
 **Diagnosis**:
-```sql
--- Check if TVIEW exists
-SELECT entity_name, created_at
-FROM pg_tviews_metadata
-WHERE entity_name LIKE '%name%';
 
--- Check for typos in TVIEW name
-SELECT entity_name
-FROM pg_tviews_metadata
-ORDER BY entity_name;
+```sql
+-- Counters of this session (compare before/after one write, in the same session)
+SELECT tviews.pg_tviews_queue_stats();
+
+-- Plan of one key's refresh
+EXPLAIN ANALYZE SELECT * FROM public.v_post WHERE pk_post = 1;
+
+-- Physical state: HOT ratio, dead tuples, unused/missing indexes, fan-out, warnings
+SELECT entity, hot_ratio, n_dead_tup, unused_indexes, missing_propagation_indexes,
+       fanout, warnings
+FROM tviews.pg_tviews_profile('post');
+
+-- Indexes the propagation from embedded TVIEWs needs
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 ```
 
-**Solutions**:
-```sql
--- If TVIEW doesn't exist, create it
-SELECT pg_tviews_convert_existing_table('correct_schema.correct_table');
+With `pg_stat_statements`, the refresh statements on `v_<entity>` / `tv_<entity>`
+show their mean time and calls.
 
--- If name is wrong, use correct name
-SELECT pg_tviews_refresh('correct_tview_name');
+**Solutions**: add the indexes the view's joins and the mapping queries need
+(`pg_tviews_ensure_propagation_indexes()` without `dry_run` creates the propagation
+ones); `VACUUM ANALYZE` the TVIEW if dead tuples are high; reduce fan-out (one base
+row embedded in very many TVIEW rows).
+
+## Issue 4: TVIEW not found
+
+**Symptoms**: `TVIEW metadata not found for entity '...'`.
+
+Functions take the entity without the `tv_` prefix (`pg_tviews_refresh('user')`),
+except `pg_tviews_reregister`, `pg_tviews_drop` and `pg_tviews_mapping_query`,
+which take the TVIEW name. List the names:
+
+```sql
+SELECT schema, name, entity FROM tviews.registry ORDER BY schema, name;
 ```
 
-### Issue 2: Permission Denied
+## Logging
+Log slow statements to catch slow refreshes in context:
 
-**Symptoms**: `ERROR: permission denied for table tview_name`
-
-**Diagnosis**:
 ```sql
--- Check current user permissions
-SELECT current_user, session_user;
-
--- Check TVIEW ownership
-SELECT schemaname, tablename, tableowner
-FROM pg_tables
-WHERE tablename LIKE '%tview_name%';
-```
-
-**Solutions**:
-```sql
--- Grant necessary permissions
-GRANT SELECT, UPDATE, DELETE ON tview_name TO your_user;
-GRANT USAGE ON SCHEMA schema_name TO your_user;
-
--- Or switch to privileged user
-SET ROLE privileged_user;
-SELECT pg_tviews_refresh('tview_name');
-```
-
-### Issue 3: Lock Conflicts
-
-**Symptoms**: `ERROR: canceling statement due to lock timeout`
-
-**Diagnosis**:
-```sql
--- Find blocking transactions
-SELECT
-    blocked.pid as blocked_pid,
-    blocked.query as blocked_query,
-    blocking.pid as blocking_pid,
-    blocking.query as blocking_query,
-    blocked.age as blocked_age
-FROM (
-    SELECT
-        pid,
-        query,
-        EXTRACT(EPOCH FROM (NOW() - query_start)) as age
-    FROM pg_stat_activity
-    WHERE state = 'active'
-) blocked
-JOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid
-JOIN pg_locks blocking_locks ON blocked_locks.locktype = blocking_locks.locktype
-    AND blocked_locks.database = blocking_locks.database
-    AND blocked_locks.relation = blocking_locks.relation
-    AND blocked_locks.page = blocking_locks.page
-    AND blocked_locks.tuple = blocking_locks.tuple
-    AND blocked_locks.virtualxid = blocking_locks.virtualxid
-    AND blocked_locks.transactionid = blocking_locks.transactionid
-    AND blocked_locks.classid = blocking_locks.classid
-    AND blocked_locks.objid = blocking_locks.objid
-    AND blocked_locks.objsubid = blocking_locks.objsubid
-    AND blocked_locks.pid != blocking_locks.pid
-    AND blocking_locks.granted
-JOIN (
-    SELECT pid, query
-    FROM pg_stat_activity
-    WHERE state = 'active'
-) blocking ON blocking_locks.pid = blocking.pid;
-```
-
-**Solutions**:
-```sql
--- Terminate blocking query (use with caution)
-SELECT pg_cancel_backend(blocking_pid);
-
--- Or terminate entire session
-SELECT pg_terminate_backend(blocking_pid);
-
--- Wait for blocking transaction to complete
--- Or reschedule refresh during maintenance window
-```
-
-### Issue 4: Out of Memory
-
-**Symptoms**: `ERROR: out of memory` or extremely slow performance
-
-**Diagnosis**:
-```sql
--- Check memory settings
-SELECT name, setting, unit
-FROM pg_settings
-WHERE name IN ('work_mem', 'maintenance_work_mem', 'shared_buffers');
-
--- Check TVIEW size
-SELECT
-    entity_name,
-    pg_size_pretty(pg_total_relation_size(entity_name)) as size,
-    (SELECT COUNT(*) FROM information_schema.columns
-     WHERE table_schema || '.' || table_name = m.entity_name) as columns
-FROM pg_tviews_metadata m
-WHERE entity_name = 'problematic_tview';
-```
-
-**Solutions**:
-```sql
--- Increase memory settings temporarily
-SET work_mem = '256MB';
-SET maintenance_work_mem = '512MB';
-
--- Schedule during low-usage period
--- Consider TVIEW partitioning for large datasets
-```
-
-### Issue 5: Slow Refresh Performance
-
-**Symptoms**: Refresh takes > 30 seconds for normal operations
-
-**Diagnosis**:
-```sql
--- Analyze refresh performance history
-SELECT
-    entity_name,
-    last_refresh_duration_ms / 1000 as duration_seconds,
-    last_refreshed,
-    (SELECT AVG(last_refresh_duration_ms) / 1000
-     FROM pg_tviews_metadata m2
-     WHERE m2.entity_name = m1.entity_name
-       AND m2.last_refreshed > NOW() - INTERVAL '7 days') as week_avg_seconds
-FROM pg_tviews_metadata m1
-WHERE entity_name = 'slow_tview';
-
--- Check for table bloat
-SELECT
-    schemaname, tablename,
-    n_dead_tup, n_live_tup,
-    ROUND(n_dead_tup::numeric / (n_live_tup + n_dead_tup) * 100, 2) as bloat_ratio
-FROM pg_stat_user_tables
-WHERE tablename LIKE '%tview%';
-
--- Check index usage
-SELECT
-    schemaname, tablename, indexname,
-    idx_scan, idx_tup_read, idx_tup_fetch
-FROM pg_stat_user_indexes
-WHERE tablename LIKE '%tview%'
-ORDER BY idx_scan DESC;
-```
-
-**Solutions**:
-```sql
--- Reindex if necessary
-REINDEX TABLE tview_name;
-
--- Vacuum to reduce bloat
-VACUUM ANALYZE tview_name;
-
--- Check query plan for inefficiencies
-EXPLAIN ANALYZE SELECT * FROM source_table WHERE id = 123;
-
--- Consider refresh optimization settings
-ALTER TABLE tview_name SET (autovacuum_vacuum_scale_factor = 0.1);
-```
-
-## Advanced Troubleshooting
-
-### Step 1: Enable Detailed Logging
-```sql
--- Enable detailed logging for refresh operations
-ALTER SYSTEM SET log_statement = 'ddl';
-ALTER SYSTEM SET log_duration = on;
-ALTER SYSTEM SET log_min_duration_statement = 1000;  -- Log queries > 1s
+ALTER SYSTEM SET log_min_duration_statement = 1000;  -- ms
 SELECT pg_reload_conf();
-
--- Monitor logs during refresh attempt
-tail -f /var/log/postgresql/postgresql.log | grep -i tview
-```
-
-### Step 2: Test with Minimal Data
-```sql
--- Create test scenario with small dataset
-CREATE TEMP TABLE test_source AS
-SELECT * FROM source_table LIMIT 100;
-
--- Test refresh on small scale
-SELECT pg_tviews_refresh('test_tview');
-
--- Compare performance
-SELECT last_refresh_duration_ms
-FROM pg_tviews_metadata
-WHERE entity_name = 'test_tview';
-```
-
-### Step 3: Isolate Components
-```sql
--- Test individual components of refresh process
-
--- 1. Test source table access
-SELECT COUNT(*) FROM source_table LIMIT 1;
-
--- 2. Test TVIEW metadata
-SELECT * FROM pg_tviews_metadata WHERE entity_name = 'problem_tview';
-
--- 3. Test queue operations
-SELECT * FROM pg_tviews_queue WHERE entity_name = 'problem_tview' LIMIT 5;
-
--- 4. Test with different isolation levels
-BEGIN ISOLATION LEVEL READ COMMITTED;
-SELECT pg_tviews_refresh('tview_name');
-COMMIT;
-```
-
-## Automated Diagnostics
-
-### Run Diagnostics
-```sql
--- Extension, catalog, triggers and TVIEWs to re-register
-SELECT * FROM tviews.pg_tviews_health_check();
-
--- Per-TVIEW sizes, HOT ratio, dead tuples, indexes and fan-out, with warnings
-SELECT * FROM tviews.pg_tviews_profile('your_entity');
-```
-
-### Regular Health Checks
-```bash
-# Add to cron for regular monitoring
-*/15 * * * * psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';"
 ```
 
 ## Related Runbooks
-
-- [TVIEW Health Check](../01-health-monitoring/tview-health-check.md) - Overall system health
-- [Manual Refresh](manual-refresh.md) - Individual refresh operations
-- [Batch Refresh](batch-refresh.md) - Multiple TVIEW operations
-- [Performance Monitoring](../01-health-monitoring/performance-monitoring.md) - Performance analysis
-- [Incident Checklist](../04-incident-response/incident-checklist.md) - Crisis response
-
-## Best Practices
-
-1. **Monitor Regularly**: Set up automated health checks
-2. **Log Issues**: Document symptoms, diagnosis, and solutions
-3. **Test Fixes**: Validate solutions in staging before production
-4. **Escalate Early**: Don't spend hours on complex issues
-5. **Document Workarounds**: Record temporary solutions for future reference
-6. **Review Patterns**: Look for systemic issues requiring code changes
+- [TVIEW Health Check](../01-health-monitoring/tview-health-check.md) - Overall health
+- [Manual Refresh](manual-refresh.md) - Refresh one TVIEW
+- [Batch Refresh](batch-refresh.md) - Bulk writes and suspension
+- [Performance Monitoring](../01-health-monitoring/performance-monitoring.md) - Refresh cost
+- [Incident Checklist](../04-incident-response/incident-checklist.md) - Incident response

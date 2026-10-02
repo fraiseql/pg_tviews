@@ -7,9 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
-  # jsonb_delta v0.3.0 targets pg18 (pgrx 0.17.0) and ships 0.3.0 as its
+  # jsonb_delta v0.3.0 (pgrx 0.17.0) builds for pg16-18 and ships 0.3.0 as its
   # default_version. It is a byte-identical SQL drop-in over the 0.1.0/0.2.0
   # contract pg_tviews is built against: detection is by extension presence
   # only (no version pin), so CREATE EXTENSION lands on 0.3.0 unchanged.
@@ -18,7 +17,15 @@ env:
 
 jobs:
   test:
+    name: test (pg${{ matrix.pg }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Supported PostgreSQL versions: every one runs every suite.
+      matrix:
+        pg: ["16", "17", "18"]
+    env:
+      PG_MAJOR: ${{ matrix.pg }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +61,8 @@ jobs:
             echo "PGPORT=${port}"
             echo "PGUSER=postgres"
           } >> "$GITHUB_ENV"
+          # Client tools of the same major (pg_dump/pg_restore in the #96 test).
+          echo "/usr/lib/postgresql/${PG_MAJOR}/bin" >> "$GITHUB_PATH"
 
       - name: Install pgrx
         run: |
@@ -69,7 +78,7 @@ jobs:
         run: |
           git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
           cd /tmp/jsonb_delta
-          cargo pgrx install --release \
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
       - name: Enable shared_preload_libraries and restart
@@ -99,7 +108,7 @@ jobs:
 
       # These scripts create a throwaway database per test and exit non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
-      - name: Regression suite (test/sql/regress_issue_*.sql)
+      - name: Regression suite (test/sql/regress_*.sql)
         run: ./test/run_regression_tests.sh
 
       - name: Integration suite (test/sql/[0-9]*.sql)

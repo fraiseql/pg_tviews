@@ -1,384 +1,184 @@
 # Post-Incident Review Runbook
 
 ## Purpose
-Conduct thorough analysis of incidents to identify root causes, improve processes, and prevent future occurrences.
+Analyse a pg_tviews incident to find its root cause, improve the response, and
+prevent it from recurring.
 
 ## When to Use
-- **After Any Incident**: All incidents require review, regardless of severity
-- **Major Incidents**: SEV 1 and SEV 2 incidents require detailed analysis
-- **Recurring Issues**: When similar incidents happen multiple times
-- **Process Failures**: When incident response processes broke down
-- **Learning Opportunities**: Even successful resolutions can provide insights
+- **SEV 1 and SEV 2 incidents**: always
+- **Recurring issues**: the same symptom more than once
+- **Response problems**: when a runbook or tool did not help
 
 ## Prerequisites
-- Incident documentation complete
-- All participants available for discussion
-- Timeline of events reconstructed
-- Metrics and monitoring data collected
-- Access to relevant logs and system data
+- The incident ticket, with the diagnostics saved during the incident
+- The participants
+- PostgreSQL logs for the incident window
 
-## Phase 1: Review Preparation (30 minutes)
+## Phase 1: Preparation (30 minutes)
 
-### Step 1: Timeline Reconstruction
+### Step 1: Reconstruct the timeline
+Record when the incident started, was detected, was contained and was resolved,
+and every action taken. Sources:
+- the PostgreSQL log (refresh errors, slow statements, restarts);
+- the ticket and chat history;
+- deployments, migrations, extension upgrades and bulk loads in the window.
+
+pg_tviews keeps no history of refresh errors. What the database can still show:
+
 ```sql
--- Gather incident timeline data
-CREATE TEMP TABLE incident_timeline AS
-SELECT
-    'Incident Start' as event,
-    incident_start_time as timestamp,
-    'User reported issue' as description
-UNION ALL
-SELECT
-    'Detection' as event,
-    detection_time as timestamp,
-    'Monitoring alert or user report' as description
-UNION ALL
-SELECT
-    'Response Start' as event,
-    response_start_time as timestamp,
-    'Team began incident response' as description
-UNION ALL
-SELECT
-    'Containment' as event,
-    containment_time as timestamp,
-    'Issue contained, impact limited' as description
-UNION ALL
-SELECT
-    'Resolution' as event,
-    resolution_time as timestamp,
-    'Issue fully resolved' as description
-UNION ALL
-SELECT
-    'Post-Incident' as event,
-    NOW() as timestamp,
-    'Review and analysis phase' as description;
+-- When each TVIEW's rows last changed (per TVIEW)
+SELECT max(updated_at) AS last_change FROM public.tv_user;
 
-SELECT * FROM incident_timeline ORDER BY timestamp;
+-- Installed versions (the time of an upgrade is not recorded)
+SELECT tviews.pg_tviews_version() AS library,
+       (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 ```
 
-### Step 2: Impact Assessment
+If `pg_tviews.audit_enabled` was on, `tviews.pg_tview_audit_log` holds the TVIEW
+creations, drops and committed refreshes of the window:
+
 ```sql
--- Quantify incident impact
-SELECT
-    'IMPACT ASSESSMENT' as analysis_type,
-    incident_duration_minutes as downtime_minutes,
-    affected_users_count as users_impacted,
-    business_impact_dollars as financial_impact,
-    data_loss_mb as data_loss,
-    customer_tickets_created as support_tickets
-FROM incident_metrics;
+SELECT performed_at, operation, entity, rows_affected, performed_by
+FROM tviews.pg_tview_audit_log
+WHERE performed_at BETWEEN now() - interval '1 day' AND now()
+ORDER BY performed_at;
 ```
 
-### Step 3: Data Collection
-- [ ] **Logs**: Collect relevant system and application logs
-- [ ] **Metrics**: Gather monitoring data from incident period
-- [ ] **Communications**: Compile all incident communications
-- [ ] **Actions Taken**: Document all troubleshooting and resolution steps
-- [ ] **Test Results**: Include any testing performed during incident
+### Step 2: Assess impact
+- Duration of failing writes, stale data or slow writes
+- Affected TVIEWs, applications and users
+- Data impact: TVIEWs are derived; base-table data is affected only if writes were
+  lost by the application during failures
+
+### Step 3: Collect data
+- [ ] Logs and error texts
+- [ ] Diagnostics saved during the incident (health check, refresh status)
+- [ ] TVIEW definitions involved (`SELECT name, query FROM tviews.registry`)
+- [ ] Actions taken and their effect
 
 ## Phase 2: Root Cause Analysis (1 hour)
 
-### Step 4: 5-Why Analysis
-Use the 5-Why technique to drill down to root cause:
+### Step 4: 5-Why analysis
+Ask "why" from the symptom until you reach a cause you can act on:
 
-1. **Why did the incident occur?**
-   - *Answer: [Immediate cause]*
+1. **Why did the incident occur?** *[Immediate cause, e.g. writes failed on a refresh error]*
+2. **Why did that happen?** *[e.g. the view divided by a column that became zero]*
+3. **Why did that happen?** *[e.g. new data not covered by the definition]*
+4. **Why was it not caught?** *[e.g. no test with that data]*
+5. **Why?** *[Root cause, e.g. definition changes are not tested against production-like data]*
 
-2. **Why did that happen?**
-   - *Answer: [Contributing factor]*
+### Step 5: Contributing factors
+Classify factors as people, process, technology or environment. pg_tviews-specific
+ones to check:
+- [ ] A base table no cascade reaches (`tviews.registry.uncascaded_tables`) under the `warn` policy
+- [ ] Re-registration skipped after an upgrade (`needs_reregister`)
+- [ ] Refresh suspended (`pg_tviews.suspend_triggers`) and not followed by a refresh
+- [ ] UNLOGGED TVIEWs read on a standby or after a crash
+- [ ] Missing indexes, or high fan-out (`tviews.pg_tviews_profile()`)
+- [ ] A health check warning ignored before the incident
 
-3. **Why did that happen?**
-   - *Answer: [System weakness]*
+### Step 6: Root cause
+- [ ] Primary cause agreed
+- [ ] Contributing causes listed
+- [ ] Preventable causes identified
 
-4. **Why did that happen?**
-   - *Answer: [Process gap]*
+## Phase 3: Response Review (45 minutes)
 
-5. **Why did that happen?**
-   - *Answer: [Root cause]*
+### Step 7: Timeline analysis
+Compare detection, containment and resolution times with the severity's response
+time in the [Incident Checklist](incident-checklist.md).
 
-### Step 5: Contributing Factors Analysis
-```sql
--- Analyze contributing factors
-CREATE TEMP TABLE contributing_factors AS
-SELECT
-    'People' as category,
-    factor_description,
-    impact_level,
-    prevention_measure
-FROM incident_factors WHERE category = 'People'
+### Step 8: Process adherence
+- [ ] Detected promptly?
+- [ ] Severity correct?
+- [ ] Stakeholders informed?
+- [ ] Escalated at the right time?
+- [ ] Documented?
 
-UNION ALL
+### Step 9: Runbooks and tools
+- [ ] Did the runbooks match the system? Fix any step that failed.
+- [ ] Were the needed tools and access available?
+- [ ] Could a check have detected it earlier (health check, TVIEW-vs-view comparison)?
 
-SELECT
-    'Process' as category,
-    factor_description,
-    impact_level,
-    prevention_measure
-FROM incident_factors WHERE category = 'Process'
+## Phase 4: Improvements (45 minutes)
 
-UNION ALL
+### Step 10: Corrective actions
+Fix this incident's cause: definition, data, index, configuration, missing
+re-registration.
 
-SELECT
-    'Technology' as category,
-    factor_description,
-    impact_level,
-    prevention_measure
-FROM incident_factors WHERE category = 'Technology'
+### Step 11: Preventive measures
+Examples:
+- schedule [health-check.sql](../scripts/health-check.sql) and alert on warnings;
+- run the TVIEW-vs-view comparison (step 4 of
+  [post-upgrade-validation.sql](../../upgrade/scripts/post-upgrade-validation.sql))
+  after deployments;
+- create TVIEWs with `pg_tviews.uncascaded_policy = 'error'` so unmappable
+  definitions are rejected;
+- make TVIEWs read on standbys logged (`pg_tviews_set_logged`).
 
-UNION ALL
+### Step 12: Process improvements
+- [ ] Detection: monitoring and alerts
+- [ ] Response: escalation and communication
+- [ ] Resolution: runbook fixes
+- [ ] Prevention: tests and reviews
 
-SELECT
-    'Environment' as category,
-    factor_description,
-    impact_level,
-    prevention_measure
-FROM incident_factors WHERE category = 'Environment';
+## Phase 5: Action Planning (30 minutes)
 
-SELECT * FROM contributing_factors ORDER BY impact_level DESC, category;
-```
+### Step 13: Assign actions
+Track each action in the team's tracker with an owner, priority and target date.
 
-### Step 6: Root Cause Determination
-- [ ] **Single Root Cause**: Identify the primary cause
-- [ ] **Contributing Causes**: List secondary factors
-- [ ] **Prevention Focus**: Determine which causes are preventable
-- [ ] **Systemic Issues**: Identify process or architectural problems
+### Step 14: Timeline
+- [ ] Immediate actions: within 1 week
+- [ ] Short-term: within 1 month
+- [ ] Longer-term: within 3-6 months
 
-## Phase 3: Response Effectiveness Review (45 minutes)
-
-### Step 7: Timeline Analysis
-```sql
--- Analyze response effectiveness
-SELECT
-    phase,
-    planned_duration_minutes,
-    actual_duration_minutes,
-    (actual_duration_minutes - planned_duration_minutes) as variance_minutes,
-    CASE
-        WHEN actual_duration_minutes > planned_duration_minutes * 1.5 THEN 'SIGNIFICANT_DELAY'
-        WHEN actual_duration_minutes > planned_duration_minutes THEN 'MINOR_DELAY'
-        WHEN actual_duration_minutes < planned_duration_minutes THEN 'FASTER_THAN_PLANNED'
-        ELSE 'ON_TIME'
-    END as performance_rating
-FROM incident_response_phases
-ORDER BY phase_order;
-```
-
-### Step 8: Process Adherence Review
-- [ ] **Detection**: Was incident detected promptly?
-- [ ] **Assessment**: Was severity correctly assessed?
-- [ ] **Communication**: Were stakeholders properly informed?
-- [ ] **Escalation**: Did escalation happen at appropriate times?
-- [ ] **Resolution**: Was resolution approach correct?
-- [ ] **Documentation**: Was incident properly documented?
-
-### Step 9: Tool and Runbook Effectiveness
-- [ ] **Runbooks Used**: Were appropriate runbooks available and effective?
-- [ ] **Tools Available**: Did team have necessary tools and access?
-- [ ] **Automation**: Could any manual steps be automated?
-- [ ] **Knowledge Gaps**: Were there missing procedures or documentation?
-
-## Phase 4: Improvement Identification (45 minutes)
-
-### Step 10: Corrective Actions
-```sql
--- Identify corrective actions
-CREATE TEMP TABLE corrective_actions AS
-SELECT
-    action_category,
-    action_description,
-    priority,
-    owner,
-    target_completion_date,
-    success_measure
-FROM proposed_improvements
-WHERE action_type = 'Corrective';
-
-SELECT * FROM corrective_actions ORDER BY priority DESC;
-```
-
-### Step 11: Preventive Measures
-```sql
--- Identify preventive measures
-CREATE TEMP TABLE preventive_measures AS
-SELECT
-    prevention_category,
-    measure_description,
-    expected_impact,
-    implementation_effort,
-    cost_estimate
-FROM proposed_improvements
-WHERE action_type = 'Preventive';
-
-SELECT * FROM preventive_measures ORDER BY expected_impact DESC;
-```
-
-### Step 12: Process Improvements
-- [ ] **Detection Improvements**: Better monitoring and alerting
-- [ ] **Response Improvements**: Faster escalation and communication
-- [ ] **Resolution Improvements**: Better tools and procedures
-- [ ] **Prevention Improvements**: Proactive measures and training
-
-## Phase 5: Action Planning and Follow-up (30 minutes)
-
-### Step 13: Action Item Assignment
-```sql
--- Create action tracking table
-CREATE TABLE incident_followup_actions (
-    action_id SERIAL PRIMARY KEY,
-    incident_id TEXT,
-    action_description TEXT,
-    owner TEXT,
-    priority TEXT,
-    status TEXT DEFAULT 'PENDING',
-    target_date DATE,
-    completion_date DATE,
-    notes TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Insert identified actions
-INSERT INTO incident_followup_actions (incident_id, action_description, owner, priority, target_date)
-SELECT
-    'INCIDENT_ID',
-    action_description,
-    owner,
-    priority,
-    target_completion_date
-FROM corrective_actions;
-```
-
-### Step 14: Timeline and Accountability
-- [ ] **Immediate Actions**: Complete within 1 week
-- [ ] **Short-term Actions**: Complete within 1 month
-- [ ] **Medium-term Actions**: Complete within 3 months
-- [ ] **Long-term Actions**: Complete within 6-12 months
-- [ ] **Accountability**: Assign owners and track progress
-
-### Step 15: Success Metrics
-Define how to measure the effectiveness of implemented improvements:
-- [ ] **MTTR Reduction**: Mean Time To Resolution should decrease
-- [ ] **MTTD Improvement**: Mean Time To Detection should improve
-- [ ] **Recurrence Prevention**: Similar incidents should not recur
-- [ ] **Process Adherence**: Response processes should be followed consistently
+### Step 15: Success measures
+- [ ] The same incident does not recur
+- [ ] Time to detect and resolve decreases
 
 ## Post-Incident Review Template
 
 ### Incident Summary
-- **Incident ID**: [Unique identifier]
-- **Date/Time**: [When incident occurred]
-- **Duration**: [How long it lasted]
-- **Severity**: [SEV 1/2/3/4]
-- **Affected Systems**: [Which systems impacted]
-- **Business Impact**: [Description of business effects]
+- **Incident ID**:
+- **Date/Time**:
+- **Duration**:
+- **Severity**:
+- **Affected TVIEWs / systems**:
+- **Business impact**:
 
 ### What Happened
-- **Trigger**: [What initiated the incident]
-- **Symptoms**: [What was observed]
-- **Scope**: [How widespread was the impact]
-- **Detection**: [How was it discovered]
+- **Trigger**:
+- **Symptoms**:
+- **Scope**:
+- **Detection**:
 
 ### Root Cause
-- **Primary Cause**: [The main reason]
-- **Contributing Factors**: [Secondary causes]
-- **Prevention Gaps**: [What could have prevented it]
+- **Primary cause**:
+- **Contributing factors**:
+- **Prevention gaps**:
 
 ### Response Analysis
-- **Strengths**: [What went well]
-- **Weaknesses**: [What didn't go well]
-- **Timeline**: [Key timestamps and durations]
-- **Communication**: [How information flowed]
+- **What went well**:
+- **What did not**:
+- **Timeline**:
 
 ### Lessons Learned
-- **Technical Lessons**: [System and technical insights]
-- **Process Lessons**: [Response and operational insights]
-- **Team Lessons**: [Collaboration and coordination insights]
+- **Technical**:
+- **Process**:
 
 ### Action Items
 | Action | Owner | Priority | Target Date | Status |
 |--------|-------|----------|-------------|--------|
-| [Action 1] | [Owner] | [Priority] | [Date] | [Status] |
-| [Action 2] | [Owner] | [Priority] | [Date] | [Status] |
+| | | | | |
 
-### Follow-up Review
-- **Review Date**: [When to check progress]
-- **Success Criteria**: [How to measure improvement]
-- **Escalation**: [What to do if actions not completed]
-
-## Common Post-Incident Anti-patterns
-
-### ❌ What Not to Do
-- **Blame Assignment**: Focus on systems and processes, not people
-- **Superficial Analysis**: "Server crashed" is not a root cause
-- **No Follow-through**: Actions identified but never implemented
-- **Overly Broad Actions**: Trying to fix everything at once
-- **Ignoring Data**: Making decisions without evidence
-
-### ✅ Best Practices
-- **Focus on Learning**: Every incident is a learning opportunity
-- **Data-Driven**: Base conclusions on evidence, not opinions
-- **Action-Oriented**: Identify specific, measurable improvements
-- **Collaborative**: Include all stakeholders in analysis
-- **Timely**: Complete review while details are fresh
+## Guidelines
+- Blameless: focus on systems and processes, not people
+- Evidence-based: conclusions from logs and data
+- Specific actions with owners, not broad intentions
+- Complete the review while details are fresh
 
 ## Related Runbooks
-
 - [Incident Checklist](incident-checklist.md) - Incident response process
 - [Emergency Procedures](emergency-procedures.md) - Crisis response
 - [TVIEW Health Check](../01-health-monitoring/tview-health-check.md) - Ongoing monitoring
 - [Performance Monitoring](../01-health-monitoring/performance-monitoring.md) - Proactive monitoring
-
-## Metrics to Track
-
-### Incident Review Metrics
-- **Review Completion Rate**: Percentage of incidents with completed reviews
-- **Action Implementation Rate**: Percentage of identified actions implemented
-- **Recurrence Rate**: How often similar incidents happen
-- **Time to Review**: How quickly reviews are completed
-
-### Process Improvement Metrics
-- **MTTR Trends**: Mean Time To Resolution over time
-- **MTTD Trends**: Mean Time To Detection over time
-- **Severity Distribution**: How incident severity changes
-- **Process Adherence**: How well response processes are followed
-
-## Templates and Checklists
-
-### Post-Incident Review Checklist
-- [ ] Timeline reconstructed and verified
-- [ ] Root cause identified and agreed upon
-- [ ] Contributing factors documented
-- [ ] Impact fully assessed
-- [ ] Response effectiveness evaluated
-- [ ] Corrective actions identified
-- [ ] Preventive measures planned
-- [ ] Action items assigned with owners and dates
-- [ ] Success metrics defined
-- [ ] Follow-up review scheduled
-- [ ] Documentation completed and shared
-
-### Action Item Template
-```
-Action: [Clear, specific description]
-Owner: [Person responsible]
-Priority: [High/Medium/Low]
-Target Date: [Specific date]
-Success Criteria: [How to measure completion]
-Dependencies: [What needs to happen first]
-Resources Needed: [Tools, budget, or help required]
-```
-
-## Continuous Improvement
-
-### Regular Review Cadence
-- **Weekly**: Review any incidents from past week
-- **Monthly**: Analyze incident trends and patterns
-- **Quarterly**: Review process effectiveness and make systemic improvements
-- **Annually**: Major process reviews and training updates
-
-### Knowledge Sharing
-- **Incident Database**: Maintain searchable incident history
-- **Lessons Learned Sessions**: Regular team discussions
-- **Training Updates**: Incorporate lessons into training programs
-- **Process Documentation**: Keep runbooks current with lessons learned
-
-Remember: The goal of post-incident reviews is not to assign blame, but to improve systems, processes, and team capabilities to prevent future incidents and respond more effectively when they do occur.

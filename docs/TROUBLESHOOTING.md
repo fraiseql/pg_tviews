@@ -62,15 +62,15 @@ Query: Unknown
 CREATE TABLE tv_test AS SELECT id, data FROM v_test;
 
 -- 2. Manually convert to TVIEW
-SELECT pg_tviews_convert_existing_table('tv_test');
+SELECT tviews.pg_tviews_convert_existing_table('tv_test');
 
 -- 3. Verify
-SELECT * FROM pg_tviews_metadata WHERE table_name = 'tv_test';
+SELECT schema, name, entity, base_tables FROM tviews.registry WHERE name = 'tv_test';
 ```
 
 **Why This Happens**: PostgreSQL prevents nested transactions during DDL events. SPI calls create sub-transactions, causing conflicts.
 
-**Future**: Background worker support will enable automatic conversion in a separate transaction context.
+Creating the TVIEW with `SELECT tviews.pg_tviews_create('tv_test', 'SELECT ...');` avoids the problem.
 
 ### 3. "relation does not exist"
 
@@ -189,7 +189,7 @@ CREATE EXTENSION IF NOT EXISTS pg_tviews;
 psql -d pg_tviews_benchmark -c "\dx pg_tviews"
 
 # List TVIEW functions
-psql -d pg_tviews_benchmark -c "\df pg_tviews*"
+psql -d pg_tviews_benchmark -c "\df tviews.pg_tviews*"
 ```
 
 ## Diagnostic Commands
@@ -221,13 +221,12 @@ EOF
 ### Check TVIEW Status
 ```bash
 psql -d pg_tviews_benchmark <<EOF
-SELECT
-    table_name,
-    source_view,
-    created_at,
-    last_refreshed
-FROM pg_tviews_metadata
-ORDER BY table_name;
+SELECT schema, name, view, base_tables, needs_reregister
+FROM tviews.registry
+ORDER BY schema, name;
+
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check();
 EOF
 ```
 
@@ -235,10 +234,12 @@ EOF
 ```bash
 psql -d pg_tviews_benchmark <<EOF
 -- Attempt conversion
-SELECT pg_tviews_convert_existing_table('benchmark.tv_product');
+SELECT tviews.pg_tviews_convert_existing_table('benchmark.tv_product');
 
 -- Check result
-SELECT * FROM pg_tviews_metadata WHERE table_name = 'tv_product';
+SELECT schema, name, entity, base_tables
+FROM tviews.registry
+WHERE schema = 'benchmark' AND name = 'tv_product';
 EOF
 ```
 
@@ -335,8 +336,4 @@ EXPLAIN ANALYZE SELECT * FROM benchmark.tv_product WHERE ...;
 **Common Issues**:
 - Missing indexes on optimization columns
 - TVIEW not converted (querying raw table)
-- Outdated TVIEW data (needs refresh)
-
----
-
-*Last Updated: 2025-12-14*
+- TVIEW content differs from its view (rebuild with `SELECT tviews.pg_tviews_refresh('product');`)

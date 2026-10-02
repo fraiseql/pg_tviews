@@ -391,6 +391,37 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 }
             }
 
+            // A write to a table no cascade maps (`full_refresh` policy, issues
+            // #157, #158): bring the whole TVIEW to its view once, which covers
+            // every other key of the entity, and queue the parents of the rows
+            // that changed.
+            if entity_keys.iter().any(super::key::RefreshKey::is_all) {
+                let meta =
+                    crate::catalog::TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+                        crate::TViewError::MetadataNotFound {
+                            entity: entity.clone(),
+                        }
+                    })?;
+                let changed: Vec<super::key::RefreshKey> =
+                    crate::ddl::replace::reconcile(&entity, &meta)?
+                        .iter()
+                        .filter_map(|k| k.parse::<i64>().ok())
+                        .map(|pk| super::key::RefreshKey::pk(&entity, pk))
+                        .collect();
+                for parent_key in crate::propagate::find_parents_batch(&changed, &graph)?
+                    .into_values()
+                    .flatten()
+                {
+                    super::patch::poison_into(&mut patches, parent_key.clone());
+                    if !processed.contains(&parent_key) {
+                        pending.insert(parent_key);
+                    }
+                }
+                processed.extend(changed);
+                iteration += 1;
+                continue;
+            }
+
             // Issue #56: split off keys carrying a usable direct patch. They are
             // applied straight to tv_<entity> (no backing-view query); everything
             // else — poisoned keys, dedup keys, keys with no patch, or the fast

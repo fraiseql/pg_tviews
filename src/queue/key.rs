@@ -19,6 +19,11 @@ pub struct RefreshKey {
     /// When `None`, `pk` is the authoritative identifier.
     #[serde(default)]
     pub dedup_key: Option<String>,
+
+    /// Every row of the entity's TVIEW (issues #157, #158): a write to a base table
+    /// no cascade maps, under the `full_refresh` policy. `pk` is 0.
+    #[serde(default)]
+    pub all: bool,
 }
 
 impl RefreshKey {
@@ -28,6 +33,7 @@ impl RefreshKey {
             entity: entity.into(),
             pk,
             dedup_key: None,
+            all: false,
         }
     }
 
@@ -37,6 +43,17 @@ impl RefreshKey {
             entity: entity.into(),
             pk: 0,
             dedup_key: Some(key.into()),
+            all: false,
+        }
+    }
+
+    /// Construct a key for every row of the entity's TVIEW.
+    pub fn all(entity: impl Into<String>) -> Self {
+        Self {
+            entity: entity.into(),
+            pk: 0,
+            dedup_key: None,
+            all: true,
         }
     }
 
@@ -45,11 +62,20 @@ impl RefreshKey {
     pub fn is_dedup(&self) -> bool {
         self.dedup_key.is_some()
     }
+
+    /// Returns `true` if this key stands for every row of the TVIEW.
+    #[must_use]
+    pub const fn is_all(&self) -> bool {
+        self.all
+    }
 }
 
 impl PartialEq for RefreshKey {
     fn eq(&self, other: &Self) -> bool {
-        self.entity == other.entity && self.pk == other.pk && self.dedup_key == other.dedup_key
+        self.entity == other.entity
+            && self.pk == other.pk
+            && self.dedup_key == other.dedup_key
+            && self.all == other.all
     }
 }
 
@@ -58,6 +84,7 @@ impl Hash for RefreshKey {
         self.entity.hash(state);
         self.pk.hash(state);
         self.dedup_key.hash(state);
+        self.all.hash(state);
     }
 }
 
@@ -100,6 +127,17 @@ mod tests {
         set.insert(RefreshKey::dedup("contract", "uuid-1")); // duplicate
         set.insert(RefreshKey::dedup("contract", "uuid-2"));
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_all_key_is_distinct_and_deduplicated() {
+        let mut set = std::collections::HashSet::new();
+        set.insert(RefreshKey::all("order"));
+        set.insert(RefreshKey::all("order"));
+        set.insert(RefreshKey::pk("order", 0));
+        assert_eq!(set.len(), 2);
+        assert!(RefreshKey::all("order").is_all());
+        assert!(!RefreshKey::pk("order", 0).is_all());
     }
 
     #[test]

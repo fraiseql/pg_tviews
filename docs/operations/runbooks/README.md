@@ -1,101 +1,70 @@
 # pg_tviews Operations Runbooks
 
-This directory contains comprehensive operational procedures for managing pg_tviews in production environments.
+Procedures for running pg_tviews in production.
+
+## How pg_tviews refreshes (read first)
+
+A TVIEW `tv_<entity>` is a table kept up to date from its view `v_<entity>`. Triggers
+on the base tables queue the affected keys in memory, inside the writing transaction,
+and the TVIEW rows are refreshed at the end of each statement and on COMMIT. There is
+no queue table, no background worker and no refresh schedule. A failed refresh fails
+the writing statement and rolls back its transaction.
 
 ## Quick Reference
 
-| Category | Runbook | Purpose | Frequency |
-|----------|---------|---------|-----------|
-| **Health Monitoring** | [TVIEW Health Check](01-health-monitoring/tview-health-check.md) | Verify TVIEW synchronization | Every 4 hours |
-| | [Queue Management](01-health-monitoring/queue-management.md) | Monitor and manage refresh queues | Daily |
-| | [Performance Monitoring](01-health-monitoring/performance-monitoring.md) | Track refresh performance | Hourly |
-| **Refresh Operations** | [Manual Refresh](02-refresh-operations/manual-refresh.md) | Refresh individual TVIEWs | As needed |
-| | [Batch Refresh](02-refresh-operations/batch-refresh.md) | Refresh multiple TVIEWs | Scheduled |
-| | [Refresh Troubleshooting](02-refresh-operations/refresh-troubleshooting.md) | Debug refresh issues | When needed |
-| **Maintenance** | [Regular Maintenance](03-maintenance/regular-maintenance.md) | Routine maintenance tasks | Weekly |
-| | [Connection Management](03-maintenance/connection-management.md) | Monitor database connections | Daily |
-| | [Table Analysis](03-maintenance/table-analysis.md) | Analyze table statistics | Monthly |
-| **Incident Response** | [Emergency Procedures](04-incident-response/emergency-procedures.md) | Handle critical incidents | As needed |
-| | [Incident Checklist](04-incident-response/incident-checklist.md) | Systematic incident response | During incidents |
-| | [Post-Incident Review](04-incident-response/post-incident-review.md) | Learn from incidents | After incidents |
+| Category | Runbook | Purpose |
+|----------|---------|---------|
+| **Health Monitoring** | [TVIEW Health Check](01-health-monitoring/tview-health-check.md) | Installation, registration, triggers, content |
+| | [Refresh Queue](01-health-monitoring/queue-management.md) | The in-memory queue: observing it, size limit, blocked writes |
+| | [Performance Monitoring](01-health-monitoring/performance-monitoring.md) | Slow writes and slow TVIEW reads |
+| **Refresh Operations** | [Manual Refresh](02-refresh-operations/manual-refresh.md) | Rebuild one TVIEW |
+| | [Batch Refresh](02-refresh-operations/batch-refresh.md) | Rebuild several TVIEWs, bulk loads |
+| | [Refresh Troubleshooting](02-refresh-operations/refresh-troubleshooting.md) | TVIEW not reflecting writes |
+| **Maintenance** | [Regular Maintenance](03-maintenance/regular-maintenance.md) | Routine tasks |
+| | [Connection Management](03-maintenance/connection-management.md) | Connections and poolers |
+| | [Table Analysis](03-maintenance/table-analysis.md) | Table statistics and storage |
+| **Incident Response** | [Emergency Procedures](04-incident-response/emergency-procedures.md) | Critical incidents |
+| | [Incident Checklist](04-incident-response/incident-checklist.md) | Step-by-step incident response |
+| | [Post-Incident Review](04-incident-response/post-incident-review.md) | After incidents |
 
 ## Getting Started
 
-### For On-Call Engineers
+### For on-call engineers
 
-1. **Health Check**: Start with [TVIEW Health Check](01-health-monitoring/tview-health-check.md) for routine monitoring
-2. **Incident Response**: Use [Incident Checklist](04-incident-response/incident-checklist.md) during outages
-3. **Common Issues**: Check [Refresh Troubleshooting](02-refresh-operations/refresh-troubleshooting.md) for refresh problems
+1. Run the [TVIEW Health Check](01-health-monitoring/tview-health-check.md)
+2. During an outage, follow the [Incident Checklist](04-incident-response/incident-checklist.md)
+3. For stale TVIEW data, see [Refresh Troubleshooting](02-refresh-operations/refresh-troubleshooting.md)
 
-### For Operations Teams
+### For operations teams
 
-1. **Daily Tasks**: Review [Queue Management](01-health-monitoring/queue-management.md) and [Connection Management](03-maintenance/connection-management.md)
-2. **Weekly Tasks**: Follow [Regular Maintenance](03-maintenance/regular-maintenance.md)
-3. **Emergency Prep**: Familiarize with [Emergency Procedures](04-incident-response/emergency-procedures.md)
+1. Routine: [TVIEW Health Check](01-health-monitoring/tview-health-check.md) and
+   [Regular Maintenance](03-maintenance/regular-maintenance.md)
+2. Before an incident happens: read [Emergency Procedures](04-incident-response/emergency-procedures.md)
 
 ## Supporting Scripts
 
-All runbooks reference executable SQL scripts in the `scripts/` directory:
+All read-only. Run the SQL scripts with `psql -X -v ON_ERROR_STOP=1 -d <database> -f <script>`.
 
-- `health-check.sql` - Comprehensive health verification
-- `refresh-status.sql` - Current refresh status
-- `queue-cleanup.sql` - Safe queue maintenance
-- `emergency-disable.sql` - Emergency TVIEW disable
+- `scripts/health-check.sql` - versions, health check, registry, freshness, physical health, replication
+- `scripts/refresh-status.sql` - how writes reach each TVIEW, last content change, suspension state
+- `scripts/emergency-disable.sql` - suspension state, and the commands to suspend and resume refresh
+- `../upgrade/scripts/pre-upgrade-checks.sh`, `../upgrade/scripts/post-upgrade-validation.sql` - upgrades
 
 ## Conventions
 
-### Command Format
-- **SQL commands** are shown in code blocks with syntax highlighting
-- **Shell commands** use `$` prefix for local commands
-- **Database commands** use `psql>` prefix for interactive sessions
-
-### Parameterization
-- All scripts use parameterized queries (no hardcoded database names)
-- Environment variables used for configuration
-- Examples show both parameterized and concrete usage
-
-### Error Handling
-- Each procedure includes expected errors and solutions
-- Rollback procedures provided for reversible operations
-- Escalation paths defined for complex issues
+- SQL uses schema-qualified names: pg_tviews objects live in schema `tviews`.
+- Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`); substitute your own.
 
 ## Prerequisites
 
-### Database Access
-- PostgreSQL client tools (`psql`, `pg_isready`)
-- Database connection credentials
-- Appropriate permissions (SELECT on system tables, TVIEW operations)
-
-### Monitoring Tools
-- Access to PostgreSQL logs
-- System monitoring (CPU, memory, disk I/O)
-- Alerting system integration
-
-### Knowledge Requirements
-- Basic PostgreSQL administration
-- Understanding of TVIEW concepts
-- Familiarity with your specific database schema
-
-## Emergency Contacts
-
-When procedures don't resolve issues:
-
-1. **Database Team**: For PostgreSQL-specific issues
-2. **Application Team**: For TVIEW schema changes
-3. **Infrastructure Team**: For system-level problems
-4. **Vendor Support**: For pg_tviews extension issues
+- PostgreSQL client tools (`psql`)
+- A role with SELECT on the `tviews` schema and the TVIEW tables; repair operations
+  (refresh, re-register) need the TVIEW owner or a superuser
+- Access to the PostgreSQL server log
 
 ## Contributing
 
 When updating runbooks:
-1. Test procedures in staging environment
-2. Update supporting scripts if needed
-3. Include rollback procedures for new operations
-4. Update this README if adding new runbooks
-
-## Version History
-
-- **v1.0**: Initial comprehensive runbook set
-- Covers all major operational scenarios
-- Tested procedures with error handling
-- Supporting automation scripts included
+1. Run every SQL snippet against a database with pg_tviews installed
+2. Name only objects that exist (`\df tviews.*`, `\dv tviews.*`, `\dt tviews.*`)
+3. Update this README when adding or removing a runbook

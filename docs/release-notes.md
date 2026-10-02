@@ -44,7 +44,7 @@ pg_tviews provides automatic incremental maintenance of materialized views conta
 ## Installation
 
 ### Prerequisites
-- PostgreSQL 15+ (tested through 17)
+- PostgreSQL 16, 17 or 18
 - Rust 1.70+
 - cargo-pgrx 0.12.8
 

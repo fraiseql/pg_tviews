@@ -1,310 +1,90 @@
-# Queue Management Runbook
+# Refresh Queue Runbook
 
 ## Purpose
-Monitor, maintain, and troubleshoot the pg_tviews refresh queue to ensure efficient processing of TVIEW updates.
+Explain what the pg_tviews refresh queue is, how to observe it, and what to do when a
+write fails because of it.
 
-## When to Use
-- **Daily Monitoring**: Check queue status and health
-- **Performance Issues**: When refresh operations seem slow or stuck
-- **After Failures**: Clean up after system crashes or transaction failures
-- **Maintenance Windows**: Regular queue cleanup and optimization
-- **Incident Response**: As part of diagnosing synchronization problems
+## What the queue is
+- When a statement writes a base table, row triggers record the affected TVIEW keys in
+  a queue held **in memory, in the writing backend, for the current transaction**.
+- The queue is flushed (the TVIEW rows are refreshed) at the end of each statement, by a
+  statement trigger, and again on `COMMIT` / `PREPARE TRANSACTION`.
+- There is no queue table, no background worker and no refresh schedule. Nothing is left
+  behind between transactions, so there is nothing to clean up, retry or vacuum.
+- If a refresh fails, the writing statement fails with an ERROR and its transaction rolls
+  back, base-table changes included. Errors appear to the client and in the server log.
 
-## Prerequisites
-- PostgreSQL CLI access (`psql`)
-- Database credentials with SELECT/DELETE permissions on queue tables
-- Understanding of TVIEW refresh mechanics
-- Access to system logs for troubleshooting
+## Observing the queue
 
-## Queue Status Check (5 minutes)
+Contents of the queue in the current transaction (normally `[]` when called from SQL,
+because the previous statement already flushed it):
 
-### Step 1: Current Queue Overview
 ```sql
--- Get comprehensive queue status
-SELECT
-    COUNT(*) as total_items,
-    COUNT(*) FILTER (WHERE processed_at IS NULL) as pending_items,
-    COUNT(*) FILTER (WHERE processed_at IS NOT NULL) as processed_items,
-    COUNT(*) FILTER (WHERE error_message IS NOT NULL) as failed_items,
-    MIN(created_at) as oldest_pending,
-    MAX(created_at) as newest_pending,
-    AVG(EXTRACT(EPOCH FROM (NOW() - created_at))) FILTER (WHERE processed_at IS NULL) as avg_pending_age_seconds
-FROM pg_tviews_queue;
+SELECT tviews.pg_tviews_debug_queue();
 ```
 
-### Step 2: Priority Distribution
+Counters for the current session, including `queue_size`, `total_refreshes`,
+`max_iterations` and `total_timing_ms`:
+
 ```sql
--- Check priority distribution
-SELECT
-    priority,
-    COUNT(*) as count,
-    MIN(created_at) as oldest,
-    MAX(created_at) as newest
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-GROUP BY priority
-ORDER BY
-    CASE priority
-        WHEN 'high' THEN 1
-        WHEN 'normal' THEN 2
-        WHEN 'low' THEN 3
-    END;
+SELECT tviews.pg_tviews_queue_stats();
 ```
 
-### Step 3: Entity Distribution
+The counters cover this session only; read them before and after a write in the same
+session and compare.
+
+What a transaction changed in TVIEWs (keys updated and deleted, per entity):
+
 ```sql
--- Check which TVIEWs have queued items
-SELECT
-    entity_name,
-    COUNT(*) as queued_items,
-    MIN(created_at) as oldest_item,
-    MAX(created_at) as newest_item
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-GROUP BY entity_name
-ORDER BY COUNT(*) DESC;
+SELECT tviews.pg_tviews_flush_and_report();
 ```
 
-## Queue Maintenance Procedures
+## Queue size limit
 
-### Routine Cleanup (15 minutes)
+`pg_tviews.max_queue_size` (default 10000) caps the number of keys one transaction may
+queue. Beyond it the write fails with
+`refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`.
 
-Run this weekly or when queue grows beyond normal levels:
+Options, in order of preference:
+1. Split the bulk write into smaller transactions.
+2. Suspend refresh for the bulk load and refresh afterwards:
+   ```sql
+   BEGIN;
+   SELECT tviews.pg_tviews_suspend_triggers();
+   -- bulk INSERT / UPDATE / DELETE
+   SELECT tviews.pg_tviews_resume_triggers();  -- refreshes what changed
+   COMMIT;
+   ```
+   Suspension ends with the transaction if `pg_tviews_resume_triggers()` is not called.
+   `tviews.pg_tviews_is_suspended()` and `tviews.pg_tviews_suspended_entities()` show the
+   current state.
+3. Raise the limit for the session: `SET pg_tviews.max_queue_size = 100000;`
 
-#### Step 1: Identify Stale Items
+## Writes that look stuck
+
+A write that waits is waiting on locks, not on a queue. Look for blocking sessions:
+
 ```sql
--- Find items older than 1 hour that haven't been processed
-SELECT
-    entity_name,
-    primary_key_value,
-    priority,
-    created_at,
-    NOW() - created_at as age
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-  AND created_at < NOW() - INTERVAL '1 hour'
-ORDER BY created_at ASC;
+SELECT pid, state, wait_event_type, wait_event,
+       now() - xact_start AS xact_age,
+       pg_blocking_pids(pid) AS blocked_by,
+       left(query, 80) AS query
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (state = 'idle in transaction' OR cardinality(pg_blocking_pids(pid)) > 0)
+ORDER BY xact_start;
 ```
 
-#### Step 2: Safe Cleanup of Stale Items
+Also check prepared transactions, which keep their TVIEW row locks until
+`COMMIT PREPARED` / `ROLLBACK PREPARED`:
+
 ```sql
--- Only remove items that are truly stale (no active transaction)
--- This query identifies items that can be safely removed
-WITH active_transactions AS (
-    SELECT DISTINCT entity_name, primary_key_value
-    FROM pg_tviews_queue q
-    WHERE processed_at IS NULL
-      AND EXISTS (
-          SELECT 1 FROM pg_stat_activity
-          WHERE query LIKE '%' || q.entity_name || '%'
-             OR query LIKE '%refresh%'
-      )
-)
-DELETE FROM pg_tviews_queue
-WHERE processed_at IS NULL
-  AND created_at < NOW() - INTERVAL '2 hours'
-  AND (entity_name, primary_key_value) NOT IN (
-      SELECT entity_name, primary_key_value FROM active_transactions
-  );
-```
-
-#### Step 3: Verify Cleanup
-```sql
--- Check that cleanup was successful
-SELECT COUNT(*) as remaining_stale_items
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-  AND created_at < NOW() - INTERVAL '1 hour';
-```
-
-### Failed Item Handling
-
-#### Step 1: Identify Failed Items
-```sql
--- Find items that failed processing
-SELECT
-    entity_name,
-    primary_key_value,
-    priority,
-    created_at,
-    error_message,
-    retry_count
-FROM pg_tviews_queue
-WHERE error_message IS NOT NULL
-ORDER BY created_at DESC;
-```
-
-#### Step 2: Retry Failed Items (Manual)
-```sql
--- For items that can be retried, trigger manual refresh
--- Replace 'your_entity' and 'your_key' with actual values
-SELECT pg_tviews_refresh('your_entity', 'your_key');
-
--- Then remove from queue if successful
-DELETE FROM pg_tviews_queue
-WHERE entity_name = 'your_entity'
-  AND primary_key_value = 'your_key'
-  AND error_message IS NOT NULL;
-```
-
-#### Step 3: Remove Permanently Failed Items
-```sql
--- For items that consistently fail (retry_count > 3)
-DELETE FROM pg_tviews_queue
-WHERE retry_count > 3
-  AND error_message IS NOT NULL
-  AND created_at < NOW() - INTERVAL '24 hours';
-```
-
-## Queue Performance Optimization
-
-### Step 1: Analyze Processing Rates
-```sql
--- Check processing throughput over time
-SELECT
-    DATE_TRUNC('hour', processed_at) as hour,
-    COUNT(*) as items_processed,
-    AVG(EXTRACT(EPOCH FROM (processed_at - created_at))) as avg_processing_time_seconds,
-    MAX(EXTRACT(EPOCH FROM (processed_at - created_at))) as max_processing_time_seconds
-FROM pg_tviews_queue
-WHERE processed_at IS NOT NULL
-  AND processed_at > NOW() - INTERVAL '24 hours'
-GROUP BY DATE_TRUNC('hour', processed_at)
-ORDER BY hour DESC;
-```
-
-### Step 2: Identify Bottlenecks
-```sql
--- Find TVIEWs with slow processing
-SELECT
-    entity_name,
-    COUNT(*) as total_processed,
-    AVG(EXTRACT(EPOCH FROM (processed_at - created_at))) as avg_time_seconds,
-    MAX(EXTRACT(EPOCH FROM (processed_at - created_at))) as max_time_seconds
-FROM pg_tviews_queue
-WHERE processed_at IS NOT NULL
-  AND processed_at > NOW() - INTERVAL '7 days'
-GROUP BY entity_name
-HAVING AVG(EXTRACT(EPOCH FROM (processed_at - created_at))) > 30
-ORDER BY avg_time_seconds DESC;
-```
-
-### Step 3: Queue Size Monitoring
-```sql
--- Monitor queue growth trends
-SELECT
-    DATE_TRUNC('day', created_at) as day,
-    COUNT(*) as items_created,
-    COUNT(*) FILTER (WHERE processed_at IS NOT NULL) as items_processed,
-    COUNT(*) FILTER (WHERE processed_at IS NULL) as items_pending
-FROM pg_tviews_queue
-WHERE created_at > NOW() - INTERVAL '30 days'
-GROUP BY DATE_TRUNC('day', created_at)
-ORDER BY day DESC;
-```
-
-## Emergency Queue Operations
-
-### Complete Queue Flush (Use with Caution)
-```sql
--- WARNING: This will cancel all pending refreshes
--- Only use during maintenance windows or emergencies
-
--- Step 1: Check what will be affected
-SELECT COUNT(*) as items_to_flush FROM pg_tviews_queue WHERE processed_at IS NULL;
-
--- Step 2: Flush queue (if confirmed)
-DELETE FROM pg_tviews_queue WHERE processed_at IS NULL;
-
--- Step 3: Verify
-SELECT COUNT(*) as remaining_items FROM pg_tviews_queue WHERE processed_at IS NULL;
-```
-
-### Queue Pause (For Maintenance)
-```sql
--- Temporarily disable queue processing
--- Note: This is a conceptual operation - actual implementation depends on your setup
-
--- Check if you have a queue processing control mechanism
-SELECT * FROM pg_settings WHERE name LIKE '%tview%' OR name LIKE '%queue%';
-
--- If available, pause processing:
--- ALTER SYSTEM SET pg_tviews.queue_processing = 'off';
--- SELECT pg_reload_conf();
-```
-
-## Monitoring and Alerting
-
-### Recommended Alerts
-- Queue size > 1000 items
-- Items pending > 30 minutes
-- Processing rate < 10 items/minute
-- Error rate > 5%
-
-### Automated Monitoring Script
-```bash
-# Run queue monitoring
-psql -h $DB_HOST -U $DB_USER -d $DB_NAME -f docs/operations/runbooks/scripts/queue-status.sql
-```
-
-## Troubleshooting
-
-### Queue Not Processing
-```sql
--- Check if queue processor is running
-SELECT * FROM pg_stat_activity WHERE query LIKE '%tview%' OR query LIKE '%queue%';
-
--- Check for blocking locks
-SELECT * FROM pg_locks WHERE NOT granted;
-
--- Check system resources
-SELECT * FROM pg_stat_bgwriter;
-```
-
-### High Queue Growth
-```sql
--- Identify source of queue items
-SELECT entity_name, COUNT(*) as queue_count
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-GROUP BY entity_name
-ORDER BY COUNT(*) DESC
-LIMIT 10;
-
--- Check if specific TVIEWs are problematic
-SELECT entity_name, last_error, last_refreshed
-FROM pg_tviews_metadata
-WHERE entity_name IN (
-    SELECT entity_name FROM pg_tviews_queue
-    WHERE processed_at IS NULL
-    GROUP BY entity_name
-    HAVING COUNT(*) > 100
-);
-```
-
-### Performance Degradation
-```sql
--- Check for table bloat affecting queue operations
-SELECT schemaname, tablename, n_dead_tup, n_live_tup
-FROM pg_stat_user_tables
-WHERE tablename LIKE '%queue%'
-   OR schemaname LIKE '%tview%';
-
--- Consider VACUUM if bloat > 20%
-VACUUM ANALYZE pg_tviews_queue;
+SELECT gid, prepared, owner, database FROM pg_prepared_xacts ORDER BY prepared;
 ```
 
 ## Related Runbooks
 
-- [TVIEW Health Check](tview-health-check.md) - Overall system health
-- [Performance Monitoring](performance-monitoring.md) - Detailed performance analysis
-- [Manual Refresh](../02-refresh-operations/manual-refresh.md) - Individual refresh operations
-- [Emergency Procedures](../04-incident-response/emergency-procedures.md) - Crisis response
-
-## Best Practices
-
-1. **Monitor Regularly**: Check queue status daily
-2. **Clean Up Weekly**: Remove stale items during maintenance windows
-3. **Alert on Growth**: Set up monitoring for unusual queue growth
-4. **Document Issues**: Track recurring queue problems and solutions
-5. **Test Procedures**: Validate cleanup procedures in staging first
+- [TVIEW Health Check](tview-health-check.md)
+- [Performance Monitoring](performance-monitoring.md)
+- [Manual Refresh](../02-refresh-operations/manual-refresh.md)
+- [Emergency Procedures](../04-incident-response/emergency-procedures.md)

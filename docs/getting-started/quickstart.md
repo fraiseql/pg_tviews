@@ -4,7 +4,7 @@ Get pg_tviews running in your FraiseQL application in 10 minutes.
 
 ## Prerequisites
 
-- PostgreSQL 15+ installed and running
+- PostgreSQL 16, 17 or 18 installed and running
 - Rust toolchain 1.70+ (for building the extension)
 - A database for testing
 

@@ -1,369 +1,142 @@
 # Performance Monitoring Runbook
 
 ## Purpose
-Monitor and analyze pg_tviews performance metrics to ensure optimal operation and identify performance degradation early.
+Find out why writes to base tables, or reads of TVIEWs, got slower.
+
+## How refresh cost shows up
+pg_tviews refreshes TVIEW rows inside the writing transaction: at the end of each
+statement and on COMMIT. A slow refresh is therefore a slow `INSERT`/`UPDATE`/`DELETE`
+(or a slow `COMMIT`) on a base table. There is no refresh job and no per-refresh
+duration history; measure the writing statements themselves.
 
 ## When to Use
-- **Hourly Monitoring**: Check key performance indicators
-- **Performance Issues**: When users report slow queries or system sluggishness
-- **Capacity Planning**: Before scaling decisions or infrastructure changes
-- **Post-Changes**: After TVIEW schema changes or bulk data operations
-- **Trend Analysis**: Monthly performance reviews
+- Users report slow writes to tables that feed TVIEWs, or slow reads of `tv_*` tables
+- After adding a TVIEW, changing a view definition, or a bulk data change
+- Capacity planning
 
 ## Prerequisites
-- PostgreSQL monitoring access (`pg_stat_*` views)
-- System monitoring tools (CPU, memory, disk I/O)
-- Historical performance data (recommended: 30+ days)
-- Baseline performance metrics from healthy periods
+- `psql` access to the database
+- `pg_stat_statements` (recommended) for statement timings
 
-## Key Performance Indicators (KPIs)
+## Step 1: Physical health of each TVIEW
 
-### TVIEW-Specific Metrics
-
-#### Refresh Performance
 ```sql
--- Current refresh performance
-SELECT
-    entity_name,
-    last_refresh_duration_ms,
-    last_refreshed,
-    CASE
-        WHEN last_refresh_duration_ms < 100 THEN 'EXCELLENT'
-        WHEN last_refresh_duration_ms < 500 THEN 'GOOD'
-        WHEN last_refresh_duration_ms < 2000 THEN 'FAIR'
-        WHEN last_refresh_duration_ms < 5000 THEN 'SLOW'
-        ELSE 'CRITICAL'
-    END as performance_rating
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '1 hour'
-ORDER BY last_refresh_duration_ms DESC;
+SELECT entity, tview, persistence, rows_estimate,
+       pg_size_pretty(heap_bytes) AS heap,
+       pg_size_pretty(index_bytes) AS indexes,
+       round(hot_ratio::numeric, 2) AS hot_ratio,
+       n_dead_tup, unused_indexes, missing_propagation_indexes, fanout, warnings
+FROM tviews.pg_tviews_profile()
+ORDER BY heap_bytes DESC;
 ```
 
-#### Queue Throughput
+What to look at:
+- `warnings`: the function's own findings (UNLOGGED, low HOT ratio, missing indexes, large fan-out).
+- `hot_ratio` well below 1: updates are not HOT; check `fillfactor` and indexes on `data`.
+- `missing_propagation_indexes`: cascades from embedded TVIEWs scan instead of using an index.
+- `fanout`: how many rows one parent row change touches; a high value makes single-row writes expensive.
+
+One TVIEW, with a lower fan-out threshold:
+
 ```sql
--- Queue processing throughput (last hour)
-SELECT
-    COUNT(*) as items_processed,
-    AVG(EXTRACT(EPOCH FROM (processed_at - created_at))) as avg_processing_time_seconds,
-    MAX(EXTRACT(EPOCH FROM (processed_at - created_at))) as max_processing_time_seconds,
-    COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (processed_at - created_at)) > 30) as slow_items
-FROM pg_tviews_queue
-WHERE processed_at > NOW() - INTERVAL '1 hour';
+SELECT * FROM tviews.pg_tviews_profile('user', fanout_warn => 100);
 ```
 
-### System Resource Metrics
+## Step 2: Missing propagation indexes
 
-#### Database Performance
 ```sql
--- Database-wide performance indicators
-SELECT
-    datname,
-    numbackends,
-    xact_commit,
-    xact_rollback,
-    blks_read,
-    blks_hit,
-    tup_returned,
-    tup_fetched,
-    tup_inserted,
-    tup_updated,
-    tup_deleted
-FROM pg_stat_database
-WHERE datname = current_database();
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 ```
 
-#### Table Statistics
+Each row is a `CREATE INDEX` statement that would be run. Run it with `dry_run => false`
+(or run the statements yourself) to create them.
+
+## Step 3: Time the writing statements
+
 ```sql
--- TVIEW table performance
-SELECT
-    schemaname,
-    tablename,
-    seq_scan,
-    seq_tup_read,
-    idx_scan,
-    idx_tup_fetch,
-    n_tup_ins,
-    n_tup_upd,
-    n_tup_del,
-    n_live_tup,
-    n_dead_tup
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY n_tup_ins + n_tup_upd + n_tup_del DESC;
-```
-
-## Performance Baselines
-
-### Establish Baselines (Monthly)
-```sql
--- Create performance baseline (run during healthy periods)
-CREATE TABLE IF NOT EXISTS pg_tviews_performance_baseline (
-    collected_at TIMESTAMP DEFAULT NOW(),
-    metric_name TEXT,
-    metric_value NUMERIC,
-    notes TEXT
-);
-
--- Insert current baseline metrics
-INSERT INTO pg_tviews_performance_baseline (metric_name, metric_value, notes)
-SELECT
-    'avg_refresh_time_ms',
-    AVG(last_refresh_duration_ms),
-    'Baseline from healthy period'
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '24 hours'
-
-UNION ALL
-
-SELECT
-    'queue_throughput_per_hour',
-    COUNT(*) / 24.0,
-    'Items processed per hour baseline'
-FROM pg_tviews_queue
-WHERE processed_at > NOW() - INTERVAL '24 hours';
-```
-
-### Compare to Baselines
-```sql
--- Compare current performance to baseline
-WITH current_metrics AS (
-    SELECT
-        'avg_refresh_time_ms' as metric,
-        AVG(last_refresh_duration_ms) as current_value
-    FROM pg_tviews_metadata
-    WHERE last_refreshed > NOW() - INTERVAL '1 hour'
-
-    UNION ALL
-
-    SELECT
-        'queue_throughput_per_hour' as metric,
-        COUNT(*) * 1.0 as current_value
-    FROM pg_tviews_queue
-    WHERE processed_at > NOW() - INTERVAL '1 hour'
-)
-SELECT
-    cm.metric,
-    cm.current_value,
-    pb.metric_value as baseline_value,
-    ROUND((cm.current_value - pb.metric_value) / pb.metric_value * 100, 2) as percent_change,
-    CASE
-        WHEN ABS((cm.current_value - pb.metric_value) / pb.metric_value) > 0.5 THEN 'CRITICAL'
-        WHEN ABS((cm.current_value - pb.metric_value) / pb.metric_value) > 0.25 THEN 'WARNING'
-        ELSE 'NORMAL'
-    END as status
-FROM current_metrics cm
-JOIN pg_tviews_performance_baseline pb ON cm.metric = pb.metric_name
-WHERE pb.collected_at > NOW() - INTERVAL '30 days'
-ORDER BY ABS((cm.current_value - pb.metric_value) / pb.metric_value) DESC;
-```
-
-## Performance Analysis Procedures
-
-### Step 1: Identify Slow TVIEWs
-```sql
--- Find TVIEWs with performance degradation
-SELECT
-    entity_name,
-    last_refresh_duration_ms,
-    last_refreshed,
-    (SELECT AVG(last_refresh_duration_ms)
-     FROM pg_tviews_metadata m2
-     WHERE m2.entity_name = m1.entity_name
-       AND m2.last_refreshed > NOW() - INTERVAL '7 days') as week_avg,
-    CASE
-        WHEN last_refresh_duration_ms > (SELECT AVG(last_refresh_duration_ms) * 2
-                                        FROM pg_tviews_metadata m2
-                                        WHERE m2.entity_name = m1.entity_name
-                                          AND m2.last_refreshed > NOW() - INTERVAL '7 days')
-        THEN 'DEGRADED'
-        ELSE 'NORMAL'
-    END as status
-FROM pg_tviews_metadata m1
-WHERE last_refreshed > NOW() - INTERVAL '24 hours'
-ORDER BY last_refresh_duration_ms DESC;
-```
-
-### Step 2: Analyze System Bottlenecks
-```sql
--- Check for system resource issues
-SELECT
-    'CPU' as resource,
-    (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active') as active_connections,
-    (SELECT setting FROM pg_settings WHERE name = 'max_connections') as max_connections
-
-UNION ALL
-
-SELECT
-    'Memory' as resource,
-    (SELECT setting FROM pg_settings WHERE name = 'shared_buffers') as shared_buffers,
-    (SELECT setting FROM pg_settings WHERE name = 'work_mem') as work_mem
-
-UNION ALL
-
-SELECT
-    'I/O' as resource,
-    (SELECT sum(blks_read) FROM pg_stat_database) as blocks_read,
-    (SELECT sum(blks_hit) FROM pg_stat_database) as blocks_hit;
-```
-
-### Step 3: Query Performance Analysis
-```sql
--- Analyze slow queries affecting TVIEWs
-SELECT
-    query,
-    calls,
-    total_time / 1000 as total_time_seconds,
-    mean_time / 1000 as mean_time_seconds,
-    rows
+SELECT query, calls,
+       round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2) AS mean_ms,
+       rows
 FROM pg_stat_statements
-WHERE query LIKE '%tview%' OR query LIKE '%pg_tviews%'
-ORDER BY mean_time DESC
-LIMIT 10;
+WHERE query ILIKE '%tb_%' OR query ILIKE '%tv_%'
+ORDER BY mean_exec_time DESC
+LIMIT 20;
 ```
 
-## Performance Optimization
+Refresh work is included in the time of the statement that wrote the base table.
 
-### Index Optimization
+## Step 4: Refresh counters of one session
+
+`tviews.pg_tviews_queue_stats()` returns counters for the current session only
+(`total_refreshes`, `view_recomputes`, `refresh_noop_skipped`, `direct_patches_applied`,
+`direct_patch_fallbacks`, `total_timing_ms`, cache hit rates, ...). Take a reading, run
+the slow write in the same session, and compare:
+
 ```sql
--- Check for missing indexes on TVIEW tables
-SELECT
-    schemaname,
-    tablename,
-    attname,
-    n_distinct,
-    correlation
-FROM pg_stats
-WHERE schemaname LIKE '%tview%'
-  AND attname IN ('primary_key_column', 'updated_at', 'created_at')
-  AND n_distinct > 1000
-ORDER BY n_distinct DESC;
+SELECT tviews.pg_tviews_queue_stats();
+UPDATE tb_user SET name = name WHERE pk_user = 1;
+SELECT tviews.pg_tviews_queue_stats();
 ```
 
-### Table Maintenance
+A large increase in `view_recomputes` means rows were rebuilt from the view rather than
+patched directly; `refresh_noop_skipped` counts recomputes that found nothing to change.
+
+## Step 5: Cost of rebuilding one row
+
+A refresh recomputes affected rows from the backing view. Its cost is roughly the cost
+of this query:
+
 ```sql
--- Check for table bloat
-SELECT
-    schemaname,
-    tablename,
-    n_dead_tup,
-    n_live_tup,
-    ROUND(n_dead_tup::numeric / (n_live_tup + n_dead_tup) * 100, 2) as bloat_ratio
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM v_user WHERE pk_user = 1;
+```
+
+A sequential scan here usually means a missing index on a join or foreign-key column
+in the base tables.
+
+## Step 6: Dependencies and fan-out
+
+```sql
+SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
+
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy
+FROM tviews.registry
+ORDER BY schema, name;
+```
+
+`cascade_kinds` says how writes to each base table reach the TVIEW. Base tables listed
+in `uncascaded_tables` with `uncascaded_policy = 'full_refresh'` recompute the whole TVIEW
+on every write: expect those writes to be slow on large TVIEWs.
+
+## Step 7: Table maintenance
+
+```sql
+SELECT relid::regclass AS tview, n_live_tup, n_dead_tup,
+       last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
 FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-  AND n_dead_tup > 1000
-ORDER BY bloat_ratio DESC;
+WHERE relid IN (SELECT (quote_ident(schema) || '.' || quote_ident(name))::regclass
+                FROM tviews.registry WHERE schema IS NOT NULL)
+ORDER BY n_dead_tup DESC;
 ```
 
-### Configuration Tuning
+High `n_dead_tup` with old vacuum times: tune autovacuum for that table, or run
+`VACUUM ANALYZE` on it.
+
+## Configuration
+
 ```sql
--- Check current TVIEW-related settings
-SELECT name, setting, unit, context
+SELECT name, setting, short_desc
 FROM pg_settings
-WHERE name LIKE '%tview%' OR name LIKE '%refresh%' OR name LIKE '%queue%'
+WHERE name LIKE 'pg_tviews.%'
 ORDER BY name;
 ```
 
-## Automated Monitoring
-
-### Performance Alert Queries
-```sql
--- Critical alerts (immediate action)
-SELECT 'CRITICAL: Slow refresh detected' as alert
-WHERE EXISTS (
-    SELECT 1 FROM pg_tviews_metadata
-    WHERE last_refresh_duration_ms > 30000
-      AND last_refreshed > NOW() - INTERVAL '30 minutes'
-);
-
--- Warning alerts (investigate)
-SELECT 'WARNING: Queue backlog growing' as alert
-WHERE (SELECT COUNT(*) FROM pg_tviews_queue WHERE processed_at IS NULL) > 100;
-
--- Info alerts (monitor trends)
-SELECT 'INFO: Performance trending down' as alert
-WHERE (
-    SELECT AVG(last_refresh_duration_ms)
-    FROM pg_tviews_metadata
-    WHERE last_refreshed > NOW() - INTERVAL '1 hour'
-) > (
-    SELECT AVG(last_refresh_duration_ms)
-    FROM pg_tviews_metadata
-    WHERE last_refreshed > NOW() - INTERVAL '24 hours'
-) * 1.5;
-```
-
-### Monitoring Script
-```bash
-# Run comprehensive performance monitoring
-psql -h $DB_HOST -U $DB_USER -d $DB_NAME -f docs/operations/runbooks/scripts/performance-monitor.sql
-```
-
-## Troubleshooting Performance Issues
-
-### Slow Refresh Diagnosis
-```sql
--- Step 1: Identify the slow TVIEW
-SELECT entity_name, last_refresh_duration_ms, last_refreshed
-FROM pg_tviews_metadata
-ORDER BY last_refresh_duration_ms DESC
-LIMIT 1;
-
--- Step 2: Check system load during refresh
-SELECT * FROM pg_stat_activity
-WHERE query_start < NOW() - INTERVAL '30 minutes'
-ORDER BY query_start ASC;
-
--- Step 3: Analyze the TVIEW structure
-SELECT * FROM information_schema.columns
-WHERE table_schema || '.' || table_name = 'your_slow_tview'
-ORDER BY ordinal_position;
-```
-
-### Memory Issues
-```sql
--- Check memory usage patterns
-SELECT
-    name,
-    setting,
-    CASE
-        WHEN name = 'shared_buffers' THEN setting || ' (' || ROUND(setting::numeric / 1024 / 1024, 1) || ' GB)'
-        WHEN name = 'work_mem' THEN setting || ' (' || ROUND(setting::numeric / 1024, 1) || ' MB)'
-        WHEN name = 'maintenance_work_mem' THEN setting || ' (' || ROUND(setting::numeric / 1024, 1) || ' MB)'
-        ELSE setting
-    END as readable_setting
-FROM pg_settings
-WHERE name IN ('shared_buffers', 'work_mem', 'maintenance_work_mem');
-```
-
-### I/O Bottlenecks
-```sql
--- Check I/O performance
-SELECT
-    schemaname,
-    tablename,
-    seq_scan,
-    seq_tup_read,
-    idx_scan,
-    idx_tup_fetch,
-    ROUND(seq_tup_read::numeric / GREATEST(seq_scan, 1), 2) as avg_tuples_per_seq_scan,
-    ROUND(idx_tup_fetch::numeric / GREATEST(idx_scan, 1), 2) as avg_tuples_per_idx_scan
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY seq_tup_read DESC;
-```
+See the GUC table in the README for what each one does.
 
 ## Related Runbooks
 
-- [TVIEW Health Check](tview-health-check.md) - Overall system health
-- [Queue Management](queue-management.md) - Queue-specific performance
-- [Table Analysis](../03-maintenance/table-analysis.md) - Storage optimization
-- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) - Specific refresh issues
-
-## Best Practices
-
-1. **Establish Baselines**: Measure performance during healthy periods
-2. **Monitor Trends**: Watch for gradual performance degradation
-3. **Set Alerts**: Configure monitoring for critical thresholds
-4. **Regular Analysis**: Review performance metrics monthly
-5. **Document Changes**: Track performance impact of configuration changes
-6. **Capacity Planning**: Use performance data for scaling decisions
+- [TVIEW Health Check](tview-health-check.md)
+- [Refresh Queue](queue-management.md)
+- [Table Analysis](../03-maintenance/table-analysis.md)
+- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md)

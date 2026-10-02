@@ -1,192 +1,59 @@
-# pg_tviews Upgrade & Migration Guides
+# pg_tviews Upgrade Guides
 
-This directory contains comprehensive procedures for upgrading PostgreSQL versions and pg_tviews extensions in production environments.
+Procedures for upgrading PostgreSQL and pg_tviews on servers that run TVIEWs.
 
 ## Quick Reference
 
-| Upgrade Type | Guide | Risk Level | Downtime | Testing Required |
-|--------------|-------|------------|----------|------------------|
-| **PostgreSQL Minor** | [Minor Version Upgrade](postgresql/minor-version-upgrade.md) | LOW | 5-15 min | Basic validation |
-| **PostgreSQL Major** | [pg15→pg16](postgresql/pg15-to-pg16.md) | HIGH | 30-120 min | Full regression testing |
-| **Extension Minor** | [Extension Updates](extension/extension-minor-update.md) | LOW | 1-5 min | Basic functionality |
-| **From 0.1.0** (≤ 0.1.0-beta.19) | [`scripts/migrate-from-0.1.0.sql`](../../../scripts/migrate-from-0.1.0.sql), see the README's *Upgrading* | HIGH | minutes | Full regression testing |
+| Upgrade | Guide | Downtime | What pg_tviews needs |
+|---------|-------|----------|----------------------|
+| PostgreSQL minor (16.4 to 16.6) | [Minor Version Upgrade](postgresql/minor-version-upgrade.md) | a restart | nothing; rebuild UNLOGGED TVIEWs only after an unclean shutdown |
+| PostgreSQL 15 to 16+ | [pg15 to pg16](postgresql/pg15-to-pg16.md) | pg_upgrade or dump/restore | same pg_tviews release built for the new major; update pg_tviews afterwards |
+| pg_tviews release to release | [Extension Updates](extension/extension-minor-update.md) | a restart, then one statement per database | `ALTER EXTENSION pg_tviews UPDATE`, then `SELECT * FROM tviews.pg_tviews_reregister_all()` |
+| pg_tviews `0.1.0` installs (up to 0.1.0-beta.19) | [`scripts/migrate-from-0.1.0.sql`](../../../scripts/migrate-from-0.1.0.sql), see the README, *Upgrading* | minutes | the script, in each database |
+| Problems | [Troubleshooting Upgrades](postgresql/troubleshooting-upgrades.md) | | |
 
-## Upgrade Planning
+Supported PostgreSQL versions: 16, 17, 18. How pg_tviews versions its extension SQL and
+upgrade scripts: [Extension versioning](../../development/extension-versioning.md).
 
-### Risk Assessment
+## Rules that apply to every upgrade
 
-#### LOW RISK (Minor Updates)
-- PostgreSQL patch releases (15.1 → 15.5)
-- Extension patch releases (0.1.0 → 0.1.1)
-- No schema changes, no data migration
-- Usually safe with proper testing
-
-#### MEDIUM RISK (Minor Version Changes)
-- PostgreSQL minor releases (15 → 16)
-- Extension minor releases (0.1.x → 0.2.x)
-- May include new features, some schema changes
-- Requires compatibility testing
-
-#### HIGH RISK (Major Changes)
-- PostgreSQL major releases (15 → 16 with pg_upgrade)
-- Extension major releases (0.x → 1.x)
-- Significant changes, potential data migration
-- Requires extensive testing and rollback planning
-
-### Prerequisites for All Upgrades
-
-- [ ] **Backup Strategy**: Full database backup with verified restore
-- [ ] **Maintenance Window**: Scheduled downtime with business approval
-- [ ] **Rollback Plan**: Tested procedure to revert if upgrade fails
-- [ ] **Testing Environment**: Identical staging environment for validation
-- [ ] **Communication Plan**: Stakeholder notification and status updates
-- [ ] **Monitoring Setup**: Enhanced monitoring during and after upgrade
+- **One change at a time.** Upgrade PostgreSQL with the pg_tviews release you run, then
+  pg_tviews (or the reverse), never both in one step.
+- **Back up first.** `pg_dump -Fc` of each database with pg_tviews; the dump includes
+  the TVIEW registrations (`tviews.pg_tview_meta`).
+- **No downgrade scripts.** Rolling back pg_tviews means reinstalling the previous
+  package and restoring the backup.
+- **Every database.** The library is shared by the whole server; each database with
+  pg_tviews needs its own `ALTER EXTENSION pg_tviews UPDATE`. Until then, writes to its
+  TVIEW base tables fail with
+  `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`.
+- **Never drop the extension to upgrade it.** `DROP EXTENSION pg_tviews` removes every
+  TVIEW registration.
+- **UNLOGGED TVIEWs** (the default) are empty after a crash, an immediate shutdown or a
+  physical restore. Check with `SELECT * FROM tviews.pg_tviews_replication_status();`
+  and rebuild with `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
 
 ## Pre-Upgrade Checklist
-
-### Database Preparation
-- [ ] Run pre-upgrade health checks
-- [ ] Verify all TVIEWs are functioning normally
-- [ ] Check disk space (2x database size minimum)
-- [ ] Validate backup integrity
-- [ ] Document current versions and configurations
-
-### Application Preparation
-- [ ] Notify application teams of maintenance window
-- [ ] Implement read-only mode if available
-- [ ] Stop non-critical background jobs
-- [ ] Prepare application rollback procedures
-
-### Team Preparation
-- [ ] Assemble upgrade team with required expertise
-- [ ] Review and test rollback procedures
-- [ ] Prepare monitoring dashboards
-- [ ] Set up communication channels
-
-## Upgrade Execution Framework
-
-### Phase 1: Preparation (1-4 hours)
-1. **Environment Setup**: Configure staging environment
-2. **Backup Creation**: Full database backup
-3. **Pre-Checks**: Run health and compatibility checks
-4. **Team Briefing**: Final coordination and assignments
-
-### Phase 2: Execution (downtime window)
-1. **Application Shutdown**: Stop application services
-2. **Upgrade Execution**: Perform the actual upgrade
-3. **Validation**: Run post-upgrade checks
-4. **Application Restart**: Bring services back online
-
-### Phase 3: Validation (1-4 hours)
-1. **Functionality Testing**: Verify all features work
-2. **Performance Validation**: Check performance meets requirements
-3. **Data Integrity**: Validate data consistency
-4. **Monitoring**: Ensure monitoring systems are working
-
-### Phase 4: Production Handover (30 minutes)
-1. **Documentation**: Record upgrade details and outcomes
-2. **Team Debrief**: Quick retrospective
-3. **Monitoring Handover**: Ensure monitoring team is aware
-4. **Support Readiness**: Confirm support team is prepared
-
-## Rollback Procedures
-
-### Immediate Rollback (< 30 minutes)
-If critical issues discovered immediately:
-1. Stop all services
-2. Restore from backup
-3. Verify rollback success
-4. Restart with original versions
-
-### Extended Rollback (< 4 hours)
-If issues discovered during validation:
-1. Assess impact and urgency
-2. Implement temporary workarounds if possible
-3. Schedule rollback window
-4. Execute controlled rollback
-5. Full validation after rollback
-
-### Rollback Success Criteria
-- [ ] All services restored to pre-upgrade state
-- [ ] Data integrity verified
-- [ ] Application functionality confirmed
-- [ ] Performance meets baseline requirements
-- [ ] Monitoring systems operational
-
-## Success Criteria
-
-### Technical Success
-- [ ] Upgrade completes without errors
-- [ ] All TVIEWs function correctly
-- [ ] Performance meets or exceeds baseline
-- [ ] Data integrity verified
-- [ ] Monitoring systems operational
-
-### Business Success
-- [ ] Applications functioning normally
-- [ ] User impact minimized
-- [ ] Stakeholder communication effective
-- [ ] Lessons learned documented
+- [ ] Backup taken and restore tested ([Backup Testing](../disaster-recovery/backup-strategy/backup-testing.md))
+- [ ] `scripts/pre-upgrade-checks.sh` passes in each database
+- [ ] Release notes (CHANGELOG) read for every version skipped
+- [ ] Procedure rehearsed on a copy of production
+- [ ] Maintenance window agreed; applications can be stopped or put read-only
 
 ## Supporting Scripts
 
-All upgrade guides reference executable scripts in the `scripts/` directory:
+In [`scripts/`](scripts/):
 
-- `pre-upgrade-checks.sh` - Comprehensive pre-upgrade validation
-- `upgrade-extension.sql` - Extension upgrade procedures
-- `post-upgrade-validation.sql` - Post-upgrade verification
+- `pre-upgrade-checks.sh`: read-only checks before an upgrade (PostgreSQL version,
+  installed and available pg_tviews versions, health-check errors, prepared
+  transactions). Run as `PGDATABASE=<db> docs/operations/upgrade/scripts/pre-upgrade-checks.sh`.
+- `post-upgrade-validation.sql`: versions, catalog revision, re-registrations still
+  pending, full health check, and each TVIEW compared with its view. Run as
+  `psql -X -v ON_ERROR_STOP=1 -d <db> -f docs/operations/upgrade/scripts/post-upgrade-validation.sql`.
 
-## Testing Requirements
-
-### Low Risk Upgrades
-- [ ] Basic functionality testing
-- [ ] Performance validation
-- [ ] Backup integrity verification
-
-### Medium Risk Upgrades
-- [ ] Full regression testing
-- [ ] Load testing
-- [ ] Failover testing
-- [ ] Performance benchmarking
-
-### High Risk Upgrades
-- [ ] Complete test suite execution
-- [ ] Production-like load testing
-- [ ] Disaster recovery testing
-- [ ] Multi-day stability testing
-
-## Common Pitfalls
-
-### Planning Phase
-- **Inadequate Testing**: Not testing in staging environment
-- **Poor Communication**: Not informing stakeholders properly
-- **Insufficient Backups**: Not having verified rollback capability
-
-### Execution Phase
-- **Time Pressure**: Rushing through critical steps
-- **Manual Errors**: Making mistakes in complex procedures
-- **Insufficient Monitoring**: Not watching for issues during upgrade
-
-### Validation Phase
-- **Superficial Testing**: Only testing happy path scenarios
-- **Performance Neglect**: Not validating performance requirements
-- **Premature Declaration**: Declaring success too early
-
-## Emergency Contacts
-
-**During Upgrade Window:**
-- Upgrade Coordinator: [primary contact]
-- Database Administrator: [DBA contact]
-- Application Support: [app team contact]
-- Infrastructure Support: [infra team contact]
-
-**After Hours:**
-- On-call Engineer: [pager/phone]
-- Management Escalation: [executive contact]
-
-## Version History
-
-- **v1.0**: Initial comprehensive upgrade guides
-- Covers PostgreSQL 15-17 and extension 0.1.x upgrades
-- Includes both pg_upgrade and logical migration paths
-- Comprehensive testing and rollback procedures
+## Success Criteria
+- [ ] `extversion` equals `tviews.pg_tviews_version()` in every database
+- [ ] `tviews.pg_tviews_health_check()` reports no warning or error
+- [ ] No TVIEW has `needs_reregister`, none is unexpectedly empty
+- [ ] Each TVIEW equals its view (post-upgrade validation step 4)
+- [ ] A test write to a base table propagates; applications work

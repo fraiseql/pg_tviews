@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Added
+
+- **`pg_tviews.uncascaded_policy`** (#157, #158): what a new TVIEW does about a base
+  table it reads that nothing links to its key (an uncorrelated subquery, a window
+  function). `warn` (default) names the tables in a WARNING, `error` refuses the
+  TVIEW, `full_refresh` refreshes the whole TVIEW at flush on every write to such a
+  table. The policy is read once at create time and stored with the TVIEW; the
+  writer's session setting never matters.
+- **`tviews.registry.uncascaded_tables` and `uncascaded_policy`** (#157, #158),
+  appended; `contract_version()` stays 1. The upgrade script marks every TVIEW for
+  re-registration (`SELECT * FROM tviews.pg_tviews_reregister_all()`), which fills
+  `uncascaded_tables`.
+- **`tviews.registry.cascade_kinds`** (ADR 0157): how a write to each base table maps
+  to TVIEW keys (`local`, `mapped`, `propagated`, `all_keys`), read from PostgreSQL's
+  query tree of the backing view (views, CTEs, subqueries and `UNION` branches
+  followed) rather than from the SQL text. Registration fails when that analysis and
+  `pg_depend` disagree on the tables the view reads, and warns about non-immutable
+  functions the view calls (the tables they read are not tracked). Stored in the new
+  `pg_tview_meta.key_mappings`, with, for each `mapped` table, the generated query that
+  turns changed rows into keys (schema-qualified names and operators, so it resolves
+  nothing through `search_path`). A mapping query that would scan a large table
+  sequentially is reported at create time with the index to add.
+  `tviews.pg_tviews_mapping_query(tview, base_table)` shows the query.
+
+### Fixed
+
+- **An UPDATE of a base table no longer fails when its TVIEW projects an
+  extension-typed column** (#156, regression in 0.1.0-beta.20). The refresh's no-op
+  guard compared rows with `IS DISTINCT FROM`, which looks `=` up by name; under the
+  owner's `search_path = pg_catalog, pg_temp` (#141) the `=` of `ltree`, `citext`,
+  `hstore` or a domain over them was not found. Columns of a type with no `=` at all
+  (`json`, `point`) failed the same way before 0.1.0-beta.20, whatever the
+  search_path. The guard, and the row comparison of `pg_tviews_create_or_replace()`,
+  now compare record images (`*=`, schema-qualified), which need no per-type operator.
+- **Writes to a table read in a subquery or through a view refresh the TVIEW**
+  (#157, #158). A table read only by `ARRAY(SELECT … WHERE l.fk_order = o.pk_order)`,
+  or through a plain view with `GROUP BY`, got triggers but no cascade, and its writes
+  were dropped without a word (#158 named only the view). Writes now map to the keys
+  through the condition that links them (ADR 0157); a table nothing links to the key
+  is named at create time instead of being dropped silently.
+- **TRUNCATE of a base table refreshes its TVIEWs**: it left them stale.
+- **No WARNING on every write without jsonb_delta** (#159). Each refresh that would
+  have used smart patching sent `WARNING: jsonb_delta extension not installed` to the
+  client. Each backend now writes it once to the server log (`LOG`), `CREATE
+  EXTENSION pg_tviews` warns once when jsonb_delta is absent, and
+  `pg_tviews_health_check()` reports it as before. The `union_duplicate_policy =
+  'first'` duplicate-row message and the "initial column not found" cascade message,
+  also sent on every write, are logged once per backend the same way.
+
+### Changed
+
+- **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The
+  cascade paths re-parsed from the definition's SQL text are replaced by an analysis
+  of the backing view's query tree. A table whose key is a column of the changed row
+  keeps its row trigger (and the direct-patch and fan-out fast paths). Any other
+  table gets statement-level triggers that map all the rows a statement changed with
+  one query over its transition tables, instead of one lookup per row and hop.
+  Single-row writes cost the same; a single-row write two hops away is about 30%
+  faster (`test/sql/real_benchmark/results/adr_0157`).
+- **After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all()`**: it re-derives every TVIEW and
+  installs the new triggers. Until then, a TVIEW keeps its old triggers, and a write
+  its old metadata maps through more than one hop refreshes it in full (logged once
+  per backend).
+- **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
+  are gone, CI builds, lints and runs every SQL suite on each supported version, and
+  `CREATE EXTENSION pg_tviews` on an older server fails with
+  `pg_tviews requires PostgreSQL 16 or later`.
+- **The no-op guard uses binary equality** (#156). A change that a type's `=` treats
+  as equal but that changes the stored bytes is now written to the TVIEW: `citext`
+  `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly
+  what its view returns. NULL still equals NULL.
+
+### Documentation
+
+- **The operations runbooks query only what pg_tviews has** (#150). The runbooks,
+  their scripts and `docs/TROUBLESHOOTING.md` queried relations and columns that never
+  existed (`pg_tviews_metadata`, `pg_tviews_queue`, `last_refreshed`, …). They now use
+  `tviews.registry`, `pg_tviews_health_check()`, `pg_tviews_profile()`, `updated_at`
+  of each TVIEW and the PostgreSQL statistics views, and describe the refresh queue
+  as it is: in memory, inside each transaction. `queue-cleanup.sql` is archived (there
+  is nothing to clean). A regression test runs every runbook script and rejects the
+  phantom names.
+- The bulk-load section of the README runs the suspend/resume pattern in one
+  transaction: suspension ends with the transaction.
+
 ## [0.1.0-beta.20] - 2026-10-01
 
 ### Added

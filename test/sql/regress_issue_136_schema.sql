@@ -188,8 +188,9 @@ DO $$ BEGIN
     IF app.tviews_triggers_on('app.tb_post') <> 0 THEN
         RAISE EXCEPTION '#136 FAIL: DROP TABLE tv_post left triggers on tb_post';
     END IF;
-    IF app.tviews_triggers_on('app.tb_user') <> 2 THEN
-        RAISE EXCEPTION '#136 FAIL: tb_user should keep only tv_user''s two triggers, has %',
+    -- tv_user's row, flush and TRUNCATE triggers.
+    IF app.tviews_triggers_on('app.tb_user') <> 3 THEN
+        RAISE EXCEPTION '#136 FAIL: tb_user should keep only tv_user''s three triggers, has %',
             app.tviews_triggers_on('app.tb_user');
     END IF;
 END $$;
@@ -230,8 +231,10 @@ SELECT tviews.pg_tviews_create('tv_invoice_line_adjustment_with_a_deliberately_l
       ON a.pk_invoice_line_adjustment_with_a_deliberately_long_name_a
        = b.fk_invoice_line_adjustment_with_a_deliberately_long_name_a $$);
 DO $$ BEGIN
-    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 4 THEN
-        RAISE EXCEPTION '#136 FAIL: expected two triggers per TVIEW on the shared table, got %',
+    -- tv_..._a: row, flush, TRUNCATE; tv_..._b maps it through a query: three delta
+    -- triggers, flush, TRUNCATE. All eight names stay distinct within 63 bytes.
+    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 8 THEN
+        RAISE EXCEPTION '#136 FAIL: expected 3 + 5 triggers on the shared table, got %',
             app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a');
     END IF;
 END $$;
@@ -244,8 +247,8 @@ DO $$ BEGIN
 END $$;
 SELECT tviews.pg_tviews_drop('invoice_line_adjustment_with_a_deliberately_long_name_b');
 DO $$ BEGIN
-    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 2 THEN
-        RAISE EXCEPTION '#136 FAIL: dropping one long-named TVIEW should leave the other''s two triggers';
+    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 3 THEN
+        RAISE EXCEPTION '#136 FAIL: dropping one long-named TVIEW should leave the other''s three triggers';
     END IF;
 END $$;
 
@@ -288,8 +291,11 @@ SELECT tviews.pg_tviews_create('tv_flush_y', $$
     SELECT f.pk_flush_y, f.id, f.fk_y, jsonb_build_object('v', y.v) AS data
     FROM app.tb_flush_y f JOIN app.tb_y y ON y.pk_y = f.fk_y $$);
 DO $$ BEGIN
-    IF app.tviews_triggers_on('app.tb_y') <> 4 THEN
-        RAISE EXCEPTION '#136 FAIL: tv_y and tv_flush_y should each have two triggers on tb_y';
+    -- tv_y: row, flush, TRUNCATE; tv_flush_y maps tb_y through a query: three delta
+    -- triggers, flush, TRUNCATE.
+    IF app.tviews_triggers_on('app.tb_y') <> 8 THEN
+        RAISE EXCEPTION '#136 FAIL: tv_y and tv_flush_y should have 3 + 5 triggers on tb_y, got %',
+            app.tviews_triggers_on('app.tb_y');
     END IF;
 END $$;
 

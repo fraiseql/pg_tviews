@@ -23,4 +23,7 @@ pub mod graph;
 pub mod triggers;
 
 pub use graph::{DependencyGraph, find_base_tables};
-pub use triggers::{install_triggers, remove_entity_triggers, sync_entity_triggers};
+pub use triggers::{
+    TriggerPlan, TriggerSet, install_triggers, remove_entity_triggers, sync_entity_triggers,
+    trigger_plan,
+};

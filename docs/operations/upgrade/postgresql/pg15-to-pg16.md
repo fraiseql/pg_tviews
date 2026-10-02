@@ -1,421 +1,120 @@
-# PostgreSQL 15 to 16 Major Version Upgrade
+# Upgrading from PostgreSQL 15 to 16
 
 ## Scope
-Upgrading from PostgreSQL 15.x to 16.x using both pg_upgrade (in-place) and logical migration methods.
+pg_tviews supports PostgreSQL 16, 17 and 18; on an older server
+`CREATE EXTENSION pg_tviews` fails with `pg_tviews requires PostgreSQL 16 or later`.
+A database that runs pg_tviews on PostgreSQL 15 (with a release up to `0.1.0-beta.20`)
+must move to PostgreSQL 16 or later **before** pg_tviews can be updated to a current
+release. The same steps apply to 15 to 17 or 15 to 18.
 
-## Risk Level
-**HIGH** - Major version changes require extensive testing and careful planning
+## Approach
+Change one thing at a time:
+
+1. Move PostgreSQL from 15 to 16, keeping the pg_tviews release you run now.
+2. Then update pg_tviews on PostgreSQL 16.
+
+Doing both at once means restoring a catalog written by one release into another, and
+leaves no clean rollback point.
 
 ## Prerequisites
-- PostgreSQL 15.x currently running and stable
-- At least 2x database size in free disk space
-- Full database backup completed and tested
-- Maintenance window scheduled (2-4 hours)
-- Staging environment with identical data for testing
-- pg_tviews extension compatible with PostgreSQL 16
-- Application compatibility verified with PostgreSQL 16
+- A verified backup (`pg_dump -Fc` of each database)
+- PostgreSQL 16 installed next to 15
+- **The pg_tviews release you run now, built for PostgreSQL 16**, installed into the
+  16 installation (`cargo pgrx install --release --pg-config /usr/lib/postgresql/16/bin/pg_config --no-default-features --features pg16`
+  from that release's tag), plus `jsonb_delta` for 16 if you use it
+- `shared_preload_libraries = 'pg_tviews'` in the new cluster's `postgresql.conf`
+- A test run of the whole procedure on a copy of production
 
-## Impact Assessment
-
-### Downtime
-- **pg_upgrade method**: 30-90 minutes
-- **Logical migration**: 60-180 minutes (longer but safer)
-- **Testing time**: 4-8 hours in staging
-
-### TVIEW Impact
-- **Data**: Schema compatible, no data migration needed
-- **Functionality**: Extension must be reinstalled
-- **Performance**: May improve with PostgreSQL 16 optimizations
-- **Compatibility**: Full compatibility maintained
-
-### Compatibility Considerations
-- **Applications**: May need driver updates for PostgreSQL 16
-- **Extensions**: All extensions need PostgreSQL 16 versions
-- **System Catalogs**: Major changes in internal structure
-- **Configuration**: Some parameters may have different defaults
-
-## Pre-Upgrade Planning
-
-### Environment Assessment
-```bash
-# Check current PostgreSQL version and configuration
-psql -h $DB_HOST -U $DB_USER -c "SELECT version();"
-psql -h $DB_HOST -U $DB_USER -c "SHOW ALL;" > $BACKUP_DIR/postgres-config-before.txt
-
-# Check database size and objects
-psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "
-SELECT
-    current_database() as database,
-    pg_size_pretty(pg_database_size(current_database())) as size,
-    (SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')) as user_tables,
-    (SELECT count(*) FROM pg_stat_user_indexes) as indexes,
-    (SELECT count(*) FROM pg_extension) as extensions
-;"
-
-# Check for deprecated features
-psql -h $DB_HOST -U $DB_USER -c "
-SELECT name, current_setting(name) as value
-FROM pg_settings
-WHERE name LIKE '%deprecated%' OR name LIKE '%obsolete%'
-    AND current_setting(name) != '';
-"
-```
-
-### TVIEW-Specific Assessment
+## Pre-Upgrade Checks
+On the PostgreSQL 15 server, in each database with pg_tviews:
 ```sql
--- Assess TVIEW upgrade impact
-SELECT
-    COUNT(*) as total_tviews,
-    COUNT(*) FILTER (WHERE last_refresh_duration_ms > 30000) as slow_tviews,
-    pg_size_pretty(SUM(pg_total_relation_size(entity_name))) as total_tview_size,
-    MAX(last_refreshed) as last_refresh_time
-FROM pg_tviews_metadata;
-
--- Check for any TVIEW-specific configurations
-SELECT name, setting
-FROM pg_settings
-WHERE name LIKE '%tview%' OR name LIKE '%refresh%';
+SELECT version();
+SELECT extversion, extnamespace::regnamespace AS schema
+FROM pg_extension WHERE extname = 'pg_tviews';
+SELECT * FROM pg_tviews_health_check();
 ```
+Note `extversion`. `0.1.0` means a release up to `0.1.0-beta.19`, installed in the
+schema shown (its functions are not in `tviews`); later releases live in schema
+`tviews`, so qualify the call as `tviews.pg_tviews_health_check()` there.
 
-### Compatibility Testing Plan
-- [ ] Install PostgreSQL 16 in staging environment
-- [ ] Restore production backup to staging
-- [ ] Test all application functionality
-- [ ] Run full TVIEW test suite
-- [ ] Performance benchmarking
-- [ ] Failover and recovery testing
+## Method 1: pg_upgrade
+pg_upgrade copies the data files and keeps object OIDs, so the extension, its catalog
+and the TVIEWs come over as they are.
 
-## Method 1: pg_upgrade (In-Place Upgrade)
-
-### Advantages
-- Faster upgrade process
-- Less disk space required
-- Preserves all database objects exactly
-
-### Disadvantages
-- Higher risk if issues occur
-- Requires PostgreSQL downtime during upgrade
-- More complex rollback if needed
-
-### Step-by-Step pg_upgrade Procedure
-
-#### Phase 1: Preparation (60 minutes)
 ```bash
-# Install PostgreSQL 16 alongside 15
-sudo apt update
-sudo apt install postgresql-16 postgresql-client-16
-
-# Stop PostgreSQL 15
-sudo systemctl stop postgresql
-
-# Create new data directory for PostgreSQL 16
-sudo mkdir -p /var/lib/postgresql/16/main
-sudo chown postgres:postgres /var/lib/postgresql/16/main
-
-# Initialize PostgreSQL 16 cluster
-sudo -u postgres /usr/lib/postgresql/16/bin/initdb -D /var/lib/postgresql/16/main
-
-# Copy configuration from PostgreSQL 15
-sudo cp /etc/postgresql/15/main/*.conf /etc/postgresql/16/main/
-sudo cp /etc/postgresql/15/main/pg_hba.conf /etc/postgresql/16/main/
-sudo cp /etc/postgresql/15/main/pg_ident.conf /etc/postgresql/16/main/
-
-# Adjust configuration for PostgreSQL 16
-sudo -u postgres vi /etc/postgresql/16/main/postgresql.conf
-# - Update data_directory
-# - Update port if needed (default 5433 for 16)
-# - Adjust other settings as needed
-```
-
-#### Phase 2: Upgrade Execution (30-60 minutes)
-```bash
-# Run pg_upgrade in check mode first
-sudo -u postgres /usr/lib/postgresql/16/bin/pg_upgrade \
+# On a stopped PostgreSQL 15 cluster and a fresh, stopped PostgreSQL 16 cluster
+/usr/lib/postgresql/16/bin/pg_upgrade \
     --old-datadir=/var/lib/postgresql/15/main \
     --new-datadir=/var/lib/postgresql/16/main \
     --old-bindir=/usr/lib/postgresql/15/bin \
     --new-bindir=/usr/lib/postgresql/16/bin \
-    --old-port=5432 \
-    --new-port=5433 \
     --check
-
-# If check passes, run actual upgrade
-sudo -u postgres /usr/lib/postgresql/16/bin/pg_upgrade \
-    --old-datadir=/var/lib/postgresql/15/main \
-    --new-datadir=/var/lib/postgresql/16/main \
-    --old-bindir=/usr/lib/postgresql/15/bin \
-    --new-bindir=/usr/lib/postgresql/16/bin \
-    --old-port=5432 \
-    --new-port=5433
-
-# Check upgrade log for errors
-cat /var/lib/postgresql/16/main/pg_upgrade_internal.log
 ```
+`--check` fails with `Your installation references loadable libraries that are missing
+from the new installation` when pg_tviews (or jsonb_delta) is not installed for 16.
+Run without `--check` once it passes, start the 16 cluster, then run the validation
+below. If an UNLOGGED TVIEW comes back empty, rebuild it (validation step 3).
 
-#### Phase 3: Service Migration (15 minutes)
+## Method 2: pg_dump / pg_restore
 ```bash
-# Stop both PostgreSQL instances
-sudo systemctl stop postgresql
-
-# Update configuration to use PostgreSQL 16
-sudo ln -sf /etc/postgresql/16/main /etc/postgresql/main
-sudo ln -sf /var/lib/postgresql/16/main /var/lib/postgresql/main
-
-# Start PostgreSQL 16
-sudo systemctl start postgresql
-
-# Verify upgrade success
-psql -c "SELECT version();"
-psql -d $DB_NAME -c "SELECT pg_tviews_version();"
+pg_dump -Fc -h old-host -f /backups/mydb-pg15.dump mydb          # with the 15 client or newer
+createdb -h new-host mydb
+pg_restore -h new-host --exit-on-error --dbname=mydb /backups/mydb-pg15.dump
 ```
+The dump carries the TVIEW registrations from `0.1.0-beta.19` on (the catalog is
+dumped with `pg_extension_config_dump`). With an older release, the restored TVIEWs
+are not registered: use pg_upgrade, or first update pg_tviews on PostgreSQL 15 to
+`0.1.0-beta.19` or `0.1.0-beta.20`.
 
-#### Phase 4: Extension Reinstallation
-```sql
--- Drop and recreate pg_tviews extension
-DROP EXTENSION IF EXISTS pg_tviews;
-CREATE EXTENSION pg_tviews;
+## Validation
+On PostgreSQL 16, in each database (here for a release installed in schema `tviews`;
+for a `0.1.0` install use the functions in its own schema):
 
--- Verify TVIEWs are accessible
-SELECT COUNT(*) FROM pg_tviews_metadata;
-SELECT pg_tviews_health_check();
-```
+1. Versions and health:
+   ```sql
+   SELECT version();
+   SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
+   SELECT status, component, severity, message
+   FROM tviews.pg_tviews_health_check()
+   WHERE severity <> 'info';
+   ```
+2. TVIEWs and their contents:
+   ```bash
+   psql -X -v ON_ERROR_STOP=1 -d mydb -f docs/operations/runbooks/scripts/health-check.sql
+   ```
+3. Emptied UNLOGGED TVIEWs:
+   ```sql
+   SELECT * FROM tviews.pg_tviews_replication_status();
+   SELECT * FROM tviews.pg_tviews_rebuild_all();
+   ```
+4. A write propagates:
+   ```sql
+   BEGIN;
+   UPDATE public.tb_post SET title = title || ' (upgrade check)' WHERE pk_post = 1;
+   SELECT data->>'title' FROM public.tv_post WHERE pk_post = 1;
+   ROLLBACK;
+   ```
+5. Statistics: pg_upgrade does not carry planner statistics over. Run
+   `vacuumdb --all --analyze-in-stages`.
 
-## Method 2: Logical Migration (pg_dump + pg_restore)
+## Then update pg_tviews
+With PostgreSQL 16 running:
 
-### Advantages
-- Lower risk approach
-- Can be tested thoroughly in advance
-- Easier rollback if issues occur
-- Can migrate to different architecture
+- `extversion` = `0.1.0` (releases up to `0.1.0-beta.19`): install the current release
+  and run `scripts/migrate-from-0.1.0.sql` in each database (README, "Upgrading").
+- Later releases: [Extension Updates](../extension/extension-minor-update.md)
+  (`ALTER EXTENSION pg_tviews UPDATE`, then `SELECT * FROM tviews.pg_tviews_reregister_all();`).
 
-### Disadvantages
-- Longer downtime
-- More disk space required
-- Statistics need rebuilding
-- Sequences may need adjustment
-
-### Step-by-Step Logical Migration
-
-#### Phase 1: Schema Migration (30 minutes)
-```bash
-# Create new PostgreSQL 16 instance
-sudo systemctl stop postgresql
-sudo apt install postgresql-16
-sudo systemctl start postgresql
-
-# Create target database
-createdb -O $DB_OWNER $DB_NAME
-
-# Dump schema only first
-pg_dump -h $OLD_HOST -U $DB_USER --schema-only --no-owner --no-privileges $DB_NAME > schema.sql
-
-# Restore schema to PostgreSQL 16
-psql -h $NEW_HOST -U $DB_USER -d $DB_NAME -f schema.sql
-```
-
-#### Phase 2: Data Migration (60-120 minutes)
-```bash
-# Dump data with parallel processing
-pg_dump -h $OLD_HOST -U $DB_USER \
-    --data-only \
-    --compress=9 \
-    --format=directory \
-    --jobs=4 \
-    --no-owner \
-    --exclude-schema=pg_toast \
-    --file=data_dump \
-    $DB_NAME
-
-# Restore data to PostgreSQL 16
-pg_restore -h $NEW_HOST -U $DB_USER \
-    --jobs=4 \
-    --verbose \
-    --dbname=$DB_NAME \
-    data_dump
-```
-
-#### Phase 3: Extension and Configuration
-```sql
--- Install pg_tviews extension
-CREATE EXTENSION pg_tviews;
-
--- Recreate TVIEWs (they won't be in the dump)
--- This requires running the original TVIEW creation scripts
--- Adjust paths and scripts as needed
-psql -f /path/to/tview_creation_scripts.sql
-
--- Update sequences if needed
-SELECT 'SELECT setval(''' || schemaname || '.' || sequencename || ''', (SELECT max(' || attname || ') FROM ' || schemaname || '.' || tablename || '));'
-FROM pg_sequences s
-JOIN information_schema.columns c ON c.column_default LIKE '%' || s.sequencename || '%'
-WHERE c.table_schema = s.schemaname;
-```
-
-## Post-Upgrade Validation
-
-### Comprehensive Testing
-```bash
-# Run post-upgrade validation script
-psql -d $DB_NAME -f docs/operations/upgrade/scripts/post-upgrade-validation.sql
-
-# Test TVIEW functionality
-psql -d $DB_NAME -c "
-SELECT
-    COUNT(*) as tviews_present,
-    COUNT(*) FILTER (WHERE last_error IS NULL) as tviews_healthy,
-    COUNT(*) FILTER (WHERE last_refreshed > NOW() - INTERVAL '1 hour') as recently_refreshed
-FROM pg_tviews_metadata;
-"
-
-# Test application connectivity
-# Replace with your application test commands
-curl -f http://app-server/health
-```
-
-### Performance Validation
-```sql
--- Compare performance metrics
-SELECT
-    'Performance validation' as check,
-    (SELECT AVG(last_refresh_duration_ms) FROM pg_tviews_metadata WHERE last_refreshed > NOW() - INTERVAL '1 hour') as current_avg_refresh,
-    (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active') as active_connections,
-    (SELECT sum(blks_hit) + sum(blks_read) FROM pg_stat_database WHERE datname = current_database()) as block_access
-FROM pg_stat_bgwriter;
-```
-
-## Rollback Procedures
-
-### pg_upgrade Rollback (< 30 minutes)
-```bash
-# Stop PostgreSQL 16
-sudo systemctl stop postgresql
-
-# Restore configuration to PostgreSQL 15
-sudo ln -sf /etc/postgresql/15/main /etc/postgresql/main
-sudo ln -sf /var/lib/postgresql/15/main /var/lib/postgresql/main
-
-# Start PostgreSQL 15
-sudo systemctl start postgresql
-
-# Verify rollback
-psql -c "SELECT version();"
-```
-
-### Logical Migration Rollback (< 60 minutes)
-```bash
-# Stop applications
-sudo systemctl stop application-services
-
-# Drop and recreate database from backup
-dropdb $DB_NAME
-createdb -O $DB_OWNER $DB_NAME
-pg_restore -d $DB_NAME /path/to/pre-upgrade/backup
-
-# Restart applications
-sudo systemctl start application-services
-```
-
-## Troubleshooting
-
-### pg_upgrade Issues
-```bash
-# Check upgrade logs
-cat /var/lib/postgresql/16/main/pg_upgrade_internal.log
-cat /var/lib/postgresql/16/main/pg_upgrade_server.log
-
-# Common issues:
-# - Incompatible extensions
-# - Custom data types
-# - Large objects issues
-
-# Fix extension issues
-psql -d $DB_NAME -c "DROP EXTENSION problematic_extension;"
-# Then rerun pg_upgrade
-```
-
-### Logical Migration Issues
-```bash
-# Check for data consistency issues
-psql -d $DB_NAME -c "
-SELECT schemaname, tablename,
-       pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
-FROM pg_tables
-WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
-LIMIT 5;
-"
-
-# Fix sequence issues
-SELECT 'SELECT setval(''' || schemaname || '.' || sequencename || ''', (SELECT COALESCE(max(' || attname || '), 1) FROM ' || schemaname || '.' || tablename || '));'
-FROM pg_sequences s
-JOIN information_schema.columns c ON c.column_default LIKE '%' || s.sequencename || '%';
-```
-
-### TVIEW-Specific Issues
-```sql
--- Recreate TVIEWs if needed
-SELECT 'SELECT pg_tviews_convert_existing_table(''' || table_schema || '.' || table_name || ''');'
-FROM information_schema.tables
-WHERE table_type = 'BASE TABLE'
-  AND table_schema NOT IN ('pg_catalog', 'information_schema')
-  AND table_name LIKE '%tview%';
-```
-
-## Success Criteria
-
-### Technical Success
-- [ ] PostgreSQL 16 running and accessible
-- [ ] All databases restored successfully
-- [ ] pg_tviews extension installed and functional
-- [ ] All TVIEWs present and operational
-- [ ] Application connections working
-- [ ] Performance within acceptable ranges
-
-### Data Integrity Success
-- [ ] Row counts match between versions
-- [ ] Data consistency verified
-- [ ] Foreign key constraints satisfied
-- [ ] Sequences at correct values
-
-### Application Success
-- [ ] All application features working
-- [ ] User acceptance testing passed
-- [ ] Error rates within normal bounds
-- [ ] Response times acceptable
-
-## Performance Expectations
-
-### PostgreSQL 16 Improvements
-- Better query optimization
-- Improved parallel processing
-- Enhanced memory management
-- Faster index operations
-- Better vacuum performance
-
-### TVIEW Performance Impact
-- May see 10-30% performance improvement
-- Reduced memory usage
-- Faster refresh operations
-- Better concurrency handling
-
-## Documentation Requirements
-
-### Upgrade Record
-- [ ] Method used (pg_upgrade vs logical)
-- [ ] Versions before and after
-- [ ] Duration and issues encountered
-- [ ] Performance impact assessment
-- [ ] Rollback procedures tested
-
-### Change Management
-- [ ] Change request approved
-- [ ] Risk assessment completed
-- [ ] Communication plan executed
-- [ ] Success criteria met
+## Rollback
+- pg_upgrade (without `--link`): the 15 cluster is untouched until you start 16 and
+  remove it; start 15 again.
+- pg_upgrade with `--link`: once the 16 cluster has started, the 15 cluster can no
+  longer be used safely; restore from backup.
+- pg_dump / pg_restore: the source server is untouched; point applications back to it.
 
 ## Related Guides
-
-- [Minor Version Upgrade](minor-version-upgrade.md) - For patch-level upgrades
-- [Extension versioning](../../../development/extension-versioning.md) - For pg_tviews upgrades
-- [Troubleshooting Upgrades](troubleshooting-upgrades.md) - For upgrade issue resolution
-- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md) - For upgrade failures
+- [PostgreSQL Minor Upgrade](minor-version-upgrade.md)
+- [Extension Updates](../extension/extension-minor-update.md)
+- [Extension versioning](../../../development/extension-versioning.md)
+- [Troubleshooting Upgrades](troubleshooting-upgrades.md)
+- [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md)

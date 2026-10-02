@@ -36,13 +36,7 @@ CREATE TEMP TABLE known AS
     UNION SELECT unnest(ARRAY[
         'pg_tviews_test', 'pg_tviews_benchmark', 'pg_tviews_recovery_test',
         'pg_tviews_user', 'pg_tviews_admin', 'pg_tviews_test_user',
-        'pg_tview_meta_backup', 'pg_tviews_auto_convert', 'pg_tviews_auto_convert_plan'])
-    -- Relations the operations runbooks query but pg_tviews never had, until
-    -- #150 rewrites them: remove each name as it goes.
-    UNION SELECT unnest(ARRAY[
-        'pg_tviews_metadata', 'pg_tviews_queue', 'pg_tviews_queue_archive',
-        'pg_tviews_metrics', 'pg_tviews_dependencies', 'pg_tviews_maintenance_log',
-        'pg_tviews_performance_baseline', 'pg_tview_queue', 'pg_tview_meta_audit']);
+        'pg_tview_meta_backup', 'pg_tviews_auto_convert', 'pg_tviews_auto_convert_plan']);
 
 DO $$
 DECLARE

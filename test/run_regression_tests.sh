@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the pg_tviews open-issue regression suite (test/sql/regress_issue_*.sql).
+# Run the pg_tviews regression suite (test/sql/regress_*.sql).
 #
 # Each test runs in a throwaway database. Tests that require the real jsonb_delta
 # extension are skipped (not failed) when it is not installed in the cluster, so
@@ -28,7 +28,7 @@ have_jsonb_delta=$(psql -d postgres -tAc \
   "SELECT count(*) FROM pg_available_extensions WHERE name='jsonb_delta'" 2>/dev/null || echo 0)
 
 pass=0 fail=0 skip=0 failed_names=""
-for f in "$sqldir"/regress_issue_*.sql; do
+for f in "$sqldir"/regress_*.sql; do
   name="$(basename "$f")"
   # The fallback test deliberately runs without jsonb_delta; everything else needs it.
   if [[ "$name" != *fallback* && "$have_jsonb_delta" == "0" ]]; then
@@ -44,9 +44,24 @@ for f in "$sqldir"/regress_issue_*.sql; do
       echo "FAIL  $name -> unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
-    want=$(sed -n 's/^-- expect-output: //p' "$f" | head -1)
-    if [[ -n "$want" ]] && ! grep -q "$want" /tmp/$tmpdb.out; then
-      echo "FAIL  $name -> expected output containing '$want'"
+    # Every `-- expect-output: <text>` line must appear in the output, every
+    # `-- expect-once: <text>` line exactly once, and no `-- reject-output: <text>` line.
+    missing="" unwanted=""
+    while IFS= read -r once; do
+      [[ -n "$once" ]] && [[ "$(grep -cF -- "$once" /tmp/$tmpdb.out)" != 1 ]] && { missing="$once (exactly once)"; break; }
+    done < <(sed -n 's/^-- expect-once: //p' "$f")
+    while IFS= read -r want; do
+      [[ -n "$want" ]] && ! grep -qF -- "$want" /tmp/$tmpdb.out && { missing="$want"; break; }
+    done < <(sed -n 's/^-- expect-output: //p' "$f")
+    while IFS= read -r reject; do
+      [[ -n "$reject" ]] && grep -qF -- "$reject" /tmp/$tmpdb.out && { unwanted="$reject"; break; }
+    done < <(sed -n 's/^-- reject-output: //p' "$f")
+    if [[ -n "$missing" ]]; then
+      echo "FAIL  $name -> expected output containing '$missing'"
+      fail=$((fail+1)); failed_names="$failed_names $name"; continue
+    fi
+    if [[ -n "$unwanted" ]]; then
+      echo "FAIL  $name -> unexpected output containing '$unwanted'"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
     echo "PASS  $name"; pass=$((pass+1))

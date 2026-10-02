@@ -1,119 +1,43 @@
--- pg_tviews Refresh Status Script
--- Monitor current refresh operations and queue status
--- Run: psql -f docs/operations/runbooks/scripts/refresh-status.sql
+-- pg_tviews refresh status: how each TVIEW is kept up to date, and how recently
+-- its rows changed.
+-- Run: psql -X -v ON_ERROR_STOP=1 -d <database> -f docs/operations/runbooks/scripts/refresh-status.sql
+--
+-- Read-only. pg_tviews refreshes TVIEW rows inside the transaction that writes the
+-- base tables; there is no refresh job and no queue table to inspect.
 
-\echo '=== pg_tviews Refresh Status ==='
-\echo 'Timestamp:' :DATE
-\echo ''
-
--- Current refresh activity
-\echo '1. Active Refresh Operations:'
-SELECT
-    pid,
-    query_start,
-    EXTRACT(EPOCH FROM (NOW() - query_start)) as duration_seconds,
-    LEFT(query, 100) as query_preview
-FROM pg_stat_activity
-WHERE query LIKE '%tview%' OR query LIKE '%refresh%'
-  AND state = 'active'
-ORDER BY query_start;
+\echo '=== pg_tviews refresh status ==='
 
 \echo ''
-\echo '2. Recent Refresh History (last 30 minutes):'
-SELECT
-    entity_name,
-    last_refreshed,
-    last_refresh_duration_ms / 1000 as duration_seconds,
-    CASE
-        WHEN last_error IS NOT NULL THEN 'FAILED'
-        WHEN last_refresh_duration_ms > 30000 THEN 'SLOW'
-        ELSE 'SUCCESS'
-    END as status,
-    COALESCE(LEFT(last_error, 50), 'None') as error_preview
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '30 minutes'
-ORDER BY last_refreshed DESC;
+\echo '1. How writes to each base table reach each TVIEW'
+\echo '   local: key read off the row; mapped: one query per statement;'
+\echo '   propagated: through an embedded TVIEW; all_keys: see uncascaded_policy'
+SELECT r.schema, r.name, k.key AS base_table, k.value AS kind, r.uncascaded_policy
+FROM tviews.registry r, pg_catalog.jsonb_each_text(r.cascade_kinds) k
+ORDER BY r.schema, r.name, k.key;
 
 \echo ''
-\echo '3. Queue Processing Status:'
-SELECT
-    COUNT(*) as total_queued,
-    COUNT(*) FILTER (WHERE processed_at IS NULL) as pending,
-    COUNT(*) FILTER (WHERE processed_at IS NOT NULL AND error_message IS NULL) as successful,
-    COUNT(*) FILTER (WHERE error_message IS NOT NULL) as failed,
-    ROUND(AVG(EXTRACT(EPOCH FROM (processed_at - created_at))), 1) as avg_processing_time_seconds,
-    ROUND(MAX(EXTRACT(EPOCH FROM (processed_at - created_at))), 1) as max_processing_time_seconds
-FROM pg_tviews_queue
-WHERE created_at > NOW() - INTERVAL '1 hour';
+\echo '2. TVIEWs to re-register after an upgrade (SELECT * FROM tviews.pg_tviews_reregister_all())'
+SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''
-\echo '4. Queue Backlog Analysis:'
-SELECT
-    priority,
-    COUNT(*) as count,
-    ROUND(AVG(EXTRACT(EPOCH FROM (NOW() - created_at))), 0) as avg_age_seconds,
-    MIN(created_at) as oldest_item
-FROM pg_tviews_queue
-WHERE processed_at IS NULL
-GROUP BY priority
-ORDER BY
-    CASE priority
-        WHEN 'high' THEN 1
-        WHEN 'normal' THEN 2
-        WHEN 'low' THEN 3
-    END;
+\echo '3. Last content change and write activity per TVIEW table'
+SELECT pg_catalog.format(
+           'SELECT %L AS tview, max(t.updated_at) AS last_change, '
+           '(SELECT n_tup_ins FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_inserted, '
+           '(SELECT n_tup_upd FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_updated, '
+           '(SELECT n_tup_del FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_deleted '
+           'FROM %I.%I t',
+           r.schema || '.' || r.name,
+           pg_catalog.quote_ident(r.schema) || '.' || pg_catalog.quote_ident(r.name),
+           pg_catalog.quote_ident(r.schema) || '.' || pg_catalog.quote_ident(r.name),
+           pg_catalog.quote_ident(r.schema) || '.' || pg_catalog.quote_ident(r.name),
+           r.schema, r.name)
+FROM tviews.registry r
+WHERE r.schema IS NOT NULL
+ORDER BY r.schema, r.name
+\gexec
 
 \echo ''
-\echo '5. Failed Refreshes (last 24 hours):'
-SELECT
-    entity_name,
-    COUNT(*) as failure_count,
-    MAX(last_refreshed) as last_failure_time,
-    LEFT(MAX(last_error), 100) as latest_error
-FROM pg_tviews_metadata
-WHERE last_error IS NOT NULL
-  AND last_refreshed > NOW() - INTERVAL '24 hours'
-GROUP BY entity_name
-ORDER BY COUNT(*) DESC;
-
-\echo ''
-\echo '6. Performance Trends (by hour):'
-SELECT
-    DATE_TRUNC('hour', last_refreshed) as hour,
-    COUNT(*) as refreshes,
-    ROUND(AVG(last_refresh_duration_ms) / 1000, 1) as avg_duration_sec,
-    ROUND(MAX(last_refresh_duration_ms) / 1000, 1) as max_duration_sec,
-    COUNT(*) FILTER (WHERE last_refresh_duration_ms > 30000) as slow_refreshes
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '24 hours'
-GROUP BY DATE_TRUNC('hour', last_refreshed)
-ORDER BY hour DESC
-LIMIT 6;
-
-\echo ''
-\echo '7. System Impact Assessment:'
-SELECT
-    'Active TVIEW-related connections' as metric,
-    COUNT(*) as value
-FROM pg_stat_activity
-WHERE query LIKE '%tview%' OR query LIKE '%refresh%'
-
-UNION ALL
-
-SELECT
-    'Recent block I/O operations' as metric,
-    (sum(blks_hit) + sum(blks_read))::text as value
-FROM pg_stat_database
-WHERE datname = current_database()
-
-UNION ALL
-
-SELECT
-    'TVIEW table modifications (last 5 min)' as metric,
-    (sum(n_tup_ins) + sum(n_tup_upd) + sum(n_tup_del))::text as value
-FROM pg_stat_user_tables
-WHERE tablename LIKE '%tview%'
-  AND last_analyze > NOW() - INTERVAL '5 minutes';
-
-\echo ''
-\echo '=== Refresh Status Complete ==='
+\echo '4. Is refresh suspended in this transaction?'
+SELECT tviews.pg_tviews_is_suspended() AS suspended,
+       tviews.pg_tviews_suspended_entities() AS changed_while_suspended;
