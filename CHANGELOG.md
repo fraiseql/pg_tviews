@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **A view whose CTEs read each other three or more deep, or that defines a CTE it
+  never uses, is accepted again** (#163, regression in 0.1.0-beta.21). The analyzer
+  counted a CTE body's references from the level it was walking instead of the level
+  that defines the CTE, so a third CTE in a chain lost its table and the create was
+  refused ("not found in the view's query"). An unused CTE's tables are now known but
+  not tracked: nothing they hold can change the TVIEW.
+
 ## [0.1.0-beta.21] - 2026-10-02
 
 ### Added
