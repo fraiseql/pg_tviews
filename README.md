@@ -574,50 +574,38 @@ For bulk INSERT/UPDATE/DELETE operations (e.g., seed data loading, ETL imports) 
 
 ### Basic Pattern
 
-```sql
--- Suspend trigger-based refresh globally
-SELECT pg_tviews_suspend_triggers();
+Suspension lasts until the end of the transaction, so run the load in one:
 
--- Perform bulk operations
+```sql
+BEGIN;
+SELECT pg_tviews_suspend_triggers();   -- no refresh from here on in this transaction
+
 INSERT INTO customers SELECT * FROM staging_customers;
 INSERT INTO orders SELECT * FROM staging_orders;
 
--- Resume triggers and refresh all TVIEWs in dependency order
-SELECT pg_tviews_resume_triggers();
-SELECT pg_tviews_refresh_all();
+SELECT pg_tviews_resume_triggers();    -- rebuilds the changed TVIEWs, dependencies first
+COMMIT;
 ```
 
 ### Why This Matters
 
-When bulk inserting into multiple related tables:
-- Triggers fire on EACH insert
-- But dependent TVIEWs may not have all their data yet
-- This causes silent refresh failures (due to ON CONFLICT DO NOTHING)
+When bulk inserting into multiple related tables, triggers refresh TVIEW rows after
+each statement, while the related tables may not be loaded yet. With suspension,
+all the data is loaded first, and each TVIEW that changed (and every TVIEW that
+embeds it) is rebuilt once, in dependency order.
 
-The suspend/resume API ensures:
-1. All data is loaded before any refresh happens
-2. TVIEWs are refreshed in dependency order
-3. JOINs in TVIEWs succeed because all tables are populated
+### Ending the Transaction Without Resuming
 
-### Transaction-Scoped
-
-Suspension auto-resumes at transaction end:
-
-```sql
-BEGIN;
-  SELECT pg_tviews_suspend_triggers();
-  -- Bulk operations
-  -- No explicit resume needed!
-COMMIT;  -- Auto-resumes and enqueues changes
-
-SELECT pg_tviews_refresh_all();
-```
+An explicit `COMMIT` catches up the same way when the transaction is still
+suspended. An implicit commit (an autocommit statement, a `DO` block) cannot: it
+logs a WARNING naming the stale TVIEWs, to be fixed with `pg_tviews_refresh(entity)`
+or `pg_tviews_refresh_all()`.
 
 ### API Reference
 
 - `pg_tviews_suspend_triggers()` - Start suspension (supports nesting)
-- `pg_tviews_resume_triggers()` - Resume; enqueues changed entities
-- `pg_tviews_refresh_all()` - Refresh all queued TVIEWs in dependency order
+- `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
+- `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
 - `pg_tviews_is_suspended()` - Check current suspension state
 - `pg_tviews_suspended_entities()` - List entities that changed during suspension
 
@@ -626,11 +614,13 @@ SELECT pg_tviews_refresh_all();
 Calls can be nested; each must be matched:
 
 ```sql
+BEGIN;
 SELECT pg_tviews_suspend_triggers();  -- depth 1
 SELECT pg_tviews_suspend_triggers();  -- depth 2
 -- operations...
 SELECT pg_tviews_resume_triggers();   -- depth 1
 SELECT pg_tviews_resume_triggers();   -- depth 0 (now resumed)
+COMMIT;
 ```
 
 ### Use Cases

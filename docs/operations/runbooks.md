@@ -1,256 +1,175 @@
 # Operational Runbooks
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
+Short procedures for common pg_tviews problems: symptoms, diagnosis, resolution.
+The detailed runbooks are in [runbooks/](runbooks/README.md).
 
-## Overview
-
-This document provides step-by-step procedures for diagnosing and resolving common pg_tviews operational issues. Each runbook includes symptoms, diagnosis steps, and resolution procedures.
+Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`); substitute your own.
 
 ## Runbook 1: TVIEW Not Updating
 
-**Symptom**: Data changes in base tables not reflected in tv_* tables
+**Symptom**: changes to base tables do not show in a `tv_*` table.
 
-**Diagnosis Steps**:
+**Diagnosis**:
 
 ```sql
--- 1. Check if triggers exist
--- Trinity pattern: tb_your_table has pk_your_table (integer), id (UUID)
-SELECT
-  pg_trigger.tgname,
-  pg_trigger.tgrelid::regclass,
-  pg_trigger.tgenabled
+-- 1. Health check: triggers, catalog revision, re-registration
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check()
+WHERE severity <> 'info';
+```
+
+```sql
+-- 2. Is the table registered, and do writes to it reach the TVIEW?
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
+       needs_reregister
+FROM tviews.registry
+WHERE entity = 'user';
+```
+
+A base table missing from `cascade_kinds`, or listed in `uncascaded_tables` with policy
+`warn`, is a table whose writes do not refresh the TVIEW by key.
+
+```sql
+-- 3. pg_tviews triggers on the base table
+SELECT tgname, tgrelid::regclass, tgfoid::regproc, tgenabled
 FROM pg_trigger
-WHERE pg_trigger.tgname LIKE 'tview%'
-  AND pg_trigger.tgrelid = 'tb_your_table'::regclass;
+WHERE tgrelid = 'tb_user'::regclass AND NOT tgisinternal;
 ```
 
-```sql
--- 2. Check metadata
-SELECT * FROM pg_tview_meta WHERE pg_tview_meta.entity = 'your_entity';
-```
+Expect a row trigger (`tviews.pg_tview_trigger_handler`), a statement trigger
+(`tviews.pg_tview_flush_trigger`) and a truncate trigger, with `tgenabled = 'O'`.
 
 ```sql
--- 3. Check for errors in logs
--- (Review PostgreSQL logs for TVIEW-related errors)
-```
-
-```sql
--- 4. Manual refresh test
--- Note: pk_your_table is integer (SERIAL), id is UUID
-UPDATE tb_your_table
-SET some_field = tb_your_table.some_field
-WHERE tb_your_table.pk_your_table = 1;
-COMMIT;
-SELECT * FROM tv_your_entity WHERE tv_your_entity.pk_your_entity = 1;
+-- 4. Is refresh suspended in this session/transaction?
+SELECT tviews.pg_tviews_is_suspended(), current_setting('pg_tviews.suspend_triggers');
 ```
 
 **Resolution**:
 
-1. **If triggers missing**: Recreate TVIEW
+1. Missing or disabled triggers, or `needs_reregister`:
    ```sql
-   DROP TABLE tv_your_entity CASCADE;
-   CREATE TABLE tv_your_entity AS
-   SELECT
-     tb_your_table.pk_your_table,
-     tb_your_table.id,
-     jsonb_build_object('id', tb_your_table.id, 'field', tb_your_table.field) as data
-   FROM tb_your_table;
+   SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
-
-2. **If metadata corrupt**: Clean up and recreate
+2. Bring the TVIEW up to date now:
    ```sql
-   DELETE FROM pg_tview_meta WHERE entity = 'your_entity';
-   -- Then recreate TVIEW as above
+   SELECT tviews.pg_tviews_refresh('user');
    ```
-
-3. **If errors in logs**: Address root cause (permissions, syntax, etc.)
+3. Tables in `uncascaded_tables`: see `docs/reference/ddl.md` (tables no cascade reaches);
+   either rewrite the view so keys can be mapped, or recreate the TVIEW with
+   `uncascaded_policy` `full_refresh` or `error`.
 
 ---
 
-## Runbook 2: Slow Cascade Updates
+## Runbook 2: Slow Writes to Base Tables
 
-**Symptom**: Cascade updates taking >1 second
+**Symptom**: `INSERT`/`UPDATE`/`DELETE` on tables feeding TVIEWs got slow. Refresh runs
+inside the writing statement, so its cost shows up there.
 
-**Diagnosis Steps**:
+**Diagnosis**:
 
 ```sql
--- 1. Check if jsonb_delta installed
-SELECT pg_tviews_check_jsonb_delta();
+-- 1. jsonb_delta installed?
+SELECT tviews.pg_tviews_check_jsonb_delta();
 ```
 
 ```sql
--- 2. Check dependency depth
-SELECT
-  pg_tview_meta.entity,
-  array_length(pg_tview_meta.dependencies, 1) as dep_count
-FROM pg_tview_meta
-ORDER BY dep_count DESC;
+-- 2. Physical health, fan-out and missing indexes per TVIEW
+SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, fanout, warnings
+FROM tviews.pg_tviews_profile();
 ```
 
 ```sql
--- 3. Check for missing indexes
-SELECT
-  pg_indexes.schemaname,
-  pg_indexes.tablename,
-  pg_indexes.indexname
-FROM pg_indexes
-WHERE pg_indexes.tablename LIKE 'tv_%'
-  AND pg_indexes.indexname NOT LIKE '%pkey%';
+-- 3. Dependency chain
+SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 ```
 
 ```sql
--- 4. Analyze query plans
--- Note: pk_your_entity is integer, id is UUID
-EXPLAIN ANALYZE
-UPDATE tv_your_entity
-SET data = tv_your_entity.data
-WHERE tv_your_entity.pk_your_entity = 1;
+-- 4. Cost of recomputing one row
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM v_user WHERE pk_user = 1;
 ```
 
 **Resolution**:
 
-1. **Install jsonb_delta if missing** (1.5-3× speedup)
-   ```sql
-   CREATE EXTENSION jsonb_delta;
-   ```
-
-2. **Create indexes on fk_* columns**
-   ```sql
-   CREATE INDEX idx_tv_your_entity_fk_parent ON tv_your_entity(fk_parent);
-   ```
-
-3. **Check the propagation indexes cascades rely on**
+1. Install jsonb_delta if missing: `CREATE EXTENSION jsonb_delta;`
+2. Create the indexes cascades need:
    ```sql
    SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
    ```
+3. Index the join and foreign-key columns the view uses in its base tables.
+4. Reduce fan-out or nesting depth in the view definitions.
 
-4. **Consider flattening deep dependency chains**
-   - Redesign to reduce cascade depth
-   - Use computed columns instead of joins where possible
+See [Performance Monitoring](runbooks/01-health-monitoring/performance-monitoring.md).
 
 ---
 
-## Runbook 3: Out of Memory During Cascade
+## Runbook 3: Out of Memory or Queue Limit During a Bulk Write
 
-**Symptom**: PostgreSQL OOM killer or "out of memory" errors
+**Symptom**: "out of memory", or
+`refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`.
 
-**Diagnosis Steps**:
-
-```sql
--- 1. Check cascade size
--- Trinity pattern: tv_your_entity has pk_your_entity (int), id (UUID), data (JSONB)
-SELECT
-  pg_tview_meta.entity,
-  pg_size_pretty(pg_relation_size('tv_' || pg_tview_meta.entity)) as tview_size,
-  array_length(pg_tview_meta.dependencies, 1) as cascade_depth
-FROM pg_tview_meta
-ORDER BY pg_relation_size('tv_' || pg_tview_meta.entity) DESC;
-```
+**Diagnosis**:
 
 ```sql
--- 2. Check work_mem setting
 SHOW work_mem;
-```
-
-```sql
--- 3. Monitor memory during cascade
-SELECT
-  pg_stat_activity.pid,
-  pg_stat_activity.query,
-  pg_stat_activity.state,
-  pg_size_pretty(pg_backend_memory_contexts.total_bytes)
-FROM pg_stat_activity
-JOIN LATERAL pg_backend_memory_contexts ON true
-WHERE pg_stat_activity.backend_type = 'client backend';
+SHOW pg_tviews.max_queue_size;
+SELECT entity, rows_estimate, pg_size_pretty(heap_bytes) AS heap, fanout
+FROM tviews.pg_tviews_profile()
+ORDER BY heap_bytes DESC;
 ```
 
 **Resolution**:
 
-1. **Increase work_mem** (session or global)
+1. Write in smaller transactions (for example by key range).
+2. Suspend refresh for the load and refresh once at the end:
    ```sql
-   SET work_mem = '256MB';  -- Or higher
-   -- Or globally: ALTER SYSTEM SET work_mem = '256MB';
+   BEGIN;
+   SELECT tviews.pg_tviews_suspend_triggers();
+   -- bulk writes
+   SELECT tviews.pg_tviews_resume_triggers();
+   COMMIT;
    ```
-
-2. **Batch large updates**
-   ```sql
-   -- Instead of updating all rows at once:
-   UPDATE tb_large_table SET field = value;
-
-   -- Do it in batches:
-   UPDATE tb_large_table SET field = value
-   WHERE pk_large_table BETWEEN 1 AND 10000;
-
-   UPDATE tb_large_table SET field = value
-   WHERE pk_large_table BETWEEN 10001 AND 20000;
-   ```
-
-3. **Consider partitioning large TVIEWs**
-   ```sql
-   -- Partition by date for time-series data
-   CREATE TABLE tv_event_y2025_m01 PARTITION OF tv_event
-   FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
-   ```
-
-4. **Implement rate limiting for bulk operations**
-   - Add application-level throttling
-   - Use smaller transaction sizes
+3. Raise limits for the session if the load is legitimate:
+   `SET work_mem = '256MB'; SET pg_tviews.max_queue_size = 100000;`
 
 ---
 
 ## Runbook 4: Extension Upgrade Failed
 
-**Symptom**: `ALTER EXTENSION pg_tviews UPDATE` fails
+**Symptom**: `ALTER EXTENSION pg_tviews UPDATE` fails, or the health check reports a
+catalog revision mismatch.
 
-**Diagnosis Steps**:
-
-```sql
--- 1. Check current version
-SELECT * FROM pg_extension WHERE pg_extension.extname = 'pg_tviews';
-```
+**Diagnosis**:
 
 ```sql
--- 2. Check for version mismatch
-SELECT pg_tviews_version();
-```
-
-```sql
--- 3. Review upgrade script
--- cat $(pg_config --sharedir)/extension/pg_tviews--oldver--newver.sql
+SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
+SELECT tviews.pg_tviews_version(), tviews.pg_tviews_catalog_revision();
+SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+WHERE component IN ('extension', 'catalog', 'reregister');
 ```
 
 **Resolution**:
 
-1. **Backup metadata**: `CREATE TABLE pg_tview_meta_backup AS SELECT * FROM pg_tview_meta;`
-
-2. **If upgrade fails, rollback**:
+1. `ALTER EXTENSION pg_tviews UPDATE` runs in one transaction: a failure leaves the old
+   version in place. Fix the reported error and run it again.
+2. After a successful update:
    ```sql
-   ALTER EXTENSION pg_tviews UPDATE TO 'old_version';
+   SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
-
-3. **Restore metadata if needed**
-   ```sql
-   TRUNCATE pg_tview_meta;
-   INSERT INTO pg_tview_meta SELECT * FROM pg_tview_meta_backup;
-   ```
-
-4. **Contact maintainer if persistent issue**
-   - Include full error messages
-   - PostgreSQL version and logs
-   - pg_tviews version being upgraded from/to
+3. Databases created with 0.1.0 use `scripts/migrate-from-0.1.0.sql`.
+4. Scripts: `docs/operations/upgrade/scripts/pre-upgrade-checks.sh` and
+   `post-upgrade-validation.sql`. If the problem persists, open an issue with the full
+   error, the PostgreSQL version and both pg_tviews versions.
 
 ---
 
 ## Runbook 5: Orphaned Triggers After TVIEW Drop
 
-**Symptom**: Triggers remain after dropping TVIEW
+**Symptom**: pg_tviews triggers remain on base tables after a TVIEW was dropped.
 
-**Diagnosis Steps**:
+**Diagnosis**:
 
 ```sql
--- pg_tviews triggers (those calling tviews.pg_tview_trigger_handler or
--- tviews.pg_tview_flush_trigger) against the tables each TVIEW reads
 SELECT status, message
 FROM tviews.pg_tviews_health_check()
 WHERE component = 'triggers';
@@ -267,190 +186,110 @@ DROP TRIGGER trg_tview_row_post_on_app_tb_user ON app.tb_user;
 SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
----
-
-## Runbook 6: Data Inconsistency Between Base and TVIEW
-
-**Symptom**: tv_* table shows different data than base table
-
-**Diagnosis Steps**:
-
-```sql
--- 1. Compare row counts
-SELECT
-  (SELECT COUNT(*) FROM tb_your_table) as base_count,
-  (SELECT COUNT(*) FROM tv_your_table) as tview_count;
-```
-
-```sql
--- 2. Check for missing rows in TVIEW
-SELECT tb_your_table.pk_your_table
-FROM tb_your_table
-LEFT JOIN tv_your_table ON tb_your_table.pk_your_table = tv_your_table.pk_your_table
-WHERE tv_your_table.pk_your_table IS NULL;
-```
-
-```sql
--- 3. Check for stale data in TVIEW
-SELECT
-  tb_your_table.pk_your_table,
-  tb_your_table.last_updated,
-  tv_your_table.data->>'last_updated' as tview_updated
-FROM tb_your_table
-JOIN tv_your_table ON tb_your_table.pk_your_table = tv_your_table.pk_your_table
-WHERE tb_your_table.last_updated > (tv_your_table.data->>'last_updated')::timestamptz;
-```
-
-**Resolution**:
-
-1. **Force refresh affected rows**
-   ```sql
-   -- Manual cascade for specific rows
-   SELECT pg_tviews_cascade('tb_your_table'::regclass::oid, pk_value);
-   ```
-
-2. **Full TVIEW recreation**
-   ```sql
-   DROP TABLE tv_your_table;
-   CREATE TABLE tv_your_table AS
-   SELECT
-     tb_your_table.pk_your_table,
-     tb_your_table.id,
-     jsonb_build_object('id', tb_your_table.id, /* ... */) as data
-   FROM tb_your_table;
-   ```
-
-3. **Check for trigger failures**
-   ```sql
-   -- Review PostgreSQL logs for trigger errors
-   -- Check trigger enablement: ALTER TABLE tb_your_table ENABLE TRIGGER ALL;
-   ```
+Drop TVIEWs with `SELECT tviews.pg_tviews_drop('tv_post');` (or `DROP TABLE tv_post`) so
+their triggers are removed with them.
 
 ---
 
-## Runbook 7: High CPU Usage During Refresh
+## Runbook 6: TVIEW Content Differs From Its View
 
-**Symptom**: CPU spikes during TVIEW refresh operations
+**Symptom**: a `tv_*` row differs from what `v_*` returns.
 
-**Diagnosis Steps**:
-
-```sql
--- 1. Check active refresh operations
-SELECT
-  pg_stat_activity.pid,
-  pg_stat_activity.query,
-  pg_stat_activity.state,
-  pg_stat_activity.wait_event_type,
-  pg_stat_activity.wait_event
-FROM pg_stat_activity
-WHERE pg_stat_activity.query LIKE '%tview%' OR pg_stat_activity.query LIKE '%tv_%';
-```
+**Diagnosis**:
 
 ```sql
--- 2. Check for expensive operations
-EXPLAIN (ANALYZE, BUFFERS)
-UPDATE tb_your_table SET field = value WHERE condition;
+-- Rows that differ, in either direction
+(SELECT pk_user, data FROM v_user EXCEPT SELECT pk_user, data FROM tv_user)
+UNION ALL
+(SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM v_user);
 ```
 
-```sql
--- 3. Monitor system resources
-SELECT
-  pg_stat_activity.pid,
-  pg_stat_activity.usename,
-  pg_stat_activity.client_addr,
-  pg_size_pretty(pg_backend_memory_contexts.total_bytes) as memory_used
-FROM pg_stat_activity
-JOIN LATERAL pg_backend_memory_contexts ON true
-WHERE pg_stat_activity.state = 'active';
-```
+Then check Runbook 1 (registration, triggers, uncascaded tables).
 
 **Resolution**:
 
-1. **Optimize queries**
-   ```sql
-   -- Add missing indexes
-   CREATE INDEX idx_tb_your_table_field ON tb_your_table(field);
+```sql
+SELECT tviews.pg_tviews_refresh('user');       -- rebuild one TVIEW from its view
+SELECT tviews.pg_tviews_refresh_all();         -- all TVIEWs, dependencies first
+```
 
-   -- Rewrite expensive operations
-   -- Instead of: UPDATE tb_large SET computed = expensive_function(field)
-   -- Use: UPDATE tb_large SET computed = expensive_function(field) WHERE pk_large IN (SELECT ... LIMIT 1000)
-   ```
+A difference with healthy triggers and no uncascaded tables is a bug: please report it
+with the view definition.
 
-2. **Reduce cascade frequency**
-   ```sql
-   -- Batch updates instead of individual ones
-   -- A bulk statement refreshes each affected row once, at its end
-   ```
+---
 
-3. **Scale resources**
-   ```sql
-   -- Increase CPU allocation
-   -- Consider read replicas for heavy queries
-   ```
+## Runbook 7: High CPU During Writes
+
+**Symptom**: CPU spikes while base tables are written.
+
+**Diagnosis**:
+
+```sql
+SELECT pid, state, wait_event_type, wait_event, now() - query_start AS running,
+       left(query, 80) AS query
+FROM pg_stat_activity
+WHERE datname = current_database() AND state = 'active'
+ORDER BY query_start;
+```
+
+```sql
+-- Refresh counters of this session: run before and after one write and compare
+SELECT tviews.pg_tviews_queue_stats();
+```
+
+A large increase in `view_recomputes` relative to `direct_patches_applied` means rows
+are being rebuilt from the view; `fanout` in `tviews.pg_tviews_profile()` shows how many
+rows each parent change touches.
+
+**Resolution**:
+
+1. Index the columns the view joins on; create propagation indexes (Runbook 2).
+2. Write in bulk statements rather than many single-row statements: each statement
+   refreshes each affected key once, at its end.
+3. For large loads, suspend refresh and resume once (Runbook 3).
 
 ---
 
 ## Emergency Procedures
 
-### Complete System Reset
-
-**Use only as last resort**
+### Rebuild every TVIEW
 
 ```sql
--- 1. Stop all application connections
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE datname = current_database()
-  AND pid != pg_backend_pid();
-
--- 2. Drop all TVIEWs
-DO $$
-DECLARE
-    rec record;
-BEGIN
-    FOR rec IN SELECT entity FROM pg_tview_meta LOOP
-        EXECUTE 'DROP TABLE tv_' || rec.entity || ' CASCADE';
-    END LOOP;
-END $$;
-
--- 3. Clean metadata
-TRUNCATE pg_tview_meta;
-TRUNCATE pg_tview_helpers;
-
--- 4. Recreate TVIEWs from application scripts
--- (Run your TVIEW creation scripts)
-
--- 5. Verify system health
-SELECT * FROM pg_tviews_health_check();
+SELECT tviews.pg_tviews_refresh_all();
 ```
+
+### Rebuild TVIEWs emptied by a crash or promotion (UNLOGGED)
+
+```sql
+SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+SELECT * FROM tviews.pg_tviews_rebuild_all();
+```
+
+### Stop refreshing from one session
+
+See `runbooks/scripts/emergency-disable.sql` and
+[Emergency Procedures](runbooks/04-incident-response/emergency-procedures.md).
 
 ## Monitoring Integration
 
-### Automated Health Checks
-
 ```bash
 #!/bin/bash
-# daily_health_check.sh
-
-# Run health check
-psql -d your_db -c "SELECT * FROM pg_tviews_health_check()" > health_check.log
-
-# Check for issues
-if grep -q "ERROR\|WARNING" health_check.log; then
-    echo "Health check failed" | mail -s "pg_tviews Health Alert" admin@yourcompany.com
+# Exit non-zero when the health check reports a warning or an error.
+problems=$(psql -X -At -d "$DB_NAME" -c \
+  "SELECT component || ': ' || message FROM tviews.pg_tviews_health_check() WHERE severity <> 'info'")
+if [ -n "$problems" ]; then
+    echo "$problems"
+    exit 1
 fi
 ```
 
-### Alert Thresholds
-
-- **Queue size > 1000**: Immediate alert
-- **Update latency > 5 seconds**: Warning
-- **Orphaned triggers > 0**: Warning
-- **Metadata inconsistencies**: Critical alert
-- **Memory usage > 80%**: Warning
+What to alert on:
+- Any `pg_tviews_health_check()` row with severity `error` (critical) or `warning`
+- `needs_rebuild` in `pg_tviews_replication_status()` after a failover
+- Writes failing with pg_tviews errors in the server log
 
 ## See Also
 
-- [Monitoring Guide](../MONITORING.md) - Health check details
-- [Troubleshooting Guide](troubleshooting.md) - Additional debugging steps
-- [Performance Tuning](performance-tuning.md) - Optimization strategies
+- [Monitoring Guide](monitoring.md)
+- [Troubleshooting Guide](troubleshooting.md)
+- [Performance Tuning](performance-tuning.md)

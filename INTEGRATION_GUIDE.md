@@ -185,8 +185,9 @@ psql -d mydb -c "
     SELECT * FROM tv_user;  -- Should be automatically populated
 "
 
-# 4. Check queue operations
-psql -d mydb -c "SELECT * FROM pg_tview_queue LIMIT 5;"
+# 4. Check registered TVIEWs and their health
+psql -d mydb -c "SELECT schema, name, base_tables FROM tviews.registry;"
+psql -d mydb -c "SELECT * FROM tviews.pg_tviews_health_check();"
 ```
 
 ## Building Schemas with Multiple Database Systems
@@ -255,7 +256,7 @@ SELECT tablename FROM pg_tables WHERE tablename LIKE 'tb_%' ORDER BY tablename;
 
 After conversion:
 
-1. **Monitor refresh operations**: Check `pg_tview_queue` and `pg_tview_meta_audit`
+1. **Monitor refresh operations**: run `docs/operations/runbooks/scripts/health-check.sql` and check `tviews.pg_tviews_health_check()`
 2. **Define foreign keys**: Update `fk_columns` in `pg_tview_meta` if needed
 3. **Customize backing views**: Create custom `v_*` views with complex logic
 4. **Set up alerting**: Monitor for stale TVIEWs or refresh lag

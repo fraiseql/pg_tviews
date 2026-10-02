@@ -80,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `'A'` → `'a'`, `numeric` `1.0` → `1.00`, `json` whitespace. The TVIEW holds exactly
   what its view returns. NULL still equals NULL.
 
+### Documentation
+
+- **The operations runbooks query only what pg_tviews has** (#150). The runbooks,
+  their scripts and `docs/TROUBLESHOOTING.md` queried relations and columns that never
+  existed (`pg_tviews_metadata`, `pg_tviews_queue`, `last_refreshed`, …). They now use
+  `tviews.registry`, `pg_tviews_health_check()`, `pg_tviews_profile()`, `updated_at`
+  of each TVIEW and the PostgreSQL statistics views, and describe the refresh queue
+  as it is: in memory, inside each transaction. `queue-cleanup.sql` is archived (there
+  is nothing to clean). A regression test runs every runbook script and rejects the
+  phantom names.
+- The bulk-load section of the README runs the suspend/resume pattern in one
+  transaction: suspension ends with the transaction.
+
 ## [0.1.0-beta.20] - 2026-10-01
 
 ### Added

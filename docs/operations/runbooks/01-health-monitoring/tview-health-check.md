@@ -1,264 +1,157 @@
 # TVIEW Health Check Runbook
 
 ## Purpose
-Regular health check to ensure all TVIEWs are synchronized, operational, and performing within expected parameters.
+Check that pg_tviews is installed correctly, every TVIEW is registered with working
+triggers, and TVIEW contents match their backing views.
 
 ## When to Use
-- **Routine Monitoring**: Every 4 hours during business hours
-- **After Major Changes**: Database maintenance, schema changes, bulk data updates
-- **User Reports**: When users report synchronization issues or slow queries
-- **Pre-Deployments**: Before deploying application changes that affect TVIEWs
-- **Incident Investigation**: As part of diagnosing performance issues
+- Routine monitoring
+- After an extension upgrade, a schema change or a bulk data change
+- When users report stale data in a `tv_*` table
+- As the first step of an incident
 
 ## Prerequisites
-- PostgreSQL CLI access (`psql`)
-- Database credentials with SELECT permissions on TVIEW metadata tables
-- Access to system monitoring (optional but recommended)
+- `psql` access to the database
+- SELECT on the `tviews` schema and on the TVIEW tables
 
 ## Quick Health Check (2 minutes)
 
-Run this procedure for routine monitoring:
-
-### Step 1: Connect to Database
 ```bash
-# Connect to your database
-psql -h $DB_HOST -U $DB_USER -d $DB_NAME
+psql -X -v ON_ERROR_STOP=1 -d "$DB_NAME" -f docs/operations/runbooks/scripts/health-check.sql
 ```
 
-### Step 2: Check TVIEW Status
+The script prints versions, the health check, the registry, freshness per TVIEW,
+physical health and replication readiness. The core of it:
+
 ```sql
--- Check 1: All TVIEWs are defined and accessible
-SELECT
-    COUNT(*) as total_tviews,
-    COUNT(*) FILTER (WHERE last_refreshed > NOW() - INTERVAL '1 hour') as recently_refreshed,
-    COUNT(*) FILTER (WHERE last_error IS NOT NULL) as with_errors
-FROM pg_tviews_metadata;
-
--- Expected: total_tviews > 0, with_errors = 0, recently_refreshed should be reasonable
+SELECT status, component, severity, message
+FROM tviews.pg_tviews_health_check()
+ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, component;
 ```
 
-### Step 3: Check Queue Health
-```sql
--- Check 2: Queue status (should be minimal during normal operation)
-SELECT
-    COUNT(*) as queued_items,
-    MAX(created_at) as oldest_item,
-    COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '1 hour') as stale_items
-FROM pg_tviews_queue;
-
--- Expected: queued_items low, oldest_item recent, stale_items = 0
-```
-
-### Step 4: Performance Check
-```sql
--- Check 3: Recent refresh performance
-SELECT
-    entity_name,
-    last_refresh_duration_ms,
-    last_refreshed,
-    CASE
-        WHEN last_refresh_duration_ms > 5000 THEN 'SLOW'
-        WHEN last_refresh_duration_ms > 1000 THEN 'OK'
-        ELSE 'FAST'
-    END as performance_status
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '24 hours'
-ORDER BY last_refresh_duration_ms DESC
-LIMIT 5;
-
--- Expected: No 'SLOW' entries, reasonable performance distribution
-```
+Expected: every row has severity `info`. The components covered include the
+extension version, jsonb_delta, catalog revision, metadata, re-registration and triggers.
 
 ## Comprehensive Health Check (10 minutes)
 
-Use this for detailed investigation or after issues are detected:
+### Step 1: Registered TVIEWs
 
-### Step 1: TVIEW Inventory
 ```sql
--- Complete TVIEW inventory with status
-SELECT
-    entity_name,
-    primary_key_column,
-    created_at,
-    last_refreshed,
-    last_refresh_duration_ms,
-    CASE
-        WHEN last_error IS NOT NULL THEN 'ERROR'
-        WHEN last_refreshed < NOW() - INTERVAL '1 hour' THEN 'STALE'
-        WHEN last_refresh_duration_ms > 5000 THEN 'SLOW'
-        ELSE 'HEALTHY'
-    END as health_status,
-    last_error
-FROM pg_tviews_metadata
-ORDER BY
-    CASE
-        WHEN last_error IS NOT NULL THEN 1
-        WHEN last_refreshed < NOW() - INTERVAL '1 hour' THEN 2
-        WHEN last_refresh_duration_ms > 5000 THEN 3
-        ELSE 4
-    END,
-    last_refreshed DESC;
+SELECT schema, name, entity, logged, needs_reregister,
+       base_tables, uncascaded_tables, uncascaded_policy, cascade_kinds
+FROM tviews.registry
+ORDER BY schema, name;
 ```
 
-### Step 2: Queue Analysis
+- `needs_reregister = true`: run `SELECT * FROM tviews.pg_tviews_reregister_all();`
+- `uncascaded_tables` not empty: writes to those tables do not reach the TVIEW by key;
+  `uncascaded_policy` says what happens instead (`warn`, `error`, `full_refresh`).
+
+### Step 2: Freshness
+
+`updated_at` on a TVIEW row moves only when the row's content changes.
+
 ```sql
--- Detailed queue analysis
-SELECT
-    COUNT(*) as total_queued,
-    COUNT(*) FILTER (WHERE priority = 'high') as high_priority,
-    COUNT(*) FILTER (WHERE priority = 'normal') as normal_priority,
-    COUNT(*) FILTER (WHERE priority = 'low') as low_priority,
-    MIN(created_at) as oldest_item,
-    MAX(created_at) as newest_item,
-    AVG(EXTRACT(EPOCH FROM (NOW() - created_at))) as avg_age_seconds
-FROM pg_tviews_queue;
-
--- Check for stuck items
-SELECT
-    entity_name,
-    primary_key_value,
-    priority,
-    created_at,
-    NOW() - created_at as age
-FROM pg_tviews_queue
-WHERE created_at < NOW() - INTERVAL '30 minutes'
-ORDER BY created_at ASC;
+SELECT count(*) AS rows, max(updated_at) AS last_change,
+       now() - max(updated_at) AS since_last_change
+FROM public.tv_user;
 ```
 
-### Step 3: Error Analysis
+A TVIEW that has not changed for a long time is not necessarily stale: compare with
+recent writes to its base tables (`n_tup_ins`, `n_tup_upd`, `n_tup_del` in
+`pg_stat_user_tables`). `docs/operations/runbooks/scripts/refresh-status.sql` shows
+both for every TVIEW.
+
+### Step 3: Content matches the view
+
+The TVIEW should hold exactly what its view returns. Rows that differ:
+
 ```sql
--- Recent errors (last 24 hours)
-SELECT
-    entity_name,
-    last_error,
-    last_refreshed,
-    error_count_24h
-FROM (
-    SELECT
-        entity_name,
-        last_error,
-        last_refreshed,
-        COUNT(*) FILTER (WHERE last_error IS NOT NULL AND last_refreshed > NOW() - INTERVAL '24 hours') as error_count_24h
-    FROM pg_tviews_metadata
-    WHERE last_error IS NOT NULL
-) t
-WHERE error_count_24h > 0
-ORDER BY error_count_24h DESC;
+(SELECT pk_user, data FROM public.v_user
+ EXCEPT
+ SELECT pk_user, data FROM public.tv_user)
+UNION ALL
+(SELECT pk_user, data FROM public.tv_user
+ EXCEPT
+ SELECT pk_user, data FROM public.v_user);
 ```
 
-### Step 4: Performance Trends
+Expected: no rows. This reads the whole view; run it off-peak on large TVIEWs.
+If rows differ, rebuild the TVIEW (`SELECT tviews.pg_tviews_refresh('user');`) and
+report the case: it is a bug.
+
+### Step 4: Physical health
+
 ```sql
--- Performance trends (last 7 days)
-SELECT
-    DATE_TRUNC('day', last_refreshed) as day,
-    COUNT(*) as refreshes,
-    AVG(last_refresh_duration_ms) as avg_duration_ms,
-    MAX(last_refresh_duration_ms) as max_duration_ms,
-    COUNT(*) FILTER (WHERE last_refresh_duration_ms > 5000) as slow_refreshes
-FROM pg_tviews_metadata
-WHERE last_refreshed > NOW() - INTERVAL '7 days'
-GROUP BY DATE_TRUNC('day', last_refreshed)
-ORDER BY day DESC;
+SELECT entity, rows_estimate, pg_size_pretty(heap_bytes) AS heap,
+       round(hot_ratio::numeric, 2) AS hot_ratio, n_dead_tup, warnings
+FROM tviews.pg_tviews_profile()
+ORDER BY entity;
 ```
 
-### Step 5: System Resource Check
+See [Performance Monitoring](performance-monitoring.md) for how to read it.
+
+### Step 5: Replication readiness
+
 ```sql
--- Check system resources (if monitoring tables exist)
-SELECT
-    schemaname,
-    tablename,
-    n_tup_ins,
-    n_tup_upd,
-    n_tup_del,
-    n_live_tup,
-    n_dead_tup,
-    last_vacuum,
-    last_autovacuum,
-    last_analyze,
-    last_autoanalyze
-FROM pg_stat_user_tables
-WHERE schemaname LIKE '%tview%' OR tablename LIKE '%tview%'
-ORDER BY n_dead_tup DESC;
+SELECT * FROM tviews.pg_tviews_replication_status() ORDER BY entity;
 ```
 
-## Automated Health Check Script
-
-Use the provided script for consistent monitoring:
-
-```bash
-# Run automated health check
-psql -h $DB_HOST -U $DB_USER -d $DB_NAME -f docs/operations/runbooks/scripts/health-check.sql
-```
+UNLOGGED TVIEWs (the default) are empty on a standby and after a crash restart.
+`needs_rebuild = true`: run `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
 
 ## Expected Results
 
-### Healthy System
-- ✅ All TVIEWs show `HEALTHY` status
-- ✅ Queue has minimal items (< 10)
-- ✅ No stale queue items (> 30 minutes)
-- ✅ Refresh durations < 5 seconds typically
-- ✅ No recent errors
-- ✅ Performance trends stable
+### Healthy
+- Every `pg_tviews_health_check()` row has severity `info`
+- No TVIEW with `needs_reregister`
+- Step 3 returns no rows
+- No `needs_rebuild` in Step 5
 
-### Warning Signs
-- ⚠️ TVIEWs with `STALE` status (> 1 hour since refresh)
-- ⚠️ Queue growing steadily
-- ⚠️ Increasing refresh durations
-- ⚠️ Occasional errors (< 5% of refreshes)
+### Warning signs
+- Health check rows with severity `warning` (for example jsonb_delta missing, orphaned triggers)
+- `uncascaded_tables` with policy `warn` on TVIEWs whose base tables are written often
+- `warnings` from `pg_tviews_profile()`
 
-### Critical Issues
-- ❌ TVIEWs with `ERROR` status
-- ❌ Queue items > 1 hour old
-- ❌ Refresh failures > 10%
-- ❌ Performance degradation > 50%
-- ❌ System resource exhaustion
+### Critical
+- Health check rows with severity `error` (catalog revision mismatch, missing triggers)
+- Step 3 returns rows
+- Writes to base tables failing with pg_tviews errors
 
 ## Troubleshooting
 
-### TVIEW Shows STALE Status
-```sql
--- Check if refresh is queued
-SELECT * FROM pg_tviews_queue WHERE entity_name = 'your_tview_name';
+### Health check reports missing or orphaned triggers
 
--- Manual refresh if needed
-SELECT pg_tviews_refresh('your_tview_name');
+```sql
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
-### Queue Growing
-```sql
--- Check for blocking transactions
-SELECT * FROM pg_stat_activity WHERE state = 'idle in transaction';
+An orphaned trigger named in the message can be dropped with `DROP TRIGGER ... ON ...`.
 
--- Check for long-running refreshes
-SELECT entity_name, last_refresh_duration_ms, last_refreshed
-FROM pg_tviews_metadata
-WHERE last_refresh_duration_ms > 10000
-ORDER BY last_refresh_duration_ms DESC;
+### Catalog revision mismatch after an upgrade
+
+```sql
+ALTER EXTENSION pg_tviews UPDATE;
+SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
-### Performance Degradation
-```sql
--- Check system load
-SELECT * FROM pg_stat_bgwriter;
-SELECT * FROM pg_stat_database WHERE datname = current_database();
+### A TVIEW shows old data
 
--- Check for table bloat
-SELECT schemaname, tablename, n_dead_tup, n_live_tup
-FROM pg_stat_user_tables
-WHERE n_dead_tup > n_live_tup * 0.2;
+```sql
+SELECT tviews.pg_tviews_refresh('user');
 ```
+
+Then find out why: check Step 1 (`uncascaded_tables`) and the
+[Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) runbook.
 
 ## Escalation
 
-If health checks reveal issues:
-
-1. **Minor Issues**: Document and monitor for trends
-2. **Performance Issues**: Check system resources, consider maintenance
-3. **Queue Issues**: Investigate blocking transactions, consider manual cleanup
-4. **Critical Errors**: Follow [Incident Checklist](../04-incident-response/incident-checklist.md)
+1. Warnings: record them and watch for trends
+2. Errors in the health check, or Step 3 differences: follow the
+   [Incident Checklist](../04-incident-response/incident-checklist.md)
 
 ## Related Runbooks
 
-- [Queue Management](queue-management.md) - For queue-specific issues
-- [Performance Monitoring](performance-monitoring.md) - For detailed performance analysis
-- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md) - For refresh-specific issues
+- [Refresh Queue](queue-management.md)
+- [Performance Monitoring](performance-monitoring.md)
+- [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md)

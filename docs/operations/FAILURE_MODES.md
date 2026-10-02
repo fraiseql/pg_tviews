@@ -1,73 +1,73 @@
 # Failure Modes and Recovery Procedures
 
+pg_tviews refreshes TVIEW rows inside the transaction that writes the base tables
+(at the end of each statement and on COMMIT). Most failures therefore follow ordinary
+transaction rules: if anything fails, the base-table writes and the TVIEW writes roll
+back together. Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`).
+
 ## Database Failures
 
-### PostgreSQL Crash During Refresh
+### PostgreSQL Crash
 
 **Symptoms**:
-- Transaction in progress when PostgreSQL crashes
-- TVIEW may be out of sync with backing table
+- The server crashed or was restarted in immediate mode
+- UNLOGGED TVIEWs (the default) are empty after crash recovery
 
 **Recovery**:
-1. PostgreSQL will automatically roll back uncommitted transactions
-2. TVIEW will be consistent with pre-crash state
-3. Re-run refresh if needed:
+1. Uncommitted transactions are rolled back; committed base-table writes and LOGGED
+   TVIEW writes are recovered together.
+2. Rebuild UNLOGGED TVIEWs that recovery emptied:
    ```sql
-   SELECT pg_tviews_refresh('entity_name');
+   SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+   SELECT * FROM tviews.pg_tviews_rebuild_all();          -- only empty TVIEWs by default
+   SELECT tviews.pg_tviews_recover_after_crash('user');   -- or one TVIEW
    ```
+   `pg_tviews.auto_rebuild_databases` (server restart required) lists databases whose
+   emptied TVIEWs are rebuilt automatically when recovery ends.
 
-**Prevention**: Use 2PC for critical transactions requiring atomicity across systems.
+**Prevention**: make TVIEWs that must survive a crash LOGGED:
+`SELECT tviews.pg_tviews_set_logged('user', true);`
 
 ### Disk Full
 
 **Symptoms**:
-- `ERROR: could not extend file` messages
-- Transactions fail
+- `ERROR: could not extend file ...`
+- Writes to base tables fail
 
 **Recovery**:
-1. Free up disk space
-2. Check TVIEW consistency:
+1. Free disk space.
+2. Failed writes rolled back with their TVIEW changes; nothing to repair. To confirm a
+   TVIEW matches its view:
    ```sql
-   -- Compare row counts
-   SELECT COUNT(*) FROM backing_table;
-   SELECT COUNT(*) FROM tview_table;
+   (SELECT pk_user, data FROM v_user EXCEPT SELECT pk_user, data FROM tv_user)
+   UNION ALL
+   (SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM v_user);
    ```
-3. If inconsistent, force refresh:
-   ```sql
-   SELECT pg_tviews_refresh('entity_name', force => true);
-   ```
+3. If rows differ, rebuild: `SELECT tviews.pg_tviews_refresh('user');`
 
-**Prevention**: Monitor disk usage, set up alerts at 80% capacity.
+**Prevention**: alert on disk usage before it fills.
 
 ### Out of Memory
 
 **Symptoms**:
-- `ERROR: out of memory` during large refresh
-- PostgreSQL may restart
+- `ERROR: out of memory` during a large write or a full rebuild
 
 **Recovery**:
-1. Increase `work_mem` for session:
+1. For a rebuild, raise `work_mem` for the session:
    ```sql
    SET work_mem = '256MB';
-   SELECT pg_tviews_refresh('large_entity');
+   SELECT tviews.pg_tviews_refresh('user');
    RESET work_mem;
    ```
-2. Consider batch refresh instead of full refresh
-
-**Prevention**: Use incremental refresh, avoid `force => true` on large TVIEWs.
+2. For a bulk write, split it into smaller transactions, or suspend refresh for the
+   load (see "Bulk loads" below).
 
 ### Connection Loss
 
 **Symptoms**:
-- Client disconnects during transaction
-- Network partition
+- Client disconnects during a transaction
 
-**Recovery**:
-1. Transaction automatically rolled back
-2. TVIEW remains consistent
-3. Reconnect and retry operation
-
-**Prevention**: Use connection pooling with proper timeout settings.
+**Recovery**: the transaction rolls back, TVIEW writes included. Reconnect and retry.
 
 ---
 
@@ -77,38 +77,50 @@
 
 **Symptoms**:
 ```
-ERROR: Circular dependency detected: tv_a -> tv_b -> tv_a
+ERROR: Circular dependency detected: a → b → a
 ```
 
-**Recovery**:
-1. Identify cycle in dependencies
-2. Break cycle by dropping one TVIEW:
-   ```sql
-   DROP TABLE tv_b CASCADE;
-   ```
-3. Recreate without circular reference
+**Recovery**: the statement that would close the cycle fails. Inspect the chain
+and change one view so the dependency graph has no cycle:
+```sql
+SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
+```
 
-**Prevention**: Design TVIEW dependency graph as DAG (directed acyclic graph).
-
-### Metadata Corruption
+### Metadata Not Found
 
 **Symptoms**:
-- `ERROR: Metadata not found for TVIEW: entity_name`
-- Triggers exist but no metadata entry
+```
+ERROR: TVIEW metadata not found for entity 'user'
+```
+- Triggers exist on a base table but no TVIEW is registered for them
 
 **Recovery**:
-1. Recreate the TVIEW from its defining SELECT:
+1. Check what is registered:
    ```sql
-   SELECT pg_tviews_create('entity_name', '<the defining SELECT>');
+   SELECT schema, name, entity FROM tviews.registry ORDER BY schema, name;
+   SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+   WHERE severity <> 'info';
    ```
-2. Verify metadata:
+2. If the TVIEW is gone, drop the orphaned triggers named by the health check, or
+   recreate the TVIEW:
    ```sql
-   SELECT * FROM pg_tviews_metadata WHERE entity_name = 'entity_name';
+   SELECT tviews.pg_tviews_create_or_replace('tv_user', '<the defining SELECT>');
    ```
 
-**Prevention**: Do not manually modify `pg_tviews_metadata` table.
+**Prevention**: do not edit `tviews.pg_tview_meta` by hand; create, change and drop
+TVIEWs with `tviews.pg_tviews_create_or_replace` and `tviews.pg_tviews_drop`.
 
-### Prepared transactions left open
+### Refresh Error During a Write
+
+**Symptoms**:
+- An `INSERT`/`UPDATE`/`DELETE` on a base table fails with an error raised while
+  refreshing a TVIEW (for example a cast or constraint error inside the view)
+
+**Recovery**: the statement and its transaction rolled back; the TVIEW is unchanged
+and consistent. Fix the data or the view definition, then retry the write. To let
+writes proceed while the cause is investigated, see "Bulk loads" below.
+
+### Prepared Transactions Left Open
 
 **Symptoms**:
 - A TVIEW does not show changes made by a transaction that ran `PREPARE TRANSACTION`
@@ -128,65 +140,55 @@ prepared transaction keeps its locks until then.
    COMMIT PREPARED 'gid';     -- or ROLLBACK PREPARED 'gid';
    ```
 
-**Prevention**: Always commit or rollback prepared transactions promptly.
+**Prevention**: always commit or roll back prepared transactions promptly.
 
-### Trigger Malfunction
+### Missing or Disabled Triggers
 
 **Symptoms**:
-- Triggers disabled or dropped
-- Refresh not happening on DML
+- Writes to a base table do not reach the TVIEW
+- The health check reports trigger problems
 
 **Recovery**:
-1. Check trigger status:
+1. Check the triggers:
    ```sql
-   SELECT * FROM information_schema.triggers
-   WHERE trigger_name LIKE 'pg_tviews_%';
+   SELECT tgname, tgrelid::regclass, tgfoid::regproc, tgenabled
+   FROM pg_trigger
+   WHERE tgfoid::regproc::text IN ('tviews.pg_tview_trigger_handler',
+                                   'tviews.pg_tview_flush_trigger',
+                                   'tviews.pg_tview_truncate_trigger');
    ```
-2. Recreate TVIEW to restore triggers:
+2. Re-install them, then bring the TVIEW up to date:
    ```sql
-   SELECT pg_tviews_create('entity_name', '<the defining SELECT>');
+   SELECT * FROM tviews.pg_tviews_reregister_all();
+   SELECT tviews.pg_tviews_refresh('user');
    ```
 
-**Prevention**: Avoid DDL operations on TVIEW tables.
+**Prevention**: do not disable or drop `trg_tview_*` triggers by hand.
 
 ---
 
 ## Operational Failures
 
-### PostgreSQL Version Upgrade
+### PostgreSQL Major Version Upgrade
 
 **Procedure**:
-1. Before upgrade:
+1. Before the upgrade:
    ```bash
-   # Backup
-   pg_dump mydb > backup.sql
-
-   # Note pg_tviews version
-   psql -c "SELECT pg_tviews_version();"
+   pg_dump -Fc mydb > mydb.dump
+   psql -d mydb -c "SELECT tviews.pg_tviews_version();"
    ```
-
-2. Upgrade PostgreSQL:
-   ```bash
-   # Standard PostgreSQL upgrade procedure
-   pg_upgrade ...
-   ```
-
-3. Reinstall pg_tviews:
-   ```bash
-   cargo pgrx install --release --pg-config=/path/to/new/pg_config
-   ```
-
-4. Verify:
+2. Install pg_tviews (and jsonb_delta) built for the new PostgreSQL version, then run
+   `pg_upgrade`. Supported versions: 16, 17, 18.
+3. Verify:
    ```sql
-   SELECT pg_tviews_version();
-   SELECT entity_name, COUNT(*) FROM pg_tviews_metadata;
+   SELECT tviews.pg_tviews_version();
+   SELECT * FROM tviews.pg_tviews_health_check();
+   SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
-
-**Known Issues**: Extension must be reinstalled after major PostgreSQL upgrades.
 
 ### Backup and Restore
 
-**Backup** (recommended):
+**Backup**:
 ```bash
 # Full logical backup: tv_* tables, v_* views, base-table triggers and the
 # pg_tview_meta / pg_tview_helpers catalog rows
@@ -210,130 +212,88 @@ earlier) does not mark its catalog for dumping, so its dumps carry no
 
 **Verification**:
 ```sql
--- Check all TVIEWs restored
-SELECT entity, table_oid, view_oid FROM pg_tview_meta;
-
--- Verify refresh works
-INSERT INTO tb_<entity> VALUES (...);
--- Check tv_<entity> updated
+SELECT schema, name, view, needs_reregister FROM tviews.registry ORDER BY schema, name;
+SELECT * FROM tviews.pg_tviews_health_check();
+-- then write a base-table row and check that the TVIEW row changes
 ```
 
-**Caution**: Physical backups (PITR) may have consistency issues if taken during refresh.
-
-### Replication Lag
+### Standbys and Failover
 
 **Symptoms**:
-- Replica TVIEW data stale
-- Cascade refresh on replica
+- TVIEWs are empty or unreadable on a hot standby
+- TVIEWs are empty after promoting a standby
+
+**Cause**: UNLOGGED TVIEWs (the default) are not replicated.
 
 **Recovery**:
-1. Wait for replication to catch up
-2. Manual refresh on replica if needed:
-   ```sql
-   SELECT pg_tviews_refresh('entity_name');
-   ```
+```sql
+SELECT * FROM tviews.pg_tviews_replication_status();
+-- after promotion:
+SELECT * FROM tviews.pg_tviews_rebuild_all();
+```
 
-**Prevention**: Monitor replication lag, avoid heavy refresh operations during peak hours.
+**Prevention**: make TVIEWs that standbys must read LOGGED
+(`SELECT tviews.pg_tviews_set_logged('user', true);`). LOGGED TVIEWs replicate like any
+table; they lag the primary exactly as much as the base tables do.
 
 ### Concurrent DDL
 
-**Scenario**: `DROP TABLE tv_entity` while refresh in progress
+**Scenario**: a TVIEW is dropped while another session writes its base tables.
 
-**Behavior**:
-- Refresh transaction will fail
-- Error message: `relation "tv_entity" does not exist`
-- No data corruption
+**Behavior**: the writing transaction either completes first (the drop waits for its
+lock) or fails and rolls back. No partial data is left.
 
-**Recovery**: None needed - transaction rolled back cleanly.
-
-**Prevention**: Use DDL locks or maintenance windows for TVIEW DDL.
+**Prevention**: run TVIEW DDL in maintenance windows.
 
 ---
 
 ## Emergency Procedures
 
-### Force Refresh All TVIEWs
+### Rebuild All TVIEWs
 
 ```sql
--- Refresh all TVIEWs (use with caution on large databases)
-DO $$
-DECLARE
-    rec RECORD;
-BEGIN
-    FOR rec IN SELECT entity_name FROM pg_tviews_metadata LOOP
-        RAISE NOTICE 'Refreshing %', rec.entity_name;
-        PERFORM pg_tviews_refresh(rec.entity_name, force => true);
-    END LOOP;
-END $$;
+-- All TVIEWs, dependencies first; returns the order and duration
+SELECT tviews.pg_tviews_refresh_all();
 ```
 
-### Disable All TVIEW Triggers (Emergency)
+### Bulk loads, or writes while a refresh keeps failing
+
+Suspend refresh in the writing transaction and catch up at the end:
 
 ```sql
--- Disable refresh triggers (stops automatic refresh)
-DO $$
-DECLARE
-    rec RECORD;
-BEGIN
-    FOR rec IN
-        SELECT DISTINCT trigger_name, event_object_table
-        FROM information_schema.triggers
-        WHERE trigger_name LIKE 'pg_tviews_%'
-    LOOP
-        EXECUTE format('ALTER TABLE %I DISABLE TRIGGER %I',
-                      rec.event_object_table, rec.trigger_name);
-    END LOOP;
-END $$;
+BEGIN;
+SELECT tviews.pg_tviews_suspend_triggers();
+-- writes
+SELECT tviews.pg_tviews_suspended_entities();   -- TVIEWs that will need refreshing
+SELECT tviews.pg_tviews_resume_triggers();      -- refreshes them
+COMMIT;
 ```
 
-### Re-enable Triggers
-
-```sql
-DO $$
-DECLARE
-    rec RECORD;
-BEGIN
-    FOR rec IN
-        SELECT DISTINCT trigger_name, event_object_table
-        FROM information_schema.triggers
-        WHERE trigger_name LIKE 'pg_tviews_%'
-    LOOP
-        EXECUTE format('ALTER TABLE %I ENABLE TRIGGER %I',
-                      rec.event_object_table, rec.trigger_name);
-    END LOOP;
-END $$;
-```
+See `docs/operations/runbooks/scripts/emergency-disable.sql`. Disabling `trg_tview_*`
+triggers with `ALTER TABLE ... DISABLE TRIGGER` also stops refresh, but nothing records
+what was missed: run `SELECT tviews.pg_tviews_refresh_all();` after re-enabling them.
 
 ---
 
 ## Monitoring and Alerts
 
-### Key Metrics to Monitor
-
-1. **Queue size**: Should be 0 between transactions
+1. **Health check**: alert on any row with severity `warning` or `error`:
    ```sql
-   SELECT jsonb_array_length(pg_tviews_debug_queue());
+   SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+   WHERE severity <> 'info';
    ```
-
-2. **Orphaned prepared transactions**:
+2. **Old prepared transactions**:
    ```sql
-   SELECT COUNT(*) FROM pg_prepared_xacts
-   WHERE age(now(), prepared) > interval '1 hour';
+   SELECT count(*) FROM pg_prepared_xacts WHERE prepared < now() - interval '1 hour';
    ```
-
-3. **TVIEW consistency** (periodic check):
+3. **TVIEWs needing a rebuild** after a crash or failover:
    ```sql
-   SELECT entity_name,
-          (SELECT COUNT(*) FROM tb_||entity_name) as backing_count,
-          (SELECT COUNT(*) FROM tv_||entity_name) as tview_count
-   FROM pg_tviews_metadata;
+   SELECT entity FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
    ```
+4. **Writes failing** with pg_tviews errors: watch the server log.
 
-### Alert Thresholds
-
-- **Critical**: Queue size > 1000 for > 5 minutes
-- **Warning**: Orphaned 2PC transactions > 10
-- **Info**: TVIEW refresh took > 1 second
+There is no queue to monitor between transactions: the refresh queue exists only
+inside a running transaction.
 
 ---
 
@@ -341,4 +301,4 @@ END $$;
 
 For issues not covered here, see:
 - [GitHub Issues](https://github.com/fraiseql/pg_tviews/issues)
-- [Troubleshooting Guide](./TROUBLESHOOTING.md)
+- [Troubleshooting Guide](troubleshooting.md)

@@ -1,598 +1,271 @@
 # pg_tviews Debugging Guide
 
-**Version**: 0.1.0-alpha
-**Last Updated**: December 10, 2025
+Systematic troubleshooting for common pg_tviews problems. Examples use the entities
+`user` and `post` (`tb_user`, `v_user`, `tv_user`, ...); substitute your own.
 
-## Overview
+## How refresh works (what to debug)
 
-This guide provides systematic troubleshooting procedures for common pg_tviews issues. Use the flowcharts and debugging steps to identify and resolve problems.
+Row triggers on base tables record affected TVIEW keys in an in-memory queue of the
+writing transaction. A statement trigger flushes the queue at the end of each statement,
+and COMMIT flushes anything left. Each affected TVIEW row is either patched directly or
+recomputed from the backing view `v_<entity>`. There is no queue table and no background
+worker: if a refresh fails, the writing statement fails.
 
 ## Quick Diagnosis
 
-### System Health Check
-
-Start with a comprehensive health check:
-
 ```sql
--- Overall system status
-SELECT * FROM pg_tviews_health_check();
+-- Overall status: severity info | warning | error per component
+SELECT * FROM tviews.pg_tviews_health_check();
 
--- Current queue status
-SELECT * FROM pg_tviews_queue_realtime;
+-- Registered TVIEWs and how writes reach them
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
+       needs_reregister
+FROM tviews.registry;
 
--- Recent performance
-SELECT * FROM pg_tviews_performance_summary LIMIT 5;
-
--- Cache status
-SELECT * FROM pg_tviews_cache_stats;
+-- Physical health and warnings per TVIEW
+SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, fanout, warnings
+FROM tviews.pg_tviews_profile();
 ```
 
 ### Common Symptoms and Solutions
 
 | Symptom | Likely Cause | Quick Fix |
 |---------|-------------|-----------|
-| TVIEW not refreshing | Missing triggers | `SELECT * FROM tviews.pg_tviews_reregister_all();` |
-| Slow performance | No jsonb_delta | `CREATE EXTENSION jsonb_delta;` |
-| Queue buildup | Long transactions | Check `pg_stat_activity` |
-| Permission errors | Missing grants | Grant permissions on TVIEW tables |
-| Memory errors | Large datasets | Increase `work_mem` |
+| TVIEW not refreshing | Missing triggers, or needs re-registration | `SELECT * FROM tviews.pg_tviews_reregister_all();` |
+| TVIEW not refreshing for one base table | Table in `registry.uncascaded_tables` | See `docs/reference/ddl.md` (tables no cascade reaches) |
+| Slow writes | No jsonb_delta, missing indexes, high fan-out | `CREATE EXTENSION jsonb_delta;` and `tviews.pg_tviews_ensure_propagation_indexes()` |
+| Write fails with queue backpressure | Bulk write over `pg_tviews.max_queue_size` | Smaller transactions, or suspend/resume |
+| Writes blocked | Long or prepared transactions holding locks | `pg_stat_activity`, `pg_prepared_xacts` |
+| Memory errors | Large rebuilds or bulk writes | Increase `work_mem` for the session |
 
 ## Troubleshooting Flowcharts
 
 ### TVIEW Not Refreshing
 
 ```
-Start: Data changed in base table
+Start: data changed in a base table, the TVIEW does not show it
     ↓
-Does TVIEW show changes?
-    ├─ YES → Problem solved
-    └─ NO → Continue
+Was the writing transaction committed? (other sessions see TVIEW changes only after COMMIT)
+    ├─ NO  → commit it (check pg_prepared_xacts too)
+    └─ YES → continue
         ↓
-Check triggers installed?
-SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%tview%';
-    ├─ 0 triggers → Run: SELECT * FROM tviews.pg_tviews_reregister_all();
-    └─ Triggers exist → Continue
+Health check errors or warnings?
+SELECT * FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
+    ├─ triggers / reregister / catalog → SELECT * FROM tviews.pg_tviews_reregister_all();
+    └─ none → continue
         ↓
-Check queue status
-SELECT * FROM pg_tviews_queue_realtime;
-    ├─ Queue empty → Manual refresh: SELECT pg_tviews_cascade(table_oid, pk);
-    └─ Queue has items → Continue
+Does the write reach the TVIEW?
+SELECT cascade_kinds, uncascaded_tables, uncascaded_policy FROM tviews.registry WHERE entity = 'post';
+    ├─ base table in uncascaded_tables → change the view, or the policy
+    └─ base table in cascade_kinds → continue
         ↓
-Check for stuck transactions
-SELECT * FROM pg_stat_activity WHERE state = 'idle in transaction';
-    ├─ Long-running tx → Kill or wait for completion
-    └─ No stuck tx → Continue
+Was refresh suspended for that write?
+SELECT tviews.pg_tviews_is_suspended(), current_setting('pg_tviews.suspend_triggers');
+    ├─ yes → SELECT tviews.pg_tviews_refresh('post');
+    └─ no  → continue
         ↓
-Check TVIEW permissions
-SELECT * FROM information_schema.table_privileges WHERE table_name LIKE 'tv_%';
-    ├─ Missing permissions → GRANT SELECT,UPDATE ON tv_* TO user;
-    └─ Permissions OK → Continue
-        ↓
-Check TVIEW definition
-SELECT * FROM pg_tview_meta WHERE entity = 'entity_name';
-    ├─ Definition missing → Recreate TVIEW
-    └─ Definition exists → Check PostgreSQL logs
+Rebuild and compare with the view
+SELECT tviews.pg_tviews_refresh('post');
+    └─ if the difference comes back after later writes, report a bug with the view definition
 ```
 
-### Performance Degradation
+### Slow Writes
 
 ```
-Start: Slow TVIEW operations
+Start: writes to base tables got slow
     ↓
-Check cache hit rates
-SELECT * FROM pg_tviews_cache_stats;
-    ├─ Low hit rates → Check jsonb_delta: SELECT pg_tviews_check_jsonb_delta();
-    │   ├─ FALSE → CREATE EXTENSION jsonb_delta;
-    │   └─ TRUE → Continue
-    └─ Good hit rates → Continue
+jsonb_delta installed?
+SELECT tviews.pg_tviews_check_jsonb_delta();
+    ├─ false → CREATE EXTENSION jsonb_delta;
+    └─ true  → continue
         ↓
-Check queue size
-SELECT * FROM pg_tviews_queue_realtime;
-    ├─ Large queue → Check for bulk operations, consider statement triggers
-    └─ Normal queue → Continue
+Missing propagation indexes, high fan-out, low HOT ratio?
+SELECT entity, missing_propagation_indexes, fanout, hot_ratio, warnings FROM tviews.pg_tviews_profile();
+    ├─ missing indexes → SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
+    ├─ high fan-out → one parent change rewrites many rows; reconsider the nesting
+    └─ fine → continue
         ↓
-Check memory settings
-SHOW work_mem; SHOW maintenance_work_mem;
-    ├─ Too low → Increase: SET work_mem = '64MB';
-    └─ Adequate → Continue
+Is recomputing one row expensive?
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM v_post WHERE pk_post = 1;
+    ├─ seq scans → index the join / foreign-key columns of the base tables
+    └─ fast → continue
         ↓
-Check index usage
-EXPLAIN ANALYZE SELECT * FROM tv_table WHERE condition;
-    ├─ Seq scan → Add indexes on JSONB fields
-    └─ Index scan → Continue
-        ↓
-Check concurrent load
-SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active';
-    ├─ High concurrency → Check connection pool settings
-    └─ Normal load → Check PostgreSQL logs for specific errors
-```
-
-### Queue Buildup Issues
-
-```
-Start: Queue size growing
-    ↓
-Check queue size trend
-SELECT
-    date_trunc('hour', recorded_at) as hour,
-    AVG(queue_size) as avg_queue
-FROM pg_tviews_metrics
-WHERE recorded_at > now() - interval '24 hours'
-GROUP BY 1 ORDER BY 1;
-    ├─ Steady growth → Continue
-    └─ Normal fluctuations → Monitor and alert if exceeds threshold
-        ↓
-Check transaction length
-SELECT pid, xact_start, now() - xact_start as duration
-FROM pg_stat_activity
-WHERE state = 'active' AND xact_start IS NOT NULL
-ORDER BY duration DESC;
-    ├─ Long transactions → Optimize or break into smaller transactions
-    └─ Normal tx length → Continue
-        ↓
-Check for deadlocks
-Check PostgreSQL logs for deadlock messages
-    ├─ Deadlocks found → Review transaction ordering
-    └─ No deadlocks → Continue
-        ↓
-Check refresh performance
-SELECT * FROM pg_tviews_performance_summary LIMIT 5;
-    ├─ Slow refreshes → Investigate specific operations
-    └─ Fast refreshes → Check for application issues
+Recomputes vs direct patches for one write (same session, before and after)
+SELECT tviews.pg_tviews_queue_stats();
+    └─ compare view_recomputes, direct_patches_applied, direct_patch_fallbacks
 ```
 
 ## Debugging Tools
 
-### Queue Debugging
+### Queue
 
 ```sql
--- View current queue contents
-SELECT * FROM pg_tviews_debug_queue();
+-- Keys queued in the current transaction (normally [] between statements)
+SELECT tviews.pg_tviews_debug_queue();
 
--- Monitor queue in real-time (run in separate session)
-SELECT pg_sleep(1);
-SELECT * FROM pg_tviews_queue_realtime;
+-- Refresh counters of this session
+SELECT tviews.pg_tviews_queue_stats();
 
--- Check queue processing history
-SELECT
-    recorded_at,
-    queue_size,
-    refresh_count,
-    timing_ms
-FROM pg_tviews_metrics
-WHERE recorded_at > now() - interval '1 hour'
-ORDER BY recorded_at DESC;
+-- TVIEW rows the current transaction changed, per entity
+SELECT tviews.pg_tviews_flush_and_report();
 ```
 
-### Trigger Debugging
+### Triggers
 
 ```sql
--- Check installed triggers
-SELECT
-    tgname,
-    tgrelid::regclass as table_name,
-    tgenabled
+-- pg_tviews triggers and the tables they are on
+SELECT tgname, tgrelid::regclass AS table_name, tgfoid::regproc AS function, tgenabled
 FROM pg_trigger
-WHERE tgname LIKE '%tview%'
-ORDER BY table_name;
+WHERE tgfoid::regproc::text IN ('tviews.pg_tview_trigger_handler',
+                                'tviews.pg_tview_flush_trigger',
+                                'tviews.pg_tview_truncate_trigger')
+ORDER BY tgrelid::regclass::text, tgname;
 
--- Test trigger manually
-INSERT INTO base_table (id, data) VALUES (999, '{}');
-SELECT * FROM tv_table WHERE pk_entity = 999;
-
--- Check trigger function exists
-SELECT proname FROM pg_proc WHERE proname LIKE '%tview%trigger%';
+-- Test one write end to end
+BEGIN;
+UPDATE tb_user SET name = name || '' WHERE pk_user = 1;
+SELECT updated_at, data FROM tv_user WHERE pk_user = 1;
+ROLLBACK;
 ```
 
-### Performance Debugging
+### Dependencies
 
 ```sql
--- Slow query analysis
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT * FROM tv_table WHERE data->>'field' = 'value';
+-- Chain of TVIEWs an entity depends on
+SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 
--- Cache performance analysis
-SELECT
-    'graph_cache' as cache,
-    COUNT(*) as entries
-FROM pg_tview_meta
-UNION ALL
-SELECT
-    'prepared_statements',
-    COUNT(*)
-FROM pg_prepared_statements
-WHERE name LIKE 'tview_refresh_%';
+-- Relations each TVIEW reads
+SELECT entity, relid::regclass FROM tviews.pg_tview_reads ORDER BY entity;
 
--- Memory usage analysis
-SELECT
-    name,
-    setting,
-    unit
-FROM pg_settings
-WHERE name IN ('work_mem', 'maintenance_work_mem', 'shared_buffers');
-```
+-- The query used to map writes on a base table to TVIEW keys
+SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
 
-### Dependency Debugging
-
-```sql
--- View TVIEW dependencies
-SELECT
-    entity,
-    dependencies,
-    dependency_types
-FROM pg_tview_meta;
-
--- Check for circular dependencies
-WITH RECURSIVE dep_chain AS (
-    SELECT entity, entity as root, 0 as depth
-    FROM pg_tview_meta
-    UNION ALL
-    SELECT m.entity, dc.root, dc.depth + 1
-    FROM pg_tview_meta m
-    JOIN dep_chain dc ON m.entity = ANY(dc.dependencies)
-    WHERE dc.depth < 10
-)
-SELECT root, array_agg(entity ORDER BY depth) as chain
-FROM dep_chain
-GROUP BY root
-HAVING COUNT(*) > 1;
-
--- Test dependency resolution
-SELECT pg_tviews_analyze_select('SELECT ... FROM table1 JOIN table2 ...');
+-- Check a SELECT before creating a TVIEW from it
+SELECT tviews.pg_tviews_analyze_select('SELECT pk_user, id, jsonb_build_object(''name'', name) AS data FROM tb_user');
 ```
 
 ## Common Issues and Solutions
 
 ### Issue: TVIEW Creation Fails
 
-**Symptoms**: `CREATE TABLE tv_*` returns error or doesn't create TVIEW
+**Debug steps**:
+1. Check the SELECT on its own: `EXPLAIN SELECT ...;`
+2. Required columns: `pk_<entity>` (bigint), `id` (uuid), `data` (jsonb)
+3. Check permissions on the base tables: `\dp tb_post`
+4. Run `SELECT tviews.pg_tviews_analyze_select('SELECT ...');`
 
-**Debug Steps**:
-1. Check SQL syntax: `EXPLAIN SELECT ...;`
-2. Verify required columns: `pk_<entity>`, `data`
-3. Check table permissions: `\dp base_table`
-4. Validate dependencies: `SELECT pg_tviews_analyze_select('SELECT ...');`
-5. Check if hook is installed: Verify extension is loaded
-
-**Common Solutions**:
+**Create it**:
 ```sql
--- Fix missing primary key
-CREATE TABLE tv_post AS
-SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('id', tb_post.id, 'title', tb_post.title) as data
-FROM tb_post;
-
--- Fix permissions
-GRANT SELECT ON tb_post TO pg_tviews_user;
-GRANT ALL ON tv_post TO pg_tviews_user;
-
--- Alternative: Use function approach
-SELECT pg_tviews_create('tv_post', 'SELECT tb_post.pk_post, tb_post.id, jsonb_build_object(...) as data FROM tb_post');
+SELECT tviews.pg_tviews_create_or_replace('tv_post',
+  'SELECT p.pk_post, p.id, jsonb_build_object(''title'', p.title) AS data FROM tb_post p');
 ```
 
 ### Issue: Automatic Refresh Not Working
 
-**Symptoms**: Base table changes don't appear in TVIEW
+Follow the "TVIEW Not Refreshing" flowchart. Repairs:
 
-**Debug Steps**:
-1. Check triggers: `SELECT * FROM pg_trigger WHERE tgname LIKE '%tview%';`
-2. Verify trigger function: `SELECT * FROM pg_proc WHERE proname LIKE '%trigger%';`
-3. Test manual refresh: `SELECT pg_tviews_cascade('table'::regclass::oid, 123);`
-4. Check queue: `SELECT * FROM pg_tviews_debug_queue();`
-
-**Common Solutions**:
 ```sql
--- Reinstall triggers
-SELECT * FROM tviews.pg_tviews_reregister_all();
-
--- Manual refresh stuck items
-SELECT pg_tviews_cascade('table'::regclass::oid, pk_value)
-FROM stuck_items;
+SELECT * FROM tviews.pg_tviews_reregister_all();   -- re-install triggers
+SELECT tviews.pg_tviews_refresh('post');           -- bring one TVIEW up to date
 ```
 
-### Issue: Performance Degradation
+### Issue: Slow TVIEW Reads
 
-**Symptoms**: TVIEW queries getting slower
-
-**Debug Steps**:
-1. Check cache status: `SELECT * FROM pg_tviews_cache_stats;`
-2. Monitor hit rates: `SELECT * FROM pg_tviews_performance_summary;`
-3. Analyze query plans: `EXPLAIN ANALYZE SELECT * FROM tv_table;`
-4. Check memory settings: `SHOW work_mem;`
-
-**Common Solutions**:
 ```sql
--- Install jsonb_delta for better performance
-CREATE EXTENSION jsonb_delta;
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tv_post WHERE data->>'title' = 'x';
 
--- Add indexes on JSONB fields
+-- Expression indexes for frequent filters
 CREATE INDEX idx_tv_post_title ON tv_post ((data->>'title'));
-CREATE INDEX idx_tv_post_author ON tv_post ((data->'author'->>'id'));
-
--- Increase memory settings
-SET work_mem = '128MB';
-SET maintenance_work_mem = '512MB';
 ```
 
-### Issue: Memory Issues
+`pg_tviews.data_gin_index` creates a GIN index on `data` for new TVIEWs. Every index on
+`data` makes refresh updates non-HOT; check `hot_ratio` in `tviews.pg_tviews_profile()`.
 
-**Symptoms**: Out of memory errors, crashes
+### Issue: Memory Errors
 
-**Debug Steps**:
-1. Check current memory: `SHOW work_mem; SHOW shared_buffers;`
-2. Monitor memory usage: `SELECT * FROM pg_stat_activity;`
-3. Check for large datasets: `SELECT COUNT(*) FROM tv_table;`
-4. Review query patterns: `SELECT * FROM pg_stat_statements WHERE query LIKE '%tv_%';`
+**Debug steps**:
+1. `SHOW work_mem;`
+2. `SELECT pid, state, now() - xact_start, left(query, 80) FROM pg_stat_activity WHERE state <> 'idle';`
+3. Size of the TVIEW being written: `SELECT entity, rows_estimate, heap_bytes, fanout FROM tviews.pg_tviews_profile();`
 
-**Common Solutions**:
+**Solutions**: raise `work_mem` for the session doing the rebuild or the bulk write;
+split bulk writes into smaller transactions; for large loads suspend refresh and resume
+once (see [Failure Modes](FAILURE_MODES.md)).
+
+### Issue: Connection Poolers
+
+The refresh queue lives in the writing transaction and is flushed before COMMIT
+completes, so transaction pooling is safe. Session state that does matter:
+`pg_tviews_suspend_triggers()` (ends with the transaction) and `SET pg_tviews.*`
+(session GUCs; reset by `DISCARD ALL`).
+
+### Issue: TVIEW Content Differs From Its View
+
 ```sql
--- Increase memory settings
-ALTER SYSTEM SET work_mem = '256MB';
-ALTER SYSTEM SET maintenance_work_mem = '1GB';
-SELECT pg_reload_conf();
-
--- Process large datasets in batches
-CREATE TEMP TABLE batch_ids AS
-SELECT pk_entity FROM tv_table LIMIT 1000 OFFSET 0;
-
-UPDATE tv_table SET data = data || '{"processed": true}'
-WHERE pk_entity IN (SELECT pk_entity FROM batch_ids);
+(SELECT pk_post, data FROM v_post EXCEPT SELECT pk_post, data FROM tv_post)
+UNION ALL
+(SELECT pk_post, data FROM tv_post EXCEPT SELECT pk_post, data FROM v_post);
 ```
 
-### Issue: Connection Pool Issues
-
-**Symptoms**: "queue state lost" errors, connection timeouts
-
-**Debug Steps**:
-1. Check pool configuration: `SHOW POOLS;` (PgBouncer)
-2. Verify DISCARD ALL: `SHOW server_reset_query;`
-3. Monitor connection usage: `SELECT * FROM pg_stat_activity;`
-4. Check for long transactions: `SELECT xact_start, now() - xact_start FROM pg_stat_activity;`
-
-**Common Solutions**:
-```ini
-# PgBouncer configuration
-[pgbouncer]
-pool_mode = transaction
-server_reset_query = DISCARD ALL
-max_client_conn = 1000
-default_pool_size = 20
-reserve_pool_size = 5
-```
-
-### Issue: Data Inconsistency
-
-**Symptoms**: TVIEW shows stale or incorrect data
-
-**Debug Steps**:
-1. Compare base vs TVIEW: `SELECT COUNT(*) FROM base_table; SELECT COUNT(*) FROM tv_table;`
-2. Check for failed refreshes: `SELECT * FROM pg_tviews_metrics WHERE refresh_count = 0;`
-3. Verify data integrity: `SELECT pk_entity, data FROM tv_table WHERE data IS NULL;`
-4. Check for constraint violations
-
-**Common Solutions**:
-```sql
--- Force full refresh
-TRUNCATE tv_table;
-INSERT INTO tv_table SELECT * FROM v_table;
-
--- Fix data inconsistencies
-UPDATE tv_table SET data = (
-    SELECT jsonb_build_object(...) FROM base_table WHERE id = pk_entity
-) WHERE data->>'field' IS NULL;
-```
+Repair with `SELECT tviews.pg_tviews_refresh('post');`. Do not `TRUNCATE` or write
+`tv_*` tables directly.
 
 ## Advanced Debugging
 
-### PostgreSQL Log Analysis
+### PostgreSQL Log
+
+```sql
+ALTER SYSTEM SET log_line_prefix = '%t [%p]: user=%u,db=%d,app=%a ';
+ALTER SYSTEM SET log_min_duration_statement = 1000;  -- slow writes, refresh included
+SELECT pg_reload_conf();
+```
 
 ```bash
-# Enable detailed logging
-ALTER SYSTEM SET log_statement = 'ddl';
-ALTER SYSTEM SET log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ';
-SELECT pg_reload_conf();
-
-# Search for TVIEW-related errors
-grep "pg_tviews\|tview\|TVIEW" /var/log/postgresql/postgresql-*.log
-
-# Monitor trigger execution
-grep "trigger" /var/log/postgresql/postgresql-*.log
+grep -iE "pg_tviews|tview" /var/log/postgresql/postgresql-*.log
 ```
 
-### Performance Profiling
-
-```sql
--- Create performance snapshot
-CREATE TABLE perf_snapshot AS
-SELECT
-    now() as snapshot_time,
-    (SELECT COUNT(*) FROM pg_tviews_queue_realtime) as queue_size,
-    (SELECT * FROM pg_tviews_cache_stats) as cache_stats,
-    (SELECT * FROM pg_stat_activity WHERE state = 'active') as active_sessions;
-
--- Compare snapshots over time
-SELECT
-    snapshot_time,
-    queue_size,
-    cache_stats,
-    active_sessions
-FROM perf_snapshot
-ORDER BY snapshot_time DESC;
-```
-
-### Memory Leak Detection
-
-```sql
--- Monitor memory usage
-SELECT
-    datname,
-    usename,
-    pid,
-    memory_used,
-    memory_allocated
-FROM pg_stat_activity
-WHERE memory_used > 100 * 1024 * 1024;  -- 100MB
-
--- Check for connection leaks
-SELECT
-    usename,
-    count(*) as connection_count
-FROM pg_stat_activity
-GROUP BY usename
-ORDER BY connection_count DESC;
-```
+`SET pg_tviews.log_level = 'debug';` makes pg_tviews log more detail in one session.
 
 ### Lock Analysis
 
 ```sql
--- Check for blocking locks
-SELECT
-    blocked_locks.pid as blocked_pid,
-    blocked_activity.usename as blocked_user,
-    blocking_locks.pid as blocking_pid,
-    blocking_activity.usename as blocking_user,
-    blocked_activity.query as blocked_query
-FROM pg_locks blocked_locks
-JOIN pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
-JOIN pg_locks blocking_locks
-    ON blocking_locks.locktype = blocked_locks.locktype
-    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
-    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
-    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
-    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
-    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
-    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
-    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
-    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
-    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
-    AND blocking_locks.pid != blocked_locks.pid
-JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
-WHERE NOT blocked_locks.granted;
+SELECT pid, pg_blocking_pids(pid) AS blocked_by, wait_event_type, wait_event,
+       now() - xact_start AS xact_age, left(query, 80) AS query
+FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) > 0;
 ```
 
 ## Emergency Procedures
 
-### Complete TVIEW Reset
+### Rebuild all TVIEWs
 
 ```sql
--- Emergency: Reset all TVIEWs
-BEGIN;
-
--- Drop all TVIEWs
-SELECT pg_tviews_drop(entity, true) FROM pg_tview_meta;
-
--- Clear metadata
-TRUNCATE pg_tview_meta;
-
--- Clear metrics
-TRUNCATE pg_tviews_metrics;
-
--- Recreate TVIEWs from backup definitions
--- (Restore from DDL backup)
-
-COMMIT;
+SELECT tviews.pg_tviews_refresh_all();
 ```
 
-### System Recovery
+### Drop and recreate a TVIEW
 
 ```sql
--- Recover from corrupted state
-BEGIN;
-
--- Disconnect all users
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE datname = current_database()
-  AND pid != pg_backend_pid();
-
--- Drop and recreate extension
-DROP EXTENSION pg_tviews CASCADE;
-CREATE EXTENSION pg_tviews;
-
--- Restore from backup
--- (Follow backup restore procedures)
-
-COMMIT;
+SELECT query FROM tviews.registry WHERE entity = 'post';   -- keep the definition
+SELECT tviews.pg_tviews_drop('tv_post', if_exists => true);
+SELECT tviews.pg_tviews_create_or_replace('tv_post', '<the saved query>');
 ```
 
-### Data Repair
+`pg_tviews_drop(..., cascade => true)` also drops objects that depend on the TVIEW or its view.
 
-```sql
--- Repair inconsistent TVIEW data
-CREATE TEMP TABLE repair_log (pk_entity bigint, old_data jsonb, new_data jsonb);
+## Proactive Monitoring
 
-INSERT INTO repair_log
-SELECT
-    t.pk_entity,
-    t.data as old_data,
-    (SELECT jsonb_build_object(...) FROM base_table b WHERE b.id = t.pk_entity) as new_data
-FROM tv_table t
-WHERE t.data->>'field' != (SELECT value FROM base_table WHERE id = t.pk_entity);
-
--- Apply repairs
-UPDATE tv_table SET data = new_data
-FROM repair_log
-WHERE tv_table.pk_entity = repair_log.pk_entity;
-```
-
-## Best Practices
-
-### Proactive Monitoring
-
-```sql
--- Daily health check script
+```bash
 #!/bin/bash
-psql -d mydb -c "
-    SELECT status, check_name, details
-    FROM pg_tviews_health_check()
-    WHERE status != 'OK'
+psql -X -At -d mydb -c "
+    SELECT component || ' ' || severity || ': ' || message
+    FROM tviews.pg_tviews_health_check()
+    WHERE severity <> 'info'
 " > health_check.log
 
 if [ -s health_check.log ]; then
-    mail -s 'pg_tviews Health Check Failed' admin@example.com < health_check.log
+    mail -s 'pg_tviews health check' admin@example.com < health_check.log
 fi
-```
-
-### Alert Configuration
-
-```sql
--- Create alerting view
-CREATE VIEW alerting_conditions AS
-SELECT
-    'queue_size' as metric,
-    queue_size as value,
-    100 as threshold,
-    CASE WHEN queue_size > 100 THEN 'CRITICAL' ELSE 'OK' END as status
-FROM pg_tviews_queue_realtime
-
-UNION ALL
-
-SELECT
-    'timing' as metric,
-    timing_ms as value,
-    500 as threshold,
-    CASE WHEN timing_ms > 500 THEN 'WARNING' ELSE 'OK' END as status
-FROM pg_tviews_metrics
-WHERE recorded_at > now() - interval '5 minutes';
-```
-
-### Documentation Maintenance
-
-```sql
--- Document your TVIEWs
-CREATE TABLE tview_documentation (
-    entity text PRIMARY KEY,
-    description text,
-    dependencies text[],
-    refresh_frequency text,
-    business_owner text,
-    last_reviewed date
-);
-
--- Keep documentation current
-UPDATE tview_documentation SET
-    last_reviewed = CURRENT_DATE,
-    dependencies = (SELECT array_agg(entity) FROM pg_tview_meta WHERE entity != tview_documentation.entity)
-WHERE entity IN (SELECT entity FROM pg_tview_meta);
 ```
 
 ## See Also

@@ -38,6 +38,6 @@ ORDER BY r.schema, r.name
 \gexec
 
 \echo ''
-\echo '4. Is refresh suspended in this session?'
+\echo '4. Is refresh suspended in this transaction?'
 SELECT tviews.pg_tviews_is_suspended() AS suspended,
        tviews.pg_tviews_suspended_entities() AS changed_while_suspended;

@@ -1,16 +1,18 @@
--- pg_tviews emergency: stop refreshing TVIEWs from this session's writes, and
+-- pg_tviews emergency: stop refreshing TVIEWs from a transaction's writes, and
 -- bring them up to date afterwards.
 -- Run: psql -X -v ON_ERROR_STOP=1 -d <database> -f docs/operations/runbooks/scripts/emergency-disable.sql
 --
--- Suspension is per session (backend): it lets one session write base tables
--- without refreshing TVIEWs (a bulk load, or while a refresh fails), records which
--- TVIEWs it skipped, and catches them up on resume. Other sessions keep refreshing.
+-- pg_tviews_suspend_triggers() lasts until the end of the transaction: it lets one
+-- transaction write base tables without refreshing TVIEWs (a bulk load, or while a
+-- refresh fails), records which TVIEWs it skipped, and catches them up on resume or
+-- at an explicit COMMIT. The pg_tviews.suspend_triggers setting lasts for the session
+-- and records nothing. Other sessions keep refreshing.
 -- This script shows the state and the commands; it changes nothing.
 
 \echo '=== pg_tviews emergency controls ==='
 
 \echo ''
-\echo '1. Current state of this session'
+\echo '1. Current state (this transaction, and the session setting)'
 SELECT tviews.pg_tviews_is_suspended() AS suspended,
        tviews.pg_tviews_suspended_entities() AS changed_while_suspended,
        pg_catalog.current_setting('pg_tviews.suspend_triggers', true) AS suspend_triggers_guc;
@@ -23,15 +25,17 @@ WHERE severity <> 'info'
 ORDER BY component;
 
 \echo ''
-\echo '3. Commands (run them in the session that writes):'
-\echo '   SELECT tviews.pg_tviews_suspend_triggers();   -- stop refreshing from this session'
+\echo '3. Commands (run them in the transaction that writes):'
+\echo '   BEGIN;'
+\echo '   SELECT tviews.pg_tviews_suspend_triggers();   -- stop refreshing in this transaction'
 \echo '   ... writes ...'
 \echo '   SELECT tviews.pg_tviews_resume_triggers();    -- resume; skipped TVIEWs are refreshed'
+\echo '   COMMIT;'
 \echo ''
 \echo '   Bring one TVIEW, or all of them, back to their views:'
 \echo '   SELECT tviews.pg_tviews_refresh(''<entity>'');'
 \echo '   SELECT tviews.pg_tviews_refresh_all();'
 \echo ''
-\echo '   Or for a whole session without code changes (also stops the flush):'
+\echo '   Or for a whole session without code changes (records nothing, stops the flush):'
 \echo '   SET pg_tviews.suspend_triggers = on;  ...  RESET pg_tviews.suspend_triggers;'
-\echo '   then refresh the TVIEWs the session wrote to.'
+\echo '   then refresh the TVIEWs the session wrote to (and the TVIEWs that embed them).'
