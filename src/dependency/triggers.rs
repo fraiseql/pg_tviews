@@ -456,27 +456,29 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
                            AND b.proname IN ('{ROW_HANDLER}', '{DELTA_HANDLER}'))",
         schema = crate::utils::ext_schema(),
     );
-    let changes: Vec<Change> = Spi::connect(|client| {
-        // SAFETY: the datum copies `rel`.
-        let args =
-            [unsafe { DatumWithOid::new(rel, PgOid::BuiltIn(PgBuiltInOids::REGCLASSOID).value()) }];
-        let mut out = Vec::new();
-        for row in client.select(&query, None, &args)? {
-            if let (Some(action), Some(entity), Some(relid), Some(proname)) = (
-                row.get::<String>(1)?,
-                row.get::<String>(2)?,
-                row.get::<pg_sys::Oid>(3)?,
-                row.get::<String>(4)?,
-            ) {
-                out.push((action, entity, relid, proname, row.get::<String>(5)?));
+    let changes: Vec<Change> =
+        Spi::connect(|client| {
+            // SAFETY: the datum copies `rel`.
+            let args = [unsafe {
+                DatumWithOid::new(rel, PgOid::BuiltIn(PgBuiltInOids::REGCLASSOID).value())
+            }];
+            let mut out = Vec::new();
+            for row in client.select(&query, None, &args)? {
+                if let (Some(action), Some(entity), Some(relid), Some(proname)) = (
+                    row.get::<String>(1)?,
+                    row.get::<String>(2)?,
+                    row.get::<pg_sys::Oid>(3)?,
+                    row.get::<String>(4)?,
+                ) {
+                    out.push((action, entity, relid, proname, row.get::<String>(5)?));
+                }
             }
-        }
-        Ok::<_, spi::Error>(out)
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Find the partition triggers to change".to_string(),
-        pg_error: e.to_string(),
-    })?;
+            Ok::<_, spi::Error>(out)
+        })
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Find the partition triggers to change".to_string(),
+            pg_error: e.to_string(),
+        })?;
 
     for (action, entity, relid, proname, tgname) in changes {
         let (schema, relname, _) = get_table_name(relid)?;

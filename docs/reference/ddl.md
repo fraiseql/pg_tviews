@@ -286,13 +286,23 @@ The triggers follow the kind of each table:
 Every table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
 refreshes the whole TVIEW. An `UPDATE` that changes none of the columns the TVIEW
 reads from a `mapped` table maps nothing (rows are matched to their old image by
-primary key). A partitioned `mapped` table maps each row from a row trigger, since
-partitions cannot have transition tables.
+primary key).
 
-**Limitation:** statement triggers on a partitioned table do not fire for a
-statement that targets one of its partitions directly. In an autocommit statement
-such a write is refreshed at the next flush (the next write to a base table, or an
-explicit `COMMIT`). Write through the partitioned table, or inside a transaction.
+**Partitioned tables.** A partitioned table of any kind but `propagated` gets the
+row trigger, which PostgreSQL copies onto every partition, and maps each changed row
+from it: the transition tables of a statement trigger on the partitioned table would
+miss the rows of a statement that names a partition. Every partition, leaf or middle
+level, also gets the flush and `AFTER TRUNCATE` triggers, because a statement
+trigger fires only on the table the statement names. So a write or a `TRUNCATE` that
+targets a partition directly refreshes the TVIEW like one through the partitioned
+table, and a `TRUNCATE` of the partitioned table refreshes it once.
+
+Partitions created (`CREATE TABLE … PARTITION OF`, also from a function such as a
+partition manager's) or attached after the TVIEW get the same triggers, and a
+detached one loses them. `ATTACH` and `DETACH` move rows in or out with no row
+trigger firing, so each refreshes the TVIEWs over that table in full.
+`pg_tviews_health_check()` reports a partition whose triggers are missing, and
+`pg_tviews_reregister_all()` puts them back.
 
 ### Tables no cascade reaches
 

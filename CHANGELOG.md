@@ -71,6 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   and nothing flushed it. Inside one they still queue it for the transaction's next
   flush.
 
+- **Writes and `TRUNCATE` that target a partition directly refresh the TVIEW;
+  partitions created or attached later are covered**. Only the partitioned table
+  had the flush and `TRUNCATE` triggers, so in autocommit a statement naming a
+  partition left the TVIEW stale until a later write, and `TRUNCATE` of a partition
+  until a full refresh. Every partition now gets them, including partitions created
+  (also from a partition manager's function) or attached after the TVIEW; a
+  detached one loses them, and `ATTACH`/`DETACH` refresh the TVIEWs over the table.
+  `TRUNCATE` of the partitioned table refreshes each TVIEW once.
+  `pg_tviews_health_check()` reports a missing partition trigger, and no longer
+  reports one of ours on a partition as orphaned. Existing TVIEWs get the triggers
+  from `pg_tviews_reregister_all()`, which the upgrade already asks for.
+- **A refresh that fails after `TRUNCATE` aborts the `TRUNCATE`**: it only warned,
+  leaving the TVIEW stale.
+
 ### Changed
 
 - **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The

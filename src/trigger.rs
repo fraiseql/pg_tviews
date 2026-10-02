@@ -211,8 +211,8 @@ fn pg_tview_trigger_handler<'a>(
     //    Follow cascade paths to determine which TVIEW rows need refreshing
     enqueue_cascade_parents(trigger, table_oid, &serves);
 
-    // 3. A partitioned table whose writes map through a query (ADR 0157): its
-    //    partitions cannot have transition tables, so map this row.
+    // 3. A partitioned table whose writes map through a query (ADR 0157): the
+    //    row trigger is the one copied onto every partition, so map this row.
     if let Some(entity) = &served
         && let Err(e) = crate::delta::map_row(trigger, entity, table_oid)
     {

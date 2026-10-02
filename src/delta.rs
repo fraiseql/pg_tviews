@@ -313,8 +313,9 @@ fn fan_out(
 }
 
 /// Map one changed row of a partitioned `mapped` / `all_keys` table, from the row
-/// trigger (the partition the row is in cannot have transition tables). Returns
-/// false when `entity` has no such mapping of the table.
+/// trigger that `PostgreSQL` copied onto the partition the row is in (only row
+/// triggers are copied). Returns false when `entity` has no such mapping of the
+/// table.
 pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewResult<bool> {
     let Some(meta) = TviewMeta::load_by_entity(entity)? else {
         return Ok(false);
