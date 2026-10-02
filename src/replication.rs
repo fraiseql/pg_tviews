@@ -220,21 +220,8 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             // Known empty: fill without TRUNCATE, so readers are not blocked.
             crate::admin::fill_empty_tview(&rel.entity)?;
         } else {
-            let refresh = format!(
-                "SELECT {}.pg_tviews_refresh($1)",
-                crate::utils::ext_schema()
-            );
-            // SAFETY: the text datum borrows `rel.entity`, which outlives the call.
-            let args = [unsafe {
-                DatumWithOid::new(
-                    rel.entity.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            }];
-            Spi::run_with_args(&refresh, &args).map_err(|e| TViewError::SpiError {
-                query: refresh.clone(),
-                error: e.to_string(),
-            })?;
+            // Every target is rebuilt, dependencies first: no cascade needed.
+            crate::admin::rebuild_one(&rel.entity)?;
         }
         crate::queue::mark_crash_recovery_checked(&rel.entity);
         let count_sql = format!("SELECT count(*) FROM {}", rel.qualified(&rel.table));

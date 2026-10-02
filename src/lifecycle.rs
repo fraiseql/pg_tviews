@@ -1,8 +1,5 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
-use pgrx::PgBuiltInOids;
-use pgrx::PgOid;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::sync::Mutex;
 
@@ -82,16 +79,8 @@ pub fn jsonb_delta_schema() -> Option<String> {
 pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
     crate::revision::check();
     if detect_post_crash_truncation(entity_name)? {
-        // Perform full refresh of the TVIEW
-        Spi::run_with_args(
-            &format!(
-                "SELECT {}.pg_tviews_refresh($1)",
-                crate::utils::ext_schema()
-            ),
-            &[unsafe {
-                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }],
-        )?;
+        // Only this TVIEW was reset; what reads it is unchanged.
+        crate::admin::rebuild_one(entity_name)?;
         Ok(true)
     } else {
         Ok(false)
