@@ -5,9 +5,11 @@
 //! with transition tables takes one event). The handler runs the table's mapping
 //! query once over the changed rows, as the TVIEW's owner, and enqueues the keys it
 //! returns. `all_keys` tables carry the same triggers: under the `full_refresh`
-//! policy they enqueue the whole TVIEW. A partitioned table, whose partitions cannot
-//! have transition tables, maps each row from the row trigger instead. `TRUNCATE`
-//! refreshes the whole TVIEW.
+//! policy they enqueue the whole TVIEW. A partitioned table maps each row from the
+//! row trigger instead: `PostgreSQL` copies only row triggers onto partitions, and
+//! the transition tables of the root's statement triggers would miss the rows of
+//! statements naming a partition. `TRUNCATE` refreshes the whole TVIEW, once per
+//! statement however many truncated partitions fire.
 
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
@@ -38,6 +40,12 @@ thread_local! {
     static DELTAS: RefCell<HashMap<DeltaKey, String>> = RefCell::new(HashMap::new());
     /// Table → the root of its partition tree (itself when it is not a partition).
     static ROOTS: RefCell<HashMap<Oid, Oid>> = RefCell::new(HashMap::new());
+    /// Number of the current `TRUNCATE` statement, counted by the `ProcessUtility`
+    /// hook; 0 when the hook is not loaded.
+    static TRUNCATE_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The entities the `TRUNCATE` statement numbered `.0` already refreshed.
+    static TRUNCATE_REFRESHED: RefCell<(u64, std::collections::HashSet<String>)> =
+        RefCell::new((0, std::collections::HashSet::new()));
 }
 
 /// Forget the cached queries; part of [`crate::queue::cache::invalidate_all_caches`].
@@ -87,8 +95,29 @@ fn pg_tview_delta_trigger<'a>(
     Ok(None)
 }
 
+/// A `TRUNCATE` statement starts: its truncate triggers refresh each TVIEW once.
+/// Called by the `ProcessUtility` hook. No SPI.
+pub fn begin_truncate() {
+    TRUNCATE_EPOCH.set(TRUNCATE_EPOCH.get().wrapping_add(1).max(1));
+}
+
+/// Whether this `TRUNCATE` statement has yet to refresh `entity`, recording that it
+/// does now. Always true without the hook (no statement numbers).
+fn first_truncate_refresh(entity: &str) -> bool {
+    let epoch = TRUNCATE_EPOCH.get();
+    epoch == 0
+        || TRUNCATE_REFRESHED.with(|r| {
+            let mut refreshed = r.borrow_mut();
+            if refreshed.0 != epoch {
+                *refreshed = (epoch, std::collections::HashSet::new());
+            }
+            refreshed.1.insert(entity.to_string())
+        })
+}
+
 /// `TRUNCATE` of a base table: refresh the whole TVIEW now (no flush trigger
-/// follows a `TRUNCATE`).
+/// follows a `TRUNCATE`). `TRUNCATE` of a partitioned table fires this on each
+/// truncated partition too, after all of them are empty: the first one refreshes.
 #[pg_trigger]
 fn pg_tview_truncate_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
@@ -101,11 +130,36 @@ fn pg_tview_truncate_trigger<'a>(
         crate::suspend::record_change(&entity);
         return Ok(None);
     }
+    if !first_truncate_refresh(&entity) {
+        return Ok(None);
+    }
     crate::queue::enqueue_refresh_all(&entity);
     if let Err(e) = crate::queue::flush_refresh_queue() {
-        warning!("TVIEW refresh failed in TRUNCATE trigger: {:?}", e);
+        error!("pg_tviews: could not refresh tv_{entity} after TRUNCATE: {e}");
     }
     Ok(None)
+}
+
+/// Refresh in full every TVIEW whose row trigger sits on the root of `table`'s
+/// partition tree: the rows of a partition attached to it or detached from it
+/// changed with no row trigger firing.
+///
+/// # Errors
+/// Returns an error if the catalog query or a refresh fails.
+pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
+    let root = partition_root(table)?;
+    let entities = crate::dependency::triggers::row_trigger_entities(root)?;
+    if entities.is_empty() {
+        return Ok(());
+    }
+    for entity in &entities {
+        if suspended() {
+            crate::suspend::record_change(entity);
+        } else {
+            crate::queue::enqueue_refresh_all(entity);
+        }
+    }
+    crate::queue::flush_refresh_queue()
 }
 
 /// The query that maps changed rows of `base_table`, read from a relation named

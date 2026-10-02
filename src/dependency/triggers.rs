@@ -358,6 +358,40 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
     Ok(())
 }
 
+/// The TVIEWs whose row trigger is on `table` itself (not a copy of a parent's).
+///
+/// # Errors
+/// Returns an error if the catalog query fails.
+pub fn row_trigger_entities(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
+    let query = format!(
+        "SELECT DISTINCT pg_catalog.convert_from( \
+                    pg_catalog.substring(t.tgargs, 1, pg_catalog.length(t.tgargs) - 1), \
+                    pg_catalog.getdatabaseencoding()) \
+         FROM pg_catalog.pg_trigger t \
+         JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+         WHERE p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+           AND p.proname = '{ROW_HANDLER}' \
+           AND t.tgparentid = 0 AND t.tgnargs = 1 AND t.tgrelid = $1",
+        schema = crate::utils::ext_schema(),
+    );
+    Spi::connect(|client| {
+        // SAFETY: the datum copies `table`.
+        let args =
+            [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let mut out = Vec::new();
+        for row in client.select(&query, None, &args)? {
+            if let Some(entity) = row.get::<String>(1)? {
+                out.push(entity);
+            }
+        }
+        Ok::<_, spi::Error>(out)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the TVIEWs over a partitioned table".to_string(),
+        pg_error: e.to_string(),
+    })
+}
+
 /// Give every partition of the tree `rel` belongs to the [`PARTITION_MEMBER`]
 /// triggers of each TVIEW whose row trigger sits on the tree's root, and remove
 /// ours from members that no longer need them (a partition detached, a root no

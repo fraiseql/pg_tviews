@@ -87,7 +87,9 @@ CREATE TABLE tb_note_3 PARTITION OF tb_note FOR VALUES FROM (200) TO (300);
 INSERT INTO tb_note_3 (pk_note, fk_line, body) VALUES (210, 130, 'n4 new partition');
 SELECT check_fresh('INSERT into a partition created later');
 CREATE TABLE tb_line_3 (pk_line bigint NOT NULL, fk_order bigint NOT NULL, pos int NOT NULL);
+INSERT INTO tb_line_3 (pk_line, fk_order, pos) VALUES (205, 2, 5);   -- rows come with it
 ALTER TABLE tb_line ATTACH PARTITION tb_line_3 FOR VALUES FROM (200) TO (300);
+SELECT check_fresh('ATTACH a partition that has rows');
 INSERT INTO tb_line_3 (pk_line, fk_order, pos) VALUES (210, 1, 7);
 SELECT check_fresh('INSERT into an attached partition');
 -- From PL/pgSQL, as partition managers do.
@@ -118,6 +120,29 @@ BEGIN
     END IF;
 END $$;
 SELECT check_fresh('TRUNCATE the root');
+
+-- A refresh that fails in the truncate trigger aborts the TRUNCATE (N7).
+CREATE TABLE tb_kind (pk_kind bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
+CREATE TABLE tb_weight (w int NOT NULL);
+INSERT INTO tb_kind (pk_kind, name) VALUES (1, 'k');
+INSERT INTO tb_weight VALUES (1);
+SET client_min_messages TO ERROR;   -- tb_weight is read uncorrelated: a WARNING at create
+SELECT pg_tviews_create('tv_kind', $$
+    SELECT k.pk_kind, k.id,
+           jsonb_build_object('name', k.name,
+                              'share', 1 / (SELECT count(*) FROM tb_weight)) AS data
+    FROM tb_kind k $$);
+SET client_min_messages TO WARNING;
+DO $$ BEGIN
+    BEGIN
+        TRUNCATE tb_weight;
+    EXCEPTION WHEN division_by_zero THEN
+        NULL;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM tb_weight) THEN
+        RAISE EXCEPTION 'N7 FAIL: TRUNCATE committed although the refresh of tv_kind failed';
+    END IF;
+END $$;
 
 -- ── DETACH removes ours from the detached table ─────────────────────────────
 ALTER TABLE tb_line DETACH PARTITION tb_line_3;

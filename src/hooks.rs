@@ -85,6 +85,15 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // PostgreSQL internals — all pointer dereferences and static accesses are
     // inherently unsafe FFI operations.
 
+    // Number every TRUNCATE, nested ones included, so its truncate triggers
+    // refresh each TVIEW once (one fires per truncated partition).
+    if !pstmt.is_null()
+        && unsafe { !(*pstmt).utilityStmt.is_null() }
+        && unsafe { (*(*pstmt).utilityStmt).type_ } == pg_sys::NodeTag::T_TruncateStmt
+    {
+        crate::delta::begin_truncate();
+    }
+
     // Reentrancy guard: if we're already inside the hook (e.g., processing DDL triggered
     // internally by pg_tviews_create via Spi::run), skip interception and pass through.
     if unsafe { HOOK_IN_PROGRESS } {
@@ -553,6 +562,8 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
 /// from a partition tree, resolved once `PostgreSQL` has run the statement.
 struct PartitionDdl {
     tables: Vec<*mut pg_sys::RangeVar>,
+    /// The partitioned table an `ATTACH` or `DETACH` changes the rows of.
+    changed_rows_of: Option<*mut pg_sys::RangeVar>,
 }
 
 impl PartitionDdl {
@@ -571,6 +582,15 @@ impl PartitionDdl {
                 crate::dependency::triggers::ensure_partition_triggers(oid)?;
             }
         }
+        // The rows of an attached or detached partition enter or leave the
+        // partitioned table with no row written: refresh its TVIEWs in full.
+        // SAFETY: see above.
+        let parent = self
+            .changed_rows_of
+            .map_or(pg_sys::InvalidOid, |rv| unsafe { resolve_relation_oid(rv) });
+        if parent != pg_sys::InvalidOid {
+            crate::delta::refresh_tviews_over(parent)?;
+        }
         Ok(())
     }
 }
@@ -586,6 +606,7 @@ unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Option<Partitio
         }
         let node = (*pstmt).utilityStmt;
         let mut tables = Vec::new();
+        let mut changed_rows_of = None;
         match (*node).type_ {
             pg_sys::NodeTag::T_CreateStmt => {
                 #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → CreateStmt* cast
@@ -616,12 +637,16 @@ unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Option<Partitio
                     let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
                     if !partition.name.is_null() {
                         tables.push(partition.name);
+                        changed_rows_of = Some(stmt.relation);
                     }
                 }
             }
             _ => {}
         }
-        (!tables.is_empty()).then_some(PartitionDdl { tables })
+        (!tables.is_empty()).then_some(PartitionDdl {
+            tables,
+            changed_rows_of,
+        })
     }
 }
 
