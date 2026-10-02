@@ -252,9 +252,7 @@ impl Walker<'_> {
                     else {
                         continue;
                     };
-                    let opaque = whole
-                        .clone()
-                        .or_else(|| top_opaque_reason((*rte).subquery));
+                    let opaque = whole.clone().or_else(|| top_opaque_reason((*rte).subquery));
                     let leaf_flags = Flags {
                         branch,
                         opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),

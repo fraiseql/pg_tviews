@@ -1098,7 +1098,10 @@ mod tests {
     fn test_outer_set_operation_finds_intersect_and_except() {
         for (sql, op) in [
             ("select a from tb_a union all select a from tb_b", "union"),
-            ("select a from tb_a intersect select a from tb_b", "intersect"),
+            (
+                "select a from tb_a intersect select a from tb_b",
+                "intersect",
+            ),
             ("select a from tb_a except select a from tb_b", "except"),
         ] {
             let at = find_outer_set_operation(sql, 0).unwrap();

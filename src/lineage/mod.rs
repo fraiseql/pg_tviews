@@ -262,9 +262,11 @@ impl Graph {
         let Some(root) = self.root_of(occ) else {
             // A top level whose rows a write changes beyond its own (a window
             // function, LIMIT…) has no root; say why.
-            return Kind::AllKeys(o.opaque_level.clone().unwrap_or_else(|| {
-                "the TVIEW key is not a column of a base table".to_string()
-            }));
+            return Kind::AllKeys(
+                o.opaque_level
+                    .clone()
+                    .unwrap_or_else(|| "the TVIEW key is not a column of a base table".to_string()),
+            );
         };
         if root.key.occ == occ {
             return Kind::Local(root.key.name.clone());
