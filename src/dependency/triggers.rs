@@ -67,13 +67,22 @@ const DELTA_DELETE: TriggerSpec = TriggerSpec {
     tag: "delta_d",
 };
 
+/// What every member of a partitioned base table's tree gets, the root excepted.
+/// PostgreSQL copies only row triggers onto partitions, and a statement trigger
+/// fires only on the table the statement names: a statement writing to a
+/// partition directly needs a flush trigger of its own, and a `TRUNCATE` of one
+/// a truncate trigger.
+const PARTITION_MEMBER: &[TriggerSpec] = &[FLUSH, TRUNCATE];
+
 /// Which triggers a base table gets for a TVIEW, from how its writes map to keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerSet {
     /// The key is read off each changed row: row trigger.
     Row,
     /// A query maps the statement's changed rows: delta triggers. A partitioned
-    /// table, whose partitions cannot have transition tables, maps row by row.
+    /// table maps row by row: transition tables of its statement triggers would
+    /// see only the rows of statements naming it, and its partitions get no copy
+    /// of a trigger with transition tables.
     Delta,
     /// Refreshing another TVIEW refreshes this one: nothing.
     None,
@@ -341,8 +350,119 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
                 pg_error: e,
             })?;
         }
+        if partitioned && set != TriggerSet::None {
+            ensure_partition_triggers(table_oid)?;
+        }
     }
 
+    Ok(())
+}
+
+/// Give every partition of the tree `rel` belongs to the [`PARTITION_MEMBER`]
+/// triggers of each TVIEW whose row trigger sits on the tree's root, and remove
+/// ours from members that no longer need them (a partition detached, a root no
+/// longer read). Covers `rel`'s own subtree too, so after a `DETACH` it cleans
+/// the detached table. Idempotent; each trigger is created or dropped as the
+/// owner of its table, which may not be the caller (a partition created by a
+/// partition manager's role).
+///
+/// # Errors
+/// Returns an error if the catalog query or a trigger change fails.
+pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
+    /// `(action, entity, table, trigger function, trigger name)`.
+    type Change = (String, String, pg_sys::Oid, String, Option<String>);
+    let query = format!(
+        "WITH ours AS ( \
+             SELECT t.tgname::text AS tgname, t.tgrelid, p.proname::text AS proname, \
+                    pg_catalog.convert_from( \
+                        pg_catalog.substring(t.tgargs, 1, pg_catalog.length(t.tgargs) - 1), \
+                        pg_catalog.getdatabaseencoding()) AS entity \
+             FROM pg_catalog.pg_trigger t \
+             JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+             WHERE p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+               AND p.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}', '{DELTA_HANDLER}', \
+                                 '{TRUNCATE_HANDLER}') \
+               AND t.tgparentid = 0 AND t.tgnargs = 1 \
+         ), \
+         tree AS ( \
+             SELECT m.relid, \
+                    COALESCE(pg_catalog.pg_partition_root(m.relid)::pg_catalog.oid, m.relid) AS root \
+             FROM (SELECT relid::pg_catalog.oid FROM pg_catalog.pg_partition_tree( \
+                       COALESCE(pg_catalog.pg_partition_root($1), $1::pg_catalog.regclass)) \
+                   UNION SELECT $1) m \
+         ), \
+         wanted AS ( \
+             SELECT DISTINCT o.entity, tr.relid, f.proname \
+             FROM tree tr \
+             JOIN ours o ON o.tgrelid = tr.root AND o.proname = '{ROW_HANDLER}' \
+             CROSS JOIN (VALUES ('{FLUSH_HANDLER}'), ('{TRUNCATE_HANDLER}')) f(proname) \
+             WHERE tr.relid <> tr.root \
+         ) \
+         SELECT 'create', w.entity, w.relid, w.proname, NULL::pg_catalog.text \
+         FROM wanted w \
+         WHERE NOT EXISTS (SELECT 1 FROM ours o WHERE o.tgrelid = w.relid \
+                           AND o.entity = w.entity AND o.proname = w.proname) \
+         UNION ALL \
+         SELECT 'drop', o.entity, o.tgrelid, o.proname, o.tgname \
+         FROM ours o JOIN tree tr ON tr.relid = o.tgrelid \
+         WHERE o.proname IN ('{FLUSH_HANDLER}', '{TRUNCATE_HANDLER}') \
+           AND NOT EXISTS (SELECT 1 FROM wanted w WHERE w.relid = o.tgrelid \
+                           AND w.entity = o.entity AND w.proname = o.proname) \
+           AND NOT EXISTS (SELECT 1 FROM ours b WHERE b.tgrelid = o.tgrelid \
+                           AND b.entity = o.entity \
+                           AND b.proname IN ('{ROW_HANDLER}', '{DELTA_HANDLER}'))",
+        schema = crate::utils::ext_schema(),
+    );
+    let changes: Vec<Change> = Spi::connect(|client| {
+        // SAFETY: the datum copies `rel`.
+        let args =
+            [unsafe { DatumWithOid::new(rel, PgOid::BuiltIn(PgBuiltInOids::REGCLASSOID).value()) }];
+        let mut out = Vec::new();
+        for row in client.select(&query, None, &args)? {
+            if let (Some(action), Some(entity), Some(relid), Some(proname)) = (
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<pg_sys::Oid>(3)?,
+                row.get::<String>(4)?,
+            ) {
+                out.push((action, entity, relid, proname, row.get::<String>(5)?));
+            }
+        }
+        Ok::<_, spi::Error>(out)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the partition triggers to change".to_string(),
+        pg_error: e.to_string(),
+    })?;
+
+    for (action, entity, relid, proname, tgname) in changes {
+        let (schema, relname, _) = get_table_name(relid)?;
+        let qi_table = format!(
+            "{}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&relname)
+        );
+        if let Some(trigger) = tgname.filter(|_| action == "drop") {
+            drop_trigger(relid, &qi_table, &trigger)?;
+            continue;
+        }
+        let Some(spec) = PARTITION_MEMBER.iter().find(|s| s.function == proname) else {
+            continue;
+        };
+        let _owner = crate::owner::AsOwner::of_table(relid)?;
+        let trigger_sql = format!(
+            "CREATE TRIGGER {} {} EXECUTE FUNCTION {}.{}({})",
+            quote_identifier(&trigger_name(spec.tag, &entity, &schema, &relname)),
+            spec.clause.replace("{table}", &qi_table),
+            crate::utils::ext_schema(),
+            spec.function,
+            quote_identifier(&entity),
+        );
+        crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
+            operation: format!("Install {} trigger on partition {qi_table}", spec.function),
+            pg_error: e,
+        })?;
+    }
     Ok(())
 }
 
@@ -356,6 +476,9 @@ pub fn sync_entity_triggers(
     plan: &[(pg_sys::Oid, TriggerSet)],
     tview_entity: &str,
 ) -> TViewResult<()> {
+    // A partition's triggers depend on its root's, which this changes: they are
+    // reconciled once the planned tables are done.
+    let mut partitions = Vec::new();
     for installed in entity_triggers(tview_entity, None)? {
         let wanted = match plan.iter().find(|(oid, _)| *oid == installed.table_oid) {
             Some(&(oid, set)) => {
@@ -366,11 +489,24 @@ pub fn sync_entity_triggers(
             }
             None => false,
         };
-        if !wanted {
+        if wanted {
+            continue;
+        }
+        if PARTITION_MEMBER
+            .iter()
+            .any(|spec| spec.function == installed.function)
+            && crate::delta::partition_root(installed.table_oid)? != installed.table_oid
+        {
+            partitions.push(installed.table_oid);
+        } else {
             drop_trigger(installed.table_oid, &installed.table, &installed.trigger)?;
         }
     }
-    install_triggers(plan, tview_entity)
+    install_triggers(plan, tview_entity)?;
+    for partition in partitions {
+        ensure_partition_triggers(partition)?;
+    }
+    Ok(())
 }
 
 /// Remove every trigger installed for `tview_entity`, wherever it is. This needs
