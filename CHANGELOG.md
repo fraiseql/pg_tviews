@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   'first'` duplicate-row message and the "initial column not found" cascade message,
   also sent on every write, are logged once per backend the same way.
 
+- **A TVIEW whose own table is partitioned refreshes on writes**. Every write to a
+  partitioned `tb_<entity>`, through the root or to a partition, was dropped with a
+  "not managed by pg_tviews" WARNING: the row trigger PostgreSQL clones onto each
+  partition looked the entity up by the partition. It now uses the partition root.
+
 ### Changed
 
 - **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The

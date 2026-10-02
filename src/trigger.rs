@@ -168,7 +168,7 @@ fn pg_tview_trigger_handler<'a>(
                 }
             } else {
                 // Standard PK-based TVIEW: extract pk_<entity>
-                let pk_value = match crate::utils::extract_pk(trigger) {
+                let pk_value = match crate::utils::extract_pk(trigger, entity) {
                     Ok(pk) => pk,
                     Err(e) => {
                         warning!("Failed to extract primary key from trigger: {:?}", e);

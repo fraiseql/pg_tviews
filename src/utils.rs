@@ -178,30 +178,16 @@ pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) ->
     }
 }
 
-/// Extracts a `pk_*` integer from `NEW` or `OLD` tuple by convention.
+/// Extracts `pk_<entity>` from the trigger's `NEW` or `OLD` tuple.
 ///
-/// Derives the PK column name dynamically from the triggering table OID.
-/// Convention: `tb_<entity>` → `pk_<entity>` (e.g. `tb_user` → `pk_user`).
-pub fn extract_pk(trigger: &PgTrigger) -> spi::Result<i64> {
+/// The caller passes the entity it resolved from the table, or from the
+/// partitioned table when the trigger fired on a partition (a partition has the
+/// same columns, but it is not `tb_<entity>`).
+pub fn extract_pk(trigger: &PgTrigger, entity: &str) -> spi::Result<i64> {
     let tuple = trigger
         .new()
         .or_else(|| trigger.old())
         .expect("Row must exist for AFTER trigger");
-
-    let table_oid = trigger
-        .relation()
-        .map_err(|_| crate::TViewError::SpiError {
-            query: "get trigger relation".to_string(),
-            error: "Failed to get trigger relation".to_string(),
-        })?
-        .oid();
-
-    let entity = crate::catalog::entity_for_table(table_oid)?.ok_or_else(|| {
-        crate::TViewError::SpiError {
-            query: "entity_for_table".to_string(),
-            error: format!("Table OID {table_oid:?} not managed by pg_tviews"),
-        }
-    })?;
 
     let pk_column = format!("pk_{entity}");
 
