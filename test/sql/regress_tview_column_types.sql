@@ -109,4 +109,23 @@ BEGIN
     END IF;
 END $$;
 
+-- ── DROP TYPE … CASCADE drops the view, and with it the whole TVIEW ─────────
+CREATE TYPE app.color AS ENUM ('red', 'blue');
+CREATE TABLE tb_car (pk_car bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                     c app.color, name text);
+INSERT INTO tb_car (pk_car, c, name) VALUES (1, 'red', 'a');
+SELECT pg_tviews_create('tv_car', $$
+    SELECT pk_car, id, c, jsonb_build_object('name', name) AS data FROM tb_car $$);
+DROP TYPE app.color CASCADE;
+DO $$ BEGIN
+    IF to_regclass('tv_car') IS NOT NULL
+       OR EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'car')
+       OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'tb_car'::regclass
+                  AND tgname LIKE 'trg_tview_%') THEN
+        RAISE EXCEPTION 'item 7 FAIL: DROP TYPE CASCADE left part of tv_car behind';
+    END IF;
+END $$;
+UPDATE tb_car SET name = 'b';   -- the base table still works
+
 \echo 'tview column types: PASS'
+

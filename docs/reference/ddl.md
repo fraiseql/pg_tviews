@@ -222,6 +222,19 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 6. **Initial Population**: Fills TVIEW with current data
 7. **Metadata Registration**: Records TVIEW in system catalogs
 
+**Column types.** Every column of `tv_<entity>` has the type of the backing view's
+column, typmod included: an enum, a domain, a composite, an array of them, a type in
+another schema, `varchar(5)`, `numeric(6,2)`, `bit(4)`. Only the convention columns
+have fixed types: `pk_<entity>` and `fk_*` are `BIGINT`, `id` is `UUID`, `data` is
+`JSONB`. A TVIEW created before 0.1.0-beta.21 stored enums, domains and composites as
+`text` and dropped typmods; it keeps those types until
+`pg_tviews_create_or_replace()` is run with its definition, which converts each such
+column in place and returns `altered`.
+
+Because the backing view's columns depend on their types, `DROP TYPE … CASCADE` of a
+type the view returns drops the view, and pg_tviews then drops the whole TVIEW (its
+table, triggers and registration), as when a base table is dropped with `CASCADE`.
+
 ### Supported SQL Features
 
 #### ✅ Supported

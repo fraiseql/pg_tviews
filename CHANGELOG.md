@@ -75,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   and nothing flushed it. Inside one they still queue it for the transaction's next
   flush.
 
+- **A TVIEW with a `bit(n)` column (n > 1) can be created**: the column was created
+  as `bit(1)` and the create failed.
 - **Writes and `TRUNCATE` that target a partition directly refresh the TVIEW;
   partitions created or attached later are covered**. Only the partitioned table
   had the flush and `TRUNCATE` triggers, so in autocommit a statement naming a
@@ -120,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   TVIEW embedding it stale until each was refreshed by hand. The requested TVIEW is
   rebuilt with the caller's privileges, the TVIEWs embedding it as their owners.
   `pg_tviews_refresh_all()` still rebuilds each TVIEW once.
+- **New TVIEWs keep the backing view's column types** (enums, domains, composites,
+  arrays of them, types in other schemas, typmods such as `varchar(5)` or
+  `numeric(6,2)`). They were stored as `text`, or lost their typmod, so ordering by an
+  enum, comparing with the enum type, reading a composite's field or a domain's check
+  did not work on the TVIEW. Existing TVIEWs keep their types until
+  `pg_tviews_create_or_replace()` is run with their definition: it converts each such
+  column in place and returns `altered`. Tools that read TVIEW column types see the
+  real types.
 - **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
   are gone, CI builds, lints and runs every SQL suite on each supported version, and
   `CREATE EXTENSION pg_tviews` on an older server fails with
