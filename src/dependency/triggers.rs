@@ -121,6 +121,7 @@ pub fn trigger_plan(
             {
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
+                None if lineage.unread.contains(&oid.to_u32()) => TriggerSet::None,
                 Some(TableKind::Local(_)) | None => TriggerSet::Row,
             };
             (oid, set)

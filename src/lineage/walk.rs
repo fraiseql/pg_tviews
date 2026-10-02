@@ -38,6 +38,8 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         graph: Graph::default(),
         levels: Vec::new(),
         catalog: CatalogNames::default(),
+        cte_parent: None,
+        read_ctes: HashSet::new(),
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -77,6 +79,8 @@ struct Flags {
     via_tview: Option<String>,
     in_sublink: bool,
     opaque_level: Option<String>,
+    /// Inside a CTE the view never uses: its tables cannot change the output.
+    unread: bool,
 }
 
 /// A column a Var stands for once views and subqueries are seen through.
@@ -113,6 +117,9 @@ struct Level {
     query: *mut pg_sys::Query,
     rtes: Vec<RteInfo>,
     link: Link,
+    /// The level a `ctelevelsup` of 1 names: the enclosing level, except for a
+    /// CTE body, whose references count from the level that defines the CTE.
+    cte_parent: Option<usize>,
 }
 
 /// Where a predicate comes from, which says in which directions it must hold.
@@ -144,6 +151,10 @@ struct Walker<'c> {
     graph: Graph,
     levels: Vec<Level>,
     catalog: CatalogNames,
+    /// The CTE parent of the next level entered (see [`Level::cte_parent`]).
+    cte_parent: Option<usize>,
+    /// `(defining query, name)` of every CTE walked, by reference or as unread.
+    read_ctes: HashSet<(usize, String)>,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -238,11 +249,11 @@ impl Walker<'_> {
             let whole = top_opaque_reason(query);
             // UNION: each leaf is a branch with its own root. The leaves sit in
             // the rtable as subqueries, referenced from the set-operation tree.
-            self.levels.push(Level {
+            self.push_level(
                 query,
-                rtes: vec![RteInfo::Other; list_len((*query).rtable)],
-                link: Link::Top,
-            });
+                vec![RteInfo::Other; list_len((*query).rtable)],
+                Link::Top,
+            );
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
             let result: TViewResult<()> = (|| {
@@ -268,7 +279,7 @@ impl Walker<'_> {
                         });
                     }
                 }
-                Ok(())
+                self.unread_ctes(flags)
             })();
             self.levels.pop();
             result
@@ -302,12 +313,10 @@ impl Walker<'_> {
                 opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
                 ..flags.clone()
             };
-            self.levels.push(Level {
-                query,
-                rtes: Vec::new(),
-                link,
-            });
-            let result = self.level_body(query, &flags, link, opaque.is_some());
+            self.push_level(query, Vec::new(), link);
+            let result = self
+                .level_body(query, &flags, link, opaque.is_some())
+                .and_then(|outputs| self.unread_ctes(&flags).map(|()| outputs));
             self.levels.pop();
             result
         }
@@ -367,11 +376,11 @@ impl Walker<'_> {
     ) -> TViewResult<Vec<Resolved>> {
         // SAFETY: fields of a valid Query.
         unsafe {
-            self.levels.push(Level {
+            self.push_level(
                 query,
-                rtes: vec![RteInfo::Other; list_len((*query).rtable)],
-                link: Link::From,
-            });
+                vec![RteInfo::Other; list_len((*query).rtable)],
+                Link::From,
+            );
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
             let width = list_len((*query).targetList);
@@ -392,7 +401,7 @@ impl Walker<'_> {
                         }
                     }
                 }
-                Ok(())
+                self.unread_ctes(flags)
             })();
             self.levels.pop();
             result?;
@@ -413,6 +422,52 @@ impl Walker<'_> {
         self.levels.last_mut().expect("inside a query level")
     }
 
+    /// Enter a query level. Its CTE parent is the level a pending CTE lookup
+    /// found the CTE in, else the enclosing level.
+    fn push_level(&mut self, query: *mut pg_sys::Query, rtes: Vec<RteInfo>, link: Link) {
+        let cte_parent = self
+            .cte_parent
+            .take()
+            .or_else(|| self.levels.len().checked_sub(1));
+        self.levels.push(Level {
+            query,
+            rtes,
+            link,
+            cte_parent,
+        });
+    }
+
+    /// Walk the CTEs the innermost level defines and nothing used, so that the
+    /// tables they read are known (they are not tracked: they cannot change the
+    /// output).
+    ///
+    /// SAFETY: the innermost level's query is valid.
+    unsafe fn unread_ctes(&mut self, flags: &Flags) -> TViewResult<()> {
+        let index = self.levels.len() - 1;
+        let query = self.levels[index].query;
+        // SAFETY: the CTE list of a valid Query.
+        let ctes = unsafe { elements::<pg_sys::CommonTableExpr>((*query).cteList) };
+        for cte in ctes {
+            // SAFETY: a valid CommonTableExpr of that list.
+            let (name, body) = unsafe { (cstr((*cte).ctename), (*cte).ctequery) };
+            if self.read_ctes.contains(&(query as usize, name.clone())) {
+                continue;
+            }
+            self.read_ctes.insert((query as usize, name));
+            let unread = Flags {
+                unread: true,
+                ..flags.clone()
+            };
+            self.cte_parent = Some(index);
+            // SAFETY: a copy of the CTE's query.
+            unsafe {
+                let copy = pg_sys::copyObjectImpl(body.cast()).cast::<pg_sys::Query>();
+                self.level(copy, &unread, Link::From)?;
+            }
+        }
+        Ok(())
+    }
+
     // ── range table ─────────────────────────────────────────────────────────
 
     /// SAFETY: `rte` is a valid RTE of the innermost level.
@@ -431,11 +486,15 @@ impl Walker<'_> {
                     Link::From,
                 )?)),
                 pg_sys::RTEKind::RTE_CTE => {
-                    let Some(cte) = self.cte(&cstr((*rte).ctename), (*rte).ctelevelsup as usize)
+                    let name = cstr((*rte).ctename);
+                    let Some((cte, defined_at)) = self.cte(&name, (*rte).ctelevelsup as usize)
                     else {
                         return Ok(RteInfo::Other);
                     };
+                    self.read_ctes
+                        .insert((self.levels[defined_at].query as usize, name));
                     let copy = pg_sys::copyObjectImpl(cte.cast()).cast::<pg_sys::Query>();
+                    self.cte_parent = Some(defined_at);
                     Ok(RteInfo::Outputs(self.level(copy, flags, Link::From)?))
                 }
                 pg_sys::RTEKind::RTE_JOIN => Ok(RteInfo::Join((*rte).joinaliasvars)),
@@ -459,6 +518,10 @@ impl Walker<'_> {
             (relkind, relname, qualified)
         };
         match relkind {
+            b'r' | b'p' if flags.unread => {
+                self.graph.unread_tables.insert(relid.to_u32());
+                Ok(RteInfo::Other)
+            }
             b'r' | b'p' if !self.ctx.tview_tables.contains(&relid) => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
@@ -505,16 +568,21 @@ impl Walker<'_> {
         }
     }
 
-    /// The query of CTE `name`, defined `levelsup` levels above the innermost one.
-    fn cte(&self, name: &str, levelsup: usize) -> Option<*mut pg_sys::Query> {
-        let level = self.levels.len().checked_sub(1 + levelsup)?;
+    /// The query of CTE `name`, defined `levelsup` levels above the innermost one,
+    /// and the index of the level that defines it. Levels are counted along CTE
+    /// parents: the references inside a CTE body count from where it is defined.
+    fn cte(&self, name: &str, levelsup: usize) -> Option<(*mut pg_sys::Query, usize)> {
+        let mut level = self.levels.len().checked_sub(1)?;
+        for _ in 0..levelsup {
+            level = self.levels[level].cte_parent?;
+        }
         let query = self.levels[level].query;
         // SAFETY: the CTE list of a valid Query.
         unsafe {
             elements::<pg_sys::CommonTableExpr>((*query).cteList)
                 .into_iter()
                 .find(|cte| cstr((**cte).ctename) == *name)
-                .map(|cte| (*cte).ctequery.cast())
+                .map(|cte| ((*cte).ctequery.cast(), level))
         }
     }
 
@@ -1176,6 +1244,7 @@ impl Clone for Level {
             query: self.query,
             rtes: self.rtes.clone(),
             link: self.link,
+            cte_parent: self.cte_parent,
         }
     }
 }

@@ -108,4 +108,11 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+DO $$ BEGIN
+    IF (SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') <> 'OK' THEN
+        RAISE EXCEPTION '#163 FAIL: health check: %',
+            (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers');
+    END IF;
+END $$;
+
 \echo 'issue #163 CTE levels: PASS'

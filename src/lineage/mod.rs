@@ -191,6 +191,9 @@ pub struct Graph {
     pub roots: Vec<Root>,
     /// Functions the view calls that may read tables `pg_tviews` does not see.
     pub untracked_functions: Vec<String>,
+    /// Tables read only where the output never depends on them (a CTE the view
+    /// does not use): not tracked.
+    pub unread_tables: std::collections::BTreeSet<u32>,
 }
 
 /// How a write to one occurrence maps to keys.
@@ -594,6 +597,8 @@ impl Graph {
 #[derive(Debug, Clone)]
 pub struct Lineage {
     pub tables: Vec<TableLineage>,
+    /// Tables the view reads only where its output cannot depend on them.
+    pub unread: Vec<u32>,
 }
 
 impl Lineage {
@@ -732,7 +737,12 @@ pub fn analyze(
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
     // pg_depend and the query tree must agree on the tables.
-    let found: HashSet<u32> = graph.occurrences.iter().map(|o| o.relid).collect();
+    let found: HashSet<u32> = graph
+        .occurrences
+        .iter()
+        .map(|o| o.relid)
+        .chain(graph.unread_tables.iter().copied())
+        .collect();
     let expected: HashSet<u32> = base_tables.iter().map(|o| o.to_u32()).collect();
     if found != expected {
         let name = |relid: &u32| {
@@ -773,7 +783,13 @@ pub fn analyze(
             explain(entity, table, sql)?;
         }
     }
-    Ok(Lineage { tables })
+    let unread = graph
+        .unread_tables
+        .iter()
+        .copied()
+        .filter(|relid| tables.iter().all(|t| t.relid != *relid))
+        .collect();
+    Ok(Lineage { tables, unread })
 }
 
 /// A mapping-query template with the current names of its relations and columns;
@@ -1039,6 +1055,7 @@ mod tests {
             conjuncts,
             roots: vec![Root { branch: 0, key }],
             untracked_functions: vec![],
+            unread_tables: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1110,6 +1127,7 @@ mod tests {
             conjuncts: vec![],
             roots: vec![],
             untracked_functions: vec![],
+            unread_tables: std::collections::BTreeSet::new(),
         };
         assert_eq!(
             g.classify(0, NONE),
