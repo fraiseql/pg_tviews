@@ -215,7 +215,8 @@ pub struct TableLineage {
     pub kind: TableKind,
     /// Mapped occurrences, each with its predicate chain (for the mapping query).
     pub paths: Vec<(usize, Vec<usize>)>,
-    /// `mapped`: the query over [`DELTA`] returning the keys its rows can affect.
+    /// `mapped`, and `all_keys` when some reads can be traced: the query over
+    /// [`DELTA`] returning the keys its rows can affect.
     pub sql: Option<String>,
     /// Columns of the table the TVIEW reads (name, attnum); empty when unknown.
     pub columns: Vec<(String, i16)>,
@@ -504,9 +505,25 @@ impl Graph {
         Some(sql)
     }
 
+    /// The predicate chain from a `Local` or `Mapped` occurrence to its root's key
+    /// (empty for the root itself).
+    fn occurrence_path(&self, occ: usize, kind: &Kind) -> Vec<usize> {
+        match kind {
+            Kind::Mapped(p) => p.clone(),
+            // A local occurrence other than the root reads the key through its one
+            // equality.
+            _ => self
+                .root_of(occ)
+                .filter(|r| r.key.occ != occ)
+                .and_then(|r| self.path(occ, r.key.occ))
+                .unwrap_or_default(),
+        }
+    }
+
     /// Classify every base table, combining the kinds of its occurrences: any
-    /// `AllKeys` wins; occurrences propagation covers need nothing more; the rest
-    /// are `Local` when they all read the key from the same column, else `Mapped`.
+    /// `AllKeys` wins, keeping the mapping of the occurrences that can be traced;
+    /// occurrences propagation covers need nothing more; the rest are `Local` when
+    /// they all read the key from the same column, else `Mapped`.
     #[must_use]
     pub fn tables(&self, propagates: &dyn Fn(&str, u32) -> bool) -> Vec<TableLineage> {
         let mut by_table: Vec<(u32, Vec<(usize, Kind)>)> = Vec::new();
@@ -526,6 +543,13 @@ impl Graph {
                     Kind::AllKeys(r) => Some(r.clone()),
                     _ => None,
                 }) {
+                    // The reads that can be traced keep refreshing; only the rest
+                    // is left to the TVIEW's uncascaded_policy (#162).
+                    for (occ, k) in &kinds {
+                        if matches!(k, Kind::Local(_) | Kind::Mapped(_)) {
+                            paths.push((*occ, self.occurrence_path(*occ, k)));
+                        }
+                    }
                     TableKind::AllKeys(reason)
                 } else {
                     let direct: Vec<&(usize, Kind)> = kinds
@@ -550,22 +574,16 @@ impl Graph {
                         TableKind::Local(columns[0].clone())
                     } else {
                         for (occ, k) in direct {
-                            let path = match k {
-                                Kind::Mapped(p) => p.clone(),
-                                // A local occurrence other than the root reads the
-                                // key through its one equality.
-                                _ => self
-                                    .root_of(*occ)
-                                    .filter(|r| r.key.occ != *occ)
-                                    .and_then(|r| self.path(*occ, r.key.occ))
-                                    .unwrap_or_default(),
-                            };
-                            paths.push((*occ, path));
+                            paths.push((*occ, self.occurrence_path(*occ, k)));
                         }
                         TableKind::Mapped
                     }
                 };
-                let sql = (kind == TableKind::Mapped).then(|| self.mapping_sql(&paths));
+                let sql = match kind {
+                    TableKind::Mapped => Some(self.mapping_sql(&paths)),
+                    TableKind::AllKeys(_) if !paths.is_empty() => Some(self.mapping_sql(&paths)),
+                    _ => None,
+                };
                 let lookups = self.lookups(&paths);
                 let hop = match paths.as_slice() {
                     [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
@@ -641,7 +659,12 @@ impl Lineage {
                     match &t.kind {
                         TableKind::Local(column) => entry["column"] = column.clone().into(),
                         TableKind::Propagated(entity) => entry["entity"] = entity.clone().into(),
-                        TableKind::AllKeys(reason) => entry["reason"] = reason.clone().into(),
+                        TableKind::AllKeys(reason) => {
+                            entry["reason"] = reason.clone().into();
+                            if let Some(sql) = &t.sql {
+                                entry["sql"] = sql.clone().into();
+                            }
+                        }
                         TableKind::Mapped => {
                             entry["sql"] = t.sql.clone().unwrap_or_default().into();
                             if let Some((own, root)) = &t.hop {
@@ -853,7 +876,8 @@ pub struct KeyMapping {
     pub column: Option<String>,
     #[serde(default)]
     pub entity: Option<String>,
-    /// `mapped`: the query template (see [`render_template`]).
+    /// `mapped` (and `all_keys` for its traceable reads): the query template (see
+    /// [`render_template`]).
     #[serde(default)]
     pub sql: Option<String>,
     /// Columns of the table the TVIEW reads; empty when unknown.
