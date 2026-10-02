@@ -100,6 +100,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   installs the new triggers. Until then, a TVIEW keeps its old triggers, and a write
   its old metadata maps through more than one hop refreshes it in full (logged once
   per backend).
+- **`pg_tviews_refresh(entity)` also rebuilds the TVIEWs that embed it**, in
+  dependency order. It rebuilt only the one TVIEW, so a manual repair left every
+  TVIEW embedding it stale until each was refreshed by hand. The requested TVIEW is
+  rebuilt with the caller's privileges, the TVIEWs embedding it as their owners.
+  `pg_tviews_refresh_all()` still rebuilds each TVIEW once.
 - **Supported PostgreSQL versions: 16, 17, 18.** The `pg13`–`pg15` build features
   are gone, CI builds, lints and runs every SQL suite on each supported version, and
   `CREATE EXTENSION pg_tviews` on an older server fails with

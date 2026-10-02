@@ -605,6 +605,7 @@ or `pg_tviews_refresh_all()`.
 
 - `pg_tviews_suspend_triggers()` - Start suspension (supports nesting)
 - `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
+- `pg_tviews_refresh(entity)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
 - `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
 - `pg_tviews_is_suspended()` - Check current suspension state
 - `pg_tviews_suspended_entities()` - List entities that changed during suspension

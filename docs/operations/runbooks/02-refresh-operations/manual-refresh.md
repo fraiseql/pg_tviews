@@ -42,23 +42,21 @@ SELECT count(*) AS rows_differing FROM (
 SELECT tviews.pg_tviews_refresh('user');
 ```
 
-The refresh recomputes the TVIEW from its view in one statement: it writes only the
-rows that differ (their `updated_at` moves), inserts missing rows and deletes rows
-no longer in the view. It returns nothing; an error rolls it back.
+The refresh rebuilds `tv_user` from its view (`TRUNCATE`, then `INSERT … SELECT`),
+then every TVIEW whose view reads it, directly or through others (`tv_post` embedding
+the user, `tv_feed` embedding the post), dependencies first. Each rebuilt TVIEW is
+locked ACCESS EXCLUSIVE until the transaction ends, so readers wait. It returns
+nothing; an error rolls the whole refresh back.
 
-### Step 4: Refresh the TVIEWs that embed it
-`pg_tviews_refresh` does not cascade. Refresh every TVIEW listed after the entity,
-in depth order:
+To see what it rebuilds:
 
 ```sql
 SELECT depth, entity_name FROM tviews.pg_tviews_show_cascade_path('user') ORDER BY depth;
--- then, for each listed entity other than 'user':
-SELECT tviews.pg_tviews_refresh('post');
 ```
 
-Or refresh everything, dependencies first: `SELECT tviews.pg_tviews_refresh_all();`
+To rebuild everything, dependencies first: `SELECT tviews.pg_tviews_refresh_all();`
 
-### Step 5: Verify
+### Step 4: Verify
 Rerun Step 2 (expect 0), then check when the rows last changed:
 
 ```sql
