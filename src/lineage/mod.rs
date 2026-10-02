@@ -183,8 +183,9 @@ pub enum Maps {
     /// It must hold for every contributing row of the first occurrence.
     Yes,
     /// An outer join's equality toward its nullable side: it holds for a row that
-    /// has a match, so a path may take it only to go on from the nullable side (a
-    /// row with no match yields NULLs there, which nothing beyond matches, #165).
+    /// has a match. A row with no match yields NULLs there, which no key and no
+    /// further equality matches, so a path may take it and then end at the key or
+    /// go on by an equality (#165).
     IfMatched,
 }
 
@@ -303,15 +304,17 @@ impl Graph {
 
     /// The shortest chain of usable predicates from `from` to `to`.
     fn path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
-        // A state is an occurrence, and whether it was reached through a nullable
-        // step that the path must go on from.
+        // A state is an occurrence, and whether it was reached through an
+        // `IfMatched` step. From there the path ends at the key (a row with no
+        // match has a NULL key) or goes on by an equality, which fails on the
+        // NULLs of a row with no match; any other predicate might hold for them.
         type State = (usize, bool);
         let mut previous: BTreeMap<State, (State, usize)> = BTreeMap::new();
         let start: State = (from, false);
         let mut queue = VecDeque::from([start]);
         while let Some(state) = queue.pop_front() {
             let (at, pending) = state;
-            if at == to && !pending {
+            if at == to {
                 let mut path = Vec::new();
                 let mut cur = state;
                 while cur != start {
@@ -328,6 +331,9 @@ impl Graph {
             order.sort_by_key(|&i| self.conjuncts[i].equality.is_none());
             for i in order {
                 let c = &self.conjuncts[i];
+                if pending && c.equality.is_none() {
+                    continue;
+                }
                 let next = if c.a == at && c.a_to_b != Maps::No {
                     (c.b, c.a_to_b == Maps::IfMatched)
                 } else if c.b == at && c.b_to_a != Maps::No {
