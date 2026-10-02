@@ -61,9 +61,10 @@ BEGIN
     END IF;
 END $$;
 
--- Full refreshes of tv_order in this transaction, from the queue metrics.
-CREATE FUNCTION full_refreshes() RETURNS bigint LANGUAGE sql AS $$
-    SELECT (tviews.pg_tviews_queue_stats()->>'total_refreshes')::bigint $$;
+-- Scans of tb_order_1 in this transaction: each full refresh of tv_order reads it.
+CREATE FUNCTION order_scans() RETURNS bigint LANGUAGE sql AS $$
+    SELECT COALESCE(seq_scan, 0) + COALESCE(idx_scan, 0)
+    FROM pg_stat_xact_user_tables WHERE relid = 'tb_order_1'::regclass $$;
 
 -- ── direct writes, autocommit ───────────────────────────────────────────────
 UPDATE tb_note_1 SET body = 'n1 leaf' WHERE pk_note = 1;
@@ -99,16 +100,21 @@ SELECT check_fresh('INSERT into a partition created from PL/pgSQL');
 -- ── TRUNCATE ────────────────────────────────────────────────────────────────
 TRUNCATE tb_note_1;
 SELECT check_fresh('TRUNCATE a leaf');
+INSERT INTO tb_note (pk_note, fk_line, body) VALUES (1, 1, 'n1 again'), (220, 130, 'n5');
 DO $$
-DECLARE before bigint := full_refreshes();
-DECLARE rows_per_refresh bigint := (SELECT count(*) FROM tb_order);
+DECLARE s0 bigint;
+DECLARE one_refresh bigint;
+DECLARE root bigint;
 BEGIN
-    TRUNCATE tb_note;
-    -- One full refresh rewrites every row once; one per truncated partition
-    -- would rewrite them once per partition.
-    IF full_refreshes() - before > rows_per_refresh THEN
-        RAISE EXCEPTION 'item 2 FAIL: TRUNCATE of the root refreshed % rows for % TVIEW rows',
-            full_refreshes() - before, rows_per_refresh;
+    s0 := order_scans();
+    TRUNCATE tb_note_1;
+    one_refresh := order_scans() - s0;
+    s0 := order_scans();
+    TRUNCATE tb_note;      -- fires the truncate trigger of the root and of each partition
+    root := order_scans() - s0;
+    IF one_refresh = 0 OR root > one_refresh THEN
+        RAISE EXCEPTION 'item 2 FAIL: TRUNCATE of the root refreshed tv_order % times',
+            CASE WHEN one_refresh = 0 THEN 'an unknown number of' ELSE (root / one_refresh)::text END;
     END IF;
 END $$;
 SELECT check_fresh('TRUNCATE the root');
