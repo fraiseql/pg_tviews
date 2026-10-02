@@ -840,7 +840,7 @@ fn fanout_patch(
     if hop.table_name != own_table
         || hop.carry_col != format!("pk_{entity_name}")
         || path.source_columns.is_empty()
-        || crate::schema::parser::find_outer_union(&select_sql.to_lowercase(), 0).is_some()
+        || crate::schema::parser::find_outer_set_operation(&select_sql.to_lowercase(), 0).is_some()
     {
         return None;
     }
@@ -1635,11 +1635,12 @@ fn register_metadata(
     key_mappings: &serde_json::Value,
     replace: bool,
 ) -> TViewResult<()> {
-    // Detect whether the definition is a UNION / UNION ALL query.
-    // CTE bodies are inside (...) so their UNION is at depth > 0 and not matched.
+    // Detect whether the definition is a set operation (UNION, INTERSECT, EXCEPT):
+    // its rows are recomputed, never patched. CTE bodies are inside (...) so their
+    // set operations are at depth > 0 and not matched.
     let is_union = {
         let sql_lower = definition_sql.to_lowercase();
-        crate::schema::parser::find_outer_union(&sql_lower, 0).is_some()
+        crate::schema::parser::find_outer_set_operation(&sql_lower, 0).is_some()
     };
 
     // Analyze dependencies to populate type/path/match_key info
