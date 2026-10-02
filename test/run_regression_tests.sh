@@ -53,6 +53,12 @@ for f in "$sqldir"/regress_*.sql; do
     while IFS= read -r want; do
       [[ -n "$want" ]] && ! grep -qF -- "$want" /tmp/$tmpdb.out && { missing="$want"; break; }
     done < <(sed -n 's/^-- expect-output: //p' "$f")
+    # Refresh work still queued at COMMIT is a missing flush: rejected unless the
+    # file expects it.
+    if ! grep -qF -- "-- expect-once: queued refreshes" "$f" \
+       && grep -qF "queued refreshes for" /tmp/$tmpdb.out; then
+      unwanted="queued refreshes for"
+    fi
     while IFS= read -r reject; do
       [[ -n "$reject" ]] && grep -qF -- "$reject" /tmp/$tmpdb.out && { unwanted="$reject"; break; }
     done < <(sed -n 's/^-- reject-output: //p' "$f")

@@ -144,6 +144,15 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 
             crate::suspend::force_resume();
 
+            // Every path that enqueues flushes before the commit (statement
+            // trigger, ProcessUtility hook). Work still queued here is dropped: it
+            // must never run under another transaction's snapshot, and a patch
+            // carries values read in this one.
+            warn_unflushed();
+            clear_queue();
+            super::patch::clear_patch_map();
+            super::patch::clear_fanout_map();
+
             // Queue flush + audit flush happen in ProcessUtility hook before COMMIT.
             // Clear audit buffer as safety net (should already be empty after flush).
             crate::audit::clear_audit_buffer();
@@ -183,6 +192,32 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             super::affected::clear();
         }
     }
+}
+
+/// The WARNING for refresh work still queued when a transaction commits, once
+/// per backend (no SPI: this runs in the transaction callback).
+fn warn_unflushed() {
+    let queued = super::state::get_queue_contents();
+    if queued.is_empty() || !crate::utils::first_time("commit with queued refreshes") {
+        return;
+    }
+    let entities: std::collections::BTreeSet<&str> =
+        queued.iter().map(|k| k.entity.as_str()).collect();
+    pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_WARNING,
+        format!(
+            "pg_tviews: transaction committed with {} queued refreshes for {:?}; they were \
+             not applied (missing flush trigger?)",
+            queued.len(),
+            entities
+        ),
+        function_name!(),
+    )
+    .set_hint(
+        "Run tviews.pg_tviews_health_check() to find missing triggers, and \
+         tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",
+    )
+    .report(PgLogLevel::WARNING);
 }
 
 /// Subtransaction callback handler (invoked by `PostgreSQL` for savepoints)

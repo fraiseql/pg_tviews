@@ -333,9 +333,15 @@ thread_local! {
 /// the condition `key`; later calls are silent (issue #159). For conditions a
 /// normal workload hits on every write, where a client WARNING would be noise.
 pub fn log_once(key: &str, message: &str) {
-    if LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string())) {
+    if first_time(key) {
         log!("pg_tviews: {message}");
     }
+}
+
+/// True the first time this backend sees the condition `key`, false afterwards
+/// (until [`forget_logged`]).
+pub fn first_time(key: &str) -> bool {
+    LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string()))
 }
 
 /// Let [`log_once`] report `key` again, after the condition may have changed.
