@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.21] - 2026-10-02
+
 ### Added
 
 - **`pg_tviews.uncascaded_policy`** (#157, #158): what a new TVIEW does about a base
