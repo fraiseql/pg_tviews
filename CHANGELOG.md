@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **A table that feeds only view columns a TVIEW never reads is no longer tracked**
+  (#166). Every write to it mapped its rows to TVIEW keys and recomputed them for
+  nothing: on a real schema a 2,163-row insert took 646 ms instead of 104 ms. A view,
+  subquery or CTE is now walked only for the columns the level above reads (a
+  column used for sorting, grouping or `DISTINCT`, or returning a set, always
+  counts), and the tables behind the others get no trigger.
 - **A `DISTINCT ON` TVIEW keyed on `pk_<entity>` can read tables through joins
   again** (#164, regression in 0.1.0-beta.21). Every `DISTINCT ON` TVIEW with a table
   mapped through a join was refused, with a count of the wrong tables. Keyed on
