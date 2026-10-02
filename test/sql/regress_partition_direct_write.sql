@@ -143,6 +143,7 @@ DO $$ BEGIN
         RAISE EXCEPTION 'N7 FAIL: TRUNCATE committed although the refresh of tv_kind failed';
     END IF;
 END $$;
+DROP TABLE tv_kind;
 
 -- ── DETACH removes ours from the detached table ─────────────────────────────
 ALTER TABLE tb_line DETACH PARTITION tb_line_3;

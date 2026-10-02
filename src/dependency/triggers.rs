@@ -211,7 +211,7 @@ fn entity_triggers(
 pub struct TriggerProblems {
     /// Triggers whose entity is not registered or does not read their table.
     pub orphaned: Vec<String>,
-    /// Tables a TVIEW reads that lack its row or flush trigger.
+    /// Tables a TVIEW reads, or their partitions, that lack one of its triggers.
     pub missing: Vec<String>,
     /// `pg_tviews` triggers without an entity argument (installed by an older
     /// release): `pg_tviews_reregister_all()` replaces them.
@@ -222,9 +222,9 @@ pub struct TriggerProblems {
 /// (`tviews.pg_tview_reads`: ordinary and partitioned tables reached from the
 /// backing view through views, other TVIEWs' tables excepted) and the triggers
 /// its lineage gives each table ([`TriggerSet`]); a TVIEW registered before
-/// lineage expects the row and flush triggers on every table. The copies
-/// `PostgreSQL` makes of a partitioned table's triggers on its partitions are not
-/// counted.
+/// lineage expects the row and flush triggers on every table. Every partition of
+/// a partitioned table carrying a row trigger expects the [`PARTITION_MEMBER`]
+/// triggers; the copies `PostgreSQL` makes of the row trigger are not counted.
 ///
 /// # Errors
 /// Returns an error if the catalog query fails.
@@ -252,8 +252,8 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
              WHERE r.relid NOT IN (SELECT table_oid::oid FROM {meta}) \
          ), \
-         expected AS ( \
-             SELECT r.entity, r.relid, f.proname \
+         planned AS ( \
+             SELECT r.entity, r.relid, r.relkind, f.proname \
              FROM reads r \
              CROSS JOIN (VALUES ('{ROW_HANDLER}'), ('{FLUSH_HANDLER}'), ('{DELTA_HANDLER}'), \
                                 ('{TRUNCATE_HANDLER}')) AS f(proname) \
@@ -264,6 +264,15 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                  WHEN r.kind IN ('mapped', 'all_keys') \
                      THEN f.proname IN ('{DELTA_HANDLER}', '{FLUSH_HANDLER}', '{TRUNCATE_HANDLER}') \
                  ELSE false END \
+         ), \
+         expected AS ( \
+             SELECT entity, relid, proname FROM planned \
+             UNION ALL \
+             SELECT p.entity, m.relid::pg_catalog.oid, f.proname \
+             FROM planned p \
+             CROSS JOIN LATERAL pg_catalog.pg_partition_tree(p.relid) m \
+             CROSS JOIN (VALUES ('{FLUSH_HANDLER}'), ('{TRUNCATE_HANDLER}')) AS f(proname) \
+             WHERE p.relkind = 'p' AND p.proname = '{ROW_HANDLER}' AND m.relid <> p.relid \
          ) \
          SELECT 'orphaned', pg_catalog.format('%I on %s', o.tgname, \
                                               o.tgrelid::pg_catalog.regclass) \
