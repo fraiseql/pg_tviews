@@ -392,27 +392,12 @@ fn create_tview_inner(
         group_keys,
         &dep_graph.base_tables,
         &schema_name,
+        &DistinctOn {
+            output_keys: &distinct_on_output_keys,
+            policy,
+            at_create: true,
+        },
     )?;
-
-    // Step 6.55: Reject a DISTINCT ON tview that also has JOIN-based cascade paths
-    // (issue #51). A DISTINCT ON tview refreshes by dedup key (the trigger enqueues
-    // the DISTINCT ON key value); a cascade path enqueues a base-table PK that
-    // `refresh_pk` looks up by `pk_<entity>`. When the dedup key is aliased the two
-    // are different values, so mixing them would refresh the wrong row silently.
-    // The dedup and PK refresh paths are mutually exclusive by design.
-    if !distinct_on_keys.is_empty() && (!cascade_paths.is_empty() || lineage.has_mapped()) {
-        return Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
-            reason: format!(
-                "TVIEW '{tv_table_name}' combines DISTINCT ON with a JOIN that produces \
-                 cascade paths ({} dependent table(s)). DISTINCT ON tviews refresh by \
-                 deduplication key and cannot also track PK-based cascade dependencies — the \
-                 two refresh paths are mutually exclusive. Remove the DISTINCT ON, or express \
-                 the dependency without a join that pg_tviews would cascade.",
-                cascade_paths.len()
-            ),
-        });
-    }
 
     // Step 6.6: Reject a tview that can never be incrementally refreshed (issue #49).
     // A refresh is enqueued for this entity only if either a `tb_<entity>` base table
@@ -525,6 +510,14 @@ pub fn reregister_metadata(
     let view_name = format!("v_{entity_name}");
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
     let group_keys = stored_group_keys(entity_name)?;
+    // The stored policy holds; an `error` TVIEW whose set is no longer empty
+    // aborts the re-registration (and the ALTER that caused it).
+    let policy = crate::catalog::TviewMeta::load_by_entity(entity_name)
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Read the uncascaded policy of tv_{entity_name}"),
+            pg_error: e.to_string(),
+        })?
+        .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
     let Derivation {
         lineage,
         key_mappings,
@@ -536,15 +529,12 @@ pub fn reregister_metadata(
         group_keys.as_ref(),
         &dep_graph.base_tables,
         schema_name,
+        &DistinctOn {
+            output_keys: &distinct_on_output_keys,
+            policy,
+            at_create: false,
+        },
     )?;
-    // The stored policy holds; an `error` TVIEW whose set is no longer empty
-    // aborts the re-registration (and the ALTER that caused it).
-    let policy = crate::catalog::TviewMeta::load_by_entity(entity_name)
-        .map_err(|e| TViewError::CatalogError {
-            operation: format!("Read the uncascaded policy of tv_{entity_name}"),
-            pg_error: e.to_string(),
-        })?
-        .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         policy,
@@ -661,6 +651,69 @@ pub(crate) fn stored_group_keys(
 /// What registration derives from a definition: how a write to each base table
 /// maps to keys (stored as `key_mappings`), and the cascade paths the row trigger
 /// follows for local tables.
+/// What a DISTINCT ON TVIEW's registration needs to decide about the tables it
+/// reads through joins (#164).
+struct DistinctOn<'a> {
+    /// The projected DISTINCT ON keys; empty for a TVIEW without DISTINCT ON.
+    output_keys: &'a [String],
+    policy: UncascadedPolicy,
+    /// A create refuses what a re-registration only reclassifies.
+    at_create: bool,
+}
+
+impl DistinctOn<'_> {
+    /// A DISTINCT ON TVIEW is keyed on its dedup key, while a table read through a
+    /// join maps writes to `pk_<entity>` values (issue #51): the two agree only when
+    /// the dedup key is `pk_<entity>`. Otherwise those tables become `all_keys`
+    /// (refreshed in full under `full_refresh`), and a create under another policy
+    /// is refused with them named.
+    fn apply(&self, entity: &str, lineage: &mut crate::lineage::Lineage) -> TViewResult<()> {
+        use crate::lineage::TableKind;
+        let key = format!("pk_{entity}");
+        if self.output_keys.is_empty() || self.output_keys == [key.clone()] {
+            return Ok(());
+        }
+        let joined: Vec<String> = lineage
+            .tables
+            .iter()
+            .filter(|t| !t.root && matches!(t.kind, TableKind::Mapped | TableKind::Local(_)))
+            .map(|t| t.qualified.clone())
+            .collect();
+        if joined.is_empty() {
+            return Ok(());
+        }
+        if self.at_create && self.policy != UncascadedPolicy::FullRefresh {
+            return Err(TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason: format!(
+                    "tv_{entity} is keyed on its DISTINCT ON key ({}), not {key}, so writes to the \
+                     tables it reads through joins cannot be mapped to its rows: {} ({} table{}). \
+                     Make {key} the DISTINCT ON key, or create it with \
+                     pg_tviews.uncascaded_policy = 'full_refresh' to refresh it in full on writes \
+                     to them.",
+                    self.output_keys.join(", "),
+                    joined.join(", "),
+                    joined.len(),
+                    if joined.len() == 1 { "" } else { "s" },
+                ),
+            });
+        }
+        let reason = format!(
+            "read through a join of a DISTINCT ON TVIEW keyed on {}, not {key}",
+            self.output_keys.join(", ")
+        );
+        for table in &mut lineage.tables {
+            if !table.root && matches!(table.kind, TableKind::Mapped | TableKind::Local(_)) {
+                table.kind = TableKind::AllKeys(reason.clone());
+                table.sql = None;
+                table.paths.clear();
+                table.hop = None;
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Derivation {
     lineage: crate::lineage::Lineage,
     key_mappings: serde_json::Value,
@@ -676,6 +729,7 @@ fn derive(
     group_keys: Option<&super::aggregate::GroupKeys>,
     base_tables: &[pg_sys::Oid],
     schema_name: &str,
+    distinct_on: &DistinctOn<'_>,
 ) -> TViewResult<Derivation> {
     let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
     let mut embeds: Vec<String> = aggregate_embeds(definition, entity_name)?
@@ -687,7 +741,8 @@ fn derive(
             .iter()
             .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
     );
-    let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    distinct_on.apply(entity_name, &mut lineage)?;
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
