@@ -59,4 +59,18 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- ── keyed on the nullable side itself ───────────────────────────────────────
+DROP TABLE tv_order;
+SELECT pg_tviews_create('tv_order', $$
+  SELECT o.pk_order, o.id, jsonb_build_object('skus', jsonb_agg(l.sku ORDER BY l.pk_line)) AS data
+  FROM tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order
+  WHERE o.pk_order IS NOT NULL
+  GROUP BY o.pk_order, o.id $$);
+UPDATE tb_line SET sku = 'b3' WHERE sku = 'b2';
+SELECT check_fresh('an UPDATE of tb_line (keyed on the nullable side)');
+UPDATE tb_line SET fk_order = 1 WHERE sku = 'a';
+SELECT check_fresh('an fk move (keyed on the nullable side)');
+INSERT INTO tb_line (fk_order, sku) VALUES (98, 'orphan 2');
+SELECT check_fresh('an orphan INSERT (keyed on the nullable side)');
+
 \echo 'issue #165 outer join links: PASS'

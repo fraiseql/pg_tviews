@@ -1173,14 +1173,36 @@ mod tests {
     }
 
     #[test]
-    fn a_nullable_step_does_not_end_a_path() {
-        // The key is on the nullable side itself: the path would end there.
+    fn a_nullable_step_may_end_at_the_key() {
+        // tb_line l LEFT JOIN tb_order o, keyed on o: a line with no order has a
+        // NULL key, which is no TVIEW row; one with an order maps to it.
         let g = graph(
             vec![occ(1, "tb_order"), occ(2, "tb_line")],
             vec![outer_on(1, 0)],
             col(0, "pk_order"),
         );
-        assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));
+        assert_eq!(g.classify(1, NONE), Kind::Local("fk_order".into()));
+    }
+
+    #[test]
+    fn a_nullable_step_goes_on_only_by_an_equality() {
+        // After l → o2 (nullable), only an equality is known to fail on o2's NULLs.
+        let mut sql = Sql::default();
+        sql.push_text("COALESCE(o2.id, 0) IS NOT DISTINCT FROM o.id");
+        let loose = Conjunct {
+            sql,
+            a: 1,
+            b: 0,
+            a_to_b: Maps::Yes,
+            b_to_a: Maps::No,
+            equality: None,
+        };
+        let g = graph(
+            vec![occ(1, "tb_order"), occ(1, "tb_order"), occ(2, "tb_line")],
+            vec![outer_on(2, 1), loose],
+            col(0, "pk_order"),
+        );
+        assert!(matches!(g.classify(2, NONE), Kind::AllKeys(_)));
     }
 
     #[test]
