@@ -162,6 +162,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Documentation
 
+- **The concurrency page describes what pg_tviews does.** It documented per-row
+  advisory locks, a `pg_tviews.lock_timeout_ms` setting, a required REPEATABLE READ
+  "to avoid dirty reads" and debug settings, none of which exist. It now describes
+  the refresh inside the writer's transaction, the row locks, the registration lock,
+  and the one case READ COMMITTED gets wrong: two transactions refreshing the same
+  TVIEW row at once through a full recompute can leave it stale; use REPEATABLE READ
+  and retry, or `pg_tviews_refresh()`.
+- **Every relative link in the README and `docs/` resolves**, and a regression test
+  keeps it that way (49 pointed at pages that never existed or had moved).
+- **The DDL reference matches what ships**: INTERSECT/EXCEPT are maintained, window
+  functions and `LIMIT` go through `uncascaded_policy`, partitions are covered, no
+  10-table limit. The API reference documents every public function
+  (`pg_tviews_refresh`, suspension, change reports, aggregates, replication) and lists
+  the internal ones; the README lists `pg_tviews.report_max_tracked`.
 - **The operations runbooks query only what pg_tviews has** (#150). The runbooks,
   their scripts and `docs/TROUBLESHOOTING.md` queried relations and columns that never
   existed (`pg_tviews_metadata`, `pg_tviews_queue`, `last_refreshed`, …). They now use

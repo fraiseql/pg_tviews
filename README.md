@@ -367,6 +367,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
+| `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.uncascaded_policy` | enum | warn | `warn`, `error` or `full_refresh`: what a new TVIEW does about base tables no cascade reaches. Read at create time and stored with the TVIEW; `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
 | `pg_tviews.log_level` | string | info | Logging verbosity |
 

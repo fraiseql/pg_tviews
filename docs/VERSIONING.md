@@ -137,7 +137,7 @@ v1.0.6 (security patch, same day if possible)
 | 1.5.x | Future | TBD |
 | 1.4.x | Future | 1 year after 1.5 release |
 | 1.3.x | Future | 1 year after 1.4 release |
-| 1.0.x | Apr 2026 | 2 years (Apr 2028) |
+| 1.0.x | Future | 2 years after its release |
 | 0.9.x | TBD | 6 months after 1.0 release |
 | 0.1.x | Current | 6 months after 1.0 release |
 
@@ -156,10 +156,10 @@ v1.0.6 (security patch, same day if possible)
 ```sql
 -- Check version
 SELECT pg_tviews_version();
--- Result: "0.1.0-beta.1"
+-- Result: "0.1.0-beta.21"
 
--- Programmatic check
-SELECT current_setting('pg_tviews.version')::semver >= '0.2.0'::semver;
+-- Programmatic check (major.minor.patch, pre-release suffix ignored)
+SELECT string_to_array(split_part(pg_tviews_version(), '-', 1), '.')::int[] >= ARRAY[0, 2, 0];
 ```
 
 ### Rust

@@ -489,6 +489,170 @@ FROM pg_tviews_ensure_propagation_indexes(NULL, true) AS ddl;
 - Runs inside a transaction, so it takes a `SHARE` lock per index build; use the
   dry-run + `CONCURRENTLY` route on busy tables
 
+## Refresh and Repair
+
+### pg_tviews_refresh()
+
+```sql
+pg_tviews_refresh(entity TEXT) RETURNS VOID
+```
+
+Rebuilds `tv_<entity>` from its view, then every TVIEW whose view reads it, directly
+or through others, dependencies first: the repair for a TVIEW left stale by a change
+its triggers did not see. Each rebuild is a `TRUNCATE` and an `INSERT … SELECT`,
+holding an `ACCESS EXCLUSIVE` lock on that TVIEW until the transaction ends. The
+requested TVIEW is rebuilt with the caller's privileges, the ones that embed it as
+their owners.
+
+```sql
+SELECT pg_tviews_refresh('user');   -- tv_user, then tv_post (embeds user), tv_feed (embeds post)
+```
+
+### pg_tviews_refresh_all() / pg_tviews_refresh_all_entities()
+
+```sql
+pg_tviews_refresh_all() RETURNS JSONB
+pg_tviews_refresh_all_entities() RETURNS VOID
+```
+
+Rebuild every TVIEW once, dependencies first. `pg_tviews_refresh_all()` returns
+`{"refreshed_count", "order", "duration_ms"}` and refuses to run while refresh is
+suspended; `pg_tviews_refresh_all_entities()` reports the count as an INFO message.
+
+### pg_tviews_show_cascade_path()
+
+```sql
+pg_tviews_show_cascade_path(entity TEXT)
+    RETURNS TABLE(depth INTEGER, entity_name TEXT, depends_on TEXT)
+```
+
+`entity` itself at depth 0, then the TVIEWs that embed it, with their depth: what
+`pg_tviews_refresh(entity)` rebuilds.
+
+### pg_tviews_mapping_query()
+
+```sql
+pg_tviews_mapping_query(tview TEXT, base_table OID) RETURNS TEXT
+```
+
+The query that maps rows changed in `base_table` to keys of `tview`, NULL when
+writes to the table do not map through a query of their own. See
+[How a write finds the TVIEW rows to refresh](ddl.md#how-a-write-finds-the-tview-rows-to-refresh).
+
+## Suspending Refresh
+
+```sql
+pg_tviews_suspend_triggers() RETURNS VOID
+pg_tviews_resume_triggers() RETURNS VOID
+pg_tviews_is_suspended() RETURNS BOOLEAN
+pg_tviews_suspended_entities() RETURNS TEXT[]
+```
+
+`pg_tviews_suspend_triggers()` defers refreshes for a bulk load; calls nest.
+When the outermost `pg_tviews_resume_triggers()` runs, every TVIEW changed while
+suspended, and every TVIEW embedding one of them, is rebuilt. Suspension ends with
+the transaction: an explicit `COMMIT` catches up the same way, an implicit commit
+logs a WARNING naming the stale TVIEWs. `pg_tviews_suspended_entities()` lists the
+TVIEWs changed so far. Run the whole pattern in one transaction:
+
+```sql
+BEGIN;
+SELECT pg_tviews_suspend_triggers();
+INSERT INTO tb_order (fk_user) SELECT 1 FROM generate_series(1, 10000);
+SELECT pg_tviews_resume_triggers();
+COMMIT;
+```
+
+## Change Reports
+
+### pg_tviews_flush_and_report()
+
+```sql
+pg_tviews_flush_and_report(max_entities INTEGER DEFAULT 500,
+                           include_data BOOLEAN DEFAULT true,
+                           reset BOOLEAN DEFAULT true) RETURNS JSONB
+```
+
+Flushes the queue, then reports the TVIEW rows this transaction changed, for a
+GraphQL cascade response: each entry carries its type name, `id` and (with
+`include_data`) the row's `data`; a deleted entry is `{"__typename", "id"}`. Past
+`max_entities` entries, or when the journal overflowed `pg_tviews.report_max_tracked`,
+`truncated` is true and `invalidated_types` lists the types left out. With `reset`,
+the next call reports only later changes. See
+[GraphQL cascade](../user-guides/graphql-cascade.md).
+
+### pg_tviews_set_typename()
+
+```sql
+pg_tviews_set_typename(entity TEXT, typename TEXT) RETURNS VOID
+```
+
+Sets the GraphQL type name `pg_tviews_flush_and_report()` reports for `entity`;
+NULL resets it to the PascalCase of the entity.
+
+## Aggregate TVIEWs
+
+### pg_tviews_create_aggregate()
+
+```sql
+pg_tviews_create_aggregate(tview_name TEXT, select_sql TEXT, group_keys JSONB) RETURNS TEXT
+```
+
+Creates a TVIEW keyed on a group (one row per `GROUP BY` key). `group_keys` maps each
+source table to the column holding the group key:
+
+```sql
+SELECT pg_tviews_create_aggregate('tv_user_summary', $$
+    SELECT o.fk_user AS pk_user_summary, u.id, jsonb_build_object('orders', count(*)) AS data
+    FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
+    GROUP BY o.fk_user, u.id $$,
+    '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+```
+
+See [Aggregate TVIEWs](../user-guides/aggregate-tviews.md).
+
+## Storage, Replication and Recovery
+
+```sql
+pg_tviews_set_logged(entity TEXT, logged BOOLEAN) RETURNS VOID
+pg_tviews_is_replica_readable(entity TEXT) RETURNS BOOLEAN
+pg_tviews_replication_status()
+    RETURNS TABLE(entity TEXT, persistence TEXT, replica_readable BOOLEAN,
+                  is_empty BOOLEAN, needs_rebuild BOOLEAN)
+pg_tviews_rebuild_all(only_empty BOOLEAN DEFAULT true) RETURNS TABLE(entity TEXT, rows BIGINT)
+pg_tviews_recover_after_crash(entity_name TEXT) RETURNS BOOLEAN
+pg_tviews_profile(p_entity TEXT DEFAULT NULL, fanout_warn BIGINT DEFAULT 1000) RETURNS TABLE(…)
+pg_tviews_catalog_revision() RETURNS INTEGER
+```
+
+- `pg_tviews_set_logged` switches `tv_<entity>` to LOGGED (readable on standbys) or
+  back to UNLOGGED; `ALTER TABLE … SET [UN]LOGGED` rewrites the table under an
+  `ACCESS EXCLUSIVE` lock.
+- `pg_tviews_is_replica_readable` is true for a LOGGED TVIEW, false for an UNLOGGED
+  one, NULL for an unknown entity; `pg_tviews_replication_status` reports every
+  TVIEW and is safe on a standby.
+- `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
+  restore left empty (every TVIEW with `only_empty => false`), dependencies first.
+  `pg_tviews_recover_after_crash` does it for one entity and returns whether it had
+  to.
+- `pg_tviews_profile` is the per-TVIEW physical health report:
+  see [profile.md](profile.md).
+- `pg_tviews_catalog_revision` is the revision of the extension's catalog the
+  library checks before it works on it.
+
+See [Replication](../operations/replication.md).
+
+## Internal Functions
+
+Called by triggers, event triggers and restore; don't call them directly:
+`pg_tviews_audit_write`, `pg_tviews_defines_view`, `pg_tviews_handle_dropped`,
+`pg_tviews_invalidate_caches`, `pg_tviews_meta_changed`, `pg_tviews_meta_rebind`,
+`pg_tviews_migrate_triggers`, `pg_tviews_rebind_cascade_paths`, and the trigger
+functions `pg_tview_trigger_handler`, `pg_tview_flush_trigger`,
+`pg_tview_delta_trigger`, `pg_tview_truncate_trigger`.
+`pg_tviews_convert_existing_table` is deprecated and always raises an error: use
+`pg_tviews_create()` or `CREATE TABLE tv_x AS SELECT …`.
+
 ## Views
 
 ### tviews.registry and tviews.contract_version()
