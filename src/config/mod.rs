@@ -11,7 +11,7 @@
 //! | `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | Cache dependency graphs |
 //! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
-//! | `pg_tviews.metrics_enabled` | bool | false | Collect refresh metrics |
+//! | `pg_tviews.metrics_enabled` | bool | false | Deprecated, no effect (metrics are always collected) |
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | `debug` shows internal diagnostics as NOTICE |
 //! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
@@ -151,8 +151,8 @@ pub fn register_gucs() {
 
     GucRegistry::define_bool_guc(
         c"pg_tviews.metrics_enabled",
-        c"Enable collection of refresh metrics.",
-        c"When true, per-transaction refresh statistics are tracked.",
+        c"Deprecated: has no effect; will be removed.",
+        c"Refresh metrics are always collected (pg_tviews_queue_stats()).",
         &METRICS_ENABLED_GUC,
         GucContext::Userset,
         GucFlags::default(),
@@ -335,6 +335,11 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+
+    // Every pg_tviews.* setting is defined above: refuse any other name, so a
+    // typo or a setting that never existed raises instead of doing nothing.
+    // SAFETY: called from _PG_init with a static, NUL-terminated prefix.
+    unsafe { pgrx::pg_sys::MarkGUCPrefixReserved(c"pg_tviews".as_ptr()) };
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -389,10 +394,16 @@ pub fn log_level() -> String {
     )
 }
 
-/// Check if metrics collection is enabled
-#[must_use]
-pub fn metrics_enabled() -> bool {
-    METRICS_ENABLED_GUC.get()
+/// Log once per backend that the deprecated `pg_tviews.metrics_enabled` is set:
+/// it has no effect.
+pub fn warn_deprecated_settings() {
+    if METRICS_ENABLED_GUC.get() {
+        crate::utils::log_once(
+            "metrics_enabled deprecated",
+            "pg_tviews.metrics_enabled is deprecated and has no effect (metrics are always \
+             collected); it will be removed",
+        );
+    }
 }
 
 /// Policy for UNION ALL backing views that return duplicate rows for the same key.

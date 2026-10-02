@@ -351,6 +351,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         return Ok(());
     }
     crate::revision::check();
+    crate::config::warn_deprecated_settings();
     super::affected::begin_flush();
 
     // Issue #56: drain the direct-patch map in lockstep with the queue so it never
