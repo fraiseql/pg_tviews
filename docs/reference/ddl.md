@@ -253,6 +253,10 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   `tb_line l LEFT JOIN tb_order o ON l.fk_order = o.pk_order` exposing `o.id AS
   order_id`, read by the TVIEW with `v.order_id = t.id`): a row with no match yields
   NULLs there and matches no key
+- **`GROUP BY` / `DISTINCT ON` views**: a view column passes through when it is a
+  grouping or `DISTINCT ON` key, or equal to one through a join condition
+  (`DISTINCT ON (l.fk_order) o.pk_order` with `l.fk_order = o.pk_order`): its value
+  is the key's on every row that can match
 - **View columns the TVIEW doesn't read**: a view, subquery or CTE is followed only
   for the columns read from it (in the select list, `WHERE`, joins, or through a
   whole-row reference). The tables behind the other columns get no trigger, so
@@ -279,7 +283,9 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
 - **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
   the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`).
   Tables read through joins are followed when the DISTINCT ON key is
-  `pk_<entity>`; with another key the create is refused, naming them, unless
+  `pk_<entity>`, or a unique NOT NULL column of the TVIEW's own table that no other
+  table it reads has (the TVIEW then gets a unique index on `pk_<entity>`); with
+  another key the create is refused, naming them, unless
   `pg_tviews.uncascaded_policy` is `full_refresh`, which refreshes the TVIEW in full
   on writes to them
 

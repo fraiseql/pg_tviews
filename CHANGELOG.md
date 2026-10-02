@@ -30,15 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - **A `DISTINCT ON` TVIEW keyed on `pk_<entity>` can read tables through joins
   again** (#164, regression in 0.1.0-beta.21). Every `DISTINCT ON` TVIEW with a table
   mapped through a join was refused, with a count of the wrong tables. Keyed on
-  `pk_<entity>`, those tables now map to its rows. Keyed on another column, it is
-  refused with the tables named, unless `pg_tviews.uncascaded_policy` is
-  `full_refresh`, which refreshes it in full on writes to them.
+  `pk_<entity>`, or on a unique NOT NULL column of its own table (the TVIEW then gets
+  a unique index on `pk_<entity>`), those tables now map to its rows. Keyed on
+  anything else, it is refused with the tables named, unless
+  `pg_tviews.uncascaded_policy` is `full_refresh`, which refreshes it in full on
+  writes to them.
 - **A write to a TVIEW's own table refreshes its row again when another read of the
   table can't be traced** (#162, regression in 0.1.0-beta.21). One untraceable read
   of a table (here, inside a `DISTINCT ON` view) made the whole table `all_keys`, and
   under the default `warn` policy its writes refreshed nothing, the written row
   included. The reads that can be traced now keep refreshing the rows they reach;
   only the rest is left to `pg_tviews.uncascaded_policy`, and the WARNING says so.
+  The repro's view itself now maps entirely: a `GROUP BY` or `DISTINCT ON` view
+  column equal to the key through a join (`DISTINCT ON (l.fk_order) o.pk_order` with
+  `l.fk_order = o.pk_order`) passes through like the key.
 - **A view whose CTEs read each other three or more deep, or that defines a CTE it
   never uses, is accepted again** (#163, regression in 0.1.0-beta.21). The analyzer
   counted a CTE body's references from the level it was walking instead of the level
