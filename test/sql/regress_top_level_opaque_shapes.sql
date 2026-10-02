@@ -67,7 +67,7 @@ SELECT pg_tviews_create('tv_srf', $$
     SELECT pk_srf, id, jsonb_build_object('x', unnest(ARRAY[s])) AS data FROM tb_srf $$);
 SELECT pg_tviews_create('tv_gs', $$
     SELECT pk_gs, id, jsonb_build_object('n', count(*), 's', sum(s)) AS data
-    FROM tb_gs GROUP BY GROUPING SETS ((pk_gs, id)) $$);
+    FROM tb_gs GROUP BY GROUPING SETS ((pk_gs, id), ()) HAVING GROUPING(pk_gs, id) = 0 $$);
 SET client_min_messages TO WARNING;
 
 -- One statement per table: the write to a table is what refreshes its TVIEW.

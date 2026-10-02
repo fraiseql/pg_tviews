@@ -1098,6 +1098,24 @@ mod tests {
     }
 
     #[test]
+    fn an_opaque_top_level_without_a_root_is_all_keys_with_the_reason() {
+        // SELECT pk_win, … count(*) OVER () FROM tb_win: the walker gives the
+        // opaque top level no root and stamps its occurrences.
+        let mut win = occ(1, "tb_win");
+        win.opaque_level = Some("read under a window function in the top-level SELECT".into());
+        let g = Graph {
+            occurrences: vec![win],
+            conjuncts: vec![],
+            roots: vec![],
+            untracked_functions: vec![],
+        };
+        assert_eq!(
+            g.classify(0, NONE),
+            Kind::AllKeys("read under a window function in the top-level SELECT".into())
+        );
+    }
+
+    #[test]
     fn an_embedded_tview_s_table_is_propagated() {
         let mut user = occ(3, "tb_user");
         user.via_tview = Some("user".into());

@@ -85,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - **A refresh that fails after `TRUNCATE` aborts the `TRUNCATE`**: it only warned,
   leaving the TVIEW stale.
 
+- **A window function, `LIMIT`/`OFFSET`, a set-returning function or `GROUPING SETS`
+  in a TVIEW's top-level SELECT now goes through `uncascaded_policy`**. It was
+  treated as row-local: a write refreshed only its own row, while `count(*) OVER ()`,
+  a rank or a `LIMIT` changes others, and the TVIEW went stale with no WARNING, under
+  `full_refresh` too. Its tables are now `all_keys`, named at create time with the
+  reason. Re-registering an existing TVIEW of that shape reports them the same way.
+- **An `INTERSECT` or `EXCEPT` TVIEW stays equal to its view on `UPDATE`**. A change to
+  a column copied into `data` was patched straight into the TVIEW, even when the set
+  operation no longer returned the row. Set operations of every kind are now
+  recomputed, as `UNION` ones were.
+
 ### Changed
 
 - **Writes are mapped to TVIEW keys from PostgreSQL's query tree** (ADR 0157). The
