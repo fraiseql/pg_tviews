@@ -394,6 +394,7 @@ fn create_tview_inner(
         &schema_name,
         &DistinctOn {
             output_keys: &distinct_on_output_keys,
+            source_keys: &distinct_on_keys,
             policy,
             at_create: true,
         },
@@ -531,6 +532,7 @@ pub fn reregister_metadata(
         schema_name,
         &DistinctOn {
             output_keys: &distinct_on_output_keys,
+            source_keys: &distinct_on_keys,
             policy,
             at_create: false,
         },
@@ -656,6 +658,8 @@ pub(crate) fn stored_group_keys(
 struct DistinctOn<'a> {
     /// The projected DISTINCT ON keys; empty for a TVIEW without DISTINCT ON.
     output_keys: &'a [String],
+    /// The DISTINCT ON expressions as written, qualifiers stripped.
+    source_keys: &'a [String],
     policy: UncascadedPolicy,
     /// A create refuses what a re-registration only reclassifies.
     at_create: bool,
@@ -663,15 +667,20 @@ struct DistinctOn<'a> {
 
 impl DistinctOn<'_> {
     /// A DISTINCT ON TVIEW is keyed on its dedup key, while a table read through a
-    /// join maps writes to `pk_<entity>` values (issue #51): the two agree only when
-    /// the dedup key is `pk_<entity>`. Otherwise those tables become `all_keys`
-    /// (refreshed in full under `full_refresh`), and a create under another policy
-    /// is refused with them named.
-    fn apply(&self, entity: &str, lineage: &mut crate::lineage::Lineage) -> TViewResult<()> {
+    /// join maps writes to `pk_<entity>` values (issue #51): the two agree when the
+    /// dedup key is `pk_<entity>`, or a unique NOT NULL column of the root table
+    /// (one dedup key per `pk_<entity>`; the TVIEW then needs a unique index on
+    /// `pk_<entity>`, and this returns true). Otherwise those tables become
+    /// `all_keys` (refreshed in full under `full_refresh`), and a create under
+    /// another policy is refused with them named.
+    fn apply(&self, entity: &str, lineage: &mut crate::lineage::Lineage) -> TViewResult<bool> {
         use crate::lineage::TableKind;
         let key = format!("pk_{entity}");
         if self.output_keys.is_empty() || self.output_keys == [key.clone()] {
-            return Ok(());
+            return Ok(false);
+        }
+        if unique_root_column(lineage, self.source_keys)? {
+            return Ok(true);
         }
         let joined: Vec<String> = lineage
             .tables
@@ -680,7 +689,7 @@ impl DistinctOn<'_> {
             .map(|t| t.qualified.clone())
             .collect();
         if joined.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         if self.at_create && self.policy != UncascadedPolicy::FullRefresh {
             return Err(TViewError::InvalidInput {
@@ -710,8 +719,85 @@ impl DistinctOn<'_> {
                 table.hop = None;
             }
         }
-        Ok(())
+        Ok(false)
     }
+}
+
+/// Whether `keys` is one column of the TVIEW's root table that a one-column
+/// unique index covers and that is NOT NULL, and that no other table the TVIEW
+/// reads has (the DISTINCT ON keys come with their qualifiers stripped).
+fn unique_root_column(lineage: &crate::lineage::Lineage, keys: &[String]) -> TViewResult<bool> {
+    let roots: Vec<u32> = lineage
+        .tables
+        .iter()
+        .filter(|t| t.root)
+        .map(|t| t.relid)
+        .collect();
+    let ([column], [root]) = (keys, roots.as_slice()) else {
+        return Ok(false);
+    };
+    let others: Vec<u32> = lineage
+        .tables
+        .iter()
+        .filter(|t| t.relid != *root)
+        .map(|t| t.relid)
+        .collect();
+    Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+                        JOIN pg_catalog.pg_attribute a \
+                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] \
+                        WHERE i.indrelid = $1 AND i.indisunique AND i.indnatts = 1 \
+                          AND i.indpred IS NULL AND i.indexprs IS NULL \
+                          AND a.attname = $2 AND a.attnotnull) \
+            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                            WHERE a.attrelid = ANY($3) AND a.attname = $2 \
+                              AND a.attnum > 0 AND NOT a.attisdropped)",
+        // SAFETY: the datums copy the OIDs and borrow `column`, which outlive the call.
+        &[
+            unsafe {
+                DatumWithOid::new(
+                    pg_sys::Oid::from(*root),
+                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    column.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+            unsafe {
+                DatumWithOid::new(
+                    others
+                        .into_iter()
+                        .map(pg_sys::Oid::from)
+                        .collect::<Vec<_>>(),
+                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+                )
+            },
+        ],
+    )
+    .map(|found| found == Some(true))
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check the DISTINCT ON key {column}"),
+        pg_error: e.to_string(),
+    })
+}
+
+/// A unique index on `pk_<entity>` of a DISTINCT ON TVIEW keyed on another
+/// unique column: refreshing by `pk_<entity>` upserts on it.
+fn ensure_unique_pk_index(schema_name: &str, tview_name: &str, entity: &str) -> TViewResult<()> {
+    let sql = format!(
+        "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}.{} ({})",
+        quote_identifier(&index_name(tview_name, "pk_unique")),
+        quote_identifier(schema_name),
+        quote_identifier(tview_name),
+        quote_identifier(&format!("pk_{entity}")),
+    );
+    crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
+        query: sql,
+        error: e,
+    })
 }
 
 struct Derivation {
@@ -742,7 +828,9 @@ fn derive(
             .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
     );
     let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
-    distinct_on.apply(entity_name, &mut lineage)?;
+    if distinct_on.apply(entity_name, &mut lineage)? {
+        ensure_unique_pk_index(schema_name, &format!("tv_{entity_name}"), entity_name)?;
+    }
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
