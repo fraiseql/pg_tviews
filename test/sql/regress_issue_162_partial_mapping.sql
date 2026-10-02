@@ -7,9 +7,10 @@
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_162_partial_mapping.sql
 --
 -- expect-output: issue #162 partial mapping: PASS
+-- expect-output: the rows its other reads reach are still refreshed
 
 \set ON_ERROR_STOP on
-SET client_min_messages TO ERROR;
+SET client_min_messages TO WARNING;
 \set VERBOSITY terse
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;

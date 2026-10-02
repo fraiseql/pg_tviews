@@ -632,13 +632,22 @@ impl Lineage {
         self.tables.iter().any(|t| t.kind == TableKind::Mapped)
     }
 
-    /// The tables no cascade reaches (`all_keys`), with the reason.
+    /// The tables no cascade reaches (`all_keys`), with the reason, which says when
+    /// some reads of the table still refresh the rows they reach.
     #[must_use]
     pub fn all_keys(&self) -> Vec<(u32, String, String)> {
         self.tables
             .iter()
             .filter_map(|t| match &t.kind {
-                TableKind::AllKeys(reason) => Some((t.relid, t.qualified.clone(), reason.clone())),
+                TableKind::AllKeys(reason) => Some((
+                    t.relid,
+                    t.qualified.clone(),
+                    if t.sql.is_some() {
+                        format!("{reason}; the rows its other reads reach are still refreshed")
+                    } else {
+                        reason.clone()
+                    },
+                )),
                 _ => None,
             })
             .collect()
@@ -1331,6 +1340,18 @@ mod tests {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].kind, TableKind::Mapped);
         assert_eq!(tables[0].paths, vec![(0, vec![]), (1, vec![0])]);
+    }
+
+    #[test]
+    fn an_all_keys_table_keeps_the_mapping_of_its_traceable_reads() {
+        // tb_order is the root, and read again in a subquery nothing links (#162).
+        let mut again = occ(1, "tb_order");
+        again.in_sublink = true;
+        let g = graph(vec![occ(1, "tb_order"), again], vec![], col(0, "pk_order"));
+        let tables = g.tables(NONE);
+        assert!(matches!(tables[0].kind, TableKind::AllKeys(_)));
+        assert_eq!(tables[0].paths, vec![(0, vec![])]);
+        assert!(tables[0].sql.is_some());
     }
 
     #[test]
