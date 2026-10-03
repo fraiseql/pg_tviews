@@ -227,11 +227,7 @@ pub mod table_cache {
         Ok(Some(CachedEntityInfo {
             name,
             distinct_on: meta.identity.kind == crate::lineage::IdentityKind::DistinctOn,
-            legacy_root: if meta
-                .cascade_paths
-                .iter()
-                .any(|p| p.root && p.source_oid == table_oid)
-            {
+            legacy_root: if !meta.identity.legacy {
                 None
             } else if meta.identity.legacy_distinct_on {
                 Some(LegacyRoot::DistinctOn)

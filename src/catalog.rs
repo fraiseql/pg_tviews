@@ -109,6 +109,9 @@ pub struct TviewMeta {
 pub struct RowIdentity {
     pub column: String,
     pub kind: crate::lineage::IdentityKind,
+    /// Registered before identities were recorded (NULL in the catalog): the
+    /// root table's key is read by name until it is re-registered.
+    pub legacy: bool,
     /// Registered before identities were recorded, as a DISTINCT ON TVIEW: its
     /// rows are refreshed in full until it is re-registered.
     pub legacy_distinct_on: bool,
@@ -142,6 +145,7 @@ impl RowIdentity {
         Self {
             column,
             kind,
+            legacy: json.is_none(),
             legacy_distinct_on: json.is_none() && legacy_distinct_on,
         }
     }
@@ -702,7 +706,8 @@ mod tests {
         let old = RowIdentity::from_catalog("doc", None, false);
         assert_eq!(old.column, "pk_doc");
         assert_eq!(old.kind, IdentityKind::Pk);
-        assert!(old.is_pk("doc") && !old.legacy_distinct_on);
+        assert!(old.is_pk("doc") && old.legacy && !old.legacy_distinct_on);
+        assert!(!id.legacy);
 
         assert!(RowIdentity::from_catalog("doc", None, true).legacy_distinct_on);
     }

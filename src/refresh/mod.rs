@@ -109,7 +109,14 @@ pub(crate) fn touched(
 ) -> Touched {
     if meta.identity.is_pk(&meta.entity_name) {
         return Touched {
-            pks: keys.iter().filter_map(KeyValue::as_int).collect(),
+            // A key read off a column of another type (a domain, numeric) is text.
+            pks: keys
+                .iter()
+                .filter_map(|k| match k {
+                    KeyValue::Int(v) => Some(*v),
+                    KeyValue::Text(t) => t.parse().ok(),
+                })
+                .collect(),
             appeared: written.inserted,
         };
     }

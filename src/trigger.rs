@@ -66,7 +66,8 @@ unsafe fn tuple_key(
     let Some(att) = tupdesc.get(attnum - 1) else {
         return KeyExtraction::Missing;
     };
-    let typid = att.atttypid;
+    // SAFETY: a catalog lookup by type OID; a domain is read as its base type.
+    let typid = unsafe { pg_sys::getBaseType(att.atttypid) };
     // SAFETY: the caller's tuple and its descriptor; `attnum` is in range.
     unsafe {
         let mut isnull = false;
