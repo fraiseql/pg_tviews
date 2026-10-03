@@ -460,11 +460,11 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
             let mut recompute_keys: Vec<super::key::RefreshKey> = Vec::new();
             for key in entity_keys {
                 if apply_enabled
-                    && !key.is_dedup()
+                    && let Some(pk) = key.key.as_int()
                     && let Some(super::patch::PatchState::Direct(chain)) = patches.get(&key)
                 {
-                    patched.push((key.pk, chain.clone()));
-                    applied_pks.insert(key.pk);
+                    patched.push((pk, chain.clone()));
+                    applied_pks.insert(pk);
                     continue;
                 }
                 recompute_keys.push(key);
@@ -501,8 +501,8 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 let mut pks =
                     Vec::with_capacity(recompute_keys.iter().filter(|k| !k.is_dedup()).count());
                 for key in &recompute_keys {
-                    if !key.is_dedup() {
-                        pks.push(key.pk);
+                    if let Some(pk) = key.key.as_int() {
+                        pks.push(pk);
                     }
                 }
                 // FAIL-FAST: Propagate error immediately to abort transaction
@@ -703,10 +703,11 @@ fn refresh_and_get_parents(
     })?;
 
     // Refresh this entity — dispatch on key type
-    if let Some(dedup) = &key.dedup_key {
-        crate::refresh::refresh_by_dedup_key(meta.view_oid, dedup)?;
-    } else {
-        crate::refresh::refresh_pk(meta.view_oid, key.pk)?;
+    match &key.key {
+        super::key::KeyValue::Text(dedup) => {
+            crate::refresh::refresh_by_dedup_key(meta.view_oid, dedup)?;
+        }
+        super::key::KeyValue::Int(pk) => crate::refresh::refresh_pk(meta.view_oid, *pk)?,
     }
 
     // Find parent entities (NEW: returns keys instead of refreshing)

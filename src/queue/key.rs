@@ -1,90 +1,88 @@
-use std::hash::{Hash, Hasher};
-
-/// Identifies a unique TVIEW row to refresh.
+/// The value of a TVIEW's identity column for one row (ADR 0169).
 ///
-/// For standard TVIEWs the key is a `(entity, pk)` pair; for DISTINCT ON TVIEWs
-/// the key is a `(entity, dedup_key)` pair where `dedup_key` is the value of the
-/// DISTINCT ON column stored as TEXT.
-#[derive(Debug, Clone, Eq, serde::Serialize, serde::Deserialize)]
+/// `Int` for an integer identity (`int2`, `int4`, `int8`: the trinity `pk_*` hot
+/// path, no text round trip); `Text` for any other type, in its canonical output
+/// text, cast back to the column's type where it is bound.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum KeyValue {
+    Int(i64),
+    Text(String),
+}
+
+impl KeyValue {
+    /// The integer value of an `Int` key.
+    #[must_use]
+    pub const fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(v) => Some(*v),
+            Self::Text(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for KeyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(v) => write!(f, "{v}"),
+            Self::Text(v) => f.write_str(v),
+        }
+    }
+}
+
+/// Identifies a unique TVIEW row to refresh: an entity and the value of its
+/// identity column, or every row of the entity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RefreshKey {
     /// Entity name (e.g., "user", "post", "company")
     pub entity: String,
 
-    /// Primary key value (pk_<entity>).  Used for standard TVIEWs.
-    /// Set to 0 when `dedup_key` is present.
-    pub pk: i64,
-
-    /// Deduplication key for DISTINCT ON TVIEWs (stored as TEXT).
-    /// When `Some`, the key identifies the DISTINCT ON group to re-evaluate.
-    /// When `None`, `pk` is the authoritative identifier.
-    #[serde(default)]
-    pub dedup_key: Option<String>,
+    /// The row's identity value.
+    pub key: KeyValue,
 
     /// Every row of the entity's TVIEW (issues #157, #158): a write to a base table
-    /// no cascade maps, under the `full_refresh` policy. `pk` is 0.
-    #[serde(default)]
+    /// no cascade maps, under the `full_refresh` policy. `key` is `Int(0)`.
     pub all: bool,
 }
 
 impl RefreshKey {
-    /// Construct a standard PK-based key.
+    /// A key of an integer identity.
     pub fn pk(entity: impl Into<String>, pk: i64) -> Self {
+        Self::new(entity, KeyValue::Int(pk))
+    }
+
+    /// A key of any identity.
+    pub fn new(entity: impl Into<String>, key: KeyValue) -> Self {
         Self {
             entity: entity.into(),
-            pk,
-            dedup_key: None,
+            key,
             all: false,
         }
     }
 
     /// Construct a DISTINCT ON dedup key.
     pub fn dedup(entity: impl Into<String>, key: impl Into<String>) -> Self {
-        Self {
-            entity: entity.into(),
-            pk: 0,
-            dedup_key: Some(key.into()),
-            all: false,
-        }
+        Self::new(entity, KeyValue::Text(key.into()))
     }
 
     /// Construct a key for every row of the entity's TVIEW.
     pub fn all(entity: impl Into<String>) -> Self {
         Self {
             entity: entity.into(),
-            pk: 0,
-            dedup_key: None,
+            key: KeyValue::Int(0),
             all: true,
         }
     }
 
     /// Returns `true` if this is a DISTINCT ON dedup key.
     #[must_use]
-    pub fn is_dedup(&self) -> bool {
-        self.dedup_key.is_some()
+    pub const fn is_dedup(&self) -> bool {
+        matches!(self.key, KeyValue::Text(_))
     }
 
     /// Returns `true` if this key stands for every row of the TVIEW.
     #[must_use]
     pub const fn is_all(&self) -> bool {
         self.all
-    }
-}
-
-impl PartialEq for RefreshKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.entity == other.entity
-            && self.pk == other.pk
-            && self.dedup_key == other.dedup_key
-            && self.all == other.all
-    }
-}
-
-impl Hash for RefreshKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.entity.hash(state);
-        self.pk.hash(state);
-        self.dedup_key.hash(state);
-        self.all.hash(state);
     }
 }
 
@@ -114,18 +112,11 @@ mod tests {
     }
 
     #[test]
-    fn test_dedup_key_distinct_from_pk_key() {
-        let pk_key = RefreshKey::pk("contract", 42);
-        let dedup_key = RefreshKey::dedup("contract", "some-uuid");
-        assert_ne!(pk_key, dedup_key);
-    }
-
-    #[test]
-    fn test_dedup_key_hashset() {
+    fn int_and_text_keys_differ_and_deduplicate() {
         let mut set = std::collections::HashSet::new();
-        set.insert(RefreshKey::dedup("contract", "uuid-1"));
-        set.insert(RefreshKey::dedup("contract", "uuid-1")); // duplicate
-        set.insert(RefreshKey::dedup("contract", "uuid-2"));
+        set.insert(RefreshKey::new("doc", KeyValue::Text("42".into())));
+        set.insert(RefreshKey::new("doc", KeyValue::Text("42".into())));
+        set.insert(RefreshKey::pk("doc", 42));
         assert_eq!(set.len(), 2);
     }
 
@@ -141,34 +132,13 @@ mod tests {
     }
 
     #[test]
-    fn test_is_dedup() {
-        assert!(!RefreshKey::pk("user", 1).is_dedup());
-        assert!(RefreshKey::dedup("contract", "uuid").is_dedup());
-    }
-
-    #[test]
-    fn test_serde_roundtrip_pk() {
-        let key = RefreshKey::pk("user", 99);
-        let json = serde_json::to_string(&key).unwrap();
-        let back: RefreshKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(key, back);
-    }
-
-    #[test]
-    fn test_serde_roundtrip_dedup() {
-        let key = RefreshKey::dedup("contract", "some-uuid-val");
-        let json = serde_json::to_string(&key).unwrap();
-        let back: RefreshKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(key, back);
-    }
-
-    #[test]
-    fn test_serde_backward_compat_no_dedup_key_field() {
-        // Old serialized format has no "dedup_key" field — must default to None
-        let json = r#"{"entity":"user","pk":42}"#;
-        let key: RefreshKey = serde_json::from_str(json).unwrap();
-        assert_eq!(key.entity, "user");
-        assert_eq!(key.pk, 42);
-        assert!(key.dedup_key.is_none());
+    fn key_value_text_and_int() {
+        assert_eq!(KeyValue::Int(7).as_int(), Some(7));
+        assert_eq!(KeyValue::Text("a".into()).as_int(), None);
+        assert_eq!(KeyValue::Int(-3).to_string(), "-3");
+        assert_eq!(
+            KeyValue::Text("00000000-0000-0000-0000-000000000001".into()).to_string(),
+            "00000000-0000-0000-0000-000000000001"
+        );
     }
 }

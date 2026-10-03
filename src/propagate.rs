@@ -43,9 +43,9 @@ pub fn find_parents_for(
 
     // Propagation only applies to PK-based keys; DISTINCT ON dedup keys
     // do not carry a FK value that parent TVIEWs can use for lookup.
-    if key.is_dedup() {
+    let Some(pk) = key.key.as_int() else {
         return Ok(Vec::new());
-    }
+    };
 
     // Pre-allocate parent_keys: conservatively estimate 8 parents per entity on average
     let expected_parents = parent_entities.len().saturating_mul(8);
@@ -53,11 +53,11 @@ pub fn find_parents_for(
 
     // For each parent entity, find affected rows
     for parent_entity in parent_entities {
-        if prune_edge(graph, &key.entity, &parent_entity, key.pk) {
+        if prune_edge(graph, &key.entity, &parent_entity, pk) {
             continue;
         }
         let lookup_col = graph.lookup_column(&key.entity, &parent_entity);
-        let affected_pks = find_affected_pks(&parent_entity, &lookup_col, key.pk)?;
+        let affected_pks = find_affected_pks(&parent_entity, &lookup_col, pk)?;
 
         // Convert to RefreshKeys
         for pk in affected_pks {
@@ -114,7 +114,7 @@ pub fn find_parents_batch(
         // Map results back to original keys
         for key in &pk_keys {
             if key.entity == child_entity
-                && let Some(affected_pks) = affected_pk_map.get(&key.pk)
+                && let Some(affected_pks) = key.key.as_int().and_then(|pk| affected_pk_map.get(&pk))
             {
                 for pk in affected_pks {
                     result
@@ -156,17 +156,18 @@ fn build_batch_groups(
     let mut groups: HashMap<(String, String), Vec<i64>> = HashMap::with_capacity(4);
 
     for key in keys {
+        let Some(pk) = key.key.as_int() else { continue };
         // Get parent entities for this child from the cached graph
         let parent_entities = graph.parents.get(&key.entity).cloned().unwrap_or_default();
 
         for parent_entity in parent_entities {
-            if prune_edge(graph, &key.entity, &parent_entity, key.pk) {
+            if prune_edge(graph, &key.entity, &parent_entity, pk) {
                 continue;
             }
             groups
                 .entry((parent_entity, key.entity.clone()))
                 .or_insert_with(|| Vec::with_capacity(8))
-                .push(key.pk);
+                .push(pk);
         }
     }
 
