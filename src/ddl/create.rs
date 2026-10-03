@@ -360,31 +360,18 @@ fn create_tview_inner(
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
 
-    // Step 4: Create materialized table tv_<entity>.
-    // DISTINCT ON tviews key the table on the projected OUTPUT column.
-    create_materialized_table(
-        &tv_table_name,
-        &final_schema,
-        &schema_name,
-        &distinct_on_output_keys,
-        storage,
-    )?;
-
-    // Step 5: Populate initial data
-    let rows = populate_initial_data(&tv_table_name, &view_name, &schema_name)?;
-
-    // Step 6: Find base table dependencies.
+    // Step 4: Find base table dependencies, and how a write to each maps to keys,
+    // from the view's query tree (ADR 0157), with the column that names the
+    // TVIEW's rows (ADR 0169); and the cascade paths of its local tables (for an
+    // aggregate TVIEW, one per declared group key, issue #58).
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
-
-    // Step 6.5: How a write to each base table maps to keys, from the view's query
-    // tree (ADR 0157), and the cascade paths of its local tables (for an aggregate
-    // TVIEW, one per declared group key, issue #58).
     let Derivation {
         lineage,
         key_mappings,
         cascade_paths,
+        unique_pk_index,
     } = derive(
         entity_name,
         &final_select_sql,
@@ -399,6 +386,21 @@ fn create_tview_inner(
             at_create: true,
         },
     )?;
+
+    // Step 5: Create materialized table tv_<entity>, keyed on the identity.
+    create_materialized_table(
+        &tv_table_name,
+        &final_schema,
+        &schema_name,
+        &lineage.identity.name,
+        storage,
+    )?;
+    if unique_pk_index {
+        ensure_unique_pk_index(&schema_name, &tv_table_name, entity_name)?;
+    }
+
+    // Step 6: Populate initial data
+    let rows = populate_initial_data(&tv_table_name, &view_name, &schema_name)?;
 
     // Step 6.6: Reject a tview that can never be incrementally refreshed (issue #49).
     // A refresh is enqueued for this entity only if either a `tb_<entity>` base table
@@ -457,6 +459,7 @@ fn create_tview_inner(
         group_keys,
         &uncascaded,
         &key_mappings,
+        &lineage.identity,
         false,
     )?;
 
@@ -523,6 +526,7 @@ pub fn reregister_metadata(
         lineage,
         key_mappings,
         cascade_paths,
+        unique_pk_index,
     } = derive(
         entity_name,
         definition,
@@ -537,6 +541,9 @@ pub fn reregister_metadata(
             at_create: false,
         },
     )?;
+    if unique_pk_index {
+        ensure_unique_pk_index(schema_name, &format!("tv_{entity_name}"), entity_name)?;
+    }
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         policy,
@@ -562,6 +569,7 @@ pub fn reregister_metadata(
         group_keys.as_ref(),
         &uncascaded,
         &key_mappings,
+        &lineage.identity,
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
@@ -804,6 +812,8 @@ struct Derivation {
     lineage: crate::lineage::Lineage,
     key_mappings: serde_json::Value,
     cascade_paths: Vec<cascade_path::CascadePath>,
+    /// The TVIEW needs a unique index on `pk_<entity>` (#164).
+    unique_pk_index: bool,
 }
 
 /// Analyze `v_<entity>` (ADR 0157) and derive the cascade paths of its local
@@ -828,9 +838,7 @@ fn derive(
             .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
     );
     let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
-    if distinct_on.apply(entity_name, &mut lineage)? {
-        ensure_unique_pk_index(schema_name, &format!("tv_{entity_name}"), entity_name)?;
-    }
+    let unique_pk_index = distinct_on.apply(entity_name, &mut lineage)?;
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
@@ -841,6 +849,7 @@ fn derive(
         lineage,
         key_mappings,
         cascade_paths,
+        unique_pk_index,
     })
 }
 
@@ -1327,46 +1336,32 @@ fn view_oid(schema: &str, view: &str) -> TViewResult<pg_sys::Oid> {
     })
 }
 
-/// Create the materialized table with proper schema inferred from the backing view
+/// Create the materialized table with proper schema inferred from the backing view,
+/// with its primary key on the TVIEW's identity column (ADR 0169).
 fn create_materialized_table(
     tview_name: &str,
     schema: &TViewSchema,
     schema_name: &str,
-    distinct_on_output_keys: &[String],
+    identity: &str,
     storage: Storage,
 ) -> TViewResult<()> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
-
-    // For DISTINCT ON TVIEWs the dedup key is the table PK; pk_<entity> becomes a plain
-    // column. The key here is the projected OUTPUT column (the name the view exposes).
-    let first_dedup = distinct_on_output_keys.first().map(String::as_str);
-    let is_distinct_on = first_dedup.is_some();
+    // `<name> <type>`, with PRIMARY KEY on the identity column.
+    let key = |name: &str| if name == identity { " PRIMARY KEY" } else { "" };
 
     // Build column definitions based on inferred schema
     let mut columns = Vec::new();
 
-    // Primary key column
+    // pk_<entity>: the row identity, or a plain column (DISTINCT ON another key)
     if let Some(pk) = &schema.pk_column {
-        if is_distinct_on && first_dedup != Some(pk.as_str()) {
-            // DISTINCT ON TVIEW: pk_<entity> is a plain column, not the table PK
-            columns.push(format!("{} BIGINT", quote_identifier(pk)));
-        } else if is_distinct_on {
-            // pk_<entity> is itself the dedup key — make it the PK
-            columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
-        } else {
-            columns.push(format!("{} BIGINT PRIMARY KEY", quote_identifier(pk)));
-        }
+        columns.push(format!("{} BIGINT{}", quote_identifier(pk), key(pk)));
     }
 
     // ID column (Trinity identifier)
     if let Some(id) = &schema.id_column {
-        if first_dedup == Some(id.as_str()) {
-            // Dedup key on `id` — make it the table PK with a UNIQUE constraint
-            columns.push(format!("{} UUID PRIMARY KEY", quote_identifier(id)));
-        } else {
-            columns.push(format!("{} UUID NOT NULL", quote_identifier(id)));
-        }
+        let not_null = if id == identity { key(id) } else { " NOT NULL" };
+        columns.push(format!("{} UUID{not_null}", quote_identifier(id)));
     }
 
     // Every other column takes the backing view's type, typmod included and
@@ -1388,9 +1383,10 @@ fn create_materialized_table(
     // Identifier column (optional Trinity identifier)
     if let Some(identifier) = &schema.identifier_column {
         columns.push(format!(
-            "{} {}",
+            "{} {}{}",
             quote_identifier(identifier),
-            view_type(identifier, "TEXT")
+            view_type(identifier, "TEXT"),
+            key(identifier)
         ));
     }
 
@@ -1401,26 +1397,32 @@ fn create_materialized_table(
 
     // Foreign key columns (for lineage tracking)
     for fk in &schema.fk_columns {
-        columns.push(format!("{} BIGINT", quote_identifier(fk)));
+        columns.push(format!("{} BIGINT{}", quote_identifier(fk), key(fk)));
     }
 
     // UUID foreign key columns (for filtering): a column named `*_id` may be TEXT.
     for uuid_fk in &schema.uuid_fk_columns {
         columns.push(format!(
-            "{} {}",
+            "{} {}{}",
             quote_identifier(uuid_fk),
-            view_type(uuid_fk, "UUID")
+            view_type(uuid_fk, "UUID"),
+            key(uuid_fk)
         ));
     }
 
     for (col_name, col_type) in &schema.additional_columns_with_types {
-        let qi_col = quote_identifier(col_name);
-        let effective_type = view_type(col_name, col_type);
-        if first_dedup == Some(col_name.as_str()) {
-            columns.push(format!("{qi_col} {effective_type} PRIMARY KEY"));
-        } else {
-            columns.push(format!("{qi_col} {effective_type}"));
-        }
+        columns.push(format!(
+            "{} {}{}",
+            quote_identifier(col_name),
+            view_type(col_name, col_type),
+            key(col_name)
+        ));
+    }
+    if !columns.iter().any(|c| c.ends_with(" PRIMARY KEY")) {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!("{tview_name} has no column {identity} to key its rows on"),
+        });
     }
 
     // Add timestamps for tracking
@@ -1667,6 +1669,7 @@ fn register_metadata(
     group_keys: Option<&super::aggregate::GroupKeys>,
     uncascaded: &Uncascaded,
     key_mappings: &serde_json::Value,
+    identity: &crate::lineage::Identity,
     replace: bool,
 ) -> TViewResult<()> {
     // Detect whether the definition is a set operation (UNION, INTERSECT, EXCEPT):
@@ -1821,7 +1824,8 @@ fn register_metadata(
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
             group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
-            uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings"
+            uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings, \
+            identity = EXCLUDED.identity"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1849,8 +1853,13 @@ fn register_metadata(
             aggregate_embeds,
             uncascaded_oids,
             uncascaded_policy,
-            key_mappings
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7)
+            key_mappings,
+            identity
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
+                  pg_catalog.jsonb_build_object('kind', $8::pg_catalog.text, 'columns',
+                      pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+                          'name', $9::pg_catalog.text,
+                          'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))))
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1905,6 +1914,24 @@ fn register_metadata(
             DatumWithOid::new(
                 pgrx::JsonB(key_mappings.clone()),
                 PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                identity.kind.name(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                identity.name.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                pg_sys::Oid::from(identity.type_oid),
+                PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
             )
         },
     ];

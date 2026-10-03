@@ -6,7 +6,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_distinct_on_composite.sql
 --
--- known-failing: #170 (D2, composite DISTINCT ON refused)
 -- expect-output: composite DISTINCT ON refused: PASS
 
 \set ON_ERROR_STOP on

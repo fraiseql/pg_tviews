@@ -293,7 +293,7 @@ pub(crate) fn create_or_replace(
 
     let (normalized_sql, normalized) = create::normalize_definition(&entity, query)?;
     check_key(&entity, &normalized)?;
-    let comparison = compare_definition(meta.view_oid, &normalized_sql)?;
+    let comparison = compare_definition(&entity, meta.view_oid, &normalized_sql)?;
 
     let current = current_storage(&entity)?;
     let desired = Storage {
@@ -321,7 +321,7 @@ pub(crate) fn create_or_replace(
     }
     if comparison.same_columns
         && desired_keys == current_keys
-        && same_table_key(meta.tview_oid, &normalized_sql, &normalized)?
+        && same_table_key(meta.tview_oid, comparison.identity.as_deref())?
     {
         replace_in_place(
             &entity,
@@ -471,22 +471,9 @@ fn check_key(entity: &str, normalized: &TViewSchema) -> TViewResult<()> {
     }
 }
 
-/// Whether `definition` keys the table on the column its primary key is on now:
-/// the first `DISTINCT ON` key, or `pk_<entity>`.
-fn same_table_key(
-    table: pg_sys::Oid,
-    definition: &str,
-    normalized: &TViewSchema,
-) -> TViewResult<bool> {
-    let distinct_on =
-        crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
-    let key = if distinct_on.is_empty() {
-        normalized.pk_column.clone()
-    } else {
-        crate::sql_parser::extract_distinct_on_output_keys(definition)
-            .ok()
-            .and_then(|keys| keys.into_iter().next())
-    };
+/// Whether the new definition's identity (`key`, ADR 0169) is the column the
+/// table's primary key is on now.
+fn same_table_key(table: pg_sys::Oid, key: Option<&str>) -> TViewResult<bool> {
     let current = strings(
         "SELECT a.attname::text FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
@@ -506,11 +493,18 @@ struct Comparison {
     same_columns: bool,
     /// Ordinary and partitioned tables the new definition reads, through views.
     base_tables: Vec<pg_sys::Oid>,
+    /// The column that names the new definition's rows; `None` when it has none
+    /// (creating it raises why).
+    identity: Option<String>,
 }
 
 /// Compare `definition` with the backing view `view_oid` through a temporary view.
 /// An invalid definition raises its error.
-fn compare_definition(view_oid: pg_sys::Oid, definition: &str) -> TViewResult<Comparison> {
+fn compare_definition(
+    entity: &str,
+    view_oid: pg_sys::Oid,
+    definition: &str,
+) -> TViewResult<Comparison> {
     run(&format!(
         "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
     ))?;
@@ -542,11 +536,20 @@ fn compare_definition(view_oid: pg_sys::Oid, definition: &str) -> TViewResult<Co
         ),
         &[text("pg_temp.pg_tviews_candidate")],
     )?;
+    let candidate = oids(
+        "SELECT 'pg_temp.pg_tviews_candidate'::pg_catalog.regclass::pg_catalog.oid",
+        &[],
+    )?;
+    let identity = candidate
+        .first()
+        .and_then(|&oid| crate::lineage::view_identity(entity, oid).ok())
+        .map(|identity| identity.name);
     run("DROP VIEW pg_temp.pg_tviews_candidate")?;
     Ok(Comparison {
         same_view: same_view == Some(true),
         same_columns: same_columns == Some(true),
         base_tables,
+        identity,
     })
 }
 

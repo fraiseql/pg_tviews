@@ -984,40 +984,7 @@ pub fn analyze(
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
-    let identity = match graph
-        .identity
-        .clone()
-        .unwrap_or(Err(IdentityError::Missing))
-    {
-        Ok(walked) => Identity {
-            name: walked.name,
-            type_oid: walked.type_oid,
-            kind: walked.kind,
-            columns: walked
-                .columns
-                .iter()
-                .map(|c| (graph.occurrences[c.occ].relid, c.attnum))
-                .collect(),
-        },
-        Err(error) => {
-            let viewdef = Spi::get_one_with_args::<String>(
-                "SELECT pg_catalog.pg_get_viewdef($1)",
-                // SAFETY: a plain OID datum.
-                &[unsafe {
-                    pgrx::datum::DatumWithOid::new(
-                        view_oid,
-                        PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                    )
-                }],
-            )
-            .map_err(catalog)?
-            .unwrap_or_default();
-            return Err(crate::TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
-                reason: identity_refusal(entity, error, &distinct_on_list(&viewdef)),
-            });
-        }
-    };
+    let identity = identity_of(entity, view_oid, &graph)?;
     // pg_depend and the query tree must agree on the tables.
     let found: HashSet<u32> = graph
         .occurrences
@@ -1076,6 +1043,71 @@ pub fn analyze(
         unread,
         identity,
     })
+}
+
+/// The identity of the view `view_oid` as the TVIEW of `entity` (ADR 0169).
+///
+/// # Errors
+/// Returns an error if the view cannot be walked, or if no column of it can name
+/// the TVIEW's rows (the refusal names its DISTINCT ON key).
+pub fn view_identity(entity: &str, view_oid: pgrx::pg_sys::Oid) -> crate::TViewResult<Identity> {
+    let key_column = format!("pk_{entity}");
+    let graph = walk::analyze(
+        view_oid,
+        &walk::Context {
+            tview_tables: &std::collections::HashSet::new(),
+            tview_views: &std::collections::HashMap::new(),
+            entity,
+            key_column: &key_column,
+        },
+    )?;
+    identity_of(entity, view_oid, &graph)
+}
+
+/// The identity a walk of `view_oid` found, or the refusal naming its DISTINCT ON key.
+fn identity_of(
+    entity: &str,
+    view_oid: pgrx::pg_sys::Oid,
+    graph: &Graph,
+) -> crate::TViewResult<Identity> {
+    use pgrx::prelude::*;
+    match graph
+        .identity
+        .clone()
+        .unwrap_or(Err(IdentityError::Missing))
+    {
+        Ok(walked) => Ok(Identity {
+            name: walked.name,
+            type_oid: walked.type_oid,
+            kind: walked.kind,
+            columns: walked
+                .columns
+                .iter()
+                .map(|c| (graph.occurrences[c.occ].relid, c.attnum))
+                .collect(),
+        }),
+        Err(error) => {
+            let viewdef = Spi::get_one_with_args::<String>(
+                "SELECT pg_catalog.pg_get_viewdef($1)",
+                // SAFETY: a plain OID datum.
+                &[unsafe {
+                    pgrx::datum::DatumWithOid::new(
+                        view_oid,
+                        PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+                    )
+                }],
+            )
+            .map_err(|e| crate::TViewError::CatalogError {
+                operation: format!("Read the definition of the view of tv_{entity}"),
+                pg_error: e.to_string(),
+            })?
+            .unwrap_or_default();
+            Err(crate::TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason: identity_refusal(entity, error, &distinct_on_list(&viewdef)),
+            })
+        }
+    }
 }
 
 /// A mapping-query template with the current names of its relations and columns;

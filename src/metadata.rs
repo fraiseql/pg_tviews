@@ -20,7 +20,6 @@
 //! - **ALTER EXTENSION**: Handles schema migrations
 //! - **DROP EXTENSION**: Cleans up metadata
 
-use crate::error::{TViewError, TViewResult};
 use pgrx::prelude::*;
 
 // The control file fixes the install schema to `tviews` (issue #136). CREATE
@@ -127,7 +126,11 @@ extension_sql!(
         -- How a write to each base table maps to this TVIEW's keys (ADR 0157), read
         -- from the backing view's query tree: one object per table with its name,
         -- relid and kind (local, mapped, propagated, all_keys).
-        key_mappings JSONB NOT NULL DEFAULT '[]'
+        key_mappings JSONB NOT NULL DEFAULT '[]',
+        -- The output column that names this TVIEW's rows (ADR 0169), read from the
+        -- backing view's query tree: an object with its kind (pk, distinct_on) and
+        -- its columns (name, type). NULL for a row registered before it: pk_<entity>.
+        identity JSONB
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -163,7 +166,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 2';
+    AS 'SELECT 3';
     ",
     name = "create_metadata_tables",
 );
@@ -259,7 +262,10 @@ SELECT
                     (e->>'relid')::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text,
                     e->>'kind')
          FROM pg_catalog.jsonb_array_elements(m.key_mappings) e),
-        '{}') AS cascade_kinds
+        '{}') AS cascade_kinds,
+    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
+         ELSE ARRAY(SELECT c->>'name'
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -734,211 +740,3 @@ COMMENT ON FUNCTION @extschema@.pg_tviews_profile(TEXT, BIGINT) IS
     name = "profile_function",
     requires = ["create_metadata_tables"]
 );
-
-/// Create the metadata tables required for `pg_tviews` extension
-///
-/// # Errors
-/// Returns error if table creation fails due to insufficient permissions or SQL errors
-pub fn create_metadata_tables() -> TViewResult<()> {
-    Spi::run(
-        r"
-        CREATE TABLE IF NOT EXISTS pg_tview_meta (
-            entity TEXT NOT NULL PRIMARY KEY,
-            view_oid REGCLASS NOT NULL,
-            table_oid REGCLASS NOT NULL,
-            definition TEXT NOT NULL,
-            cascade_paths TEXT[] NOT NULL DEFAULT '{}',
-            fk_columns TEXT[] NOT NULL DEFAULT '{}',
-            uuid_fk_columns TEXT[] NOT NULL DEFAULT '{}',
-            dependency_types TEXT[] NOT NULL DEFAULT '{}',
-            dependency_paths TEXT[]  NOT NULL DEFAULT '{}',
-            array_match_keys TEXT[] NOT NULL DEFAULT '{}',
-            distinct_on_keys TEXT[] NOT NULL DEFAULT '{}',
-            direct_map_columns TEXT[] NOT NULL DEFAULT '{}',
-            direct_map_keys TEXT[] NOT NULL DEFAULT '{}',
-            is_union BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS pg_tview_helpers (
-            helper_name TEXT NOT NULL PRIMARY KEY,
-            is_helper BOOLEAN NOT NULL DEFAULT TRUE,
-            used_by TEXT[] NOT NULL DEFAULT '{}',
-            depends_on TEXT[] NOT NULL DEFAULT '{}',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-
-        COMMENT ON TABLE pg_tview_meta IS
-            'Metadata for TVIEW materialized tables';
-        COMMENT ON TABLE pg_tview_helpers IS
-            'Tracks helper views used by TVIEWs';
-        ",
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "create_metadata_tables".to_string(),
-        pg_error: e.to_string(),
-    })?;
-
-    Ok(())
-}
-
-/// Drop all metadata tables (for testing/cleanup)
-///
-/// # Errors
-/// Returns error if table drop fails due to insufficient permissions or SQL errors
-pub fn drop_metadata_tables() -> TViewResult<()> {
-    Spi::run(
-        r"
-        DROP TABLE IF EXISTS pg_tview_helpers;
-        DROP TABLE IF EXISTS pg_tview_meta;
-        ",
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "drop_metadata_tables".to_string(),
-        pg_error: e.to_string(),
-    })?;
-
-    Ok(())
-}
-
-/// Check if metadata tables exist
-///
-/// # Errors
-/// Returns error if `information_schema` query fails
-pub fn metadata_tables_exist() -> TViewResult<bool> {
-    let meta_exists = Spi::get_one::<bool>(
-        "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_name = 'pg_tview_meta'",
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: "check pg_tview_meta exists".to_string(),
-        error: e.to_string(),
-    })?;
-
-    let helpers_exists = Spi::get_one::<bool>(
-        "SELECT COUNT(*) = 1 FROM information_schema.tables
-         WHERE table_name = 'pg_tview_helpers'",
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: "check pg_tview_helpers exists".to_string(),
-        error: e.to_string(),
-    })?;
-
-    Ok(meta_exists.unwrap_or(false) && helpers_exists.unwrap_or(false))
-}
-
-#[cfg(any(test, feature = "pg_test"))]
-#[pg_schema]
-mod tests {
-    use super::*;
-
-    #[pg_test]
-    fn test_metadata_tables_creation() {
-        // Clean up first
-        let _ = drop_metadata_tables();
-
-        // Create tables
-        create_metadata_tables().expect("Failed to create metadata tables");
-
-        // Verify pg_tview_meta exists
-        let result = Spi::get_one::<bool>(
-            "SELECT COUNT(*) = 1 FROM information_schema.tables
-             WHERE table_name = 'pg_tview_meta'",
-        );
-        assert_eq!(result, Ok(Some(true)), "pg_tview_meta table should exist");
-
-        // Verify pg_tview_helpers exists
-        let result = Spi::get_one::<bool>(
-            "SELECT COUNT(*) = 1 FROM information_schema.tables
-             WHERE table_name = 'pg_tview_helpers'",
-        );
-        assert_eq!(
-            result,
-            Ok(Some(true)),
-            "pg_tview_helpers table should exist"
-        );
-
-        // Verify pg_tview_meta has expected columns
-        let result = Spi::get_one::<i64>(
-            "SELECT COUNT(*) FROM information_schema.columns
-             WHERE table_name = 'pg_tview_meta'",
-        );
-        assert!(
-            result.unwrap_or(Some(0)).unwrap_or(0) > 0,
-            "pg_tview_meta should have columns"
-        );
-    }
-
-    #[pg_test]
-    fn test_metadata_tables_schema() {
-        // Ensure tables exist
-        create_metadata_tables().expect("Failed to create metadata tables");
-
-        // Check pg_tview_meta columns
-        let columns = Spi::connect(|client| {
-            let mut columns = Vec::new();
-            let query = "
-                SELECT column_name, data_type, is_nullable::text
-                FROM information_schema.columns
-                WHERE table_name = 'pg_tview_meta'
-                ORDER BY ordinal_position
-            ";
-
-            for row in client.select(query, None, &[])? {
-                let name: String = row.get(1)?.unwrap_or_default();
-                let data_type: String = row.get(2)?.unwrap_or_default();
-                let nullable: String = row.get(3)?.unwrap_or_default();
-                columns.push((name, data_type, nullable));
-            }
-
-            Ok::<_, pgrx::spi::SpiError>(columns)
-        })
-        .expect("Failed to query column info");
-
-        // Verify expected columns exist
-        let expected_columns = vec![
-            ("entity", "text", "NO"),
-            ("view_oid", "oid", "NO"),
-            ("table_oid", "oid", "NO"),
-            ("definition", "text", "NO"),
-            ("cascade_paths", "ARRAY", "NO"),
-            ("fk_columns", "ARRAY", "NO"),
-            ("uuid_fk_columns", "ARRAY", "NO"),
-            ("dependency_types", "ARRAY", "NO"),
-            ("dependency_paths", "ARRAY", "NO"),
-            ("array_match_keys", "ARRAY", "NO"),
-            ("created_at", "timestamp with time zone", "NO"),
-        ];
-
-        for (expected_name, expected_type, expected_nullable) in expected_columns {
-            let found = columns.iter().any(|(name, data_type, nullable)| {
-                name == expected_name
-                    && (data_type == expected_type || data_type.starts_with(expected_type))
-                    && nullable == expected_nullable
-            });
-            assert!(
-                found,
-                "Column {expected_name} with type {expected_type} nullable {expected_nullable} not found"
-            );
-        }
-    }
-
-    #[pg_test]
-    fn test_metadata_tables_exist_function() {
-        // Clean up first
-        let _ = drop_metadata_tables();
-        assert_eq!(
-            metadata_tables_exist(),
-            Ok(false),
-            "Tables should not exist initially"
-        );
-
-        // Create tables
-        create_metadata_tables().expect("Failed to create metadata tables");
-        assert_eq!(
-            metadata_tables_exist(),
-            Ok(true),
-            "Tables should exist after creation"
-        );
-    }
-}
