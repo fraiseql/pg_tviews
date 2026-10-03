@@ -241,7 +241,8 @@ fn enqueue_legacy_root(
     let Some(tupdesc) = trigger_tupdesc(trigger) else {
         return;
     };
-    if let Some(fields) = try_capture_direct_patch(trigger, info, &pk_col)
+    if let Some(fields) =
+        try_capture_direct_patch(trigger, info, &pk_col, changed_columns(trigger).as_deref())
         && let Some(new) = new_image(trigger)
         // SAFETY: the new image of the trigger's row.
         && let KeyExtraction::Value(KeyValue::Int(pk)) =
@@ -312,7 +313,8 @@ fn enqueue_cascade_parents(
         // copied into its data is patched in place.
         if path.root
             && let Some(info) = own.filter(|i| i.name == path.entity_name)
-            && let Some(fields) = try_capture_direct_patch(trigger, info, &path.initial_col)
+            && let Some(fields) =
+                try_capture_direct_patch(trigger, info, &path.initial_col, changed.as_deref())
             && let Some(new) = new_image(trigger)
             // SAFETY: the new image of the trigger's row.
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
@@ -442,6 +444,7 @@ fn try_capture_direct_patch(
     trigger: &PgTrigger,
     entity_info: &CachedEntityInfo,
     key_col: &str,
+    changed: Option<&[String]>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     use std::collections::HashSet;
 
@@ -459,7 +462,7 @@ fn try_capture_direct_patch(
 
     // Full-tuple diff — `None` unless this is a row-level UPDATE (OLD and NEW both
     // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
-    let changed = changed_columns(trigger)?;
+    let changed = changed?;
     if changed.is_empty() {
         return None;
     }
@@ -479,7 +482,7 @@ fn try_capture_direct_patch(
         .map(String::as_str)
         .collect();
 
-    for col in &changed {
+    for col in changed {
         if col == key_col
             || fk_set.contains(col.as_str())
             || uuid_fk_set.contains(col.as_str())
@@ -493,7 +496,7 @@ fn try_capture_direct_patch(
     // Capture NEW's value for each changed column with the type whitelist.
     let new_tuple = trigger.new()?;
     let mut fields = serde_json::Map::with_capacity(changed.len());
-    for col in &changed {
+    for col in changed {
         let key = entity_info.direct_map.get(col.as_str())?;
         let value = capture_value(&new_tuple, col)?;
         fields.insert(key.clone(), value);

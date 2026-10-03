@@ -119,18 +119,19 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> spi::Result<super::Touch
 /// Removing the row here is what makes DELETE propagate to the tview instead of
 /// leaving a stale row (issue #48).
 fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> spi::Result<Vec<i64>> {
+    let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = quote_identifier(&meta.identity.column);
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'",
-        super::key_cast(&meta.identity.key_type, "$1", false)
+        super::key_cast(&key_type, "$1", false)
     );
     super::run_journaled_delete(
         &meta.entity_name,
         &sql,
-        &[super::key_scalar(&meta.identity.key_type, key)?],
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 
@@ -143,16 +144,17 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> spi::Result<Vec<i64>> {
 /// SELECT 1 FROM v_post WHERE pk_post = $1 LIMIT 2
 /// ```
 fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> spi::Result<bool> {
+    let key_type = meta.key_type()?;
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
 
     let sql = format!(
         "SELECT 1 FROM {qi_view} WHERE {} = {} LIMIT 2",
         quote_identifier(&meta.identity.column),
-        super::key_cast(&meta.identity.key_type, "$1", false)
+        super::key_cast(&key_type, "$1", false)
     );
 
     Spi::connect(|client| {
-        let args = [super::key_scalar(&meta.identity.key_type, key)?];
+        let args = [super::key_scalar(&key_type, key)?];
         let mut rows = client.select(&sql, None, &args)?;
 
         // No backing-view row for this key means the base row was deleted (or now
@@ -244,6 +246,7 @@ fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> spi::Result<bool> {
 /// apply_patch(&view_row, &meta)?;
 /// ```
 fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+    let key_type = meta.key_type()?;
     let key_col = &meta.identity.column;
 
     // Check if jsonb_delta is available (cached after first session query)
@@ -320,10 +323,10 @@ fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Wri
         &col_list,
         &format!(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
-            super::key_cast(&meta.identity.key_type, "$1", false)
+            super::key_cast(&key_type, "$1", false)
         ),
         &conflict,
-        &[super::key_scalar(&meta.identity.key_type, key)?],
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 
@@ -442,6 +445,7 @@ fn build_smart_patch_expr(
 /// WHERE pk_entity = $2
 /// ```
 fn apply_full_replacement(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+    let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
     let qi_key = quote_identifier(key_col);
@@ -463,13 +467,13 @@ fn apply_full_replacement(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64,
         &col_list,
         &format!(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
-            super::key_cast(&meta.identity.key_type, "$1", false)
+            super::key_cast(&key_type, "$1", false)
         ),
         &format!(
             "ON CONFLICT ({qi_key}) {}",
             super::upsert_conflict_action(&qi_tv, &col_names, key_col, None)
         ),
-        &[super::key_scalar(&meta.identity.key_type, key)?],
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 

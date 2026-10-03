@@ -109,8 +109,6 @@ pub struct TviewMeta {
 pub struct RowIdentity {
     pub column: String,
     pub kind: crate::lineage::IdentityKind,
-    /// How its values are bound: `Int` for an integer column.
-    pub key_type: KeyType,
     /// Registered before identities were recorded, as a DISTINCT ON TVIEW: its
     /// rows are refreshed in full until it is re-registered.
     pub legacy_distinct_on: bool,
@@ -127,13 +125,11 @@ pub enum KeyType {
 
 impl RowIdentity {
     /// Read `pg_tview_meta.identity` (NULL for a row registered before it:
-    /// `pk_<entity>`) and the type of the column in the TVIEW's table (`None`:
-    /// an integer type).
+    /// `pk_<entity>`).
     #[must_use]
     pub fn from_catalog(
         entity: &str,
         json: Option<&serde_json::Value>,
-        type_name: Option<String>,
         legacy_distinct_on: bool,
     ) -> Self {
         let column = json
@@ -146,7 +142,6 @@ impl RowIdentity {
         Self {
             column,
             kind,
-            key_type: type_name.map_or(KeyType::Int, KeyType::Text),
             legacy_distinct_on: json.is_none() && legacy_distinct_on,
         }
     }
@@ -168,22 +163,17 @@ pub(crate) fn meta_select() -> String {
          dependency_types, dependency_paths, array_match_keys, \
          direct_map_columns, direct_map_keys, is_union, cascade_paths, \
          uncascaded_policy, key_mappings, identity, \
-         distinct_on_keys <> '{{}}' AS legacy_distinct_on, \
-         (SELECT pg_catalog.quote_ident(tn.nspname) || '.' || pg_catalog.quote_ident(t.typname) \
-          FROM pg_catalog.pg_attribute a \
-          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-          JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace \
-          WHERE a.attrelid = table_oid AND NOT a.attisdropped \
-            AND a.attname = COALESCE(identity->'columns'->0->>'name', 'pk_' || entity) \
-            AND a.atttypid NOT IN ('pg_catalog.int2'::pg_catalog.regtype, \
-                                   'pg_catalog.int4'::pg_catalog.regtype, \
-                                   'pg_catalog.int8'::pg_catalog.regtype)) AS identity_type \
+         distinct_on_keys <> '{{}}' AS legacy_distinct_on \
          FROM {}",
         crate::utils::meta_table()
     )
 }
 
 thread_local! {
+    /// TVIEW table → the type of its identity column, per backend; cleared with
+    /// [`META_CACHE`].
+    static KEY_TYPES: std::cell::RefCell<std::collections::HashMap<Oid, KeyType>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per-backend `TviewMeta` cache (issue #91), cleared through
     /// [`crate::queue::cache::sync_generation`] when the catalog or a TVIEW changes.
     static META_CACHE: std::cell::RefCell<Vec<TviewMeta>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -206,9 +196,48 @@ fn remember(loaded: Option<TviewMeta>) -> Option<TviewMeta> {
 /// Forget every cached `TviewMeta`.
 pub fn clear_meta_cache() {
     META_CACHE.with(|c| c.borrow_mut().clear());
+    KEY_TYPES.with(|c| c.borrow_mut().clear());
 }
 
 impl TviewMeta {
+    /// How the values of the identity column are bound: the type of the column in
+    /// the TVIEW's table (cached per backend).
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be read.
+    pub fn key_type(&self) -> spi::Result<KeyType> {
+        if let Some(key_type) = KEY_TYPES.with(|c| c.borrow().get(&self.tview_oid).cloned()) {
+            return Ok(key_type);
+        }
+        let name = Spi::get_one_with_args::<String>(
+            "SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
+                                             'pg_catalog.int4'::pg_catalog.regtype, \
+                                             'pg_catalog.int8'::pg_catalog.regtype) THEN NULL \
+                    ELSE pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(t.typname) END \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+             WHERE a.attrelid = $1 AND a.attname = $2 AND NOT a.attisdropped",
+            // SAFETY: the datums copy the OID and borrow the name, which outlive the call.
+            &[
+                unsafe { DatumWithOid::new(self.tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
+                unsafe {
+                    DatumWithOid::new(
+                        self.identity.column.as_str(),
+                        PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                    )
+                },
+            ],
+        )
+        .or_else(|e| match e {
+            spi::Error::InvalidPosition => Ok(None),
+            e => Err(e),
+        })?;
+        let key_type = name.map_or(KeyType::Int, KeyType::Text);
+        KEY_TYPES.with(|c| c.borrow_mut().insert(self.tview_oid, key_type.clone()));
+        Ok(key_type)
+    }
+
     /// The mapping of base table `table_oid`, also found by name (a row restored
     /// before its relids were rebound) or through the partitioned table `root`.
     #[must_use]
@@ -395,7 +424,6 @@ impl TviewMeta {
                 .value::<pgrx::JsonB>()?
                 .map(|j| j.0)
                 .as_ref(),
-            row["identity_type"].value::<String>()?,
             row["legacy_distinct_on"].value::<bool>()?.unwrap_or(false),
         );
 
@@ -527,7 +555,7 @@ impl Default for TviewMeta {
             cascade_paths: vec![],
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
             key_mappings: vec![],
-            identity: RowIdentity::from_catalog("", None, None, false),
+            identity: RowIdentity::from_catalog("", None, false),
         }
     }
 }
@@ -666,19 +694,17 @@ mod tests {
         use crate::lineage::IdentityKind;
         let doc =
             serde_json::json!({"kind": "distinct_on", "columns": [{"name": "id", "type": "uuid"}]});
-        let id = RowIdentity::from_catalog("doc", Some(&doc), Some("pg_catalog.uuid".into()), true);
+        let id = RowIdentity::from_catalog("doc", Some(&doc), true);
         assert_eq!(id.column, "id");
         assert_eq!(id.kind, IdentityKind::DistinctOn);
-        assert_eq!(id.key_type, KeyType::Text("pg_catalog.uuid".into()));
         assert!(!id.legacy_distinct_on && !id.is_pk("doc"));
 
-        let old = RowIdentity::from_catalog("doc", None, None, false);
+        let old = RowIdentity::from_catalog("doc", None, false);
         assert_eq!(old.column, "pk_doc");
         assert_eq!(old.kind, IdentityKind::Pk);
-        assert_eq!(old.key_type, KeyType::Int);
         assert!(old.is_pk("doc") && !old.legacy_distinct_on);
 
-        assert!(RowIdentity::from_catalog("doc", None, None, true).legacy_distinct_on);
+        assert!(RowIdentity::from_catalog("doc", None, true).legacy_distinct_on);
     }
 
     #[test]

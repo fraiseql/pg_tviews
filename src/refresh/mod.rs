@@ -279,6 +279,7 @@ pub(crate) fn lock_rows(
     if keys.is_empty() || (transaction_snapshot && !with_pks) {
         return Ok(Vec::new());
     }
+    let key_type = meta.key_type()?;
     let qi_key = quote_identifier(&meta.identity.column);
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
     let lock = if transaction_snapshot {
@@ -289,9 +290,9 @@ pub(crate) fn lock_rows(
     let sql = format!(
         "SELECT {qi_pk}::pg_catalog.int8 FROM {qi_tv} \
          WHERE {qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY {qi_key}{lock}",
-        key_cast(&meta.identity.key_type, "$1", true)
+        key_cast(&key_type, "$1", true)
     );
-    let args = [key_array(&meta.identity.key_type, keys)?];
+    let args = [key_array(&key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
     Spi::connect_mut(|client| {
         let mut pks = Vec::new();

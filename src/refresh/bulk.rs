@@ -46,6 +46,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
+    let key_type = meta.key_type()?;
 
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
     if col_names.is_empty() {
@@ -61,10 +62,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // tables' indexes through the view (#174).
     let qi_key = crate::utils::quote_identifier(key_col);
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{entity}"));
-    let any_key = format!(
-        "ANY({})",
-        super::key_cast(&meta.identity.key_type, "$1", true)
-    );
+    let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
     let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
@@ -95,12 +93,12 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &col_list,
             &source_sql,
             &conflict,
-            &[super::key_array(&meta.identity.key_type, chunk)?],
+            &[super::key_array(&key_type, chunk)?],
         )?;
         let deleted = super::run_journaled_delete(
             entity,
             &delete_sql,
-            &[super::key_array(&meta.identity.key_type, chunk)?],
+            &[super::key_array(&key_type, chunk)?],
         )?;
         touched.extend(super::touched(&meta, chunk, before, written, deleted));
     }

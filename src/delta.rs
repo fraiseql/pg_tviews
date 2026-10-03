@@ -228,7 +228,9 @@ fn map_statement(
                 return refresh_all(entity, "a relation its mapping reads is gone");
             };
             let delta = delta_sql(table_oid, event, &mapping.attnums)?;
-            let key_type = &meta.identity.key_type;
+            let key_type = &meta
+                .key_type()
+                .map_err(|e| spi_error("the identity's type", &e))?;
             let keys = run_with_transition_tables(
                 trigger,
                 entity,
@@ -370,7 +372,9 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 .map(|i| format!("SELECT (${i}).*"))
                 .collect::<Vec<_>>()
                 .join(" UNION ALL ");
-            let key_type = &meta.identity.key_type;
+            let key_type = &meta
+                .key_type()
+                .map_err(|e| spi_error("the identity's type", &e))?;
             let sql = format!(
                 "WITH {DELTA} AS ({delta}) \
                  SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",

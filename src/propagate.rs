@@ -98,7 +98,8 @@ fn find_affected_keys_batch(
     let qi_fk = quote_identifier(lookup_col);
     let qi_parent = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = quote_identifier(&meta.identity.column);
-    let key_type = match meta.identity.key_type {
+    let parent_key_type = meta.key_type()?;
+    let key_type = match parent_key_type {
         KeyType::Int => "pg_catalog.int8",
         KeyType::Text(_) => "pg_catalog.text",
     };
@@ -134,7 +135,7 @@ fn find_affected_keys_batch(
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
             };
-            let key = match meta.identity.key_type {
+            let key = match parent_key_type {
                 KeyType::Int => row["parent_key"].value::<i64>()?.map(KeyValue::Int),
                 KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
             };
