@@ -431,7 +431,7 @@ fn create_tview_inner(
         group_keys,
         &uncascaded,
         &key_mappings,
-        &lineage.identity,
+        &lineage,
         false,
     )?;
 
@@ -494,6 +494,11 @@ pub fn reregister_metadata(
         &dep_graph.base_tables,
         schema_name,
     )?;
+    key_table_on_identity(
+        schema_name,
+        &format!("tv_{entity_name}"),
+        &lineage.identity.name,
+    )?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         policy,
@@ -517,7 +522,7 @@ pub fn reregister_metadata(
         group_keys.as_ref(),
         &uncascaded,
         &key_mappings,
-        &lineage.identity,
+        &lineage,
         true,
     )?;
     crate::queue::cache::invalidate_all_caches();
@@ -690,7 +695,7 @@ fn add_fanout_patches(
             root: false,
             initial_attnum: None,
         };
-        let Some(fanout) = fanout_patch(definition, entity_name, schema, &path) else {
+        let Some(fanout) = fanout_patch(definition, entity_name, schema, &path, lineage) else {
             continue;
         };
         if let Some(entry) = entries
@@ -731,13 +736,85 @@ fn local_cascade_paths(
                     initial_attnum: t.columns.iter().find(|(n, _)| n == column).map(|(_, a)| *a),
                 };
                 if !t.root && lineage.identity.kind == crate::lineage::IdentityKind::Pk {
-                    path.fanout = fanout_patch(definition, entity_name, schema, &path);
+                    path.fanout = fanout_patch(definition, entity_name, schema, &path, lineage);
                 }
                 Some(path)
             }
             _ => None,
         })
         .collect()
+}
+
+/// Make a TVIEW's table keyed on its identity at re-registration (ADR 0169): drop
+/// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had (#164), and
+/// add the primary key a table created without one lacks (a DISTINCT ON key named
+/// `identifier`, `fk_*` or `*_id`). A primary key on another column is refused.
+fn key_table_on_identity(schema_name: &str, tview_name: &str, identity: &str) -> TViewResult<()> {
+    let table = relation_oid(schema_name, tview_name)?;
+    let qualified = crate::utils::qualified_relname_from_oid(table)?;
+    let catalog = |e: pgrx::spi::Error| TViewError::CatalogError {
+        operation: format!("Read the keys of {qualified}"),
+        pg_error: e.to_string(),
+    };
+    let pk_unique = index_name(tview_name, "pk_unique");
+    // SAFETY: the datums borrow values that outlive each call.
+    let leftover = Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+                        JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+                        WHERE i.indrelid = $1 AND c.relname = $2)",
+        &[
+            unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
+            unsafe {
+                DatumWithOid::new(
+                    pk_unique.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                )
+            },
+        ],
+    )
+    .map_err(catalog)?;
+    if leftover == Some(true) {
+        let sql = format!(
+            "DROP INDEX {}.{}",
+            quote_identifier(schema_name),
+            quote_identifier(&pk_unique)
+        );
+        crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
+            query: sql,
+            error: e,
+        })?;
+    }
+    let key = Spi::get_one_with_args::<Vec<String>>(
+        "SELECT pg_catalog.array_agg(a.attname::text ORDER BY a.attnum) \
+         FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
+         WHERE i.indrelid = $1 AND i.indisprimary",
+        // SAFETY: a plain OID datum.
+        &[unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
+    )
+    .map_err(catalog)?
+    .unwrap_or_default();
+    match key.as_slice() {
+        [column] if column == identity => Ok(()),
+        [] => {
+            let sql = format!(
+                "ALTER TABLE {qualified} ADD PRIMARY KEY ({})",
+                quote_identifier(identity)
+            );
+            crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
+                query: sql,
+                error: e,
+            })
+        }
+        _ => Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "{qualified} is keyed on ({}), but its rows are named by {identity}: \
+                 pg_tviews_create_or_replace() with the same query rebuilds it",
+                key.join(", ")
+            ),
+        }),
+    }
 }
 
 /// The tables of `lineage` no cascade reaches, as the policy reports them.
@@ -787,6 +864,7 @@ fn fanout_patch(
     entity_name: &str,
     schema: &TViewSchema,
     path: &cascade_path::CascadePath,
+    lineage: &crate::lineage::Lineage,
 ) -> Option<cascade_path::FanoutPatch> {
     let [hop] = path.hops.as_slice() else {
         return None;
@@ -795,7 +873,7 @@ fn fanout_patch(
     if hop.table_name != own_table
         || hop.carry_col != format!("pk_{entity_name}")
         || path.source_columns.is_empty()
-        || crate::schema::parser::find_outer_set_operation(&select_sql.to_lowercase(), 0).is_some()
+        || lineage.set_operation
     {
         return None;
     }
@@ -1470,16 +1548,13 @@ fn register_metadata(
     group_keys: Option<&super::aggregate::GroupKeys>,
     uncascaded: &Uncascaded,
     key_mappings: &serde_json::Value,
-    identity: &crate::lineage::Identity,
+    lineage: &crate::lineage::Lineage,
     replace: bool,
 ) -> TViewResult<()> {
-    // Detect whether the definition is a set operation (UNION, INTERSECT, EXCEPT):
-    // its rows are recomputed, never patched. CTE bodies are inside (...) so their
-    // set operations are at depth > 0 and not matched.
-    let is_union = {
-        let sql_lower = definition_sql.to_lowercase();
-        crate::schema::parser::find_outer_set_operation(&sql_lower, 0).is_some()
-    };
+    let identity = &lineage.identity;
+    // A set operation (UNION, INTERSECT, EXCEPT): its rows are recomputed, never
+    // patched.
+    let is_union = lineage.set_operation;
 
     // Analyze dependencies to populate type/path/match_key info
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);

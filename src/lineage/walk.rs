@@ -264,6 +264,7 @@ impl Walker<'_> {
                 }
                 return Ok(());
             }
+            self.graph.set_operation = true;
             // LIMIT/OFFSET over the whole set operation applies to every branch.
             let whole = top_opaque_reason(query);
             // UNION: each leaf is a branch with its own root. The leaves sit in

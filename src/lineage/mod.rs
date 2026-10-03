@@ -319,6 +319,9 @@ pub struct Graph {
     pub unread_tables: std::collections::BTreeSet<u32>,
     /// The column that names the TVIEW's rows (`None` before the walk sets it).
     pub identity: Option<Result<WalkedIdentity, IdentityError>>,
+    /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
+    /// EXCEPT).
+    pub set_operation: bool,
 }
 
 /// The identity the walk found: the output column, and the base column it stands
@@ -765,6 +768,9 @@ pub struct Lineage {
     /// Tables the view reads only where its output cannot depend on them.
     pub unread: Vec<u32>,
     pub identity: Identity,
+    /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
+    /// EXCEPT): its rows are recomputed, never patched.
+    pub set_operation: bool,
 }
 
 /// The column that names a TVIEW's rows (ADR 0169).
@@ -1044,6 +1050,7 @@ pub fn analyze(
         tables,
         unread,
         identity,
+        set_operation: graph.set_operation,
     })
 }
 
@@ -1378,6 +1385,7 @@ mod tests {
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
+            set_operation: false,
         }
     }
 
@@ -1503,6 +1511,7 @@ mod tests {
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
+            set_operation: false,
         };
         assert_eq!(
             g.classify(0, NONE),

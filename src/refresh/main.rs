@@ -578,7 +578,7 @@ mod tests {
             .unwrap();
         refresh_row(user_oid, &KeyValue::Int(1)).unwrap();
 
-        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        // Explicitly refresh tv_post (propagation is handled by the queue, not the refresh)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
@@ -724,7 +724,7 @@ mod tests {
             .unwrap();
         refresh_row(comment_oid, &KeyValue::Int(1)).unwrap();
 
-        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        // Explicitly refresh tv_post (propagation is handled by the queue, not the refresh)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
@@ -1180,10 +1180,9 @@ mod tests {
         assert_eq!(updated.0["name"], "Alice Legacy");
     }
 
-    /// Test DISTINCT ON TVIEW refresh with dedup key.
+    /// Test DISTINCT ON TVIEW refresh by its DISTINCT ON key.
     ///
-    /// Verifies that `refresh_key()` correctly generates and reuses
-    /// DML strings (column list and DO UPDATE clause) across multiple calls.
+    /// Verifies that `refresh_key()` recomputes a DISTINCT ON group's winner.
     #[pg_test]
     fn test_refresh_distinct_on_basic() {
         // Create base tables
@@ -1219,7 +1218,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by user, keep first post)
+        // Create DISTINCT ON TVIEW (one row per user, keep first post)
         Spi::run(
             "
             SELECT pg_tviews_create('post_by_user', $$
@@ -1270,10 +1269,9 @@ mod tests {
         );
     }
 
-    /// Test multiple dedup key refreshes for DISTINCT ON TVIEW.
+    /// Test several refreshes of a DISTINCT ON TVIEW.
     ///
-    /// Verifies that multiple `refresh_key()` calls reuse the cached
-    /// DML strings without rebuilding them.
+    /// Verifies that successive `refresh_key()` calls follow the group's winner.
     #[pg_test]
     fn test_refresh_distinct_on_multiple_keys() {
         // Create base tables
@@ -1311,7 +1309,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by category)
+        // Create DISTINCT ON TVIEW (one row per category)
         Spi::run(
             "
             SELECT pg_tviews_create('item_by_cat', $$
@@ -1344,20 +1342,19 @@ mod tests {
         .unwrap();
         assert_eq!(cat1_title, "Item 1A", "Category 1 should show Item 1A");
 
-        // Now delete Item 1A (the current winner) and refresh dedup key
+        // Now delete Item 1A (the current winner) and refresh its group
         // This simulates the real cascade scenario where one item changes
         // and we need to refresh the DISTINCT ON group
         Spi::run("DELETE FROM tb_item WHERE pk_item = 1").unwrap();
 
-        // Simulate calling refresh_by_dedup_key by directly calling it
+        // Refresh the group directly
         // (The actual invocation would be through queue mechanism)
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_item_by_cat'::regclass::oid")
             .unwrap()
             .unwrap();
 
-        // This should reuse cached DML strings
         let result = refresh_row(view_oid, &KeyValue::Int(1));
-        assert!(result.is_ok(), "First dedup key refresh should succeed");
+        assert!(result.is_ok(), "First refresh should succeed");
 
         // Verify winner changed to Item 1B
         let cat1_new_title: String = Spi::get_one(
@@ -1372,14 +1369,11 @@ mod tests {
             "Category 1 should now show Item 1B"
         );
 
-        // Delete Item 1B and refresh again - this tests cache reuse
+        // Delete Item 1B and refresh again
         Spi::run("DELETE FROM tb_item WHERE pk_item = 2").unwrap();
 
         let result2 = refresh_row(view_oid, &KeyValue::Int(1));
-        assert!(
-            result2.is_ok(),
-            "Second dedup key refresh should succeed and reuse cache"
-        );
+        assert!(result2.is_ok(), "Second refresh should succeed");
 
         // Verify winner changed to Item 1C
         let cat1_final_title: String = Spi::get_one(
@@ -1598,10 +1592,7 @@ mod tests {
         );
     }
 
-    /// Test DML cache invalidation when column metadata changes.
-    ///
-    /// Verifies that the DML cache is properly cleared when a TVIEW schema
-    /// changes (e.g., after view redefinition).
+    /// Test refreshing a DISTINCT ON TVIEW keyed on a text column.
     #[pg_test]
     fn test_refresh_distinct_on_text_keys() {
         // Create base tables
@@ -1621,7 +1612,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by title as simple example)
+        // Create DISTINCT ON TVIEW (one row per title, a text key)
         Spi::run(
             "
             SELECT pg_tviews_create('post_by_title', $$
@@ -1635,20 +1626,13 @@ mod tests {
         )
         .unwrap();
 
-        // Get initial cache state
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_post_by_title'::regclass::oid")
             .unwrap()
             .unwrap();
 
-        // First refresh to populate cache
         let result1 = refresh_row(view_oid, &KeyValue::Text("Post 1".into()));
         assert!(result1.is_ok(), "Initial refresh should succeed");
 
-        // Invalidate cache (simulating schema change through external mechanism)
-        // For now, we verify it still works - the cache invalidation is tested
-        // through the invalidate_all_caches() function
-
-        // Second refresh should still work (either from cache or rebuilt)
         let result2 = refresh_row(view_oid, &KeyValue::Text("Post 2".into()));
         assert!(result2.is_ok(), "Second refresh should succeed");
     }
