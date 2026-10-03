@@ -4,7 +4,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_distinct_on_multirow.sql
 --
--- known-failing: #171
 -- expect-output: #171 multi-row writes to a DISTINCT ON TVIEW: PASS
 
 \set ON_ERROR_STOP on

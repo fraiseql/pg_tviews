@@ -6,7 +6,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_169_distinct_on_qualified_key.sql
 --
--- known-failing: #169
 -- expect-output: #169 DISTINCT ON a qualified key: PASS
 
 \set ON_ERROR_STOP on

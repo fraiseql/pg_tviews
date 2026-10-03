@@ -236,7 +236,7 @@ impl EntityDepGraph {
     ///
     /// Keys are grouped by entity, then sorted by `topo_order`.
     /// Within each entity group, insertion order is preserved.
-    /// Both PK and dedup keys are retained as-is.
+    /// Integer and text keys are retained as-is.
     pub fn sort_keys(&self, keys: Vec<super::key::RefreshKey>) -> Vec<super::key::RefreshKey> {
         // Group by entity, preserving full RefreshKey values
         let mut groups: HashMap<String, Vec<super::key::RefreshKey>> = HashMap::new();
@@ -348,8 +348,15 @@ fn topological_sort(
 mod tests {
     use super::*;
 
+    fn text_key(entity: &str, value: &str) -> super::super::key::RefreshKey {
+        super::super::key::RefreshKey::new(
+            entity,
+            super::super::key::KeyValue::Text(value.to_string()),
+        )
+    }
+
     #[test]
-    fn test_sort_keys_preserves_dedup_keys() {
+    fn test_sort_keys_preserves_text_keys() {
         // Build a simple graph: company -> user -> post
         let graph = EntityDepGraph {
             parents: HashMap::new(),
@@ -361,10 +368,10 @@ mod tests {
 
         let keys = vec![
             super::super::key::RefreshKey::pk("post", 10),
-            super::super::key::RefreshKey::dedup("user", "some-uuid"),
+            text_key("user", "some-uuid"),
             super::super::key::RefreshKey::pk("company", 1),
             super::super::key::RefreshKey::pk("user", 42),
-            super::super::key::RefreshKey::dedup("post", "dedup-val"),
+            text_key("post", "text-val"),
         ];
 
         let sorted = graph.sort_keys(keys);
@@ -372,13 +379,9 @@ mod tests {
         // All 5 keys must be present
         assert_eq!(sorted.len(), 5);
 
-        // Dedup keys must survive with their dedup_key field intact
-        let dedup_keys: Vec<_> = sorted.iter().filter(|k| k.is_dedup()).collect();
-        assert_eq!(dedup_keys.len(), 2);
-
-        // Verify specific dedup keys are present with correct fields
-        assert!(sorted.contains(&super::super::key::RefreshKey::dedup("user", "some-uuid")));
-        assert!(sorted.contains(&super::super::key::RefreshKey::dedup("post", "dedup-val")));
+        // Text keys must survive with their value intact
+        assert!(sorted.contains(&text_key("user", "some-uuid")));
+        assert!(sorted.contains(&text_key("post", "text-val")));
 
         // Verify topological order: company entities before user, user before post
         let first_company = sorted.iter().position(|k| k.entity == "company").unwrap();

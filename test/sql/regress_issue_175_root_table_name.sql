@@ -6,7 +6,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_175_root_table_name.sql
 --
--- known-failing: #175
 -- expect-output: #175 root table not named tb_<entity>: PASS
 
 \set ON_ERROR_STOP on

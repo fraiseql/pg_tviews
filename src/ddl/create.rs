@@ -337,25 +337,6 @@ fn create_tview_inner(
         });
     }
 
-    // Resolve DISTINCT ON keys before creating any objects, so an unresolvable
-    // dedup key rejects the create cleanly (issue #51). `distinct_on_keys` is the
-    // raw SOURCE column the trigger reads off the base tuple; `distinct_on_output_keys`
-    // is the projected OUTPUT column the view / tv expose and that refresh + the
-    // tview primary key must use. They differ when the DISTINCT ON key is aliased
-    // (e.g. `c.id_contract AS pk_contract`).
-    let distinct_on_keys =
-        crate::schema::parser::extract_distinct_on_keys(&final_select_sql).unwrap_or_default();
-    let distinct_on_output_keys = if distinct_on_keys.is_empty() {
-        Vec::new()
-    } else {
-        crate::sql_parser::extract_distinct_on_output_keys(&final_select_sql).map_err(|reason| {
-            TViewError::InvalidInput {
-                parameter: "DISTINCT ON key".to_string(),
-                reason,
-            }
-        })?
-    };
-
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
@@ -371,7 +352,6 @@ fn create_tview_inner(
         lineage,
         key_mappings,
         cascade_paths,
-        unique_pk_index,
     } = derive(
         entity_name,
         &final_select_sql,
@@ -379,12 +359,6 @@ fn create_tview_inner(
         group_keys,
         &dep_graph.base_tables,
         &schema_name,
-        &DistinctOn {
-            output_keys: &distinct_on_output_keys,
-            source_keys: &distinct_on_keys,
-            policy,
-            at_create: true,
-        },
     )?;
 
     // Step 5: Create materialized table tv_<entity>, keyed on the identity.
@@ -395,9 +369,6 @@ fn create_tview_inner(
         &lineage.identity.name,
         storage,
     )?;
-    if unique_pk_index {
-        ensure_unique_pk_index(&schema_name, &tv_table_name, entity_name)?;
-    }
 
     // Step 6: Populate initial data
     let rows = populate_initial_data(&tv_table_name, &view_name, &schema_name)?;
@@ -412,8 +383,11 @@ fn create_tview_inner(
     // their joins produce cascade paths. This runs before metadata registration and
     // trigger installation, and any objects created above roll back with the ERROR,
     // so a rejected create leaves the incumbent tview untouched.
+    let root_table = format!("tb_{entity_name}");
     if group_keys.is_none()
-        && cascade_paths.is_empty()
+        && !cascade_paths
+            .iter()
+            .any(|p| p.source_table != root_table && (!p.root || lineage.is_union()))
         && !lineage.has_mapped()
         && !entity_base_table_exists(entity_name, &schema_name)?
     {
@@ -454,8 +428,6 @@ fn create_tview_inner(
         &final_schema,
         &cascade_paths,
         &schema_name,
-        &distinct_on_keys,
-        &distinct_on_output_keys,
         group_keys,
         &uncascaded,
         &key_mappings,
@@ -499,18 +471,6 @@ pub fn reregister_metadata(
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
     let schema = infer_schema(definition)?;
-    let distinct_on_keys =
-        crate::schema::parser::extract_distinct_on_keys(definition).unwrap_or_default();
-    let distinct_on_output_keys = if distinct_on_keys.is_empty() {
-        Vec::new()
-    } else {
-        crate::sql_parser::extract_distinct_on_output_keys(definition).map_err(|reason| {
-            TViewError::InvalidInput {
-                parameter: "DISTINCT ON key".to_string(),
-                reason,
-            }
-        })?
-    };
     let view_name = format!("v_{entity_name}");
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
     let group_keys = stored_group_keys(entity_name)?;
@@ -526,7 +486,6 @@ pub fn reregister_metadata(
         lineage,
         key_mappings,
         cascade_paths,
-        unique_pk_index,
     } = derive(
         entity_name,
         definition,
@@ -534,16 +493,7 @@ pub fn reregister_metadata(
         group_keys.as_ref(),
         &dep_graph.base_tables,
         schema_name,
-        &DistinctOn {
-            output_keys: &distinct_on_output_keys,
-            source_keys: &distinct_on_keys,
-            policy,
-            at_create: false,
-        },
     )?;
-    if unique_pk_index {
-        ensure_unique_pk_index(schema_name, &format!("tv_{entity_name}"), entity_name)?;
-    }
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         policy,
@@ -564,8 +514,6 @@ pub fn reregister_metadata(
         &schema,
         &cascade_paths,
         schema_name,
-        &distinct_on_keys,
-        &distinct_on_output_keys,
         group_keys.as_ref(),
         &uncascaded,
         &key_mappings,
@@ -661,159 +609,10 @@ pub(crate) fn stored_group_keys(
 /// What registration derives from a definition: how a write to each base table
 /// maps to keys (stored as `key_mappings`), and the cascade paths the row trigger
 /// follows for local tables.
-/// What a DISTINCT ON TVIEW's registration needs to decide about the tables it
-/// reads through joins (#164).
-struct DistinctOn<'a> {
-    /// The projected DISTINCT ON keys; empty for a TVIEW without DISTINCT ON.
-    output_keys: &'a [String],
-    /// The DISTINCT ON expressions as written, qualifiers stripped.
-    source_keys: &'a [String],
-    policy: UncascadedPolicy,
-    /// A create refuses what a re-registration only reclassifies.
-    at_create: bool,
-}
-
-impl DistinctOn<'_> {
-    /// A DISTINCT ON TVIEW is keyed on its dedup key, while a table read through a
-    /// join maps writes to `pk_<entity>` values (issue #51): the two agree when the
-    /// dedup key is `pk_<entity>`, or a unique NOT NULL column of the root table
-    /// (one dedup key per `pk_<entity>`; the TVIEW then needs a unique index on
-    /// `pk_<entity>`, and this returns true). Otherwise those tables become
-    /// `all_keys` (refreshed in full under `full_refresh`), and a create under
-    /// another policy is refused with them named.
-    fn apply(&self, entity: &str, lineage: &mut crate::lineage::Lineage) -> TViewResult<bool> {
-        use crate::lineage::TableKind;
-        let key = format!("pk_{entity}");
-        if self.output_keys.is_empty() || self.output_keys == [key.clone()] {
-            return Ok(false);
-        }
-        if unique_root_column(lineage, self.source_keys)? {
-            return Ok(true);
-        }
-        let joined: Vec<String> = lineage
-            .tables
-            .iter()
-            .filter(|t| !t.root && matches!(t.kind, TableKind::Mapped | TableKind::Local(_)))
-            .map(|t| t.qualified.clone())
-            .collect();
-        if joined.is_empty() {
-            return Ok(false);
-        }
-        if self.at_create && self.policy != UncascadedPolicy::FullRefresh {
-            return Err(TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
-                reason: format!(
-                    "tv_{entity} is keyed on its DISTINCT ON key ({}), not {key}, so writes to the \
-                     tables it reads through joins cannot be mapped to its rows: {} ({} table{}). \
-                     Make {key} the DISTINCT ON key, or create it with \
-                     pg_tviews.uncascaded_policy = 'full_refresh' to refresh it in full on writes \
-                     to them.",
-                    self.output_keys.join(", "),
-                    joined.join(", "),
-                    joined.len(),
-                    if joined.len() == 1 { "" } else { "s" },
-                ),
-            });
-        }
-        let reason = format!(
-            "read through a join of a DISTINCT ON TVIEW keyed on {}, not {key}",
-            self.output_keys.join(", ")
-        );
-        for table in &mut lineage.tables {
-            if !table.root && matches!(table.kind, TableKind::Mapped | TableKind::Local(_)) {
-                table.kind = TableKind::AllKeys(reason.clone());
-                table.sql = None;
-                table.paths.clear();
-                table.hop = None;
-            }
-        }
-        Ok(false)
-    }
-}
-
-/// Whether `keys` is one column of the TVIEW's root table that a one-column
-/// unique index covers and that is NOT NULL, and that no other table the TVIEW
-/// reads has (the DISTINCT ON keys come with their qualifiers stripped).
-fn unique_root_column(lineage: &crate::lineage::Lineage, keys: &[String]) -> TViewResult<bool> {
-    let roots: Vec<u32> = lineage
-        .tables
-        .iter()
-        .filter(|t| t.root)
-        .map(|t| t.relid)
-        .collect();
-    let ([column], [root]) = (keys, roots.as_slice()) else {
-        return Ok(false);
-    };
-    let others: Vec<u32> = lineage
-        .tables
-        .iter()
-        .filter(|t| t.relid != *root)
-        .map(|t| t.relid)
-        .collect();
-    Spi::get_one_with_args::<bool>(
-        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
-                        JOIN pg_catalog.pg_attribute a \
-                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] \
-                        WHERE i.indrelid = $1 AND i.indisunique AND i.indnatts = 1 \
-                          AND i.indpred IS NULL AND i.indexprs IS NULL \
-                          AND a.attname = $2 AND a.attnotnull) \
-            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
-                            WHERE a.attrelid = ANY($3) AND a.attname = $2 \
-                              AND a.attnum > 0 AND NOT a.attisdropped)",
-        // SAFETY: the datums copy the OIDs and borrow `column`, which outlive the call.
-        &[
-            unsafe {
-                DatumWithOid::new(
-                    pg_sys::Oid::from(*root),
-                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                )
-            },
-            unsafe {
-                DatumWithOid::new(
-                    column.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
-            unsafe {
-                DatumWithOid::new(
-                    others
-                        .into_iter()
-                        .map(pg_sys::Oid::from)
-                        .collect::<Vec<_>>(),
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                )
-            },
-        ],
-    )
-    .map(|found| found == Some(true))
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check the DISTINCT ON key {column}"),
-        pg_error: e.to_string(),
-    })
-}
-
-/// A unique index on `pk_<entity>` of a DISTINCT ON TVIEW keyed on another
-/// unique column: refreshing by `pk_<entity>` upserts on it.
-fn ensure_unique_pk_index(schema_name: &str, tview_name: &str, entity: &str) -> TViewResult<()> {
-    let sql = format!(
-        "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}.{} ({})",
-        quote_identifier(&index_name(tview_name, "pk_unique")),
-        quote_identifier(schema_name),
-        quote_identifier(tview_name),
-        quote_identifier(&format!("pk_{entity}")),
-    );
-    crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
-        query: sql,
-        error: e,
-    })
-}
-
 struct Derivation {
     lineage: crate::lineage::Lineage,
     key_mappings: serde_json::Value,
     cascade_paths: Vec<cascade_path::CascadePath>,
-    /// The TVIEW needs a unique index on `pk_<entity>` (#164).
-    unique_pk_index: bool,
 }
 
 /// Analyze `v_<entity>` (ADR 0157) and derive the cascade paths of its local
@@ -825,7 +624,6 @@ fn derive(
     group_keys: Option<&super::aggregate::GroupKeys>,
     base_tables: &[pg_sys::Oid],
     schema_name: &str,
-    distinct_on: &DistinctOn<'_>,
 ) -> TViewResult<Derivation> {
     let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
     let mut embeds: Vec<String> = aggregate_embeds(definition, entity_name)?
@@ -837,8 +635,7 @@ fn derive(
             .iter()
             .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
     );
-    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
-    let unique_pk_index = distinct_on.apply(entity_name, &mut lineage)?;
+    let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
@@ -849,7 +646,6 @@ fn derive(
         lineage,
         key_mappings,
         cascade_paths,
-        unique_pk_index,
     })
 }
 
@@ -864,6 +660,11 @@ fn add_fanout_patches(
     lineage: &crate::lineage::Lineage,
 ) {
     let root = format!("tb_{entity_name}");
+    // A DISTINCT ON TVIEW's row shows its group's winner: writing one source row
+    // into it could write a loser's values.
+    if lineage.identity.kind == crate::lineage::IdentityKind::DistinctOn {
+        return;
+    }
     let Some(entries) = key_mappings.as_array_mut() else {
         return;
     };
@@ -886,6 +687,8 @@ fn add_fanout_patches(
             unresolvable: false,
             source_columns: table.columns.iter().map(|(name, _)| name.clone()).collect(),
             fanout: None,
+            root: false,
+            initial_attnum: None,
         };
         let Some(fanout) = fanout_patch(definition, entity_name, schema, &path) else {
             continue;
@@ -900,25 +703,21 @@ fn add_fanout_patches(
     }
 }
 
-/// One cascade path per local table other than `tb_<entity>` (whose own row
-/// trigger finds the key): the key is the table's `column`, read off the changed
-/// row; an UPDATE that touches none of the columns the TVIEW reads is skipped.
-/// The table holding the key gets one only as a UNION branch: a single-root TVIEW
-/// over another entity's table is refused (issue #49).
+/// One cascade path per local table: the key is the table's `column`, read off the
+/// changed row; an UPDATE that touches none of the columns the TVIEW reads is
+/// skipped. The table holding the key (of each UNION branch) gets one too, marked
+/// `root`: its own rows are the TVIEW's rows (ADR 0169).
 fn local_cascade_paths(
     entity_name: &str,
     definition: &str,
     schema: &TViewSchema,
     lineage: &crate::lineage::Lineage,
 ) -> Vec<cascade_path::CascadePath> {
-    let root = format!("tb_{entity_name}");
     lineage
         .tables
         .iter()
         .filter_map(|t| match &t.kind {
-            crate::lineage::TableKind::Local(column)
-                if t.relname != root && (!t.root || lineage.is_union()) =>
-            {
+            crate::lineage::TableKind::Local(column) => {
                 let mut path = cascade_path::CascadePath {
                     source_oid: pg_sys::Oid::from(t.relid),
                     source_table: t.relname.clone(),
@@ -928,8 +727,12 @@ fn local_cascade_paths(
                     unresolvable: false,
                     source_columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
                     fanout: None,
+                    root: t.root,
+                    initial_attnum: t.columns.iter().find(|(n, _)| n == column).map(|(_, a)| *a),
                 };
-                path.fanout = fanout_patch(definition, entity_name, schema, &path);
+                if !t.root && lineage.identity.kind == crate::lineage::IdentityKind::Pk {
+                    path.fanout = fanout_patch(definition, entity_name, schema, &path);
+                }
                 Some(path)
             }
             _ => None,
@@ -1664,8 +1467,6 @@ fn register_metadata(
     schema: &TViewSchema,
     cascade_paths: &[cascade_path::CascadePath],
     schema_name: &str,
-    distinct_on_keys: &[String],
-    distinct_on_output_keys: &[String],
     group_keys: Option<&super::aggregate::GroupKeys>,
     uncascaded: &Uncascaded,
     key_mappings: &serde_json::Value,
@@ -1795,18 +1596,6 @@ fn register_metadata(
         pg_error: "Table OID not found".to_string(),
     })?;
 
-    // Serialize distinct_on_keys (source) and distinct_on_output_keys as array literals
-    let distinct_on_str = distinct_on_keys
-        .iter()
-        .map(|s| pg_array_elem(s))
-        .collect::<Vec<_>>()
-        .join(",");
-    let distinct_on_output_str = distinct_on_output_keys
-        .iter()
-        .map(|s| pg_array_elem(s))
-        .collect::<Vec<_>>()
-        .join(",");
-
     // A re-registration (after a column rename, or by pg_tviews_reregister)
     // replaces every derived column and keeps created_at, graphql_typename and
     // needs_reregister: only pg_tviews_reregister, which also re-installs the
@@ -1819,8 +1608,7 @@ fn register_metadata(
             dependency_types = EXCLUDED.dependency_types, \
             dependency_paths = EXCLUDED.dependency_paths, \
             array_match_keys = EXCLUDED.array_match_keys, \
-            distinct_on_keys = EXCLUDED.distinct_on_keys, \
-            distinct_on_output_keys = EXCLUDED.distinct_on_output_keys, \
+            distinct_on_keys = '{}', distinct_on_output_keys = '{}', \
             direct_map_columns = EXCLUDED.direct_map_columns, \
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
             group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
@@ -1844,8 +1632,6 @@ fn register_metadata(
             dependency_types,
             dependency_paths,
             array_match_keys,
-            distinct_on_keys,
-            distinct_on_output_keys,
             direct_map_columns,
             direct_map_keys,
             is_union,
@@ -1855,7 +1641,7 @@ fn register_metadata(
             uncascaded_policy,
             key_mappings,
             identity
-        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
+        ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
                   pg_catalog.jsonb_build_object('kind', $8::pg_catalog.text, 'columns',
                       pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
                           'name', $9::pg_catalog.text,
@@ -1869,8 +1655,6 @@ fn register_metadata(
         dep_types,
         dep_paths,
         array_keys,
-        distinct_on_str,
-        distinct_on_output_str,
         direct_map_columns,
         direct_map_keys,
         is_union

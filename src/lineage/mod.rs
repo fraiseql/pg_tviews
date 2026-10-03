@@ -326,6 +326,8 @@ pub struct Graph {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkedIdentity {
     pub name: String,
+    /// Index of the output column (0-based).
+    pub position: usize,
     pub type_oid: u32,
     pub kind: IdentityKind,
     pub columns: Vec<Column>,

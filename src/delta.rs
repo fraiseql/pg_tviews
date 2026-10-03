@@ -11,11 +11,12 @@
 //! statements naming a partition. `TRUNCATE` refreshes the whole TVIEW, once per
 //! statement however many truncated partitions fire.
 
-use crate::catalog::TviewMeta;
+use crate::catalog::{KeyType, TviewMeta};
 use crate::config::UncascadedPolicy;
 use crate::dependency::triggers::{NEW_TABLE, OLD_TABLE};
 use crate::error::{TViewError, TViewResult};
 use crate::lineage::{DELTA, KeyMapping};
+use crate::queue::key::KeyValue;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
@@ -207,6 +208,7 @@ fn map_statement(
             let changed = run_with_transition_tables(
                 trigger,
                 entity,
+                &KeyType::Int,
                 &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
             )?;
             if !changed.is_empty() {
@@ -226,12 +228,15 @@ fn map_statement(
                 return refresh_all(entity, "a relation its mapping reads is gone");
             };
             let delta = delta_sql(table_oid, event, &mapping.attnums)?;
+            let key_type = &meta.identity.key_type;
             let keys = run_with_transition_tables(
                 trigger,
                 entity,
+                key_type,
                 &format!(
                     "WITH {DELTA} AS ({delta}) \
-                     SELECT DISTINCT k::pg_catalog.int8 FROM ({keys_sql}) s(k) WHERE k IS NOT NULL"
+                     SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
+                    key_sql_type(key_type)
                 ),
             )?;
             if !keys.is_empty() {
@@ -365,17 +370,17 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 .map(|i| format!("SELECT (${i}).*"))
                 .collect::<Vec<_>>()
                 .join(" UNION ALL ");
+            let key_type = &meta.identity.key_type;
             let sql = format!(
                 "WITH {DELTA} AS ({delta}) \
-                 SELECT DISTINCT k::pg_catalog.int8 FROM ({keys_sql}) s(k) WHERE k IS NOT NULL"
+                 SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
+                key_sql_type(key_type)
             );
             let _owner = crate::owner::AsOwner::of_entity(entity)?;
             let keys = Spi::connect(|client| {
                 let mut keys = Vec::new();
                 for row in client.select(&sql, None, &images)? {
-                    if let Some(k) = row.get::<i64>(1)? {
-                        keys.push(k);
-                    }
+                    keys.extend(key_of(&row, key_type)?);
                 }
                 Ok::<_, spi::Error>(keys)
             })
@@ -540,19 +545,35 @@ fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, V
     Ok(Some((same_row, columns)))
 }
 
+/// The type a mapping query casts its keys to: `int8` for an integer identity,
+/// its canonical text otherwise.
+const fn key_sql_type(key_type: &KeyType) -> &'static str {
+    match key_type {
+        KeyType::Int => "pg_catalog.int8",
+        KeyType::Text(_) => "pg_catalog.text",
+    }
+}
+
+/// The key in the first column of `row`, cast by [`key_sql_type`].
+fn key_of(row: &spi::SpiHeapTupleData<'_>, key_type: &KeyType) -> spi::Result<Option<KeyValue>> {
+    Ok(match key_type {
+        KeyType::Int => row.get::<i64>(1)?.map(KeyValue::Int),
+        KeyType::Text(_) => row.get::<String>(1)?.map(KeyValue::Text),
+    })
+}
+
 /// Run `sql`, which reads the statement's transition tables, as `entity`'s owner
-/// and return the `int8` of each row's first column.
+/// and return the key in each row's first column.
 fn run_with_transition_tables(
     trigger: &PgTrigger<'_>,
     entity: &str,
+    key_type: &KeyType,
     sql: &str,
-) -> TViewResult<Vec<i64>> {
+) -> TViewResult<Vec<KeyValue>> {
     with_transition_tables(trigger, entity, |client| {
         let mut keys = Vec::new();
         for row in client.select(sql, None, &[])? {
-            if let Some(k) = row.get::<i64>(1)? {
-                keys.push(k);
-            }
+            keys.extend(key_of(&row, key_type)?);
         }
         Ok(keys)
     })

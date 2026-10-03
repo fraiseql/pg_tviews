@@ -249,8 +249,13 @@ impl Walker<'_> {
                 };
                 self.identity_level = true;
                 let outputs = self.level(query, &flags, Link::Top)?;
+                // The key root is the identity's column (ADR 0169).
+                let root_position = match &self.graph.identity {
+                    Some(Ok(identity)) => Some(identity.position),
+                    _ => key_position,
+                };
                 if opaque.is_none()
-                    && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
+                    && let Some(Resolved::Col(key)) = root_position.and_then(|p| outputs.get(p))
                 {
                     self.graph.roots.push(Root {
                         branch: flags.branch,
@@ -303,8 +308,10 @@ impl Walker<'_> {
                         .get(p)
                         .copied()
                 })
-                .map(|tle| WalkedIdentity {
+                .zip(key_position)
+                .map(|(tle, position)| WalkedIdentity {
                     name: self.ctx.key_column.to_string(),
+                    position,
                     type_oid: pg_sys::exprType((*tle).expr.cast()).to_u32(),
                     kind: IdentityKind::Pk,
                     columns: self.graph.roots.iter().map(|r| r.key.clone()).collect(),
@@ -514,6 +521,7 @@ impl Walker<'_> {
             let chosen = &outputs[selected.position];
             Ok(WalkedIdentity {
                 name: chosen.name.clone(),
+                position: selected.position,
                 type_oid: chosen.type_oid,
                 kind: selected.kind,
                 columns: chosen.column.iter().cloned().collect(),

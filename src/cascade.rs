@@ -40,8 +40,17 @@ fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
             continue;
         }
 
+        // The rows are found by pk_<entity>; a TVIEW keyed on another column
+        // (ADR 0169) is refreshed whole.
+        if !tview_meta.identity.is_pk(&tview_meta.entity_name) {
+            queue::enqueue_refresh_all(&tview_meta.entity_name);
+            continue;
+        }
         for affected_pk in affected_rows {
-            queue::enqueue_refresh(&tview_meta.entity_name, affected_pk);
+            queue::enqueue_refresh(
+                &tview_meta.entity_name,
+                queue::key::KeyValue::Int(affected_pk),
+            );
         }
     }
 

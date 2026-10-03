@@ -6,15 +6,19 @@ use crate::cascade_path::CascadePath;
 
 /// Cached information for a table managed by `pg_tviews`.
 ///
-/// Beyond the entity name and DISTINCT ON key, this carries everything the issue
-/// #56 direct-patch eligibility check needs, so the row trigger can decide the fast
+/// Beyond the entity name, this carries everything the issue #56 direct-patch
+/// eligibility check needs, so the row trigger can decide the fast
 /// path from a single cached lookup with **no SPI in the hot path** (populated once
 /// per session on cache miss, invalidated on DDL).
 #[derive(Clone, Debug)]
 pub struct CachedEntityInfo {
     pub name: String,
-    /// First DISTINCT ON key if this is a DISTINCT ON TVIEW, None otherwise
-    pub distinct_on_key: Option<String>,
+    /// The TVIEW is keyed on a DISTINCT ON key: a row's own values may not be its
+    /// group's, so the fast path declines.
+    pub distinct_on: bool,
+    /// Registered before the root table had a cascade path of its own (ADR
+    /// 0169): how the trigger finds its key until it is re-registered.
+    pub legacy_root: Option<LegacyRoot>,
 
     /// Direct-patch column→key map (issue #56): base column name → JSONB key it
     /// feeds in the entity's own `data`. Empty ⇒ the fast path never engages.
@@ -38,11 +42,21 @@ pub struct CachedEntityInfo {
     pub is_union: bool,
 }
 
+/// How the row trigger keys a TVIEW registered before its root table had a
+/// cascade path of its own (ADR 0169).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyRoot {
+    /// `pk_<entity>`, read by name off `tb_<entity>`.
+    Pk,
+    /// A DISTINCT ON TVIEW: refreshed in full.
+    DistinctOn,
+}
+
 /// Global cache for `EntityDepGraph` to avoid repeated `pg_tview_meta` queries
 static ENTITY_GRAPH_CACHE: LazyLock<Mutex<Option<super::graph::EntityDepGraph>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Global cache for table OID → entity info (name + `distinct_on_key`)
+/// Global cache for table OID → entity info
 /// Stores Option<CachedEntityInfo> to cache negative lookups (None results)
 static TABLE_ENTITY_CACHE: LazyLock<Mutex<HashMap<pg_sys::Oid, Option<CachedEntityInfo>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -99,7 +113,7 @@ pub mod table_cache {
     #[allow(clippy::wildcard_imports)] // Reason: module-internal prelude import
     use super::*;
 
-    /// Get cached entity info (name + `distinct_on_key`) for table OID
+    /// Get cached entity info for table OID
     /// Loads from database on first miss per session, caches negative results
     pub fn entity_info_cached(
         table_oid: pg_sys::Oid,
@@ -157,7 +171,8 @@ pub mod table_cache {
         let Some(meta) = crate::catalog::TviewMeta::load_by_entity(&name)? else {
             return Ok(Some(CachedEntityInfo {
                 name,
-                distinct_on_key: None,
+                distinct_on: false,
+                legacy_root: Some(LegacyRoot::Pk),
                 direct_map: HashMap::new(),
                 fk_columns: Vec::new(),
                 uuid_fk_columns: Vec::new(),
@@ -211,7 +226,18 @@ pub mod table_cache {
 
         Ok(Some(CachedEntityInfo {
             name,
-            distinct_on_key: meta.distinct_on_keys.first().cloned(),
+            distinct_on: meta.identity.kind == crate::lineage::IdentityKind::DistinctOn,
+            legacy_root: if meta
+                .cascade_paths
+                .iter()
+                .any(|p| p.root && p.source_oid == table_oid)
+            {
+                None
+            } else if meta.identity.legacy_distinct_on {
+                Some(LegacyRoot::DistinctOn)
+            } else {
+                Some(LegacyRoot::Pk)
+            },
             direct_map,
             fk_columns: meta.fk_columns,
             uuid_fk_columns: meta.uuid_fk_columns,
@@ -369,7 +395,6 @@ pub fn invalidate_all_caches() {
     crate::lifecycle::invalidate_jsonb_delta_cache();
     crate::utils::invalidate_oid_relname_cache();
     crate::utils::invalidate_view_columns_cache();
-    crate::utils::invalidate_dedup_dml_cache();
     crate::delta::clear_caches();
 }
 
@@ -403,7 +428,8 @@ mod tests {
                 pg_sys::Oid::from(123),
                 Some(CachedEntityInfo {
                     name: "test".to_string(),
-                    distinct_on_key: None,
+                    distinct_on: false,
+                    legacy_root: None,
                     direct_map: HashMap::new(),
                     fk_columns: Vec::new(),
                     uuid_fk_columns: Vec::new(),
@@ -439,7 +465,8 @@ mod tests {
 
         let info = CachedEntityInfo {
             name: "user".to_string(),
-            distinct_on_key: None,
+            distinct_on: false,
+            legacy_root: None,
             direct_map,
             fk_columns: vec!["fk_org".to_string()],
             uuid_fk_columns: vec![],

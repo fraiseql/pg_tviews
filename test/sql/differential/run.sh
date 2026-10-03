@@ -20,9 +20,8 @@ n="${1:-60}"
 seeds="${2:-1 2 3}"
 db="pg_tviews_differential_$$"
 # Shapes with an open defect (comma-separated tv_* names): their divergence is
-# reported, not failed. DISTINCT ON TVIEWs and their parents: #169, #171-#173;
-# tv_purchase: #175.
-xfail="${HARNESS_XFAIL-tv_order,tv_contract,tv_deal,tv_desk,tv_doc,tv_note,tv_lastline,tv_purchase}"
+# reported, not failed.
+xfail="${HARNESS_XFAIL-}"
 
 failed=0
 for seed in $seeds; do

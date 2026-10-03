@@ -91,11 +91,12 @@ SELECT harness_create('tv_order', 'id', $$
                             'customer', vc.data) AS data
   FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order
   LEFT JOIN v_customer vc ON vc.pk_customer = o.fk_customer ORDER BY o.id $$);
--- DISTINCT ON the root key, aliased as pk_<entity> (versioned rows)
+-- DISTINCT ON the root key, aliased as pk_<entity> (versioned rows). The writes can
+-- tie two versions: the ORDER BY ends with the pk so the winner is deterministic.
 SELECT harness_create('tv_contract', 'pk_contract', $$
   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
          jsonb_build_object('status', c.status, 'version', c.version_no) AS data
-  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract DESC $$);
 -- parents of a DISTINCT ON TVIEW, one and two levels up
 SELECT harness_create('tv_deal', 'pk_deal', $$
   SELECT d.pk_deal, d.id, d.fk_contract,
@@ -107,7 +108,7 @@ SELECT harness_create('tv_desk', 'pk_desk', $$
 -- DISTINCT ON a non-unique uuid: the winning row's pk_<entity> changes
 SELECT harness_create('tv_doc', 'id', $$
   SELECT DISTINCT ON (d.id) d.pk_doc, d.id, jsonb_build_object('body', d.body, 'rev', d.rev) AS data
-  FROM tb_doc d ORDER BY d.id, d.rev DESC $$);
+  FROM tb_doc d ORDER BY d.id, d.rev DESC, d.pk_doc DESC $$);
 SELECT harness_create('tv_note', 'pk_note', $$
   SELECT n.pk_note, n.id, n.fk_doc, jsonb_build_object('text', n.text, 'doc', vd.data) AS data
   FROM tb_note n LEFT JOIN v_doc vd ON vd.pk_doc = n.fk_doc $$);

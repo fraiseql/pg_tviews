@@ -9,16 +9,132 @@ pub mod main;
 pub mod bulk;
 pub mod direct;
 
-// Re-export main functions for backward compatibility
-pub use main::refresh_pk;
-// Re-export DISTINCT ON refresh
-pub use main::refresh_by_dedup_key;
-// Re-export bulk functions
 pub use bulk::refresh_bulk;
+pub use main::refresh_key;
 
+use crate::catalog::KeyType;
+use crate::queue::key::KeyValue;
 use crate::utils::quote_identifier;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+
+/// `param` (`$1`) cast to the identity's type, or to an array of it: an integer
+/// identity is bound as `int8`, any other as text cast to its type, so a filter on
+/// the identity column can use its index.
+pub(crate) fn key_cast(key_type: &KeyType, param: &str, array: bool) -> String {
+    let brackets = if array { "[]" } else { "" };
+    match key_type {
+        KeyType::Int => format!("{param}::pg_catalog.int8{brackets}"),
+        KeyType::Text(ty) => format!("{param}::pg_catalog.text{brackets}::{ty}{brackets}"),
+    }
+}
+
+/// The values of `keys` as the identity binds them; a text key of an integer
+/// identity that is not an integer is an error.
+fn key_values(key_type: &KeyType, keys: &[KeyValue]) -> spi::Result<KeyValues> {
+    Ok(match key_type {
+        KeyType::Int => KeyValues::Int(
+            keys.iter()
+                .map(|k| match k {
+                    KeyValue::Int(v) => Ok(*v),
+                    KeyValue::Text(t) => t.parse::<i64>().map_err(|_| {
+                        spi::Error::from(crate::TViewError::InvalidInput {
+                            parameter: "key".to_string(),
+                            reason: format!("{t} is not a value of an integer identity"),
+                        })
+                    }),
+                })
+                .collect::<spi::Result<_>>()?,
+        ),
+        KeyType::Text(_) => KeyValues::Text(keys.iter().map(ToString::to_string).collect()),
+    })
+}
+
+enum KeyValues {
+    Int(Vec<i64>),
+    Text(Vec<String>),
+}
+
+/// `keys` as one array parameter, for [`key_cast`]`(…, true)`.
+pub(crate) fn key_array(
+    key_type: &KeyType,
+    keys: &[KeyValue],
+) -> spi::Result<DatumWithOid<'static>> {
+    // SAFETY: the datums own their arrays.
+    Ok(match key_values(key_type, keys)? {
+        KeyValues::Int(v) => unsafe { DatumWithOid::new(v, PgBuiltInOids::INT8ARRAYOID.value()) },
+        KeyValues::Text(v) => unsafe { DatumWithOid::new(v, PgBuiltInOids::TEXTARRAYOID.value()) },
+    })
+}
+
+/// One key as a parameter, for [`key_cast`]`(…, false)`.
+pub(crate) fn key_scalar(key_type: &KeyType, key: &KeyValue) -> spi::Result<DatumWithOid<'static>> {
+    // SAFETY: the datums own their values.
+    Ok(match key_values(key_type, std::slice::from_ref(key))? {
+        KeyValues::Int(v) => unsafe { DatumWithOid::new(v[0], PgBuiltInOids::INT8OID.value()) },
+        KeyValues::Text(mut v) => unsafe {
+            DatumWithOid::new(v.swap_remove(0), PgBuiltInOids::TEXTOID.value())
+        },
+    })
+}
+
+/// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look
+/// them up by (ADR 0169, D4).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Touched {
+    /// Every row refreshed, before and after.
+    pub pks: Vec<i64>,
+    /// The rows that were not in the table before: a parent that embeds them
+    /// through an inner join may be missing from its own table too (#177).
+    pub appeared: Vec<i64>,
+}
+
+impl Touched {
+    pub fn extend(&mut self, other: Self) {
+        self.pks.extend(other.pks);
+        self.appeared.extend(other.appeared);
+    }
+}
+
+/// What the refresh of `keys` touched: when the identity is `pk_<entity>`, the
+/// keys themselves and the rows inserted; otherwise the rows' `pk_<entity>` before
+/// the refresh (`before`) and those it wrote or deleted, of which the written ones
+/// not there before appeared.
+pub(crate) fn touched(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+    before: Vec<i64>,
+    written: Written,
+    deleted: Vec<i64>,
+) -> Touched {
+    if meta.identity.is_pk(&meta.entity_name) {
+        return Touched {
+            pks: keys.iter().filter_map(KeyValue::as_int).collect(),
+            appeared: written.inserted,
+        };
+    }
+    let appeared: Vec<i64> = written
+        .inserted
+        .iter()
+        .chain(&written.updated)
+        .copied()
+        .filter(|pk| !before.contains(pk))
+        .collect();
+    let mut pks = before;
+    pks.extend(written.inserted);
+    pks.extend(written.updated);
+    pks.extend(deleted);
+    pks.sort_unstable();
+    pks.dedup();
+    Touched { pks, appeared }
+}
+
+/// The `pk_<entity>` of the rows an upsert inserted and updated.
+#[derive(Debug, Default)]
+pub(crate) struct Written {
+    pub inserted: Vec<i64>,
+    pub updated: Vec<i64>,
+}
 
 /// Quoted, comma-separated column list of a refresh upsert (`INSERT INTO tv (…)`
 /// and the matching `SELECT …`), so reserved-word and mixed-case columns work (#89).
@@ -103,7 +219,8 @@ pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
 /// The source runs once, in a CTE; the statement returns how many rows the source
 /// produced and the `pk_<entity>` of each row written, split into inserted
 /// (`xmax = 0`) and updated. The skipped count is added to `refresh_noop_skipped`.
-/// Returns how many source rows there were (0: the row is gone from the view).
+/// Returns how many source rows there were (0: the row is gone from the view), and
+/// the rows written.
 pub(crate) fn run_counted_upsert(
     entity: &str,
     qi_tv: &str,
@@ -111,7 +228,7 @@ pub(crate) fn run_counted_upsert(
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
-) -> spi::Result<i64> {
+) -> spi::Result<(i64, Written)> {
     let qi_pk = quote_identifier(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
@@ -129,45 +246,71 @@ pub(crate) fn run_counted_upsert(
     crate::metrics::metrics_api::record_noop_skipped(
         produced.unwrap_or(0).unsigned_abs().saturating_sub(written),
     );
+    let parse = |pks: &[String]| pks.iter().filter_map(|pk| pk.parse().ok()).collect();
+    let written = Written {
+        inserted: parse(&inserted),
+        updated: parse(&updated),
+    };
     for pk in inserted {
         crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Inserted);
     }
     for pk in updated {
         crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Updated);
     }
-    Ok(produced.unwrap_or(0))
+    Ok((produced.unwrap_or(0), written))
 }
 
-/// Lock the existing rows of `pks` in `qi_tv` (in key order) before recomputing
-/// them. Under READ COMMITTED a concurrent writer recomputing one of these rows
-/// is then waited for here, and the recompute that follows, a new statement,
-/// sees what it committed; without the lock it waited inside its own upsert and
-/// wrote a document computed before that commit. Under REPEATABLE READ and
-/// SERIALIZABLE the upsert already fails on such a row (SQLSTATE 40001).
-pub(crate) fn lock_rows(qi_tv: &str, pk_col: &str, pks: &[i64]) -> spi::Result<()> {
+/// Lock the existing rows of `keys` in the TVIEW (in key order) before
+/// recomputing them, and return their `pk_<entity>` when `with_pks`. Under READ
+/// COMMITTED a concurrent writer recomputing one of these rows is then waited for
+/// here, and the recompute that follows, a new statement, sees what it committed;
+/// without the lock it waited inside its own upsert and wrote a document computed
+/// before that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already
+/// fails on such a row (SQLSTATE 40001): the rows are only read.
+pub(crate) fn lock_rows(
+    meta: &crate::catalog::TviewMeta,
+    qi_tv: &str,
+    keys: &[KeyValue],
+    with_pks: bool,
+) -> spi::Result<Vec<i64>> {
     // SAFETY: reads the backend's isolation level.
     let transaction_snapshot =
         unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
-    if transaction_snapshot || pks.is_empty() {
-        return Ok(());
+    if keys.is_empty() || (transaction_snapshot && !with_pks) {
+        return Ok(Vec::new());
     }
-    let qi_pk = quote_identifier(pk_col);
-    Spi::run_with_args(
-        &format!(
-            "SELECT 1 FROM {qi_tv} WHERE {qi_pk} OPERATOR(pg_catalog.=) ANY($1) \
-             ORDER BY {qi_pk} FOR UPDATE"
-        ),
-        // SAFETY: the array datum borrows `pks`, which outlives the call.
-        &[unsafe { DatumWithOid::new(pks.to_vec(), pgrx::PgBuiltInOids::INT8ARRAYOID.value()) }],
-    )
+    let qi_key = quote_identifier(&meta.identity.column);
+    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let lock = if transaction_snapshot {
+        ""
+    } else {
+        " FOR UPDATE"
+    };
+    let sql = format!(
+        "SELECT {qi_pk}::pg_catalog.int8 FROM {qi_tv} \
+         WHERE {qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY {qi_key}{lock}",
+        key_cast(&meta.identity.key_type, "$1", true)
+    );
+    let args = [key_array(&meta.identity.key_type, keys)?];
+    // Read-write: a read-only SPI call refuses FOR UPDATE.
+    Spi::connect_mut(|client| {
+        let mut pks = Vec::new();
+        for row in client.update(&sql, None, &args)? {
+            if let Some(pk) = row.get::<i64>(1)? {
+                pks.push(pk);
+            }
+        }
+        Ok(pks)
+    })
 }
 
-/// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed.
+/// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed,
+/// and return their `pk_<entity>`.
 pub(crate) fn run_journaled_delete(
     entity: &str,
     sql: &str,
     args: &[DatumWithOid],
-) -> spi::Result<()> {
+) -> spi::Result<Vec<i64>> {
     let deleted = Spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in client.update(sql, None, args)? {
@@ -179,10 +322,14 @@ pub(crate) fn run_journaled_delete(
         }
         Ok::<_, spi::Error>(out)
     })?;
+    let pks = deleted
+        .iter()
+        .filter_map(|(pk, _)| pk.parse().ok())
+        .collect();
     for (pk, id) in deleted {
         crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Deleted(id));
     }
-    Ok(())
+    Ok(pks)
 }
 
 #[cfg(test)]
@@ -251,6 +398,28 @@ mod tests {
         assert_eq!(
             super::column_list(&cols(&["pk_x", "order", "Label", "a\"b"])),
             r#""pk_x", "order", "Label", "a""b""#
+        );
+    }
+
+    #[test]
+    fn key_cast_binds_int8_or_text_cast_to_the_type() {
+        use crate::catalog::KeyType;
+        assert_eq!(
+            super::key_cast(&KeyType::Int, "$1", true),
+            "$1::pg_catalog.int8[]"
+        );
+        assert_eq!(
+            super::key_cast(&KeyType::Int, "$2", false),
+            "$2::pg_catalog.int8"
+        );
+        let uuid = KeyType::Text("pg_catalog.uuid".into());
+        assert_eq!(
+            super::key_cast(&uuid, "$1", true),
+            "$1::pg_catalog.text[]::pg_catalog.uuid[]"
+        );
+        assert_eq!(
+            super::key_cast(&uuid, "$1", false),
+            "$1::pg_catalog.text::pg_catalog.uuid"
         );
     }
 

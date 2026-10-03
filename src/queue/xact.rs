@@ -429,30 +429,37 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                             entity: entity.clone(),
                         }
                     })?;
-                let changed: Vec<super::key::RefreshKey> =
-                    crate::ddl::replace::reconcile(&entity, &meta)?
-                        .iter()
-                        .filter_map(|k| k.parse::<i64>().ok())
-                        .map(|pk| super::key::RefreshKey::pk(&entity, pk))
-                        .collect();
-                for parent_key in crate::propagate::find_parents_batch(&changed, &graph)?
-                    .into_values()
-                    .flatten()
+                let changed: Vec<i64> = crate::ddl::replace::reconcile(&entity, &meta)?
+                    .iter()
+                    .filter_map(|k| k.parse::<i64>().ok())
+                    .collect();
+                // A full refresh may bring rows back: look their parents up in the
+                // parents' views too.
+                for parent_key in
+                    crate::propagate::find_parents_batch(&entity, &changed, &changed, &graph)?
+                        .into_values()
+                        .flatten()
                 {
                     super::patch::poison_into(&mut patches, parent_key.clone());
                     if !processed.contains(&parent_key) {
                         pending.insert(parent_key);
                     }
                 }
-                processed.extend(changed);
+                if meta.identity.is_pk(&entity) {
+                    processed.extend(
+                        changed
+                            .into_iter()
+                            .map(|pk| super::key::RefreshKey::pk(&entity, pk)),
+                    );
+                }
                 iteration += 1;
                 continue;
             }
 
             // Issue #56: split off keys carrying a usable direct patch. They are
             // applied straight to tv_<entity> (no backing-view query); everything
-            // else — poisoned keys, dedup keys, keys with no patch, or the fast
-            // path disabled — recomputes exactly as before. The GUC is re-checked
+            // else — poisoned keys, keys with no patch, or the fast path
+            // disabled — recomputes exactly as before. The GUC is re-checked
             // here so toggling it off between capture and commit forces recompute.
             let apply_enabled = crate::config::direct_patch_enabled();
             let mut patched: Vec<(i64, Vec<super::patch::PatchEntry>)> = Vec::new();
@@ -485,36 +492,37 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
                 }
             }
 
-            // Recompute the remaining keys via the existing single/bulk path.
-            // A recomputed child's whole document changed, so its parents must
-            // recompute too: poison any parent patch (issue #56).
-            if recompute_keys.len() == 1 {
-                let key = &recompute_keys[0];
-                let parents = refresh_and_get_parents(key, &graph)?;
-                for parent_key in parents {
+            // Recompute the remaining keys, one row with a smart patch or several
+            // in bulk; both return the pk_<entity> of the rows they touched, which
+            // parents look them up by (ADR 0169). A recomputed child's whole
+            // document changed, so its parents must recompute too: poison any
+            // parent patch (issue #56). FAIL-FAST: an error aborts the transaction.
+            if !recompute_keys.is_empty() {
+                let keys: Vec<super::key::KeyValue> =
+                    recompute_keys.into_iter().map(|k| k.key).collect();
+                let touched = if let [key] = keys.as_slice() {
+                    let meta =
+                        crate::catalog::TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+                            crate::TViewError::MetadataNotFound {
+                                entity: entity.clone(),
+                            }
+                        })?;
+                    crate::refresh::refresh_key(&meta, key)?
+                } else {
+                    crate::refresh::refresh_bulk(&entity, &keys)?
+                };
+                for parent_key in crate::propagate::find_parents_batch(
+                    &entity,
+                    &touched.pks,
+                    &touched.appeared,
+                    &graph,
+                )?
+                .into_values()
+                .flatten()
+                {
                     super::patch::poison_into(&mut patches, parent_key.clone());
                     if !processed.contains(&parent_key) {
                         pending.insert(parent_key);
-                    }
-                }
-            } else if recompute_keys.len() > 1 {
-                let mut pks =
-                    Vec::with_capacity(recompute_keys.iter().filter(|k| !k.is_dedup()).count());
-                for key in &recompute_keys {
-                    if let Some(pk) = key.key.as_int() {
-                        pks.push(pk);
-                    }
-                }
-                // FAIL-FAST: Propagate error immediately to abort transaction
-                crate::refresh::refresh_bulk(&entity, &pks)?;
-
-                let parent_map = crate::propagate::find_parents_batch(&recompute_keys, &graph)?;
-                for parent_keys in parent_map.values() {
-                    for parent_key in parent_keys {
-                        super::patch::poison_into(&mut patches, parent_key.clone());
-                        if !processed.contains(parent_key) {
-                            pending.insert(parent_key.clone());
-                        }
                     }
                 }
             }
@@ -527,12 +535,11 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
             // parent is poisoned and recomputes. Poison stickiness means a parent
             // reached by both a patched and a recomputed child recomputes.
             if !applied_pks.is_empty() {
-                let applied_keys: Vec<super::key::RefreshKey> = applied_pks
-                    .iter()
-                    .map(|&pk| super::key::RefreshKey::pk(&entity, pk))
-                    .collect();
-                let parent_map = crate::propagate::find_parents_batch(&applied_keys, &graph)?;
-                for (child_key, parent_keys) in &parent_map {
+                let applied: Vec<i64> = applied_pks.into_iter().collect();
+                let parent_map =
+                    crate::propagate::find_parents_batch(&entity, &applied, &[], &graph)?;
+                for (child_pk, parent_keys) in &parent_map {
+                    let child_key = &super::key::RefreshKey::pk(&entity, *child_pk);
                     // Snapshot the child's applied chain before mutating `patches`.
                     let child_chain = match patches.get(child_key) {
                         Some(super::patch::PatchState::Direct(chain)) => Some(chain.clone()),
@@ -662,11 +669,7 @@ fn apply_fanouts(
         let owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
         let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
         drop(owner);
-        let keys: Vec<_> = changed
-            .into_iter()
-            .map(|pk| super::key::RefreshKey::pk(&entity, pk))
-            .collect();
-        for parent_key in crate::propagate::find_parents_batch(&keys, graph)?
+        for parent_key in crate::propagate::find_parents_batch(&entity, &changed, &[], graph)?
             .into_values()
             .flatten()
         {
@@ -677,41 +680,4 @@ fn apply_fanouts(
         }
     }
     Ok(())
-}
-
-/// Refresh a single entity+pk and return discovered parent keys (without refreshing them)
-///
-/// This function:
-/// 1. Refreshes the given (entity, pk) using existing refresh logic
-/// 2. Discovers parent entities that depend on this one
-/// 3. Returns parent keys WITHOUT refreshing them (defer to queue)
-///
-/// # Design Note
-///
-/// This function returns parent keys for queue processing instead of
-/// calling `refresh_pk()` recursively.
-fn refresh_and_get_parents(
-    key: &super::key::RefreshKey,
-    graph: &super::EntityDepGraph,
-) -> TViewResult<Vec<super::key::RefreshKey>> {
-    // Load metadata
-    use crate::catalog::TviewMeta;
-    let meta = TviewMeta::load_by_entity(&key.entity)?.ok_or_else(|| {
-        crate::TViewError::MetadataNotFound {
-            entity: key.entity.clone(),
-        }
-    })?;
-
-    // Refresh this entity — dispatch on key type
-    match &key.key {
-        super::key::KeyValue::Text(dedup) => {
-            crate::refresh::refresh_by_dedup_key(meta.view_oid, dedup)?;
-        }
-        super::key::KeyValue::Int(pk) => crate::refresh::refresh_pk(meta.view_oid, *pk)?,
-    }
-
-    // Find parent entities (NEW: returns keys instead of refreshing)
-    let parent_keys = crate::propagate::find_parents_for(key, graph)?;
-
-    Ok(parent_keys)
 }

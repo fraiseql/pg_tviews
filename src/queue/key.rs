@@ -59,11 +59,6 @@ impl RefreshKey {
         }
     }
 
-    /// Construct a DISTINCT ON dedup key.
-    pub fn dedup(entity: impl Into<String>, key: impl Into<String>) -> Self {
-        Self::new(entity, KeyValue::Text(key.into()))
-    }
-
     /// Construct a key for every row of the entity's TVIEW.
     pub fn all(entity: impl Into<String>) -> Self {
         Self {
@@ -71,12 +66,6 @@ impl RefreshKey {
             key: KeyValue::Int(0),
             all: true,
         }
-    }
-
-    /// Returns `true` if this is a DISTINCT ON dedup key.
-    #[must_use]
-    pub const fn is_dedup(&self) -> bool {
-        matches!(self.key, KeyValue::Text(_))
     }
 
     /// Returns `true` if this key stands for every row of the TVIEW.

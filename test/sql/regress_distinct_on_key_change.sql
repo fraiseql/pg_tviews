@@ -4,7 +4,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_distinct_on_key_change.sql
 --
--- known-failing: #172
 -- expect-output: #172 DISTINCT ON key change: PASS
 
 \set ON_ERROR_STOP on
