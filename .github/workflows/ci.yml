@@ -114,6 +114,11 @@ jobs:
       - name: Integration suite (test/sql/[0-9]*.sql)
         run: ./test/run_integration_tests.sh
 
+      # Every TVIEW shape equals its backing view after each of a few hundred
+      # seeded random writes.
+      - name: Differential suite (test/sql/differential/run.sh)
+        run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+
       # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
       # pg_tviews_create_or_replace() and refresh work where the library is loaded
       # lazily (#134).
