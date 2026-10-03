@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **A `DISTINCT ON` TVIEW is keyed on its `DISTINCT ON` key, read from the query
+  tree** ([ADR 0169](docs/adr/0169-tview-row-identity.md), #170). A second key system,
+  derived from the definition's text and matched by column name, ran `DISTINCT ON`
+  TVIEWs; it is gone. Every TVIEW now has one identity: `pk_<entity>`, or its
+  `DISTINCT ON` key, which is its table's primary key and is reported in the new
+  `tviews.registry.identity` column. Writes, refreshes and propagation all go through
+  it, with the key's own type (`bigint`, `uuid`, `text`, `numeric`, `date`…).
+- **A `DISTINCT ON` TVIEW reads tables through joins whatever its key.** Keyed on
+  anything but `pk_<entity>`, it was refused unless `pg_tviews.uncascaded_policy` was
+  `full_refresh` (#164); the tables it reads now map to its key like any TVIEW's.
+- **Refused at create, with the key named**: a composite `DISTINCT ON (a, b)` (a TVIEW
+  row is one entity with one key; it already failed, on a duplicate key), and a
+  `DISTINCT ON` expression (every write to it was skipped with a WARNING).
+- A TVIEW's table always has its primary key on the identity column (a `DISTINCT ON`
+  key named `identifier`, `fk_*` or `*_id` got none).
+
+### Fixed
+
+- **A statement writing rows of several `DISTINCT ON` groups refreshes them all**
+  (#171). It refreshed none: the flush's bulk path dropped every `DISTINCT ON` key.
+- **Changing a row's `DISTINCT ON` key removes the old group's row** (#172). The
+  trigger read the new row only. Keys are now read from the old and the new row.
+- **A TVIEW embedding a `DISTINCT ON` TVIEW follows it** (#173). Propagation skipped
+  `DISTINCT ON` keys; parents are now found from the `pk_<entity>` of the child rows a
+  refresh touched, before and after, so they also follow a new winning row.
+- **`DISTINCT ON (o.id)` is accepted when another table read has an `id` column**
+  (#169).
+- **A `DISTINCT ON` refresh uses the base table's index** (#174). It filtered on
+  `key::text = $1`, which no index serves and which cannot be pushed below the
+  `DISTINCT ON`: every refresh deduplicated the whole view. On 50,000 rows a
+  one-group update went from 18 ms to 1.4 ms.
+- **Writes to a TVIEW's root table are no longer lost when it is not named
+  `tb_<entity>`** (#175). The root table's key was found by stripping `tb_` from its
+  name; it now goes through its key mapping like any other table's.
+- **A parent row that an inner join dropped with its child comes back with it**
+  (#177). Parents were looked up only in their own table; for child rows that
+  reappear they are looked up in their backing view too.
+
+### Upgrade notes
+
+- After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all();`. It records each TVIEW's identity,
+  keys its table on it (adding the primary key a table lacked) and drops the unique
+  index on `pk_<entity>` that 0.1.0-beta.22 gave some `DISTINCT ON` TVIEWs. Until
+  then, a `DISTINCT ON` TVIEW is refreshed in full on writes to its own table, and
+  every other TVIEW refreshes as before.
+
 ## [0.1.0-beta.22] - 2026-10-02
 
 ### Fixed

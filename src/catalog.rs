@@ -67,25 +67,6 @@ pub struct TviewMeta {
     /// Length matches `dependency_types`.
     pub array_match_keys: Vec<Option<String>>,
 
-    /// DISTINCT ON key column names for DISTINCT ON TVIEWs (e.g. `["id"]`).
-    ///
-    /// When non-empty, this TVIEW uses deduplication-based refresh: the trigger
-    /// enqueues the DISTINCT ON key value instead of the base-table PK, and the
-    /// refresh re-evaluates the full DISTINCT ON group to find the winning row.
-    ///
-    /// Empty for standard (PK-based) TVIEWs.
-    pub distinct_on_keys: Vec<String>,
-
-    /// OUTPUT (projected) column name for each DISTINCT ON key — the alias the
-    /// backing view / `tv_<entity>` actually expose (e.g. `["pk_contract"]` for
-    /// `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`).
-    ///
-    /// `distinct_on_keys` holds the raw SOURCE column read off the base tuple by
-    /// the trigger; this holds the OUTPUT column used by `refresh_by_dedup_key`'s
-    /// WHERE / ON CONFLICT and the materialized table's primary key. Equal to
-    /// `distinct_on_keys` when the key is not aliased. Aligned by index.
-    pub distinct_on_output_keys: Vec<String>,
-
     /// Direct-patch column map (issue #56): base-table columns that map
     /// identity-style to top-level keys of this entity's own `data` object.
     ///
@@ -118,6 +99,62 @@ pub struct TviewMeta {
     /// How a write to each base table maps to keys (ADR 0157); empty for a TVIEW
     /// registered by a release without lineage, until it is re-registered.
     pub key_mappings: Vec<crate::lineage::KeyMapping>,
+
+    /// The column that names the TVIEW's rows (ADR 0169).
+    pub identity: RowIdentity,
+}
+
+/// The column that names a TVIEW's rows (ADR 0169), as the catalog records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowIdentity {
+    pub column: String,
+    pub kind: crate::lineage::IdentityKind,
+    /// Registered before identities were recorded (NULL in the catalog): the
+    /// root table's key is read by name until it is re-registered.
+    pub legacy: bool,
+    /// Registered before identities were recorded, as a DISTINCT ON TVIEW: its
+    /// rows are refreshed in full until it is re-registered.
+    pub legacy_distinct_on: bool,
+}
+
+/// How the values of an identity column are carried and bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyType {
+    /// `int2`, `int4` or `int8`: bound as `int8`.
+    Int,
+    /// Any other type, schema-qualified and quoted: bound as text, cast to it.
+    Text(String),
+}
+
+impl RowIdentity {
+    /// Read `pg_tview_meta.identity` (NULL for a row registered before it:
+    /// `pk_<entity>`).
+    #[must_use]
+    pub fn from_catalog(
+        entity: &str,
+        json: Option<&serde_json::Value>,
+        legacy_distinct_on: bool,
+    ) -> Self {
+        let column = json
+            .and_then(|j| j["columns"][0]["name"].as_str())
+            .map_or_else(|| format!("pk_{entity}"), str::to_string);
+        let kind = match json.and_then(|j| j["kind"].as_str()) {
+            Some("distinct_on") => crate::lineage::IdentityKind::DistinctOn,
+            _ => crate::lineage::IdentityKind::Pk,
+        };
+        Self {
+            column,
+            kind,
+            legacy: json.is_none(),
+            legacy_distinct_on: json.is_none() && legacy_distinct_on,
+        }
+    }
+
+    /// Whether the identity is `pk_<entity>`, the column parents join on.
+    #[must_use]
+    pub fn is_pk(&self, entity: &str) -> bool {
+        self.column == format!("pk_{entity}")
+    }
 }
 
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
@@ -128,15 +165,19 @@ pub(crate) fn meta_select() -> String {
         "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, \
          fk_columns, uuid_fk_columns, \
          dependency_types, dependency_paths, array_match_keys, \
-         distinct_on_keys, distinct_on_output_keys, \
          direct_map_columns, direct_map_keys, is_union, cascade_paths, \
-         uncascaded_policy, key_mappings \
+         uncascaded_policy, key_mappings, identity, \
+         distinct_on_keys <> '{{}}' AS legacy_distinct_on \
          FROM {}",
         crate::utils::meta_table()
     )
 }
 
 thread_local! {
+    /// TVIEW table → the type of its identity column, per backend; cleared with
+    /// [`META_CACHE`].
+    static KEY_TYPES: std::cell::RefCell<std::collections::HashMap<Oid, KeyType>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// Per-backend `TviewMeta` cache (issue #91), cleared through
     /// [`crate::queue::cache::sync_generation`] when the catalog or a TVIEW changes.
     static META_CACHE: std::cell::RefCell<Vec<TviewMeta>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -159,9 +200,48 @@ fn remember(loaded: Option<TviewMeta>) -> Option<TviewMeta> {
 /// Forget every cached `TviewMeta`.
 pub fn clear_meta_cache() {
     META_CACHE.with(|c| c.borrow_mut().clear());
+    KEY_TYPES.with(|c| c.borrow_mut().clear());
 }
 
 impl TviewMeta {
+    /// How the values of the identity column are bound: the type of the column in
+    /// the TVIEW's table (cached per backend).
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be read.
+    pub fn key_type(&self) -> spi::Result<KeyType> {
+        if let Some(key_type) = KEY_TYPES.with(|c| c.borrow().get(&self.tview_oid).cloned()) {
+            return Ok(key_type);
+        }
+        let name = Spi::get_one_with_args::<String>(
+            "SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
+                                             'pg_catalog.int4'::pg_catalog.regtype, \
+                                             'pg_catalog.int8'::pg_catalog.regtype) THEN NULL \
+                    ELSE pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(t.typname) END \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+             WHERE a.attrelid = $1 AND a.attname = $2 AND NOT a.attisdropped",
+            // SAFETY: the datums copy the OID and borrow the name, which outlive the call.
+            &[
+                unsafe { DatumWithOid::new(self.tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
+                unsafe {
+                    DatumWithOid::new(
+                        self.identity.column.as_str(),
+                        PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                    )
+                },
+            ],
+        )
+        .or_else(|e| match e {
+            spi::Error::InvalidPosition => Ok(None),
+            e => Err(e),
+        })?;
+        let key_type = name.map_or(KeyType::Int, KeyType::Text);
+        KEY_TYPES.with(|c| c.borrow_mut().insert(self.tview_oid, key_type.clone()));
+        Ok(key_type)
+    }
+
     /// The mapping of base table `table_oid`, also found by name (a row restored
     /// before its relids were rebound) or through the partitioned table `root`.
     #[must_use]
@@ -196,32 +276,6 @@ impl TviewMeta {
                     .map(|s| s.split('.').map(str::to_string).collect())
             })
             .collect()
-    }
-
-    /// Look up metadata by source table OID or view OID (cached per backend).
-    pub fn load_for_source(source_oid: Oid) -> spi::Result<Option<Self>> {
-        crate::queue::cache::sync_generation();
-        if let Some(meta) = cached(|m| m.tview_oid == source_oid || m.view_oid == source_oid) {
-            return Ok(Some(meta));
-        }
-        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-        // The OID is a validated PostgreSQL object identifier.
-        let loaded = Spi::connect(|client| -> spi::Result<Option<Self>> {
-            let args = vec![unsafe {
-                DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-            }];
-            let mut rows = client.select(
-                &format!("{} WHERE view_oid = $1 OR table_oid = $1", meta_select()),
-                None,
-                &args,
-            )?;
-
-            match rows.next() {
-                Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
-                None => Ok(None),
-            }
-        })?;
-        Ok(remember(loaded))
     }
 
     /// Look up metadata by entity name (cached per backend).
@@ -327,16 +381,6 @@ impl TviewMeta {
         // array_match_keys (TEXT[]) with NULL values
         let array_keys: Option<Vec<Option<String>>> = row["array_match_keys"].value()?;
 
-        // distinct_on_keys (TEXT[]) — raw SOURCE column read off the base tuple by the trigger
-        let distinct_on_keys: Vec<String> = row["distinct_on_keys"]
-            .value::<Vec<String>>()?
-            .unwrap_or_default();
-
-        // distinct_on_output_keys (TEXT[]) — projected OUTPUT column used by refresh/PK
-        let distinct_on_output_keys: Vec<String> = row["distinct_on_output_keys"]
-            .value::<Vec<String>>()?
-            .unwrap_or_default();
-
         // direct_map_columns / direct_map_keys (TEXT[]) — aligned column→key map
         // for the issue #56 direct-patch fast path. Empty for pre-#56 tviews.
         let direct_map_columns: Vec<String> = row["direct_map_columns"]
@@ -372,6 +416,21 @@ impl TviewMeta {
             .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
             .unwrap_or_default();
 
+        let entity_name: String = row["entity"].value()?.ok_or_else(|| {
+            spi::Error::from(crate::TViewError::SpiError {
+                query: String::new(),
+                error: "entity column is NULL".to_string(),
+            })
+        })?;
+        let identity = RowIdentity::from_catalog(
+            &entity_name,
+            row["identity"]
+                .value::<pgrx::JsonB>()?
+                .map(|j| j.0)
+                .as_ref(),
+            row["legacy_distinct_on"].value::<bool>()?.unwrap_or(false),
+        );
+
         Ok(Self {
             tview_oid: row["tview_oid"].value()?.ok_or_else(|| {
                 spi::Error::from(crate::TViewError::SpiError {
@@ -385,33 +444,21 @@ impl TviewMeta {
                     error: "view_oid column is NULL".to_string(),
                 })
             })?,
-            entity_name: row["entity"].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: String::new(),
-                    error: "entity column is NULL".to_string(),
-                })
-            })?,
+            entity_name,
 
             fk_columns: fk_cols_val.unwrap_or_default(),
             uuid_fk_columns: uuid_fk_cols_val.unwrap_or_default(),
             dependency_types: dep_types,
             dependency_paths: dep_paths,
             array_match_keys: array_keys.unwrap_or_default(),
-            distinct_on_keys,
-            distinct_on_output_keys,
             direct_map_columns,
             direct_map_keys,
             is_union,
             cascade_paths,
             uncascaded_policy,
             key_mappings,
+            identity,
         })
-    }
-
-    /// Returns `true` if this TVIEW uses DISTINCT ON deduplication-based refresh.
-    #[allow(dead_code)] // Reason: Kept for API completeness; trigger handler uses cached distinct_on_key
-    pub fn is_distinct_on(&self) -> bool {
-        !self.distinct_on_keys.is_empty()
     }
 
     /// Parse dependency metadata into structured form for smart patching.
@@ -506,14 +553,13 @@ impl Default for TviewMeta {
             dependency_types: vec![],
             dependency_paths: vec![],
             array_match_keys: vec![],
-            distinct_on_keys: vec![],
-            distinct_on_output_keys: vec![],
             direct_map_columns: vec![],
             direct_map_keys: vec![],
             is_union: false,
             cascade_paths: vec![],
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
             key_mappings: vec![],
+            identity: RowIdentity::from_catalog("", None, false),
         }
     }
 }
@@ -629,8 +675,6 @@ mod tests {
             dependency_types: vec![DependencyType::Scalar],
             dependency_paths: vec![None],
             array_match_keys: vec![None],
-            distinct_on_keys: vec![],
-            distinct_on_output_keys: vec![],
             direct_map_columns: vec!["bio".to_string(), "name".to_string()],
             direct_map_keys: vec!["bio".to_string(), "display_name".to_string()],
             is_union: false,
@@ -647,6 +691,25 @@ mod tests {
         assert_eq!(map.get("bio"), Some(&"bio"));
         assert_eq!(map.get("name"), Some(&"display_name"));
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn row_identity_reads_the_catalog_and_defaults_to_pk() {
+        use crate::lineage::IdentityKind;
+        let doc =
+            serde_json::json!({"kind": "distinct_on", "columns": [{"name": "id", "type": "uuid"}]});
+        let id = RowIdentity::from_catalog("doc", Some(&doc), true);
+        assert_eq!(id.column, "id");
+        assert_eq!(id.kind, IdentityKind::DistinctOn);
+        assert!(!id.legacy_distinct_on && !id.is_pk("doc"));
+
+        let old = RowIdentity::from_catalog("doc", None, false);
+        assert_eq!(old.column, "pk_doc");
+        assert_eq!(old.kind, IdentityKind::Pk);
+        assert!(old.is_pk("doc") && old.legacy && !old.legacy_distinct_on);
+        assert!(!id.legacy);
+
+        assert!(RowIdentity::from_catalog("doc", None, true).legacy_distinct_on);
     }
 
     #[test]

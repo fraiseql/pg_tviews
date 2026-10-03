@@ -9,6 +9,10 @@
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/run_regression_tests.sh
 #
 # Honors PGHOST/PGPORT/PGUSER (defaults: localhost / 28818 / postgres).
+#
+# A test reproducing an open bug carries `-- known-failing: <issue>`: its failure
+# is reported as XFAIL and does not fail the suite; once it passes it FAILs until
+# the marker is removed.
 
 set -u
 PGHOST="${PGHOST:-localhost}"
@@ -27,7 +31,22 @@ psql -d postgres -tAc "SELECT 1" >/dev/null 2>&1 || {
 have_jsonb_delta=$(psql -d postgres -tAc \
   "SELECT count(*) FROM pg_available_extensions WHERE name='jsonb_delta'" 2>/dev/null || echo 0)
 
-pass=0 fail=0 skip=0 failed_names=""
+pass=0 fail=0 skip=0 xfail=0 failed_names=""
+
+# Record the outcome of test $1: "" when it passed, else why it failed.
+verdict() {
+  local name="$1" why="$2" known="$3"
+  if [[ -n "$known" && -n "$why" ]]; then
+    echo "XFAIL $name ($known) -> $why"; xfail=$((xfail+1))
+  elif [[ -n "$known" ]]; then
+    echo "FAIL  $name -> passes, but is marked known-failing ($known): remove the marker"
+    fail=$((fail+1)); failed_names="$failed_names $name"
+  elif [[ -n "$why" ]]; then
+    echo "FAIL  $name -> $why"; fail=$((fail+1)); failed_names="$failed_names $name"
+  else
+    echo "PASS  $name"; pass=$((pass+1))
+  fi
+}
 for f in "$sqldir"/regress_*.sql; do
   name="$(basename "$f")"
   # The fallback test deliberately runs without jsonb_delta; everything else needs it.
@@ -39,10 +58,11 @@ for f in "$sqldir"/regress_*.sql; do
   # The extension lives in schema tviews; tests call its functions unqualified.
   psql -d postgres -qc "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null \
     || { echo "ERROR: could not create test database $tmpdb"; exit 2; }
+  known=$(sed -n 's/^-- known-failing: //p' "$f" | head -1)
   if psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >/tmp/$tmpdb.out 2>&1; then
     if grep -q '^-- expect-quiet' "$f" && grep -qE 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out; then
-      echo "FAIL  $name -> unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)"
-      fail=$((fail+1)); failed_names="$failed_names $name"; continue
+      verdict "$name" "unexpected diagnostics: $(grep -E 'EVENT TRIGGER|DEBUG:|spi_run_ddl' /tmp/$tmpdb.out | head -1)" "$known"
+      continue
     fi
     # Every `-- expect-output: <text>` line must appear in the output, every
     # `-- expect-once: <text>` line exactly once, and no `-- reject-output: <text>` line.
@@ -63,22 +83,19 @@ for f in "$sqldir"/regress_*.sql; do
       [[ -n "$reject" ]] && grep -qF -- "$reject" /tmp/$tmpdb.out && { unwanted="$reject"; break; }
     done < <(sed -n 's/^-- reject-output: //p' "$f")
     if [[ -n "$missing" ]]; then
-      echo "FAIL  $name -> expected output containing '$missing'"
-      fail=$((fail+1)); failed_names="$failed_names $name"; continue
+      verdict "$name" "expected output containing '$missing'" "$known"
+    elif [[ -n "$unwanted" ]]; then
+      verdict "$name" "unexpected output containing '$unwanted'" "$known"
+    else
+      verdict "$name" "" "$known"
     fi
-    if [[ -n "$unwanted" ]]; then
-      echo "FAIL  $name -> unexpected output containing '$unwanted'"
-      fail=$((fail+1)); failed_names="$failed_names $name"; continue
-    fi
-    echo "PASS  $name"; pass=$((pass+1))
   else
-    echo "FAIL  $name -> $(grep -iE 'ERROR|EXCEPTION' /tmp/$tmpdb.out | head -1)"
-    fail=$((fail+1)); failed_names="$failed_names $name"
+    verdict "$name" "$(grep -iE 'ERROR|EXCEPTION' /tmp/$tmpdb.out | head -1)" "$known"
   fi
 done
 psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
 
 echo "----------------------------------------"
-echo "regression: $pass passed, $fail failed, $skip skipped"
+echo "regression: $pass passed, $fail failed, $skip skipped, $xfail known-failing"
 [[ -n "$failed_names" ]] && echo "failed:$failed_names"
 [[ "$fail" -eq 0 ]]

@@ -256,7 +256,10 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
         .map(|key| {
             serde_json::json!({
                 "entity": key.entity,
-                "pk": key.pk
+                "pk": match key.key {
+                    crate::queue::key::KeyValue::Int(v) => serde_json::Value::from(v),
+                    crate::queue::key::KeyValue::Text(v) => serde_json::Value::from(v),
+                }
             })
         })
         .collect();

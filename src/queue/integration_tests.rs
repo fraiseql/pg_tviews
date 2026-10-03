@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::queue::key::KeyValue;
     use crate::queue::ops::{clear_queue, take_queue_snapshot};
     use crate::queue::{RefreshKey, enqueue_refresh};
 
@@ -8,11 +9,11 @@ mod tests {
         clear_queue();
 
         // Simulate multiple trigger firings
-        enqueue_refresh("user", 1);
-        enqueue_refresh("post", 10);
-        enqueue_refresh("user", 1); // duplicate
-        enqueue_refresh("post", 20);
-        enqueue_refresh("user", 2);
+        enqueue_refresh("user", KeyValue::Int(1));
+        enqueue_refresh("post", KeyValue::Int(10));
+        enqueue_refresh("user", KeyValue::Int(1)); // duplicate
+        enqueue_refresh("post", KeyValue::Int(20));
+        enqueue_refresh("user", KeyValue::Int(2));
 
         let snapshot = take_queue_snapshot();
 

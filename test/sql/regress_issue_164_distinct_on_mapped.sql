@@ -1,9 +1,7 @@
 -- Regression test for issue #164: a DISTINCT ON TVIEW over a mapped view was
--- refused, and the message counted the wrong tables. A DISTINCT ON TVIEW keyed on
--- pk_<entity> refreshes by that key like any TVIEW, so tables reached through its
--- joins map to it. Keyed on anything else, it is refused with the tables named,
--- unless pg_tviews.uncascaded_policy is full_refresh, which refreshes it in full on
--- writes to them.
+-- refused, and the message counted the wrong tables. A DISTINCT ON TVIEW is keyed
+-- on its DISTINCT ON key (ADR 0169), whether it is pk_<entity> or another column,
+-- and the tables reached through its joins map to that key like any TVIEW's.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_164_distinct_on_mapped.sql
 --
@@ -49,25 +47,26 @@ UPDATE tb_order SET ref = 'x' WHERE pk_order = 1;
 SELECT check_fresh('an UPDATE of tb_order (DISTINCT ON the key)');
 DROP TABLE tv_order;
 
--- ── keyed on another column, under warn: refused, with the table named ──────
-DO $$
-DECLARE msg text;
-BEGIN
-    BEGIN
-        PERFORM tviews.pg_tviews_create('tv_order', $q$
-            SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data
-            FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $q$);
-        RAISE EXCEPTION '#164 FAIL: DISTINCT ON a non-key column was accepted under warn';
-    EXCEPTION WHEN invalid_parameter_value OR raise_exception OR others THEN
-        GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
-    END;
-    IF msg LIKE '#164 FAIL%' THEN RAISE EXCEPTION '%', msg; END IF;
-    IF msg NOT LIKE '%public.tb_line%' OR msg NOT LIKE '%1 table%' OR msg NOT LIKE '%full_refresh%' THEN
-        RAISE EXCEPTION '#164 FAIL: the refusal does not name the table, count it or offer full_refresh: %', msg;
+-- ── keyed on another column: accepted, and its joined tables map to it ──────
+DO $$ BEGIN
+    PERFORM tviews.pg_tviews_create('tv_order', $q$
+        SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data
+        FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $q$);
+EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION '#164 FAIL: DISTINCT ON a non-key column is refused: %', SQLERRM;
+END $$;
+INSERT INTO tb_line (fk_order, sku) VALUES (2, 'x');
+SELECT check_fresh('an INSERT into tb_line (DISTINCT ON a non-key column)');
+DO $$ BEGIN
+    IF (SELECT cascade_kinds::text FROM tviews.registry WHERE entity = 'order') LIKE '%all_keys%' THEN
+        RAISE EXCEPTION '#164 FAIL: a table read through the join is all_keys: %',
+            (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'order');
     END IF;
 END $$;
+DELETE FROM tb_line WHERE sku = 'x';
+DROP TABLE tv_order;
 
--- ── the same under full_refresh: accepted, refreshed in full ────────────────
+-- ── the same under full_refresh: accepted, fresh ───────────────────────────
 SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_order', $$
     SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data

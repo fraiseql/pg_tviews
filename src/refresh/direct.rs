@@ -30,7 +30,8 @@ pub fn derive_parent_chain(
     child_chain: &[PatchEntry],
 ) -> Option<Vec<PatchEntry>> {
     // Parent must itself clear the entity-level gates.
-    if !parent_meta.distinct_on_keys.is_empty() || parent_meta.is_union {
+    if parent_meta.identity.kind == crate::lineage::IdentityKind::DistinctOn || parent_meta.is_union
+    {
         return None;
     }
 
@@ -449,7 +450,7 @@ mod tests {
             DependencyType::NestedObject,
             Some(vec!["author".to_string()]),
         );
-        meta.distinct_on_keys = vec!["id".to_string()];
+        meta.identity.kind = crate::lineage::IdentityKind::DistinctOn;
         assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
 
         let mut meta2 = parent_meta(

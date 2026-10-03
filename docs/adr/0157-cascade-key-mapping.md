@@ -1,6 +1,6 @@
 # ADR 0157: Map base-table writes to TVIEW keys from PostgreSQL's query tree
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys)
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 

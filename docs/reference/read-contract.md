@@ -31,11 +31,20 @@ them.
 | `uncascaded_tables` | `regclass[]` | base tables whose writes no cascade maps to this TVIEW's keys (below); empty for most TVIEWs |
 | `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `warn`, `error` or `full_refresh`, fixed when the TVIEW was created |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
+| `identity` | `text[]` | the column that names the TVIEW's rows and is its table's primary key: `{pk_<entity>}`, or a `DISTINCT ON` TVIEW's key (below) |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
 `pk_<entity>, id, data` shape, and column renames applied. It is not the author's
 original text.
+
+**`identity`** is read from the backing view's query tree ([ADR
+0169](../adr/0169-tview-row-identity.md)). It is `pk_<entity>` for every TVIEW
+without `DISTINCT ON`. A `DISTINCT ON` TVIEW is keyed on its `DISTINCT ON` key
+(`{id}` for `DISTINCT ON (o.id)`), and `pk_<entity>` is then an ordinary column, which
+can repeat. The array has one element; it is an array so that other kinds of keys fit
+later. A TVIEW registered before 0.1.0-beta.23 reports `{pk_<entity>}` until
+`pg_tviews_reregister_all()` re-registers it.
 
 **`view`** is a `regclass`, like `base_tables`: it follows renames, prints
 schema-qualified and quoted as needed for the reader's `search_path`

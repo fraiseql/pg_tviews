@@ -21,7 +21,7 @@ env:
   CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
   # The confiture commit whose suites this release must pass (a full SHA: fetching
   # by commit needs all 40 characters). A release cannot be tagged while it is empty.
-  CONFITURE_REF: "7719cf22ed8c69dca1d05027821e40a77c3a6438"
+  CONFITURE_REF: "1a0747a4e8857f2b60bc84aeeb0cc9e10832a92c"
 
 jobs:
   confiture:

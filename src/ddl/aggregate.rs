@@ -123,6 +123,8 @@ pub fn cascade_paths(
             unresolvable: false,
             source_columns: crate::ddl::create::view_source_columns(schema_name, entity, oid),
             fanout: None,
+            root: false,
+            initial_attnum: None,
         });
     }
     Ok(paths)

@@ -196,6 +196,116 @@ pub struct Root {
     pub key: Column,
 }
 
+/// How a TVIEW's rows are named (ADR 0169).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityKind {
+    /// `pk_<entity>`.
+    Pk,
+    /// The top-level DISTINCT ON key.
+    DistinctOn,
+}
+
+impl IdentityKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Pk => "pk",
+            Self::DistinctOn => "distinct_on",
+        }
+    }
+}
+
+/// An output column of the backing view's top level, as [`select_identity`] sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputColumn {
+    pub name: String,
+    /// Not part of the output (an ORDER BY or DISTINCT ON expression left unprojected).
+    pub junk: bool,
+    /// Its `DISTINCT ON` / `ORDER BY` reference, 0 for none.
+    pub sortgroupref: u32,
+    /// The base column it stands for, if it is one.
+    pub column: Option<Column>,
+    pub type_oid: u32,
+}
+
+/// The output column chosen as a TVIEW's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedIdentity {
+    /// Index of the output column (0-based).
+    pub position: usize,
+    pub kind: IdentityKind,
+}
+
+/// Why a TVIEW has no identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityError {
+    /// No `pk_<entity>` output column.
+    Missing,
+    /// More than one DISTINCT ON key (ADR 0169, D2).
+    Composite,
+    /// The DISTINCT ON key is not projected, and no projected column equals it.
+    Unprojected,
+    /// The DISTINCT ON key is projected but is not a column of a base table.
+    NotAColumn,
+}
+
+/// Choose the output column that names a TVIEW's rows (ADR 0169): the top-level
+/// DISTINCT ON key, projected or equal through `equal` (a strict equality of the top
+/// level) to a projected column; `pk_<entity>` without DISTINCT ON.
+///
+/// # Errors
+/// Returns why no output column can be the identity.
+pub fn select_identity(
+    entity: &str,
+    outputs: &[OutputColumn],
+    distinct_on: Option<&[u32]>,
+    equal: &dyn Fn(&Column, &Column) -> bool,
+) -> Result<SelectedIdentity, IdentityError> {
+    let Some(refs) = distinct_on else {
+        let key = format!("pk_{entity}");
+        return outputs
+            .iter()
+            .position(|o| !o.junk && o.name == key)
+            .map(|position| SelectedIdentity {
+                position,
+                kind: IdentityKind::Pk,
+            })
+            .ok_or(IdentityError::Missing);
+    };
+    let [sortgroupref] = refs else {
+        return Err(IdentityError::Composite);
+    };
+    let Some(key) = outputs.iter().position(|o| o.sortgroupref == *sortgroupref) else {
+        return Err(IdentityError::Unprojected);
+    };
+    let chosen = |position| {
+        Ok(SelectedIdentity {
+            position,
+            kind: IdentityKind::DistinctOn,
+        })
+    };
+    match (&outputs[key], outputs[key].junk) {
+        (o, false) if o.column.is_some() => chosen(key),
+        (_, false) => Err(IdentityError::NotAColumn),
+        (
+            OutputColumn {
+                column: Some(column),
+                ..
+            },
+            true,
+        ) => outputs
+            .iter()
+            .position(|o| {
+                !o.junk
+                    && o.column
+                        .as_ref()
+                        .is_some_and(|c| c == column || equal(c, column))
+            })
+            .map_or(Err(IdentityError::Unprojected), chosen),
+        (_, true) => Err(IdentityError::Unprojected),
+    }
+}
+
 /// What [`walk`] reads from the backing view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Graph {
@@ -207,6 +317,23 @@ pub struct Graph {
     /// Tables read only where the output never depends on them (a CTE the view
     /// does not use): not tracked.
     pub unread_tables: std::collections::BTreeSet<u32>,
+    /// The column that names the TVIEW's rows (`None` before the walk sets it).
+    pub identity: Option<Result<WalkedIdentity, IdentityError>>,
+    /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
+    /// EXCEPT).
+    pub set_operation: bool,
+}
+
+/// The identity the walk found: the output column, and the base column it stands
+/// for in each UNION branch (one without UNION; none where it is not a column).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkedIdentity {
+    pub name: String,
+    /// Index of the output column (0-based).
+    pub position: usize,
+    pub type_oid: u32,
+    pub kind: IdentityKind,
+    pub columns: Vec<Column>,
 }
 
 /// How a write to one occurrence maps to keys.
@@ -640,6 +767,79 @@ pub struct Lineage {
     pub tables: Vec<TableLineage>,
     /// Tables the view reads only where its output cannot depend on them.
     pub unread: Vec<u32>,
+    pub identity: Identity,
+    /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
+    /// EXCEPT): its rows are recomputed, never patched.
+    pub set_operation: bool,
+}
+
+/// The column that names a TVIEW's rows (ADR 0169).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    /// The output column.
+    pub name: String,
+    pub type_oid: u32,
+    pub kind: IdentityKind,
+    /// `(relid, attnum)` of the base column it stands for, per UNION branch.
+    pub columns: Vec<(u32, i16)>,
+}
+
+/// The DISTINCT ON expressions of a view definition as `pg_get_viewdef` writes it
+/// (`SELECT DISTINCT ON (a, f(b, c)) …`), for messages; empty without DISTINCT ON.
+#[must_use]
+pub fn distinct_on_list(viewdef: &str) -> Vec<String> {
+    let Some(start) = viewdef.find("DISTINCT ON (") else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    let mut depth = 0_usize;
+    let mut quote: Option<char> = None;
+    let mut current = String::new();
+    for ch in viewdef[start + "DISTINCT ON (".len()..].chars() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '(') => depth += 1,
+            (None, ')') if depth == 0 => {
+                items.push(current.trim().to_string());
+                return items;
+            }
+            (None, ')') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                items.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    Vec::new()
+}
+
+/// The refusal for a TVIEW without an identity; `keys` are its DISTINCT ON
+/// expressions as written by PostgreSQL.
+#[must_use]
+pub fn identity_refusal(entity: &str, error: IdentityError, keys: &[String]) -> String {
+    let key = keys.join(", ");
+    match error {
+        IdentityError::Missing => format!("tv_{entity} has no pk_{entity} output column"),
+        IdentityError::Composite => format!(
+            "tv_{entity} has a composite DISTINCT ON key ({key}): a TVIEW row is one entity, \
+             addressed by one key (pk_<entity>, id or identifier), and its parents embed it \
+             through one fk_<entity>. Model one row per ({key}) as an entity of its own, a \
+             tb_<entity> table with its pk_<entity>, or DISTINCT ON one column"
+        ),
+        IdentityError::Unprojected => format!(
+            "the DISTINCT ON key of tv_{entity} ({key}) names its rows, but it is not an output \
+             column and no output column equals it: project it (… AS <name>)"
+        ),
+        IdentityError::NotAColumn => format!(
+            "the DISTINCT ON key of tv_{entity} ({key}) names its rows, but it is not a column of \
+             a base table, so writes cannot be mapped to them: DISTINCT ON a column"
+        ),
+    }
 }
 
 impl Lineage {
@@ -786,11 +986,13 @@ pub fn analyze(
         &walk::Context {
             tview_tables: &tview_tables,
             tview_views: &tview_views,
+            entity,
             key_column: &key_column,
         },
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
+    let identity = identity_of(entity, view_oid, &graph)?;
     // pg_depend and the query tree must agree on the tables.
     let found: HashSet<u32> = graph
         .occurrences
@@ -844,7 +1046,77 @@ pub fn analyze(
         .copied()
         .filter(|relid| tables.iter().all(|t| t.relid != *relid))
         .collect();
-    Ok(Lineage { tables, unread })
+    Ok(Lineage {
+        tables,
+        unread,
+        identity,
+        set_operation: graph.set_operation,
+    })
+}
+
+/// The identity of the view `view_oid` as the TVIEW of `entity` (ADR 0169).
+///
+/// # Errors
+/// Returns an error if the view cannot be walked, or if no column of it can name
+/// the TVIEW's rows (the refusal names its DISTINCT ON key).
+pub fn view_identity(entity: &str, view_oid: pgrx::pg_sys::Oid) -> crate::TViewResult<Identity> {
+    let key_column = format!("pk_{entity}");
+    let graph = walk::analyze(
+        view_oid,
+        &walk::Context {
+            tview_tables: &std::collections::HashSet::new(),
+            tview_views: &std::collections::HashMap::new(),
+            entity,
+            key_column: &key_column,
+        },
+    )?;
+    identity_of(entity, view_oid, &graph)
+}
+
+/// The identity a walk of `view_oid` found, or the refusal naming its DISTINCT ON key.
+fn identity_of(
+    entity: &str,
+    view_oid: pgrx::pg_sys::Oid,
+    graph: &Graph,
+) -> crate::TViewResult<Identity> {
+    use pgrx::prelude::*;
+    match graph
+        .identity
+        .clone()
+        .unwrap_or(Err(IdentityError::Missing))
+    {
+        Ok(walked) => Ok(Identity {
+            name: walked.name,
+            type_oid: walked.type_oid,
+            kind: walked.kind,
+            columns: walked
+                .columns
+                .iter()
+                .map(|c| (graph.occurrences[c.occ].relid, c.attnum))
+                .collect(),
+        }),
+        Err(error) => {
+            let viewdef = Spi::get_one_with_args::<String>(
+                "SELECT pg_catalog.pg_get_viewdef($1)",
+                // SAFETY: a plain OID datum.
+                &[unsafe {
+                    pgrx::datum::DatumWithOid::new(
+                        view_oid,
+                        PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+                    )
+                }],
+            )
+            .map_err(|e| crate::TViewError::CatalogError {
+                operation: format!("Read the definition of the view of tv_{entity}"),
+                pg_error: e.to_string(),
+            })?
+            .unwrap_or_default();
+            Err(crate::TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason: identity_refusal(entity, error, &distinct_on_list(&viewdef)),
+            })
+        }
+    }
 }
 
 /// A mapping-query template with the current names of its relations and columns;
@@ -1112,6 +1384,8 @@ mod tests {
             roots: vec![Root { branch: 0, key }],
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
+            identity: None,
+            set_operation: false,
         }
     }
 
@@ -1236,6 +1510,8 @@ mod tests {
             roots: vec![],
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
+            identity: None,
+            set_operation: false,
         };
         assert_eq!(
             g.classify(0, NONE),
@@ -1427,6 +1703,190 @@ mod tests {
         assert!(matches!(tables[0].kind, TableKind::AllKeys(_)));
         assert_eq!(tables[0].paths, vec![(0, vec![])]);
         assert!(tables[0].sql.is_some());
+    }
+
+    // ── identity ────────────────────────────────────────────────────────────
+
+    fn out(name: &str, junk: bool, sortgroupref: u32, column: Option<Column>) -> OutputColumn {
+        OutputColumn {
+            name: name.to_string(),
+            junk,
+            sortgroupref,
+            column,
+            type_oid: 20,
+        }
+    }
+
+    fn at(occ: usize, name: &str, attnum: i16) -> Column {
+        Column {
+            occ,
+            attnum,
+            name: name.to_string(),
+        }
+    }
+
+    const UNEQUAL: &dyn Fn(&Column, &Column) -> bool = &|_, _| false;
+
+    #[test]
+    fn identity_without_distinct_on_is_pk_entity() {
+        let outputs = [
+            out("id", false, 0, Some(at(0, "id", 2))),
+            out("pk_order", false, 0, Some(at(0, "pk_order", 1))),
+        ];
+        assert_eq!(
+            select_identity("order", &outputs, None, UNEQUAL),
+            Ok(SelectedIdentity {
+                position: 1,
+                kind: IdentityKind::Pk
+            })
+        );
+    }
+
+    #[test]
+    fn identity_without_pk_entity_is_missing() {
+        let outputs = [out("id", false, 0, Some(at(0, "id", 2)))];
+        assert_eq!(
+            select_identity("order", &outputs, None, UNEQUAL),
+            Err(IdentityError::Missing)
+        );
+    }
+
+    #[test]
+    fn identity_is_a_projected_distinct_on_root_column() {
+        // DISTINCT ON (c.id_contract) c.id_contract AS pk_contract
+        let outputs = [
+            out("pk_contract", false, 1, Some(at(0, "id_contract", 3))),
+            out("id", false, 0, Some(at(0, "id", 2))),
+        ];
+        assert_eq!(
+            select_identity("contract", &outputs, Some(&[1]), UNEQUAL),
+            Ok(SelectedIdentity {
+                position: 0,
+                kind: IdentityKind::DistinctOn
+            })
+        );
+    }
+
+    #[test]
+    fn identity_is_a_projected_distinct_on_column_other_than_pk() {
+        // DISTINCT ON (o.id) o.pk_order, o.id
+        let outputs = [
+            out("pk_order", false, 0, Some(at(0, "pk_order", 1))),
+            out("id", false, 1, Some(at(0, "id", 2))),
+        ];
+        assert_eq!(
+            select_identity("order", &outputs, Some(&[1]), UNEQUAL),
+            Ok(SelectedIdentity {
+                position: 1,
+                kind: IdentityKind::DistinctOn
+            })
+        );
+    }
+
+    #[test]
+    fn identity_is_a_projected_joined_column() {
+        // DISTINCT ON (l.fk_order) l.fk_order AS pk_lastline, o.id … FROM tb_line l JOIN tb_order o
+        let outputs = [
+            out("pk_lastline", false, 1, Some(at(0, "fk_order", 3))),
+            out("id", false, 0, Some(at(1, "id", 2))),
+        ];
+        assert_eq!(
+            select_identity("lastline", &outputs, Some(&[1]), UNEQUAL),
+            Ok(SelectedIdentity {
+                position: 0,
+                kind: IdentityKind::DistinctOn
+            })
+        );
+    }
+
+    #[test]
+    fn identity_is_a_projected_column_equal_to_an_unprojected_key() {
+        // DISTINCT ON (l.fk_order) o.pk_order … JOIN ON o.pk_order = l.fk_order
+        let outputs = [
+            out("pk_order", false, 0, Some(at(1, "pk_order", 1))),
+            out("id", false, 0, Some(at(1, "id", 2))),
+            out("fk_order", true, 1, Some(at(0, "fk_order", 3))),
+        ];
+        let equal = |a: &Column, b: &Column| {
+            a.occ != b.occ
+                && [a.name.as_str(), b.name.as_str()].contains(&"fk_order")
+                && [a.name.as_str(), b.name.as_str()].contains(&"pk_order")
+        };
+        assert_eq!(
+            select_identity("order", &outputs, Some(&[1]), &equal),
+            Ok(SelectedIdentity {
+                position: 0,
+                kind: IdentityKind::DistinctOn
+            })
+        );
+    }
+
+    #[test]
+    fn identity_of_an_unprojected_expression_is_refused() {
+        // DISTINCT ON (lower(o.ref)) o.pk_order …
+        let outputs = [
+            out("pk_order", false, 0, Some(at(0, "pk_order", 1))),
+            out("?column?", true, 1, None),
+        ];
+        assert_eq!(
+            select_identity("order", &outputs, Some(&[1]), UNEQUAL),
+            Err(IdentityError::Unprojected)
+        );
+    }
+
+    #[test]
+    fn identity_of_an_unprojected_column_nothing_equals_is_refused() {
+        // DISTINCT ON (o.ref) o.pk_order …
+        let outputs = [
+            out("pk_order", false, 0, Some(at(0, "pk_order", 1))),
+            out("ref", true, 1, Some(at(0, "ref", 3))),
+        ];
+        assert_eq!(
+            select_identity("order", &outputs, Some(&[1]), UNEQUAL),
+            Err(IdentityError::Unprojected)
+        );
+    }
+
+    #[test]
+    fn identity_of_a_projected_expression_is_refused() {
+        // DISTINCT ON (lower(o.ref)) lower(o.ref) AS code, o.pk_order …
+        let outputs = [
+            out("code", false, 1, None),
+            out("pk_order", false, 0, Some(at(0, "pk_order", 1))),
+        ];
+        assert_eq!(
+            select_identity("order", &outputs, Some(&[1]), UNEQUAL),
+            Err(IdentityError::NotAColumn)
+        );
+    }
+
+    #[test]
+    fn composite_identity_is_refused() {
+        // DISTINCT ON (s.sku, s.warehouse)
+        let outputs = [
+            out("pk_stock", false, 0, Some(at(0, "pk_stock", 1))),
+            out("sku", false, 1, Some(at(0, "sku", 3))),
+            out("warehouse", false, 2, Some(at(0, "warehouse", 4))),
+        ];
+        assert_eq!(
+            select_identity("stock", &outputs, Some(&[1, 2]), UNEQUAL),
+            Err(IdentityError::Composite)
+        );
+    }
+
+    #[test]
+    fn distinct_on_list_splits_top_level_commas() {
+        assert_eq!(
+            distinct_on_list(
+                " SELECT DISTINCT ON (s.sku, lower((s.warehouse)::text), f(a, ')')) s.pk_stock"
+            ),
+            vec!["s.sku", "lower((s.warehouse)::text)", "f(a, ')')"]
+        );
+        assert_eq!(
+            distinct_on_list(" SELECT DISTINCT ON (o.id) o.id"),
+            vec!["o.id"]
+        );
+        assert!(distinct_on_list(" SELECT o.id FROM t").is_empty());
     }
 
     #[test]

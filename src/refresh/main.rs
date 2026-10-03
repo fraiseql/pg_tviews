@@ -6,7 +6,7 @@
 //!
 //! ## Architecture
 //!
-//! 1. **Detect Change**: Trigger on source table → calls `refresh_pk(source_oid, pk)`
+//! 1. **Detect Change**: Trigger on source table → enqueues the row's identity value
 //! 2. **Recompute Row**: Query `v_entity` to get fresh JSONB data
 //! 3. **Smart Patch**: Use dependency metadata to apply surgical JSONB updates
 //! 4. **Propagate**: Cascade to parent entities via FK relationships
@@ -51,11 +51,10 @@
 //! -- Optimized: UPDATE tv_post SET data = jsonb_smart_patch_nested(data, $1, '{author}')
 //! ```
 
-use pgrx::datum::DatumWithOid;
-use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 
 use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
+use crate::queue::key::KeyValue;
 
 use crate::lifecycle::jsonb_delta_schema;
 use crate::utils::{qualified_relname_from_oid, quote_identifier};
@@ -68,259 +67,99 @@ use crate::utils::{qualified_relname_from_oid, quote_identifier};
 ///
 /// # Workflow
 ///
-/// 1. **Load Metadata**: Find TVIEW configuration via `source_oid`
+/// 1. **Lock**: wait for a concurrent writer of the row (READ COMMITTED)
 /// 2. **Recompute Row**: Query `v_entity` view for fresh JSONB data
 /// 3. **Apply Patch**: Use smart JSONB patching to update `tv_entity` table
 ///
 /// # Arguments
 ///
-/// * `source_oid` - OID of the TVIEW's view or table (e.g., `tv_user` or `v_user`)
-/// * `pk` - Primary key value of the changed row
+/// * `meta` - The TVIEW
+/// * `key` - Identity value of the row (ADR 0169)
 ///
 /// # Returns
 ///
-/// `Ok(())` if refresh succeeded, `Err` if any step failed.
+/// The rows refreshed, as parents look them up.
 ///
 /// # Errors
 ///
-/// - No TVIEW found for `source_oid` (metadata missing)
-/// - Row not found in `v_entity` view
 /// - Update to `tv_entity` table failed
-pub fn refresh_pk(source_oid: Oid, pk: i64) -> spi::Result<()> {
-    // 1. Find TVIEW metadata (tview_oid, view_oid, entity_name, etc.)
-    let meta = TviewMeta::load_for_source(source_oid)?;
-    let Some(meta) = meta else {
-        error!("No TVIEW metadata for source_oid: {:?}", source_oid);
-    };
-
+pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> spi::Result<super::Touched> {
+    let keys = std::slice::from_ref(key);
     // Wait for a concurrent writer of this row before reading the view.
-    super::lock_rows(
+    let before = super::lock_rows(
+        meta,
         &qualified_relname_from_oid(meta.tview_oid)?,
-        &format!("pk_{}", meta.entity_name),
-        &[pk],
+        keys,
+        !meta.identity.is_pk(&meta.entity_name),
     )?;
 
-    // 2. A UNION view can return several rows for one pk: read it first so the
-    //    union_duplicate_policy applies before the upsert.
-    if meta.is_union && !view_row_exists(&meta, pk)? {
-        return delete_tview_row(&meta, pk);
-    }
-
-    // 3. Upsert straight from v_entity: the view is evaluated once (issue #91). No
-    //    source row means the base row was deleted, so remove the tview row
-    //    instead of erroring (issue #48: DELETE left stale rows).
-    crate::metrics::metrics_api::record_view_recomputes(1);
-    if apply_patch(&meta, pk)? == 0 {
-        delete_tview_row(&meta, pk)?;
-    }
-    Ok(())
+    // A UNION view can return several rows for one key: read it first so the
+    // union_duplicate_policy applies before the upsert.
+    let (written, deleted) = if meta.is_union && !view_row_exists(meta, key)? {
+        (super::Written::default(), delete_tview_row(meta, key)?)
+    } else {
+        // Upsert straight from v_entity: the view is evaluated once (issue #91). No
+        // source row means the base row was deleted, so remove the tview row
+        // instead of erroring (issue #48: DELETE left stale rows).
+        crate::metrics::metrics_api::record_view_recomputes(1);
+        let (produced, written) = apply_patch(meta, key)?;
+        let deleted = if produced == 0 {
+            delete_tview_row(meta, key)?
+        } else {
+            Vec::new()
+        };
+        (written, deleted)
+    };
+    Ok(super::touched(meta, keys, before, written, deleted))
 }
 
-/// Delete the tview row for a pk whose backing-view row has disappeared.
+/// Delete the tview row of a key whose backing-view row has disappeared, and
+/// return its `pk_<entity>`.
 ///
-/// Called when `recompute_view_row` returns `None` (base row deleted or now
-/// filtered out of the backing view). Removing the row here is what makes DELETE
-/// propagate to the tview instead of leaving a stale row (issue #48).
-fn delete_tview_row(meta: &TviewMeta, pk: i64) -> spi::Result<()> {
+/// Removing the row here is what makes DELETE propagate to the tview instead of
+/// leaving a stale row (issue #48).
+fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> spi::Result<Vec<i64>> {
+    let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_key = quote_identifier(&meta.identity.column);
     let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
     let sql = format!(
-        "DELETE FROM {qi_tv} WHERE {qi_pk} = $1 \
-         RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
+        "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
+         RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'",
+        super::key_cast(&key_type, "$1", false)
     );
     super::run_journaled_delete(
         &meta.entity_name,
         &sql,
-        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
-    )?;
-    Ok(())
-}
-
-/// Refresh a DISTINCT ON TVIEW row when a base-table row in its dedup group changes.
-///
-/// Re-evaluates the full DISTINCT ON group for the given `dedup_key` value and
-/// UPSERTs the winning row into the TVIEW.  If no rows remain in the backing view
-/// for that key (all base-table rows deleted), the TVIEW row is deleted.
-///
-/// # Arguments
-///
-/// * `source_oid` - OID of the TVIEW's view or table
-/// * `dedup_key` - TEXT representation of the DISTINCT ON key value (e.g. UUID as string)
-///
-/// # Errors
-///
-/// Returns `Err` if the TVIEW has no metadata, is not a DISTINCT ON TVIEW, or if
-/// the database operation fails.
-pub fn refresh_by_dedup_key(source_oid: Oid, dedup_key: &str) -> spi::Result<()> {
-    let meta = TviewMeta::load_for_source(source_oid)?;
-    let Some(meta) = meta else {
-        error!("No TVIEW metadata for source_oid: {:?}", source_oid);
-    };
-
-    if meta.distinct_on_keys.is_empty() {
-        error!(
-            "refresh_by_dedup_key called on non-DISTINCT-ON TVIEW '{}'",
-            meta.entity_name
-        );
-    }
-
-    // Use the projected OUTPUT column for WHERE / ON CONFLICT — the name the backing
-    // view and tv actually expose. For an aliased DISTINCT ON key this differs from
-    // the source column the trigger reads; fall back to the source key when output
-    // keys are absent (unaliased keys, or metadata predating distinct_on_output_keys).
-    // `key_col` stays bare for column-name comparison in build_dedup_dml_components;
-    // `key_col_q` is quoted for interpolation into SQL.
-    let key_col = meta
-        .distinct_on_output_keys
-        .first()
-        .unwrap_or(&meta.distinct_on_keys[0]);
-    let key_col_q = quote_identifier(key_col);
-    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
-    let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
-
-    // Check whether any winning row exists for this dedup key
-    let count_sql = format!("SELECT COUNT(*) FROM {qi_view} WHERE {key_col_q}::text = $1");
-    let row_count: i64 = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
-        let mut rows = client.select(&count_sql, None, &args)?;
-        let count = rows
-            .next()
-            .and_then(|r| r["count"].value::<i64>().ok().flatten())
-            .unwrap_or(0);
-        Ok::<i64, spi::SpiError>(count)
-    })?;
-
-    if row_count == 0 {
-        // No winning row — remove the TVIEW row for this dedup key
-        let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
-        let delete_sql = format!(
-            "DELETE FROM {qi_tv} WHERE {key_col_q}::text = $1 \
-             RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'"
-        );
-        super::run_journaled_delete(
-            &meta.entity_name,
-            &delete_sql,
-            &[unsafe {
-                DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }],
-        )?;
-    } else {
-        // Winning row exists — UPSERT from the backing view
-        // Get (col_list, do_update) from cache or compute once
-
-        // Fast path: check cache
-        let cached_dml: Option<(String, String)> = {
-            let cache = crate::utils::DEDUP_DML_CACHE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.get(&qi_view).cloned()
-        };
-
-        let (col_list, do_update) = if let Some(dml) = cached_dml {
-            dml
-        } else {
-            // Slow path: build and cache
-            let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-            if col_names.is_empty() {
-                return Ok(());
-            }
-
-            let dml = build_dedup_dml_components(&qi_tv, &col_names, key_col.as_str());
-
-            // Cache the DML strings (bounded by pg_tviews.cache_size)
-            {
-                let mut cache = crate::utils::DEDUP_DML_CACHE
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                crate::utils::bound_cache(&mut cache);
-                cache.insert(qi_view.clone(), dml.clone());
-            }
-
-            dml
-        };
-
-        super::run_counted_upsert(
-            &meta.entity_name,
-            &qi_tv,
-            &col_list,
-            &format!("SELECT {col_list} FROM {qi_view} WHERE {key_col_q}::text = $1 LIMIT 1"),
-            &format!("ON CONFLICT ({key_col_q}) {do_update}"),
-            &[unsafe {
-                DatumWithOid::new(dedup_key, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }],
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Build DML components (`col_list`, conflict action) for dedup key refresh.
-///
-/// The conflict action is the guarded `DO UPDATE` from
-/// [`super::upsert_conflict_action`]; the dedup key column is excluded from it
-/// since it's the CONFLICT key.
-///
-/// # Arguments
-///
-/// * `qi_tv` - The quoted TVIEW table (qualifies the stored columns in the guard)
-/// * `col_names` - Column names from the backing view
-/// * `key_col` - The dedup key column name (excluded from DO UPDATE)
-///
-/// # Returns
-///
-/// Tuple of (`col_list`, `conflict_action`)
-fn build_dedup_dml_components(
-    qi_tv: &str,
-    col_names: &[String],
-    key_col: &str,
-) -> (String, String) {
-    (
-        super::column_list(col_names),
-        super::upsert_conflict_action(qi_tv, col_names, key_col, None),
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 
-/// Recompute a single row from the `v_entity` view.
-///
-/// Queries the view definition to get the latest JSONB `data` column and FK values
-/// for a specific primary key. This represents the "ground truth" after a source
-/// table change.
-///
-/// # Arguments
-///
-/// * `meta` - TVIEW metadata containing view OID and entity name
-/// * `pk` - Primary key value to recompute
-///
-/// # Returns
-///
-/// `ViewRow` with fresh `data` JSONB and extracted FK values, or error if row not found.
+/// Whether the backing view still has a row for `key`, applying the
+/// `union_duplicate_policy` when a UNION view returns several.
 ///
 /// # Example Query
 ///
 /// ```sql
-/// SELECT * FROM v_post WHERE pk_post = 1
-/// -- Returns: pk_post, fk_user, data JSONB
+/// SELECT 1 FROM v_post WHERE pk_post = $1 LIMIT 2
 /// ```
-fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
+fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> spi::Result<bool> {
+    let key_type = meta.key_type()?;
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
-    let pk_col = format!("pk_{}", meta.entity_name); // e.g. pk_post
 
     let sql = format!(
-        "SELECT 1 FROM {qi_view} WHERE {} = $1 LIMIT 2",
-        quote_identifier(&pk_col)
+        "SELECT 1 FROM {qi_view} WHERE {} = {} LIMIT 2",
+        quote_identifier(&meta.identity.column),
+        super::key_cast(&key_type, "$1", false)
     );
 
     Spi::connect(|client| {
-        let args =
-            vec![unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }];
+        let args = [super::key_scalar(&key_type, key)?];
         let mut rows = client.select(&sql, None, &args)?;
 
-        // No backing-view row for this pk means the base row was deleted (or now
+        // No backing-view row for this key means the base row was deleted (or now
         // fails the view's WHERE/branch conditions). This is not an error: the
-        // caller removes the corresponding tview row. Returning Ok(None) is what
-        // makes DELETE propagate instead of being swallowed as an SPI failure.
+        // caller removes the corresponding tview row.
         if rows.next().is_none() {
             return Ok(false);
         }
@@ -332,20 +171,20 @@ fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
                 crate::utils::log_once(
                     &format!("union_duplicate:{}", meta.entity_name),
                     &format!(
-                        "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}; \
+                        "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}; \
                          taking the first row (union_duplicate_policy=first). Reported once \
                          per backend.",
-                        meta.entity_name, pk
+                        meta.entity_name, meta.identity.column
                     ),
                 );
             } else {
                 return Err(spi::Error::from(crate::TViewError::SpiError {
                     query: sql.clone(),
                     error: format!(
-                        "TVIEW '{}': UNION ALL backing view returned multiple rows for pk={}. \
+                        "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}. \
                          Ensure UNION ALL branches are mutually exclusive, or set \
                          pg_tviews.union_duplicate_policy='first' to suppress this error.",
-                        meta.entity_name, pk
+                        meta.entity_name, meta.identity.column
                     ),
                 }));
             }
@@ -406,8 +245,9 @@ fn view_row_exists(meta: &TviewMeta, pk: i64) -> spi::Result<bool> {
 /// // WHERE pk_post = $2
 /// apply_patch(&view_row, &meta)?;
 /// ```
-fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
-    let pk_col = format!("pk_{}", meta.entity_name);
+fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+    let key_type = meta.key_type()?;
+    let key_col = &meta.identity.column;
 
     // Check if jsonb_delta is available (cached after first session query)
     let Some(delta_schema) = jsonb_delta_schema() else {
@@ -416,7 +256,7 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
             "jsonb_delta is not installed: smart JSONB patching is disabled and cascades \
              replace whole documents (about 2x slower). CREATE EXTENSION jsonb_delta to enable it.",
         );
-        return apply_full_replacement(meta, pk);
+        return apply_full_replacement(meta, key);
     };
 
     // Parse dependencies
@@ -424,7 +264,7 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
 
     // If no dependencies, use full replacement
     if deps.is_empty() {
-        return apply_full_replacement(meta, pk);
+        return apply_full_replacement(meta, key);
     }
 
     // Array (issue #50) and nested-object (issue #52) dependencies cannot be
@@ -442,7 +282,7 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
             DependencyType::Array | DependencyType::NestedObject
         )
     }) {
-        return apply_full_replacement(meta, pk);
+        return apply_full_replacement(meta, key);
     }
 
     // UPSERT rather than UPDATE (issue #48): a smart patch only makes sense for a
@@ -451,14 +291,14 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
     // row from the backing view, or smart-patch the existing row on conflict.
     let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
     if col_names.is_empty() {
-        return apply_full_replacement(meta, pk);
+        return apply_full_replacement(meta, key);
     }
     let col_list = super::column_list(&col_names);
     // Qualify the target column as `{tv}.data`: the INSERT … SELECT source relation
     // is in scope inside ON CONFLICT DO UPDATE, so a bare `data` is ambiguous.
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
-    let qi_pk = quote_identifier(&pk_col);
+    let qi_key = quote_identifier(key_col);
     // The patch source is the freshly computed document the upsert already read
     // from the view (`EXCLUDED.data`), so the view is evaluated once (issue #91).
     let patch_expr = build_smart_patch_expr(
@@ -468,23 +308,25 @@ fn apply_patch(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
         "EXCLUDED.\"data\"",
     );
 
-    // $1 = primary key (selects the row to insert from the backing view). In the
+    // $1 = the row's identity (selects the row to insert from the backing view). In the
     // DO UPDATE clause, `data` is patched in place while every other projected
     // column takes the backing view's value (#98); the guard skips the write when
     // nothing changed (#72).
     let conflict = format!(
-        "ON CONFLICT ({qi_pk}) {}",
-        super::upsert_conflict_action(&qi_tv, &col_names, &pk_col, Some(&patch_expr))
+        "ON CONFLICT ({qi_key}) {}",
+        super::upsert_conflict_action(&qi_tv, &col_names, key_col, Some(&patch_expr))
     );
 
-    // SAFETY: DatumWithOid::new wraps the INT8 primary key for SPI parameter passing.
     super::run_counted_upsert(
         &meta.entity_name,
         &qi_tv,
         &col_list,
-        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $1"),
+        &format!(
+            "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
+            super::key_cast(&key_type, "$1", false)
+        ),
         &conflict,
-        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 
@@ -602,10 +444,11 @@ fn build_smart_patch_expr(
 /// SET data = $1, updated_at = now()
 /// WHERE pk_entity = $2
 /// ```
-fn apply_full_replacement(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
+fn apply_full_replacement(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+    let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
-    let pk_col = format!("pk_{}", meta.entity_name);
-    let qi_pk = quote_identifier(&pk_col);
+    let key_col = &meta.identity.column;
+    let qi_key = quote_identifier(key_col);
 
     // Schema-qualified backing view, so the refresh works under any search_path
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
@@ -622,20 +465,36 @@ fn apply_full_replacement(meta: &TviewMeta, pk: i64) -> spi::Result<i64> {
         &meta.entity_name,
         &qi_tv,
         &col_list,
-        &format!("SELECT {col_list} FROM {qi_view} WHERE {qi_pk} = $1"),
         &format!(
-            "ON CONFLICT ({qi_pk}) {}",
-            super::upsert_conflict_action(&qi_tv, &col_names, &pk_col, None)
+            "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
+            super::key_cast(&key_type, "$1", false)
         ),
-        &[unsafe { DatumWithOid::new(pk, PgOid::BuiltIn(PgBuiltInOids::INT8OID).value()) }],
+        &format!(
+            "ON CONFLICT ({qi_key}) {}",
+            super::upsert_conflict_action(&qi_tv, &col_names, key_col, None)
+        ),
+        &[super::key_scalar(&key_type, key)?],
     )
 }
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
+    use crate::queue::key::KeyValue;
     use pgrx::JsonB;
     use pgrx::prelude::*;
+
+    /// Refresh the row `key` of the TVIEW whose table or view is `source`.
+    fn refresh_row(source: pg_sys::Oid, key: &KeyValue) -> spi::Result<crate::refresh::Touched> {
+        let entity = Spi::get_one::<String>(&format!(
+            "SELECT entity FROM {} WHERE view_oid::oid = {1} OR table_oid::oid = {1}",
+            crate::utils::meta_table(),
+            source.to_u32()
+        ))?
+        .expect("a registered TVIEW");
+        let meta = crate::catalog::TviewMeta::load_by_entity(&entity)?.expect("its metadata");
+        crate::refresh::refresh_key(&meta, key)
+    }
 
     /// Test smart patching for nested object dependencies.
     ///
@@ -721,13 +580,13 @@ mod tests {
         let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(user_oid, 1).unwrap();
+        refresh_row(user_oid, &KeyValue::Int(1)).unwrap();
 
-        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        // Explicitly refresh tv_post (propagation is handled by the queue, not the refresh)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         // Verify: author.name changed, title unchanged
         let updated_data = Spi::get_one::<JsonB>(
@@ -867,13 +726,13 @@ mod tests {
         let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_comment'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(comment_oid, 1).unwrap();
+        refresh_row(comment_oid, &KeyValue::Int(1)).unwrap();
 
-        // Explicitly refresh tv_post (propagation is now handled by queue, not refresh_pk)
+        // Explicitly refresh tv_post (propagation is handled by the queue, not the refresh)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         // Verify: Only the updated comment changed
         let updated_data = Spi::get_one::<JsonB>(
@@ -980,7 +839,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         // Verify: data unchanged (scalar has no path in JSONB)
         let updated_data = Spi::get_one::<JsonB>(
@@ -1127,12 +986,12 @@ mod tests {
         let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(user_oid, 1).unwrap();
+        refresh_row(user_oid, &KeyValue::Int(1)).unwrap();
 
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         let after_author_update =
             Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
@@ -1161,8 +1020,8 @@ mod tests {
         let comment_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_comment'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(comment_oid, 1).unwrap();
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(comment_oid, &KeyValue::Int(1)).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         let after_comment_update =
             Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
@@ -1254,14 +1113,14 @@ mod tests {
             .unwrap();
 
         // This should succeed using full replacement fallback
-        let result = crate::refresh::refresh_pk(user_oid, 1);
+        let result = refresh_row(user_oid, &KeyValue::Int(1));
         assert!(result.is_ok(), "Fallback should work without jsonb_delta");
 
         // Explicitly refresh tv_post (propagation is now handled by queue)
         let post_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_post'::regclass::oid")
             .unwrap()
             .unwrap();
-        crate::refresh::refresh_pk(post_oid, 1).unwrap();
+        refresh_row(post_oid, &KeyValue::Int(1)).unwrap();
 
         // Verify data was updated (via fallback)
         let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_post WHERE pk_post = 1")
@@ -1315,7 +1174,7 @@ mod tests {
             .unwrap();
 
         // Should succeed using full replacement fallback
-        let result = crate::refresh::refresh_pk(user_oid, 1);
+        let result = refresh_row(user_oid, &KeyValue::Int(1));
         assert!(result.is_ok(), "Should handle legacy TVIEW gracefully");
 
         // Verify data was updated
@@ -1325,12 +1184,11 @@ mod tests {
         assert_eq!(updated.0["name"], "Alice Legacy");
     }
 
-    /// Test DISTINCT ON TVIEW refresh with dedup key.
+    /// Test DISTINCT ON TVIEW refresh by its DISTINCT ON key.
     ///
-    /// Verifies that `refresh_by_dedup_key()` correctly generates and reuses
-    /// DML strings (column list and DO UPDATE clause) across multiple calls.
+    /// Verifies that `refresh_key()` recomputes a DISTINCT ON group's winner.
     #[pg_test]
-    fn test_refresh_by_dedup_key_basic() {
+    fn test_refresh_distinct_on_basic() {
         // Create base tables
         Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
         Spi::run(
@@ -1364,7 +1222,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by user, keep first post)
+        // Create DISTINCT ON TVIEW (one row per user, keep first post)
         Spi::run(
             "
             SELECT pg_tviews_create('post_by_user', $$
@@ -1378,18 +1236,18 @@ mod tests {
         )
         .unwrap();
 
-        // Verify TVIEW was created with DISTINCT ON metadata
-        let distinct_keys = crate::utils::spi_get_string(
+        // Verify TVIEW was created keyed on its DISTINCT ON key
+        let identity = crate::utils::spi_get_string(
             "
-            SELECT distinct_on_keys::text FROM pg_tview_meta
+            SELECT identity::text FROM pg_tview_meta
             WHERE entity = 'post_by_user'
         ",
         )
         .unwrap()
         .unwrap();
         assert!(
-            distinct_keys.contains("fk_user"),
-            "Should capture distinct_on_keys"
+            identity.contains("fk_user"),
+            "Should record the DISTINCT ON key as the identity"
         );
 
         // Verify initial state (only one row for user 1, fk_user=1)
@@ -1415,12 +1273,11 @@ mod tests {
         );
     }
 
-    /// Test multiple dedup key refreshes for DISTINCT ON TVIEW.
+    /// Test several refreshes of a DISTINCT ON TVIEW.
     ///
-    /// Verifies that multiple `refresh_by_dedup_key()` calls reuse the cached
-    /// DML strings without rebuilding them.
+    /// Verifies that successive `refresh_key()` calls follow the group's winner.
     #[pg_test]
-    fn test_refresh_by_dedup_key_multiple_keys() {
+    fn test_refresh_distinct_on_multiple_keys() {
         // Create base tables
         Spi::run("CREATE TABLE tb_category (pk_category BIGSERIAL PRIMARY KEY, name TEXT)")
             .unwrap();
@@ -1456,7 +1313,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by category)
+        // Create DISTINCT ON TVIEW (one row per category)
         Spi::run(
             "
             SELECT pg_tviews_create('item_by_cat', $$
@@ -1489,20 +1346,19 @@ mod tests {
         .unwrap();
         assert_eq!(cat1_title, "Item 1A", "Category 1 should show Item 1A");
 
-        // Now delete Item 1A (the current winner) and refresh dedup key
+        // Now delete Item 1A (the current winner) and refresh its group
         // This simulates the real cascade scenario where one item changes
         // and we need to refresh the DISTINCT ON group
         Spi::run("DELETE FROM tb_item WHERE pk_item = 1").unwrap();
 
-        // Simulate calling refresh_by_dedup_key by directly calling it
+        // Refresh the group directly
         // (The actual invocation would be through queue mechanism)
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_item_by_cat'::regclass::oid")
             .unwrap()
             .unwrap();
 
-        // This should reuse cached DML strings
-        let result = crate::refresh::refresh_by_dedup_key(view_oid, "1");
-        assert!(result.is_ok(), "First dedup key refresh should succeed");
+        let result = refresh_row(view_oid, &KeyValue::Int(1));
+        assert!(result.is_ok(), "First refresh should succeed");
 
         // Verify winner changed to Item 1B
         let cat1_new_title: String = Spi::get_one(
@@ -1517,14 +1373,11 @@ mod tests {
             "Category 1 should now show Item 1B"
         );
 
-        // Delete Item 1B and refresh again - this tests cache reuse
+        // Delete Item 1B and refresh again
         Spi::run("DELETE FROM tb_item WHERE pk_item = 2").unwrap();
 
-        let result2 = crate::refresh::refresh_by_dedup_key(view_oid, "1");
-        assert!(
-            result2.is_ok(),
-            "Second dedup key refresh should succeed and reuse cache"
-        );
+        let result2 = refresh_row(view_oid, &KeyValue::Int(1));
+        assert!(result2.is_ok(), "Second refresh should succeed");
 
         // Verify winner changed to Item 1C
         let cat1_final_title: String = Spi::get_one(
@@ -1631,7 +1484,7 @@ mod tests {
     /// Test that refreshing a deleted row removes it from the tview (issue #48).
     ///
     /// When a base row is deleted (or the view condition no longer matches), the
-    /// backing view returns no row for that pk. `refresh_pk()` must remove the
+    /// backing view returns no row for that pk. `refresh_key()` must remove the
     /// corresponding tview row and succeed — previously it raised a swallowed SPI
     /// error and left the row stale.
     #[pg_test]
@@ -1677,7 +1530,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let result = crate::refresh::refresh_pk(post_oid, 1);
+        let result = refresh_row(post_oid, &KeyValue::Int(1));
         assert!(
             result.is_ok(),
             "Refresh of a deleted row should succeed by removing the tview row, got {result:?}"
@@ -1694,7 +1547,7 @@ mod tests {
 
     /// Test error handling when NULL data column is encountered.
     ///
-    /// Verifies that `refresh_pk()` gracefully handles the edge case where
+    /// Verifies that `refresh_key()` gracefully handles the edge case where
     /// the backing view returns a row but the data column is NULL.
     #[pg_test]
     fn test_null_data_column_error_handling() {
@@ -1729,7 +1582,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let result = crate::refresh::refresh_pk(item_oid, 1);
+        let result = refresh_row(item_oid, &KeyValue::Int(1));
 
         // Should fail with clear error about NULL data
         assert!(
@@ -1743,12 +1596,9 @@ mod tests {
         );
     }
 
-    /// Test DML cache invalidation when column metadata changes.
-    ///
-    /// Verifies that the DML cache is properly cleared when a TVIEW schema
-    /// changes (e.g., after view redefinition).
+    /// Test refreshing a DISTINCT ON TVIEW keyed on a text column.
     #[pg_test]
-    fn test_refresh_by_dedup_key_cache_invalidation() {
+    fn test_refresh_distinct_on_text_keys() {
         // Create base tables
         Spi::run(
             "CREATE TABLE tb_post (
@@ -1766,7 +1616,7 @@ mod tests {
         )
         .unwrap();
 
-        // Create DISTINCT ON TVIEW (dedup by title as simple example)
+        // Create DISTINCT ON TVIEW (one row per title, a text key)
         Spi::run(
             "
             SELECT pg_tviews_create('post_by_title', $$
@@ -1780,21 +1630,14 @@ mod tests {
         )
         .unwrap();
 
-        // Get initial cache state
         let view_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'v_post_by_title'::regclass::oid")
             .unwrap()
             .unwrap();
 
-        // First refresh to populate cache
-        let result1 = crate::refresh::refresh_by_dedup_key(view_oid, "Post 1");
+        let result1 = refresh_row(view_oid, &KeyValue::Text("Post 1".into()));
         assert!(result1.is_ok(), "Initial refresh should succeed");
 
-        // Invalidate cache (simulating schema change through external mechanism)
-        // For now, we verify it still works - the cache invalidation is tested
-        // through the invalidate_all_caches() function
-
-        // Second refresh should still work (either from cache or rebuilt)
-        let result2 = crate::refresh::refresh_by_dedup_key(view_oid, "Post 2");
+        let result2 = refresh_row(view_oid, &KeyValue::Text("Post 2".into()));
         assert!(result2.is_ok(), "Second refresh should succeed");
     }
 }

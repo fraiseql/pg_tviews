@@ -46,6 +46,23 @@ INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'p1'), (2, 1, 'p2'),
 INSERT INTO tb_comment (pk_comment, fk_post, body) VALUES (1, 1, 'c1'), (2, 1, 'c2');
 INSERT INTO tb_order (pk_order, fk_user, total) VALUES (1, 1, 10), (2, 2, 5);
 INSERT INTO app.tb_note (pk_note, body) VALUES (1, 'n1');
+-- Versioned rows: one TVIEW row per id_contract (DISTINCT ON).
+CREATE TABLE tb_contract (
+    pk_contract int PRIMARY KEY,
+    id          uuid NOT NULL DEFAULT gen_random_uuid(),
+    id_contract int NOT NULL,
+    version_no  int NOT NULL,
+    status      text NOT NULL
+);
+INSERT INTO tb_contract (pk_contract, id_contract, version_no, status)
+    VALUES (1, 100, 1, 'a'), (2, 100, 2, 'b'), (3, 200, 1, 'a');
+CREATE TABLE tb_shipment (
+    pk_shipment int PRIMARY KEY,
+    id          uuid NOT NULL DEFAULT gen_random_uuid(),
+    code        text NOT NULL UNIQUE,
+    fk_order    int NOT NULL REFERENCES tb_order
+);
+INSERT INTO tb_shipment (pk_shipment, code, fk_order) VALUES (1, 's1', 1), (2, 's2', 2);
 
 -- Plain.
 SELECT pg_tviews_create('tv_user', $$
@@ -77,6 +94,24 @@ SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
 $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+-- DISTINCT ON TVIEWs, from 0.1.0-beta.22 (which maps tables read through their
+-- joins, #164) on.
+SELECT COALESCE(NULLIF(pg_catalog.split_part(extversion, 'beta.', 2), '')::int >= 22, false)
+       AS distinct_on_fixtures
+FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews' \gset
+\if :distinct_on_fixtures
+-- DISTINCT ON the key, aliased as pk_<entity>.
+SELECT pg_tviews_create('tv_contract', $$
+    SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
+           jsonb_build_object('status', c.status) AS data
+    FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+-- DISTINCT ON a unique root column, a table read through a join (0.1.0-beta.22
+-- keys it with a unique index on pk_<entity>).
+SELECT pg_tviews_create('tv_shipment', $$
+    SELECT DISTINCT ON (s.code) s.pk_shipment, s.id, s.code,
+           jsonb_build_object('code', s.code, 'total', o.total) AS data
+    FROM tb_shipment s JOIN tb_order o ON o.pk_order = s.fk_order ORDER BY s.code $$);
+\endif
 -- Off the search_path.
 SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$

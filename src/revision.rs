@@ -15,7 +15,7 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 2;
+pub const CATALOG_REVISION: i32 = 3;
 
 thread_local! {
     /// Whether this backend already found a matching catalog. A mismatch is not

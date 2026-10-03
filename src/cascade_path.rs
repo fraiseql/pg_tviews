@@ -86,6 +86,14 @@ pub struct CascadePath {
     /// it reaches in one statement, instead of recomputing each (issue #120).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fanout: Option<FanoutPatch>,
+    /// The source table holds the TVIEW's key (of a UNION branch): its own rows
+    /// are the TVIEW's rows (ADR 0169).
+    #[serde(default)]
+    pub root: bool,
+    /// Attribute number of `initial_col` when registered; the trigger reads it by
+    /// number while that attribute still has this name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_attnum: Option<i16>,
 }
 
 /// How a source-row UPDATE is patched into all its target rows at once (issue
@@ -116,6 +124,8 @@ mod tests {
             unresolvable: false,
             source_columns: vec![],
             fanout: None,
+            root: false,
+            initial_attnum: None,
         };
 
         let json = serde_json::to_string(&path).unwrap();
@@ -139,6 +149,8 @@ mod tests {
             unresolvable: false,
             source_columns: vec![],
             fanout: None,
+            root: false,
+            initial_attnum: None,
         };
 
         let json = serde_json::to_string(&path).unwrap();

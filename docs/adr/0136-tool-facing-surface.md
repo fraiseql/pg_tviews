@@ -293,6 +293,7 @@ SELECT * FROM tviews.registry;      -- one row per registered TVIEW
 | `logged` | boolean | the table is LOGGED |
 | `options` | jsonb | the effective options (Decision 5), every key present; `group_keys` is `null` for a plain TVIEW |
 | `needs_reregister` | boolean | a release changed what registration derives since this TVIEW was last registered |
+| `identity` | text[] | the column that names its rows and keys its table: `pk_<entity>`, or a `DISTINCT ON` key (appended in 0.1.0-beta.23, [ADR 0169](0169-tview-row-identity.md)) |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the creation
 pipeline, with `SELECT *` expanded and a raw SELECT rewritten to the `pk_<entity>, id,

@@ -178,34 +178,6 @@ pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) ->
     }
 }
 
-/// Extracts `pk_<entity>` from the trigger's `NEW` or `OLD` tuple.
-///
-/// The caller passes the entity it resolved from the table, or from the
-/// partitioned table when the trigger fired on a partition (a partition has the
-/// same columns, but it is not `tb_<entity>`).
-pub fn extract_pk(trigger: &PgTrigger, entity: &str) -> spi::Result<i64> {
-    let tuple = trigger
-        .new()
-        .or_else(|| trigger.old())
-        .expect("Row must exist for AFTER trigger");
-
-    let pk_column = format!("pk_{entity}");
-
-    match tuple_get_i64(&tuple, &pk_column) {
-        IntExtraction::Value(v) => Ok(v),
-        IntExtraction::Null => Err(crate::TViewError::SpiError {
-            query: pk_column.clone(),
-            error: format!("{pk_column} must not be NULL"),
-        }
-        .into()),
-        IntExtraction::Missing => Err(crate::TViewError::SpiError {
-            query: pk_column.clone(),
-            error: format!("{pk_column} column not found on tuple (expected INTEGER or BIGINT)"),
-        }
-        .into()),
-    }
-}
-
 /// Global cache for OID → qualified relname mappings (schema-qualified)
 /// Populated by `qualified_relname_from_oid`; invalidated on DDL.
 static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
@@ -229,24 +201,6 @@ pub static VIEW_COLUMNS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
 /// Called when DDL creates/drops/alters tables with columns
 pub fn invalidate_view_columns_cache() {
     let mut cache = VIEW_COLUMNS_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.clear();
-}
-
-/// DML components for dedup key refresh: (`col_list`, `do_update_clause`)
-/// Precomputed once per TVIEW to avoid repeated string building
-pub type DedupDmlCache = HashMap<String, (String, String)>;
-
-/// Global cache for dedup key DML strings (`view_name` → (`col_list`, `do_update`))
-/// DML strings are stable within a session (only change on DDL)
-pub static DEDUP_DML_CACHE: LazyLock<Mutex<DedupDmlCache>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Invalidate the dedup key DML cache
-/// Called when DDL creates/drops/alters tables with columns
-pub fn invalidate_dedup_dml_cache() {
-    let mut cache = DEDUP_DML_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.clear();

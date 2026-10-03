@@ -1,4 +1,4 @@
-use super::key::RefreshKey;
+use super::key::{KeyValue, RefreshKey};
 use super::state::{TX_CRASH_RECOVERY_CHECKED, TX_REFRESH_QUEUE};
 use std::collections::HashSet;
 
@@ -15,29 +15,31 @@ fn check_queue_backpressure(limit: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Internal helper: enqueue a single PK-based refresh with explicit limit.
+/// Internal helper: enqueue a single refresh with explicit limit.
 /// Used for testability and backpressure enforcement.
-pub fn enqueue_refresh_with_limit(entity: &str, pk: i64, limit: usize) -> Result<(), String> {
+pub fn enqueue_refresh_with_limit(entity: &str, key: KeyValue, limit: usize) -> Result<(), String> {
     check_queue_backpressure(limit)?;
     TX_REFRESH_QUEUE.with(|q| {
-        q.borrow_mut().insert(RefreshKey::pk(entity, pk));
+        q.borrow_mut().insert(RefreshKey::new(entity, key));
     });
     Ok(())
 }
 
-/// Enqueue a standard PK-based refresh request.
+/// Enqueue the refresh of the row of `entity` whose identity is `key`.
 ///
-/// This is the main entry point from triggers for normal TVIEWs.
+/// This is the main entry point from triggers.
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `max_queue_size` would be exceeded.
 ///
 /// A plain enqueue **poisons** any direct patch for this key (issue #56): the key
 /// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
-pub fn enqueue_refresh(entity: &str, pk: i64) {
-    if let Err(msg) = enqueue_refresh_with_limit(entity, pk, crate::config::max_queue_size()) {
+pub fn enqueue_refresh(entity: &str, key: KeyValue) {
+    if let Err(msg) =
+        enqueue_refresh_with_limit(entity, key.clone(), crate::config::max_queue_size())
+    {
         pgrx::error!("{}", msg);
     }
-    super::patch::poison(RefreshKey::pk(entity, pk));
+    super::patch::poison(RefreshKey::new(entity, key));
 }
 
 /// Enqueue a PK-based refresh **and** record a direct patch (issue #56 fast path).
@@ -52,7 +54,9 @@ pub fn enqueue_refresh_patched(
     pk: i64,
     fields: serde_json::Map<String, serde_json::Value>,
 ) {
-    if let Err(msg) = enqueue_refresh_with_limit(entity, pk, crate::config::max_queue_size()) {
+    if let Err(msg) =
+        enqueue_refresh_with_limit(entity, KeyValue::Int(pk), crate::config::max_queue_size())
+    {
         pgrx::error!("{}", msg);
     }
     // Count the capture once per fresh key: a base table feeding several tviews
@@ -60,24 +64,6 @@ pub fn enqueue_refresh_patched(
     if super::patch::record(RefreshKey::pk(entity, pk), Vec::new(), fields) {
         crate::metrics::metrics_api::record_direct_patch_captured();
     }
-}
-
-/// Enqueue a DISTINCT ON dedup-key refresh request.
-///
-/// Used by triggers on DISTINCT ON TVIEWs.  The `dedup_key` is the value
-/// of the DISTINCT ON column (cast to TEXT) identifying the group to re-evaluate.
-/// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if `max_queue_size` would be exceeded.
-pub fn enqueue_refresh_dedup(entity: &str, dedup_key: &str) {
-    TX_REFRESH_QUEUE.with(|q| {
-        let limit = crate::config::max_queue_size();
-        check_queue_backpressure(limit).unwrap_or_else(|msg| {
-            pgrx::error!("{}", msg);
-        });
-        q.borrow_mut().insert(RefreshKey::dedup(entity, dedup_key));
-    });
-    // Plain enqueue poisons any direct patch for this key (issue #56).
-    super::patch::poison(RefreshKey::dedup(entity, dedup_key));
 }
 
 /// Enqueue a refresh of every row of `entity`'s TVIEW (issues #157, #158). One
@@ -96,25 +82,25 @@ pub fn enqueue_refresh_all(entity: &str) {
     });
 }
 
-/// Bulk enqueue PK-based refresh requests for multiple PKs of the same entity.
+/// Bulk enqueue refresh requests for several rows of the same entity.
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `max_queue_size` would be exceeded.
-pub fn enqueue_refresh_bulk(entity: &str, pks: Vec<i64>) {
+pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
     TX_REFRESH_QUEUE.with(|q| {
         let limit = crate::config::max_queue_size();
         check_queue_backpressure(limit).unwrap_or_else(|msg| {
             pgrx::error!("{}", msg);
         });
         let mut queue = q.borrow_mut();
-        for pk in &pks {
-            queue.insert(RefreshKey::pk(entity, *pk));
+        for key in &keys {
+            queue.insert(RefreshKey::new(entity, key.clone()));
         }
     });
     // Plain (bulk) enqueue poisons any direct patches for these keys (issue #56).
-    for pk in pks {
-        super::patch::poison(RefreshKey::pk(entity, pk));
+    for key in keys {
+        super::patch::poison(RefreshKey::new(entity, key));
     }
 }
 
@@ -163,9 +149,9 @@ mod tests {
     fn test_enqueue_and_snapshot() {
         clear_queue();
 
-        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap();
-        enqueue_refresh_with_limit("post", 2, usize::MAX).unwrap();
-        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap(); // duplicate
+        enqueue_refresh_with_limit("user", KeyValue::Int(1), usize::MAX).unwrap();
+        enqueue_refresh_with_limit("post", KeyValue::Int(2), usize::MAX).unwrap();
+        enqueue_refresh_with_limit("user", KeyValue::Int(1), usize::MAX).unwrap(); // duplicate
 
         let snapshot = take_queue_snapshot();
         assert_eq!(snapshot.len(), 2); // Deduplicated
@@ -179,8 +165,8 @@ mod tests {
     fn test_clear_queue() {
         clear_queue();
 
-        enqueue_refresh_with_limit("user", 1, usize::MAX).unwrap();
-        enqueue_refresh_with_limit("post", 2, usize::MAX).unwrap();
+        enqueue_refresh_with_limit("user", KeyValue::Int(1), usize::MAX).unwrap();
+        enqueue_refresh_with_limit("post", KeyValue::Int(2), usize::MAX).unwrap();
 
         clear_queue();
 
@@ -197,14 +183,16 @@ mod tests {
         let limit = 2;
 
         // Should succeed: queue size is 0, adding 1 (total 1) doesn't exceed limit
-        enqueue_refresh_with_limit("user", 1, limit).expect("first insert should succeed");
+        enqueue_refresh_with_limit("user", KeyValue::Int(1), limit)
+            .expect("first insert should succeed");
 
         // Should succeed: queue size is 1, adding 1 (total 2) doesn't exceed limit
-        enqueue_refresh_with_limit("post", 2, limit).expect("second insert should succeed");
+        enqueue_refresh_with_limit("post", KeyValue::Int(2), limit)
+            .expect("second insert should succeed");
 
         // Should fail: queue size is 2, adding 1 (total 3) exceeds limit
         assert!(
-            enqueue_refresh_with_limit("user", 3, limit).is_err(),
+            enqueue_refresh_with_limit("user", KeyValue::Int(3), limit).is_err(),
             "third insert should fail"
         );
 
