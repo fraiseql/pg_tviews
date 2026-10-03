@@ -53,6 +53,11 @@ after)
         echo "TVIEWs follow their base tables before re-registration"
         psql -X -d "$upgraded" -v ON_ERROR_STOP=1 \
             -c "SELECT * FROM tviews.pg_tviews_reregister_all(strict => true)"
+        # A DISTINCT ON TVIEW is keyed on its DISTINCT ON key (ADR 0169): the
+        # unique index on pk_<entity> it had before is gone.
+        left="$(psql -X -At -d "$upgraded" -c \
+            "SELECT count(*) FROM pg_catalog.pg_class WHERE relkind = 'i' AND relname LIKE 'idx\_tv\_%\_pk\_unique'")"
+        [[ "$left" == 0 ]] || fail "$left pk_unique index(es) survived re-registration"
         ;;
     *) fail "usage: $0 after update|migrate" ;;
     esac

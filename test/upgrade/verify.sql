@@ -14,6 +14,16 @@ DELETE FROM public.tb_comment WHERE pk_comment = (SELECT min(pk_comment) FROM pu
 INSERT INTO public.tb_order (pk_order, fk_user, total)
     VALUES ((SELECT max(pk_order) + 1 FROM public.tb_order), 1, 1);
 UPDATE app.tb_note SET body = body || '+';
+-- The DISTINCT ON fixtures exist from 0.1.0-beta.22 on.
+SELECT pg_catalog.to_regclass('public.tv_shipment') IS NOT NULL AS distinct_on_fixtures \gset
+\if :distinct_on_fixtures
+UPDATE public.tb_contract SET status = status || '+' WHERE id_contract = 100;
+INSERT INTO public.tb_contract (pk_contract, id_contract, version_no, status)
+    VALUES ((SELECT max(pk_contract) + 1 FROM public.tb_contract), 200,
+            (SELECT max(version_no) + 1 FROM public.tb_contract WHERE id_contract = 200), 'v');
+UPDATE public.tb_order SET total = total + 1 WHERE pk_order = 2;
+UPDATE public.tb_shipment SET fk_order = 1 WHERE code = 's2';
+\endif
 
 DO $$
 DECLARE
@@ -21,7 +31,8 @@ DECLARE
     diverging BIGINT;
 BEGIN
     FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.comment', 'public.user_orders',
-                              'app.note'] LOOP
+                              'public.contract', 'public.shipment', 'app.note'] LOOP
+        CONTINUE WHEN pg_catalog.to_regclass(pg_catalog.replace(tv, '.', '.tv_')) IS NULL;
         EXECUTE pg_catalog.format(
             'SELECT count(*) FROM ((SELECT pk_%2$s, data FROM %1$I.tv_%2$s
                                     EXCEPT SELECT pk_%2$s, data FROM %1$I.v_%2$s)
