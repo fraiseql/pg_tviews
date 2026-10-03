@@ -4,7 +4,9 @@
 -- writer's change. The refresh now locks the rows first, then recomputes them
 -- with a snapshot that sees the other writer's commit.
 --
--- Two dblink connections stand for the two writers; this session checks.
+-- Two dblink connections stand for the two writers; this session checks. The same
+-- holds for a DISTINCT ON TVIEW, whose rows are locked by their DISTINCT ON key
+-- (ADR 0169).
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_concurrent_refresh_read_committed.sql
 --
@@ -56,6 +58,36 @@ BEGIN
             RAISE EXCEPTION 'race FAIL (run %): tv_post has %, the view has %', run,
                 (SELECT data FROM tv_post WHERE pk_post = 1),
                 (SELECT data FROM v_post WHERE pk_post = 1);
+        END IF;
+    END LOOP;
+END $$;
+
+-- A DISTINCT ON TVIEW keyed on a uuid: the latest revision of each document.
+CREATE TABLE tb_rev (pk_rev bigint PRIMARY KEY, id uuid NOT NULL, rev int NOT NULL,
+                     fk_user bigint NOT NULL REFERENCES tb_user, title text);
+INSERT INTO tb_rev VALUES (1, '00000000-0000-0000-0000-000000000001', 1, 1, 'r1'),
+                          (2, '00000000-0000-0000-0000-000000000001', 2, 1, 'r2');
+SELECT pg_tviews_create('tv_rev', $$
+    SELECT DISTINCT ON (r.id) r.pk_rev, r.id, r.fk_user,
+           jsonb_build_object('title', r.title, 'author', u.name) AS data
+    FROM tb_rev r JOIN tb_user u ON u.pk_user = r.fk_user ORDER BY r.id, r.rev DESC $$);
+
+DO $$
+DECLARE run int;
+BEGIN
+    FOR run IN 1..3 LOOP
+        PERFORM dblink_exec('first', format('UPDATE tb_user SET name = %L', 'old'));
+        PERFORM dblink_exec('first', 'UPDATE tb_rev SET title = ''t0''');
+        PERFORM dblink_exec('first', 'BEGIN');
+        PERFORM dblink_exec('first', format('UPDATE tb_user SET name = %L WHERE pk_user = 1', 'D' || run));
+        PERFORM dblink_send_query('second', 'UPDATE tb_rev SET title = ''T2'' WHERE pk_rev = 2');
+        PERFORM pg_sleep(0.3);
+        PERFORM dblink_exec('first', 'COMMIT');
+        PERFORM * FROM dblink_get_result('second') AS r(status text);
+        PERFORM * FROM dblink_get_result('second') AS r(status text);
+        IF (SELECT data FROM tv_rev) IS DISTINCT FROM (SELECT data FROM v_rev) THEN
+            RAISE EXCEPTION 'race FAIL (DISTINCT ON, run %): tv_rev has %, the view has %', run,
+                (SELECT data FROM tv_rev), (SELECT data FROM v_rev);
         END IF;
     END LOOP;
 END $$;
