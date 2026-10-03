@@ -183,6 +183,29 @@ SELECT pg_tviews_create('posts', 'SELECT id FROM posts');  -- Missing pk_post an
 2. Check SQL syntax with `EXPLAIN SELECT ...;`
 3. Remove unsupported features (see DDL Reference for supported SQL)
 
+### DISTINCT ON key refused
+
+**SQLSTATE**: 22023
+**Description**: A `DISTINCT ON` TVIEW is keyed on its `DISTINCT ON` key ([ADR
+0169](adr/0169-tview-row-identity.md)), which must be one column of a base table.
+
+**Messages**:
+- `tv_<entity> has a composite DISTINCT ON key (<keys>): a TVIEW row is one entity,
+  addressed by one key …`: a row is one entity with one key, which parents embed
+  through one `fk_<entity>`.
+- `the DISTINCT ON key of tv_<entity> (<key>) names its rows, but it is not an output
+  column and no output column equals it …`
+- `the DISTINCT ON key of tv_<entity> (<key>) names its rows, but it is not a column
+  of a base table …`: an expression such as `lower(o.ref)`.
+
+**Resolution**:
+1. A composite key: give "one row per (a, b)" its own entity table
+   (`tb_<entity>` with its `pk_<entity>`), or `DISTINCT ON` one column.
+2. An unprojected key: project it (`DISTINCT ON (o.code) o.code, …`), or project a
+   column equal to it through a join condition.
+3. An expression: store it in a column of the base table, and `DISTINCT ON` that
+   column.
+
 ### RequiredColumnMissing
 
 **SQLSTATE**: 42703

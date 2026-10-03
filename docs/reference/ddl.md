@@ -280,14 +280,25 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   accepted, but a write to a table read under one of them can change rows other
   than its own, so the table is `all_keys` and the TVIEW's `uncascaded_policy`
   decides (see [Tables no cascade reaches](#tables-no-cascade-reaches))
-- **DISTINCT ON**: deduplicated read models; the DISTINCT ON key may be aliased in
-  the SELECT list (e.g. `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`).
-  Tables read through joins are followed when the DISTINCT ON key is
-  `pk_<entity>`, or a unique NOT NULL column of the TVIEW's own table that no other
-  table it reads has (the TVIEW then gets a unique index on `pk_<entity>`); with
-  another key the create is refused, naming them, unless
-  `pg_tviews.uncascaded_policy` is `full_refresh`, which refreshes the TVIEW in full
-  on writes to them
+- **DISTINCT ON**: deduplicated read models, keyed on their `DISTINCT ON` key
+  ([ADR 0169](../adr/0169-tview-row-identity.md)): its value names the TVIEW's
+  rows, it is the table's primary key, and `tviews.registry.identity` reports it.
+  - The key is a column, projected (`DISTINCT ON (o.id) o.pk_order, o.id …`; it may
+    be aliased, `DISTINCT ON (c.id_contract) c.id_contract AS pk_contract`) or equal
+    through a join condition to a projected column (`DISTINCT ON (l.fk_order)
+    o.pk_order` with `l.fk_order = o.pk_order`). Its type can be anything (`bigint`,
+    `uuid`, `text`, `numeric`, `date`, a quoted mixed-case column…).
+  - Tables read through joins are followed like any TVIEW's, whatever the key.
+  - Writes are followed from the old and the new row: a row that changes its key
+    leaves its old group and joins the new one, and a statement writing several
+    groups refreshes each of them. The refresh filters on the key with its type, so
+    PostgreSQL reaches the base table's index through the `DISTINCT ON`.
+  - `pk_<entity>` is still required: parents embed the TVIEW through
+    `fk_<entity> = pk_<entity>`, and they follow the winning row when it changes.
+  - Refused at create: a composite key (`DISTINCT ON (a, b)`: a TVIEW row is one
+    entity with one key; model "one row per (a, b)" as an entity of its own), and a
+    key that is an expression, or a column not projected that no projected column
+    equals. The message names the key.
 
 #### ❌ Not Supported
 
