@@ -7,7 +7,10 @@
 
 #![allow(clippy::cast_ptr_alignment)] // Reason: `Node *` is cast to the node type its tag names, as PostgreSQL does; palloc aligns every node for its own type.
 
-use super::{Column, Conjunct, Graph, Maps, Occurrence, Root, Sql};
+use super::{
+    Column, Conjunct, Graph, IdentityKind, Maps, Occurrence, OutputColumn, Root, Sql,
+    WalkedIdentity,
+};
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
@@ -23,6 +26,8 @@ pub struct Context<'a> {
     pub tview_tables: &'a HashSet<Oid>,
     /// Backing views of other TVIEWs → their entity.
     pub tview_views: &'a HashMap<Oid, String>,
+    /// The TVIEW's entity.
+    pub entity: &'a str,
     /// The TVIEW's key column, `pk_<entity>`.
     pub key_column: &'a str,
 }
@@ -41,6 +46,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         cte_parent: None,
         read_ctes: HashSet::new(),
         wanted: None,
+        identity_level: false,
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -159,6 +165,9 @@ struct Walker<'c> {
     /// The output columns the level above reads from the next level entered
     /// (`None`: every column).
     wanted: Option<HashSet<i16>>,
+    /// The next level entered is the backing view's own SELECT (no UNION): it
+    /// chooses the TVIEW's identity.
+    identity_level: bool,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -238,6 +247,7 @@ impl Walker<'_> {
                     opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
                     ..flags.clone()
                 };
+                self.identity_level = true;
                 let outputs = self.level(query, &flags, Link::Top)?;
                 if opaque.is_none()
                     && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
@@ -286,6 +296,21 @@ impl Walker<'_> {
                 self.unread_ctes(flags)
             })();
             self.levels.pop();
+            // A UNION's rows are named by pk_<entity> in every branch.
+            let identity = key_position
+                .and_then(|p| {
+                    elements::<pg_sys::TargetEntry>((*query).targetList)
+                        .get(p)
+                        .copied()
+                })
+                .map(|tle| WalkedIdentity {
+                    name: self.ctx.key_column.to_string(),
+                    type_oid: pg_sys::exprType((*tle).expr.cast()).to_u32(),
+                    kind: IdentityKind::Pk,
+                    columns: self.graph.roots.iter().map(|r| r.key.clone()).collect(),
+                })
+                .ok_or(super::IdentityError::Missing);
+            self.graph.identity = Some(identity);
             result
         }
     }
@@ -336,6 +361,8 @@ impl Walker<'_> {
         opaque: bool,
         wanted: Option<&HashSet<i16>>,
     ) -> TViewResult<Vec<Resolved>> {
+        // Taken before the levels below are walked.
+        let identity_level = std::mem::take(&mut self.identity_level);
         // SAFETY: fields of a valid Query; RTEs and expressions belong to it.
         unsafe {
             // A view, subquery or CTE in FROM is walked only for the columns this
@@ -382,6 +409,10 @@ impl Walker<'_> {
             }
             self.sublinks((*query).havingQual, flags, false)?;
             self.note_functions(query.cast());
+            if identity_level {
+                let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
+                self.graph.identity = Some(self.identity(query, &tles));
+            }
 
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
             let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
@@ -441,6 +472,53 @@ impl Walker<'_> {
                 toward == Maps::Yes && keys.contains(key)
             })
         })
+    }
+
+    /// The identity of the backing view's own SELECT (ADR 0169): its DISTINCT ON
+    /// key, or `pk_<entity>`.
+    ///
+    /// SAFETY: `query` is the valid Query of the innermost level and `tles` its
+    /// target list.
+    unsafe fn identity(
+        &self,
+        query: *mut pg_sys::Query,
+        tles: &[*mut pg_sys::TargetEntry],
+    ) -> Result<WalkedIdentity, super::IdentityError> {
+        // SAFETY: fields of a valid Query and of its target entries.
+        unsafe {
+            let outputs: Vec<OutputColumn> = tles
+                .iter()
+                .map(|&tle| OutputColumn {
+                    name: cstr((*tle).resname),
+                    junk: (*tle).resjunk,
+                    sortgroupref: (*tle).ressortgroupref,
+                    column: match self.resolve_expr((*tle).expr.cast()) {
+                        Resolved::Col(c) => Some(c),
+                        _ => None,
+                    },
+                    type_oid: pg_sys::exprType((*tle).expr.cast()).to_u32(),
+                })
+                .collect();
+            let distinct_on: Option<Vec<u32>> = (*query).hasDistinctOn.then(|| {
+                elements::<pg_sys::SortGroupClause>((*query).distinctClause)
+                    .iter()
+                    .map(|c| (**c).tleSortGroupRef)
+                    .collect()
+            });
+            let selected = super::select_identity(
+                self.ctx.entity,
+                &outputs,
+                distinct_on.as_deref(),
+                &|column, key| self.equal_to_key(column, std::slice::from_ref(key)),
+            )?;
+            let chosen = &outputs[selected.position];
+            Ok(WalkedIdentity {
+                name: chosen.name.clone(),
+                type_oid: chosen.type_oid,
+                kind: selected.kind,
+                columns: chosen.column.iter().cloned().collect(),
+            })
+        }
     }
 
     /// The outputs of a UNION subquery: each column stands for the matching column
