@@ -39,6 +39,9 @@ thread_local! {
     static MAPPINGS: RefCell<HashMap<(String, u32), Option<String>>> = RefCell::new(HashMap::new());
     /// `(relid, event, attnums)` → the query of the changed rows.
     static DELTAS: RefCell<HashMap<DeltaKey, String>> = RefCell::new(HashMap::new());
+    /// Table → the select list that computes its virtual generated columns, `None`
+    /// when it has none (#179).
+    static COMPUTED: RefCell<HashMap<Oid, Option<String>>> = RefCell::new(HashMap::new());
     /// Table → the root of its partition tree (itself when it is not a partition).
     static ROOTS: RefCell<HashMap<Oid, Oid>> = RefCell::new(HashMap::new());
     /// Number of the current `TRUNCATE` statement, counted by the `ProcessUtility`
@@ -53,6 +56,7 @@ thread_local! {
 pub fn clear_caches() {
     MAPPINGS.with(|m| m.borrow_mut().clear());
     DELTAS.with(|d| d.borrow_mut().clear());
+    COMPUTED.with(|c| c.borrow_mut().clear());
     ROOTS.with(|r| r.borrow_mut().clear());
 }
 
@@ -227,7 +231,7 @@ fn map_statement(
             let Some(keys_sql) = rendered(entity, mapping)? else {
                 return refresh_all(entity, "a relation its mapping reads is gone");
             };
-            let delta = delta_sql(table_oid, event, &mapping.attnums)?;
+            let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
             let key_type = &meta
                 .key_type()
                 .map_err(|e| spi_error("the identity's type", &e))?;
@@ -368,10 +372,14 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 // INSERT has NEW in tg_trigtuple.
                 images
             };
-            let delta = (1..=images.len())
+            let images_sql = (1..=images.len())
                 .map(|i| format!("SELECT (${i}).*"))
                 .collect::<Vec<_>>()
                 .join(" UNION ALL ");
+            let delta = match computed_columns(entity, root)? {
+                Some(columns) => format!("SELECT {columns} FROM ({images_sql}) r"),
+                None => images_sql,
+            };
             let key_type = &meta
                 .key_type()
                 .map_err(|e| spi_error("the identity's type", &e))?;
@@ -437,28 +445,74 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
 /// The changed rows of a statement: the new rows of an INSERT, the old rows of a
 /// DELETE, both images of an UPDATE. An UPDATE row whose columns the TVIEW reads
 /// (`attnums`) are unchanged, matched to its other image by primary key, is left
-/// out of both.
-fn delta_sql(table_oid: Oid, event: Event, attnums: &[i16]) -> TViewResult<String> {
+/// out of both. Virtual generated columns, NULL in transition tables, are computed
+/// (#179).
+fn delta_sql(entity: &str, table_oid: Oid, event: Event, attnums: &[i16]) -> TViewResult<String> {
     let key = (table_oid.to_u32(), event, attnums.to_vec());
     if let Some(sql) = DELTAS.with(|d| d.borrow().get(&key).cloned()) {
         return Ok(sql);
     }
+    let (new, old) = match computed_columns(entity, table_oid)? {
+        Some(columns) => (
+            format!("(SELECT {columns} FROM {NEW_TABLE})"),
+            format!("(SELECT {columns} FROM {OLD_TABLE})"),
+        ),
+        None => (NEW_TABLE.to_string(), OLD_TABLE.to_string()),
+    };
     let sql = match event {
-        Event::Insert => format!("SELECT * FROM {NEW_TABLE}"),
-        Event::Delete => format!("SELECT * FROM {OLD_TABLE}"),
+        Event::Insert => format!("SELECT * FROM {new}"),
+        Event::Delete => format!("SELECT * FROM {old}"),
         Event::Update => match update_filter(table_oid, attnums)? {
             Some(same) => format!(
-                "SELECT o.* FROM {OLD_TABLE} o \
-                   WHERE NOT EXISTS (SELECT 1 FROM {NEW_TABLE} n WHERE {same}) \
+                "SELECT o.* FROM {old} o \
+                   WHERE NOT EXISTS (SELECT 1 FROM {new} n WHERE {same}) \
                  UNION ALL \
-                 SELECT n.* FROM {NEW_TABLE} n \
-                   WHERE NOT EXISTS (SELECT 1 FROM {OLD_TABLE} o WHERE {same})"
+                 SELECT n.* FROM {new} n \
+                   WHERE NOT EXISTS (SELECT 1 FROM {old} o WHERE {same})"
             ),
-            None => format!("SELECT * FROM {OLD_TABLE} UNION ALL SELECT * FROM {NEW_TABLE}"),
+            None => format!("SELECT * FROM {old} UNION ALL SELECT * FROM {new}"),
         },
     };
     DELTAS.with(|d| d.borrow_mut().insert(key, sql.clone()));
     Ok(sql)
+}
+
+/// The select list of table `table_oid`'s rows with its virtual generated columns
+/// computed from their expressions, in column order and under the column names;
+/// `None` when it has none (always before PostgreSQL 18). The expressions are
+/// written as `entity`'s owner sees them, so they resolve under its `search_path`.
+fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Option<String>> {
+    if let Some(columns) = COMPUTED.with(|c| c.borrow().get(&table_oid).cloned()) {
+        return Ok(columns);
+    }
+    let _owner = crate::owner::AsOwner::of_entity(entity)?;
+    let (columns, any_virtual) = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT pg_catalog.string_agg( \
+                          CASE WHEN a.attgenerated = 'v' \
+                               THEN '(' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) || ') AS ' \
+                                    || pg_catalog.quote_ident(a.attname) \
+                               ELSE pg_catalog.quote_ident(a.attname) END, \
+                          ', ' ORDER BY a.attnum), \
+                        pg_catalog.bool_or(a.attgenerated = 'v') \
+                 FROM pg_catalog.pg_attribute a \
+                 LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
+                None,
+                // SAFETY: a plain OID datum.
+                &[unsafe {
+                    DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+                }],
+            )?
+            .first()
+            .get_two::<String, bool>()
+    })
+    .map_err(|e| spi_error("the generated columns of a mapped table", &e))?;
+    let columns = columns.filter(|_| any_virtual == Some(true));
+    crate::queue::cache::watch(&[table_oid]);
+    COMPUTED.with(|c| c.borrow_mut().insert(table_oid, columns.clone()));
+    Ok(columns)
 }
 
 /// `n.pk = o.pk AND ROW(n.<cols>) *= ROW(o.<cols>)`: the same row, its columns
