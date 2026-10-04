@@ -458,7 +458,7 @@ fn create_tview_inner(
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
-/// with the same analysis as [`create_tview`], and return the base tables its
+/// with the same analysis as `create_tview_in`, and return the base tables its
 /// backing view reads. Used when a column rename has changed the text that
 /// defines `v_<entity>`, and by `pg_tviews_reregister()`; the relations themselves
 /// are unchanged.
