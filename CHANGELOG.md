@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **A write that reaches a TVIEW through a virtual generated column refreshes it**
+  (#179, PostgreSQL 18). A virtual column (`GENERATED ALWAYS AS (…)` without
+  `STORED`, PostgreSQL 18's default) is NULL in the rows a trigger sees and in
+  transition tables, so a change to its inputs was skipped (a joined table read
+  through it), filtered out as unchanged (a table reached through several joins), or
+  mapped to no key (a join on it, a `DISTINCT ON` key on it), with no warning. A
+  TVIEW reading a virtual column now reads its inputs, the changed rows used for key
+  mapping compute it, and a key on one is mapped instead of read off the row. The
+  direct and fan-out patches never copy one.
+
+### Changed
+
+- The documentation and coverage builds target PostgreSQL 18, the release target;
+  the coverage workflow now measures the unit tests (it measured nothing) (#178).
+
+### Upgrade notes
+
+- After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all();` so that TVIEWs reading virtual
+  generated columns follow their inputs.
+
 ## [0.1.0-beta.23] - 2026-10-03
 
 ### Changed

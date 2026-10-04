@@ -58,6 +58,7 @@ after)
         left="$(psql -X -At -d "$upgraded" -c \
             "SELECT count(*) FROM pg_catalog.pg_class WHERE relkind = 'i' AND relname LIKE 'idx\_tv\_%\_pk\_unique'")"
         [[ "$left" == 0 ]] || fail "$left pk_unique index(es) survived re-registration"
+        psql -X -d "$upgraded" -q -f "$here/verify_after.sql"
         ;;
     *) fail "usage: $0 after update|migrate" ;;
     esac

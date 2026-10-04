@@ -300,6 +300,13 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
     key that is an expression, or a column not projected that no projected column
     equals. The message names the key.
 
+- **Generated columns**: `STORED` columns are ordinary columns. A **virtual**
+  generated column (PostgreSQL 18's default) has no value in the rows a trigger
+  sees, so pg_tviews follows its inputs instead: a TVIEW reading `code = upper(name)`
+  refreshes when `name` changes. A key or join on a virtual column is mapped by
+  computing the column from its expression over the changed rows, and the direct
+  and fan-out patches never copy a virtual column or one of its inputs.
+
 #### ❌ Not Supported
 
 - **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
