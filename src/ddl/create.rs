@@ -878,6 +878,13 @@ fn fanout_patch(
         return None;
     }
     let lookup_col = crate::sql_parser::output_column_for(select_sql, &own_table, &hop.lookup_col)?;
+    // Never copy a virtual generated column or an input of one (#179).
+    let virtual_reads: Vec<&String> = lineage
+        .tables
+        .iter()
+        .filter(|t| pg_sys::Oid::from(t.relid) == path.source_oid)
+        .flat_map(|t| &t.virtual_reads)
+        .collect();
     if !schema.fk_columns.contains(&lookup_col) {
         return None;
     }
@@ -887,7 +894,8 @@ fn fanout_patch(
         crate::schema::direct_map::extract_joined_column_map(select_sql, &qualifier)
             .into_iter()
             .filter(|(col, _)| {
-                *col != path.initial_col
+                !virtual_reads.contains(&col)
+                    && *col != path.initial_col
                     && path.source_columns.contains(col)
                     && !outside_data.contains(&col.to_lowercase())
             })
@@ -1566,7 +1574,20 @@ fn register_metadata(
     // Extract the direct-patch column→key map (issue #56): base columns that map
     // identity-style to top-level keys of this entity's own `data` object. Empty
     // ⇒ the direct-patch fast path never engages for this entity.
-    let direct_map = extract_direct_column_map(definition_sql, &format!("tb_{entity_name}"));
+    // A virtual generated column and its inputs are never patched from the row
+    // (#179): the trigger sees the column as NULL, and a patched input would leave
+    // the column computed from it stale.
+    let root_table = format!("tb_{entity_name}");
+    let virtual_reads: Vec<&String> = lineage
+        .tables
+        .iter()
+        .filter(|t| t.relname == root_table)
+        .flat_map(|t| &t.virtual_reads)
+        .collect();
+    let direct_map: Vec<(String, String)> = extract_direct_column_map(definition_sql, &root_table)
+        .into_iter()
+        .filter(|(col, _)| !virtual_reads.contains(&col))
+        .collect();
     let direct_map_columns = direct_map
         .iter()
         .map(|(col, _)| pg_array_elem(col))

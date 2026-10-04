@@ -6,7 +6,6 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_179_virtual_generated.sql
 --
--- known-failing: #179
 -- expect-output: #179 virtual generated columns: PASS
 
 \set ON_ERROR_STOP on
@@ -140,5 +139,5 @@ SELECT assert_fresh('tv_stand', 'pk_stand', 'a STORED generated column');
 
 \echo '#179 virtual generated columns: PASS'
 \else
-\echo '#179 virtual generated columns: skipped, no virtual generated columns before PostgreSQL 18'
+\echo '#179 virtual generated columns: PASS (skipped: no virtual generated columns before PostgreSQL 18)'
 \endif

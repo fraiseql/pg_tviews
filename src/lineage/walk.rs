@@ -54,6 +54,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
     let flags = Flags::default();
     // SAFETY: `query` is a valid, copied Query.
     unsafe { walker.top(query, &flags)? };
+    walker.note_virtual_columns();
     Ok(walker.graph)
 }
 
@@ -227,6 +228,33 @@ unsafe fn conjuncts(node: *mut pg_sys::Node) -> Vec<*mut pg_sys::Node> {
 }
 
 impl Walker<'_> {
+    /// Record the virtual generated columns among the keys and equalities (#179).
+    fn note_virtual_columns(&mut self) {
+        let graph = &self.graph;
+        let columns: Vec<&Column> = graph
+            .roots
+            .iter()
+            .map(|r| &r.key)
+            .chain(
+                graph
+                    .conjuncts
+                    .iter()
+                    .filter_map(|c| c.equality.as_ref())
+                    .flat_map(|(x, y)| [x, y]),
+            )
+            .collect();
+        let found: Vec<(usize, i16)> = columns
+            .into_iter()
+            .filter(|c| {
+                let relid = Oid::from(graph.occurrences[c.occ].relid);
+                // SAFETY: a catalog lookup by OID and attribute number.
+                unsafe { pg_sys::get_attgenerated(relid, c.attnum) as u8 == b'v' }
+            })
+            .map(|c| (c.occ, c.attnum))
+            .collect();
+        self.graph.virtual_columns.extend(found);
+    }
+
     // ── query levels ────────────────────────────────────────────────────────
 
     /// The top level: the backing view itself, or each branch of its UNION.

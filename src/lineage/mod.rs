@@ -322,6 +322,9 @@ pub struct Graph {
     /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
     /// EXCEPT).
     pub set_operation: bool,
+    /// `(occurrence, attnum)` of the virtual generated columns among the keys and
+    /// equalities: NULL in the rows a trigger sees, so never read off one (#179).
+    pub virtual_columns: std::collections::BTreeSet<(usize, i16)>,
 }
 
 /// The identity the walk found: the output column, and the base column it stands
@@ -368,6 +371,9 @@ pub struct TableLineage {
     pub hop: Option<(String, String)>,
     /// The table whose column is the key (of a branch, under UNION).
     pub root: bool,
+    /// The virtual generated columns the TVIEW reads and their inputs: never
+    /// copied by a fast path, which reads the changed row (#179).
+    pub virtual_reads: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -413,7 +419,12 @@ impl Graph {
             );
         };
         if root.key.occ == occ {
-            return Kind::Local(root.key.name.clone());
+            // A virtual key is computed by the mapping query over the changed rows.
+            return if self.is_virtual(&root.key) {
+                Kind::Mapped(Vec::new())
+            } else {
+                Kind::Local(root.key.name.clone())
+            };
         }
         if let Some(entity) = &o.via_tview
             && propagates(entity, o.relid)
@@ -478,17 +489,22 @@ impl Graph {
     }
 
     /// The column of the occurrence equal to the key, when the chain is that single
-    /// equality: the key is then read off the changed row.
+    /// equality: the key is then read off the changed row (unless it is virtual).
     fn local_column(&self, path: &[usize], root: &Root) -> Option<String> {
         let [only] = path else { return None };
         let (x, y) = self.conjuncts[*only].equality.as_ref()?;
-        if *y == root.key {
-            Some(x.name.clone())
+        let own = if *y == root.key {
+            x
         } else if *x == root.key {
-            Some(y.name.clone())
+            y
         } else {
-            None
-        }
+            return None;
+        };
+        (!self.is_virtual(own)).then(|| own.name.clone())
+    }
+
+    fn is_virtual(&self, column: &Column) -> bool {
+        self.virtual_columns.contains(&(column.occ, column.attnum))
     }
 
     fn unlinked_reason(&self, occ: usize) -> String {
@@ -749,6 +765,7 @@ impl Graph {
                     columns: Vec::new(),
                     lookups,
                     hop,
+                    virtual_reads: Vec::new(),
                     root: self
                         .roots
                         .iter()
@@ -1035,10 +1052,12 @@ pub fn analyze(
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
+        let virtual_columns = virtual_inputs(table.relid).map_err(catalog)?;
         table.columns = expand_read_columns(
             referenced_columns(view_oid, table.relid).map_err(catalog)?,
-            &virtual_inputs(table.relid).map_err(catalog)?,
+            &virtual_columns,
         );
+        table.virtual_reads = virtual_reads(&table.columns, &virtual_columns);
         if let Some(sql) = &table.sql {
             explain(entity, table, sql)?;
         }
@@ -1318,6 +1337,22 @@ pub fn expand_read_columns(
     read
 }
 
+/// The names of the virtual generated columns among `read` and of their inputs.
+#[must_use]
+pub fn virtual_reads(
+    read: &[(String, i16)],
+    virtual_inputs: &[(i16, Vec<(String, i16)>)],
+) -> Vec<String> {
+    let mut names = Vec::new();
+    for (virtual_column, inputs) in virtual_inputs {
+        if let Some((name, _)) = read.iter().find(|(_, attnum)| attnum == virtual_column) {
+            names.push(name.clone());
+            names.extend(inputs.iter().map(|(input, _)| input.clone()));
+        }
+    }
+    names
+}
+
 /// The virtual generated columns of table `relid` and their inputs: the columns
 /// the dependencies of their `pg_attrdef` entries name. Empty before
 /// PostgreSQL 18, which has no virtual generated columns.
@@ -1459,6 +1494,7 @@ mod tests {
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
+            virtual_columns: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1585,6 +1621,7 @@ mod tests {
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
+            virtual_columns: std::collections::BTreeSet::new(),
         };
         assert_eq!(
             g.classify(0, NONE),
@@ -1963,6 +2000,40 @@ mod tests {
     }
 
     #[test]
+    fn a_root_keyed_on_a_virtual_column_is_mapped() {
+        // DISTINCT ON (v.code) with code virtual: the row trigger cannot read it.
+        let mut g = graph(vec![occ(1, "tb_ver")], vec![], col(0, "code"));
+        g.virtual_columns.insert((0, 1));
+        assert_eq!(g.classify(0, NONE), Kind::Mapped(vec![]));
+        assert_eq!(
+            g.mapping_sql(&[(0, vec![])]),
+            "SELECT DISTINCT d.{c:1:1} FROM pg_tviews_delta d"
+        );
+    }
+
+    #[test]
+    fn a_table_joined_on_a_virtual_column_is_mapped() {
+        // tb_order o LEFT JOIN tb_ref r ON r.ord = o.pk_order, ord virtual
+        let ord = Column {
+            occ: 1,
+            attnum: 4,
+            name: "ord".into(),
+        };
+        let mut g = graph(
+            vec![occ(1, "tb_order"), occ(2, "tb_ref")],
+            vec![eq(ord, col(0, "pk_order"), true, false)],
+            col(0, "pk_order"),
+        );
+        assert_eq!(g.classify(1, NONE), Kind::Local("ord".into()));
+        g.virtual_columns.insert((1, 4));
+        assert_eq!(g.classify(1, NONE), Kind::Mapped(vec![0]));
+        assert_eq!(
+            g.mapping_sql(&[(1, vec![0])]),
+            "SELECT DISTINCT d.{c:2:4} FROM pg_tviews_delta d"
+        );
+    }
+
+    #[test]
     fn a_virtual_column_read_adds_its_inputs() {
         let read = vec![("pk_shop".to_string(), 1), ("code".to_string(), 3)];
         let virtual_inputs = vec![
@@ -1977,6 +2048,17 @@ mod tests {
                 ("code".to_string(), 3)
             ]
         );
+    }
+
+    #[test]
+    fn virtual_reads_name_the_virtual_columns_read_and_their_inputs() {
+        let read = vec![("name".to_string(), 2), ("code".to_string(), 3)];
+        let virtual_inputs = vec![
+            (3, vec![("name".to_string(), 2)]),
+            (5, vec![("other".to_string(), 4)]),
+        ];
+        assert_eq!(virtual_reads(&read, &virtual_inputs), vec!["code", "name"]);
+        assert!(virtual_reads(&read, &[]).is_empty());
     }
 
     #[test]
