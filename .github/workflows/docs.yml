@@ -7,20 +7,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Install PostgreSQL 16
+      # The release target: code compiled only for PostgreSQL 18 is documented too.
+      - name: Install PostgreSQL 18 (PGDG)
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-server-dev-16
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
 
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Build docs
-        run: cargo doc --no-deps --no-default-features --features pg16
+        run: cargo doc --no-deps --no-default-features --features pg18
 
       - name: Check for warnings
-        run: cargo doc --no-deps --no-default-features --features pg16 2>&1 | grep -q "warning:" && exit 1 || exit 0
+        run: cargo doc --no-deps --no-default-features --features pg18 2>&1 | grep -q "warning:" && exit 1 || exit 0
