@@ -1035,7 +1035,10 @@ pub fn analyze(
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
-        table.columns = referenced_columns(view_oid, table.relid).map_err(catalog)?;
+        table.columns = expand_read_columns(
+            referenced_columns(view_oid, table.relid).map_err(catalog)?,
+            &virtual_inputs(table.relid).map_err(catalog)?,
+        );
         if let Some(sql) = &table.sql {
             explain(entity, table, sql)?;
         }
@@ -1287,6 +1290,76 @@ fn seq_scans(node: &serde_json::Value, out: &mut Vec<(String, f64)>) {
         }
         _ => {}
     }
+}
+
+/// A virtual generated column (`attnum`) and the columns its expression reads.
+pub type VirtualInputs = Vec<(i16, Vec<(String, i16)>)>;
+
+/// The columns a TVIEW reads of a table, `read`, with the inputs of every virtual
+/// generated column among them (#179): a virtual column has no value in the rows a
+/// trigger sees, so a change to it is a change to its inputs. Sorted by attnum.
+#[must_use]
+pub fn expand_read_columns(
+    mut read: Vec<(String, i16)>,
+    virtual_inputs: &[(i16, Vec<(String, i16)>)],
+) -> Vec<(String, i16)> {
+    let virtual_read: Vec<i16> = read
+        .iter()
+        .map(|(_, attnum)| *attnum)
+        .filter(|attnum| virtual_inputs.iter().any(|(v, _)| v == attnum))
+        .collect();
+    for (virtual_column, inputs) in virtual_inputs {
+        if virtual_read.contains(virtual_column) {
+            read.extend(inputs.iter().cloned());
+        }
+    }
+    read.sort_by_key(|(_, attnum)| *attnum);
+    read.dedup_by_key(|(_, attnum)| *attnum);
+    read
+}
+
+/// The virtual generated columns of table `relid` and their inputs: the columns
+/// the dependencies of their `pg_attrdef` entries name. Empty before
+/// PostgreSQL 18, which has no virtual generated columns.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn virtual_inputs(relid: u32) -> pgrx::spi::Result<VirtualInputs> {
+    use pgrx::prelude::*;
+    Spi::connect(|client| {
+        let mut out: VirtualInputs = Vec::new();
+        for row in client.select(
+            "SELECT g.attnum, i.attname::pg_catalog.text, i.attnum \
+             FROM pg_catalog.pg_attribute g \
+             JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = g.attrelid AND ad.adnum = g.attnum \
+             JOIN pg_catalog.pg_depend d \
+               ON d.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND d.objid = ad.oid \
+              AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND d.refobjid = g.attrelid AND d.refobjsubid > 0 AND d.refobjsubid <> g.attnum \
+             JOIN pg_catalog.pg_attribute i ON i.attrelid = g.attrelid AND i.attnum = d.refobjsubid \
+             WHERE g.attrelid = $1 AND g.attgenerated = 'v' AND NOT i.attisdropped \
+             ORDER BY 1, 3",
+            None,
+            // SAFETY: a plain OID datum.
+            &[unsafe {
+                pgrx::datum::DatumWithOid::new(
+                    pgrx::pg_sys::Oid::from(relid),
+                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+                )
+            }],
+        )? {
+            let (Some(column), Some(name), Some(input)) =
+                (row.get::<i16>(1)?, row.get::<String>(2)?, row.get::<i16>(3)?)
+            else {
+                continue;
+            };
+            match out.iter_mut().find(|(c, _)| *c == column) {
+                Some((_, inputs)) => inputs.push((name, input)),
+                None => out.push((column, vec![(name, input)])),
+            }
+        }
+        Ok(out)
+    })
 }
 
 /// The columns of table `relid` that the view `view_oid`, or a view it reads,
@@ -1887,6 +1960,33 @@ mod tests {
             vec!["o.id"]
         );
         assert!(distinct_on_list(" SELECT o.id FROM t").is_empty());
+    }
+
+    #[test]
+    fn a_virtual_column_read_adds_its_inputs() {
+        let read = vec![("pk_shop".to_string(), 1), ("code".to_string(), 3)];
+        let virtual_inputs = vec![
+            (3, vec![("name".to_string(), 2)]),
+            (5, vec![("other".to_string(), 4)]),
+        ];
+        assert_eq!(
+            expand_read_columns(read, &virtual_inputs),
+            vec![
+                ("pk_shop".to_string(), 1),
+                ("name".to_string(), 2),
+                ("code".to_string(), 3)
+            ]
+        );
+    }
+
+    #[test]
+    fn inputs_already_read_and_no_virtual_columns_change_nothing() {
+        let read = vec![("price".to_string(), 2), ("taxed".to_string(), 3)];
+        assert_eq!(
+            expand_read_columns(read.clone(), &[(3, vec![("price".to_string(), 2)])]),
+            read
+        );
+        assert_eq!(expand_read_columns(read.clone(), &[]), read);
     }
 
     #[test]
