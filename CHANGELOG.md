@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.24] - 2026-10-05
+
 ### Fixed
 
 - **A write that reaches a TVIEW through a virtual generated column refreshes it**
