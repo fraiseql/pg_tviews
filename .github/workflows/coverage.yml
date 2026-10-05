@@ -1,4 +1,4 @@
-name: Integration Test
+name: Coverage
 
 on:
   push:
@@ -6,60 +6,55 @@ on:
   pull_request:
     branches: [ main ]
 
+# Line and function coverage of the pure-Rust unit tests, built for PostgreSQL 18
+# (the release target). The SQL suites (ci.yml) exercise the installed extension
+# and are not counted here.
 jobs:
   coverage:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain and llvm-tools
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add llvm-tools-preview
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install PostgreSQL 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 mold
 
-    - name: Install PostgreSQL
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y postgresql-16 postgresql-server-dev-16 pkg-config
+      - name: Install pgrx and cargo-llvm-cov
+        run: |
+          cargo install --locked cargo-pgrx --version 0.17.0
+          cargo install --locked cargo-llvm-cov
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
-    - name: Start PostgreSQL service
-      run: |
-        sudo systemctl start postgresql
-        sudo systemctl enable postgresql
+      # Linked as clippy.yml's unit job links its tests: PostgreSQL symbols only
+      # resolve inside a server, mold keeps them out of the dynamic imports, and
+      # #[pg_test]s (pg_test_*) need a server.
+      - name: Measure unit-test coverage
+        run: |
+          set -o pipefail
+          RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--unresolved-symbols=ignore-all" \
+            cargo llvm-cov --lib --no-default-features --features pg18 --summary-only \
+              -- --skip pg_test_ | tee coverage-summary.txt
+          cargo llvm-cov report --lcov --output-path lcov.info
+          {
+            echo "## Unit-test coverage (PostgreSQL 18)"
+            echo
+            echo '```'
+            grep -E '^(Filename|TOTAL)' coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Install pgrx
-      run: cargo install --locked cargo-pgrx --version 0.17.0
-
-    - name: Initialize pgrx
-      run: cargo pgrx init --pg16 /usr/lib/postgresql/16/bin/pg_config
-
-    - name: Build and install extension with pgrx
-      run: cargo pgrx install --release --no-default-features --features pg16 --sudo
-
-    - name: Run extension integration tests
-      run: |
-        # Switch to postgres user to test extension
-        sudo -u postgres psql -d postgres -c "CREATE EXTENSION IF NOT EXISTS tviews;" || true
-        sudo -u postgres psql -d postgres -c "SELECT * FROM pg_extension WHERE extname = 'tviews';" || true
-
-        # Verify extension installation was successful (via sudo)
-        sudo -u postgres psql -d postgres -c "\dx" | grep -i tviews || echo "Extension check failed or not loaded"
-
-    - name: Document test coverage
-      run: |
-        echo "## Test Coverage Report" > coverage-report.md
-        echo "" >> coverage-report.md
-        echo "**Extension Status**: ✅ Successfully compiled and installed" >> coverage-report.md
-        echo "**Architecture**: PostgreSQL 16 + Rust FFI via pgrx" >> coverage-report.md
-        echo "" >> coverage-report.md
-        echo "**Test Coverage**:" >> coverage-report.md
-        echo "- SQL-based integration tests in \`test/sql/\`" >> coverage-report.md
-        echo "- CI build verification (extension builds without errors)" >> coverage-report.md
-        echo "- Clippy strict linting (passes all pedantic checks)" >> coverage-report.md
-
-    - name: Upload test report
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage-report
-        path: coverage-report.md
-        retention-days: 30
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            lcov.info
+            coverage-summary.txt
+          retention-days: 30

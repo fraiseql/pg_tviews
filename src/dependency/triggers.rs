@@ -224,7 +224,7 @@ pub struct TriggerProblems {
 /// backing view through views, other TVIEWs' tables excepted) and the triggers
 /// its lineage gives each table ([`TriggerSet`]); a TVIEW registered before
 /// lineage expects the row and flush triggers on every table. Every partition of
-/// a partitioned table carrying a row trigger expects the [`PARTITION_MEMBER`]
+/// a partitioned table carrying a row trigger expects the `PARTITION_MEMBER`
 /// triggers; the copies `PostgreSQL` makes of the row trigger are not counted.
 ///
 /// # Errors
@@ -402,7 +402,7 @@ pub fn row_trigger_entities(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
     })
 }
 
-/// Give every partition of the tree `rel` belongs to the [`PARTITION_MEMBER`]
+/// Give every partition of the tree `rel` belongs to the `PARTITION_MEMBER`
 /// triggers of each TVIEW whose row trigger sits on the tree's root, and remove
 /// ours from members that no longer need them (a partition detached, a root no
 /// longer read). Covers `rel`'s own subtree too, so after a `DETACH` it cleans

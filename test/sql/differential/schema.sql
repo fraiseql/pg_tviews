@@ -8,9 +8,14 @@ CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 \ir ../lib/assert_fresh.sql
 
+-- Generated columns are virtual on PostgreSQL 18 (its default), STORED before.
+SELECT CASE WHEN current_setting('server_version_num')::int >= 180000 THEN 'VIRTUAL'
+            ELSE 'STORED' END AS generated \gset
+
 -- No foreign keys: the generator may orphan rows, which the views must handle.
 CREATE TABLE tb_customer (pk_customer int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), name text);
+  id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), name text,
+  name_up text GENERATED ALWAYS AS (upper(name)) :generated);
 CREATE TABLE tb_order (pk_order int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), fk_customer int, ref text, status text);
 CREATE TABLE tb_line (pk_line int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -26,6 +31,11 @@ CREATE TABLE tb_doc (pk_doc int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   id uuid NOT NULL, rev int NOT NULL, body text);
 CREATE TABLE tb_note (pk_note int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   id uuid NOT NULL DEFAULT gen_random_uuid(), fk_doc int, text text);
+CREATE TABLE tb_vtag (pk_vtag int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id uuid NOT NULL DEFAULT gen_random_uuid(), raw text,
+  norm text GENERATED ALWAYS AS (lower(raw)) :generated);
+CREATE TABLE tb_vnote (pk_vnote int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id uuid NOT NULL DEFAULT gen_random_uuid(), tag text, fk_customer int);
 CREATE TABLE tb_task (pk_task int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 CREATE TABLE tb_task_archive (pk_task int GENERATED ALWAYS AS IDENTITY (START 100000) PRIMARY KEY,
@@ -42,6 +52,8 @@ INSERT INTO tb_doc (id, rev, body)
   SELECT ('00000000-0000-0000-0000-00000000000' || (1 + g % 4))::uuid, 1 + g / 4, 'b' || g
   FROM generate_series(0, 7) g;
 INSERT INTO tb_note (fk_doc, text) SELECT 1 + g % 8, 'n' || g FROM generate_series(1, 6) g;
+INSERT INTO tb_vtag (raw) SELECT chr(65 + g) FROM generate_series(0, 3) g;
+INSERT INTO tb_vnote (tag, fk_customer) SELECT chr(97 + g % 5), 1 + g % 6 FROM generate_series(0, 7) g;
 INSERT INTO tb_task (title) SELECT 't' || g FROM generate_series(1, 4) g;
 INSERT INTO tb_task_archive (title) SELECT 'a' || g FROM generate_series(1, 3) g;
 CREATE VIEW v_cnt AS SELECT fk_order, count(*) AS n, sum(qty) AS qty FROM tb_line GROUP BY fk_order;
@@ -117,6 +129,12 @@ SELECT harness_create('tv_lastline', 'pk_lastline', $$
   SELECT DISTINCT ON (l.fk_order) l.fk_order AS pk_lastline, o.id,
          jsonb_build_object('sku', l.sku, 'ref', o.ref) AS data
   FROM tb_line l JOIN tb_order o ON o.pk_order = l.fk_order ORDER BY l.fk_order, l.pk_line DESC $$);
+-- generated columns (virtual on PostgreSQL 18): read, and joined on (#179)
+SELECT harness_create('tv_vnote', 'pk_vnote', $$
+  SELECT n.pk_vnote, n.id, n.fk_customer,
+         jsonb_build_object('tag', n.tag, 'customer', c.name_up,
+                            'tagged', (SELECT count(*) FROM tb_vtag t WHERE t.norm = n.tag)) AS data
+  FROM tb_vnote n LEFT JOIN tb_customer c ON c.pk_customer = n.fk_customer $$);
 -- UNION
 SELECT harness_create('tv_task', 'pk_task', $$
   SELECT pk_task, id, jsonb_build_object('title', title, 'archived', false) AS data FROM tb_task
@@ -141,7 +159,7 @@ CREATE FUNCTION harness_i(hi int) RETURNS int LANGUAGE sql AS $$
 
 -- One random statement.
 CREATE FUNCTION harness_statement(i int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r int := floor(random() * 26)::int;
+DECLARE r int := floor(random() * 30)::int;
 BEGIN
     RETURN CASE r
     WHEN 0 THEN format('INSERT INTO tb_customer (name) SELECT ''c%s_'' || g FROM generate_series(1, %s) g', i, harness_n())
@@ -169,7 +187,11 @@ BEGIN
     WHEN 22 THEN format('DELETE FROM tb_doc WHERE pk_doc IN %s', harness_pick('tb_doc', 'pk_doc', 1))
     WHEN 23 THEN format('UPDATE tb_note SET fk_doc = %s WHERE pk_note IN %s', harness_i(10), harness_pick('tb_note', 'pk_note', harness_n()))
     WHEN 24 THEN format('UPDATE tb_task SET title = title || ''.%s'' WHERE pk_task IN %s', i, harness_pick('tb_task', 'pk_task', harness_n()))
-    ELSE format('INSERT INTO tb_task_archive (title) VALUES (''a%s'')', i)
+    WHEN 25 THEN format('INSERT INTO tb_task_archive (title) VALUES (''a%s'')', i)
+    WHEN 26 THEN format('UPDATE tb_vtag SET raw = chr(65 + %s) WHERE pk_vtag IN %s', floor(random() * 6)::int, harness_pick('tb_vtag', 'pk_vtag', harness_n()))
+    WHEN 27 THEN format('INSERT INTO tb_vtag (raw) VALUES (chr(65 + %s))', floor(random() * 6)::int)
+    WHEN 28 THEN format('DELETE FROM tb_vtag WHERE pk_vtag IN %s', harness_pick('tb_vtag', 'pk_vtag', 1))
+    ELSE format('UPDATE tb_vnote SET tag = chr(97 + %s), fk_customer = %s WHERE pk_vnote IN %s', floor(random() * 6)::int, harness_i(8), harness_pick('tb_vnote', 'pk_vnote', harness_n()))
     END;
 END $$;
 

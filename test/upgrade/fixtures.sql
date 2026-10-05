@@ -112,6 +112,19 @@ SELECT pg_tviews_create('tv_shipment', $$
            jsonb_build_object('code', s.code, 'total', o.total) AS data
     FROM tb_shipment s JOIN tb_order o ON o.pk_order = s.fk_order ORDER BY s.code $$);
 \endif
+-- A virtual generated column (PostgreSQL 18) read through a join (#179).
+SELECT current_setting('server_version_num')::int >= 180000 AS virtual_fixture \gset
+\if :virtual_fixture
+CREATE TABLE tb_badge (pk_badge int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+    name text NOT NULL, label text GENERATED ALWAYS AS (upper(name)));
+CREATE TABLE tb_holder (pk_holder int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+    fk_badge int NOT NULL REFERENCES tb_badge);
+INSERT INTO tb_badge (pk_badge, name) VALUES (1, 'b1');
+INSERT INTO tb_holder (pk_holder, fk_badge) VALUES (1, 1), (2, 1);
+SELECT pg_tviews_create('tv_holder', $$
+    SELECT h.pk_holder, h.id, jsonb_build_object('badge', b.label) AS data
+    FROM tb_holder h JOIN tb_badge b ON b.pk_badge = h.fk_badge $$);
+\endif
 -- Off the search_path.
 SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$
