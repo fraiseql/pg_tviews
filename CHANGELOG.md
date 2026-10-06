@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.25] - 2026-10-06
+
 ### Changed (breaking)
 
 - **A TVIEW's backing view lives in pg_tviews' schema** (#181):
@@ -44,7 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   read its table, not only those reading its view; `pg_tviews_rebuild_all()` and
   `pg_tviews_replication_status()` see an UNLOGGED TVIEW reading an emptied `tv_*`
   table as needing a rebuild after a promotion.
-
 - **A hierarchy joined through an array of ids refreshes every row it changes**
   (#182). A TVIEW whose key passed through a subquery with a set-returning function
   in its select list (`unnest(string_to_array(n.path, '.')::bigint[]) AS node_id`)
