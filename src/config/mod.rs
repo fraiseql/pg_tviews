@@ -24,14 +24,15 @@
 //! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
 //! | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
 //! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
-//! | `pg_tviews.uncascaded_policy` | enum | `warn` | What a new TVIEW does about base tables no cascade reaches (issues #157, #158) |
+//! | `pg_tviews.uncascaded_policy` | enum | `error` | What a new TVIEW does about base tables no cascade reaches (issues #157, #158) |
 //!
-//! `pg_tviews.uncascaded_policy` is read once, when a TVIEW is created, and stored
-//! with it: a tracked base table whose writes no cascade maps to TVIEW keys is
-//! reported with a WARNING (`warn`), refuses the create (`error`), or makes every
-//! write to it refresh the whole TVIEW at flush (`full_refresh`, which recomputes
-//! every row of the TVIEW once per flush that wrote to such a table). The row
-//! trigger always uses the stored value, never the writing session's.
+//! `pg_tviews.uncascaded_policy` is read once, when a TVIEW is created without an
+//! `uncascaded_policy` option, and stored with it: a tracked base table whose
+//! writes no cascade maps to TVIEW keys refuses the create (`error`, the default),
+//! is reported with a WARNING (`warn`), or makes every write to it refresh the
+//! whole TVIEW at flush (`full_refresh`, which recomputes every row of the TVIEW
+//! once per flush that wrote to such a table). The row trigger always uses the
+//! stored value, never the writing session's.
 //!
 //! ## Compile-time Constants
 //!
@@ -111,7 +112,7 @@ static REPORT_MAX_TRACKED_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
 static UNCASCADED_POLICY_GUC: GucSetting<UncascadedPolicy> =
-    GucSetting::<UncascadedPolicy>::new(UncascadedPolicy::Warn);
+    GucSetting::<UncascadedPolicy>::new(UncascadedPolicy::Error);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -170,9 +171,9 @@ pub fn register_gucs() {
     GucRegistry::define_enum_guc(
         c"pg_tviews.uncascaded_policy",
         c"What a new TVIEW does about base tables whose writes no cascade reaches.",
-        c"warn: WARNING, rows stay stale on such writes; error: refuse the TVIEW; \
-          full_refresh: such writes refresh the whole TVIEW. Read once at create time \
-          and stored with the TVIEW.",
+        c"error (default): refuse the TVIEW; full_refresh: such writes refresh the whole \
+          TVIEW; warn: WARNING, rows stay stale on such writes. Read once at create time \
+          when the TVIEW declares no uncascaded_policy option, and stored with it.",
         &UNCASCADED_POLICY_GUC,
         GucContext::Userset,
         GucFlags::default(),
@@ -492,7 +493,8 @@ pub fn direct_patch_enabled() -> bool {
     DIRECT_PATCH_ENABLED_GUC.get()
 }
 
-/// `pg_tviews.uncascaded_policy` (default `warn`): read when a TVIEW is created.
+/// `pg_tviews.uncascaded_policy` (default `error`): read when a TVIEW is created
+/// without an `uncascaded_policy` option.
 pub fn uncascaded_policy() -> UncascadedPolicy {
     UNCASCADED_POLICY_GUC.get()
 }
