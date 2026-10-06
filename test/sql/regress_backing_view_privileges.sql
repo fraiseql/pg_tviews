@@ -127,6 +127,18 @@ SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after OWNER T
 UPDATE app.tb_post SET title = 'a2' WHERE pk_post = 1;
 SELECT assert_fresh('app.tv_post', 'pk_post', 'a write after OWNER TO');
 
+-- The same by a non-superuser owner, giving the TVIEW to a role it belongs to.
+GRANT regress_bvp_owner TO regress_bvp_owner2;
+SET ROLE regress_bvp_owner2;
+ALTER TABLE app.tv_post OWNER TO regress_bvp_owner;
+RESET ROLE;
+SELECT must(v.relowner = 'regress_bvp_owner'::regrole,
+            'given back by its owner, the view is owned by ' || v.relowner::regrole::text)
+FROM tviews.registry g JOIN pg_class v ON v.oid = g.view WHERE g.name = 'tv_post';
+SELECT must(NOT has_schema_privilege('regress_bvp_owner', 'tviews', 'CREATE'),
+            'the new owner kept CREATE on tviews');
+SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after OWNER TO by the owner');
+
 -- A grant on the view itself does not outlive the next sync.
 GRANT SELECT ON ALL TABLES IN SCHEMA tviews TO regress_bvp_other;
 SELECT must(NOT has_table_privilege('regress_bvp_other', g.view, 'SELECT'),

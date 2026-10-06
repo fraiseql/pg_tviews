@@ -434,6 +434,9 @@ fn create_tview_inner(
         false,
     )?;
 
+    // Step 7.5: Whoever reads the TVIEW's table reads its backing view (#181).
+    super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
+
     // Step 8: Install triggers on base tables, as their lineage needs them.
     if dep_graph.base_tables.is_empty() {
         warning!("No base table dependencies found for {}", tv_table_name);

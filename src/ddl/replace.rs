@@ -979,7 +979,9 @@ fn rebuild(
         crate::utils::qualified_relname_from_oid(rebuilt.view_oid)?,
     );
     // Owners first; then the new objects' default privileges give way to the saved
-    // ones; then comments.
+    // ones; then comments. The backing view then follows the table's owner and
+    // grants (#181). The hook must not follow the table midway.
+    let internal = crate::hooks::InternalDdl::begin();
     let (owners, others): (Vec<&String>, Vec<&String>) =
         restore.iter().partition(|s| s.starts_with("ALTER "));
     for statement in owners {
@@ -1000,6 +1002,8 @@ fn rebuild(
     for statement in others {
         run(statement)?;
     }
+    drop(internal);
+    super::privileges::follow(Some(rebuilt.tview_oid), true)?;
     if let Some(typename) = graphql_typename {
         let _owner = crate::owner::AsOwner::of_extension()?;
         Spi::run_with_args(
@@ -1082,15 +1086,17 @@ const REBUILD_REFUSALS: &str = "\
     WHERE d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass \
       AND d.objoid IN ($1, $2) AND d.objsubid > 0";
 
-/// Statements that give the rebuilt table (`$1`) and view (`$2`) the owner,
-/// privileges and comment they have now, in the order to run them.
+/// Statements that give the rebuilt table (`$1`) the owner and privileges it
+/// has now, and it and its view (`$2`) their comments, in the order to run them.
+/// The view's owner and privileges follow the table's (#181).
 const RESTORE_STATEMENTS: &str = "\
     WITH objects(kind, relid) AS (VALUES ('TABLE', $1), ('VIEW', $2)) \
     SELECT statement FROM ( \
         SELECT 1 AS step, pg_catalog.format('ALTER %s %s OWNER TO %I', o.kind, \
                c.oid::pg_catalog.regclass, pg_catalog.pg_get_userbyid(c.relowner)) AS statement \
         FROM objects o JOIN pg_catalog.pg_class c ON c.oid = o.relid \
-        WHERE c.relowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = CURRENT_USER) \
+        WHERE o.kind = 'TABLE' \
+          AND c.relowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = CURRENT_USER) \
       UNION ALL \
         SELECT 2, pg_catalog.format('GRANT %s ON %s TO %s%s', a.privilege_type, \
                c.oid::pg_catalog.regclass, \
@@ -1099,7 +1105,7 @@ const RESTORE_STATEMENTS: &str = "\
                CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) \
         FROM objects o JOIN pg_catalog.pg_class c ON c.oid = o.relid, \
              pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.grantee <> c.relowner \
+        WHERE o.kind = 'TABLE' AND a.grantee <> c.relowner \
       UNION ALL \
         SELECT 3, pg_catalog.format('COMMENT ON %s %s IS %L', o.kind, \
                c.oid::pg_catalog.regclass, d.description) \

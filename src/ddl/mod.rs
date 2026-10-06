@@ -17,6 +17,7 @@
 pub mod aggregate;
 pub mod create;
 pub mod drop;
+pub(crate) mod privileges;
 pub mod rename;
 pub mod replace;
 pub(crate) mod uncascaded;
@@ -124,24 +125,38 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
 /// Returns an error if the privilege cannot be checked, granted or revoked, or
 /// if `ddl` fails.
 pub(crate) fn in_extension_schema<T>(ddl: impl FnOnce() -> TViewResult<T>) -> TViewResult<T> {
+    // SAFETY: reads the backend's current user id.
+    in_extension_schema_for(unsafe { pg_sys::GetUserId() }, ddl)
+}
+
+/// Run `ddl` with `role` allowed to create in the extension's schema: granted
+/// CREATE for the statement when it lacks it, as in [`in_extension_schema`].
+/// `ALTER VIEW … OWNER TO` needs it of the new owner.
+///
+/// # Errors
+/// Returns an error if the privilege cannot be checked, granted or revoked, or
+/// if `ddl` fails.
+pub(crate) fn in_extension_schema_for<T>(
+    role: pg_sys::Oid,
+    ddl: impl FnOnce() -> TViewResult<T>,
+) -> TViewResult<T> {
     let schema = crate::utils::ext_schema();
-    let can_create = Spi::get_one::<bool>(&format!(
-        "SELECT pg_catalog.has_schema_privilege('{schema}', 'CREATE')"
-    ))
+    let args = [unsafe { DatumWithOid::new(role, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let (can_create, name) = Spi::get_two_with_args::<bool, String>(
+        &format!(
+            "SELECT pg_catalog.has_schema_privilege($1, '{schema}', 'CREATE'), \
+                    pg_catalog.quote_ident(pg_catalog.pg_get_userbyid($1))"
+        ),
+        &args,
+    )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check CREATE on schema {schema}"),
         pg_error: e.to_string(),
-    })?
-    .unwrap_or(false);
-    if can_create {
+    })?;
+    if can_create.unwrap_or(false) {
         return ddl();
     }
-    let role = Spi::get_one::<String>("SELECT pg_catalog.quote_ident(current_user::text)")
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Read the current role".to_string(),
-            pg_error: e.to_string(),
-        })?
-        .unwrap_or_default();
+    let role = name.unwrap_or_default();
     let privilege = |verb: &str| -> TViewResult<()> {
         let sql = if verb == "GRANT" {
             format!("GRANT CREATE ON SCHEMA {schema} TO {role}")
