@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   schema now holds only its own objects; `tviews.registry.view` reports the backing
   view, which follows `ALTER TABLE tv_x RENAME` and `SET SCHEMA`, and stays owned by
   the TVIEW's owner. A definition that embedded another TVIEW through its `v_<entity>`
-  reads its `tv_<entity>` table.
+  reads its `tv_<entity>` table. Its privileges follow the TVIEW's table: whoever can
+  `SELECT` from `tv_<entity>` can `SELECT` from the backing view (only `SELECT` is
+  copied), kept so after every `GRANT` / `REVOKE` on tables, including `ON ALL TABLES
+  IN SCHEMA`, and `ALTER TABLE tv_x OWNER TO` changes the view's owner too. A grant on
+  the application's schema no longer reaches the view by itself.
 - **A TVIEW that reads a table no cascade reaches is refused unless it declares a
   policy.** `pg_tviews.uncascaded_policy` now defaults to `error` (was `warn`, which
   created it with a WARNING and stale rows on such writes). The refusal names each
@@ -69,6 +73,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   when it owns every backing view): it moves each backing view to
   `tviews.<schema>__tv_<entity>`. Tools that read `<schema>.v_<entity>` must read
   `tviews.registry.view` instead (confiture: the version pinned by this release).
+- The update gives each moved backing view the `SELECT` grants of its TVIEW's table.
+  A role that read `<schema>.v_<entity>` through `GRANT SELECT ON ALL TABLES IN SCHEMA
+  <schema>` or default privileges keeps reading it when it can read `tv_<entity>`
+  (fraisier's empty-TVIEW probe does both). A role granted the view but not the table
+  loses it: grant it `SELECT` on `tv_<entity>` instead. Hosts with custom ACLs should
+  check `SELECT has_table_privilege('<role>', view, 'SELECT') FROM tviews.registry`.
 - Then run `SELECT * FROM tviews.pg_tviews_reregister_all();` so that existing TVIEWs
   pick up the new mappings.
 - Definitions created or replaced from now on must declare a policy when they read a

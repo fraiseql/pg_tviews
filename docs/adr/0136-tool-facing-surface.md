@@ -550,6 +550,17 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   revokes it in the same transaction. Owning the views by the extension's owner would
   read the base tables with its privileges; `security_invoker` views would need grants
   for every reader.
+- **Privileges follow the table**: a grant on the application's schema (`GRANT SELECT ON
+  ALL TABLES IN SCHEMA app`, default privileges on `app`) no longer reaches the backing
+  view, so whoever can `SELECT` from `tv_<entity>` can `SELECT` from its backing view.
+  The view's `SELECT` grants are made its table's when the view is created, rebuilt or
+  moved by the upgrade, and again after every `GRANT` or `REVOKE` on tables (by name or
+  `ALL TABLES IN SCHEMA`); `ALTER TABLE tv_x OWNER TO` and `REASSIGN OWNED` give the view
+  the table's owner. Only `SELECT` is copied: the view reads the base tables with its
+  owner's privileges, and so would a write through it. A grant on the backing view alone
+  does not outlive the next of these. The grants are written as the view's owner, who
+  may always grant on it, so the caller needs no privilege on the view, and the
+  extension's owner need not be a superuser (`superuser = false`).
 - **Found by OID**: after creation nothing builds or matches the name; aggregate embeds
   come from the query tree (ADR 0157). A definition that embeds another TVIEW reads its
   `tv_<entity>` table.

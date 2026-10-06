@@ -27,7 +27,7 @@ them.
 | `logged` | `boolean` | the table is LOGGED |
 | `options` | `jsonb` | the effective options, every key present (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it |
-| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone |
+| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Whoever can `SELECT` from the TVIEW's table can `SELECT` from it ([privileges](ddl.md#privileges)) |
 | `uncascaded_tables` | `regclass[]` | base tables whose writes no cascade maps to this TVIEW's keys (below); empty for most TVIEWs |
 | `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `error`, `full_refresh` or `warn`, declared with the TVIEW (option `uncascaded_policy`, else `pg_tviews.uncascaded_policy`) |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |

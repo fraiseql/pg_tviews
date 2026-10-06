@@ -57,7 +57,9 @@ Following FraiseQL patterns:
   pg_tviews' own schema, named after the TVIEW's table and fitted to 63 bytes;
   `tviews.registry.view` reports it). The application's own `v_<entity>` view is
   left alone: a TVIEW can materialize it (`pg_tviews_create('tv_order', 'SELECT * FROM
-  v_order')`) or read views that read it
+  v_order')`) or read views that read it. Its privileges follow the TVIEW's table:
+  whoever can `SELECT` from `tv_<entity>` can `SELECT` from it (see
+  [Privileges](#privileges))
 - **Embedding another TVIEW**: read its table `tv_<entity>` (`JOIN tv_user u ON
   u.pk_user = p.fk_user`)
 - **Entity name**: Derived from TVIEW name by removing `tv_` prefix
@@ -464,6 +466,24 @@ definition so that the table is joined on a column pg_tviews can trace.
 - **Dependency Depth**: Performance degrades with >5 cascade levels
 - **Circular Dependencies**: Automatically detected and rejected
 - **Column Name Conflicts**: Must resolve ambiguous column names
+
+## Privileges
+
+A TVIEW's table is an ordinary table: grant on it as on any other. Its backing view,
+in `tviews`, follows it:
+
+- whoever can `SELECT` from `tv_<entity>` (a role, or `PUBLIC`) can `SELECT` from its
+  backing view, so a role granted `SELECT ON ALL TABLES IN SCHEMA app`, or reading
+  `app` through default privileges, reads `tviews.app__tv_<entity>` too;
+- the view's grants are made its table's when the TVIEW is created or rebuilt, and
+  after every `GRANT` or `REVOKE` on tables, including `ON ALL TABLES IN SCHEMA`;
+- `ALTER TABLE tv_<entity> OWNER TO` (and `REASSIGN OWNED`) gives the view the new
+  owner, who reads the base tables through it;
+- only `SELECT` is copied, without grant option; `INSERT`, `UPDATE` and the others
+  granted on the table are not. A grant made on the backing view alone is taken back
+  by the next of these.
+
+`USAGE` on `tviews` is granted to `PUBLIC` by the extension.
 
 ## DROP TABLE tv_*
 
