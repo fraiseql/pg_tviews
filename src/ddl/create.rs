@@ -323,9 +323,10 @@ fn create_tview_inner(
 
     let schema_name = schema_name.to_string();
 
-    // Step 3: Create backing view v_<entity>
-    let view_name = format!("v_{entity_name}");
-    create_backing_view(&view_name, &final_select_sql, &schema_name)?;
+    // Step 3: Create the backing view
+    let (view_schema, view_name) = super::backing_view_name(&schema_name, entity_name);
+    create_backing_view(&view_name, &final_select_sql, &view_schema)?;
+    let view_oid = relation_oid(&view_schema, &view_name)?;
 
     // Step 4: Find base table dependencies, and how a write to each maps to keys,
     // from the view's query tree (ADR 0157), with the column that names the
@@ -333,7 +334,7 @@ fn create_tview_inner(
     // aggregate TVIEW, one per declared group key, issue #58).
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
-    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
+    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let Derivation {
         lineage,
         key_mappings,
@@ -344,7 +345,7 @@ fn create_tview_inner(
         &final_schema,
         group_keys,
         &dep_graph.base_tables,
-        &schema_name,
+        view_oid,
     )?;
 
     // Step 5: Create materialized table tv_<entity>, keyed on the identity.
@@ -354,10 +355,11 @@ fn create_tview_inner(
         &schema_name,
         &lineage.identity.name,
         storage,
+        view_oid,
     )?;
 
     // Step 6: Populate initial data
-    let rows = populate_initial_data(&tv_table_name, &view_name, &schema_name)?;
+    let rows = populate_initial_data(&tv_table_name, &schema_name, view_oid)?;
 
     // Step 6.6: Reject a tview that can never be incrementally refreshed (issue #49).
     // A refresh is enqueued for this entity only if either a `tb_<entity>` base table
@@ -408,7 +410,7 @@ fn create_tview_inner(
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
         entity_name,
-        &view_name,
+        view_oid,
         &tv_table_name,
         &final_select_sql,
         &final_schema,
@@ -446,8 +448,8 @@ fn create_tview_inner(
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
 /// with the same analysis as `create_tview_in`, and return the base tables its
 /// backing view reads. Used when a column rename has changed the text that
-/// defines `v_<entity>`, and by `pg_tviews_reregister()`; the relations themselves
-/// are unchanged.
+/// defines the backing view, and by `pg_tviews_reregister()`; the relations
+/// themselves are unchanged.
 ///
 /// # Errors
 /// Returns an error if the definition cannot be analyzed or the catalog update fails.
@@ -457,17 +459,21 @@ pub fn reregister_metadata(
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
     let schema = infer_schema(definition)?;
-    let view_name = format!("v_{entity_name}");
-    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(schema_name))?;
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Read the metadata of tv_{entity_name}"),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| TViewError::MetadataNotFound {
+            entity: entity_name.to_string(),
+        })?;
+    let view_oid = meta.view_oid;
+    let (view_schema, view_name) = super::relation_name(view_oid)?;
+    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let group_keys = stored_group_keys(entity_name)?;
     // The stored policy holds; an `error` TVIEW whose set is no longer empty
     // aborts the re-registration (and the ALTER that caused it).
-    let policy = crate::catalog::TviewMeta::load_by_entity(entity_name)
-        .map_err(|e| TViewError::CatalogError {
-            operation: format!("Read the uncascaded policy of tv_{entity_name}"),
-            pg_error: e.to_string(),
-        })?
-        .map_or_else(crate::config::uncascaded_policy, |m| m.uncascaded_policy);
+    let policy = meta.uncascaded_policy;
     let Derivation {
         lineage,
         key_mappings,
@@ -478,7 +484,7 @@ pub fn reregister_metadata(
         &schema,
         group_keys.as_ref(),
         &dep_graph.base_tables,
-        schema_name,
+        view_oid,
     )?;
     key_table_on_identity(
         schema_name,
@@ -499,7 +505,7 @@ pub fn reregister_metadata(
     )?;
     register_metadata(
         entity_name,
-        &view_name,
+        view_oid,
         &format!("tv_{entity_name}"),
         definition,
         &schema,
@@ -639,17 +645,17 @@ fn aggregate_embeds(
         .collect()
 }
 
-/// Analyze `v_<entity>` (ADR 0157) and derive the cascade paths of its local
-/// tables, or for an aggregate TVIEW one per declared group key (issue #58).
+/// Analyze the backing view `view_oid` (ADR 0157) and derive the cascade paths of
+/// its local tables, or for an aggregate TVIEW one per declared group key (issue
+/// #58).
 fn derive(
     entity_name: &str,
     definition: &str,
     schema: &TViewSchema,
     group_keys: Option<&super::aggregate::GroupKeys>,
     base_tables: &[pg_sys::Oid],
-    schema_name: &str,
+    view_oid: pg_sys::Oid,
 ) -> TViewResult<Derivation> {
-    let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
     let embeds: Vec<String> = schema
         .fk_columns
         .iter()
@@ -658,7 +664,7 @@ fn derive(
     let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
     aggregate_embeds(&lineage, entity_name)?;
     let cascade_paths = match group_keys {
-        Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
+        Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, view_oid)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
     };
     let mut key_mappings = lineage.to_json();
@@ -1013,7 +1019,7 @@ fn build_oid_name_map(
     Ok(map)
 }
 
-/// Columns of `source_table` that the backing view `v_<entity>` depends on,
+/// Columns of `source_table` that the backing view `view_oid` depends on,
 /// read from `PostgreSQL`'s own column-level `pg_depend` records. This is the
 /// exact set of source columns whose change can alter a target tview row —
 /// it correctly accounts for expressions, `SELECT *` expansion, and repeated
@@ -1023,28 +1029,21 @@ fn build_oid_name_map(
 /// dependency on `source_table` (e.g. a multi-hop cascade whose backing view
 /// references an intermediate view, not the leaf table). The caller treats an
 /// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
-pub(crate) fn view_source_columns(schema: &str, entity: &str, source_oid: Oid) -> Vec<String> {
-    // The view and schema names are bound as text parameters (no in-band SQL
-    // quoting); the source table is matched by the OID the cascade path resolved,
-    // so a joined table in another schema is found too.
+pub(crate) fn view_source_columns(view_oid: Oid, source_oid: Oid) -> Vec<String> {
+    // The view and the source table are matched by OID, so a joined table in
+    // another schema is found too.
     const QUERY: &str = "SELECT a.attname::text AS col \
          FROM pg_depend d \
          JOIN pg_rewrite r ON r.oid = d.objid \
-         JOIN pg_class v ON v.oid = r.ev_class \
          JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
-         WHERE v.relname = $1 AND v.relnamespace = $2::regnamespace \
-           AND d.refobjid = $3 AND d.refobjsubid > 0";
-    let view_name = format!("v_{entity}");
+         WHERE r.ev_class = $1 AND d.refobjid = $2 AND d.refobjsubid > 0";
     let mut cols = Vec::new();
     let result = Spi::connect(|client| {
-        // SAFETY: DatumWithOid::new wraps datum pointers for SPI parameter passing;
-        // view_name/schema outlive this select call.
-        let text = PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value();
-        let args = vec![
-            unsafe { DatumWithOid::new(view_name.as_str(), text) },
-            unsafe { DatumWithOid::new(schema, text) },
-            unsafe { DatumWithOid::new(source_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-        ];
+        let oid = PgOid::BuiltIn(PgBuiltInOids::OIDOID).value();
+        // SAFETY: plain OID datums.
+        let args = vec![unsafe { DatumWithOid::new(view_oid, oid) }, unsafe {
+            DatumWithOid::new(source_oid, oid)
+        }];
         let rows = client.select(QUERY, None, &args)?;
         for row in rows {
             if let Ok(Some(name)) = row["col"].value::<String>() {
@@ -1055,7 +1054,7 @@ pub(crate) fn view_source_columns(schema: &str, entity: &str, source_oid: Oid) -
     });
     if let Err(e) = result {
         notice!(
-            "view_source_columns({view_name}, {source_oid:?}): {e} — cascade will always refresh"
+            "view_source_columns({view_oid:?}, {source_oid:?}): {e} — cascade will always refresh"
         );
         return Vec::new();
     }
@@ -1218,29 +1217,6 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
     Ok(())
 }
 
-/// The OID of view `schema.view`.
-fn view_oid(schema: &str, view: &str) -> TViewResult<pg_sys::Oid> {
-    let qualified = format!("{}.{}", quote_identifier(schema), quote_identifier(view));
-    // SAFETY: the text datum borrows `qualified`, which outlives the select.
-    Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT pg_catalog.to_regclass($1)::pg_catalog.oid",
-        &[unsafe {
-            DatumWithOid::new(
-                qualified.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        }],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Find view {qualified}"),
-        pg_error: e.to_string(),
-    })?
-    .ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find view {qualified}"),
-        pg_error: "the view does not exist".to_string(),
-    })
-}
-
 /// Create the materialized table with proper schema inferred from the backing view,
 /// with its primary key on the TVIEW's identity column (ADR 0169).
 fn create_materialized_table(
@@ -1249,6 +1225,7 @@ fn create_materialized_table(
     schema_name: &str,
     identity: &str,
     storage: Storage,
+    view_oid: pg_sys::Oid,
 ) -> TViewResult<()> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
@@ -1273,11 +1250,8 @@ fn create_materialized_table(
     // schema-qualified (an enum, a domain, a composite, `numeric(6,2)`, `bit(4)`).
     // The convention columns above keep their fixed types: the key is BIGINT,
     // `id` UUID, `data` JSONB and `fk_*` BIGINT whatever the view computes them as.
-    let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
     let view_types: std::collections::HashMap<String, String> =
-        crate::utils::column_types(view_oid(schema_name, &format!("v_{entity}"))?)?
-            .into_iter()
-            .collect();
+        crate::utils::column_types(view_oid)?.into_iter().collect();
     let view_type = |col: &str, fallback: &str| {
         view_types
             .get(col)
@@ -1500,23 +1474,19 @@ fn storage_clause(fillfactor: i32) -> String {
 
 /// Populate the materialized table with initial data from the backing view, and
 /// return the number of rows.
-fn populate_initial_data(tview_name: &str, view_name: &str, schema_name: &str) -> TViewResult<u64> {
+fn populate_initial_data(
+    tview_name: &str,
+    schema_name: &str,
+    view_oid: pg_sys::Oid,
+) -> TViewResult<u64> {
     // Get actual column names from the backing view (like pg_tviews_refresh does)
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
-    let view_oid = Spi::get_one::<Oid>(&format!(
-        "SELECT c.oid FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname::text = '{view_name}' AND n.nspname::text = '{schema_name}' AND c.relkind = 'v'"
-    ))?
-    .ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find view {view_name} in schema {schema_name}"),
-        pg_error: "View not found".to_string(),
-    })?;
-
+    let view = crate::utils::qualified_relname_from_oid(view_oid)?;
     let view_columns = crate::utils::get_view_columns_by_oid(view_oid)?;
 
     if view_columns.is_empty() {
         return Err(TViewError::CatalogError {
-            operation: format!("Get columns for view {view_name}"),
+            operation: format!("Get columns for view {view}"),
             pg_error: "View has no selectable columns".to_string(),
         });
     }
@@ -1526,7 +1496,6 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema_name: &str) -
 
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
-    let qi_view = quote_identifier(view_name);
     let col_list = insert_columns
         .iter()
         .map(|c| quote_identifier(c))
@@ -1535,7 +1504,7 @@ fn populate_initial_data(tview_name: &str, view_name: &str, schema_name: &str) -
 
     let insert_sql = format!(
         "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
-         SELECT {col_list} FROM {qi_schema}.{qi_view}"
+         SELECT {col_list} FROM {view}"
     );
 
     let rows = Spi::connect_mut(|client| client.update(&insert_sql, None, &[]).map(|t| t.len()))
@@ -1563,7 +1532,7 @@ fn pg_array_elem(s: &str) -> String {
 #[allow(clippy::too_many_arguments)] // Reason: all args are distinct registration fields with no natural grouping
 fn register_metadata(
     entity_name: &str,
-    view_name: &str,
+    view_oid: pg_sys::Oid,
     tview_name: &str,
     definition_sql: &str,
     schema: &TViewSchema,
@@ -1667,22 +1636,7 @@ fn register_metadata(
         .join(",");
     let cascade_paths_literal = format!("'{{{cascade_paths_str}}}'");
 
-    // Get OIDs for the created objects (schema-qualified, parameterized to prevent injection)
-    let view_oid_args = vec![
-        unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-    ];
-    let view_oid_result = Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT c.oid FROM pg_class c \
-         JOIN pg_namespace n ON c.relnamespace = n.oid \
-         WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'v'",
-        &view_oid_args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get OID for view {schema_name}.{view_name}"),
-        pg_error: e.to_string(),
-    })?;
-
+    // Get the OID of the table (schema-qualified, parameterized to prevent injection)
     let table_oid_args = vec![
         unsafe { DatumWithOid::new(tview_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
@@ -1696,11 +1650,6 @@ fn register_metadata(
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for table {schema_name}.{tview_name}"),
         pg_error: e.to_string(),
-    })?;
-
-    let view_oid = view_oid_result.ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Find view {schema_name}.{view_name}"),
-        pg_error: "View OID not found".to_string(),
     })?;
 
     let table_oid = table_oid_result.ok_or_else(|| TViewError::CatalogError {

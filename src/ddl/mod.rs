@@ -27,6 +27,37 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
+/// Schema and name of the backing view of TVIEW `tv_<entity>` in `schema`: the
+/// only place a backing view's name is built; everything else finds it by OID
+/// (`pg_tview_meta.view_oid`).
+pub(crate) fn backing_view_name(schema: &str, entity: &str) -> (String, String) {
+    (schema.to_string(), format!("v_{entity}"))
+}
+
+/// Schema and name of relation `oid`.
+///
+/// # Errors
+/// Returns an error if the relation does not exist.
+pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
+    let args = [unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let (name, schema) = Spi::get_two_with_args::<String, String>(
+        "SELECT c.relname::text, n.nspname::text FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1",
+        &args,
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Name relation {oid:?}"),
+        pg_error: e.to_string(),
+    })?;
+    match (schema, name) {
+        (Some(schema), Some(name)) => Ok((schema, name)),
+        _ => Err(TViewError::CatalogError {
+            operation: format!("Name relation {oid:?}"),
+            pg_error: "relation not found".to_string(),
+        }),
+    }
+}
+
 /// Advisory lock class of TVIEW registrations (`"tvie"`).
 const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
 

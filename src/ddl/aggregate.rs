@@ -99,7 +99,7 @@ pub fn cascade_paths(
     entity: &str,
     group_keys: &GroupKeys,
     base_tables: &[Oid],
-    schema_name: &str,
+    view_oid: Oid,
 ) -> TViewResult<Vec<CascadePath>> {
     let mut paths = Vec::with_capacity(group_keys.len());
     for (table, column) in group_keys {
@@ -121,7 +121,7 @@ pub fn cascade_paths(
             initial_col: column.clone(),
             hops: Vec::new(),
             unresolvable: false,
-            source_columns: crate::ddl::create::view_source_columns(schema_name, entity, oid),
+            source_columns: crate::ddl::create::view_source_columns(view_oid, oid),
             fanout: None,
             root: false,
             initial_attnum: None,

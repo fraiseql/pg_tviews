@@ -1,7 +1,7 @@
 //! Keep TVIEW metadata in step with `ALTER … RENAME COLUMN` on a relation a
 //! backing view reads from.
 //!
-//! `PostgreSQL` rewrites `v_<entity>` to follow a column rename, but the text in
+//! `PostgreSQL` rewrites the backing view to follow a column rename, but the text in
 //! `pg_tview_meta.definition` and everything derived from it at creation (cascade
 //! paths, the column-aware refresh set, the direct-patch map, DISTINCT ON keys)
 //! would still name the old column: propagation from the renamed column silently
@@ -10,7 +10,7 @@
 //!
 //! The definition is rewritten in place, token by token, so it stays the author's
 //! text. The rewrite is only kept if it defines exactly the same view as the
-//! renamed `v_<entity>`; otherwise the definition falls back to `pg_get_viewdef`.
+//! renamed backing view; otherwise the definition falls back to `pg_get_viewdef`.
 
 use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;

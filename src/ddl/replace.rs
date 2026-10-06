@@ -915,17 +915,17 @@ fn rebuild(
         Some(meta.uncascaded_policy),
     )?;
 
+    let rebuilt =
+        TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        })?;
     let (tv, view) = (
         format!(
             "{}.{}",
             quote_identifier(schema),
             quote_identifier(&tv_name)
         ),
-        format!(
-            "{}.{}",
-            quote_identifier(schema),
-            quote_identifier(&format!("v_{entity}"))
-        ),
+        crate::utils::qualified_relname_from_oid(rebuilt.view_oid)?,
     );
     // Owners first; then the new objects' default privileges give way to the saved
     // ones; then comments.
