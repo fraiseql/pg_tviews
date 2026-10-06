@@ -272,14 +272,31 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   rows, key included, so a row enters or leaves the TVIEW as the set operation says
 - **CTEs (`WITH`)**: cascade paths resolve through a CTE whose body reads one or
   several joined base tables, reads earlier CTEs (a chain of any length) or
-  subqueries in its `FROM`, or is a set operation. The columns the CTE joins on must
-  pass base columns through unchanged (a computed join column cannot be traced back
-  to a base row). A CTE the view defines but never uses is accepted; the tables it
-  reads get no trigger
-- **Window functions, `LIMIT`/`OFFSET`, set-returning functions, `GROUPING SETS`**:
-  accepted, but a write to a table read under one of them can change rows other
-  than its own, so the table is `all_keys` and the TVIEW's `uncascaded_policy`
-  decides (see [Tables no cascade reaches](#tables-no-cascade-reaches))
+  subqueries in its `FROM`, or is a set operation. A CTE the view defines but never
+  uses is accepted; the tables it reads get no trigger
+- **Computed columns**: a view, subquery or CTE column computed by an immutable
+  expression of base columns (`upper(n.name) AS code`) links like the expression
+  itself: a join on it (`x.code = s.code`) maps writes through `x.code =
+  upper(n.name)`. A column computed by a volatile or stable expression (`now()`,
+  `random()`) links nothing
+- **Arrays of keys**: `a.pk_node = ANY (<array>)`, a join on `unnest(<array>)` in a
+  subquery's select list, and `LATERAL unnest(<array>)` are the same condition:
+  the array's element equals the key. A write to the joined table maps through
+  `<array> @> ARRAY[<key>]`, which a GIN index on the array expression serves; the
+  create-time notice names it (below)
+- **Window functions, `LIMIT`/`OFFSET`, `GROUPING SETS`**: accepted, but a write to a
+  table read under one of them can change rows other than its own, so the table is
+  `all_keys` and the TVIEW's `uncascaded_policy` decides (see [Tables no cascade
+  reaches](#tables-no-cascade-reaches)). The same holds for a set-returning function
+  in the backing view's own select list. In a subquery's select list a set-returning
+  function only multiplies rows: the other columns pass through, and an `unnest`
+  output is an array element (above)
+- **Recursive CTEs (`WITH RECURSIVE`)**, in the definition or in a view it reads: a
+  row of a recursive CTE comes from rows of the step before, so the tables read
+  inside it are `all_keys` (`read in a recursive CTE (public.v_category_path)`) and
+  the tables read outside it keep their mapping. A small lookup tree read by a large
+  entity view is the usual case: create the TVIEW with `uncascaded_policy =
+  'full_refresh'`, and the entity's own writes stay incremental
 - **DISTINCT ON**: deduplicated read models, keyed on their `DISTINCT ON` key
   ([ADR 0169](../adr/0169-tview-row-identity.md)): its value names the TVIEW's
   rows, it is the table's primary key, and `tviews.registry.identity` reports it.
@@ -309,7 +326,6 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
 
 #### ❌ Not Supported
 
-- **Recursive Queries**: `WITH RECURSIVE` (rejected at create time)
 - **Self-Joins**: May cause dependency cycles
 
 ### How a write finds the TVIEW rows to refresh
@@ -326,6 +342,16 @@ the index that avoids it:
 ```
 NOTICE:  writes to public.tb_sku map to tv_order keys with a sequential scan of tb_line
          (about 20000 rows); an index on tb_line (fk_sku) would make them cheaper
+```
+
+A lookup by an expression (an array of keys, a computed column) names the index to
+create:
+
+```
+NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of tb_node
+         (about 3000 rows); CREATE INDEX ON public.tb_node USING gin
+         (((pg_catalog.string_to_array(path, '.'::pg_catalog.text))::bigint[])) would
+         make them cheaper
 ```
 
 `tviews.pg_tviews_mapping_query('tv_order', 'tb_sku')` returns the query.
@@ -370,13 +396,16 @@ listed in `tviews.registry.uncascaded_tables`. Common shapes:
   or `GROUPING SETS`, in the backing view's own SELECT (`count(*) OVER ()` changes
   every row when one is inserted; `ORDER BY … LIMIT 10` changes which rows are in):
   the reason reads `read under a window function in the top-level SELECT`;
-- a subquery or view whose rows are not passed through to the key: under the same
-  shapes, or a join on a computed column.
+- a subquery or view whose rows are not passed through to the key: under a window
+  function, `LIMIT`/`OFFSET` or `GROUPING SETS`, or joined on a column computed by a
+  volatile or stable expression;
+- a table read inside a recursive CTE (`read in a recursive CTE (…)`).
 
 A table read in several places is `all_keys` when one of them can't be traced, but
-its other reads keep refreshing the rows they reach (a TVIEW's own table always
-refreshes its rows): the reason then ends with `the rows its other reads reach are
-still refreshed`, and the policy decides only about the rest.
+its other reads keep refreshing the rows they reach: a TVIEW's own table, read
+where its key comes from, refreshes the row of each entity it writes. The reason
+then ends with `the rows its other reads reach are still refreshed`, and the policy
+decides only about the rest.
 
 What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
 

@@ -1,6 +1,7 @@
 # ADR 0157: Map base-table writes to TVIEW keys from PostgreSQL's query tree
 
-- Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys)
+- Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys);
+  amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 
@@ -75,7 +76,7 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
      already refreshes the embedding rows, with its patch and prune optimisations; nothing more is
      installed.
    - `AllKeys`: no selective predicate (an uncorrelated subquery, a window function, `LIMIT`, a
-     join on a computed column). Handled by `pg_tviews.uncascaded_policy` (`warn` | `error` |
+     join on a column computed by a volatile expression, a recursive CTE). Handled by `pg_tviews.uncascaded_policy` (`warn` | `error` |
      `full_refresh`), stored per TVIEW at create time. This includes a window function,
      `LIMIT`/`OFFSET`, a set-returning function or `GROUPING SETS` in the backing view's own
      SELECT (or a set-operation branch): such a level gets no key root, since a write changes rows
@@ -96,7 +97,7 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
    `AFTER TRUNCATE` trigger that refreshes the whole TVIEW.
 3. The text-based extraction, the per-hop `spi_batch_lookup` loop and the dead statement handler
    are removed. `sqlparser` remains for create-time text handling that has no query tree: DISTINCT
-   ON keys, the recursive-CTE check, embed lookups, fan-out field maps and column-rename rewriting.
+   ON keys, embed lookups, fan-out field maps and column-rename rewriting.
 
 ### Constraints this relies on
 
@@ -132,3 +133,35 @@ multi-hop writes, because it replaces rows × hops SPI calls with one join per s
   (`pg_tviews_reregister_all`); until then a TVIEW's stored multi-hop paths refresh it in full.
 - Tables read only inside functions the view calls stay invisible to both `pg_depend` and the
   analyzer. The analyzer warns about non-immutable function calls. Closing that gap is separate work.
+
+## Amendment (#182, #183): arrays, computed columns, recursion
+
+Equivalent spellings of one condition must classify alike: a hierarchy stored as a path of
+ids joined to its ancestors with `= ANY (<array>)`, a `LATERAL unnest(<array>)` or an
+`unnest` in a subquery's select list classified three different ways, and none of them mapped
+the ancestor read (#182). A view reading a recursive view was refused with a depth error
+(#183).
+
+- **Opacity per output.** A set-returning function in a subquery's select list multiplies rows
+  but leaves the other columns as they are: only its own output is opaque. A window function,
+  `LIMIT`/`OFFSET` and `GROUPING SETS` stay level-wide, and in the backing view's own SELECT a
+  set-returning function still leaves the level without a root.
+- **Computed outputs.** An output computed by an immutable expression of base columns resolves
+  to that expression written over them (`Resolved::Expr`). A predicate on it embeds the
+  expression; it is never a key, a group key or a root. A volatile expression, an aggregate or
+  anything the deparser does not write stays opaque, so the `AllKeys` case "join on a computed
+  column" narrows to those.
+- **Array membership.** `x = ANY (<array>)` is a conjunct. An output `unnest(<array>)` (select
+  list, or alone in `FROM` without ordinality) stands for an element of the array: `=` with it
+  is written `x = ANY (<array>)`; any other use links nothing. With the element type's own
+  equality the conjunct is also written `<array> @> ARRAY[x]`, which the membership implies and
+  a GIN index serves; the create-time notice for a mapping that scans a table by an expression
+  prints the `CREATE INDEX` (GIN for an array, btree for a scalar expression).
+- **Strictness.** Predicates were kept only when strict, so that a NULL-extended row could not
+  satisfy them. `= ANY` over a non-constant array and functions such as `string_to_array` are
+  not strict. A non-strict predicate is now kept when none of the occurrences it reads is on the
+  nullable side of an outer join below it; computed outputs carry their own strictness.
+- **Recursive CTEs.** The recursive term's reference to its own CTE is opaque, and a recursive
+  CTE is walked once with opaque outputs: the tables read inside it are `AllKeys` ("read in a
+  recursive CTE (<view>)"), and the tables read outside keep their mapping. The text check that
+  refused `WITH RECURSIVE` in a definition is removed.

@@ -73,9 +73,9 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)):
 | kind | meaning |
 |---|---|
 | `local` | the key is a column of the changed row: the TVIEW's own table, or a table linked by `col = <key>` (in a join, a subquery or a view) |
-| `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition) |
+| `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition, an array of keys, a computed column) |
 | `propagated` | read through the `v_<entity>` of a TVIEW this one embeds by `fk_<entity>`: refreshing that TVIEW refreshes this one |
-| `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function) |
+| `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function, a recursive CTE) |
 
 **`options`**:
 

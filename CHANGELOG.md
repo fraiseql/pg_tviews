@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Fixed
+
+- **A hierarchy joined through an array of ids refreshes every row it changes**
+  (#182). A TVIEW whose key passed through a subquery with a set-returning function
+  in its select list (`unnest(string_to_array(n.path, '.')::bigint[]) AS node_id`)
+  classified its own table `all_keys`: an update or soft delete of the entity's own
+  row was lost under `warn`. The `= ANY (<array>)` spelling of the same join refreshed
+  the row itself but not the rows whose path holds it. A set-returning function now
+  hides only its own output, and the three spellings (`unnest` in a subquery,
+  `LATERAL unnest`, `= ANY`) map the joined read through the array membership.
+- **A view with `WITH RECURSIVE` is accepted** (#183). A TVIEW reading a recursive
+  view was refused as "more than 32 levels deep", and recursion written in the
+  definition itself was refused outright. The tables read inside a recursive CTE are
+  `all_keys` ("read in a recursive CTE (<view>)") and follow the TVIEW's
+  `uncascaded_policy`; the tables read outside it keep their mapping.
+
+### Changed
+
+- **More joins are `mapped` instead of `all_keys`**: array membership
+  (`= ANY (<array>)`, `unnest`), and joins on a subquery column computed by an
+  immutable expression (`upper(n.name) AS code`). A mapping that scans a large table
+  by such an expression is reported at create time with the `CREATE INDEX` to run
+  (GIN for an array, btree for a scalar expression).
+
+### Upgrade notes
+
+- After `ALTER EXTENSION pg_tviews UPDATE`, run
+  `SELECT * FROM tviews.pg_tviews_reregister_all();` so that existing TVIEWs pick up
+  the new mappings.
+
 ## [0.1.0-beta.24] - 2026-10-05
 
 ### Fixed
