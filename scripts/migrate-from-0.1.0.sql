@@ -194,6 +194,44 @@ BEGIN
     END LOOP;
 END $$;
 
+-- 6. Give each backing view the SELECT grants of its TVIEW's table, as pg_tviews keeps
+--    them from now on: whoever can read a TVIEW can read its backing view.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        WITH tview AS (
+            SELECT m.table_oid::pg_catalog.oid AS tab, v.oid AS view, v.relowner AS owner,
+                   pg_catalog.format('%I.%I', n.nspname, v.relname) AS name
+            FROM tviews.pg_tview_meta m
+            JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid
+            JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace
+        ), wanted AS (
+            SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.tab,
+                   pg_catalog.aclexplode(c.relacl) a
+            WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner
+        ), held AS (
+            SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.view,
+                   pg_catalog.aclexplode(c.relacl) a
+            WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner
+        ), changes AS (
+            SELECT view, name, grantee, true AS adds FROM (TABLE wanted EXCEPT TABLE held) g
+            UNION ALL
+            SELECT view, name, grantee, false FROM (TABLE held EXCEPT TABLE wanted) r
+        )
+        SELECT pg_catalog.format(CASE WHEN adds THEN 'GRANT SELECT ON %s TO %s'
+                                      ELSE 'REVOKE SELECT ON %s FROM %s CASCADE' END,
+                   name,
+                   pg_catalog.string_agg(CASE WHEN grantee = 0 THEN 'PUBLIC'
+                       ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(grantee)) END,
+                       ', ' ORDER BY grantee)) AS statement
+        FROM changes GROUP BY view, name, adds ORDER BY view, adds
+    LOOP
+        EXECUTE r.statement;
+    END LOOP;
+END $$;
+
 SELECT entity, status FROM tviews.pg_tviews_reregister_all(strict => true);
 
 COMMIT;

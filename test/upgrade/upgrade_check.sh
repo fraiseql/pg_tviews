@@ -79,6 +79,8 @@ after)
 
     psql -X -d "$upgraded" -q -f "$here/verify.sql"
     echo "TVIEWs follow their base tables after the upgrade"
+    psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"
+    echo "backing views are readable by the readers of their TVIEWs"
     ;;
 *)
     fail "usage: $0 before | after update|migrate"

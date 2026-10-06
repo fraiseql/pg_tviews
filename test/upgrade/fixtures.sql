@@ -148,3 +148,17 @@ SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$
     SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM app.tb_note $$);
 SET search_path TO "$user", public, tviews;
+
+-- Readers of the TVIEWs, for the backing views' privileges (#181): one granted
+-- every table of public at once, which reached the backing views while they were
+-- public.v_<entity>; one granted tv_user alone.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'upgrade_schema_reader') THEN
+        CREATE ROLE upgrade_schema_reader;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'upgrade_table_reader') THEN
+        CREATE ROLE upgrade_table_reader;
+    END IF;
+END $$;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO upgrade_schema_reader;
+GRANT SELECT ON tv_user TO upgrade_table_reader;
