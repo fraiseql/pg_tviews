@@ -100,6 +100,27 @@ FROM tb_post p
 JOIN tb_user u ON p.fk_user = u.pk_user;
 ```
 
+### Your `v_<entity>` views, and other TVIEWs
+
+The schema keeps only what the templates generate. A TVIEW's backing view lives in
+pg_tviews' own schema, `tviews.<schema>__tv_<entity>`, so the application's `v_post`
+query view and `tv_post` coexist: `CREATE TABLE tv_post AS SELECT * FROM v_post`
+materializes it. A TVIEW that embeds another reads its table:
+
+```sql
+CREATE TABLE tv_comment AS
+SELECT c.pk_comment, c.id, c.fk_post,
+       jsonb_build_object('body', c.body, 'post', p.data) AS data
+FROM tb_comment c
+JOIN tv_post p ON p.pk_post = c.fk_post;
+```
+
+A definition that reads a table no cascade can trace (an uncorrelated subquery, a
+window function, a recursive CTE) is refused at create unless it declares what a write
+to that table does: `pg_tviews_create_or_replace('tv_post', $$ … $$, options =>
+'{"uncascaded_policy": "full_refresh"}')`, or `SET pg_tviews.uncascaded_policy =
+'full_refresh'` before `CREATE TABLE … AS`. The error says which table and why.
+
 ## GraphQL Cascade Integration
 
 ### Automatic Updates

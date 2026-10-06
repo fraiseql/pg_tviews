@@ -8,7 +8,7 @@ Systematic troubleshooting for common pg_tviews problems. Examples use the entit
 Row triggers on base tables record affected TVIEW keys in an in-memory queue of the
 writing transaction. A statement trigger flushes the queue at the end of each statement,
 and COMMIT flushes anything left. Each affected TVIEW row is either patched directly or
-recomputed from the backing view `v_<entity>`. There is no queue table and no background
+recomputed from its backing view, `tviews.<schema>__tv_<entity>` (`tviews.registry.view`). There is no queue table and no background
 worker: if a refresh fails, the writing statement fails.
 
 ## Quick Diagnosis
@@ -86,7 +86,7 @@ SELECT entity, missing_propagation_indexes, fanout, hot_ratio, warnings FROM tvi
     └─ fine → continue
         ↓
 Is recomputing one row expensive?
-EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM v_post WHERE pk_post = 1;
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_post WHERE pk_post = 1;
     ├─ seq scans → index the join / foreign-key columns of the base tables
     └─ fast → continue
         ↓
@@ -202,9 +202,9 @@ completes, so transaction pooling is safe. Session state that does matter:
 ### Issue: TVIEW Content Differs From Its View
 
 ```sql
-(SELECT pk_post, data FROM v_post EXCEPT SELECT pk_post, data FROM tv_post)
+(SELECT pk_post, data FROM tviews.public__tv_post EXCEPT SELECT pk_post, data FROM tv_post)
 UNION ALL
-(SELECT pk_post, data FROM tv_post EXCEPT SELECT pk_post, data FROM v_post);
+(SELECT pk_post, data FROM tv_post EXCEPT SELECT pk_post, data FROM tviews.public__tv_post);
 ```
 
 Repair with `SELECT tviews.pg_tviews_refresh('post');`. Do not `TRUNCATE` or write

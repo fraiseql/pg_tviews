@@ -297,7 +297,7 @@ ALTER TABLE tb_post ENABLE TRIGGER ALL;
 
 -- Rebuild TVIEWs after load
 TRUNCATE tv_post;
-INSERT INTO tv_post SELECT * FROM v_post;
+INSERT INTO tv_post SELECT * FROM tviews.public__tv_post;
 
 COMMIT;
 ```

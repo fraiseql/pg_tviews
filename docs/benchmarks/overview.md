@@ -56,7 +56,7 @@ Arms A/B register it with:
 SELECT pg_tviews_create('tv_product', $$ <product_select.sql> $$);
 ```
 
-`pg_tviews_create` materialises `tv_product` and its backing view `v_product`,
+`pg_tviews_create` materialises `tv_product` and its backing view `tviews.public__tv_product`,
 and installs the triggers that keep `tv_product` incrementally in sync. Arm C
 creates a `MATERIALIZED VIEW mv_product` from the same SELECT with a unique index
 on `pk_product`.
@@ -98,7 +98,7 @@ C the timed statement is the `REFRESH MATERIALIZED VIEW` that each change forces
 - **Statistic**: the **median** of the per-op iterations above. Medians are
   reported because they are robust to the occasional autovacuum/checkpoint blip.
 - **Correctness gate**: before any timing is trusted, `tv_product` is compared
-  row-for-row against `v_product`
+  row-for-row against its backing view
   (`WHERE t.data IS DISTINCT FROM v.data`). A non-zero divergence fails the run.
 - **Isolation**: each arm runs in its own database, cloned from a shared
   template; scratch databases are dropped between arms.

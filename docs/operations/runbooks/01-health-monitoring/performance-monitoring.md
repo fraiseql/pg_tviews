@@ -89,7 +89,7 @@ of this query:
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT * FROM v_user WHERE pk_user = 1;
+SELECT * FROM tviews.public__tv_user WHERE pk_user = 1;
 ```
 
 A sequential scan here usually means a missing index on a join or foreign-key column

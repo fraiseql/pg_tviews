@@ -4,7 +4,7 @@ Procedures for running pg_tviews in production.
 
 ## How pg_tviews refreshes (read first)
 
-A TVIEW `tv_<entity>` is a table kept up to date from its view `v_<entity>`. Triggers
+A TVIEW `tv_<entity>` is a table kept up to date from its backing view `tviews.<schema>__tv_<entity>`. Triggers
 on the base tables queue the affected keys in memory, inside the writing transaction,
 and the TVIEW rows are refreshed at the end of each statement and on COMMIT. There is
 no queue table, no background worker and no refresh schedule. A failed refresh fails

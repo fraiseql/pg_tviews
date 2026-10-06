@@ -80,7 +80,7 @@ TVIEW tables are ordinary tables: add indexes for your read patterns with
 for new TVIEWs.
 
 ### Refresh cost
-A refresh recomputes affected rows from the backing view `v_<entity>` by key. Its cost
+A refresh recomputes affected rows from its backing view (`tviews.<schema>__tv_<entity>`) by key. Its cost
 is the cost of that query:
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)

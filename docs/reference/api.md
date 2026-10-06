@@ -132,7 +132,8 @@ RETURNS TEXT  -- 'created' | 'unchanged' | 'altered' | 'replaced' | 'rebuilt'
 ```
 
 Creates a TVIEW, or brings an existing one to `query` and `options` with the smallest
-change. Options: `logged`, `fillfactor`, `data_gin_index`, `group_keys`. See
+change. Options: `logged`, `fillfactor`, `data_gin_index`, `group_keys`,
+`uncascaded_policy`. See
 [the contract for tools](read-contract.md) for the rules.
 
 ### pg_tviews_reregister() / pg_tviews_reregister_all()

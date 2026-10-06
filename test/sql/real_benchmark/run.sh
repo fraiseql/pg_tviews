@@ -87,7 +87,7 @@ tview_script() {
     cat <<'SQL'
 SELECT CASE WHEN count(*) = 0 THEN 'RB_OK divergence=0'
             ELSE 'RB_DIVERGENCE ' || count(*) END
-FROM tv_product t FULL JOIN v_product v USING (pk_product)
+FROM tv_product t FULL JOIN tviews.public__tv_product v USING (pk_product)
 WHERE t.data IS DISTINCT FROM v.data;
 SQL
     phys_step_begin
@@ -120,7 +120,7 @@ SQL
     phys_snap delete_single "$IUD_ITERS"
     # the physical steps must not have broken correctness either
     echo "SELECT CASE WHEN count(*) = 0 THEN 'RB_OK divergence=0' ELSE 'RB_DIVERGENCE ' || count(*) END"
-    echo "FROM tv_product t FULL JOIN v_product v USING (pk_product) WHERE t.data IS DISTINCT FROM v.data;"
+    echo "FROM tv_product t FULL JOIN tviews.public__tv_product v USING (pk_product) WHERE t.data IS DISTINCT FROM v.data;"
   }
 }
 

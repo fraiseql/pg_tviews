@@ -4,7 +4,7 @@
 Bring one TVIEW back in line with its backing view by hand.
 
 ## When to Use
-- **Stale rows**: a TVIEW differs from its view `v_<entity>`
+- **Stale rows**: a TVIEW differs from its backing view `tviews.<schema>__tv_<entity>`
 - **After suspended writes**: a session wrote with `pg_tviews.suspend_triggers = on`
 - **After a definition change** outside pg_tviews, or a restore
 - **Empty UNLOGGED TVIEW** after a crash or on a promoted standby
