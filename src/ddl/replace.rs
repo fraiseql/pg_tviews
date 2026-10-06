@@ -4,8 +4,8 @@
 //!
 //! - **created**: the TVIEW did not exist.
 //! - **unchanged**: the definition and the options passed match what exists.
-//! - **altered**: only `logged`, `fillfactor` or `data_gin_index` differ; changed in
-//!   place, rows kept.
+//! - **altered**: only `logged`, `fillfactor`, `data_gin_index` or
+//!   `uncascaded_policy` differ; changed in place, rows kept.
 //! - **replaced**: the definition differs but produces the same columns, and
 //!   `group_keys` is the same; the backing view is replaced and the rows reconciled
 //!   in place, touching only rows that change.
@@ -19,6 +19,7 @@
 use super::aggregate::GroupKeys;
 use super::create::{self, Storage};
 use crate::catalog::TviewMeta;
+use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::TViewSchema;
 use crate::utils::quote_identifier;
@@ -33,6 +34,9 @@ pub(crate) struct Options {
     fillfactor: Option<i32>,
     data_gin_index: Option<bool>,
     group_keys: GroupKeysOption,
+    /// What a write to a table no cascade reaches does (#181): declared with the
+    /// TVIEW, whatever `pg_tviews.uncascaded_policy` says.
+    uncascaded_policy: Option<UncascadedPolicy>,
 }
 
 /// The `group_keys` option.
@@ -119,6 +123,19 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                 }
                 options.fillfactor = i32::try_from(fillfactor).ok();
             }
+            "uncascaded_policy" => {
+                options.uncascaded_policy = Some(match value.as_str() {
+                    Some("warn") => UncascadedPolicy::Warn,
+                    Some("error") => UncascadedPolicy::Error,
+                    Some("full_refresh") => UncascadedPolicy::FullRefresh,
+                    _ => {
+                        return Err(invalid(
+                            key,
+                            "must be \"error\", \"full_refresh\" or \"warn\"",
+                        ));
+                    }
+                });
+            }
             "group_keys" => {
                 options.group_keys = match value {
                     serde_json::Value::Null => GroupKeysOption::Plain,
@@ -143,7 +160,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                     "options",
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
-                         data_gin_index, group_keys)"
+                         data_gin_index, group_keys, uncascaded_policy)"
                     ),
                 ));
             }
@@ -310,22 +327,33 @@ pub(crate) fn create_or_replace(
     };
     let current_keys = create::stored_group_keys(&entity)?;
     let desired_keys = options.group_keys.or(current_keys.clone());
+    let policy = options.uncascaded_policy.unwrap_or(meta.uncascaded_policy);
 
     if comparison.same_view && desired_keys == current_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired == current {
+        if desired == current && policy == meta.uncascaded_policy {
             return Ok(if retyped { "altered" } else { "unchanged" });
         }
-        alter_storage(
-            &qualified_tv,
-            &tv_name,
-            &schema,
-            meta.tview_oid,
-            current,
-            desired,
-        )?;
+        if desired != current {
+            alter_storage(
+                &qualified_tv,
+                &tv_name,
+                &schema,
+                meta.tview_oid,
+                current,
+                desired,
+            )?;
+        }
+        if policy != meta.uncascaded_policy {
+            // The stored policy is re-checked by a re-registration, which also
+            // brings the triggers in line: `error` still refuses a TVIEW with
+            // tables no cascade reaches.
+            store_policy(&entity, policy)?;
+            create::reregister_tview(&entity)?;
+        }
         return Ok("altered");
     }
+    store_policy(&entity, policy)?;
     if comparison.same_columns
         && desired_keys == current_keys
         && same_table_key(meta.tview_oid, comparison.identity.as_deref())?
@@ -359,8 +387,23 @@ pub(crate) fn create_or_replace(
         query,
         desired,
         desired_keys.as_ref(),
+        policy,
     )?;
     Ok("rebuilt")
+}
+
+/// Store `entity`'s `uncascaded_policy`, as the extension's owner (the caller's
+/// right to change the TVIEW was checked).
+fn store_policy(entity: &str, policy: UncascadedPolicy) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    Spi::run_with_args(
+        &format!(
+            "UPDATE {} SET uncascaded_policy = $2 WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[text(entity), text(policy.as_str())],
+    )
+    .map_err(|e| catalog("Store the uncascaded policy", &e))
 }
 
 /// Give each column of the TVIEW the type of its backing view's column where the
@@ -457,7 +500,7 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         schema,
         options.group_keys.or(None).as_ref(),
         storage,
-        None,
+        options.uncascaded_policy,
     )
 }
 
@@ -881,6 +924,7 @@ fn rebuild(
     query: &str,
     storage: Storage,
     group_keys: Option<&GroupKeys>,
+    policy: UncascadedPolicy,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
     let objects = [oid(meta.tview_oid), oid(meta.view_oid)];
@@ -920,14 +964,7 @@ fn rebuild(
         false,
         false,
     )?;
-    create::create_tview_in(
-        &tv_name,
-        query,
-        schema,
-        group_keys,
-        storage,
-        Some(meta.uncascaded_policy),
-    )?;
+    create::create_tview_in(&tv_name, query, schema, group_keys, storage, Some(policy))?;
 
     let rebuilt =
         TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
