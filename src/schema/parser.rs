@@ -266,7 +266,7 @@ fn skip_distinct_clause(sql_lower: &str, after_select: usize) -> usize {
 /// `sql_lower` where the main SELECT starts.
 ///
 /// Returns `Ok(0)` when the SQL does not begin with a `WITH` keyword.
-/// Returns `Err(msg)` if `WITH RECURSIVE` is detected or the preamble is malformed.
+/// Returns `Err(msg)` if the preamble is malformed.
 ///
 /// `sql_lower` must already be lowercased.
 fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
@@ -296,15 +296,13 @@ fn skip_cte_preamble(sql_lower: &str) -> Result<usize, String> {
         i += 1;
     }
 
-    // Reject WITH RECURSIVE
+    // Skip RECURSIVE: a recursive CTE's body is parenthesized like any other.
     if i + 9 <= len && &bytes[i..i + 9] == b"recursive" {
         let after_rec = i + 9;
         if after_rec >= len
             || (!bytes[after_rec].is_ascii_alphanumeric() && bytes[after_rec] != b'_')
         {
-            return Err("WITH RECURSIVE is not supported in TVIEWs. \
-                 Consider using a non-recursive CTE or a subquery."
-                .to_string());
+            i = after_rec;
         }
     }
 
@@ -844,22 +842,18 @@ mod tests {
     }
 
     #[test]
-    fn test_recursive_cte_rejected() {
-        let sql = "WITH RECURSIVE tree AS (SELECT 1) SELECT pk_item, id, name AS data FROM tb_item";
-        let result = parse_select_columns(sql);
-        assert!(result.is_err(), "expected error for WITH RECURSIVE");
-        assert!(
-            result.unwrap_err().contains("RECURSIVE"),
-            "error should mention RECURSIVE"
-        );
+    fn test_parse_recursive_cte_columns() {
+        let sql = "WITH RECURSIVE tree(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM tree WHERE n < 3) \
+                   SELECT pk_item, id, name AS data FROM tb_item";
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
     }
 
     #[test]
-    fn test_recursive_cte_rejected_lowercase() {
+    fn test_parse_recursive_cte_columns_lowercase() {
         let sql = "with recursive tree as (select 1) select pk_item, id, name as data from tb_item";
-        let result = parse_select_columns(sql);
-        assert!(result.is_err(), "expected error for with recursive");
-        assert!(result.unwrap_err().contains("RECURSIVE"));
+        let cols = parse_select_columns(sql).unwrap();
+        assert_eq!(cols, vec!["pk_item", "id", "data"]);
     }
 
     #[test]

@@ -1,4 +1,3 @@
--- known-failing: #183
 -- Regression test for issue #183: a backing view that reads a view with WITH
 -- RECURSIVE was refused as "more than 32 levels deep" (the walker followed the
 -- recursive CTE's reference to itself). A recursive CTE is walked once: the
@@ -67,27 +66,30 @@ BEGIN
 END $$;
 
 -- ── recursion written in the definition: the same rule ─────────────────────
+CREATE TABLE tb_listing (pk_listing bigint PRIMARY KEY, id uuid UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+                         fk_category bigint REFERENCES tb_category, name text);
+INSERT INTO tb_listing VALUES (1, DEFAULT, 2, 'thing'), (2, DEFAULT, 3, 'other');
 DO $$ BEGIN
     PERFORM tviews.pg_tviews_create('tv_listing', $q$
         WITH RECURSIVE p AS (
           SELECT pk_category, ARRAY[name] AS names FROM tb_category WHERE fk_parent IS NULL
           UNION ALL
           SELECT c.pk_category, p.names || c.name FROM tb_category c JOIN p ON p.pk_category = c.fk_parent)
-        SELECT i.pk_item AS pk_listing, i.id, jsonb_build_object('name', i.name, 'path', p.names) AS data
-        FROM tb_item i JOIN p ON p.pk_category = i.fk_category $q$);
+        SELECT l.pk_listing, l.id, jsonb_build_object('name', l.name, 'path', p.names) AS data
+        FROM tb_listing l JOIN p ON p.pk_category = l.fk_category $q$);
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION '#183 FAIL: WITH RECURSIVE in the definition is refused: %', SQLERRM;
 END $$;
-UPDATE tb_item SET fk_category = 3 WHERE pk_item = 1;
-SELECT assert_fresh('tv_listing', 'pk_listing', 'an item moved to another category');
+UPDATE tb_listing SET fk_category = 3 WHERE pk_listing = 1;
+SELECT assert_fresh('tv_listing', 'pk_listing', 'a listing moved to another category');
 INSERT INTO tb_category VALUES (4, DEFAULT, 3, 'deeper');
-UPDATE tb_item SET fk_category = 4 WHERE pk_item = 1;
-SELECT assert_fresh('tv_listing', 'pk_listing', 'a new category and an item moved into it');
+UPDATE tb_listing SET fk_category = 4 WHERE pk_listing = 1;
+SELECT assert_fresh('tv_listing', 'pk_listing', 'a new category and a listing moved into it');
 DO $$
 DECLARE m jsonb := (SELECT key_mappings FROM tviews.pg_tview_meta WHERE entity = 'listing');
 BEGIN
     IF (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'listing')
-       <> '{"tb_item": "local", "tb_category": "all_keys"}' THEN
+       <> '{"tb_listing": "local", "tb_category": "all_keys"}' THEN
         RAISE EXCEPTION '#183 FAIL: tv_listing classifies %',
             (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'listing');
     END IF;
@@ -121,19 +123,18 @@ DO $$ BEGIN
 END $$;
 
 -- ── a definition nesting more than 32 levels is still refused ───────────────
-CREATE VIEW v_d0 AS SELECT pk_item, id, name FROM tb_item;
-DO $$ BEGIN
+DO $$
+DECLARE q text := 'SELECT pk_item, id, name FROM tb_item';
+BEGIN
     FOR i IN 1..33 LOOP
-        EXECUTE format('CREATE VIEW v_d%s AS SELECT pk_item, id, name FROM v_d%s', i, i - 1);
+        q := format('SELECT pk_item, id, name FROM (%s) s%s', q, i);
     END LOOP;
-END $$;
-DO $$ BEGIN
-    PERFORM tviews.pg_tviews_create('tv_deep', $q$
-        SELECT pk_item AS pk_deep, id, jsonb_build_object('name', name) AS data FROM v_d33 $q$);
-    RAISE EXCEPTION '#183 FAIL: a definition 34 levels deep was accepted';
+    PERFORM tviews.pg_tviews_create('tv_deep', format(
+        'SELECT pk_item AS pk_deep, id, jsonb_build_object(''name'', name) AS data FROM (%s) s', q));
+    RAISE EXCEPTION '#183 FAIL: a definition 35 levels deep was accepted';
 EXCEPTION WHEN OTHERS THEN
     IF SQLERRM NOT LIKE '%more than 32 levels deep%' THEN
-        RAISE EXCEPTION '#183 FAIL: the 34-level definition is refused for another reason: %', SQLERRM;
+        RAISE EXCEPTION '#183 FAIL: the 35-level definition is refused for another reason: %', SQLERRM;
     END IF;
 END $$;
 

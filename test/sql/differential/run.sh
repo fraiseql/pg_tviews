@@ -21,7 +21,7 @@ seeds="${2:-1 2 3}"
 db="pg_tviews_differential_$$"
 # Shapes with an open defect (comma-separated tv_* names): their divergence is
 # reported, not failed.
-xfail="${HARNESS_XFAIL-tv_item}"
+xfail="${HARNESS_XFAIL-}"
 
 failed=0
 for seed in $seeds; do

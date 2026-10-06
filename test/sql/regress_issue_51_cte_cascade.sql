@@ -94,28 +94,23 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- (4) WITH RECURSIVE must be rejected at create time — cascade paths cannot be
--- tracked through a recursive CTE, so it must not be created silently.
-DO $$
-DECLARE got_expected boolean := false;
-BEGIN
-  BEGIN
-    PERFORM pg_tviews_create('tv_rec', $R$
-      WITH RECURSIVE chain(n) AS (
-        SELECT 1 UNION ALL SELECT n + 1 FROM chain WHERE n < 3
-      )
-      SELECT pk_customer, id, jsonb_build_object('n', 1) AS data FROM tb_customer
-    $R$);
-  EXCEPTION WHEN OTHERS THEN
-    IF position('RECURSIVE' IN upper(SQLERRM)) > 0 THEN
-      got_expected := true;
-    ELSE
-      RAISE EXCEPTION '#51 FAIL: WITH RECURSIVE rejected for the wrong reason: %', SQLERRM;
-    END IF;
-  END;
-  IF NOT got_expected THEN
-    RAISE EXCEPTION '#51 FAIL: WITH RECURSIVE tview was not rejected at create';
+-- (4) WITH RECURSIVE is accepted (#183): the tables read inside the recursion are
+-- all_keys, the others keep their mapping. This recursion reads no table, so
+-- tb_rec stays local.
+CREATE TABLE tb_rec (pk_rec INTEGER PRIMARY KEY, id UUID DEFAULT gen_random_uuid() NOT NULL);
+INSERT INTO tb_rec (pk_rec) VALUES (1), (2);
+SELECT pg_tviews_create('tv_rec', $R$
+  WITH RECURSIVE chain(n) AS (
+    SELECT 1 UNION ALL SELECT n + 1 FROM chain WHERE n < 3
+  )
+  SELECT r.pk_rec, r.id, jsonb_build_object('n', (SELECT max(n) FROM chain)) AS data
+  FROM tb_rec r
+$R$);
+DO $$ BEGIN
+  IF (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'rec') <> '{"tb_rec": "local"}' THEN
+    RAISE EXCEPTION '#51 FAIL: a TVIEW with a table-free recursive CTE classifies %',
+      (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'rec');
   END IF;
 END $$;
 
-SELECT '#51 PASS: CTE-wrapped base-table changes cascade; WITH RECURSIVE rejected' AS result;
+SELECT '#51 PASS: CTE-wrapped base-table changes cascade; WITH RECURSIVE classified' AS result;
