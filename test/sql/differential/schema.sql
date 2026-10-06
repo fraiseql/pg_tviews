@@ -40,6 +40,15 @@ CREATE TABLE tb_task (pk_task int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 CREATE TABLE tb_task_archive (pk_task int GENERATED ALWAYS AS IDENTITY (START 100000) PRIMARY KEY,
   id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
+-- A hierarchy stored as a path of ids (#182), badges joined on a computed name.
+CREATE TABLE tb_node (pk_node int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+  path text NOT NULL, name text, deleted_at timestamptz);
+CREATE TABLE tb_badge (pk_badge int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, code text, label text);
+-- A category tree read through a recursive view (#183).
+CREATE TABLE tb_category (pk_category int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+  fk_parent int, name text);
+CREATE TABLE tb_item (pk_item int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id uuid NOT NULL DEFAULT gen_random_uuid(), fk_category int, name text);
 
 INSERT INTO tb_customer (name) SELECT 'c' || g FROM generate_series(1, 6) g;
 INSERT INTO tb_order (fk_customer, ref, status) SELECT 1 + g % 6, 'r' || g, 'new' FROM generate_series(1, 10) g;
@@ -56,16 +65,30 @@ INSERT INTO tb_vtag (raw) SELECT chr(65 + g) FROM generate_series(0, 3) g;
 INSERT INTO tb_vnote (tag, fk_customer) SELECT chr(97 + g % 5), 1 + g % 6 FROM generate_series(0, 7) g;
 INSERT INTO tb_task (title) SELECT 't' || g FROM generate_series(1, 4) g;
 INSERT INTO tb_task_archive (title) SELECT 'a' || g FROM generate_series(1, 3) g;
+INSERT INTO tb_node (pk_node, path, name) VALUES (1, '1', 'n1'), (2, '1.2', 'n2'), (3, '1.2.3', 'n3'),
+  (4, '1.4', 'n4'), (5, '1.4.5', 'n5'), (6, '1.2.6', 'n6');
+INSERT INTO tb_badge (code, label) SELECT 'N' || g, 'b' || g FROM generate_series(1, 4) g;
+INSERT INTO tb_category (pk_category, fk_parent, name) VALUES (1, NULL, 'k1'), (2, 1, 'k2'), (3, 2, 'k3'),
+  (4, 1, 'k4');
+INSERT INTO tb_item (fk_category, name) SELECT 1 + g % 5, 'i' || g FROM generate_series(1, 6) g;
 CREATE VIEW v_cnt AS SELECT fk_order, count(*) AS n, sum(qty) AS qty FROM tb_line GROUP BY fk_order;
+CREATE VIEW v_category_path AS
+  WITH RECURSIVE p AS (
+    SELECT pk_category, ARRAY[name] AS names FROM tb_category WHERE fk_parent IS NULL
+    UNION ALL
+    SELECT c.pk_category, p.names || c.name FROM tb_category c JOIN p ON p.pk_category = c.fk_parent)
+  SELECT pk_category, names FROM p;
 
 -- ── shapes ───────────────────────────────────────────────────────────────────
 -- A shape that cannot be created is skipped when it is listed in harness.xfail
 -- (an open defect), and fails the run otherwise.
 SET harness.xfail = :'xfail';
 CREATE TABLE harness_shape (tv regclass PRIMARY KEY, key text NOT NULL);
-CREATE FUNCTION harness_create(tv text, key text, def text, group_keys jsonb DEFAULT NULL)
+CREATE FUNCTION harness_create(tv text, key text, def text, group_keys jsonb DEFAULT NULL,
+                               policy text DEFAULT 'warn')
 RETURNS void LANGUAGE plpgsql AS $f$
 BEGIN
+    PERFORM set_config('pg_tviews.uncascaded_policy', policy, true);
     BEGIN
         IF group_keys IS NULL THEN
             PERFORM pg_tviews_create(tv, def);
@@ -146,6 +169,37 @@ SELECT harness_create('tv_custstat', 'pk_custstat', $$
          jsonb_build_object('name', c.name, 'orders', count(*)) AS data
   FROM tb_order o JOIN tb_customer c ON c.pk_customer = o.fk_customer
   GROUP BY o.fk_customer, c.id, c.name $$, '{"tb_order": "fk_customer", "tb_customer": "pk_customer"}');
+-- the ancestors of a node through its path of ids, three spellings (#182)
+SELECT harness_create('tv_nsrf', 'pk_nsrf', $$
+  SELECT s.pk_node AS pk_nsrf, s.id,
+         jsonb_build_object('name', s.name, 'up', array_agg(a.name ORDER BY a.pk_node)) AS data
+  FROM (SELECT n.pk_node, n.id, n.name, unnest(string_to_array(n.path, '.')::int[]) AS node_id
+        FROM tb_node n WHERE n.deleted_at IS NULL) s
+  JOIN tb_node a ON a.pk_node = s.node_id AND a.deleted_at IS NULL
+  GROUP BY s.pk_node, s.id, s.name $$);
+SELECT harness_create('tv_nlat', 'pk_nlat', $$
+  SELECT n.pk_node AS pk_nlat, n.id,
+         jsonb_build_object('name', n.name, 'up', array_agg(a.name ORDER BY a.pk_node)) AS data
+  FROM tb_node n CROSS JOIN LATERAL unnest(string_to_array(n.path, '.')::int[]) AS u(node_id)
+  JOIN tb_node a ON a.pk_node = u.node_id AND a.deleted_at IS NULL
+  WHERE n.deleted_at IS NULL GROUP BY n.pk_node, n.id, n.name $$);
+SELECT harness_create('tv_nany', 'pk_nany', $$
+  SELECT n.pk_node AS pk_nany, n.id,
+         jsonb_build_object('name', n.name, 'up', array_agg(a.name ORDER BY a.pk_node)) AS data
+  FROM tb_node n JOIN tb_node a ON a.pk_node = ANY (string_to_array(n.path, '.')::int[])
+                                AND a.deleted_at IS NULL
+  WHERE n.deleted_at IS NULL GROUP BY n.pk_node, n.id, n.name $$);
+-- a join on a computed output of a subquery (#182)
+SELECT harness_create('tv_nbadge', 'pk_nbadge', $$
+  SELECT s.pk_node AS pk_nbadge, s.id,
+         jsonb_build_object('name', s.name, 'badges', count(x.pk_badge)) AS data
+  FROM (SELECT n.pk_node, n.id, n.name, upper(n.name) AS upper_name FROM tb_node n) s
+  LEFT JOIN tb_badge x ON x.code = s.upper_name GROUP BY s.pk_node, s.id, s.name $$);
+-- a recursive view read by the item view; the tree is refreshed in full (#183)
+SELECT harness_create('tv_item', 'pk_item', $$
+  SELECT i.pk_item, i.id, jsonb_build_object('name', i.name, 'path', cp.names) AS data
+  FROM tb_item i LEFT JOIN v_category_path cp ON cp.pk_category = i.fk_category $$,
+  policy => 'full_refresh');
 
 -- ── writes ───────────────────────────────────────────────────────────────────
 -- `n` rows of `tbl` from a random offset, as a subquery of their pks.
@@ -159,7 +213,7 @@ CREATE FUNCTION harness_i(hi int) RETURNS int LANGUAGE sql AS $$
 
 -- One random statement.
 CREATE FUNCTION harness_statement(i int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r int := floor(random() * 30)::int;
+DECLARE r int := floor(random() * 42)::int;
 BEGIN
     RETURN CASE r
     WHEN 0 THEN format('INSERT INTO tb_customer (name) SELECT ''c%s_'' || g FROM generate_series(1, %s) g', i, harness_n())
@@ -191,6 +245,18 @@ BEGIN
     WHEN 26 THEN format('UPDATE tb_vtag SET raw = chr(65 + %s) WHERE pk_vtag IN %s', floor(random() * 6)::int, harness_pick('tb_vtag', 'pk_vtag', harness_n()))
     WHEN 27 THEN format('INSERT INTO tb_vtag (raw) VALUES (chr(65 + %s))', floor(random() * 6)::int)
     WHEN 28 THEN format('DELETE FROM tb_vtag WHERE pk_vtag IN %s', harness_pick('tb_vtag', 'pk_vtag', 1))
+    WHEN 29 THEN format('INSERT INTO tb_node (pk_node, path, name) SELECT m.k, p.path || ''.'' || m.k, ''n'' || m.k FROM (SELECT max(pk_node) + 1 AS k FROM tb_node) m, tb_node p WHERE p.pk_node = %s', harness_i(8))
+    WHEN 30 THEN format('UPDATE tb_node SET name = name || ''.%s'' WHERE pk_node IN %s', i, harness_pick('tb_node', 'pk_node', harness_n()))
+    WHEN 31 THEN format('UPDATE tb_node SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE pk_node IN %s', harness_pick('tb_node', 'pk_node', harness_n()))
+    WHEN 32 THEN format('UPDATE tb_node SET path = ''1.%s.'' || pk_node WHERE pk_node IN %s', harness_i(8), harness_pick('tb_node', 'pk_node', 1))
+    WHEN 33 THEN format('DELETE FROM tb_node WHERE pk_node IN %s', harness_pick('tb_node', 'pk_node', 1))
+    WHEN 34 THEN format('UPDATE tb_node SET name = ''n%s'' WHERE pk_node IN %s', harness_i(5), harness_pick('tb_node', 'pk_node', 1))
+    WHEN 35 THEN format('INSERT INTO tb_badge (code, label) VALUES (''N%s'', ''b%s'')', harness_i(8), i)
+    WHEN 36 THEN format('UPDATE tb_badge SET code = ''N%s'' WHERE pk_badge IN %s', harness_i(8), harness_pick('tb_badge', 'pk_badge', harness_n()))
+    WHEN 37 THEN format('DELETE FROM tb_badge WHERE pk_badge IN %s', harness_pick('tb_badge', 'pk_badge', 1))
+    WHEN 38 THEN format('UPDATE tb_category SET name = name || ''.%s'' WHERE pk_category IN %s', i, harness_pick('tb_category', 'pk_category', harness_n()))
+    WHEN 39 THEN format('INSERT INTO tb_category (pk_category, fk_parent, name) SELECT max(pk_category) + 1, %s, ''k%s'' FROM tb_category', harness_i(6), i)
+    WHEN 40 THEN format('UPDATE tb_item SET fk_category = %s, name = name || ''.%s'' WHERE pk_item IN %s', harness_i(7), i, harness_pick('tb_item', 'pk_item', harness_n()))
     ELSE format('UPDATE tb_vnote SET tag = chr(97 + %s), fk_customer = %s WHERE pk_vnote IN %s', floor(random() * 6)::int, harness_i(8), harness_pick('tb_vnote', 'pk_vnote', harness_n()))
     END;
 END $$;
