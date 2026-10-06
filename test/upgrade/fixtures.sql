@@ -111,6 +111,17 @@ SELECT pg_tviews_create('tv_shipment', $$
     SELECT DISTINCT ON (s.code) s.pk_shipment, s.id, s.code,
            jsonb_build_object('code', s.code, 'total', o.total) AS data
     FROM tb_shipment s JOIN tb_order o ON o.pk_order = s.fk_order ORDER BY s.code $$);
+-- The ancestors of a node through a path of ids, unnested in a subquery: created
+-- with tb_node all_keys before 0.1.0-beta.25 (#182), mapped once re-registered.
+CREATE TABLE tb_node (pk_node int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+    path text NOT NULL, name text NOT NULL);
+INSERT INTO tb_node (pk_node, path, name) VALUES (1, '1', 'root'), (2, '1.2', 'child'), (3, '1.2.3', 'leaf');
+SELECT pg_tviews_create('tv_node', $$
+    SELECT s.pk_node, s.id, jsonb_build_object('up', array_agg(a.name ORDER BY a.pk_node)) AS data
+    FROM (SELECT n.pk_node, n.id, unnest(string_to_array(n.path, '.')::int[]) AS node_id
+          FROM tb_node n) s
+    JOIN tb_node a ON a.pk_node = s.node_id
+    GROUP BY s.pk_node, s.id $$);
 \endif
 -- A virtual generated column (PostgreSQL 18) read through a join (#179).
 SELECT current_setting('server_version_num')::int >= 180000 AS virtual_fixture \gset
