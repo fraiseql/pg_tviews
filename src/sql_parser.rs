@@ -81,22 +81,6 @@ impl JoinGraph {
     }
 }
 
-/// True if the query begins with a `WITH RECURSIVE` clause. Recursive CTEs are not
-/// supported for cascade tracking and are rejected at create time.
-pub fn has_recursive_cte(select_sql: &str) -> bool {
-    let dialect = PostgreSqlDialect {};
-    let Ok(mut parser) = Parser::new(&dialect).try_with_sql(select_sql) else {
-        return false;
-    };
-    let Ok(stmts) = parser.parse_statements() else {
-        return false;
-    };
-    matches!(
-        stmts.into_iter().next(),
-        Some(Statement::Query(q)) if q.with.as_ref().is_some_and(|w| w.recursive)
-    )
-}
-
 /// Build the join graph from a single FROM clause entry
 fn build_graph_from_table_with_joins(
     twj: &TableWithJoins,
@@ -428,17 +412,6 @@ fn expr_bare_column(expr: &Expr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_recursive_cte_detected() {
-        assert!(has_recursive_cte(
-            "WITH RECURSIVE t AS (SELECT 1) SELECT pk_x FROM tb_x"
-        ));
-        assert!(!has_recursive_cte("SELECT pk_x FROM tb_x"));
-        assert!(!has_recursive_cte(
-            "WITH t AS (SELECT 1) SELECT pk_x FROM tb_x"
-        ));
-    }
 
     fn aggregates() -> Vec<String> {
         vec!["user_summary".to_string(), "tag_count".to_string()]

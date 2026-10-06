@@ -174,6 +174,31 @@ pub struct Conjunct {
     pub b_to_a: Maps,
     /// Set when the predicate is `a.col = b.col` with `=`.
     pub equality: Option<(Column, Column)>,
+    /// What the predicate looks rows up by, other than plain columns.
+    pub lookups: Vec<Lookup>,
+}
+
+/// An expression of one occurrence that a predicate looks its rows up by: a
+/// mapping query that starts from the other occurrence scans `occ` for it, which
+/// an index on the expression avoids (#182).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lookup {
+    pub occ: usize,
+    pub expr: Sql,
+    /// Array containment (`@>`): a GIN index; else a btree index.
+    pub gin: bool,
+}
+
+/// An index on an expression that would serve a mapping query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexHint {
+    /// The table, schema-qualified and quoted.
+    pub table: String,
+    pub relname: String,
+    /// The expression, a template naming columns by attribute number (see
+    /// [`render_template`]).
+    pub expr: String,
+    pub gin: bool,
 }
 
 /// Whether a predicate maps a changed row of one occurrence to the rows of another.
@@ -365,6 +390,9 @@ pub struct TableLineage {
     pub columns: Vec<(String, i16)>,
     /// Tables the mapping query joins, with the columns it looks up in each.
     pub lookups: Vec<(String, Vec<String>)>,
+    /// Expressions the mapping query looks rows up by (array membership, computed
+    /// columns), with the index that serves each.
+    pub index_hints: Vec<IndexHint>,
     /// `mapped` through one equality onto a column of the root, `(column of this
     /// table, column of the root)`: the TVIEW rows can be found by that column
     /// when the TVIEW projects it (fan-out, issue #120).
@@ -578,6 +606,43 @@ impl Graph {
         lookups
     }
 
+    /// The expressions of other occurrences the mapping queries look rows up by.
+    #[must_use]
+    pub fn index_hints(&self, paths: &[(usize, Vec<usize>)]) -> Vec<IndexHint> {
+        let mut hints: Vec<IndexHint> = Vec::new();
+        for (occ, path) in paths {
+            for &i in self.kept_conditions(*occ, path) {
+                for lookup in &self.conjuncts[i].lookups {
+                    if lookup.occ == *occ {
+                        continue;
+                    }
+                    let o = &self.occurrences[lookup.occ];
+                    let expr = lookup
+                        .expr
+                        .0
+                        .iter()
+                        .map(|p| match p {
+                            Piece::Text(t) => escape_template(t),
+                            Piece::Column { occ, attnum } => {
+                                format!("{{c:{}:{attnum}}}", self.occurrences[*occ].relid)
+                            }
+                        })
+                        .collect::<String>();
+                    let hint = IndexHint {
+                        table: o.qualified.clone(),
+                        relname: o.relname.clone(),
+                        expr,
+                        gin: lookup.gin,
+                    };
+                    if !hints.contains(&hint) {
+                        hints.push(hint);
+                    }
+                }
+            }
+        }
+        hints
+    }
+
     /// The conditions of `path` its mapping query keeps: all but a last one that
     /// only copies the key (the root is then left out).
     fn kept_conditions<'p>(&self, occ: usize, path: &'p [usize]) -> &'p [usize] {
@@ -751,6 +816,7 @@ impl Graph {
                     _ => None,
                 };
                 let lookups = self.lookups(&paths);
+                let index_hints = self.index_hints(&paths);
                 let hop = match paths.as_slice() {
                     [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
                     _ => None,
@@ -764,6 +830,7 @@ impl Graph {
                     sql,
                     columns: Vec::new(),
                     lookups,
+                    index_hints,
                     hop,
                     virtual_reads: Vec::new(),
                     root: self
@@ -1268,24 +1335,39 @@ fn explain(entity: &str, table: &TableLineage, template: &str) -> crate::TViewRe
         .unwrap_or_default();
     let mut scans = Vec::new();
     seq_scans(&plan, &mut scans);
+    // Once per relation: the changed rows of a self-join scan it too.
+    scans.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.total_cmp(&x.1)));
+    scans.dedup_by(|x, y| x.0 == y.0);
     for (relation, rows) in scans {
         if rows < LARGE_TABLE_ROWS {
             continue;
         }
-        let Some((_, columns)) = table
+        let mut advice: Vec<String> = table
             .lookups
             .iter()
-            .find(|(t, _)| t.rsplit('.').next() == Some(relation.as_str()))
-        else {
+            .filter(|(t, _)| t.rsplit('.').next() == Some(relation.as_str()))
+            .map(|(_, columns)| format!("an index on {relation} ({})", columns.join(", ")))
+            .collect();
+        for hint in table.index_hints.iter().filter(|h| h.relname == relation) {
+            let expr = render_template(&hint.expr)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| hint.expr.clone());
+            advice.push(format!(
+                "CREATE INDEX ON {} USING {} (({expr}))",
+                hint.table,
+                if hint.gin { "gin" } else { "btree" }
+            ));
+        }
+        if advice.is_empty() {
             continue;
-        };
+        }
         notice!(
             "writes to {} map to tv_{entity} keys with a sequential scan of {} (about {rows} rows); \
-             an index on {} ({}) would make them cheaper",
+             {} would make them cheaper",
             table.qualified,
             relation,
-            relation,
-            columns.join(", ")
+            advice.join(" or ")
         );
     }
     Ok(())
@@ -1482,6 +1564,7 @@ mod tests {
             a_to_b: if a_to_b { Maps::Yes } else { Maps::No },
             b_to_a: if b_to_a { Maps::Yes } else { Maps::No },
             equality: Some((a, b)),
+            lookups: vec![],
         }
     }
 
@@ -1585,6 +1668,7 @@ mod tests {
             a_to_b: Maps::Yes,
             b_to_a: Maps::No,
             equality: None,
+            lookups: vec![],
         };
         let g = graph(
             vec![occ(1, "tb_order"), occ(1, "tb_order"), occ(2, "tb_line")],
@@ -1659,6 +1743,101 @@ mod tests {
             col(0, "pk_order"),
         );
         assert_eq!(g.classify(1, NONE), Kind::Local("fk_order".into()));
+    }
+
+    /// `a.pk_node = ANY (arr(n.path)) AND arr(n.path) @> ARRAY[a.pk_node]`, with the
+    /// array of `n` (occurrence `n`) looked up by a GIN index (#182).
+    fn membership(a: usize, n: usize) -> Conjunct {
+        let path = Column {
+            occ: n,
+            attnum: 3,
+            name: "path".to_string(),
+        };
+        let mut array = Sql::text("(pg_catalog.string_to_array(");
+        array.push_sql(path.sql());
+        array.push_text(", '.'::pg_catalog.text))::bigint[]");
+        let mut sql = Sql::text("((");
+        sql.push_sql(col(a, "pk_node").sql());
+        sql.push_text(" OPERATOR(pg_catalog.=) ANY (");
+        sql.push_sql(array.clone());
+        sql.push_text(")) AND (");
+        sql.push_sql(array.clone());
+        sql.push_text(") OPERATOR(pg_catalog.@>) ARRAY[");
+        sql.push_sql(col(a, "pk_node").sql());
+        sql.push_text("])");
+        Conjunct {
+            sql,
+            a,
+            b: n,
+            a_to_b: Maps::Yes,
+            b_to_a: Maps::Yes,
+            equality: None,
+            lookups: vec![Lookup {
+                occ: n,
+                expr: array,
+                gin: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn an_ancestor_read_through_array_membership_is_mapped() {
+        // tb_node n JOIN tb_node a ON a.pk_node = ANY (string_to_array(n.path, '.')::bigint[])
+        let g = graph(
+            vec![occ(7, "tb_node"), occ(7, "tb_node")],
+            vec![membership(1, 0)],
+            col(0, "pk_node"),
+        );
+        assert_eq!(g.classify(0, NONE), Kind::Local("pk_node".into()));
+        assert_eq!(g.classify(1, NONE), Kind::Mapped(vec![0]));
+        let tables = g.tables(NONE);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].kind, TableKind::Mapped);
+        assert_eq!(
+            tables[0].sql.as_deref(),
+            Some(
+                "SELECT DISTINCT d.{c:7:1} FROM pg_tviews_delta d UNION \
+                 SELECT DISTINCT o1.{c:7:1} FROM pg_tviews_delta d, {r:7} o1 \
+                 WHERE ((d.{c:7:1} OPERATOR(pg_catalog.=) ANY ((pg_catalog.string_to_array(o1.{c:7:3}, \
+                 '.'::pg_catalog.text))::bigint[])) AND ((pg_catalog.string_to_array(o1.{c:7:3}, \
+                 '.'::pg_catalog.text))::bigint[]) OPERATOR(pg_catalog.@>) ARRAY[d.{c:7:1}])"
+            )
+        );
+    }
+
+    #[test]
+    fn a_lookup_by_expression_names_its_index() {
+        let g = graph(
+            vec![occ(7, "tb_node"), occ(7, "tb_node")],
+            vec![membership(1, 0)],
+            col(0, "pk_node"),
+        );
+        let tables = g.tables(NONE);
+        assert_eq!(
+            tables[0].index_hints,
+            vec![IndexHint {
+                table: "public.tb_node".into(),
+                relname: "tb_node".into(),
+                expr: "(pg_catalog.string_to_array({c:7:3}, '.'::pg_catalog.text))::bigint[]"
+                    .into(),
+                gin: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_changed_side_of_a_lookup_needs_no_index() {
+        // A write to n maps through its own key: its array is read off the change.
+        let g = graph(
+            vec![occ(7, "tb_node"), occ(8, "tb_ancestor")],
+            vec![membership(1, 0)],
+            col(0, "pk_node"),
+        );
+        let tables = g.tables(NONE);
+        let node = tables.iter().find(|t| t.relname == "tb_node").unwrap();
+        let ancestor = tables.iter().find(|t| t.relname == "tb_ancestor").unwrap();
+        assert!(node.index_hints.is_empty());
+        assert_eq!(ancestor.index_hints.len(), 1);
     }
 
     // ── mapping queries (golden) ────────────────────────────────────────────

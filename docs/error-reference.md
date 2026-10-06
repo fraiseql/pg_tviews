@@ -166,7 +166,7 @@ CREATE TABLE tv_post AS SELECT tb_post.pk_post, tb_post.id, jsonb_build_object('
 
 **Common Causes**:
 - Syntax errors in SQL
-- Unsupported SQL features (`WITH RECURSIVE`; set operations, CTEs, window
+- Unsupported SQL features (set operations, CTEs including `WITH RECURSIVE`, window
   functions and DISTINCT ON *are* accepted)
 - Missing required columns (pk_*, data)
 

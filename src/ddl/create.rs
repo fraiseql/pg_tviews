@@ -323,20 +323,6 @@ fn create_tview_inner(
 
     let schema_name = schema_name.to_string();
 
-    // Reject WITH RECURSIVE up front (issue #51): cascade paths cannot be tracked
-    // through a recursive CTE, so creating one would leave a tview that silently
-    // refreshes incompletely.
-    if crate::sql_parser::has_recursive_cte(&final_select_sql) {
-        return Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
-            reason: format!(
-                "TVIEW '{tv_table_name}' uses WITH RECURSIVE, which pg_tviews does not support: \
-                 cascade paths cannot be tracked through a recursive CTE, so the tview would \
-                 refresh incompletely. Rewrite the definition without recursion."
-            ),
-        });
-    }
-
     // Step 3: Create backing view v_<entity>
     let view_name = format!("v_{entity_name}");
     create_backing_view(&view_name, &final_select_sql, &schema_name)?;
