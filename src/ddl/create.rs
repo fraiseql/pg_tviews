@@ -606,6 +606,39 @@ struct Derivation {
     cascade_paths: Vec<cascade_path::CascadePath>,
 }
 
+/// The aggregate TVIEWs (issue #58) a definition embeds, each mapped to the output
+/// column that carries the value joined to the aggregate's `pk_<aggregate>`
+/// (issue #126). An aggregate has no `fk_<aggregate>` column to propagate by, so a
+/// change to group `k` refreshes the rows whose column equals `k`.
+///
+/// # Errors
+/// Rejects a definition that reads an aggregate TVIEW without projecting the
+/// column equal to its key: such a TVIEW could never be refreshed when the
+/// aggregate changes.
+fn aggregate_embeds(
+    lineage: &crate::lineage::Lineage,
+    entity_name: &str,
+) -> TViewResult<std::collections::BTreeMap<String, String>> {
+    lineage
+        .aggregate_embeds
+        .iter()
+        .map(|(aggregate, column)| match column {
+            Some(column) => Ok((aggregate.clone(), column.clone())),
+            None => Err(TViewError::InvalidInput {
+                parameter: "tview definition".to_string(),
+                reason: format!(
+                    "TVIEW 'tv_{entity_name}' reads aggregate TVIEW '{aggregate}' but no output \
+                     column carries the value it is joined to on pk_{aggregate}, so a change to \
+                     a '{aggregate}' group could not be routed to the rows embedding it. Join \
+                     tv_{aggregate} with an equality on its key (e.g. `LEFT JOIN \
+                     tv_{aggregate} a ON a.pk_{aggregate} = t.pk_{entity_name}`) and project \
+                     the other side of that equality."
+                ),
+            }),
+        })
+        .collect()
+}
+
 /// Analyze `v_<entity>` (ADR 0157) and derive the cascade paths of its local
 /// tables, or for an aggregate TVIEW one per declared group key (issue #58).
 fn derive(
@@ -617,16 +650,13 @@ fn derive(
     schema_name: &str,
 ) -> TViewResult<Derivation> {
     let view_oid = relation_oid(schema_name, &format!("v_{entity_name}"))?;
-    let mut embeds: Vec<String> = aggregate_embeds(definition, entity_name)?
-        .into_keys()
+    let embeds: Vec<String> = schema
+        .fk_columns
+        .iter()
+        .filter_map(|c| c.strip_prefix("fk_").map(str::to_string))
         .collect();
-    embeds.extend(
-        schema
-            .fk_columns
-            .iter()
-            .filter_map(|c| c.strip_prefix("fk_").map(str::to_string)),
-    );
     let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    aggregate_embeds(&lineage, entity_name)?;
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, schema_name)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
@@ -1554,7 +1584,7 @@ fn register_metadata(
     let dep_infos = analyze_dependencies(definition_sql, &schema.fk_columns);
 
     // Aggregate TVIEWs embedded through a join on their key (issue #126).
-    let aggregate_embeds = aggregate_embeds(definition_sql, entity_name)?;
+    let aggregate_embeds = aggregate_embeds(lineage, entity_name)?;
     create_embed_lookup_indexes(&aggregate_embeds, schema, tview_name, schema_name)?;
 
     // Extract the direct-patch column→key map (issue #56): base columns that map
@@ -1810,72 +1840,6 @@ fn register_metadata(
     })?;
 
     Ok(())
-}
-
-/// The aggregate TVIEWs (issue #58) a definition embeds, each mapped to the output
-/// column that carries the value joined to the aggregate's `pk_<aggregate>`
-/// (issue #126). An aggregate has no `fk_<aggregate>` column to propagate by, so a
-/// change to group `k` refreshes the rows whose column equals `k`.
-///
-/// # Errors
-/// Rejects a definition that reads an aggregate TVIEW without projecting the
-/// column joined to its key: such a TVIEW could never be refreshed when the
-/// aggregate changes.
-fn aggregate_embeds(
-    definition_sql: &str,
-    entity_name: &str,
-) -> TViewResult<std::collections::BTreeMap<String, String>> {
-    let aggregates: Vec<String> = Spi::connect(|client| {
-        let args = [unsafe {
-            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
-        client
-            .select(
-                &format!(
-                    "SELECT entity FROM {} WHERE group_keys IS NOT NULL AND entity <> $1 \
-                     ORDER BY entity",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &args,
-            )?
-            .map(|row| row["entity"].value::<String>())
-            .filter_map(Result::transpose)
-            .collect::<Result<_, _>>()
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "List aggregate TVIEWs".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    if aggregates.is_empty() {
-        return Ok(std::collections::BTreeMap::new());
-    }
-
-    let lookups =
-        crate::sql_parser::embed_lookup_columns(definition_sql, &aggregates).map_err(|reason| {
-            TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
-                reason,
-            }
-        })?;
-    let mut embeds = std::collections::BTreeMap::new();
-    for (aggregate, column) in lookups {
-        let Some(column) = column else {
-            return Err(TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
-                reason: format!(
-                    "TVIEW 'tv_{entity_name}' reads aggregate TVIEW '{aggregate}' but no output \
-                     column carries the value it is joined to on pk_{aggregate}, so a change to \
-                     a '{aggregate}' group could not be routed to the rows embedding it. Join \
-                     v_{aggregate} with an equality on its key in the FROM clause (e.g. `LEFT \
-                     JOIN v_{aggregate} a ON a.pk_{aggregate} = t.pk_{entity_name}`) and \
-                     project the other side of that equality."
-                ),
-            });
-        };
-        embeds.insert(aggregate, column);
-    }
-    Ok(embeds)
 }
 
 /// Index each aggregate-embed lookup column that is neither the TVIEW's primary

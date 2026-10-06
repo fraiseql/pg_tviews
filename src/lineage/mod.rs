@@ -350,6 +350,14 @@ pub struct Graph {
     /// `(occurrence, attnum)` of the virtual generated columns among the keys and
     /// equalities: NULL in the rows a trigger sees, so never read off one (#179).
     pub virtual_columns: std::collections::BTreeSet<(usize, i16)>,
+    /// Every other TVIEW the view reads (its backing view or its table, found by
+    /// OID), with the base columns equal to its `pk_<entity>`: the column its key
+    /// stands for in its backing view, or one an equality with its table's key
+    /// names.
+    pub tview_keys: BTreeMap<String, Vec<Column>>,
+    /// The output columns of the backing view's own SELECT (none for a set
+    /// operation), with the base column each stands for.
+    pub outputs: Vec<(String, Option<Column>)>,
 }
 
 /// The identity the walk found: the output column, and the base column it stands
@@ -426,6 +434,38 @@ impl TableKind {
 }
 
 impl Graph {
+    /// Every TVIEW the view reads, with the output column equal to its key: a
+    /// change to its row `k` changes the rows whose column holds `k`. `None` when
+    /// no output column carries its key.
+    #[must_use]
+    pub fn embed_lookups(&self) -> BTreeMap<String, Option<String>> {
+        self.tview_keys
+            .iter()
+            .map(|(entity, keys)| (entity.clone(), self.output_equal_to(keys)))
+            .collect()
+    }
+
+    /// The first output column equal to one of `keys`: the same column, or one an
+    /// equality links it to.
+    fn output_equal_to(&self, keys: &[Column]) -> Option<String> {
+        let equal = |x: &Column, y: &Column| {
+            x == y
+                || self.conjuncts.iter().any(|c| {
+                    c.equality
+                        .as_ref()
+                        .is_some_and(|(a, b)| (a == x && b == y) || (a == y && b == x))
+                })
+        };
+        self.outputs
+            .iter()
+            .find(|(_, column)| {
+                column
+                    .as_ref()
+                    .is_some_and(|c| keys.iter().any(|k| equal(c, k)))
+            })
+            .map(|(name, _)| name.clone())
+    }
+
     fn root_of(&self, occ: usize) -> Option<&Root> {
         let branch = self.occurrences[occ].branch;
         self.roots.iter().find(|r| r.branch == branch)
@@ -855,6 +895,10 @@ pub struct Lineage {
     /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
     /// EXCEPT): its rows are recomputed, never patched.
     pub set_operation: bool,
+    /// The aggregate TVIEWs (#58) the view reads, each with the output column
+    /// equal to its key, if any (#126): no `fk_<aggregate>` column propagates a
+    /// change of one of its groups, this column does.
+    pub aggregate_embeds: Vec<(String, Option<String>)>,
 }
 
 /// The column that names a TVIEW's rows (ADR 0169).
@@ -1004,9 +1048,9 @@ impl Lineage {
 
 /// Analyze the backing view `view_oid` of `entity`.
 ///
-/// `embeds` lists the TVIEWs it embeds (`fk_<entity>` columns and aggregate
-/// embeds); `base_tables` is what `pg_depend` says the view reads, which the
-/// analysis must find exactly.
+/// `embeds` lists the TVIEWs it embeds through `fk_<entity>` columns; the
+/// aggregate TVIEWs it reads are embeds too, found by the walk. `base_tables` is
+/// what `pg_depend` says the view reads, which the analysis must find exactly.
 ///
 /// # Errors
 /// Returns an error if the view cannot be analyzed, or if the analysis and
@@ -1025,14 +1069,16 @@ pub fn analyze(
         pg_error: e.to_string(),
     };
     // Every other registered TVIEW: its table, its view, what it maps.
-    let mut tview_tables: HashSet<pgrx::pg_sys::Oid> = HashSet::new();
+    let mut tview_tables: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
     let mut tview_views: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
     let mut mapped_by: HashMap<String, (HashSet<u32>, bool)> = HashMap::new();
+    let mut aggregates: Vec<String> = Vec::new();
     Spi::connect(|client| {
         for row in client.select(
             &format!(
                 "SELECT entity::text, table_oid::oid, view_oid::oid, key_mappings, \
-                        uncascaded_policy = 'full_refresh' FROM {}",
+                        uncascaded_policy = 'full_refresh', group_keys IS NOT NULL \
+                 FROM {} ORDER BY entity",
                 crate::utils::meta_table()
             ),
             None,
@@ -1045,9 +1091,12 @@ pub fn analyze(
             ) else {
                 continue;
             };
-            tview_tables.insert(table);
+            tview_tables.insert(table, other.clone());
             if other == entity {
                 continue;
+            }
+            if row.get::<bool>(6)?.unwrap_or(false) {
+                aggregates.push(other.clone());
             }
             tview_views.insert(view, other.clone());
             let mapped: HashSet<u32> = row
@@ -1110,9 +1159,26 @@ pub fn analyze(
         );
     }
 
+    // The aggregate TVIEWs the view reads embed through the output equal to their
+    // key (#126).
+    let mut lookups = graph.embed_lookups();
+    let aggregate_embeds: Vec<(String, Option<String>)> = aggregates
+        .into_iter()
+        .filter_map(|a| lookups.remove(&a).map(|column| (a, column)))
+        .collect();
+    let embeds: Vec<&str> = embeds
+        .iter()
+        .map(String::as_str)
+        .chain(
+            aggregate_embeds
+                .iter()
+                .filter(|(_, column)| column.is_some())
+                .map(|(a, _)| a.as_str()),
+        )
+        .collect();
     // Propagation from an embedded TVIEW covers a table only if that TVIEW maps it.
     let propagates = |child: &str, relid: u32| {
-        embeds.iter().any(|e| e == child)
+        embeds.contains(&child)
             && mapped_by
                 .get(child)
                 .is_some_and(|(mapped, full)| *full || mapped.contains(&relid))
@@ -1140,6 +1206,7 @@ pub fn analyze(
         unread,
         identity,
         set_operation: graph.set_operation,
+        aggregate_embeds,
     })
 }
 
@@ -1153,7 +1220,7 @@ pub fn view_identity(entity: &str, view_oid: pgrx::pg_sys::Oid) -> crate::TViewR
     let graph = walk::analyze(
         view_oid,
         &walk::Context {
-            tview_tables: &std::collections::HashSet::new(),
+            tview_tables: &std::collections::HashMap::new(),
             tview_views: &std::collections::HashMap::new(),
             entity,
             key_column: &key_column,
@@ -1578,6 +1645,8 @@ mod tests {
             identity: None,
             set_operation: false,
             virtual_columns: std::collections::BTreeSet::new(),
+            tview_keys: BTreeMap::new(),
+            outputs: vec![],
         }
     }
 
@@ -1706,6 +1775,8 @@ mod tests {
             identity: None,
             set_operation: false,
             virtual_columns: std::collections::BTreeSet::new(),
+            tview_keys: BTreeMap::new(),
+            outputs: vec![],
         };
         assert_eq!(
             g.classify(0, NONE),
@@ -1838,6 +1909,73 @@ mod tests {
         let ancestor = tables.iter().find(|t| t.relname == "tb_ancestor").unwrap();
         assert!(node.index_hints.is_empty());
         assert_eq!(ancestor.index_hints.len(), 1);
+    }
+
+    // ── embeds of other TVIEWs (#126, #181) ─────────────────────────────────
+
+    /// `tb_user u` (0) joined to the backing view of `user_summary`, whose key is
+    /// `tb_order.fk_user` (1), projecting `outputs`.
+    fn summary_graph(join: Vec<Conjunct>, outputs: Vec<(&str, Column)>) -> Graph {
+        let mut g = graph(
+            vec![occ(1, "tb_user"), occ(2, "tb_order")],
+            join,
+            col(0, "pk_user"),
+        );
+        g.tview_keys
+            .insert("user_summary".into(), vec![col(1, "fk_user")]);
+        g.outputs = outputs
+            .into_iter()
+            .map(|(name, c)| (name.to_string(), Some(c)))
+            .collect();
+        g
+    }
+
+    #[test]
+    fn an_embed_is_found_through_an_equality_with_its_key() {
+        // tb_user u LEFT JOIN <summary view> s ON s.pk_user_summary = u.pk_user
+        let g = summary_graph(
+            vec![eq(col(1, "fk_user"), col(0, "pk_user"), true, false)],
+            vec![("pk_user", col(0, "pk_user")), ("id", col(0, "id"))],
+        );
+        assert_eq!(
+            g.embed_lookups(),
+            BTreeMap::from([("user_summary".to_string(), Some("pk_user".to_string()))])
+        );
+    }
+
+    #[test]
+    fn an_embed_lookup_uses_the_output_name() {
+        // tb_post p JOIN tv_tag_count c ON p.fk_author = c.pk_tag_count, `p.fk_author AS author`
+        let mut g = graph(vec![occ(1, "tb_post")], vec![], col(0, "pk_post"));
+        g.tview_keys
+            .insert("tag_count".into(), vec![col(0, "fk_author")]);
+        g.outputs = vec![
+            ("pk_post".into(), Some(col(0, "pk_post"))),
+            ("author".into(), Some(col(0, "fk_author"))),
+        ];
+        assert_eq!(
+            g.embed_lookups(),
+            BTreeMap::from([("tag_count".to_string(), Some("author".to_string()))])
+        );
+    }
+
+    #[test]
+    fn an_embed_whose_key_no_output_carries_has_no_lookup() {
+        // tb_post p JOIN <summary view> s ON s.pk_user_summary = p.fk_user, fk_user not projected
+        let g = summary_graph(
+            vec![eq(col(1, "fk_user"), col(0, "fk_user"), true, false)],
+            vec![("pk_user", col(0, "pk_user"))],
+        );
+        assert_eq!(
+            g.embed_lookups(),
+            BTreeMap::from([("user_summary".to_string(), None)])
+        );
+    }
+
+    #[test]
+    fn a_tview_not_read_has_no_lookup() {
+        let g = graph(vec![occ(1, "tb_user")], vec![], col(0, "pk_user"));
+        assert!(g.embed_lookups().is_empty());
     }
 
     // ── mapping queries (golden) ────────────────────────────────────────────

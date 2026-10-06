@@ -1,4 +1,3 @@
--- known-failing: #181
 -- Regression test for issue #181 (prerequisite): a TVIEW embedding an aggregate
 -- TVIEW is found from the query tree, by OID, whatever the aggregate's backing
 -- view is called. The text match on `v_<aggregate>` / `tv_<aggregate>` missed a

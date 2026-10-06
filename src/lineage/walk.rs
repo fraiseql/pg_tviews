@@ -22,8 +22,9 @@ pub const MAX_DEPTH: usize = 32;
 
 /// What the walk needs to know about the registered TVIEWs.
 pub struct Context<'a> {
-    /// Tables of TVIEWs (`tv_*`): not base tables, as in `pg_tview_reads`.
-    pub tview_tables: &'a HashSet<Oid>,
+    /// Tables of TVIEWs (`tv_*`) → their entity: not base tables, as in
+    /// `pg_tview_reads`.
+    pub tview_tables: &'a HashMap<Oid, String>,
     /// Backing views of other TVIEWs → their entity.
     pub tview_views: &'a HashMap<Oid, String>,
     /// The TVIEW's entity.
@@ -147,6 +148,12 @@ enum RteInfo {
     Base(usize),
     Outputs(Vec<Resolved>),
     Join(*mut pg_sys::List),
+    /// The table of another TVIEW: its columns are opaque, but an equality on its
+    /// key says where it is embedded.
+    Tview {
+        entity: String,
+        relid: Oid,
+    },
     Other,
 }
 
@@ -333,6 +340,18 @@ impl Walker<'_> {
                 };
                 self.identity_level = true;
                 let outputs = self.level(query, &flags, Link::Top)?;
+                self.graph.outputs = elements::<pg_sys::TargetEntry>((*query).targetList)
+                    .iter()
+                    .zip(&outputs)
+                    .filter(|(tle, _)| !(***tle).resjunk)
+                    .map(|(tle, out)| {
+                        let column = match out {
+                            Resolved::Col(c) => Some(c.clone()),
+                            _ => None,
+                        };
+                        (cstr((**tle).resname), column)
+                    })
+                    .collect();
                 // The key root is the identity's column (ADR 0169).
                 let root_position = match &self.graph.identity {
                     Some(Ok(identity)) => Some(identity.position),
@@ -797,7 +816,12 @@ impl Walker<'_> {
                 self.graph.unread_tables.insert(relid.to_u32());
                 Ok(RteInfo::Other)
             }
-            b'r' | b'p' if !self.ctx.tview_tables.contains(&relid) => {
+            b'r' | b'p' if self.ctx.tview_tables.contains_key(&relid) => {
+                let entity = self.ctx.tview_tables[&relid].clone();
+                self.graph.tview_keys.entry(entity.clone()).or_default();
+                Ok(RteInfo::Tview { entity, relid })
+            }
+            b'r' | b'p' => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
                     relname,
@@ -836,7 +860,23 @@ impl Walker<'_> {
                     },
                 };
                 // SAFETY: the view query is a fresh copy.
-                let outputs = unsafe { self.level(view_query(relid)?, &inner, Link::From)? };
+                let query = unsafe { view_query(relid)? };
+                // SAFETY: a valid, copied Query.
+                let outputs = unsafe { self.level(query, &inner, Link::From)? };
+                if let Some(entity) = self.ctx.tview_views.get(&relid) {
+                    // SAFETY: the target list of a valid Query.
+                    let key = unsafe { output_position(query, &format!("pk_{entity}")) };
+                    let columns = match key.and_then(|i| outputs.get(i)) {
+                        Some(Resolved::Col(c)) => vec![c.clone()],
+                        Some(Resolved::Alt(cs)) => cs.clone(),
+                        _ => Vec::new(),
+                    };
+                    self.graph
+                        .tview_keys
+                        .entry(entity.clone())
+                        .or_default()
+                        .extend(columns);
+                }
                 Ok(RteInfo::Outputs(outputs))
             }
             _ => Ok(RteInfo::Other),
@@ -1020,6 +1060,7 @@ impl Walker<'_> {
     unsafe fn predicate(&mut self, qual: *mut pg_sys::Node, origin: Origin<'_>) {
         // SAFETY: read-only checks of a valid expression.
         unsafe {
+            self.tview_key_equality(qual);
             if matches!(origin, Origin::None)
                 || pg_sys::contain_mutable_functions(qual)
                 || has_sublink(qual)
@@ -1031,6 +1072,57 @@ impl Walker<'_> {
                 return;
             }
             self.add_conjuncts(qual, &sites, &|_| None, origin, true);
+        }
+    }
+
+    /// `<tv table>.pk_<entity> = <column>`: the column carries the key of the
+    /// TVIEW whose table this level reads.
+    ///
+    /// SAFETY: `qual` is a valid expression of the innermost level.
+    unsafe fn tview_key_equality(&mut self, qual: *mut pg_sys::Node) {
+        // SAFETY: checked by tag before each cast; RTE lists of valid levels.
+        unsafe {
+            if tag(qual) != Some(pg_sys::NodeTag::T_OpExpr)
+                || cstr(pg_sys::get_opname((*qual.cast::<pg_sys::OpExpr>()).opno)) != "="
+            {
+                return;
+            }
+            let args = elements::<pg_sys::Node>((*qual.cast::<pg_sys::OpExpr>()).args);
+            let [l, r] = args[..] else { return };
+            let (l, r) = (strip_relabel(l), strip_relabel(r));
+            if tag(l) != Some(pg_sys::NodeTag::T_Var) || tag(r) != Some(pg_sys::NodeTag::T_Var) {
+                return;
+            }
+            for (key, other) in [(l, r), (r, l)] {
+                let (key, other) = (key.cast::<pg_sys::Var>(), other.cast::<pg_sys::Var>());
+                let Some(entity) = self.tview_key_of(key) else {
+                    continue;
+                };
+                if let Resolved::Col(c) = self.resolve_var(other, (*other).varlevelsup as usize) {
+                    self.graph.tview_keys.entry(entity).or_default().push(c);
+                }
+            }
+        }
+    }
+
+    /// The entity whose TVIEW table `var` reads the key `pk_<entity>` of.
+    ///
+    /// SAFETY: `var` is a valid Var of the innermost level or one above.
+    unsafe fn tview_key_of(&self, var: *mut pg_sys::Var) -> Option<String> {
+        // SAFETY: fields of a valid Var; RTE lists of valid levels.
+        unsafe {
+            let index = self
+                .levels
+                .len()
+                .checked_sub(1 + (*var).varlevelsup as usize)?;
+            let rtindex = usize::try_from((*var).varno).ok()?;
+            let Some(RteInfo::Tview { entity, relid }) =
+                self.levels[index].rtes.get(rtindex.wrapping_sub(1))
+            else {
+                return None;
+            };
+            (cstr(pg_sys::get_attname(*relid, (*var).varattno, true)) == format!("pk_{entity}"))
+                .then(|| entity.clone())
         }
     }
 
@@ -1877,6 +1969,18 @@ unsafe fn top_opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
                     .then(|| "read under a set-returning function".to_string())
             })
             .map(|why| format!("{why} in the top-level SELECT"))
+    }
+}
+
+/// The position of the output column named `name`.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn output_position(query: *mut pg_sys::Query, name: &str) -> Option<usize> {
+    // SAFETY: the target list of a valid Query.
+    unsafe {
+        elements::<pg_sys::TargetEntry>((*query).targetList)
+            .iter()
+            .position(|tle| !(**tle).resjunk && cstr((**tle).resname) == name)
     }
 }
 
