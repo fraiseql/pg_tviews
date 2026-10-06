@@ -13,10 +13,11 @@
 -- subquery, or through the view's GROUP BY key) maps a tb_line row to its order
 -- (ADR 0157). A table that nothing links to the key (an uncorrelated subquery) is
 -- never dropped silently either: it is named at create time, recorded in
--- tviews.registry.uncascaded_tables, and handled by the TVIEW's
--- pg_tviews.uncascaded_policy, read once at create time and stored with the TVIEW:
+-- tviews.registry.uncascaded_tables, and handled by the TVIEW's uncascaded_policy
+-- (its option, else pg_tviews.uncascaded_policy), read once at create time and
+-- stored with the TVIEW:
+--   error         ERROR, nothing is created (the default)
 --   warn          WARNING, the TVIEW is created
---   error         ERROR, nothing is created
 --   full_refresh  NOTICE, and a write to the table refreshes the whole TVIEW
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_157_158_uncascaded_tables.sql
@@ -109,15 +110,16 @@ SELECT pg_tviews_create_aggregate('tv_user_posts', $$
     GROUP BY p.fk_user, u.id
 $$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
 
--- An uncorrelated subquery: nothing links tb_flag to the key (warn, the default).
+-- An uncorrelated subquery: nothing links tb_flag to the key; the TVIEW accepts
+-- stale rows (warn).
 CREATE TABLE tb_flag (pk_flag bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, active boolean);
 CREATE TABLE tb_report (pk_report bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                         id uuid NOT NULL DEFAULT gen_random_uuid());
 INSERT INTO tb_report DEFAULT VALUES;
 INSERT INTO tb_flag (active) VALUES (true);
-SELECT pg_tviews_create('tv_report', $$
+SELECT pg_tviews_create_or_replace('tv_report', $$
     SELECT r.pk_report, r.id, jsonb_build_object('flags', (SELECT count(*) FROM tb_flag)) AS data
-    FROM tb_report r $$);
+    FROM tb_report r $$, '{"uncascaded_policy": "warn"}');
 
 -- Helpers.
 CREATE FUNCTION _diverges(entity text) RETURNS boolean LANGUAGE plpgsql AS $$
@@ -243,7 +245,8 @@ BEGIN
             RAISE EXCEPTION 'FAIL [registry]: % uncascaded_tables = %', r.entity, r.uncascaded_tables;
         END IF;
         IF r.uncascaded_policy IS DISTINCT FROM
-           (CASE r.entity WHEN 'basket' THEN 'full_refresh' ELSE 'warn' END) THEN
+           (CASE r.entity WHEN 'basket' THEN 'full_refresh' WHEN 'report' THEN 'warn'
+                          ELSE 'error' END) THEN
             RAISE EXCEPTION 'FAIL [registry]: % uncascaded_policy = %', r.entity, r.uncascaded_policy;
         END IF;
     END LOOP;

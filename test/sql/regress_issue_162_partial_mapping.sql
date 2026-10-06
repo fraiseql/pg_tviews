@@ -16,6 +16,8 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+-- Tables no cascade reaches are what this file classifies: the TVIEWs accept them.
+SET pg_tviews.uncascaded_policy = 'warn';
 
 CREATE TABLE tb_order (pk_order bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                        id uuid NOT NULL DEFAULT gen_random_uuid(), ref text);
@@ -27,10 +29,10 @@ INSERT INTO tb_line (fk_order, sku) VALUES (1, 'a'), (1, 'b'), (2, 'c');
 -- ── the own table is read again where nothing links it to the key ──────────
 -- (#162's repro itself, a DISTINCT ON view keyed on l.fk_order, now maps
 -- entirely: see regress_distinct_on_key_equality.sql.)
-SELECT pg_tviews_create('tv_order', $$
+SELECT pg_tviews_create_or_replace('tv_order', $$
   SELECT o.pk_order, o.id, o.ref,
          jsonb_build_object('ref', o.ref, 'orders', (SELECT count(*) FROM tb_order)) AS data
-  FROM tb_order o $$);
+  FROM tb_order o $$, '{"uncascaded_policy": "warn"}');
 
 UPDATE tb_order SET ref = 'o1-new' WHERE pk_order = 1;
 DO $$ BEGIN
