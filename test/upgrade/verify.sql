@@ -33,12 +33,16 @@ BEGIN
     FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.comment', 'public.user_orders',
                               'public.contract', 'public.shipment', 'app.note'] LOOP
         CONTINUE WHEN pg_catalog.to_regclass(pg_catalog.replace(tv, '.', '.tv_')) IS NULL;
+        -- The backing view by OID: <schema>.v_<entity> before 0.1.0-beta.25, in
+        -- tviews after.
         EXECUTE pg_catalog.format(
             'SELECT count(*) FROM ((SELECT pk_%2$s, data FROM %1$I.tv_%2$s
-                                    EXCEPT SELECT pk_%2$s, data FROM %1$I.v_%2$s)
-                         UNION ALL (SELECT pk_%2$s, data FROM %1$I.v_%2$s
+                                    EXCEPT SELECT pk_%2$s, data FROM %3$s)
+                         UNION ALL (SELECT pk_%2$s, data FROM %3$s
                                     EXCEPT SELECT pk_%2$s, data FROM %1$I.tv_%2$s)) d',
-            pg_catalog.split_part(tv, '.', 1), pg_catalog.split_part(tv, '.', 2))
+            pg_catalog.split_part(tv, '.', 1), pg_catalog.split_part(tv, '.', 2),
+            (SELECT m.view_oid::pg_catalog.oid::pg_catalog.regclass FROM tviews.pg_tview_meta m
+             WHERE m.entity = pg_catalog.split_part(tv, '.', 2)))
             INTO diverging;
         IF diverging <> 0 THEN
             RAISE EXCEPTION 'upgrade check: % diverges from its view (% rows)', tv, diverging;

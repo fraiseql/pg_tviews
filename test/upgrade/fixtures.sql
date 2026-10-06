@@ -122,6 +122,13 @@ SELECT pg_tviews_create('tv_node', $$
           FROM tb_node n) s
     JOIN tb_node a ON a.pk_node = s.node_id
     GROUP BY s.pk_node, s.id $$);
+-- A table name long enough that its backing view's name is fitted to 63 bytes.
+CREATE TABLE tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij (pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij int PRIMARY KEY,
+    id uuid NOT NULL DEFAULT gen_random_uuid(), label text NOT NULL);
+INSERT INTO tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij (pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij, label) VALUES (1, 'l1');
+SELECT pg_tviews_create('tv_long_entity_name_for_the_upgrade_fitter_check_abcdefghij', $$
+    SELECT pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij, id, jsonb_build_object('label', label) AS data
+    FROM tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij $$);
 \endif
 -- A virtual generated column (PostgreSQL 18) read through a join (#179).
 SELECT current_setting('server_version_num')::int >= 180000 AS virtual_fixture \gset
