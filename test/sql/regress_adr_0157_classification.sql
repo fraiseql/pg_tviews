@@ -21,6 +21,8 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+-- Tables no cascade reaches are what this file classifies: the TVIEWs accept them.
+SET pg_tviews.uncascaded_policy = 'warn';
 
 CREATE TABLE tb_user  (pk_user bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -68,7 +70,7 @@ SELECT pg_tviews_create('tv_order', $$
            jsonb_build_object('ref', o.ref, 'user', u.data,
                               'skus', COALESCE(jsonb_agg(s.name) FILTER (WHERE s.pk_sku IS NOT NULL), '[]')) AS data
     FROM tb_order o
-    JOIN v_user u ON u.pk_user = o.fk_user
+    JOIN tviews.public__tv_user u ON u.pk_user = o.fk_user
     LEFT JOIN tb_line l ON l.fk_order = o.pk_order
     LEFT JOIN tb_sku s ON s.pk_sku = l.fk_sku
     GROUP BY o.pk_order, o.id, o.fk_user, o.ref, u.data $$);
@@ -76,14 +78,14 @@ INSERT INTO expected VALUES ('order', 'tb_order', 'local'), ('order', 'tb_line',
                             ('order', 'tb_sku', 'mapped'), ('order', 'tb_user', 'propagated');
 
 -- #157: correlated subqueries in the select list
-SELECT pg_tviews_create('tv_basket', $$
+SELECT pg_tviews_create_or_replace('tv_basket', $$
     SELECT o.pk_basket, o.id,
            ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_basket ORDER BY l.pos) AS skus,
            jsonb_build_object(
                'skun', (SELECT string_agg(s.name, ',') FROM tb_line l2 JOIN tb_sku s ON s.pk_sku = l2.fk_sku
                         WHERE l2.fk_order = o.pk_basket),
                'flags', (SELECT count(*) FROM tb_flag)) AS data
-    FROM tb_basket o $$);
+    FROM tb_basket o $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('basket', 'tb_basket', 'local'), ('basket', 'tb_line', 'local'),
                             ('basket', 'tb_sku', 'mapped'), ('basket', 'tb_flag', 'all_keys');
 

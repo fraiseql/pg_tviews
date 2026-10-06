@@ -25,7 +25,7 @@ CREATE VIEW v_cnt AS SELECT fk_order, count(*) n FROM tb_line GROUP BY fk_order;
 
 CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN v_order v USING (pk_order)
+    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
                WHERE t.pk_order IS NULL OR v.pk_order IS NULL OR t.data IS DISTINCT FROM v.data) THEN
         RAISE EXCEPTION '#164 FAIL: tv_order stale after %', label;
     END IF;

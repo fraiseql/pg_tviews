@@ -2,6 +2,7 @@
 
 - Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys);
   amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
+  and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create))
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 
@@ -165,3 +166,22 @@ the ancestor read (#182). A view reading a recursive view was refused with a dep
   CTE is walked once with opaque outputs: the tables read inside it are `AllKeys` ("read in a
   recursive CTE (<view>)"), and the tables read outside keep their mapping. The text check that
   refused `WITH RECURSIVE` in a definition is removed.
+
+## Amendment: untraceable reads fail at create
+
+`AllKeys` tables were handled under `pg_tviews.uncascaded_policy`, `warn` by default: a
+TVIEW whose writes to some table refresh nothing was created with a WARNING. An agent
+building a schema fixes ERRORs in its loop and does not read WARNINGs, and a session
+setting is state a definition file must set first.
+
+- The default is now **`error`**: such a TVIEW is refused at create. The message names
+  each table with its reason; the HINT gives the exact option to declare and, for
+  `CREATE TABLE … AS` and `pg_tviews_create()`, the setting to use.
+- The policy is **declared with the TVIEW**: `pg_tviews_create_or_replace(…, options =>
+  '{"uncascaded_policy": "full_refresh"}')` (ADR 0136, amendment); the setting remains
+  for the entry points that take no options. Existing TVIEWs keep their stored policy.
+- An opaque top level still has no root (a top-level window function or `LIMIT` is not
+  an entity projection): such a TVIEW is refused unless it declares a policy.
+- Reads through another TVIEW's backing view are recognised by the view's OID, whatever
+  its name (`Propagated`); a definition now usually reads the other TVIEW's `tv_<entity>`
+  table, which is not a base table.

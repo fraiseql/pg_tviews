@@ -30,7 +30,7 @@ SELECT pg_tviews_create('tv_author', $$
   SELECT pk_author, id, jsonb_build_object('name', name) AS data FROM tb_author $$);
 SELECT pg_tviews_create('tv_book', $$
   SELECT b.pk_book, b.id, b.fk_author, jsonb_build_object('title', b.title, 'author', a.data) AS data
-  FROM tb_book b JOIN v_author a ON a.pk_author = b.fk_author $$);
+  FROM tb_book b JOIN tv_author a ON a.pk_author = b.fk_author $$);
 UPDATE tb_author SET name = 'a2' WHERE pk_author = 1;
 SELECT assert_fresh('tv_book', 'pk_book', 'an UPDATE of a domain-keyed child');
 UPDATE tb_author SET name = name || '!';

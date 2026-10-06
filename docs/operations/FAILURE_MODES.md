@@ -39,9 +39,9 @@ back together. Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`).
 2. Failed writes rolled back with their TVIEW changes; nothing to repair. To confirm a
    TVIEW matches its view:
    ```sql
-   (SELECT pk_user, data FROM v_user EXCEPT SELECT pk_user, data FROM tv_user)
+   (SELECT pk_user, data FROM tviews.public__tv_user EXCEPT SELECT pk_user, data FROM tv_user)
    UNION ALL
-   (SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM v_user);
+   (SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM tviews.public__tv_user);
    ```
 3. If rows differ, rebuild: `SELECT tviews.pg_tviews_refresh('user');`
 

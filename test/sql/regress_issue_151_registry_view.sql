@@ -39,20 +39,22 @@ SELECT must(
     'the ninth registry column is not view regclass');
 SELECT must(tviews.contract_version() = 1, 'contract_version() changed');
 
--- 2. It names the backing view, in the TVIEW's schema.
-SELECT must((SELECT view FROM tviews.registry WHERE entity = 'user') = 'public.v_user'::regclass,
+-- 2. It names the backing view, in the extension's schema (#181).
+SELECT must((SELECT view FROM tviews.registry WHERE entity = 'user') = 'tviews.public__tv_user'::regclass,
             'tv_user view');
-SELECT must((SELECT view FROM tviews.registry WHERE entity = 'post') = 'app.v_post'::regclass,
+SELECT must((SELECT view FROM tviews.registry WHERE entity = 'post') = 'tviews.app__tv_post'::regclass,
             'tv_post view');
-SELECT must((SELECT view::text FROM tviews.registry WHERE entity = 'post') = 'app.v_post',
+SET search_path TO public;
+SELECT must((SELECT view::text FROM tviews.registry WHERE entity = 'post') = 'tviews.app__tv_post',
             'tv_post view is not printed schema-qualified off the search_path');
+RESET search_path;
 
 -- 3. A registration whose view is gone reports NULL, not a dangling OID.
 UPDATE tviews.pg_tview_meta SET view_oid = 4000000000::oid::regclass WHERE entity = 'user';
 SELECT must((SELECT view IS NULL FROM tviews.registry WHERE entity = 'user'),
             'a missing view is not NULL: '
             || (SELECT view::text FROM tviews.registry WHERE entity = 'user'));
-UPDATE tviews.pg_tview_meta SET view_oid = 'public.v_user'::regclass WHERE entity = 'user';
+UPDATE tviews.pg_tview_meta SET view_oid = 'tviews.public__tv_user'::regclass WHERE entity = 'user';
 
 DROP SCHEMA app CASCADE;
 DROP EXTENSION pg_tviews CASCADE;

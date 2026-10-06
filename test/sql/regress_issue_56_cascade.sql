@@ -16,9 +16,9 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
-DROP TABLE IF EXISTS tv_feed CASCADE;    DROP VIEW IF EXISTS v_feed CASCADE;
-DROP TABLE IF EXISTS tv_post CASCADE;    DROP VIEW IF EXISTS v_post CASCADE;
-DROP TABLE IF EXISTS tv_user CASCADE;    DROP VIEW IF EXISTS v_user CASCADE;
+DROP TABLE IF EXISTS tv_feed CASCADE;    DROP VIEW IF EXISTS tviews.public__tv_feed CASCADE;
+DROP TABLE IF EXISTS tv_post CASCADE;    DROP VIEW IF EXISTS tviews.public__tv_post CASCADE;
+DROP TABLE IF EXISTS tv_user CASCADE;    DROP VIEW IF EXISTS tviews.public__tv_user CASCADE;
 DROP TABLE IF EXISTS tb_feed CASCADE;
 DROP TABLE IF EXISTS tb_comment CASCADE;
 DROP TABLE IF EXISTS tb_post CASCADE;
@@ -61,21 +61,21 @@ SELECT pg_tviews_create('tv_post', $TVIEW$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
            jsonb_build_object(
                'title', tb_post.title,
-               'author', v_user.data,
+               'author', tv_user.data,
                'comments', COALESCE(jsonb_agg(
                    jsonb_build_object('body', c.body) ORDER BY c.pk_comment)
                    FILTER (WHERE c.pk_comment IS NOT NULL), '[]'::jsonb)
            ) AS data
     FROM tb_post
-    LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
+    LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
     LEFT JOIN tb_comment c ON c.fk_post = tb_post.pk_post
-    GROUP BY tb_post.pk_post, tb_post.id, tb_post.fk_user, tb_post.title, v_user.data
+    GROUP BY tb_post.pk_post, tb_post.id, tb_post.fk_user, tb_post.title, tv_user.data
 $TVIEW$);
 -- Feed embeds its post (nested_object) — two levels above user.
 SELECT pg_tviews_create('tv_feed', $TVIEW$
     SELECT tb_feed.pk_feed, tb_feed.id, tb_feed.fk_post,
-           jsonb_build_object('label', tb_feed.label, 'post', v_post.data) AS data
-    FROM tb_feed LEFT JOIN v_post ON v_post.pk_post = tb_feed.fk_post
+           jsonb_build_object('label', tb_feed.label, 'post', tv_post.data) AS data
+    FROM tb_feed LEFT JOIN tv_post ON tv_post.pk_post = tb_feed.fk_post
 $TVIEW$);
 
 -- Precondition: post is classified nested_object on the author dependency.

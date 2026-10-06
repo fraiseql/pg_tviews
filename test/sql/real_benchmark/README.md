@@ -20,7 +20,7 @@ supplier, inventory, and a review aggregate — maintained three ways:
 
 Only `tb_product` mutations are timed — the operation pg_tviews refreshes
 incrementally **and** correctly. Every run gates on a row-for-row divergence
-check of `tv_product` against its backing view (`v_product`); a non-zero
+check of `tv_product` against its backing view (`tviews.public__tv_product`); a non-zero
 divergence fails the run. Cascades from the embedded dimension/aggregate tables
 (category, reviews) are intentionally out of scope here: they only propagate when
 the parent is itself a registered `tv_` entity, which this single-entity

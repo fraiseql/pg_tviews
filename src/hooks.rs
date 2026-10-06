@@ -194,10 +194,21 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81),
     // and a partition added or removed gets or loses its triggers.
-    let (column_rename, partition_ddl) = if extension_installed() {
-        unsafe { (column_rename_of(pstmt), partition_ddl_of(pstmt)) }
+    // A TVIEW's table renamed or moved to another schema takes its backing view's
+    // name along (#181); its OID is resolved before the statement renames it.
+    // A GRANT or REVOKE on tables, or a change of a table's owner, is followed by
+    // the backing views (#181): their privileges are their tables'.
+    let (column_rename, partition_ddl, table_move, privileges_change) = if extension_installed() {
+        unsafe {
+            (
+                column_rename_of(pstmt),
+                partition_ddl_of(pstmt),
+                table_move_of(pstmt),
+                privileges_change_of(pstmt),
+            )
+        }
     } else {
-        (None, None)
+        (None, None, None, None)
     };
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary.
@@ -395,6 +406,18 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             unsafe { HOOK_IN_PROGRESS = false };
             error!("pg_tviews: could not update the triggers of a partition: {e}");
         }
+        if let Some(table) = table_move
+            && let Err(e) = crate::ddl::follow_table_move(table)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not rename the backing view of a moved TVIEW: {e}");
+        }
+        if let Some(PrivilegesChange { owners }) = privileges_change
+            && let Err(e) = crate::ddl::privileges::follow(None, owners)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not give the backing views their tables' privileges: {e}");
+        }
     }
 
     // Release the reentrancy guard
@@ -554,6 +577,113 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
             old_name: CStr::from_ptr(stmt.subname).to_string_lossy().into_owned(),
             new_name: CStr::from_ptr(stmt.newname).to_string_lossy().into_owned(),
         })
+    }
+}
+
+/// The table an `ALTER TABLE … RENAME TO` or `ALTER TABLE … SET SCHEMA` renames or
+/// moves, resolved before the statement runs.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+unsafe fn table_move_of(pstmt: *const pg_sys::PlannedStmt) -> Option<pg_sys::Oid> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        let relation = match (*node).type_ {
+            pg_sys::NodeTag::T_RenameStmt => {
+                let stmt = &*node.cast::<pg_sys::RenameStmt>();
+                (stmt.renameType == pg_sys::ObjectType::OBJECT_TABLE).then_some(stmt.relation)
+            }
+            pg_sys::NodeTag::T_AlterObjectSchemaStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterObjectSchemaStmt>();
+                (stmt.objectType == pg_sys::ObjectType::OBJECT_TABLE).then_some(stmt.relation)
+            }
+            _ => None,
+        }?;
+        if relation.is_null() {
+            return None;
+        }
+        let relid = pg_sys::RangeVarGetRelidExtended(
+            relation,
+            pg_sys::NoLock.cast_signed(),
+            pg_sys::RVROption::RVR_MISSING_OK,
+            None,
+            std::ptr::null_mut(),
+        );
+        (relid != pg_sys::InvalidOid).then_some(relid)
+    }
+}
+
+/// A statement after which the backing views must follow their tables' grants,
+/// and their owners when `owners`.
+struct PrivilegesChange {
+    owners: bool,
+}
+
+/// `GRANT` / `REVOKE` on tables (by name or `ALL TABLES IN SCHEMA`), `ALTER TABLE
+/// … OWNER TO` and `REASSIGN OWNED`.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+unsafe fn privileges_change_of(pstmt: *const pg_sys::PlannedStmt) -> Option<PrivilegesChange> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        match (*node).type_ {
+            pg_sys::NodeTag::T_GrantStmt => {
+                let stmt = &*node.cast::<pg_sys::GrantStmt>();
+                (stmt.objtype == pg_sys::ObjectType::OBJECT_TABLE)
+                    .then_some(PrivilegesChange { owners: false })
+            }
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                let cmds = stmt.cmds;
+                let changes_owner = stmt.objtype == pg_sys::ObjectType::OBJECT_TABLE
+                    && (0..pg_sys::list_length(cmds)).any(|i| {
+                        let cmd = pg_sys::list_nth(cmds, i).cast::<pg_sys::AlterTableCmd>();
+                        !cmd.is_null() && (*cmd).subtype == pg_sys::AlterTableType::AT_ChangeOwner
+                    });
+                changes_owner.then_some(PrivilegesChange { owners: true })
+            }
+            pg_sys::NodeTag::T_ReassignOwnedStmt => Some(PrivilegesChange { owners: true }),
+            _ => None,
+        }
+    }
+}
+
+/// While alive, statements `pg_tviews` runs pass through the hook unhandled, as
+/// those it runs for a statement the hook handles do. Taken around its own
+/// `GRANT`s and owner changes, which the hook would otherwise follow mid-way.
+pub(crate) struct InternalDdl {
+    took: bool,
+}
+
+impl InternalDdl {
+    pub(crate) fn begin() -> Self {
+        // SAFETY: single-threaded backend; plain reads/writes of process-local statics.
+        unsafe {
+            if HOOK_IN_PROGRESS {
+                return Self { took: false };
+            }
+            HOOK_IN_PROGRESS = true;
+            HOOK_GUARD_LEVEL = pg_sys::GetCurrentTransactionNestLevel();
+        }
+        Self { took: true }
+    }
+}
+
+impl Drop for InternalDdl {
+    fn drop(&mut self) {
+        if self.took {
+            // SAFETY: as in `begin`.
+            unsafe { HOOK_IN_PROGRESS = false };
+        }
     }
 }
 

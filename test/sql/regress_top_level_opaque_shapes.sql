@@ -45,8 +45,8 @@ CREATE FUNCTION check_fresh(tv text, label text) RETURNS void LANGUAGE plpgsql A
 DECLARE d bigint;
 BEGIN
     EXECUTE format(
-        'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                     UNION ALL (SELECT pk_%1$s, data FROM v_%1$s EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
+        'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                     UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
         tv) INTO d;
     IF d <> 0 THEN
         RAISE EXCEPTION 'item 6 FAIL: tv_% stale after %', tv, label;

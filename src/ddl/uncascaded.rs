@@ -1,10 +1,10 @@
 //! Base tables a TVIEW reads whose writes no cascade maps to its keys (issues
 //! #157, #158): the tables its lineage classifies `all_keys` (ADR 0157). They are
-//! reported when the TVIEW is registered, and `pg_tviews.uncascaded_policy`
-//! decides what a write to one of them does.
+//! reported when the TVIEW is registered, and its `uncascaded_policy` decides
+//! what a write to one of them does: refused at create by default.
 
 use crate::config::UncascadedPolicy;
-use crate::error::{TViewError, TViewResult};
+use crate::error::TViewResult;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
@@ -50,11 +50,23 @@ fn describe(tview: &str, tables: &[UncascadedTable], verb: &str) -> String {
     format!("writes to {names} {verb} {tview} ({reasons})")
 }
 
+/// What to write to declare the policy of `tview`: the option of
+/// `pg_tviews_create_or_replace()`, or the setting `CREATE TABLE … AS` and
+/// `pg_tviews_create()` read.
+fn how_to_declare(tview: &str, policy: &str) -> String {
+    format!(
+        "pg_tviews_create_or_replace('{tview}', <definition>, options => \
+         '{{\"uncascaded_policy\": \"{policy}\"}}'); before CREATE TABLE … AS or \
+         pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
+    )
+}
+
 /// Report the uncascaded tables of `tview` (schema-qualified) under `policy`:
-/// a WARNING, a NOTICE, or an ERROR that aborts the create.
+/// a WARNING, a NOTICE, or an ERROR that aborts the create and says what to
+/// declare instead.
 ///
 /// # Errors
-/// Returns an error under the `error` policy when `tables` is not empty.
+/// Never returns one: under the `error` policy the ERROR is raised here.
 pub(crate) fn report(
     tview: &str,
     tables: &[UncascadedTable],
@@ -70,10 +82,10 @@ pub(crate) fn report(
                 describe(tview, tables, "will not refresh"),
                 function_name!(),
             )
-            .set_hint(
-                "Set pg_tviews.uncascaded_policy to 'full_refresh' before creating the TVIEW \
-                 to refresh it in full on such writes, or to 'error' to refuse it.",
-            )
+            .set_hint(format!(
+                "To refresh it in full on such writes instead: {}.",
+                how_to_declare(tview, "full_refresh")
+            ))
             .report(PgLogLevel::WARNING);
             Ok(())
         }
@@ -81,13 +93,23 @@ pub(crate) fn report(
             notice!("{}", describe(tview, tables, "will refresh all rows of"));
             Ok(())
         }
-        UncascadedPolicy::Error => Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
-            reason: format!(
-                "{}. Set pg_tviews.uncascaded_policy to 'warn' or 'full_refresh' to create it anyway",
-                describe(tview, tables, "would not refresh")
-            ),
-        }),
+        UncascadedPolicy::Error => {
+            pg_sys::panic::ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
+                format!(
+                    "{}: declare what such a write does with the TVIEW's uncascaded_policy",
+                    describe(tview, tables, "would not refresh")
+                ),
+                function_name!(),
+            )
+            .set_hint(format!(
+                "To refresh {tview} in full on such writes: {}. \"warn\" accepts stale \
+                 rows instead. Or join the tables on a column pg_tviews can trace.",
+                how_to_declare(tview, "full_refresh")
+            ))
+            .report(PgLogLevel::ERROR);
+            Ok(())
+        }
     }
 }
 

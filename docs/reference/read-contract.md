@@ -27,9 +27,9 @@ them.
 | `logged` | `boolean` | the table is LOGGED |
 | `options` | `jsonb` | the effective options, every key present (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it |
-| `view` | `regclass` | the backing view (`v_post`); NULL when the view is gone |
+| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Whoever can `SELECT` from the TVIEW's table can `SELECT` from it ([privileges](ddl.md#privileges)) |
 | `uncascaded_tables` | `regclass[]` | base tables whose writes no cascade maps to this TVIEW's keys (below); empty for most TVIEWs |
-| `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `warn`, `error` or `full_refresh`, fixed when the TVIEW was created |
+| `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `error`, `full_refresh` or `warn`, declared with the TVIEW (option `uncascaded_policy`, else `pg_tviews.uncascaded_policy`) |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
 | `identity` | `text[]` | the column that names the TVIEW's rows and is its table's primary key: `{pk_<entity>}`, or a `DISTINCT ON` TVIEW's key (below) |
 
@@ -50,7 +50,7 @@ later. A TVIEW registered before 0.1.0-beta.23 reports `{pk_<entity>}` until
 schema-qualified and quoted as needed for the reader's `search_path`
 (`::text`), and casts to `oid` to join the system catalogs.
 
-**`base_tables`** is every relation reached from the backing view `v_<entity>` through
+**`base_tables`** is every relation reached from the backing view (`view`) through
 its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 
 - views are followed; the walk stops at the four relkinds above;
@@ -60,11 +60,12 @@ its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 
 **`uncascaded_tables`** lists the `base_tables` that pg_tviews watches but cannot map
 to TVIEW keys: neither the TVIEW's own `tb_<entity>`, nor a join it traces, nor a
-TVIEW it embeds through `fk_<entity>` reaches them. A table read only in a subquery
-of the select list, or through a plain view with an aggregate, is the typical case.
-Under `uncascaded_policy = 'warn'` a write to one leaves the TVIEW's rows stale until
-something that is mapped changes; under `'full_refresh'` it refreshes the whole TVIEW
-at flush. `pg_tviews.uncascaded_policy` sets the policy of new TVIEWs;
+TVIEW it embeds through `fk_<entity>` reaches them. An uncorrelated subquery, a
+window function or a recursive CTE is the typical case. Under the default
+`uncascaded_policy = 'error'` such a TVIEW is not created; under `'warn'` a write to
+one leaves the TVIEW's rows stale until something that is mapped changes; under
+`'full_refresh'` it refreshes the whole TVIEW at flush. The policy is declared with the
+TVIEW (the `uncascaded_policy` option, else `pg_tviews.uncascaded_policy`);
 re-registration recomputes the set and keeps the policy.
 
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
@@ -74,7 +75,7 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)):
 |---|---|
 | `local` | the key is a column of the changed row: the TVIEW's own table, or a table linked by `col = <key>` (in a join, a subquery or a view) |
 | `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition, an array of keys, a computed column) |
-| `propagated` | read through the `v_<entity>` of a TVIEW this one embeds by `fk_<entity>`: refreshing that TVIEW refreshes this one |
+| `propagated` | read through the backing view of a TVIEW this one embeds by `fk_<entity>`: refreshing that TVIEW refreshes this one |
 | `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function, a recursive CTE) |
 
 **`options`**:
@@ -117,6 +118,7 @@ when it exists.
 | `fillfactor` | integer 10–100 | `pg_tviews.fillfactor` |
 | `data_gin_index` | boolean | `pg_tviews.data_gin_index` |
 | `group_keys` | object or `null` | `null`: a plain TVIEW; an object makes an aggregate TVIEW |
+| `uncascaded_policy` | `"error"`, `"full_refresh"` or `"warn"` | `pg_tviews.uncascaded_policy` (`error`): what a write to a table no cascade reaches does; reported by `registry.uncascaded_policy` |
 
 **What counts as the same.** The definition goes through the creation pipeline, is
 created as a temporary view, and is the same when `pg_get_viewdef` renders it like the
@@ -130,9 +132,10 @@ under the current `search_path` does. An invalid definition raises its error. Pa
 - `unchanged`: definition and options are the same; nothing is touched. The comparison
   creates a temporary view, so the call cannot run on a standby or in a read-only
   transaction.
-- `altered`: only `logged`, `fillfactor` or `data_gin_index` differ; changed in place
-  (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, the GIN index created or
-  dropped), rows kept.
+- `altered`: only `logged`, `fillfactor`, `data_gin_index` or `uncascaded_policy`
+  differ; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`,
+  the GIN index created or dropped, the policy stored and the TVIEW re-registered), rows
+  kept.
 - `replaced`: the definition differs but produces the same columns (names and types,
   in order), and `group_keys` is the same. The backing view is replaced, the TVIEW
   re-registered (triggers added and removed), and the rows reconciled in place with

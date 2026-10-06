@@ -32,10 +32,10 @@ SELECT pg_tviews_create('tv_post', $$
 
 CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tv_post t FULL JOIN v_post v USING (pk_post)
+    IF EXISTS (SELECT 1 FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
                WHERE t.pk_post IS NULL OR v.pk_post IS NULL
                   OR t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION '%: tv_post diverges from v_post', label;
+        RAISE EXCEPTION '%: tv_post diverges from tviews.public__tv_post', label;
     END IF;
 END $$;
 

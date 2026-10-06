@@ -122,6 +122,13 @@ SELECT pg_tviews_create('tv_node', $$
           FROM tb_node n) s
     JOIN tb_node a ON a.pk_node = s.node_id
     GROUP BY s.pk_node, s.id $$);
+-- A table name long enough that its backing view's name is fitted to 63 bytes.
+CREATE TABLE tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij (pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij int PRIMARY KEY,
+    id uuid NOT NULL DEFAULT gen_random_uuid(), label text NOT NULL);
+INSERT INTO tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij (pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij, label) VALUES (1, 'l1');
+SELECT pg_tviews_create('tv_long_entity_name_for_the_upgrade_fitter_check_abcdefghij', $$
+    SELECT pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij, id, jsonb_build_object('label', label) AS data
+    FROM tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij $$);
 \endif
 -- A virtual generated column (PostgreSQL 18) read through a join (#179).
 SELECT current_setting('server_version_num')::int >= 180000 AS virtual_fixture \gset
@@ -141,3 +148,17 @@ SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$
     SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM app.tb_note $$);
 SET search_path TO "$user", public, tviews;
+
+-- Readers of the TVIEWs, for the backing views' privileges (#181): one granted
+-- every table of public at once, which reached the backing views while they were
+-- public.v_<entity>; one granted tv_user alone.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'upgrade_schema_reader') THEN
+        CREATE ROLE upgrade_schema_reader;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'upgrade_table_reader') THEN
+        CREATE ROLE upgrade_table_reader;
+    END IF;
+END $$;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO upgrade_schema_reader;
+GRANT SELECT ON tv_user TO upgrade_table_reader;

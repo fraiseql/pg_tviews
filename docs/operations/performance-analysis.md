@@ -85,11 +85,11 @@ ORDER BY CASCADE.depth;
 
 ```sql
 -- Analyze a TVIEW refresh query
--- Trinity pattern: v_post has pk_post (int), id (UUID), data (JSONB)
+-- Trinity pattern: tv_post's backing view has pk_post (int), id (UUID), data (JSONB)
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT v_post.pk_post, v_post.id, v_post.data
-FROM v_post
-WHERE v_post.pk_post = 123;
+SELECT v.pk_post, v.id, v.data
+FROM tviews.public__tv_post v
+WHERE v.pk_post = 123;
 
 -- Look for:
 -- - Seq Scan (bad for large tables) vs Index Scan (good)

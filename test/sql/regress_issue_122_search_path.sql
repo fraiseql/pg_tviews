@@ -52,12 +52,12 @@ SELECT pg_tviews_create('tv_user', $$
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.data) AS data
-    FROM app.tb_post p JOIN app.v_user u ON u.pk_user = p.fk_user $$);
+    FROM app.tb_post p JOIN app.tv_user u ON u.pk_user = p.fk_user $$);
 -- Array aggregate: parent lookups through propagation.
 SELECT pg_tviews_create('tv_tag', $$
     SELECT t.pk_tag, t.id, t.fk_post,
            jsonb_build_object('label', t.label, 'post', p.data->'title') AS data
-    FROM app.tb_tag t JOIN app.v_post p ON p.pk_post = t.fk_post $$);
+    FROM app.tb_tag t JOIN app.tv_post p ON p.pk_post = t.fk_post $$);
 
 -- Rows of tv and v that differ in either direction.
 CREATE FUNCTION public.assert_122(entity text, step text) RETURNS void
@@ -66,13 +66,13 @@ DECLARE d bigint;
 BEGIN
     EXECUTE format(
         'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM app.tv_%1$s
-                                EXCEPT SELECT pk_%1$s, data FROM app.v_%1$s)
-                     UNION ALL (SELECT pk_%1$s, data FROM app.v_%1$s
+                                EXCEPT SELECT pk_%1$s, data FROM tviews.app__tv_%1$s)
+                     UNION ALL (SELECT pk_%1$s, data FROM tviews.app__tv_%1$s
                                 EXCEPT SELECT pk_%1$s, data FROM app.tv_%1$s)) d',
         entity) INTO d;
     IF d <> 0 THEN
-        RAISE EXCEPTION '#122 FAIL after %: app.tv_% diverges from app.v_% (% rows)',
-            step, entity, entity, d;
+        RAISE EXCEPTION '#122 FAIL after %: app.tv_% diverges from its view (% rows)',
+            step, entity, d;
     END IF;
 END $$;
 

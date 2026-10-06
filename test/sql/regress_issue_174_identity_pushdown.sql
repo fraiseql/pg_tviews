@@ -52,12 +52,12 @@ END $$;
 DO $$
 DECLARE plan text;
 BEGIN
-    plan := plan_of($q$SELECT * FROM v_contract
+    plan := plan_of($q$SELECT * FROM tviews.public__tv_contract
                        WHERE pk_contract = ANY('{100,200}'::pg_catalog.int8[])$q$);
     IF plan NOT LIKE '%Index%tb_contract%' OR plan LIKE '%Seq Scan on tb_contract%' THEN
         RAISE EXCEPTION '#174 FAIL: the int8 identity filter does not reach the index:%', E'\n' || plan;
     END IF;
-    plan := plan_of(format($q$SELECT * FROM v_order
+    plan := plan_of(format($q$SELECT * FROM tviews.public__tv_order
                               WHERE id = ANY(%L::pg_catalog.text[]::pg_catalog.uuid[])$q$,
                            ARRAY[(SELECT id FROM tb_order WHERE pk_order = 7)::text]));
     IF plan NOT LIKE '%Index%tb_order_id_key%' OR plan LIKE '%Seq Scan on tb_order%' THEN

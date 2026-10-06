@@ -95,7 +95,7 @@ SELECT pg_tviews_create('tv_tag', $$
 -- reads tv_card as its owner inside tv_user's owner switch.
 SELECT pg_tviews_create('tv_card', $$
     SELECT c.pk_card, c.id, c.fk_user, jsonb_build_object('user', u.data) AS data
-    FROM app.tb_card c JOIN app.v_user u ON u.pk_user = c.fk_user $$);
+    FROM app.tb_card c JOIN app.tv_user u ON u.pk_user = c.fk_user $$);
 -- Children aggregated into an array.
 SELECT pg_tviews_create('tv_thread', $$
     SELECT t.pk_thread, t.id,
@@ -124,18 +124,18 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON tb_user, tb_post, tb_thread, tb_comment,
     TO regress_136_writer;
 GRANT SELECT ON tb_card TO regress_136_writer;
 ALTER TABLE tv_user OWNER TO regress_136_owner;
-ALTER VIEW v_user OWNER TO regress_136_owner;
-GRANT SELECT ON v_user TO regress_136_owner2;
+ALTER VIEW tviews.app__tv_user OWNER TO regress_136_owner;
+GRANT SELECT ON tv_user TO regress_136_owner2;
 ALTER TABLE tv_post OWNER TO regress_136_owner;
-ALTER VIEW v_post OWNER TO regress_136_owner;
+ALTER VIEW tviews.app__tv_post OWNER TO regress_136_owner;
 ALTER TABLE tv_thread OWNER TO regress_136_owner;
-ALTER VIEW v_thread OWNER TO regress_136_owner;
+ALTER VIEW tviews.app__tv_thread OWNER TO regress_136_owner;
 ALTER TABLE tv_tag OWNER TO regress_136_owner;
-ALTER VIEW v_tag OWNER TO regress_136_owner;
+ALTER VIEW tviews.app__tv_tag OWNER TO regress_136_owner;
 ALTER TABLE tv_user_orders OWNER TO regress_136_owner;
 ALTER TABLE tv_card OWNER TO regress_136_owner2;
-ALTER VIEW v_card OWNER TO regress_136_owner2;
-ALTER VIEW v_user_orders OWNER TO regress_136_owner;
+ALTER VIEW tviews.app__tv_card OWNER TO regress_136_owner2;
+ALTER VIEW tviews.app__tv_user_orders OWNER TO regress_136_owner;
 
 CREATE FUNCTION public.assert_136(step text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -144,13 +144,13 @@ BEGIN
     FOREACH entity IN ARRAY ARRAY['user', 'post', 'tag', 'card', 'thread', 'user_orders'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM app.tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM app.v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM app.v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.app__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.app__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM app.tv_%1$s)) d',
             entity) INTO d;
         IF d <> 0 THEN
-            RAISE EXCEPTION '#136 FAIL after %: app.tv_% diverges from app.v_% (% rows)',
-                step, entity, entity, d;
+            RAISE EXCEPTION '#136 FAIL after %: app.tv_% diverges from its view (% rows)',
+                step, entity, d;
         END IF;
     END LOOP;
 END $$;
@@ -245,7 +245,7 @@ RESET SESSION AUTHORIZATION;
 SELECT pg_tviews_create('tv_note', $$
     SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM app.tb_note $$);
 ALTER TABLE app.tv_note OWNER TO regress_136_owner;
-ALTER VIEW app.v_note OWNER TO regress_136_owner;
+ALTER VIEW tviews.app__tv_note OWNER TO regress_136_owner;
 SET SESSION AUTHORIZATION regress_136_writer;
 SET search_path TO app, public, tviews;
 UPDATE app.tb_note SET body = 'm';

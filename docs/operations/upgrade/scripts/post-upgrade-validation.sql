@@ -28,11 +28,11 @@ ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, com
 \echo '4. Each TVIEW against its backing view (rows that differ; expect 0)'
 SELECT pg_catalog.format(
            'SELECT %L AS tview, count(*) AS rows_differing FROM ('
-           '(SELECT %I, data FROM %I.%I EXCEPT SELECT %I, data FROM %I.%I) '
-           'UNION ALL (SELECT %I, data FROM %I.%I EXCEPT SELECT %I, data FROM %I.%I)) d',
+           '(SELECT %I, data FROM %I.%I EXCEPT SELECT %I, data FROM %s) '
+           'UNION ALL (SELECT %I, data FROM %s EXCEPT SELECT %I, data FROM %I.%I)) d',
            r.schema || '.' || r.name,
-           'pk_' || r.entity, r.schema, r.name, 'pk_' || r.entity, r.schema, 'v_' || r.entity,
-           'pk_' || r.entity, r.schema, 'v_' || r.entity, 'pk_' || r.entity, r.schema, r.name)
+           'pk_' || r.entity, r.schema, r.name, 'pk_' || r.entity, r.view,
+           'pk_' || r.entity, r.view, 'pk_' || r.entity, r.schema, r.name)
 FROM tviews.registry r
 WHERE r.schema IS NOT NULL AND r.view IS NOT NULL
 ORDER BY r.schema, r.name

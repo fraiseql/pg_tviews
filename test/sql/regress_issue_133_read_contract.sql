@@ -49,7 +49,7 @@ SELECT pg_tviews_create('tv_post', $$
            jsonb_build_object('title', t.title, 'author', u.data, 'name', tu.data->>'name') AS data
     FROM app.tb_post p
     JOIN app.v_titles t ON t.pk_post = p.pk_post
-    JOIN public.v_user u ON u.pk_user = p.fk_user
+    JOIN tviews.public__tv_user u ON u.pk_user = p.fk_user
     JOIN public.tv_user tu ON tu.pk_user = p.fk_user $$);
 RESET pg_tviews.data_gin_index;
 RESET pg_tviews.unlogged_by_default;

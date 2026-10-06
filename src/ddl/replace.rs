@@ -4,8 +4,8 @@
 //!
 //! - **created**: the TVIEW did not exist.
 //! - **unchanged**: the definition and the options passed match what exists.
-//! - **altered**: only `logged`, `fillfactor` or `data_gin_index` differ; changed in
-//!   place, rows kept.
+//! - **altered**: only `logged`, `fillfactor`, `data_gin_index` or
+//!   `uncascaded_policy` differ; changed in place, rows kept.
 //! - **replaced**: the definition differs but produces the same columns, and
 //!   `group_keys` is the same; the backing view is replaced and the rows reconciled
 //!   in place, touching only rows that change.
@@ -19,6 +19,7 @@
 use super::aggregate::GroupKeys;
 use super::create::{self, Storage};
 use crate::catalog::TviewMeta;
+use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::TViewSchema;
 use crate::utils::quote_identifier;
@@ -33,6 +34,9 @@ pub(crate) struct Options {
     fillfactor: Option<i32>,
     data_gin_index: Option<bool>,
     group_keys: GroupKeysOption,
+    /// What a write to a table no cascade reaches does (#181): declared with the
+    /// TVIEW, whatever `pg_tviews.uncascaded_policy` says.
+    uncascaded_policy: Option<UncascadedPolicy>,
 }
 
 /// The `group_keys` option.
@@ -119,6 +123,19 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                 }
                 options.fillfactor = i32::try_from(fillfactor).ok();
             }
+            "uncascaded_policy" => {
+                options.uncascaded_policy = Some(match value.as_str() {
+                    Some("warn") => UncascadedPolicy::Warn,
+                    Some("error") => UncascadedPolicy::Error,
+                    Some("full_refresh") => UncascadedPolicy::FullRefresh,
+                    _ => {
+                        return Err(invalid(
+                            key,
+                            "must be \"error\", \"full_refresh\" or \"warn\"",
+                        ));
+                    }
+                });
+            }
             "group_keys" => {
                 options.group_keys = match value {
                     serde_json::Value::Null => GroupKeysOption::Plain,
@@ -143,7 +160,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                     "options",
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
-                         data_gin_index, group_keys)"
+                         data_gin_index, group_keys, uncascaded_policy)"
                     ),
                 ));
             }
@@ -228,13 +245,20 @@ pub(crate) fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
     Spi::connect(|client| {
         client
             .select(
+                // With its table gone, a TVIEW's schema is the prefix of its backing
+                // view's name, `<schema>__tv_<entity>` (#181).
                 &format!(
-                    "SELECT n.nspname::text FROM {} m \
-                     JOIN pg_catalog.pg_class c \
-                       ON c.oid = COALESCE((SELECT t.oid FROM pg_catalog.pg_class t \
-                                           WHERE t.oid = m.table_oid), m.view_oid) \
-                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE m.entity = $1",
+                    "SELECT COALESCE( \
+                         (SELECT n.nspname::text FROM pg_catalog.pg_class t \
+                          JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
+                          WHERE t.oid = m.table_oid), \
+                         (SELECT pg_catalog.left(v.relname::text, \
+                                     -pg_catalog.length('__tv_' || m.entity)) \
+                          FROM pg_catalog.pg_class v WHERE v.oid = m.view_oid \
+                            AND pg_catalog.right(v.relname::text, \
+                                    pg_catalog.length('__tv_' || m.entity)) \
+                                = '__tv_' || m.entity)) \
+                     FROM {} m WHERE m.entity = $1",
                     crate::utils::meta_table()
                 ),
                 None,
@@ -303,22 +327,33 @@ pub(crate) fn create_or_replace(
     };
     let current_keys = create::stored_group_keys(&entity)?;
     let desired_keys = options.group_keys.or(current_keys.clone());
+    let policy = options.uncascaded_policy.unwrap_or(meta.uncascaded_policy);
 
     if comparison.same_view && desired_keys == current_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired == current {
+        if desired == current && policy == meta.uncascaded_policy {
             return Ok(if retyped { "altered" } else { "unchanged" });
         }
-        alter_storage(
-            &qualified_tv,
-            &tv_name,
-            &schema,
-            meta.tview_oid,
-            current,
-            desired,
-        )?;
+        if desired != current {
+            alter_storage(
+                &qualified_tv,
+                &tv_name,
+                &schema,
+                meta.tview_oid,
+                current,
+                desired,
+            )?;
+        }
+        if policy != meta.uncascaded_policy {
+            // The stored policy is re-checked by a re-registration, which also
+            // brings the triggers in line: `error` still refuses a TVIEW with
+            // tables no cascade reaches.
+            store_policy(&entity, policy)?;
+            create::reregister_tview(&entity)?;
+        }
         return Ok("altered");
     }
+    store_policy(&entity, policy)?;
     if comparison.same_columns
         && desired_keys == current_keys
         && same_table_key(meta.tview_oid, comparison.identity.as_deref())?
@@ -352,8 +387,23 @@ pub(crate) fn create_or_replace(
         query,
         desired,
         desired_keys.as_ref(),
+        policy,
     )?;
     Ok("rebuilt")
+}
+
+/// Store `entity`'s `uncascaded_policy`, as the extension's owner (the caller's
+/// right to change the TVIEW was checked).
+fn store_policy(entity: &str, policy: UncascadedPolicy) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    Spi::run_with_args(
+        &format!(
+            "UPDATE {} SET uncascaded_policy = $2 WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[text(entity), text(policy.as_str())],
+    )
+    .map_err(|e| catalog("Store the uncascaded policy", &e))
 }
 
 /// Give each column of the TVIEW the type of its backing view's column where the
@@ -450,7 +500,7 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         schema,
         options.group_keys.or(None).as_ref(),
         storage,
-        None,
+        options.uncascaded_policy,
     )
 }
 
@@ -580,7 +630,7 @@ fn replace_in_place(
     definition: &str,
     new_base_tables: &[pg_sys::Oid],
 ) -> TViewResult<()> {
-    let dependents = dependents(entity, meta.view_oid)?;
+    let dependents = dependents(entity, meta.view_oid, meta.tview_oid)?;
 
     // Writers lock a base table, then the TVIEW tables their flush writes: take
     // the same order. SHARE on every table read, before or after, holds writers
@@ -611,9 +661,11 @@ fn replace_in_place(
         lock_as_owner(table, "EXCLUSIVE")?;
     }
 
-    run(&format!(
-        "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
-    ))?;
+    super::in_extension_schema(|| {
+        run(&format!(
+            "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
+        ))
+    })?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
     crate::dependency::sync_entity_triggers(&reads, entity)?;
     reconcile(entity, meta)?;
@@ -632,13 +684,17 @@ fn replace_in_place(
 
 /// The TVIEWs whose view reads `view_oid`, directly or through views, as
 /// `(entity, table)`, each after the others it reads.
-fn dependents(entity: &str, view_oid: pg_sys::Oid) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
+fn dependents(
+    entity: &str,
+    view_oid: pg_sys::Oid,
+    table_oid: pg_sys::Oid,
+) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
     let (meta_table, reads) = (
         crate::utils::meta_table(),
         format!("{}.pg_tview_reads", crate::utils::ext_schema()),
     );
-    // A TVIEW reads everything the TVIEWs it reads do, and their views: it reads
-    // more of the others' views than any of them.
+    // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
+    // their views: it reads more of the others' views and tables than any of them.
     Spi::connect(|client| {
         let mut dependents = Vec::new();
         for row in client.select(
@@ -646,13 +702,14 @@ fn dependents(entity: &str, view_oid: pg_sys::Oid) -> TViewResult<Vec<(String, p
                 "SELECT m.entity::text, m.table_oid FROM {meta_table} m \
                  JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
                  WHERE m.entity <> $1 \
-                   AND EXISTS (SELECT 1 FROM {reads} r WHERE r.entity = m.entity AND r.relid = $2) \
+                   AND EXISTS (SELECT 1 FROM {reads} r \
+                               WHERE r.entity = m.entity AND r.relid IN ($2, $3)) \
                  ORDER BY (SELECT count(*) FROM {reads} r JOIN {meta_table} o \
-                           ON o.view_oid = r.relid AND o.entity <> r.entity \
+                           ON r.relid IN (o.view_oid, o.table_oid) AND o.entity <> r.entity \
                            WHERE r.entity = m.entity), m.entity"
             ),
             None,
-            &[text(entity), oid(view_oid)],
+            &[text(entity), oid(view_oid), oid(table_oid)],
         )? {
             if let (Some(dependent), Some(table)) =
                 (row.get::<String>(1)?, row.get::<pg_sys::Oid>(2)?)
@@ -867,6 +924,7 @@ fn rebuild(
     query: &str,
     storage: Storage,
     group_keys: Option<&GroupKeys>,
+    policy: UncascadedPolicy,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
     let objects = [oid(meta.tview_oid), oid(meta.view_oid)];
@@ -906,29 +964,24 @@ fn rebuild(
         false,
         false,
     )?;
-    create::create_tview_in(
-        &tv_name,
-        query,
-        schema,
-        group_keys,
-        storage,
-        Some(meta.uncascaded_policy),
-    )?;
+    create::create_tview_in(&tv_name, query, schema, group_keys, storage, Some(policy))?;
 
+    let rebuilt =
+        TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        })?;
     let (tv, view) = (
         format!(
             "{}.{}",
             quote_identifier(schema),
             quote_identifier(&tv_name)
         ),
-        format!(
-            "{}.{}",
-            quote_identifier(schema),
-            quote_identifier(&format!("v_{entity}"))
-        ),
+        crate::utils::qualified_relname_from_oid(rebuilt.view_oid)?,
     );
     // Owners first; then the new objects' default privileges give way to the saved
-    // ones; then comments.
+    // ones; then comments. The backing view then follows the table's owner and
+    // grants (#181). The hook must not follow the table midway.
+    let internal = crate::hooks::InternalDdl::begin();
     let (owners, others): (Vec<&String>, Vec<&String>) =
         restore.iter().partition(|s| s.starts_with("ALTER "));
     for statement in owners {
@@ -949,6 +1002,8 @@ fn rebuild(
     for statement in others {
         run(statement)?;
     }
+    drop(internal);
+    super::privileges::follow(Some(rebuilt.tview_oid), true)?;
     if let Some(typename) = graphql_typename {
         let _owner = crate::owner::AsOwner::of_extension()?;
         Spi::run_with_args(
@@ -1031,15 +1086,17 @@ const REBUILD_REFUSALS: &str = "\
     WHERE d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass \
       AND d.objoid IN ($1, $2) AND d.objsubid > 0";
 
-/// Statements that give the rebuilt table (`$1`) and view (`$2`) the owner,
-/// privileges and comment they have now, in the order to run them.
+/// Statements that give the rebuilt table (`$1`) the owner and privileges it
+/// has now, and it and its view (`$2`) their comments, in the order to run them.
+/// The view's owner and privileges follow the table's (#181).
 const RESTORE_STATEMENTS: &str = "\
     WITH objects(kind, relid) AS (VALUES ('TABLE', $1), ('VIEW', $2)) \
     SELECT statement FROM ( \
         SELECT 1 AS step, pg_catalog.format('ALTER %s %s OWNER TO %I', o.kind, \
                c.oid::pg_catalog.regclass, pg_catalog.pg_get_userbyid(c.relowner)) AS statement \
         FROM objects o JOIN pg_catalog.pg_class c ON c.oid = o.relid \
-        WHERE c.relowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = CURRENT_USER) \
+        WHERE o.kind = 'TABLE' \
+          AND c.relowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = CURRENT_USER) \
       UNION ALL \
         SELECT 2, pg_catalog.format('GRANT %s ON %s TO %s%s', a.privilege_type, \
                c.oid::pg_catalog.regclass, \
@@ -1048,7 +1105,7 @@ const RESTORE_STATEMENTS: &str = "\
                CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) \
         FROM objects o JOIN pg_catalog.pg_class c ON c.oid = o.relid, \
              pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.grantee <> c.relowner \
+        WHERE o.kind = 'TABLE' AND a.grantee <> c.relowner \
       UNION ALL \
         SELECT 3, pg_catalog.format('COMMENT ON %s %s IS %L', o.kind, \
                c.oid::pg_catalog.regclass, d.description) \

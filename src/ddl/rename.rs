@@ -1,7 +1,7 @@
 //! Keep TVIEW metadata in step with `ALTER … RENAME COLUMN` on a relation a
 //! backing view reads from.
 //!
-//! `PostgreSQL` rewrites `v_<entity>` to follow a column rename, but the text in
+//! `PostgreSQL` rewrites the backing view to follow a column rename, but the text in
 //! `pg_tview_meta.definition` and everything derived from it at creation (cascade
 //! paths, the column-aware refresh set, the direct-patch map, DISTINCT ON keys)
 //! would still name the old column: propagation from the renamed column silently
@@ -10,7 +10,7 @@
 //!
 //! The definition is rewritten in place, token by token, so it stays the author's
 //! text. The rewrite is only kept if it defines exactly the same view as the
-//! renamed `v_<entity>`; otherwise the definition falls back to `pg_get_viewdef`.
+//! renamed backing view; otherwise the definition falls back to `pg_get_viewdef`.
 
 use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
@@ -95,7 +95,8 @@ fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String,
         "SELECT DISTINCT m.entity, n.nspname::text AS schema, v.oid AS view_oid \
          FROM {} m \
          JOIN pg_class v ON v.oid = m.view_oid \
-         JOIN pg_namespace n ON n.oid = v.relnamespace \
+         JOIN pg_class t ON t.oid = m.table_oid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
          JOIN pg_rewrite r ON r.ev_class = v.oid \
          JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid \
          JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \

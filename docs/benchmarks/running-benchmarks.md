@@ -35,7 +35,7 @@ ways, and times `tb_product` mutations against each:
 
 Each arm runs in its own database, seeded from a common template so the base
 data is identical. Every run is **gated on correctness**: `tv_product` is
-compared row-for-row against its backing view `v_product`, and any divergence
+compared row-for-row against its backing view `tviews.public__tv_product`, and any divergence
 fails the run before a single timing is trusted.
 
 See [overview.md](overview.md) for the schema, the operations measured, and the
@@ -247,7 +247,7 @@ correctness failure, not a timing issue. Inspect the offending arm's
 
 ```sql
 SELECT pk_product, t.data, v.data
-FROM tv_product t FULL JOIN v_product v USING (pk_product)
+FROM tv_product t FULL JOIN tviews.public__tv_product v USING (pk_product)
 WHERE t.data IS DISTINCT FROM v.data;
 ```
 

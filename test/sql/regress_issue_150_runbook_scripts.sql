@@ -28,7 +28,7 @@ INSERT INTO tb_post VALUES (1, DEFAULT, 1, 'p1'), (2, DEFAULT, 2, 'p2');
 SELECT pg_tviews_create('tv_user', $$ SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$);
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
-    FROM tb_post p JOIN v_user u ON u.pk_user = p.fk_user $$);
+    FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
 UPDATE tb_post SET title = 'p1+' WHERE pk_post = 1;
 
 -- Every SQL script runs to the end; every shell script exits 0.

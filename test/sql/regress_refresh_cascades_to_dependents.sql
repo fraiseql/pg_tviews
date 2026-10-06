@@ -47,8 +47,8 @@ BEGIN
     FOREACH entity IN ARRAY ARRAY['user', 'post', 'feed', 'badge'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
             entity) INTO d;
         IF d <> 0 THEN

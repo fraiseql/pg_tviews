@@ -13,10 +13,11 @@
 -- subquery, or through the view's GROUP BY key) maps a tb_line row to its order
 -- (ADR 0157). A table that nothing links to the key (an uncorrelated subquery) is
 -- never dropped silently either: it is named at create time, recorded in
--- tviews.registry.uncascaded_tables, and handled by the TVIEW's
--- pg_tviews.uncascaded_policy, read once at create time and stored with the TVIEW:
+-- tviews.registry.uncascaded_tables, and handled by the TVIEW's uncascaded_policy
+-- (its option, else pg_tviews.uncascaded_policy), read once at create time and
+-- stored with the TVIEW:
+--   error         ERROR, nothing is created (the default)
 --   warn          WARNING, the TVIEW is created
---   error         ERROR, nothing is created
 --   full_refresh  NOTICE, and a write to the table refreshes the whole TVIEW
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_157_158_uncascaded_tables.sql
@@ -101,7 +102,7 @@ SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.data, 'author_name', bu.name) AS data
     FROM tb_post p
-    LEFT JOIN v_user u ON u.pk_user = p.fk_user
+    LEFT JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_user bu ON bu.pk_user = p.fk_user $$);
 SELECT pg_tviews_create_aggregate('tv_user_posts', $$
     SELECT p.fk_user AS pk_user_posts, u.id, jsonb_build_object('posts', count(*)) AS data
@@ -109,22 +110,23 @@ SELECT pg_tviews_create_aggregate('tv_user_posts', $$
     GROUP BY p.fk_user, u.id
 $$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
 
--- An uncorrelated subquery: nothing links tb_flag to the key (warn, the default).
+-- An uncorrelated subquery: nothing links tb_flag to the key; the TVIEW accepts
+-- stale rows (warn).
 CREATE TABLE tb_flag (pk_flag bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, active boolean);
 CREATE TABLE tb_report (pk_report bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                         id uuid NOT NULL DEFAULT gen_random_uuid());
 INSERT INTO tb_report DEFAULT VALUES;
 INSERT INTO tb_flag (active) VALUES (true);
-SELECT pg_tviews_create('tv_report', $$
+SELECT pg_tviews_create_or_replace('tv_report', $$
     SELECT r.pk_report, r.id, jsonb_build_object('flags', (SELECT count(*) FROM tb_flag)) AS data
-    FROM tb_report r $$);
+    FROM tb_report r $$, '{"uncascaded_policy": "warn"}');
 
 -- Helpers.
 CREATE FUNCTION _diverges(entity text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE d boolean;
 BEGIN
     -- Every column of the view, compared with the same column of the TVIEW.
-    EXECUTE format('SELECT EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN v_%1$s v USING (pk_%1$s) '
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN tviews.public__tv_%1$s v USING (pk_%1$s) '
                    'WHERE to_jsonb(v.*) IS DISTINCT FROM (SELECT jsonb_object_agg(k, to_jsonb(t.*) -> k) '
                    'FROM jsonb_object_keys(to_jsonb(v.*)) k))', entity) INTO d;
     RETURN d;
@@ -198,7 +200,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 RESET pg_tviews.uncascaded_policy;
 DO $$ BEGIN
-    IF to_regclass('public.tv_shelf') IS NOT NULL OR to_regclass('public.v_shelf') IS NOT NULL
+    IF to_regclass('public.tv_shelf') IS NOT NULL OR to_regclass('tviews.public__tv_shelf') IS NOT NULL
        OR EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'shelf')
        OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('tb_shelf'::regclass, 'tb_book'::regclass)
                   AND NOT tgisinternal)
@@ -243,7 +245,8 @@ BEGIN
             RAISE EXCEPTION 'FAIL [registry]: % uncascaded_tables = %', r.entity, r.uncascaded_tables;
         END IF;
         IF r.uncascaded_policy IS DISTINCT FROM
-           (CASE r.entity WHEN 'basket' THEN 'full_refresh' ELSE 'warn' END) THEN
+           (CASE r.entity WHEN 'basket' THEN 'full_refresh' WHEN 'report' THEN 'warn'
+                          ELSE 'error' END) THEN
             RAISE EXCEPTION 'FAIL [registry]: % uncascaded_policy = %', r.entity, r.uncascaded_policy;
         END IF;
     END LOOP;

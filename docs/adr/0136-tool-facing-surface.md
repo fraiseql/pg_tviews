@@ -1,6 +1,6 @@
 # ADR 0136: A stable surface for tools
 
-- Status: Accepted
+- Status: Accepted; amended for #181 (see [Amendment](#amendment-181-pg_tviews-objects-live-in-tviews))
 - Issues: #136 (fixed schema, privileges), #139 (health check), #137 (upgrade path),
   #133 (read contract), #134 (create-or-replace)
 
@@ -531,3 +531,44 @@ and coverage only run for PRs into main). Each starts with a failing
 9. Registration writes: the library checks ownership as the caller and switches to the
    extension owner for the catalog write, instead of a SQL `SECURITY DEFINER` function,
    which cannot see its caller (decided while implementing #134).
+
+## Amendment (#181): pg_tviews' objects live in `tviews`
+
+Decision 1 put the extension in `tviews`, but a TVIEW's backing view stayed in the
+application's schema as `v_<entity>`. By fraiseql's naming convention (`tb_` command
+table, `v_` application query view, `tv_` materialized) that is the application's own
+query view, so a schema built from templates could not get the TVIEW (#181).
+
+- **Backing views live in `tviews`**, named after the TVIEW's table:
+  `tviews.<schema>__<tv table>`, fitted to 63 bytes like the other generated names. No
+  option chooses the name: it follows from the convention, and `CREATE TABLE tv_x AS`
+  has nowhere to pass one. `registry.view` reports it. A name already taken is refused
+  at create; `ALTER TABLE tv_x RENAME` and `SET SCHEMA` rename the view with the table.
+- **Ownership is unchanged**: the TVIEW's owner owns its backing view, which reads the
+  base tables with that role's privileges. The role usually lacks CREATE on `tviews`
+  (Decision 2), so pg_tviews grants it for the DDL, as the extension's owner, and
+  revokes it in the same transaction. Owning the views by the extension's owner would
+  read the base tables with its privileges; `security_invoker` views would need grants
+  for every reader.
+- **Privileges follow the table**: a grant on the application's schema (`GRANT SELECT ON
+  ALL TABLES IN SCHEMA app`, default privileges on `app`) no longer reaches the backing
+  view, so whoever can `SELECT` from `tv_<entity>` can `SELECT` from its backing view.
+  The view's `SELECT` grants are made its table's when the view is created, rebuilt or
+  moved by the upgrade, and again after every `GRANT` or `REVOKE` on tables (by name or
+  `ALL TABLES IN SCHEMA`); `ALTER TABLE tv_x OWNER TO` and `REASSIGN OWNED` give the view
+  the table's owner. Only `SELECT` is copied: the view reads the base tables with its
+  owner's privileges, and so would a write through it. A grant on the backing view alone
+  does not outlive the next of these. The grants are written as the view's owner, who
+  may always grant on it, so the caller needs no privilege on the view, and the
+  extension's owner need not be a superuser (`superuser = false`).
+- **Found by OID**: after creation nothing builds or matches the name; aggregate embeds
+  come from the query tree (ADR 0157). A definition that embeds another TVIEW reads its
+  `tv_<entity>` table.
+- **Dump and upgrade**: the views are not extension members; `pg_dump` dumps them after
+  `CREATE EXTENSION` and the tables they read. The 0.1.0-beta.25 upgrade script moves
+  every existing backing view (`ALTER VIEW … SET SCHEMA tviews`, then the derived name),
+  keeping its OID.
+- **Options** (Decision 5) gain `uncascaded_policy`: a TVIEW declares what a write to a
+  table no cascade reaches does (ADR 0157, amendment), instead of a file setting the
+  session's `pg_tviews.uncascaded_policy` first. A different value is an `altered`
+  change.

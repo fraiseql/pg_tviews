@@ -239,7 +239,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 For an eligible `UPDATE`, pg_tviews builds a JSONB patch **at trigger time from
 `NEW`** and applies it straight to `tv_<entity>.data` with
 `jsonb_smart_patch_scalar/_nested` — **skipping the backing-view recompute
-entirely** (zero `SELECT … FROM v_entity`). The same patch is *derived* for
+entirely** (zero reads of the backing view). The same patch is *derived* for
 parent tviews that embed the entity as a nested object, so a single-field change
 with a wide fan-out (e.g. an author edited on 60 posts) propagates as a handful of
 grouped patch UPDATEs with no view queries.
@@ -368,7 +368,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
 | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
-| `pg_tviews.uncascaded_policy` | enum | warn | `warn`, `error` or `full_refresh`: what a new TVIEW does about base tables no cascade reaches. Read at create time and stored with the TVIEW; `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
+| `pg_tviews.uncascaded_policy` | enum | error | `error`, `full_refresh` or `warn`: what a new TVIEW does about base tables no cascade reaches, when it declares no `uncascaded_policy` option. Read at create time and stored with the TVIEW; `error` refuses it, `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
 | `pg_tviews.log_level` | string | info | Logging verbosity |
 
 ```sql

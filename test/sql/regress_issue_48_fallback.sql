@@ -17,7 +17,7 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION pg_tviews;   -- no jsonb_delta on purpose
 
 DROP TABLE IF EXISTS tv_order CASCADE;
-DROP VIEW  IF EXISTS v_order CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_order CASCADE;
 DROP TABLE IF EXISTS tb_order CASCADE;
 DROP TABLE IF EXISTS tb_tenant CASCADE;
 
@@ -80,7 +80,7 @@ DO $$
 DECLARE d bigint;
 BEGIN
   SELECT count(*) INTO d
-  FROM tv_order t FULL OUTER JOIN v_order v USING (pk_order)
+  FROM tv_order t FULL OUTER JOIN tviews.public__tv_order v USING (pk_order)
   WHERE t.data IS DISTINCT FROM v.data;
   IF d <> 0 THEN
     RAISE EXCEPTION '#48 fallback FAIL: divergence probe = % (expected 0)', d;

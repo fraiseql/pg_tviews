@@ -43,7 +43,7 @@ CREATE FUNCTION _assert(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS
 
 SELECT _assert(EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'post'),
                '#80 batch+extension: tv_post not registered');
-SELECT _assert(to_regclass('v_post') IS NOT NULL, '#80 batch+extension: v_post missing');
+SELECT _assert(to_regclass('tviews.public__tv_post') IS NOT NULL, '#80 batch+extension: tviews.public__tv_post missing');
 UPDATE tb_post SET title = 'uno' WHERE pk_post = 1;
 SELECT _assert((SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'uno',
                '#80 batch+extension: refresh does not work');
@@ -72,7 +72,7 @@ DO $$ BEGIN
       SELECT pk_tag, id, jsonb_build_object('name', name) AS data FROM tb_tag;
 END $$;
 SELECT _assert(EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'tag')
-               AND to_regclass('v_tag') IS NOT NULL, '#80 DO: tv_tag not converted');
+               AND to_regclass('tviews.public__tv_tag') IS NOT NULL, '#80 DO: tv_tag not converted');
 DROP TABLE tv_tag;
 
 -- ── Shape 4: CTAS inside a function ─────────────────────────────────────────────
@@ -83,7 +83,7 @@ BEGIN
 END $f$;
 SELECT _mk_note();
 SELECT _assert(EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'note')
-               AND to_regclass('v_note') IS NOT NULL, '#80 function: tv_note not converted');
+               AND to_regclass('tviews.public__tv_note') IS NOT NULL, '#80 function: tv_note not converted');
 SELECT _assert((SELECT count(*) FROM tv_note) = 1, '#80 function: tv_note not populated');
 
 -- ── Shape 5: COMMIT inside a procedure keeps working (guard scoping must not change it) ─

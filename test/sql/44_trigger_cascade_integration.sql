@@ -90,23 +90,23 @@ SELECT
     u.pk_user,
     u.id,
     u.fk_company,
-    v_company.id AS company_id,
+    tv_company.id AS company_id,
     jsonb_build_object(
         'id', u.id::text,
         'name', u.name,
         'email', u.email,
         'role', u.role,
-        'company', v_company.data
+        'company', tv_company.data
     ) AS data
 FROM tb_user u
-JOIN v_company ON v_company.pk_company = u.fk_company;
+JOIN tv_company ON tv_company.pk_company = u.fk_company;
 
 CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
     p.id,
     p.fk_user,
-    v_user.id AS user_id,
+    tv_user.id AS user_id,
     jsonb_build_object(
         'id', p.id::text,
         'title', p.title,
@@ -114,10 +114,10 @@ SELECT
         'status', p.status,
         'view_count', p.view_count,
         'created_at', p.created_at,
-        'author', v_user.data
+        'author', tv_user.data
     ) AS data
 FROM tb_post p
-JOIN v_user ON v_user.pk_user = p.fk_user;
+JOIN tv_user ON tv_user.pk_user = p.fk_user;
 
 \echo '✓ Step 1 complete: TVIEWs created'
 

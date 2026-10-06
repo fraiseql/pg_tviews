@@ -34,7 +34,7 @@ $$;
 CREATE FUNCTION must(ok BOOLEAN, msg TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT ok THEN RAISE EXCEPTION '#91 FAIL: %', msg; END IF; END $$;
 CREATE FUNCTION in_sync() RETURNS BOOLEAN LANGUAGE sql AS $$
-    SELECT count(*) = 0 FROM v_item v FULL JOIN tv_item t USING (pk_item)
+    SELECT count(*) = 0 FROM tviews.public__tv_item v FULL JOIN tv_item t USING (pk_item)
     WHERE t.data IS DISTINCT FROM v.data
 $$;
 

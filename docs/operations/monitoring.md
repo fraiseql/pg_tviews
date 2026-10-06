@@ -196,7 +196,7 @@ Follow the message; most trigger, catalog and re-registration problems are fixed
 
 Check `warnings`, `missing_propagation_indexes` and `fanout` in
 `tviews.pg_tviews_profile()`, then `EXPLAIN ANALYZE` a single-row query on the view
-(`SELECT * FROM v_user WHERE pk_user = 1`). See
+(`SELECT * FROM tviews.public__tv_user WHERE pk_user = 1`). See
 [Performance Monitoring](runbooks/01-health-monitoring/performance-monitoring.md).
 
 ### TVIEW differs from its view

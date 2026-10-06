@@ -120,20 +120,22 @@ under it go through `pg_tviews.uncascaded_policy` (next section). Full list:
 
 ### Tables No Cascade Reaches
 
-**Warning**: `writes to public.tb_flag will not refresh public.tv_report (...)`
+**Error**: `writes to public.tb_flag would not refresh public.tv_report (...): declare what such a write does with the TVIEW's uncascaded_policy`
 
-The definition reads a table with no condition linking its rows to the TVIEW key.
-Writes to it leave the TVIEW stale under the default `warn` policy, except for the
-rows its other reads reach when the reason ends with `the rows its other reads reach
-are still refreshed`:
+The definition reads a table with no condition linking its rows to the TVIEW key, and
+the TVIEW declares no `uncascaded_policy` (the default is `error`). The HINT gives what
+to write. Under `warn` (a `WARNING` at create) writes to it leave the TVIEW stale, except
+for the rows its other reads reach when the reason ends with `the rows its other reads
+reach are still refreshed`:
 
 ```sql
 SELECT name, uncascaded_tables, uncascaded_policy
 FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
 ```
 
-Rewrite the join, or recreate the TVIEW with
-`SET pg_tviews.uncascaded_policy = 'full_refresh'` (see
+Rewrite the join, or declare the policy:
+`pg_tviews_create_or_replace('tv_report', $$ … $$, options => '{"uncascaded_policy": "full_refresh"}')`,
+or `SET pg_tviews.uncascaded_policy = 'full_refresh'` before `CREATE TABLE … AS` (see
 [Tables no cascade reaches](../reference/ddl.md#tables-no-cascade-reaches)).
 
 ### Dependency Cycle
@@ -157,7 +159,7 @@ $$);
 ### Writes Fail With a Refresh Error
 
 A refresh error fails the writing statement (or the `COMMIT`), which rolls back.
-The `CONTEXT` line names the statement on `v_<entity>` / `tv_<entity>`. Typical
+The `CONTEXT` line names the statement on `tviews.<schema>__tv_<entity>` / `tv_<entity>`. Typical
 causes: the view's expressions fail on the new data, or one statement queues more
 keys than `pg_tviews.max_queue_size`. See
 [Refresh Troubleshooting](runbooks/02-refresh-operations/refresh-troubleshooting.md).

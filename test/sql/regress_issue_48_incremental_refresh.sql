@@ -12,7 +12,7 @@
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_48_incremental_refresh.sql
 --
 -- A companion assertion at the end runs the divergence probe: tv_order and
--- v_order must agree row-for-row.
+-- its backing view must agree row-for-row.
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -23,7 +23,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 DROP TABLE IF EXISTS tv_order CASCADE;
-DROP VIEW  IF EXISTS v_order CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_order CASCADE;
 DROP TABLE IF EXISTS tb_order CASCADE;
 DROP TABLE IF EXISTS tb_user CASCADE;
 DROP TABLE IF EXISTS tb_tenant CASCADE;
@@ -115,12 +115,12 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Divergence probe: tv_order and v_order must agree row-for-row.
+-- Divergence probe: tv_order and its backing view must agree row-for-row.
 DO $$
 DECLARE d bigint;
 BEGIN
   SELECT count(*) INTO d
-  FROM tv_order t FULL OUTER JOIN v_order v USING (pk_order)
+  FROM tv_order t FULL OUTER JOIN tviews.public__tv_order v USING (pk_order)
   WHERE t.data IS DISTINCT FROM v.data;
   IF d <> 0 THEN
     RAISE EXCEPTION '#48 FAIL: divergence probe = % (expected 0)', d;

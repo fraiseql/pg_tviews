@@ -85,7 +85,7 @@ SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 
 ```sql
 -- 4. Cost of recomputing one row
-EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM v_user WHERE pk_user = 1;
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_user WHERE pk_user = 1;
 ```
 
 **Resolution**:
@@ -199,9 +199,9 @@ their triggers are removed with them.
 
 ```sql
 -- Rows that differ, in either direction
-(SELECT pk_user, data FROM v_user EXCEPT SELECT pk_user, data FROM tv_user)
+(SELECT pk_user, data FROM tviews.public__tv_user EXCEPT SELECT pk_user, data FROM tv_user)
 UNION ALL
-(SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM v_user);
+(SELECT pk_user, data FROM tv_user EXCEPT SELECT pk_user, data FROM tviews.public__tv_user);
 ```
 
 Then check Runbook 1 (registration, triggers, uncascaded tables).

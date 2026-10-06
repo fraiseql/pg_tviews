@@ -21,7 +21,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 DROP TABLE IF EXISTS tv_comment, tv_post, tv_user CASCADE;
-DROP VIEW  IF EXISTS v_comment, v_post, v_user CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_comment, tviews.public__tv_post, tviews.public__tv_user CASCADE;
 DROP TABLE IF EXISTS tb_comment, tb_post, tb_user CASCADE;
 
 CREATE TABLE tb_user (
@@ -77,8 +77,8 @@ SELECT pg_tviews_create('tv_user', $TVIEW$
 $TVIEW$);
 SELECT pg_tviews_create('tv_post', $TVIEW$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
-           jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
+           jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
+    FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
 $TVIEW$);
 ANALYZE tv_post;
 
@@ -94,8 +94,8 @@ END $$;
 -- ── Path 2: CREATE TABLE tv_* AS SELECT (two integer FKs) ────────────────────
 CREATE TABLE tv_comment AS
     SELECT tb_comment.pk_comment, tb_comment.id, tb_comment.fk_post, tb_comment.fk_user,
-           jsonb_build_object('body', tb_comment.body, 'post', v_post.data) AS data
-    FROM tb_comment LEFT JOIN v_post ON v_post.pk_post = tb_comment.fk_post;
+           jsonb_build_object('body', tb_comment.body, 'post', tv_post.data) AS data
+    FROM tb_comment LEFT JOIN tv_post ON tv_post.pk_post = tb_comment.fk_post;
 ANALYZE tv_comment;
 
 DO $$ BEGIN
@@ -113,13 +113,13 @@ END $$;
 -- ── The cascade still produces the right rows ───────────────────────────────
 UPDATE tb_user SET name = 'renamed' WHERE pk_user = 7;
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_post t JOIN v_post v USING (pk_post)
+    IF EXISTS (SELECT 1 FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
                WHERE t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION 'FAIL #71: tv_post diverges from v_post after cascade';
+        RAISE EXCEPTION 'FAIL #71: tv_post diverges from tviews.public__tv_post after cascade';
     END IF;
-    IF EXISTS (SELECT 1 FROM tv_comment t JOIN v_comment v USING (pk_comment)
+    IF EXISTS (SELECT 1 FROM tv_comment t JOIN tviews.public__tv_comment v USING (pk_comment)
                WHERE t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION 'FAIL #71: tv_comment diverges from v_comment after cascade';
+        RAISE EXCEPTION 'FAIL #71: tv_comment diverges from tviews.public__tv_comment after cascade';
     END IF;
 END $$;
 

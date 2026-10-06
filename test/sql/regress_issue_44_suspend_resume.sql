@@ -31,15 +31,15 @@ INSERT INTO tb_user (name) SELECT 'u' || g FROM generate_series(1, 50) g;
 INSERT INTO tb_post (fk_user, title) SELECT 1 + g % 50, 't' || g FROM generate_series(1, 500) g;
 CREATE TABLE tv_user AS SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
 CREATE TABLE tv_post AS
-SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', v_user.data) AS data
-FROM tb_post p JOIN v_user ON v_user.pk_user = p.fk_user;
+SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', tv_user.data) AS data
+FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
 
 CREATE FUNCTION must(ok BOOLEAN, msg TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT ok THEN RAISE EXCEPTION '#44 FAIL: %', msg; END IF; END $$;
 CREATE FUNCTION in_sync() RETURNS BOOLEAN LANGUAGE sql AS $$
-    SELECT (SELECT count(*) FROM v_user v FULL JOIN tv_user t USING (pk_user)
+    SELECT (SELECT count(*) FROM tviews.public__tv_user v FULL JOIN tv_user t USING (pk_user)
             WHERE t.data IS DISTINCT FROM v.data) = 0
-       AND (SELECT count(*) FROM v_post v FULL JOIN tv_post t USING (pk_post)
+       AND (SELECT count(*) FROM tviews.public__tv_post v FULL JOIN tv_post t USING (pk_post)
             WHERE t.data IS DISTINCT FROM v.data) = 0
 $$;
 
@@ -52,7 +52,7 @@ UPDATE tb_user SET name = name || '!';
 SELECT must((SELECT data->>'name' FROM tv_user WHERE pk_user = 1) = 'u1',
             'tv_user was refreshed while suspended');
 SELECT pg_tviews_resume_triggers();
-SELECT must(in_sync(), 'tv_user / tv_post (which embeds v_user) not rebuilt on resume');
+SELECT must(in_sync(), 'tv_user / tv_post (which embeds tviews.public__tv_user) not rebuilt on resume');
 COMMIT;
 
 -- ========================================================================

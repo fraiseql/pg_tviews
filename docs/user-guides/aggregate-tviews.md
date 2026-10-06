@@ -21,7 +21,7 @@ to a `tb_user` row the group `pk_user`. Tables not listed do not refresh the agg
 
 A write to a listed source table refreshes the groups its row belongs to, before and
 after the write: an UPDATE that moves an order to another user refreshes both users.
-Each touched group is recomputed from the backing view `v_<entity>`: a group that
+Each touched group is recomputed from the backing view: a group that
 appears is inserted, one that changes is updated, one that empties is deleted.
 
 The refresh narrows the aggregate with `WHERE pk_<entity> = ANY(…)`, which PostgreSQL
@@ -41,14 +41,14 @@ with millions of rows is recomputed in full on every write to it
 
 ## Embedding an aggregate in another TVIEW
 
-Another TVIEW can embed an aggregate by joining its `v_<entity>` (or `tv_<entity>`) with
+Another TVIEW can embed an aggregate by joining its table `tv_<entity>` (or its backing view) with
 an equality on `pk_<entity>`:
 
 ```sql
 SELECT pg_tviews_create('tv_user', $$
     SELECT u.pk_user, u.id,
            jsonb_build_object('name', u.name, 'summary', s.data) AS data
-    FROM tb_user u LEFT JOIN v_user_summary s ON s.pk_user_summary = u.pk_user
+    FROM tb_user u LEFT JOIN tv_user_summary s ON s.pk_user_summary = u.pk_user
 $$);
 ```
 

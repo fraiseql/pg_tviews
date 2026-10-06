@@ -40,21 +40,21 @@ CREATE TABLE tv_user AS
 SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
 CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user,
-       jsonb_build_object('title', p.title, 'author', v_user.data) AS data
-FROM tb_post p JOIN v_user ON v_user.pk_user = p.fk_user;
+       jsonb_build_object('title', p.title, 'author', tv_user.data) AS data
+FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
 CREATE TABLE tv_comment AS
 SELECT c.pk_comment, c.id, c.fk_post,
-       jsonb_build_object('body', c.body, 'post', v_post.data) AS data
-FROM tb_comment c JOIN v_post ON v_post.pk_post = c.fk_post;
+       jsonb_build_object('body', c.body, 'post', tv_post.data) AS data
+FROM tb_comment c JOIN tv_post ON tv_post.pk_post = c.fk_post;
 
 CREATE FUNCTION stat(k TEXT) RETURNS BIGINT LANGUAGE sql AS
 $$ SELECT (pg_tviews_queue_stats()->>k)::bigint $$;
 CREATE FUNCTION must(ok BOOLEAN, msg TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT ok THEN RAISE EXCEPTION '#85 FAIL: %', msg; END IF; END $$;
 CREATE FUNCTION in_sync() RETURNS BOOLEAN LANGUAGE sql AS $$
-    SELECT (SELECT count(*) FROM v_post v FULL JOIN tv_post t USING (pk_post)
+    SELECT (SELECT count(*) FROM tviews.public__tv_post v FULL JOIN tv_post t USING (pk_post)
             WHERE t.data IS DISTINCT FROM v.data) = 0
-       AND (SELECT count(*) FROM v_comment v FULL JOIN tv_comment t USING (pk_comment)
+       AND (SELECT count(*) FROM tviews.public__tv_comment v FULL JOIN tv_comment t USING (pk_comment)
             WHERE t.data IS DISTINCT FROM v.data) = 0
 $$;
 

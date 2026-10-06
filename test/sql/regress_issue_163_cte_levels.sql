@@ -28,9 +28,9 @@ CREATE FUNCTION check_fresh(tv text, label text) RETURNS void LANGUAGE plpgsql A
 DECLARE d bigint;
 BEGIN
     EXECUTE format(
-        'SELECT count(*) FROM ((SELECT pk_order, data FROM %1$I EXCEPT SELECT pk_order, data FROM %2$I)
-                     UNION ALL (SELECT pk_order, data FROM %2$I EXCEPT SELECT pk_order, data FROM %1$I)) d',
-        tv, 'v_' || substr(tv, 4)) INTO d;
+        'SELECT count(*) FROM ((SELECT pk_order, data FROM %1$I EXCEPT SELECT pk_order, data FROM %2$s)
+                     UNION ALL (SELECT pk_order, data FROM %2$s EXCEPT SELECT pk_order, data FROM %1$I)) d',
+        tv, (SELECT view FROM tviews.registry WHERE name = tv)) INTO d;
     IF d <> 0 THEN
         RAISE EXCEPTION '#163 FAIL: % stale after %', tv, label;
     END IF;

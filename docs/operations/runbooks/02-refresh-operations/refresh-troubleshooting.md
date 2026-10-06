@@ -37,7 +37,7 @@ For the full picture run
 ## Issue 1: A write fails with a refresh error
 
 **Symptoms**: an `INSERT`/`UPDATE`/`DELETE` on a base table, or a `COMMIT`, fails
-with an error whose `CONTEXT` is a statement on `v_<entity>` / `tv_<entity>`, or with
+with an error whose `CONTEXT` is a statement on `tviews.<schema>__tv_<entity>` / `tv_<entity>`, or with
 `TVIEW refresh failed before COMMIT: ...`.
 
 **Diagnosis**: the error is the view query failing on the new data (for example
@@ -137,7 +137,7 @@ FROM tviews.pg_tviews_profile('post');
 SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 ```
 
-With `pg_stat_statements`, the refresh statements on `v_<entity>` / `tv_<entity>`
+With `pg_stat_statements`, the refresh statements on `tviews.<schema>__tv_<entity>` / `tv_<entity>`
 show their mean time and calls.
 
 **Solutions**: add the indexes the view's joins and the mapping queries need

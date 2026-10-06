@@ -54,10 +54,10 @@ BEGIN
         PERFORM * FROM dblink_get_result('second') AS r(status text);
         PERFORM * FROM dblink_get_result('second') AS r(status text);
         IF (SELECT data FROM tv_post WHERE pk_post = 1)
-           IS DISTINCT FROM (SELECT data FROM v_post WHERE pk_post = 1) THEN
+           IS DISTINCT FROM (SELECT data FROM tviews.public__tv_post WHERE pk_post = 1) THEN
             RAISE EXCEPTION 'race FAIL (run %): tv_post has %, the view has %', run,
                 (SELECT data FROM tv_post WHERE pk_post = 1),
-                (SELECT data FROM v_post WHERE pk_post = 1);
+                (SELECT data FROM tviews.public__tv_post WHERE pk_post = 1);
         END IF;
     END LOOP;
 END $$;
@@ -85,9 +85,9 @@ BEGIN
         PERFORM dblink_exec('first', 'COMMIT');
         PERFORM * FROM dblink_get_result('second') AS r(status text);
         PERFORM * FROM dblink_get_result('second') AS r(status text);
-        IF (SELECT data FROM tv_rev) IS DISTINCT FROM (SELECT data FROM v_rev) THEN
+        IF (SELECT data FROM tv_rev) IS DISTINCT FROM (SELECT data FROM tviews.public__tv_rev) THEN
             RAISE EXCEPTION 'race FAIL (DISTINCT ON, run %): tv_rev has %, the view has %', run,
-                (SELECT data FROM tv_rev), (SELECT data FROM v_rev);
+                (SELECT data FROM tv_rev), (SELECT data FROM tviews.public__tv_rev);
         END IF;
     END LOOP;
 END $$;

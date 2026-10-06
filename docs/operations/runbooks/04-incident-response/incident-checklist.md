@@ -117,7 +117,7 @@ FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';   -- expect no ro
 
 ### Pattern 1: Refresh errors fail writes
 **Quick diagnosis**: the client error and the PostgreSQL log (`CONTEXT` names
-`v_<entity>` / `tv_<entity>`).
+`tviews.<schema>__tv_<entity>` / `tv_<entity>`).
 **Resolution**: [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooting.md), Issue 1.
 
 ### Pattern 2: Stale TVIEW rows

@@ -114,9 +114,9 @@ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint AS r0 \gset
 UPDATE tb_other SET x = x + 1;
 SELECT must((pg_tviews_queue_stats()->>'view_recomputes')::bigint = :r0,
             'an unrelated table change recomputed TVIEW rows');
-SELECT must((SELECT count(*) FROM v_item v FULL JOIN tv_item t USING (pk_item)
+SELECT must((SELECT count(*) FROM tviews.public__tv_item v FULL JOIN tv_item t USING (pk_item)
              WHERE t.data IS DISTINCT FROM v.data) = 0, 'tv_item out of sync');
-SELECT must((SELECT count(*) FROM v_product v FULL JOIN tv_product t USING (pk_product)
+SELECT must((SELECT count(*) FROM tviews.public__tv_product v FULL JOIN tv_product t USING (pk_product)
              WHERE t.data IS DISTINCT FROM v.data) = 0, 'tv_product out of sync');
-SELECT must((SELECT count(*) FROM v_sheet v FULL JOIN tv_sheet t USING (pk_sheet)
+SELECT must((SELECT count(*) FROM tviews.public__tv_sheet v FULL JOIN tv_sheet t USING (pk_sheet)
              WHERE t.data IS DISTINCT FROM v.data) = 0, 'tv_sheet out of sync');

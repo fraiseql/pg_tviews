@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A TVIEW's backing view lives in pg_tviews' schema** (#181):
+  `tviews.<schema>__tv_<entity>` instead of `<schema>.v_<entity>`. By fraiseql's naming
+  convention `v_<entity>` is the application's query view, so a schema that already had
+  one could not get the TVIEW (`relation "v_order" already exists`). The application
+  schema now holds only its own objects; `tviews.registry.view` reports the backing
+  view, which follows `ALTER TABLE tv_x RENAME` and `SET SCHEMA`, and stays owned by
+  the TVIEW's owner. A definition that embedded another TVIEW through its `v_<entity>`
+  reads its `tv_<entity>` table. Its privileges follow the TVIEW's table: whoever can
+  `SELECT` from `tv_<entity>` can `SELECT` from the backing view (only `SELECT` is
+  copied), kept so after every `GRANT` / `REVOKE` on tables, including `ON ALL TABLES
+  IN SCHEMA`, and `ALTER TABLE tv_x OWNER TO` changes the view's owner too. A grant on
+  the application's schema no longer reaches the view by itself.
+- **A TVIEW that reads a table no cascade reaches is refused unless it declares a
+  policy.** `pg_tviews.uncascaded_policy` now defaults to `error` (was `warn`, which
+  created it with a WARNING and stale rows on such writes). The refusal names each
+  table with its reason, and its HINT gives the option or the setting to use.
+  Existing TVIEWs keep their policy.
+
+### Added
+
+- **`uncascaded_policy` option** of `pg_tviews_create_or_replace()`: a TVIEW declares
+  what a write to a table no cascade reaches does (`"error"`, `"full_refresh"` or
+  `"warn"`), whatever the session setting says; changing it is an `altered` change.
+
 ### Fixed
+
+- **A view named `v_<entity>` in the TVIEW's schema no longer blocks it** (#181), and
+  `pg_tviews_create('tv_order', 'SELECT * FROM v_order')` materializes the
+  application's view.
+- An aggregate TVIEW is recognised as embedded by the OID of what reads it, whatever
+  its backing view is called, also in a correlated subquery.
+- `pg_tviews_create_or_replace()` replacing a TVIEW in place refreshes the TVIEWs that
+  read its table, not only those reading its view; `pg_tviews_rebuild_all()` and
+  `pg_tviews_replication_status()` see an UNLOGGED TVIEW reading an emptied `tv_*`
+  table as needing a rebuild after a promotion.
 
 - **A hierarchy joined through an array of ids refreshes every row it changes**
   (#182). A TVIEW whose key passed through a subquery with a set-returning function
@@ -33,9 +69,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Upgrade notes
 
-- After `ALTER EXTENSION pg_tviews UPDATE`, run
-  `SELECT * FROM tviews.pg_tviews_reregister_all();` so that existing TVIEWs pick up
-  the new mappings.
+- Run `ALTER EXTENSION pg_tviews UPDATE` as a superuser (or as the extension's owner
+  when it owns every backing view): it moves each backing view to
+  `tviews.<schema>__tv_<entity>`. Tools that read `<schema>.v_<entity>` must read
+  `tviews.registry.view` instead (confiture: the version pinned by this release).
+- The update gives each moved backing view the `SELECT` grants of its TVIEW's table.
+  A role that read `<schema>.v_<entity>` through `GRANT SELECT ON ALL TABLES IN SCHEMA
+  <schema>` or default privileges keeps reading it when it can read `tv_<entity>`
+  (fraisier's empty-TVIEW probe does both). A role granted the view but not the table
+  loses it: grant it `SELECT` on `tv_<entity>` instead. Hosts with custom ACLs should
+  check `SELECT has_table_privilege('<role>', view, 'SELECT') FROM tviews.registry`.
+- Then run `SELECT * FROM tviews.pg_tviews_reregister_all();` so that existing TVIEWs
+  pick up the new mappings.
+- Definitions created or replaced from now on must declare a policy when they read a
+  table no cascade reaches (option `uncascaded_policy`, or `SET
+  pg_tviews.uncascaded_policy` before `CREATE TABLE … AS`); existing TVIEWs keep theirs.
 
 ## [0.1.0-beta.24] - 2026-10-05
 

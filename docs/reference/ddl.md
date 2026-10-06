@@ -53,7 +53,15 @@ Following FraiseQL patterns:
 
 - **TVIEW name**: `tv_<entity>` (e.g., `tv_post`, `tv_user`)
 - **Source tables**: `tb_<entity>` (e.g., `tb_post`, `tb_user`)
-- **Backing view**: `v_<entity>` (automatically created)
+- **Backing view**: `tviews.<schema>__tv_<entity>` (automatically created in
+  pg_tviews' own schema, named after the TVIEW's table and fitted to 63 bytes;
+  `tviews.registry.view` reports it). The application's own `v_<entity>` view is
+  left alone: a TVIEW can materialize it (`pg_tviews_create('tv_order', 'SELECT * FROM
+  v_order')`) or read views that read it. Its privileges follow the TVIEW's table:
+  whoever can `SELECT` from `tv_<entity>` can `SELECT` from it (see
+  [Privileges](#privileges))
+- **Embedding another TVIEW**: read its table `tv_<entity>` (`JOIN tv_user u ON
+  u.pk_user = p.fk_user`)
 - **Entity name**: Derived from TVIEW name by removing `tv_` prefix
 
 ### Required Columns
@@ -216,7 +224,8 @@ GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
 
 1. **SQL Analysis**: Parses SELECT statement to identify dependencies
 2. **Schema Inference**: Determines column types and relationships
-3. **Backing View Creation**: Creates `v_<entity>` with your SELECT
+3. **Backing View Creation**: Creates `tviews.<schema>__tv_<entity>` with your SELECT,
+   owned by you
 4. **Materialized Table Creation**: Creates `tv_<entity>` table
 5. **Trigger Installation**: Sets up triggers on all source tables
 6. **Initial Population**: Fills TVIEW with current data
@@ -407,29 +416,74 @@ where its key comes from, refreshes the row of each entity it writes. The reason
 then ends with `the rows its other reads reach are still refreshed`, and the policy
 decides only about the rest.
 
-What happens is fixed per TVIEW by `pg_tviews.uncascaded_policy` at create time:
+What happens is fixed per TVIEW by its `uncascaded_policy`, declared with the TVIEW
+and stored with it:
 
 | Policy | At create time | On a write to such a table |
 |---|---|---|
-| `warn` (default) | `WARNING:  writes to public.tb_flag will not refresh public.tv_report (read in a subquery, with no condition linking it to the TVIEW key)` | nothing: the rows stay stale until a mapped table changes |
-| `error` | `ERROR` with the same text; nothing is created | — |
+| `error` (default) | `ERROR`: nothing is created; the HINT says what to declare | — |
 | `full_refresh` | `NOTICE` | the whole TVIEW is brought up to date at flush, once per transaction or statement; unchanged rows are not rewritten |
+| `warn` | `WARNING:  writes to public.tb_flag will not refresh public.tv_report (read in a subquery, with no condition linking it to the TVIEW key)` | nothing: the rows stay stale until a mapped table changes |
+
+A TVIEW with such a table and no declared policy is refused:
+
+```
+ERROR:  writes to public.tb_flag would not refresh public.tv_report (read in a subquery, with no
+        condition linking it to the TVIEW key): declare what such a write does with the TVIEW's
+        uncascaded_policy
+HINT:  To refresh public.tv_report in full on such writes: pg_tviews_create_or_replace(
+       'public.tv_report', <definition>, options => '{"uncascaded_policy": "full_refresh"}');
+       before CREATE TABLE … AS or pg_tviews_create(): SET pg_tviews.uncascaded_policy =
+       'full_refresh'. "warn" accepts stale rows instead. Or join the tables on a column
+       pg_tviews can trace.
+```
+
+Declare it with the TVIEW:
+
+```sql
+SELECT pg_tviews_create_or_replace('tv_report', $$ … $$,
+    options => '{"uncascaded_policy": "full_refresh"}');
+```
+
+`CREATE TABLE … AS` and `pg_tviews_create()` take no options: they read the setting
+`pg_tviews.uncascaded_policy` (default `error`) instead.
+
+```sql
+SET pg_tviews.uncascaded_policy = 'full_refresh';
+CREATE TABLE tv_report AS SELECT …;
+RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
+```
+
+Changing the option of an existing TVIEW with `pg_tviews_create_or_replace()` is an
+`altered` change: the policy is stored and the TVIEW re-registered, with no rebuild.
 
 `full_refresh` recomputes every row of the TVIEW: on a 100 000-row TVIEW that is about
 a second per flush that wrote to such a table. Use it for small TVIEWs, or rewrite the
 definition so that the table is joined on a column pg_tviews can trace.
-
-```sql
-SET pg_tviews.uncascaded_policy = 'full_refresh';
-SELECT pg_tviews_create('tv_order', $$ … $$);
-RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
-```
 
 ### Limitations
 
 - **Dependency Depth**: Performance degrades with >5 cascade levels
 - **Circular Dependencies**: Automatically detected and rejected
 - **Column Name Conflicts**: Must resolve ambiguous column names
+
+## Privileges
+
+A TVIEW's table is an ordinary table: grant on it as on any other. Its backing view,
+in `tviews`, follows it:
+
+- whoever can `SELECT` from `tv_<entity>` (a role, or `PUBLIC`) can `SELECT` from its
+  backing view, so a role granted `SELECT ON ALL TABLES IN SCHEMA app`, or reading
+  `app` through default privileges, reads `tviews.app__tv_<entity>` too;
+- the view's grants are made its table's when the TVIEW is created or rebuilt, and
+  after every `GRANT` or `REVOKE` on tables, including `ON ALL TABLES IN SCHEMA`;
+- `ALTER TABLE tv_<entity> OWNER TO` (and `REASSIGN OWNED`) gives the view the new
+  owner, who reads the base tables through it;
+- only `SELECT` is copied, without grant option; `INSERT`, `UPDATE` and the others
+  granted on the table are not. A grant made on the backing view alone is taken back
+  by the next of these.
+
+`USAGE` on `tviews` is granted to `PUBLIC` by the extension.
 
 ## DROP TABLE tv_*
 
@@ -455,7 +509,7 @@ DROP TABLE tv_post CASCADE;
 ### What Happens During DROP TABLE tv_*
 
 1. **Trigger Removal**: Uninstalls all triggers for this TVIEW
-2. **Backing View Drop**: Removes `v_<entity>` view
+2. **Backing View Drop**: Removes its backing view in `tviews`
 3. **Materialized Table Drop**: Removes `tv_<entity>` table
 4. **Metadata Cleanup**: Removes entry from system catalogs
 5. **Dependency Check**: Fails if other TVIEWs depend on this one

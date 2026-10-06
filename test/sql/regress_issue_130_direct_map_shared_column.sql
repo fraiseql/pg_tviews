@@ -38,10 +38,10 @@ SELECT pg_tviews_create('tv_user', $$
 CREATE FUNCTION assert_fresh(step text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     IF (SELECT data FROM tv_user WHERE pk_user = 1)
-       IS DISTINCT FROM (SELECT data FROM v_user WHERE pk_user = 1) THEN
-        RAISE EXCEPTION '#130 FAIL after %: tv_user % <> v_user %', step,
+       IS DISTINCT FROM (SELECT data FROM tviews.public__tv_user WHERE pk_user = 1) THEN
+        RAISE EXCEPTION '#130 FAIL after %: tv_user % <> tviews.public__tv_user %', step,
             (SELECT data FROM tv_user WHERE pk_user = 1),
-            (SELECT data FROM v_user WHERE pk_user = 1);
+            (SELECT data FROM tviews.public__tv_user WHERE pk_user = 1);
     END IF;
 END $$;
 

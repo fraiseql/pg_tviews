@@ -23,7 +23,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 DROP TABLE IF EXISTS tv_post, tv_comment, tv_tag CASCADE;
-DROP VIEW  IF EXISTS v_post, v_comment, v_tag CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_post, tviews.public__tv_comment, tviews.public__tv_tag CASCADE;
 DROP TABLE IF EXISTS tb_comment, tb_post, tb_tag CASCADE;
 
 CREATE TABLE tb_post (
@@ -129,8 +129,8 @@ END $$;
 
 -- ── Refreshes are still correct ─────────────────────────────────────────────
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_post t FULL JOIN v_post v USING (pk_post) WHERE t.data IS DISTINCT FROM v.data)
-       OR EXISTS (SELECT 1 FROM tv_comment t FULL JOIN v_comment v USING (pk_comment) WHERE t.data IS DISTINCT FROM v.data) THEN
+    IF EXISTS (SELECT 1 FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) WHERE t.data IS DISTINCT FROM v.data)
+       OR EXISTS (SELECT 1 FROM tv_comment t FULL JOIN tviews.public__tv_comment v USING (pk_comment) WHERE t.data IS DISTINCT FROM v.data) THEN
         RAISE EXCEPTION 'FAIL: a tview diverges from its backing view';
     END IF;
 END $$;

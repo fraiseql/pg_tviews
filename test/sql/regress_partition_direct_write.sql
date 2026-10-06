@@ -54,7 +54,7 @@ SELECT pg_tviews_create('tv_order', $$
 
 CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN v_order v USING (pk_order)
+    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
                WHERE t.pk_order IS NULL OR v.pk_order IS NULL
                   OR t.data IS DISTINCT FROM v.data) THEN
         RAISE EXCEPTION 'item 2 FAIL: %', label;
@@ -127,11 +127,11 @@ CREATE TABLE tb_weight (w int NOT NULL);
 INSERT INTO tb_kind (pk_kind, name) VALUES (1, 'k');
 INSERT INTO tb_weight VALUES (1);
 SET client_min_messages TO ERROR;   -- tb_weight is read uncorrelated: a WARNING at create
-SELECT pg_tviews_create('tv_kind', $$
+SELECT pg_tviews_create_or_replace('tv_kind', $$
     SELECT k.pk_kind, k.id,
            jsonb_build_object('name', k.name,
                               'share', 1 / (SELECT count(*) FROM tb_weight)) AS data
-    FROM tb_kind k $$);
+    FROM tb_kind k $$, '{"uncascaded_policy": "warn"}');
 SET client_min_messages TO WARNING;
 DO $$ BEGIN
     BEGIN

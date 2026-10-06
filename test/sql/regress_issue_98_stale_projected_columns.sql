@@ -23,9 +23,9 @@ CREATE FUNCTION divergence(tv text, v text, cols text) RETURNS bigint LANGUAGE p
 DECLARE d bigint;
 BEGIN
     EXECUTE format(
-        'SELECT count(*) FROM ((SELECT %1$s FROM %2$I EXCEPT SELECT %1$s FROM %3$I)
-                     UNION ALL (SELECT %1$s FROM %3$I EXCEPT SELECT %1$s FROM %2$I)) d',
-        cols, tv, v) INTO d;
+        'SELECT count(*) FROM ((SELECT %1$s FROM %2$s EXCEPT SELECT %1$s FROM %3$s)
+                     UNION ALL (SELECT %1$s FROM %3$s EXCEPT SELECT %1$s FROM %2$s)) d',
+        cols, tv::regclass, v::regclass) INTO d;
     RETURN d;
 END $$;
 
@@ -61,13 +61,13 @@ SELECT pg_tviews_create('tv_item', $v$
 \set item_cols 'pk_item, id, fk_category, qty_alias, label, data'
 
 UPDATE tb_item SET qty = 10, name = 'A' WHERE pk_item = 1;
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'UPDATE of data and extra columns');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'UPDATE of data and extra columns');
 
 UPDATE tb_item SET qty = 20 WHERE pk_item = 2;
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'UPDATE of an extra column only');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'UPDATE of an extra column only');
 
 UPDATE tb_item SET name = 'B' WHERE pk_item = 2;
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'UPDATE of a directly mapped column');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'UPDATE of a directly mapped column');
 
 -- (2) Standalone TVIEW whose extra column shares a directly mapped base column:
 -- a direct patch of `data` alone would leave `label` stale.
@@ -83,7 +83,7 @@ SELECT pg_tviews_create('tv_note', $v$
     FROM tb_note $v$);
 
 UPDATE tb_note SET body = 'y' WHERE pk_note = 1;
-SELECT assert_consistent('tv_note', 'v_note', 'pk_note, id, label, data', 'direct-patch-shaped UPDATE');
+SELECT assert_consistent('tv_note', 'tviews.public__tv_note', 'pk_note, id, label, data', 'direct-patch-shaped UPDATE');
 
 SELECT pg_tviews_drop('tv_item');
 SELECT pg_tviews_drop('tv_note');
