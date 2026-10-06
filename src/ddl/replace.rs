@@ -228,13 +228,20 @@ pub(crate) fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
     Spi::connect(|client| {
         client
             .select(
+                // With its table gone, a TVIEW's schema is the prefix of its backing
+                // view's name, `<schema>__tv_<entity>` (#181).
                 &format!(
-                    "SELECT n.nspname::text FROM {} m \
-                     JOIN pg_catalog.pg_class c \
-                       ON c.oid = COALESCE((SELECT t.oid FROM pg_catalog.pg_class t \
-                                           WHERE t.oid = m.table_oid), m.view_oid) \
-                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE m.entity = $1",
+                    "SELECT COALESCE( \
+                         (SELECT n.nspname::text FROM pg_catalog.pg_class t \
+                          JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
+                          WHERE t.oid = m.table_oid), \
+                         (SELECT pg_catalog.left(v.relname::text, \
+                                     -pg_catalog.length('__tv_' || m.entity)) \
+                          FROM pg_catalog.pg_class v WHERE v.oid = m.view_oid \
+                            AND pg_catalog.right(v.relname::text, \
+                                    pg_catalog.length('__tv_' || m.entity)) \
+                                = '__tv_' || m.entity)) \
+                     FROM {} m WHERE m.entity = $1",
                     crate::utils::meta_table()
                 ),
                 None,
@@ -580,7 +587,7 @@ fn replace_in_place(
     definition: &str,
     new_base_tables: &[pg_sys::Oid],
 ) -> TViewResult<()> {
-    let dependents = dependents(entity, meta.view_oid)?;
+    let dependents = dependents(entity, meta.view_oid, meta.tview_oid)?;
 
     // Writers lock a base table, then the TVIEW tables their flush writes: take
     // the same order. SHARE on every table read, before or after, holds writers
@@ -611,9 +618,11 @@ fn replace_in_place(
         lock_as_owner(table, "EXCLUSIVE")?;
     }
 
-    run(&format!(
-        "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
-    ))?;
+    super::in_extension_schema(|| {
+        run(&format!(
+            "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
+        ))
+    })?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
     crate::dependency::sync_entity_triggers(&reads, entity)?;
     reconcile(entity, meta)?;
@@ -632,13 +641,17 @@ fn replace_in_place(
 
 /// The TVIEWs whose view reads `view_oid`, directly or through views, as
 /// `(entity, table)`, each after the others it reads.
-fn dependents(entity: &str, view_oid: pg_sys::Oid) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
+fn dependents(
+    entity: &str,
+    view_oid: pg_sys::Oid,
+    table_oid: pg_sys::Oid,
+) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
     let (meta_table, reads) = (
         crate::utils::meta_table(),
         format!("{}.pg_tview_reads", crate::utils::ext_schema()),
     );
-    // A TVIEW reads everything the TVIEWs it reads do, and their views: it reads
-    // more of the others' views than any of them.
+    // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
+    // their views: it reads more of the others' views and tables than any of them.
     Spi::connect(|client| {
         let mut dependents = Vec::new();
         for row in client.select(
@@ -646,13 +659,14 @@ fn dependents(entity: &str, view_oid: pg_sys::Oid) -> TViewResult<Vec<(String, p
                 "SELECT m.entity::text, m.table_oid FROM {meta_table} m \
                  JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
                  WHERE m.entity <> $1 \
-                   AND EXISTS (SELECT 1 FROM {reads} r WHERE r.entity = m.entity AND r.relid = $2) \
+                   AND EXISTS (SELECT 1 FROM {reads} r \
+                               WHERE r.entity = m.entity AND r.relid IN ($2, $3)) \
                  ORDER BY (SELECT count(*) FROM {reads} r JOIN {meta_table} o \
-                           ON o.view_oid = r.relid AND o.entity <> r.entity \
+                           ON r.relid IN (o.view_oid, o.table_oid) AND o.entity <> r.entity \
                            WHERE r.entity = m.entity), m.entity"
             ),
             None,
-            &[text(entity), oid(view_oid)],
+            &[text(entity), oid(view_oid), oid(table_oid)],
         )? {
             if let (Some(dependent), Some(table)) =
                 (row.get::<String>(1)?, row.get::<pg_sys::Oid>(2)?)

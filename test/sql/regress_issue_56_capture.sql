@@ -17,9 +17,9 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 DROP TABLE IF EXISTS tv_post CASCADE;
-DROP VIEW  IF EXISTS v_post CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_post CASCADE;
 DROP TABLE IF EXISTS tv_user CASCADE;
-DROP VIEW  IF EXISTS v_user CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_user CASCADE;
 DROP TABLE IF EXISTS tb_post CASCADE;
 DROP TABLE IF EXISTS tb_user CASCADE;
 
@@ -45,8 +45,8 @@ SELECT pg_tviews_create('tv_user', $TVIEW$
 $TVIEW$);
 SELECT pg_tviews_create('tv_post', $TVIEW$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
-           jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
+           jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
+    FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
 $TVIEW$);
 
 -- Cycle 3: the kill-switch GUC exists and defaults to on.

@@ -1,4 +1,3 @@
--- known-failing: #181
 -- Regression test for issue #181: a TVIEW's backing view was always created as
 -- <schema>.v_<entity>, so a schema whose own v_<entity> already existed (the
 -- application's query view, by the naming convention) could not get the TVIEW.
@@ -31,7 +30,7 @@ CREATE VIEW v_order_with_lines AS
   SELECT o.pk_order, o.id, jsonb_build_object('ref', o.ref,
          'qty', (SELECT sum(qty) FROM tb_line l WHERE l.fk_order = o.pk_order)) AS data
   FROM v_order o;
-SELECT pg_catalog.pg_get_viewdef('v_order'::regclass) AS v_order_before \gset
+CREATE TEMP TABLE v_order_before AS SELECT pg_catalog.pg_get_viewdef('v_order'::regclass) AS def;
 
 -- ── CREATE TABLE … AS over a view that reads v_order ────────────────────────
 DO $$ BEGIN
@@ -68,7 +67,7 @@ SELECT assert_fresh('tv_order', 'pk_order', 'an order update through v_order');
 
 -- The application's view is left alone; the app schema holds no pg_tviews view.
 DO $$ BEGIN
-    IF pg_catalog.pg_get_viewdef('v_order'::regclass) <> :'v_order_before' THEN
+    IF pg_catalog.pg_get_viewdef('v_order'::regclass) <> (SELECT def FROM v_order_before) THEN
         RAISE EXCEPTION '#181 FAIL: v_order was changed';
     END IF;
     IF EXISTS (SELECT 1 FROM tviews.registry r JOIN pg_class c ON c.oid = r.view::oid

@@ -69,10 +69,10 @@ SELECT pg_tviews_create('tv_basket', $$
 UPDATE tb_sku SET label = 'A2' WHERE code = 'a';
 DO $$ BEGIN
     IF (SELECT data->'labels' FROM tv_basket WHERE pk_basket = 1)
-       IS DISTINCT FROM (SELECT data->'labels' FROM v_basket WHERE pk_basket = 1) THEN
+       IS DISTINCT FROM (SELECT data->'labels' FROM tviews.public__tv_basket WHERE pk_basket = 1) THEN
         RAISE EXCEPTION '#162 FAIL: the mapped read of tb_sku stopped refreshing: % vs %',
             (SELECT data->'labels' FROM tv_basket WHERE pk_basket = 1),
-            (SELECT data->'labels' FROM v_basket WHERE pk_basket = 1);
+            (SELECT data->'labels' FROM tviews.public__tv_basket WHERE pk_basket = 1);
     END IF;
 END $$;
 
@@ -86,7 +86,7 @@ SELECT pg_tviews_create('tv_order', $$
 RESET pg_tviews.uncascaded_policy;
 INSERT INTO tb_order (ref) VALUES ('o4');
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN v_order v USING (pk_order)
+    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
                WHERE t.data IS DISTINCT FROM v.data) THEN
         RAISE EXCEPTION '#162 FAIL: full_refresh no longer refreshes every row on a tb_order write';
     END IF;

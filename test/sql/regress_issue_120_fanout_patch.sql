@@ -2,7 +2,7 @@
 -- children in one statement.
 --
 -- tv_post copies u.name into its data. An UPDATE of tb_user.name used to enqueue
--- every post of that user and recompute each from v_post. It is now written into
+-- every post of that user and recompute each from its backing view. It is now written into
 -- all of them by one UPDATE keyed by fk_user, without evaluating the view. A
 -- change the children do not copy unchanged still recomputes them.
 --
@@ -49,7 +49,7 @@ SELECT pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user $$);
 SELECT pg_tviews_create('tv_feed', $$
     SELECT f.pk_feed, f.id, f.fk_post, jsonb_build_object('post', v.data) AS data
-    FROM tb_feed f JOIN v_post v ON v.pk_post = f.fk_post $$);
+    FROM tb_feed f JOIN tv_post v ON v.pk_post = f.fk_post $$);
 
 CREATE FUNCTION assert_fresh(step text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE entity text; d bigint;
@@ -57,8 +57,8 @@ BEGIN
     FOREACH entity IN ARRAY ARRAY['post', 'feed'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
             entity) INTO d;
         IF d <> 0 THEN

@@ -73,8 +73,8 @@ UPDATE tb_post SET title = title || 'b' WHERE pk_post = 2;
 SET client_min_messages TO WARNING;
 
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_post t JOIN v_post v USING (pk_post) WHERE t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION 'FAIL #159: tv_post diverges from v_post';
+    IF EXISTS (SELECT 1 FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) WHERE t.data IS DISTINCT FROM v.data) THEN
+        RAISE EXCEPTION 'FAIL #159: tv_post diverges from tviews.public__tv_post';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check() h
                    WHERE h::text LIKE '%jsonb_delta not installed%') THEN

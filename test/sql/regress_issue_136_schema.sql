@@ -127,13 +127,13 @@ DECLARE d bigint;
 BEGIN
     EXECUTE format(
         'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM app.tv_%1$s
-                                EXCEPT SELECT pk_%1$s, data FROM app.v_%1$s)
-                     UNION ALL (SELECT pk_%1$s, data FROM app.v_%1$s
+                                EXCEPT SELECT pk_%1$s, data FROM tviews.app__tv_%1$s)
+                     UNION ALL (SELECT pk_%1$s, data FROM tviews.app__tv_%1$s
                                 EXCEPT SELECT pk_%1$s, data FROM app.tv_%1$s)) d',
         entity) INTO d;
     IF d <> 0 THEN
-        RAISE EXCEPTION '#136 FAIL after %: app.tv_% diverges from app.v_% (% rows)',
-            step, entity, entity, d;
+        RAISE EXCEPTION '#136 FAIL after %: app.tv_% diverges from its view (% rows)',
+            step, entity, d;
     END IF;
 END $$;
 
@@ -147,7 +147,7 @@ SET search_path TO '';
 CREATE TABLE app.tv_post AS
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.data) AS data
-    FROM app.tb_post p JOIN app.v_user u ON u.pk_user = p.fk_user;
+    FROM app.tb_post p JOIN app.tv_user u ON u.pk_user = p.fk_user;
 SELECT app.assert_136('post', 'CTAS');
 
 -- A fresh backend, so no cache warmed above hides an unqualified reference.

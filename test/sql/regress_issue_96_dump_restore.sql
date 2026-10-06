@@ -92,14 +92,14 @@ DO $$ BEGIN
   IF (SELECT table_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'author')
        IS DISTINCT FROM 'public.tv_author'::regclass::oid
      OR (SELECT view_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'author')
-       IS DISTINCT FROM 'public.v_author'::regclass::oid THEN
-    RAISE EXCEPTION '#96 FAIL: author catalog row does not point at the restored tv_author / v_author';
+       IS DISTINCT FROM 'tviews.public__tv_author'::regclass::oid THEN
+    RAISE EXCEPTION '#96 FAIL: author catalog row does not point at the restored tv_author / tviews.public__tv_author';
   END IF;
   IF (SELECT table_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'post')
        IS DISTINCT FROM 'app.tv_post'::regclass::oid
      OR (SELECT view_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'post')
-       IS DISTINCT FROM 'app.v_post'::regclass::oid THEN
-    RAISE EXCEPTION '#96 FAIL: post catalog row does not point at the restored app.tv_post / app.v_post';
+       IS DISTINCT FROM 'tviews.app__tv_post'::regclass::oid THEN
+    RAISE EXCEPTION '#96 FAIL: post catalog row does not point at the restored app.tv_post / tviews.app__tv_post';
   END IF;
   IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp
              WHERE m.entity = 'post'

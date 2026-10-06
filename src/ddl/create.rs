@@ -325,7 +325,18 @@ fn create_tview_inner(
 
     // Step 3: Create the backing view
     let (view_schema, view_name) = super::backing_view_name(&schema_name, entity_name);
-    create_backing_view(&view_name, &final_select_sql, &view_schema)?;
+    if relation_exists(&view_schema, &view_name)? {
+        return Err(TViewError::InvalidInput {
+            parameter: "tview definition".to_string(),
+            reason: format!(
+                "the backing view of {schema_name}.{tv_table_name}, {view_schema}.{view_name}, \
+                 is already taken by another relation"
+            ),
+        });
+    }
+    super::in_extension_schema(|| {
+        create_backing_view(&view_name, &final_select_sql, &view_schema)
+    })?;
     let view_oid = relation_oid(&view_schema, &view_name)?;
 
     // Step 4: Find base table dependencies, and how a write to each maps to keys,
@@ -854,10 +865,22 @@ fn uncascaded_tables(lineage: &crate::lineage::Lineage) -> Vec<super::uncascaded
 
 /// The OID of relation `schema.name`.
 fn relation_oid(schema: &str, name: &str) -> TViewResult<pg_sys::Oid> {
+    find_relation(schema, name)?.ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Look up {schema}.{name}"),
+        pg_error: "relation not found".to_string(),
+    })
+}
+
+/// Whether relation `schema.name` exists.
+fn relation_exists(schema: &str, name: &str) -> TViewResult<bool> {
+    Ok(find_relation(schema, name)?.is_some())
+}
+
+fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_sys::Oid>> {
     Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT c.oid FROM pg_catalog.pg_class c \
-         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-         WHERE n.nspname = $1 AND c.relname = $2",
+        "SELECT (SELECT c.oid FROM pg_catalog.pg_class c \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2)",
         &[
             unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
             unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
@@ -866,10 +889,6 @@ fn relation_oid(schema: &str, name: &str) -> TViewResult<pg_sys::Oid> {
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Look up {schema}.{name}"),
         pg_error: e.to_string(),
-    })?
-    .ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Look up {schema}.{name}"),
-        pg_error: "relation not found".to_string(),
     })
 }
 

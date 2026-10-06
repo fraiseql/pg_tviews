@@ -35,12 +35,12 @@ SELECT pg_tviews_create('tv_contract', $$
 SELECT pg_tviews_create('tv_deal', $$
   SELECT d.pk_deal, d.id, d.fk_contract,
          jsonb_build_object('name', d.name, 'contract', vc.data) AS data
-  FROM tb_deal d JOIN v_contract vc ON vc.pk_contract = d.fk_contract $$);
+  FROM tb_deal d JOIN tv_contract vc ON vc.pk_contract = d.fk_contract $$);
 -- Two levels above the DISTINCT ON TVIEW.
 SELECT pg_tviews_create('tv_desk', $$
   SELECT k.pk_desk, k.id, k.fk_deal,
          jsonb_build_object('label', k.label, 'deal', vd.data) AS data
-  FROM tb_desk k JOIN v_deal vd ON vd.pk_deal = k.fk_deal $$);
+  FROM tb_desk k JOIN tv_deal vd ON vd.pk_deal = k.fk_deal $$);
 
 CREATE FUNCTION check_all(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -75,7 +75,7 @@ SELECT pg_tviews_create('tv_doc', $$
 SELECT pg_tviews_create('tv_note', $$
   SELECT n.pk_note, n.id, n.fk_doc,
          jsonb_build_object('text', n.text, 'doc', vd.data) AS data
-  FROM tb_note n LEFT JOIN v_doc vd ON vd.pk_doc = n.fk_doc $$);
+  FROM tb_note n LEFT JOIN tv_doc vd ON vd.pk_doc = n.fk_doc $$);
 
 UPDATE tb_doc SET body = 'r1-edited';
 SELECT assert_fresh('tv_note', 'pk_note', 'an UPDATE of the winning revision');

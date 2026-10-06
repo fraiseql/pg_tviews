@@ -27,11 +27,60 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
-/// Schema and name of the backing view of TVIEW `tv_<entity>` in `schema`: the
-/// only place a backing view's name is built; everything else finds it by OID
-/// (`pg_tview_meta.view_oid`).
+/// Schema and name of the backing view of TVIEW `tv_<entity>` in `schema`:
+/// `tviews.<schema>__tv_<entity>`, fitted to 63 bytes (#181). The application's
+/// schema holds only its own objects, among them its `v_<entity>` query view.
+/// This is the only place a backing view's name is built; everything else finds
+/// it by OID (`pg_tview_meta.view_oid`).
 pub(crate) fn backing_view_name(schema: &str, entity: &str) -> (String, String) {
-    (schema.to_string(), format!("v_{entity}"))
+    (
+        crate::utils::ext_schema().to_string(),
+        crate::utils::fit_identifier(format!("{schema}__tv_{entity}")),
+    )
+}
+
+/// Run `ddl`, which creates or replaces a backing view in the extension's
+/// schema, as the current role: the TVIEW's owner owns its backing view, reads
+/// the base tables with its own privileges, and may drop it. The role is granted
+/// CREATE on the extension's schema for the statement when it lacks it, by the
+/// extension's owner, and loses it right after; both are part of the current
+/// transaction.
+///
+/// # Errors
+/// Returns an error if the privilege cannot be checked, granted or revoked, or
+/// if `ddl` fails.
+pub(crate) fn in_extension_schema<T>(ddl: impl FnOnce() -> TViewResult<T>) -> TViewResult<T> {
+    let schema = crate::utils::ext_schema();
+    let can_create = Spi::get_one::<bool>(&format!(
+        "SELECT pg_catalog.has_schema_privilege('{schema}', 'CREATE')"
+    ))
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check CREATE on schema {schema}"),
+        pg_error: e.to_string(),
+    })?
+    .unwrap_or(false);
+    if can_create {
+        return ddl();
+    }
+    let role = Spi::get_one::<String>("SELECT pg_catalog.quote_ident(current_user::text)")
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Read the current role".to_string(),
+            pg_error: e.to_string(),
+        })?
+        .unwrap_or_default();
+    let privilege = |verb: &str| -> TViewResult<()> {
+        let sql = if verb == "GRANT" {
+            format!("GRANT CREATE ON SCHEMA {schema} TO {role}")
+        } else {
+            format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}")
+        };
+        let _owner = crate::owner::AsOwner::of_extension()?;
+        crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })
+    };
+    privilege("GRANT")?;
+    let result = ddl()?;
+    privilege("REVOKE")?;
+    Ok(result)
 }
 
 /// Schema and name of relation `oid`.

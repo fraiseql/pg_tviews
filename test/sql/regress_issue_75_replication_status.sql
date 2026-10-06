@@ -47,8 +47,8 @@ CREATE TABLE tv_user AS
 SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
 CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user,
-       jsonb_build_object('title', p.title, 'user', v_user.data) AS data
-FROM tb_post p JOIN v_user ON v_user.pk_user = p.fk_user;
+       jsonb_build_object('title', p.title, 'user', tv_user.data) AS data
+FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
 BEGIN;
 SET LOCAL pg_tviews.unlogged_by_default = off;
 CREATE TABLE tv_tag AS

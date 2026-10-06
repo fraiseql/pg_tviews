@@ -58,15 +58,15 @@ CREATE FUNCTION type_drift(tv regclass, v regclass) RETURNS text LANGUAGE sql AS
       AND (ta.atttypid, ta.atttypmod) IS DISTINCT FROM (va.atttypid, va.atttypmod) $$;
 
 DO $$ BEGIN
-    IF type_drift('tv_typed', 'v_typed') IS NOT NULL THEN
-        RAISE EXCEPTION 'item 7 FAIL: tv_typed: %', type_drift('tv_typed', 'v_typed');
+    IF type_drift('tv_typed', 'tviews.public__tv_typed') IS NOT NULL THEN
+        RAISE EXCEPTION 'item 7 FAIL: tv_typed: %', type_drift('tv_typed', 'tviews.public__tv_typed');
     END IF;
 END $$;
 
 -- ── what the real types give back ───────────────────────────────────────────
 DO $$ BEGIN
     IF (SELECT array_agg(pk_typed ORDER BY mood) FROM tv_typed)
-       IS DISTINCT FROM (SELECT array_agg(pk_typed ORDER BY mood) FROM v_typed) THEN
+       IS DISTINCT FROM (SELECT array_agg(pk_typed ORDER BY mood) FROM tviews.public__tv_typed) THEN
         RAISE EXCEPTION 'item 7 FAIL: ORDER BY mood differs from the view';
     END IF;
     IF (SELECT pk_typed FROM tv_typed WHERE mood = 'happy'::app.mood) <> 1
@@ -76,7 +76,7 @@ DO $$ BEGIN
 END $$;
 UPDATE tb_typed SET mood = 'ok', amount = 9.99 WHERE pk_typed = 1;
 DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_typed t JOIN v_typed v USING (pk_typed)
+    IF EXISTS (SELECT 1 FROM tv_typed t JOIN tviews.public__tv_typed v USING (pk_typed)
                WHERE (t.mood, t.amount, t.p, t.moods) IS DISTINCT FROM (v.mood, v.amount, v.p, v.moods)) THEN
         RAISE EXCEPTION 'item 7 FAIL: tv_typed stale after an UPDATE';
     END IF;
@@ -92,7 +92,7 @@ SELECT pg_tviews_create('tv_retyped', $$
 ALTER TABLE tv_retyped ALTER COLUMN mood TYPE text, ALTER COLUMN amount TYPE numeric;
 SELECT count(*) FROM pg_tviews_reregister_all();
 DO $$ BEGIN
-    IF type_drift('tv_retyped', 'v_retyped') IS NULL THEN
+    IF type_drift('tv_retyped', 'tviews.public__tv_retyped') IS NULL THEN
         RAISE EXCEPTION 'item 7 FAIL: re-registration retyped an existing TVIEW';
     END IF;
 END $$;
@@ -100,9 +100,9 @@ DO $$
 DECLARE r text := tviews.pg_tviews_create_or_replace('tv_retyped', $q$
     SELECT pk_retyped, id, mood, amount, jsonb_build_object('mood', mood) AS data FROM tb_retyped $q$);
 BEGIN
-    IF r <> 'altered' OR type_drift('tv_retyped', 'v_retyped') IS NOT NULL THEN
+    IF r <> 'altered' OR type_drift('tv_retyped', 'tviews.public__tv_retyped') IS NOT NULL THEN
         RAISE EXCEPTION 'item 7 FAIL: create_or_replace returned % and left %', r,
-            type_drift('tv_retyped', 'v_retyped');
+            type_drift('tv_retyped', 'tviews.public__tv_retyped');
     END IF;
     IF (SELECT array_agg(pk_retyped ORDER BY mood) FROM tv_retyped) <> ARRAY[2, 1]::bigint[] THEN
         RAISE EXCEPTION 'item 7 FAIL: the retyped column lost its values';

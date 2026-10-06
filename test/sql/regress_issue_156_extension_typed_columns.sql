@@ -87,7 +87,7 @@ $TV$);
 CREATE FUNCTION _check(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (
-        SELECT 1 FROM tv_item t FULL JOIN v_item v USING (pk_item)
+        SELECT 1 FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item)
         WHERE t.data IS DISTINCT FROM v.data
            OR t.path::text IS DISTINCT FROM v.path::text
            OR t.name::text IS DISTINCT FROM v.name::text
@@ -97,13 +97,13 @@ BEGIN
            OR t.doc::text IS DISTINCT FROM v.doc::text
            OR t.pos::text IS DISTINCT FROM v.pos::text)
     THEN
-        RAISE EXCEPTION 'FAIL #156 [%]: tv_item diverges from v_item', label;
+        RAISE EXCEPTION 'FAIL #156 [%]: tv_item diverges from tviews.public__tv_item', label;
     END IF;
     IF EXISTS (
-        SELECT 1 FROM tv_node t FULL JOIN v_node v USING (pk_node)
+        SELECT 1 FROM tv_node t FULL JOIN tviews.public__tv_node v USING (pk_node)
         WHERE t.data IS DISTINCT FROM v.data OR t.path::text IS DISTINCT FROM v.path::text)
     THEN
-        RAISE EXCEPTION 'FAIL #156 [%]: tv_node diverges from v_node', label;
+        RAISE EXCEPTION 'FAIL #156 [%]: tv_node diverges from tviews.public__tv_node', label;
     END IF;
 END $$;
 

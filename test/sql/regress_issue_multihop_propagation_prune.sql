@@ -38,9 +38,9 @@ CREATE EXTENSION pg_tviews;
 -- comment entity is (or is not) processed by a given mutation.
 SET pg_tviews.audit_enabled = on;
 
-DROP TABLE IF EXISTS tv_comment CASCADE; DROP VIEW IF EXISTS v_comment CASCADE;
-DROP TABLE IF EXISTS tv_post CASCADE;    DROP VIEW IF EXISTS v_post CASCADE;
-DROP TABLE IF EXISTS tv_user CASCADE;    DROP VIEW IF EXISTS v_user CASCADE;
+DROP TABLE IF EXISTS tv_comment CASCADE; DROP VIEW IF EXISTS tviews.public__tv_comment CASCADE;
+DROP TABLE IF EXISTS tv_post CASCADE;    DROP VIEW IF EXISTS tviews.public__tv_post CASCADE;
+DROP TABLE IF EXISTS tv_user CASCADE;    DROP VIEW IF EXISTS tviews.public__tv_user CASCADE;
 DROP TABLE IF EXISTS tb_comment CASCADE;
 DROP TABLE IF EXISTS tb_post CASCADE;
 DROP TABLE IF EXISTS tb_user CASCADE;
@@ -79,8 +79,8 @@ $TVIEW$);
 -- user -> post edge is a genuine propagation edge and must be kept.
 SELECT pg_tviews_create('tv_post', $TVIEW$
     SELECT p.pk_post, p.id, p.fk_user,
-           jsonb_build_object('title', p.title, 'author', v_user.data) AS data
-    FROM tb_post p LEFT JOIN v_user ON v_user.pk_user = p.fk_user
+           jsonb_build_object('title', p.title, 'author', tv_user.data) AS data
+    FROM tb_post p LEFT JOIN tv_user ON tv_user.pk_user = p.fk_user
 $TVIEW$);
 
 -- tv_comment: scalar embed of ONLY the post's own title, read from tb_post columns

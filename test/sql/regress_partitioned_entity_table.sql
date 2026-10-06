@@ -33,10 +33,10 @@ SELECT pg_tviews_create('tv_item', $$
 
 CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tv_item t FULL JOIN v_item v USING (pk_item)
+    IF EXISTS (SELECT 1 FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item)
                WHERE t.pk_item IS NULL OR v.pk_item IS NULL
                   OR t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION 'N1 FAIL [%]: tv_item diverges from v_item', label;
+        RAISE EXCEPTION 'N1 FAIL [%]: tv_item diverges from tviews.public__tv_item', label;
     END IF;
 END $$;
 

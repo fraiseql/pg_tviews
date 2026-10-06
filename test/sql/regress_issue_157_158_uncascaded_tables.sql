@@ -101,7 +101,7 @@ SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.data, 'author_name', bu.name) AS data
     FROM tb_post p
-    LEFT JOIN v_user u ON u.pk_user = p.fk_user
+    LEFT JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_user bu ON bu.pk_user = p.fk_user $$);
 SELECT pg_tviews_create_aggregate('tv_user_posts', $$
     SELECT p.fk_user AS pk_user_posts, u.id, jsonb_build_object('posts', count(*)) AS data
@@ -124,7 +124,7 @@ CREATE FUNCTION _diverges(entity text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE d boolean;
 BEGIN
     -- Every column of the view, compared with the same column of the TVIEW.
-    EXECUTE format('SELECT EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN v_%1$s v USING (pk_%1$s) '
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN tviews.public__tv_%1$s v USING (pk_%1$s) '
                    'WHERE to_jsonb(v.*) IS DISTINCT FROM (SELECT jsonb_object_agg(k, to_jsonb(t.*) -> k) '
                    'FROM jsonb_object_keys(to_jsonb(v.*)) k))', entity) INTO d;
     RETURN d;
@@ -198,7 +198,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 RESET pg_tviews.uncascaded_policy;
 DO $$ BEGIN
-    IF to_regclass('public.tv_shelf') IS NOT NULL OR to_regclass('public.v_shelf') IS NOT NULL
+    IF to_regclass('public.tv_shelf') IS NOT NULL OR to_regclass('tviews.public__tv_shelf') IS NOT NULL
        OR EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'shelf')
        OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN ('tb_shelf'::regclass, 'tb_book'::regclass)
                   AND NOT tgisinternal)

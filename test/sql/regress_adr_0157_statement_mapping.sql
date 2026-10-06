@@ -46,9 +46,9 @@ SELECT pg_tviews_create('tv_order', $$
 
 CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN v_order v USING (pk_order)
+    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
                WHERE t.data IS DISTINCT FROM v.data) THEN
-        RAISE EXCEPTION 'FAIL ADR 0157 statement mapping [%]: tv_order diverges from v_order', label;
+        RAISE EXCEPTION 'FAIL ADR 0157 statement mapping [%]: tv_order diverges from tviews.public__tv_order', label;
     END IF;
 END $$;
 

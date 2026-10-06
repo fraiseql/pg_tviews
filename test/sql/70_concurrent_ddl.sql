@@ -158,7 +158,8 @@ DO $$ BEGIN
     RAISE EXCEPTION 'Test 5 FAIL: user_concurrent/post_concurrent not both registered';
   END IF;
   IF (SELECT count(*) FROM pg_views
-      WHERE viewname IN ('v_user_concurrent', 'v_post_concurrent')) <> 2 THEN
+      WHERE schemaname = 'tviews'
+        AND viewname IN ('public__tv_user_concurrent', 'public__tv_post_concurrent')) <> 2 THEN
     RAISE EXCEPTION 'Test 5 FAIL: backing views missing';
   END IF;
   IF (SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%tview%') < 2 THEN

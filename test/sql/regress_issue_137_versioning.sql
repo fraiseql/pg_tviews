@@ -51,7 +51,7 @@ SELECT pg_tviews_create('tv_user', $$
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.data) AS data
-    FROM tb_post p JOIN v_user u ON u.pk_user = p.fk_user $$);
+    FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
 SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
@@ -64,8 +64,8 @@ BEGIN
     FOREACH entity IN ARRAY ARRAY['user', 'post', 'user_orders'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
             entity) INTO d;
         IF d <> 0 THEN

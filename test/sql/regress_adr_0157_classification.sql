@@ -68,7 +68,7 @@ SELECT pg_tviews_create('tv_order', $$
            jsonb_build_object('ref', o.ref, 'user', u.data,
                               'skus', COALESCE(jsonb_agg(s.name) FILTER (WHERE s.pk_sku IS NOT NULL), '[]')) AS data
     FROM tb_order o
-    JOIN v_user u ON u.pk_user = o.fk_user
+    JOIN tviews.public__tv_user u ON u.pk_user = o.fk_user
     LEFT JOIN tb_line l ON l.fk_order = o.pk_order
     LEFT JOIN tb_sku s ON s.pk_sku = l.fk_sku
     GROUP BY o.pk_order, o.id, o.fk_user, o.ref, u.data $$);

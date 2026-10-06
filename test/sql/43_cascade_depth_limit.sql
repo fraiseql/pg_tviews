@@ -94,70 +94,70 @@ SELECT
     l1.pk_level_1,
     l1.id,
     l1.fk_level_0,
-    v_level_0.id AS level_0_id,
+    tv_level_0.id AS level_0_id,
     jsonb_build_object(
         'id', l1.id::text,
         'value', l1.value,
-        'parent', v_level_0.data
+        'parent', tv_level_0.data
     ) AS data
 FROM tb_level_1 l1
-JOIN v_level_0 ON v_level_0.pk_level_0 = l1.fk_level_0;
+JOIN tv_level_0 ON tv_level_0.pk_level_0 = l1.fk_level_0;
 
 CREATE TABLE tv_level_2 AS
 SELECT
     l2.pk_level_2,
     l2.id,
     l2.fk_level_1,
-    v_level_1.id AS level_1_id,
+    tv_level_1.id AS level_1_id,
     jsonb_build_object(
         'id', l2.id::text,
         'value', l2.value,
-        'parent', v_level_1.data
+        'parent', tv_level_1.data
     ) AS data
 FROM tb_level_2 l2
-JOIN v_level_1 ON v_level_1.pk_level_1 = l2.fk_level_1;
+JOIN tv_level_1 ON tv_level_1.pk_level_1 = l2.fk_level_1;
 
 CREATE TABLE tv_level_3 AS
 SELECT
     l3.pk_level_3,
     l3.id,
     l3.fk_level_2,
-    v_level_2.id AS level_2_id,
+    tv_level_2.id AS level_2_id,
     jsonb_build_object(
         'id', l3.id::text,
         'value', l3.value,
-        'parent', v_level_2.data
+        'parent', tv_level_2.data
     ) AS data
 FROM tb_level_3 l3
-JOIN v_level_2 ON v_level_2.pk_level_2 = l3.fk_level_2;
+JOIN tv_level_2 ON tv_level_2.pk_level_2 = l3.fk_level_2;
 
 CREATE TABLE tv_level_4 AS
 SELECT
     l4.pk_level_4,
     l4.id,
     l4.fk_level_3,
-    v_level_3.id AS level_3_id,
+    tv_level_3.id AS level_3_id,
     jsonb_build_object(
         'id', l4.id::text,
         'value', l4.value,
-        'parent', v_level_3.data
+        'parent', tv_level_3.data
     ) AS data
 FROM tb_level_4 l4
-JOIN v_level_3 ON v_level_3.pk_level_3 = l4.fk_level_3;
+JOIN tv_level_3 ON tv_level_3.pk_level_3 = l4.fk_level_3;
 
 CREATE TABLE tv_level_5 AS
 SELECT
     l5.pk_level_5,
     l5.id,
     l5.fk_level_4,
-    v_level_4.id AS level_4_id,
+    tv_level_4.id AS level_4_id,
     jsonb_build_object(
         'id', l5.id::text,
         'value', l5.value,
-        'parent', v_level_4.data
+        'parent', tv_level_4.data
     ) AS data
 FROM tb_level_5 l5
-JOIN v_level_4 ON v_level_4.pk_level_4 = l5.fk_level_4;
+JOIN tv_level_4 ON tv_level_4.pk_level_4 = l5.fk_level_4;
 
 \echo '✓ Test 1 passed: 5-level hierarchy created successfully'
 

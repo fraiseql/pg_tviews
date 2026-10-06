@@ -22,7 +22,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 DROP TABLE IF EXISTS tv_post, tv_article, tv_user, tv_item, tv_contract CASCADE;
-DROP VIEW  IF EXISTS v_post, v_article, v_user, v_item, v_contract CASCADE;
+DROP VIEW  IF EXISTS tviews.public__tv_post, tviews.public__tv_article, tviews.public__tv_user, tviews.public__tv_item, tviews.public__tv_contract CASCADE;
 DROP TABLE IF EXISTS tb_post, tb_article, tb_user, tb_item, tb_contract CASCADE;
 
 CREATE TABLE tb_user (
@@ -70,8 +70,8 @@ SELECT pg_tviews_create('tv_user', $TV$
 $TV$);
 SELECT pg_tviews_create('tv_post', $TV$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
-           jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user
+           jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
+    FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
 $TV$);
 SELECT pg_tviews_create('tv_article', $TV$
     SELECT a.pk_article, a.id, a.fk_user,
@@ -268,9 +268,9 @@ DECLARE r text;
 BEGIN
     FOREACH r IN ARRAY ARRAY['user', 'post', 'article', 'item', 'contract'] LOOP
         EXECUTE format(
-            'DO $d$ BEGIN IF EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN v_%1$s v USING (pk_%1$s) '
+            'DO $d$ BEGIN IF EXISTS (SELECT 1 FROM tv_%1$s t FULL JOIN tviews.public__tv_%1$s v USING (pk_%1$s) '
             'WHERE t.data IS DISTINCT FROM v.data) THEN '
-            'RAISE EXCEPTION ''FAIL #72: tv_%1$s diverges from v_%1$s''; END IF; END $d$', r);
+            'RAISE EXCEPTION ''FAIL #72: tv_%1$s diverges from tviews.public__tv_%1$s''; END IF; END $d$', r);
     END LOOP;
 END $$;
 

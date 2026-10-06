@@ -48,13 +48,13 @@ $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
 SELECT pg_tviews_create('tv_user', $$
     SELECT u.pk_user, u.id,
            jsonb_build_object('name', u.name, 'summary', s.data) AS data
-    FROM tb_user u LEFT JOIN v_user_summary s ON s.pk_user_summary = u.pk_user
+    FROM tb_user u LEFT JOIN tv_user_summary s ON s.pk_user_summary = u.pk_user
 $$);
 -- Embedded through another projected column, under an alias.
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user AS author_pk,
            jsonb_build_object('title', p.title, 'author_summary', s.data) AS data
-    FROM tb_post p LEFT JOIN v_user_summary s ON p.fk_user = s.pk_user_summary
+    FROM tb_post p LEFT JOIN tv_user_summary s ON p.fk_user = s.pk_user_summary
 $$);
 
 CREATE FUNCTION must(ok BOOLEAN, msg TEXT) RETURNS void LANGUAGE plpgsql AS $$
@@ -66,11 +66,11 @@ BEGIN
     FOREACH entity IN ARRAY ARRAY['user_summary', 'user', 'post'] LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
             entity) INTO d;
-        PERFORM must(d = 0, format('after %s: tv_%s is stale (%s rows differ from v_%s)',
+        PERFORM must(d = 0, format('after %s: tv_%s is stale (%s rows differ from tviews.public__tv_%s)',
                                    step, entity, d, entity));
     END LOOP;
 END $$;
@@ -121,7 +121,7 @@ DO $$
 BEGIN
     PERFORM pg_tviews_create('tv_note', $v$
         SELECT n.pk_note, n.id, s.data
-        FROM tb_note n JOIN v_user_summary s ON s.pk_user_summary = n.fk_user
+        FROM tb_note n JOIN tv_user_summary s ON s.pk_user_summary = n.fk_user
     $v$);
     RAISE EXCEPTION '#126 FAIL: tv_note was created';
 EXCEPTION WHEN OTHERS THEN

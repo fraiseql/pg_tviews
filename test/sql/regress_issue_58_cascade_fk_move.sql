@@ -40,10 +40,10 @@ GROUP BY p.pk_post, p.id, p.title;
 UPDATE tb_comment SET fk_post = 2 WHERE pk_comment = 1;
 
 DO $$ BEGIN
-  IF (SELECT count(*) FROM v_post v FULL JOIN tv_post t USING (pk_post)
+  IF (SELECT count(*) FROM tviews.public__tv_post v FULL JOIN tv_post t USING (pk_post)
       WHERE t.data IS DISTINCT FROM v.data) <> 0 THEN
-    RAISE EXCEPTION 'FAIL: moving a comment left tv_post = %, v_post = %',
+    RAISE EXCEPTION 'FAIL: moving a comment left tv_post = %, tviews.public__tv_post = %',
       (SELECT jsonb_object_agg(pk_post, data->'comments') FROM tv_post),
-      (SELECT jsonb_object_agg(pk_post, data->'comments') FROM v_post);
+      (SELECT jsonb_object_agg(pk_post, data->'comments') FROM tviews.public__tv_post);
   END IF;
 END $$;

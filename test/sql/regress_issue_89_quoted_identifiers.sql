@@ -27,9 +27,9 @@ CREATE FUNCTION divergence(tv text, v text, cols text) RETURNS bigint LANGUAGE p
 DECLARE d bigint;
 BEGIN
     EXECUTE format(
-        'SELECT count(*) FROM ((SELECT %1$s FROM %2$I EXCEPT SELECT %1$s FROM %3$I)
-                     UNION ALL (SELECT %1$s FROM %3$I EXCEPT SELECT %1$s FROM %2$I)) d',
-        cols, tv, v) INTO d;
+        'SELECT count(*) FROM ((SELECT %1$s FROM %2$s EXCEPT SELECT %1$s FROM %3$s)
+                     UNION ALL (SELECT %1$s FROM %3$s EXCEPT SELECT %1$s FROM %2$s)) d',
+        cols, tv::regclass, v::regclass) INTO d;
     RETURN d;
 END $$;
 
@@ -73,10 +73,10 @@ BEGIN
 END $$;
 
 \set item_cols 'pk_item, id, "order", "Label", "with space", folded, data'
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'create');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'create');
 
 UPDATE tb_item SET qty = 10, name = 'x' WHERE pk_item = 1;
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'single-row UPDATE');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'single-row UPDATE');
 DO $$ BEGIN
     IF (SELECT "order" FROM tv_item WHERE pk_item = 1) <> 10 THEN
         RAISE EXCEPTION '#89 FAIL: single-row refresh did not update "order"';
@@ -84,13 +84,13 @@ DO $$ BEGIN
 END $$;
 
 INSERT INTO tb_item (pk_item, name, qty) VALUES (4, 'd', 4);
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'single-row INSERT');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'single-row INSERT');
 
 UPDATE tb_item SET qty = qty + 100, name = name || '!';
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'bulk UPDATE');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'bulk UPDATE');
 
 DELETE FROM tb_item WHERE pk_item = 2;
-SELECT assert_consistent('tv_item', 'v_item', :'item_cols', 'DELETE');
+SELECT assert_consistent('tv_item', 'tviews.public__tv_item', :'item_cols', 'DELETE');
 
 SELECT pg_tviews_drop('tv_item');
 
@@ -118,13 +118,13 @@ SELECT pg_tviews_create('tv_line', $v$
     FROM tb_line l JOIN tb_category c ON c.pk_category = l.fk_category $v$);
 
 \set line_cols 'pk_line, id, fk_category, "order", "Qty Label", data'
-SELECT assert_consistent('tv_line', 'v_line', :'line_cols', 'create');
+SELECT assert_consistent('tv_line', 'tviews.public__tv_line', :'line_cols', 'create');
 
 INSERT INTO tb_line (pk_line, fk_category, qty) VALUES (4, 2, 4);
-SELECT assert_consistent('tv_line', 'v_line', :'line_cols', 'single-row INSERT');
+SELECT assert_consistent('tv_line', 'tviews.public__tv_line', :'line_cols', 'single-row INSERT');
 
 UPDATE tb_category SET title = 'c1 renamed' WHERE pk_category = 1;
-SELECT assert_consistent('tv_line', 'v_line', :'line_cols', 'cascade UPDATE');
+SELECT assert_consistent('tv_line', 'tviews.public__tv_line', :'line_cols', 'cascade UPDATE');
 
 SELECT pg_tviews_drop('tv_line');
 
@@ -157,13 +157,13 @@ DECLARE d bigint;
 BEGIN
     SELECT count(*) INTO d FROM (
         (SELECT pk_doc, id, "Version", "order", data FROM tv_doc
-         EXCEPT SELECT pk_doc, id, "Version", "order", data FROM v_doc)
+         EXCEPT SELECT pk_doc, id, "Version", "order", data FROM tviews.public__tv_doc)
         UNION ALL
-        (SELECT pk_doc, id, "Version", "order", data FROM v_doc
+        (SELECT pk_doc, id, "Version", "order", data FROM tviews.public__tv_doc
          EXCEPT SELECT pk_doc, id, "Version", "order", data FROM tv_doc)
     ) x;
     IF d <> 0 THEN
-        RAISE EXCEPTION '#89 FAIL: tv_doc diverges from v_doc (% rows)', d;
+        RAISE EXCEPTION '#89 FAIL: tv_doc diverges from tviews.public__tv_doc (% rows)', d;
     END IF;
     IF (SELECT "order" FROM tv_doc WHERE pk_doc = 100) <> 'signed'
        OR (SELECT "Version" FROM tv_doc WHERE pk_doc = 200) <> 2 THEN
@@ -199,18 +199,18 @@ SELECT pg_tviews_create('tv_holder', $v$
 \set holder_cols 'pk_holder, id, "fk_Mixed", data'
 
 INSERT INTO "tb_Mixed" VALUES (3, DEFAULT, 'c');
-SELECT assert_consistent('tv_Mixed', 'v_Mixed', :'mixed_cols', 'mixed-case INSERT');
+SELECT assert_consistent('"tv_Mixed"', 'tviews."public__tv_Mixed"', :'mixed_cols', 'mixed-case INSERT');
 
 UPDATE "tb_Mixed" SET x = 'a2' WHERE "pk_Mixed" = 1;
-SELECT assert_consistent('tv_Mixed', 'v_Mixed', :'mixed_cols', 'mixed-case single-row UPDATE');
-SELECT assert_consistent('tv_holder', 'v_holder', :'holder_cols', 'propagation from mixed-case entity');
+SELECT assert_consistent('"tv_Mixed"', 'tviews."public__tv_Mixed"', :'mixed_cols', 'mixed-case single-row UPDATE');
+SELECT assert_consistent('tv_holder', 'tviews.public__tv_holder', :'holder_cols', 'propagation from mixed-case entity');
 
 UPDATE "tb_Mixed" SET x = x || '!';
-SELECT assert_consistent('tv_Mixed', 'v_Mixed', :'mixed_cols', 'mixed-case bulk UPDATE');
-SELECT assert_consistent('tv_holder', 'v_holder', :'holder_cols', 'bulk propagation from mixed-case entity');
+SELECT assert_consistent('"tv_Mixed"', 'tviews."public__tv_Mixed"', :'mixed_cols', 'mixed-case bulk UPDATE');
+SELECT assert_consistent('tv_holder', 'tviews.public__tv_holder', :'holder_cols', 'bulk propagation from mixed-case entity');
 
 DELETE FROM "tb_Mixed" WHERE "pk_Mixed" = 3;
-SELECT assert_consistent('tv_Mixed', 'v_Mixed', :'mixed_cols', 'mixed-case DELETE');
+SELECT assert_consistent('"tv_Mixed"', 'tviews."public__tv_Mixed"', :'mixed_cols', 'mixed-case DELETE');
 
 DO $$ BEGIN
     IF (SELECT data->'mixed'->>'x' FROM tv_holder WHERE pk_holder = 1) <> 'a2!' THEN

@@ -40,11 +40,11 @@ INSERT INTO tb_feed (pk_feed, fk_post) VALUES (1, 1), (2, 2), (3, 3);
 SELECT tviews.pg_tviews_create_or_replace('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title) AS data
     FROM tb_post p $$);
--- A TVIEW that embeds tv_post through its view, and a plain view over its table:
+-- A TVIEW that embeds tv_post through its table, and a plain view over that table:
 -- both depend on it, which rules out a rebuild.
 SELECT tviews.pg_tviews_create_or_replace('tv_feed', $$
     SELECT f.pk_feed, f.id, f.fk_post, jsonb_build_object('post', v.data) AS data
-    FROM tb_feed f JOIN v_post v ON v.pk_post = f.fk_post $$);
+    FROM tb_feed f JOIN tv_post v ON v.pk_post = f.fk_post $$);
 CREATE VIEW post_titles AS SELECT pk_post, data->>'title' AS title FROM tv_post;
 CREATE INDEX tv_post_title_idx ON tv_post ((data->>'title'));
 COMMENT ON TABLE tv_post IS 'posts';
@@ -55,11 +55,11 @@ BEGIN
     FOR entity IN SELECT m.entity FROM tviews.pg_tview_meta m LOOP
         EXECUTE format(
             'SELECT count(*) FROM ((SELECT pk_%1$s, data FROM tv_%1$s
-                                    EXCEPT SELECT pk_%1$s, data FROM v_%1$s)
-                         UNION ALL (SELECT pk_%1$s, data FROM v_%1$s
+                                    EXCEPT SELECT pk_%1$s, data FROM tviews.public__tv_%1$s)
+                         UNION ALL (SELECT pk_%1$s, data FROM tviews.public__tv_%1$s
                                     EXCEPT SELECT pk_%1$s, data FROM tv_%1$s)) d',
             entity) INTO d;
-        PERFORM must(d = 0, format('tv_%s diverges from v_%s after %s', entity, entity, step));
+        PERFORM must(d = 0, format('tv_%s diverges from its view after %s', entity, step));
     END LOOP;
 END $$;
 
@@ -141,8 +141,8 @@ INSERT INTO tb_post (pk_post, fk_user, title) VALUES (4, 2, 'p4');
 INSERT INTO tb_feed (pk_feed, fk_post) VALUES (4, 4);
 SELECT assert_fresh('writes after replaces');
 
--- 7. A TVIEW that reads v_post is re-registered and reconciled with it: its
---    triggers follow the tables v_post reads now.
+-- 7. A TVIEW that reads tv_post's backing view is re-registered and reconciled with
+--    it: its triggers follow the tables that view reads now.
 ALTER TABLE tb_post ADD COLUMN subject text;
 UPDATE tb_post SET subject = 's' || pk_post;
 CREATE TABLE tb_headline (
@@ -157,13 +157,13 @@ SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user $$) = 'replaced', 'join added again');
 SELECT tviews.pg_tviews_create_or_replace('tv_headline', $$
     SELECT h.pk_headline, h.id, h.fk_post, jsonb_build_object('title', v.data->>'title') AS data
-    FROM tb_headline h JOIN v_post v ON v.pk_post = h.fk_post $$);
--- tv_headline reads tb_user through v_post: refreshing tv_post (which maps it)
+    FROM tb_headline h JOIN tviews.public__tv_post v ON v.pk_post = h.fk_post $$);
+-- tv_headline reads tb_user through tv_post's view: refreshing tv_post (which maps it)
 -- refreshes tv_headline (ADR 0157 `propagated`).
 CREATE FUNCTION reads_users(entity text) RETURNS boolean LANGUAGE sql AS $$
     SELECT (SELECT cascade_kinds->>'tb_user' FROM tviews.registry r WHERE r.entity = $1)
            IS NOT DISTINCT FROM 'propagated' $$;
-SELECT must(reads_users('headline'), 'tv_headline reads tb_user through v_post');
+SELECT must(reads_users('headline'), 'tv_headline reads tb_user through tv_post''s view');
 SELECT must(tviews.pg_tviews_create_or_replace('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.subject) AS data
     FROM tb_post p $$) = 'replaced', 'title from subject, join removed');
@@ -172,7 +172,7 @@ SELECT must(NOT reads_users('headline'), 'tv_headline no longer reads tb_user');
 UPDATE tb_post SET subject = 'new subject' WHERE pk_post = 1;
 SELECT assert_fresh('subject update');
 SELECT must((SELECT data->>'title' FROM tv_headline WHERE pk_headline = 1) = 'new subject',
-            'tv_headline follows the column v_post reads now');
+            'tv_headline follows the column tv_post''s view reads now');
 
 -- 8. Rows the new definition drops are deleted first, so a unique index holds
 --    throughout: row 2 takes the title row 3 gives up.

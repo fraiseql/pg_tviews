@@ -117,26 +117,23 @@ pub fn analyze_dependencies(select_sql: &str, fk_columns: &[String]) -> Vec<Depe
     deps
 }
 
-/// Infer TVIEW name from FK column name
+/// The pattern of the relation a definition reads an embedded entity's `data`
+/// from, named after its FK column: the TVIEW's table or an application view.
 ///
 /// # Conventions
-/// - `fk_user` → `v_user`
-/// - `fk_blog_post` → `v_blog_post`
+/// - `fk_user` → `tv_user` or `v_user`
+/// - `fk_blog_post` → `tv_blog_post` or `v_blog_post`
 ///
 /// # Returns
-/// - `Some(view_name)` if FK follows convention
+/// - `Some(pattern)` if FK follows convention
 /// - `None` if FK doesn't start with "fk_" or is malformed
-fn infer_view_name(fk_col: &str) -> Option<String> {
-    if !fk_col.starts_with("fk_") {
-        return None;
-    }
-
-    let entity = &fk_col[3..];
+fn infer_relation(fk_col: &str) -> Option<String> {
+    let entity = fk_col.strip_prefix("fk_")?;
     if entity.is_empty() {
         return None;
     }
 
-    Some(format!("v_{entity}"))
+    Some(format!("t?v_{}", regex::escape(entity)))
 }
 
 /// Detect how a single FK is used in the SELECT statement
@@ -145,7 +142,7 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     let sql_normalized = select_sql.replace(['\n', '\t'], " ").to_lowercase();
 
     // Try to infer view name from FK column
-    let Some(view_name) = infer_view_name(fk_col) else {
+    let Some(relation) = infer_relation(fk_col) else {
         // Can't infer view name → assume scalar
         return DependencyInfo::scalar();
     };
@@ -153,7 +150,7 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Pattern 1: Nested Object
     // Look for: 'key_name', v_something.data
     // Example: 'author', v_user.data
-    let nested_pattern = NESTED_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
+    let nested_pattern = NESTED_PATTERN_TEMPLATE.replace("{}", &relation);
     if let Ok(re) = Regex::new(&nested_pattern)
         && let Some(captures) = re.captures(&sql_normalized)
         && let Some(key_match) = captures.get(1)
@@ -166,7 +163,7 @@ fn detect_dependency_type(select_sql: &str, fk_col: &str) -> DependencyInfo {
     // Look for: 'array_name', jsonb_agg(v_something.data ...)
     // Example: 'comments', jsonb_agg(v_comment.data ORDER BY ...)
     // Also handles COALESCE wrapper
-    let array_pattern = ARRAY_PATTERN_TEMPLATE.replace("{}", &regex::escape(&view_name));
+    let array_pattern = ARRAY_PATTERN_TEMPLATE.replace("{}", &relation);
     if let Ok(re) = Regex::new(&array_pattern)
         && let Some(captures) = re.captures(&sql_normalized)
         && let Some(key_match) = captures.get(1)

@@ -95,7 +95,8 @@ fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String,
         "SELECT DISTINCT m.entity, n.nspname::text AS schema, v.oid AS view_oid \
          FROM {} m \
          JOIN pg_class v ON v.oid = m.view_oid \
-         JOIN pg_namespace n ON n.oid = v.relnamespace \
+         JOIN pg_class t ON t.oid = m.table_oid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
          JOIN pg_rewrite r ON r.ev_class = v.oid \
          JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid \
          JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
