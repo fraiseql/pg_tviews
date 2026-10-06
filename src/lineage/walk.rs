@@ -742,6 +742,9 @@ impl Walker<'_> {
                     flags,
                     Link::From,
                 )?)),
+                // The recursive term's reference to its own CTE: the CTE is being
+                // walked (#183).
+                pg_sys::RTEKind::RTE_CTE if (*rte).self_reference => Ok(RteInfo::Other),
                 pg_sys::RTEKind::RTE_CTE => {
                     let name = cstr((*rte).ctename);
                     let Some((cte, defined_at)) = self.cte(&name, (*rte).ctelevelsup as usize)
@@ -750,9 +753,23 @@ impl Walker<'_> {
                     };
                     self.read_ctes
                         .insert((self.levels[defined_at].query as usize, name));
-                    let copy = pg_sys::copyObjectImpl(cte.cast()).cast::<pg_sys::Query>();
+                    let copy =
+                        pg_sys::copyObjectImpl((*cte).ctequery.cast()).cast::<pg_sys::Query>();
                     self.cte_parent = Some(defined_at);
-                    Ok(RteInfo::Outputs(self.level(copy, flags, Link::From)?))
+                    if !(*cte).cterecursive {
+                        return Ok(RteInfo::Outputs(self.level(copy, flags, Link::From)?));
+                    }
+                    // A row of a recursive CTE comes from rows of the step before:
+                    // nothing links it to the rows of the tables it reads (#183).
+                    let recursive = Flags {
+                        opaque_level: Some(format!(
+                            "read in a recursive CTE ({})",
+                            flags.via_view.as_deref().unwrap_or("the definition")
+                        )),
+                        ..flags.clone()
+                    };
+                    let width = self.level(copy, &recursive, Link::From)?.len();
+                    Ok(RteInfo::Outputs(vec![Resolved::Opaque; width]))
                 }
                 pg_sys::RTEKind::RTE_JOIN => Ok(RteInfo::Join((*rte).joinaliasvars)),
                 pg_sys::RTEKind::RTE_FUNCTION => Ok(self.function_rte(rte)),
@@ -848,10 +865,10 @@ impl Walker<'_> {
         }
     }
 
-    /// The query of CTE `name`, defined `levelsup` levels above the innermost one,
-    /// and the index of the level that defines it. Levels are counted along CTE
-    /// parents: the references inside a CTE body count from where it is defined.
-    fn cte(&self, name: &str, levelsup: usize) -> Option<(*mut pg_sys::Query, usize)> {
+    /// CTE `name`, defined `levelsup` levels above the innermost one, and the index
+    /// of the level that defines it. Levels are counted along CTE parents: the
+    /// references inside a CTE body count from where it is defined.
+    fn cte(&self, name: &str, levelsup: usize) -> Option<(*mut pg_sys::CommonTableExpr, usize)> {
         let mut level = self.levels.len().checked_sub(1)?;
         for _ in 0..levelsup {
             level = self.levels[level].cte_parent?;
@@ -862,7 +879,7 @@ impl Walker<'_> {
             elements::<pg_sys::CommonTableExpr>((*query).cteList)
                 .into_iter()
                 .find(|cte| cstr((**cte).ctename) == *name)
-                .map(|cte| ((*cte).ctequery.cast(), level))
+                .map(|cte| (cte, level))
         }
     }
 
