@@ -1,4 +1,3 @@
--- known-failing: #182
 -- Regression test for issue #182: a hierarchy stored as a path of ids, joined to
 -- the ancestors three ways (a target-list unnest in a subquery, a LATERAL unnest,
 -- `= ANY (<array>)`). Each spelling must classify the same: the TVIEW's own read of
@@ -9,7 +8,7 @@
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_182_array_joins.sql
 --
 -- expect-output: map to tv_area keys with a sequential scan of tb_area
--- expect-output: CREATE INDEX ON public.tb_area USING gin
+-- expect-once: CREATE INDEX ON public.tb_area USING gin
 -- expect-output: issue #182 array joins: PASS
 
 \set ON_ERROR_STOP on
@@ -127,22 +126,25 @@ BEGIN
             (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'nbadge');
     END IF;
     -- The ancestor read maps through the array membership.
-    IF tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf') NOT LIKE '%ANY%' THEN
+    IF tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf'::regclass) NOT LIKE '%ANY%' THEN
         RAISE EXCEPTION '#182 FAIL: the ancestor mapping of tv_nsrf is %',
-            tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf');
+            tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf'::regclass);
     END IF;
 END $$;
 
 -- ── controls ────────────────────────────────────────────────────────────────
+CREATE TABLE tb_nvol (pk_nvol bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
+CREATE TABLE tb_ntop (pk_ntop bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
+INSERT INTO tb_nvol (pk_nvol, name) VALUES (1, 'root'), (2, 'child');
+INSERT INTO tb_ntop (pk_ntop, name) VALUES (1, 'root'), (2, 'child');
 -- A computed output that is not immutable links nothing.
 SELECT pg_tviews_create('tv_nvol', $$
-    SELECT s.pk_nbadge AS pk_nvol, s.id, jsonb_build_object('badge', x.label) AS data
-    FROM (SELECT n.pk_nbadge, n.id, upper(n.name) || to_char(now(), '') AS upper_name FROM tb_nbadge n) s
+    SELECT s.pk_nvol, s.id, jsonb_build_object('badge', x.label) AS data
+    FROM (SELECT n.pk_nvol, n.id, upper(n.name) || to_char(now(), '') AS upper_name FROM tb_nvol n) s
     LEFT JOIN tb_badge x ON x.code = s.upper_name $$);
 -- A set-returning function in the top-level SELECT keeps the TVIEW without a root.
 SELECT pg_tviews_create('tv_ntop', $$
-    SELECT n.pk_nbadge AS pk_ntop, n.id, jsonb_build_object('x', unnest(ARRAY[n.name])) AS data
-    FROM tb_nbadge n $$);
+    SELECT n.pk_ntop, n.id, jsonb_build_object('x', unnest(ARRAY[n.name])) AS data FROM tb_ntop n $$);
 DO $$ BEGIN
     IF (SELECT cascade_kinds->>'tb_badge' FROM tviews.registry WHERE entity = 'nvol') <> 'all_keys' THEN
         RAISE EXCEPTION '#182 FAIL: a volatile computed join classifies %',
@@ -175,7 +177,7 @@ DECLARE plan text := '';
 DECLARE line text;
 BEGIN
     FOR line IN EXECUTE 'EXPLAIN WITH pg_tviews_delta AS (SELECT * FROM tb_area WHERE pk_area = 7) '
-                        || tviews.pg_tviews_mapping_query('tv_area', 'tb_area') LOOP
+                        || tviews.pg_tviews_mapping_query('tv_area', 'tb_area'::regclass) LOOP
         plan := plan || line || E'\n';
     END LOOP;
     IF plan NOT LIKE '%tb_area_path_ids%' THEN

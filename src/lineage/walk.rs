@@ -8,8 +8,8 @@
 #![allow(clippy::cast_ptr_alignment)] // Reason: `Node *` is cast to the node type its tag names, as PostgreSQL does; palloc aligns every node for its own type.
 
 use super::{
-    Column, Conjunct, Graph, IdentityKind, Maps, Occurrence, OutputColumn, Root, Sql,
-    WalkedIdentity,
+    Column, Conjunct, Graph, IdentityKind, Lookup, Maps, Occurrence, OutputColumn, Piece, Root,
+    Sql, WalkedIdentity,
 };
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
@@ -47,6 +47,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         read_ctes: HashSet::new(),
         wanted: None,
         identity_level: false,
+        nullable: HashSet::new(),
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -97,7 +98,48 @@ enum Resolved {
     Col(Column),
     /// One column per UNION branch of a subquery.
     Alt(Vec<Column>),
+    /// An output computed from columns (#182).
+    Expr(Computed),
     Opaque,
+}
+
+/// An immutable output computed from base columns, written over them: never a key,
+/// a group key or a root, only what predicates above it compare with.
+#[derive(Debug, Clone)]
+struct Computed {
+    sql: Sql,
+    /// `unnest(<array>)`: `sql` is the array, and the output one of its elements.
+    /// It can only be compared with `=`, as `x = ANY (<array>)`.
+    element: bool,
+    /// NULL inputs make it NULL: no NULL-extended row turns it into a value.
+    strict: bool,
+    /// Its type (the array's, for an element).
+    type_oid: Oid,
+}
+
+impl Resolved {
+    /// The occurrences a column or computed output reads.
+    fn occs(&self) -> Vec<usize> {
+        match self {
+            Self::Col(c) => vec![c.occ],
+            Self::Alt(cs) => cs.iter().map(|c| c.occ).collect(),
+            Self::Expr(e) => sql_occs(&e.sql),
+            Self::Opaque => vec![],
+        }
+    }
+}
+
+/// The occurrences whose columns a piece of SQL reads, in order, once each.
+fn sql_occs(sql: &Sql) -> Vec<usize> {
+    let mut occs = Vec::new();
+    for piece in &sql.0 {
+        if let Piece::Column { occ, .. } = piece
+            && !occs.contains(occ)
+        {
+            occs.push(*occ);
+        }
+    }
+    occs
 }
 
 #[derive(Debug, Clone)]
@@ -141,10 +183,21 @@ enum Origin<'a> {
     None,
 }
 
-/// A Var of a predicate: the level it belongs to and the column it stands for.
+/// A Var of a predicate: the level it belongs to and what it stands for, a column
+/// (one per UNION branch) or a computed output.
 struct Site {
     levelsup: usize,
-    candidates: Vec<Column>,
+    candidates: Vec<Resolved>,
+}
+
+/// One side of a comparison, written.
+struct Operand {
+    sql: Sql,
+    type_oid: Oid,
+    /// The side is a column as it is (an index on the column serves it).
+    column: bool,
+    /// The side is an element of the array `sql` (an `unnest` output).
+    element: bool,
 }
 
 #[derive(Default)]
@@ -169,6 +222,9 @@ struct Walker<'c> {
     /// The next level entered is the backing view's own SELECT (no UNION): it
     /// chooses the TVIEW's identity.
     identity_level: bool,
+    /// Occurrences on the nullable side of an outer join walked so far: their
+    /// columns may be NULL-extended where a predicate above reads them.
+    nullable: HashSet<usize>,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -473,21 +529,29 @@ impl Walker<'_> {
                         || matches!(self.resolve_expr((*tle).expr.cast()),
                                 Resolved::Col(c) if self.equal_to_key(&c, keys))
                 };
-            let mut outputs = Vec::new();
-            for (&tle, skip) in tles.iter().zip(skipped) {
-                let pass_through = !skip
-                    && (link == Link::Top
-                        || (!opaque
-                            && (!grouped || keyed(tle, (*query).groupClause, &group_keys))
-                            && (!(*query).hasDistinctOn
-                                || keyed(tle, (*query).distinctClause, &distinct_keys))));
-                outputs.push(if pass_through {
-                    self.output((*tle).expr.cast())
-                } else {
-                    Resolved::Opaque
-                });
-            }
-            Ok(outputs)
+            let pass_through: Vec<bool> = tles
+                .iter()
+                .zip(skipped)
+                .map(|(&tle, skip)| {
+                    !skip
+                        && (link == Link::Top
+                            || (!opaque
+                                && (!grouped || keyed(tle, (*query).groupClause, &group_keys))
+                                && (!(*query).hasDistinctOn
+                                    || keyed(tle, (*query).distinctClause, &distinct_keys))))
+                })
+                .collect();
+            Ok(tles
+                .iter()
+                .zip(pass_through)
+                .map(|(&tle, pass)| {
+                    if pass {
+                        self.output((*tle).expr.cast())
+                    } else {
+                        Resolved::Opaque
+                    }
+                })
+                .collect())
         }
     }
 
@@ -590,7 +654,7 @@ impl Walker<'_> {
                         match out {
                             Resolved::Col(c) => columns[i].push(c),
                             Resolved::Alt(cs) => columns[i].extend(cs),
-                            Resolved::Opaque => {}
+                            Resolved::Expr(_) | Resolved::Opaque => {}
                         }
                     }
                 }
@@ -691,6 +755,7 @@ impl Walker<'_> {
                     Ok(RteInfo::Outputs(self.level(copy, flags, Link::From)?))
                 }
                 pg_sys::RTEKind::RTE_JOIN => Ok(RteInfo::Join((*rte).joinaliasvars)),
+                pg_sys::RTEKind::RTE_FUNCTION => Ok(self.function_rte(rte)),
                 // PostgreSQL 18: grouped Vars point at the GROUP entry, whose
                 // expressions are those of the level.
                 #[cfg(feature = "pg18")]
@@ -761,6 +826,28 @@ impl Walker<'_> {
         }
     }
 
+    /// A function in FROM: `unnest(<array>)` alone, without ordinality, stands for
+    /// the elements of the array (#182); anything else is opaque.
+    ///
+    /// SAFETY: `rte` is a valid `RTE_FUNCTION` entry of the innermost level, whose
+    /// earlier entries are known.
+    unsafe fn function_rte(&mut self, rte: *mut pg_sys::RangeTblEntry) -> RteInfo {
+        // SAFETY: fields of a valid RTE and of its function list.
+        unsafe {
+            let functions = elements::<pg_sys::RangeTblFunction>((*rte).functions);
+            let [function] = functions[..] else {
+                return RteInfo::Other;
+            };
+            if (*rte).funcordinality {
+                return RteInfo::Other;
+            }
+            match unnest_array((*function).funcexpr) {
+                Some(array) => RteInfo::Outputs(vec![self.computed(array, true)]),
+                None => RteInfo::Other,
+            }
+        }
+    }
+
     /// The query of CTE `name`, defined `levelsup` levels above the innermost one,
     /// and the index of the level that defines it. Levels are counted along CTE
     /// parents: the references inside a CTE body count from where it is defined.
@@ -826,6 +913,13 @@ impl Walker<'_> {
                         self.predicate(qual, origin);
                     }
                     self.sublinks((*join).quals, flags, false)?;
+                    // Above this join, its nullable side may be NULL-extended.
+                    match (*join).jointype {
+                        pg_sys::JoinType::JOIN_INNER => {}
+                        pg_sys::JoinType::JOIN_LEFT => self.nullable.extend(&right),
+                        pg_sys::JoinType::JOIN_RIGHT => self.nullable.extend(&left),
+                        _ => self.nullable.extend(left.iter().chain(&right)),
+                    }
                     Ok(left.union(&right).copied().collect())
                 }
                 _ => Ok(HashSet::new()),
@@ -838,14 +932,7 @@ impl Walker<'_> {
         let level = self.levels.last().expect("inside a query level");
         match level.rtes.get(rtindex.wrapping_sub(1)) {
             Some(RteInfo::Base(occ)) => HashSet::from([*occ]),
-            Some(RteInfo::Outputs(outputs)) => outputs
-                .iter()
-                .flat_map(|r| match r {
-                    Resolved::Col(c) => vec![c.occ],
-                    Resolved::Alt(cs) => cs.iter().map(|c| c.occ).collect(),
-                    Resolved::Opaque => vec![],
-                })
-                .collect(),
+            Some(RteInfo::Outputs(outputs)) => outputs.iter().flat_map(Resolved::occs).collect(),
             _ => HashSet::new(),
         }
     }
@@ -909,25 +996,42 @@ impl Walker<'_> {
     // ── predicates ──────────────────────────────────────────────────────────
 
     /// Record a predicate of the innermost level if it links two occurrences and
-    /// can be used: strict, immutable, written with supported nodes.
+    /// can be used: immutable, written with supported nodes, and never true on a
+    /// NULL-extended row ([`Walker::null_safe`]).
     ///
     /// SAFETY: `qual` is a valid expression of the innermost level.
     unsafe fn predicate(&mut self, qual: *mut pg_sys::Node, origin: Origin<'_>) {
         // SAFETY: read-only checks of a valid expression.
         unsafe {
             if matches!(origin, Origin::None)
-                || pg_sys::contain_nonstrict_functions(qual)
                 || pg_sys::contain_mutable_functions(qual)
                 || has_sublink(qual)
             {
                 return;
             }
             let mut sites = Vec::new();
-            if !self.sites(qual, &mut sites) {
+            if !self.sites(qual, &mut sites) || !self.null_safe(qual, &sites) {
                 return;
             }
             self.add_conjuncts(qual, &sites, &|_| None, origin, true);
         }
+    }
+
+    /// Whether a NULL-extended row cannot make `expr` true: `expr` is strict, or no
+    /// occurrence it reads is on the nullable side of an outer join walked so far
+    /// (one below the predicate). `x = ANY (string_to_array(n.path, '.'))` is not
+    /// strict, and is used over inner joins (#182).
+    ///
+    /// SAFETY: `expr` is a valid expression and `sites` its Vars and Params.
+    unsafe fn null_safe(&self, expr: *mut pg_sys::Node, sites: &[Site]) -> bool {
+        let terms = || sites.iter().flat_map(|s| &s.candidates);
+        // SAFETY: a read-only check of a valid expression.
+        let strict = unsafe { !pg_sys::contain_nonstrict_functions(expr) }
+            && terms().all(|t| !matches!(t, Resolved::Expr(e) if !e.strict));
+        strict
+            || terms()
+                .flat_map(Resolved::occs)
+                .all(|occ| !self.nullable.contains(&occ))
     }
 
     /// `lhs op Param` of an `IN (SELECT …)`: the Param stands for the subquery's
@@ -942,8 +1046,7 @@ impl Walker<'_> {
     ) {
         // SAFETY: read-only checks of a valid expression.
         unsafe {
-            if pg_sys::contain_nonstrict_functions(test) || pg_sys::contain_mutable_functions(test)
-            {
+            if pg_sys::contain_mutable_functions(test) {
                 return;
             }
             let mut sites = Vec::new();
@@ -951,15 +1054,15 @@ impl Walker<'_> {
                 return;
             }
             // The subquery's columns sit one level below the innermost one.
-            let param_column = |param: *mut pg_sys::Param| -> Option<Vec<Column>> {
+            let param_column = |param: *mut pg_sys::Param| -> Option<Vec<Resolved>> {
                 let p = &*param;
                 if p.paramkind != pg_sys::ParamKind::PARAM_SUBLINK {
                     return None;
                 }
                 match outputs.get(usize::try_from(p.paramid).ok()?.checked_sub(1)?)? {
-                    Resolved::Col(c) => Some(vec![c.clone()]),
-                    Resolved::Alt(cs) => Some(cs.clone()),
+                    Resolved::Alt(cs) => Some(cs.iter().cloned().map(Resolved::Col).collect()),
                     Resolved::Opaque => None,
+                    term => Some(vec![term.clone()]),
                 }
             };
             let mut param_sites = Vec::new();
@@ -974,6 +1077,9 @@ impl Walker<'_> {
                     candidates,
                 });
             }
+            if !self.null_safe(test, &sites) {
+                return;
+            }
             let lookup = |node: *mut pg_sys::Node| -> Option<usize> {
                 param_sites
                     .iter()
@@ -983,8 +1089,7 @@ impl Walker<'_> {
         }
     }
 
-    /// Resolve every Var of `expr`; false if one is opaque or `expr` holds a node
-    /// the deparser does not write.
+    /// Resolve every Var of `expr`; false if one is opaque.
     ///
     /// SAFETY: `expr` is a valid expression of the innermost level.
     unsafe fn sites(&self, expr: *mut pg_sys::Node, sites: &mut Vec<Site>) -> bool {
@@ -996,9 +1101,9 @@ impl Walker<'_> {
                 let v = &*var;
                 let levelsup = v.varlevelsup as usize;
                 let candidates = match self.resolve_var(var, levelsup) {
-                    Resolved::Col(c) => vec![c],
-                    Resolved::Alt(cs) => cs,
+                    Resolved::Alt(cs) => cs.into_iter().map(Resolved::Col).collect(),
                     Resolved::Opaque => return false,
+                    term => vec![term],
                 };
                 sites.push(Site {
                     levelsup,
@@ -1033,7 +1138,7 @@ impl Walker<'_> {
         let var_count = sites.iter().filter(|s| s.levelsup != usize::MAX).count();
         for n in 0..combinations {
             let mut rest = n;
-            let chosen: Vec<&Column> = sites
+            let chosen: Vec<&Resolved> = sites
                 .iter()
                 .map(|s| {
                     let c = &s.candidates[rest % s.candidates.len()];
@@ -1041,7 +1146,7 @@ impl Walker<'_> {
                     c
                 })
                 .collect();
-            let mut occs: Vec<usize> = chosen.iter().map(|c| c.occ).collect();
+            let mut occs: Vec<usize> = chosen.iter().flat_map(|c| c.occs()).collect();
             occs.sort_unstable();
             occs.dedup();
             let [a, b] = occs[..] else { continue };
@@ -1051,7 +1156,7 @@ impl Walker<'_> {
                 continue;
             };
             let var_index = std::cell::Cell::new(0_usize);
-            let column_of = |node: *mut pg_sys::Node| -> Option<Column> {
+            let term_of = |node: *mut pg_sys::Node| -> Option<Resolved> {
                 // SAFETY: `node` is a Var or Param of `expr`.
                 match unsafe { tag(node) } {
                     Some(pg_sys::NodeTag::T_Var) => {
@@ -1064,7 +1169,9 @@ impl Walker<'_> {
             };
             let mut next_var = || var_index.set(var_index.get() + 1);
             // SAFETY: deparse reads the same valid expression.
-            let Some(sql) = (unsafe { self.deparse(expr, &column_of, &mut next_var) }) else {
+            let Some((sql, lookups)) =
+                (unsafe { self.conjunct_sql(expr, &term_of, &mut next_var) })
+            else {
                 return;
             };
             // SAFETY: the same expression.
@@ -1088,6 +1195,7 @@ impl Walker<'_> {
                 a_to_b,
                 b_to_a,
                 equality,
+                lookups,
             });
         }
     }
@@ -1096,7 +1204,7 @@ impl Walker<'_> {
     fn directions(
         &self,
         sites: &[Site],
-        chosen: &[&Column],
+        chosen: &[&Resolved],
         a: usize,
         b: usize,
         origin: Origin<'_>,
@@ -1108,7 +1216,7 @@ impl Walker<'_> {
             sites
                 .iter()
                 .zip(chosen)
-                .filter(|(_, c)| c.occ == occ)
+                .filter(|(_, c)| c.occs().contains(&occ))
                 .map(|(s, _)| s.levelsup)
                 .min()
         };
@@ -1218,17 +1326,71 @@ impl Walker<'_> {
         }
     }
 
-    /// What an output column of the innermost level stands for. One that returns a
-    /// set is opaque: its value is not a column of the row it comes from.
+    /// What an output column of the innermost level stands for: a column, an
+    /// expression computed from columns, an element of `unnest(<array>)`, or
+    /// opaque (another set-returning function: its value is not computed from the
+    /// row it comes from).
     ///
     /// SAFETY: `node` is null or a valid expression of the innermost level.
-    unsafe fn output(&self, node: *mut pg_sys::Node) -> Resolved {
-        // SAFETY: a read-only check of a valid expression, then forwarded.
+    unsafe fn output(&mut self, node: *mut pg_sys::Node) -> Resolved {
+        // SAFETY: read-only checks of a valid expression, then forwarded.
         unsafe {
-            if pg_sys::expression_returns_set(node) {
-                Resolved::Opaque
-            } else {
+            if tag(strip_relabel(node)) == Some(pg_sys::NodeTag::T_Var) {
                 self.resolve_expr(node)
+            } else if pg_sys::expression_returns_set(node) {
+                unnest_array(node).map_or(Resolved::Opaque, |array| self.computed(array, true))
+            } else {
+                self.computed(node, false)
+            }
+        }
+    }
+
+    /// `expr` of the innermost level written over the columns it reads: opaque
+    /// when it is not immutable, reads no column (or an opaque one), holds a
+    /// subquery or a node [`Walker::deparse`] does not write (an aggregate).
+    ///
+    /// SAFETY: `expr` is null or a valid expression of the innermost level.
+    unsafe fn computed(&mut self, expr: *mut pg_sys::Node, element: bool) -> Resolved {
+        // SAFETY: read-only checks and a walk of a valid expression.
+        unsafe {
+            if expr.is_null()
+                || pg_sys::contain_mutable_functions(expr)
+                || has_sublink(expr)
+                || pg_sys::expression_returns_set(expr)
+            {
+                return Resolved::Opaque;
+            }
+            let mut vars = Vec::new();
+            collect_vars(expr, &mut vars);
+            if vars.is_empty() {
+                return Resolved::Opaque;
+            }
+            let mut terms = Vec::new();
+            for var in vars {
+                match self.resolve_var(var, (*var).varlevelsup as usize) {
+                    term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                    _ => return Resolved::Opaque,
+                }
+            }
+            let strict = !pg_sys::contain_nonstrict_functions(expr)
+                && terms
+                    .iter()
+                    .all(|t| !matches!(t, Resolved::Expr(e) if !e.strict));
+            let index = std::cell::Cell::new(0_usize);
+            let term_of = |node: *mut pg_sys::Node| {
+                (tag(node) == Some(pg_sys::NodeTag::T_Var))
+                    .then(|| terms.get(index.get()).cloned())
+                    .flatten()
+            };
+            let mut next_var = || index.set(index.get() + 1);
+            match self.deparse(expr, &term_of, &mut next_var) {
+                Some(sql) => Resolved::Expr(Computed {
+                    sql,
+                    element,
+                    strict,
+                    type_oid: pg_sys::exprType(expr),
+                }),
+                None => Resolved::Opaque,
             }
         }
     }
@@ -1251,27 +1413,192 @@ impl Walker<'_> {
 
     // ── deparsing ───────────────────────────────────────────────────────────
 
+    /// Write a predicate as SQL, with the expressions it looks rows up by. As
+    /// [`Walker::deparse`], except that `=` with an element of `unnest(<array>)` is
+    /// written as array membership, `x = ANY (<array>)`, and membership with the
+    /// element type's equality also as containment, `<array> @> ARRAY[x]`, which a
+    /// GIN index on the array serves (#182).
+    ///
+    /// SAFETY: `expr` is a valid expression.
+    unsafe fn conjunct_sql(
+        &mut self,
+        expr: *mut pg_sys::Node,
+        term_of: &dyn Fn(*mut pg_sys::Node) -> Option<Resolved>,
+        next_var: &mut dyn FnMut(),
+    ) -> Option<(Sql, Vec<Lookup>)> {
+        // SAFETY: each node is checked by tag before it is cast.
+        unsafe {
+            match tag(expr)? {
+                pg_sys::NodeTag::T_OpExpr => {
+                    let op = expr.cast::<pg_sys::OpExpr>();
+                    if let [l, r] = elements::<pg_sys::Node>((*op).args)[..]
+                        && cstr(pg_sys::get_opname((*op).opno)) == "="
+                    {
+                        let l = self.operand(l, term_of, next_var)?;
+                        let r = self.operand(r, term_of, next_var)?;
+                        return match (l.element, r.element) {
+                            (false, false) => Some(self.comparison((*op).opno, &l, &r)),
+                            (false, true) => self.membership((*op).opno, &l, &r),
+                            (true, false) => {
+                                let commutator = pg_sys::get_commutator((*op).opno);
+                                (commutator != Oid::INVALID)
+                                    .then(|| self.membership(commutator, &r, &l))
+                                    .flatten()
+                            }
+                            (true, true) => None,
+                        };
+                    }
+                }
+                pg_sys::NodeTag::T_ScalarArrayOpExpr => {
+                    let op = expr.cast::<pg_sys::ScalarArrayOpExpr>();
+                    if let [l, r] = elements::<pg_sys::Node>((*op).args)[..]
+                        && (*op).useOr
+                    {
+                        let l = self.operand(l, term_of, next_var)?;
+                        let r = self.operand(r, term_of, next_var)?;
+                        if l.element || r.element {
+                            return None;
+                        }
+                        return self.membership((*op).opno, &l, &r);
+                    }
+                }
+                _ => {}
+            }
+            Some((self.deparse(expr, term_of, next_var)?, Vec::new()))
+        }
+    }
+
+    /// One side of a comparison: written by [`Walker::deparse`], or the array of an
+    /// `unnest` element.
+    ///
+    /// SAFETY: `arg` is a valid expression; its Vars are the next ones `term_of`
+    /// gives.
+    unsafe fn operand(
+        &mut self,
+        arg: *mut pg_sys::Node,
+        term_of: &dyn Fn(*mut pg_sys::Node) -> Option<Resolved>,
+        next_var: &mut dyn FnMut(),
+    ) -> Option<Operand> {
+        // SAFETY: checked by tag; `term_of` only reads the node.
+        unsafe {
+            let bare = strip_relabel(arg);
+            let term = match tag(bare) {
+                Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(bare),
+                _ => None,
+            };
+            if let Some(Resolved::Expr(e)) = &term
+                && e.element
+            {
+                if tag(bare) == Some(pg_sys::NodeTag::T_Var) {
+                    next_var();
+                }
+                return Some(Operand {
+                    sql: e.sql.clone(),
+                    type_oid: e.type_oid,
+                    column: false,
+                    element: true,
+                });
+            }
+            Some(Operand {
+                sql: self.deparse(arg, term_of, next_var)?,
+                type_oid: pg_sys::exprType(arg),
+                column: matches!(term, Some(Resolved::Col(_))),
+                element: false,
+            })
+        }
+    }
+
+    /// `l = r`; a computed side compared with a column is looked up by (btree).
+    fn comparison(&mut self, opno: Oid, l: &Operand, r: &Operand) -> (Sql, Vec<Lookup>) {
+        let name = self.operator_name(opno);
+        let mut sql = Sql::text("(");
+        sql.push_sql(l.sql.clone());
+        sql.push_text(&format!(" OPERATOR({name}) "));
+        sql.push_sql(r.sql.clone());
+        sql.push_text(")");
+        let mut lookups = Vec::new();
+        for (side, other) in [(l, r), (r, l)] {
+            if !side.column
+                && other.column
+                && let [occ] = sql_occs(&side.sql)[..]
+            {
+                lookups.push(Lookup {
+                    occ,
+                    expr: side.sql.clone(),
+                    gin: false,
+                });
+            }
+        }
+        (sql, lookups)
+    }
+
+    /// `scalar op ANY (array)`. With the element type's own equality it also
+    /// writes `array @> ARRAY[scalar]`: true whenever the membership is, and served
+    /// by a GIN index on the array.
+    fn membership(
+        &mut self,
+        opno: Oid,
+        scalar: &Operand,
+        array: &Operand,
+    ) -> Option<(Sql, Vec<Lookup>)> {
+        let name = self.operator_name(opno);
+        let mut sql = Sql::text("(");
+        sql.push_sql(scalar.sql.clone());
+        sql.push_text(&format!(" OPERATOR({name}) ANY ("));
+        sql.push_sql(array.sql.clone());
+        sql.push_text("))");
+        // SAFETY: catalog lookups by type OID.
+        let containment = unsafe {
+            let element = pg_sys::get_element_type(array.type_oid);
+            element != Oid::INVALID
+                && element == scalar.type_oid
+                && (*pg_sys::lookup_type_cache(element, pg_sys::TYPECACHE_EQ_OPR.cast_signed()))
+                    .eq_opr
+                    == opno
+        };
+        let mut lookups = Vec::new();
+        if containment {
+            let mut both = Sql::text("(");
+            both.push_sql(sql);
+            both.push_text(" AND (");
+            both.push_sql(array.sql.clone());
+            both.push_text(") OPERATOR(pg_catalog.@>) ARRAY[");
+            both.push_sql(scalar.sql.clone());
+            both.push_text("])");
+            sql = both;
+            if let [occ] = sql_occs(&array.sql)[..] {
+                lookups.push(Lookup {
+                    occ,
+                    expr: array.sql.clone(),
+                    gin: true,
+                });
+            }
+        }
+        Some((sql, lookups))
+    }
+
     /// Write `expr` as SQL that resolves no name through `search_path`: relations,
     /// operators, functions and types are schema-qualified. `None` for a node it
-    /// does not write. `column_of` gives the column of each Var / Param in walk
-    /// order; `next_var` is called after each Var.
+    /// does not write, or an `unnest` element outside a comparison. `term_of` gives
+    /// what each Var / Param stands for (Vars in walk order); `next_var` is called
+    /// after each Var.
     ///
     /// SAFETY: `expr` is a valid expression.
     unsafe fn deparse(
         &mut self,
         expr: *mut pg_sys::Node,
-        column_of: &dyn Fn(*mut pg_sys::Node) -> Option<Column>,
+        term_of: &dyn Fn(*mut pg_sys::Node) -> Option<Resolved>,
         next_var: &mut dyn FnMut(),
     ) -> Option<Sql> {
         // SAFETY: each node is checked by tag before it is cast.
         unsafe {
             match tag(expr)? {
                 pg_sys::NodeTag::T_Var => {
-                    let column = column_of(expr)?;
+                    let term = term_of(expr)?;
                     next_var();
-                    Some(column.sql())
+                    term_sql(&term)
                 }
-                pg_sys::NodeTag::T_Param => Some(column_of(expr)?.sql()),
+                pg_sys::NodeTag::T_Param => term_sql(&term_of(expr)?),
                 pg_sys::NodeTag::T_Const => {
                     let c = expr.cast::<pg_sys::Const>();
                     let ty = self.type_name((*c).consttype);
@@ -1292,12 +1619,12 @@ impl Walker<'_> {
                     match args[..] {
                         [arg] => {
                             sql.push_text(&format!("OPERATOR({name}) "));
-                            sql.push_sql(self.deparse(arg, column_of, next_var)?);
+                            sql.push_sql(self.deparse(arg, term_of, next_var)?);
                         }
                         [l, r] => {
-                            sql.push_sql(self.deparse(l, column_of, next_var)?);
+                            sql.push_sql(self.deparse(l, term_of, next_var)?);
                             sql.push_text(&format!(" OPERATOR({name}) "));
-                            sql.push_sql(self.deparse(r, column_of, next_var)?);
+                            sql.push_sql(self.deparse(r, term_of, next_var)?);
                         }
                         _ => return None,
                     }
@@ -1311,12 +1638,12 @@ impl Walker<'_> {
                         return None;
                     };
                     let mut sql = Sql::text("(");
-                    sql.push_sql(self.deparse(l, column_of, next_var)?);
+                    sql.push_sql(self.deparse(l, term_of, next_var)?);
                     sql.push_text(&format!(
                         " OPERATOR({name}) {} (",
                         if (*op).useOr { "ANY" } else { "ALL" }
                     ));
-                    sql.push_sql(self.deparse(r, column_of, next_var)?);
+                    sql.push_sql(self.deparse(r, term_of, next_var)?);
                     sql.push_text("))");
                     Some(sql)
                 }
@@ -1333,13 +1660,13 @@ impl Walker<'_> {
                             if i > 0 {
                                 sql.push_text(", ");
                             }
-                            sql.push_sql(self.deparse(arg, column_of, next_var)?);
+                            sql.push_sql(self.deparse(arg, term_of, next_var)?);
                         }
                         sql.push_text(")");
                     } else {
                         let [arg, ..] = args[..] else { return None };
                         sql = Sql::text("(");
-                        sql.push_sql(self.deparse(arg, column_of, next_var)?);
+                        sql.push_sql(self.deparse(arg, term_of, next_var)?);
                         sql.push_text(&format!(")::{}", self.type_name((*f).funcresulttype)));
                     }
                     Some(sql)
@@ -1347,14 +1674,21 @@ impl Walker<'_> {
                 pg_sys::NodeTag::T_RelabelType => {
                     let r = expr.cast::<pg_sys::RelabelType>();
                     let mut sql = Sql::text("(");
-                    sql.push_sql(self.deparse((*r).arg.cast(), column_of, next_var)?);
+                    sql.push_sql(self.deparse((*r).arg.cast(), term_of, next_var)?);
+                    sql.push_text(&format!(")::{}", self.type_name((*r).resulttype)));
+                    Some(sql)
+                }
+                pg_sys::NodeTag::T_ArrayCoerceExpr => {
+                    let r = expr.cast::<pg_sys::ArrayCoerceExpr>();
+                    let mut sql = Sql::text("(");
+                    sql.push_sql(self.deparse((*r).arg.cast(), term_of, next_var)?);
                     sql.push_text(&format!(")::{}", self.type_name((*r).resulttype)));
                     Some(sql)
                 }
                 pg_sys::NodeTag::T_CoerceViaIO => {
                     let r = expr.cast::<pg_sys::CoerceViaIO>();
                     let mut sql = Sql::text("(");
-                    sql.push_sql(self.deparse((*r).arg.cast(), column_of, next_var)?);
+                    sql.push_sql(self.deparse((*r).arg.cast(), term_of, next_var)?);
                     sql.push_text(&format!(")::{}", self.type_name((*r).resulttype)));
                     Some(sql)
                 }
@@ -1365,7 +1699,7 @@ impl Walker<'_> {
                     match (*b).boolop {
                         pg_sys::BoolExprType::NOT_EXPR => {
                             sql.push_text("NOT ");
-                            sql.push_sql(self.deparse(*args.first()?, column_of, next_var)?);
+                            sql.push_sql(self.deparse(*args.first()?, term_of, next_var)?);
                         }
                         op => {
                             let joiner = if op == pg_sys::BoolExprType::AND_EXPR {
@@ -1377,7 +1711,7 @@ impl Walker<'_> {
                                 if i > 0 {
                                     sql.push_text(joiner);
                                 }
-                                sql.push_sql(self.deparse(arg, column_of, next_var)?);
+                                sql.push_sql(self.deparse(arg, term_of, next_var)?);
                             }
                         }
                     }
@@ -1586,13 +1920,52 @@ unsafe fn is_required_sublink(node: *mut pg_sys::Node) -> bool {
     }
 }
 
+/// The SQL a Var or Param stands for: a column, or a computed output in
+/// parentheses; `None` for an `unnest` element.
+fn term_sql(term: &Resolved) -> Option<Sql> {
+    match term {
+        Resolved::Col(c) => Some(c.sql()),
+        Resolved::Expr(e) if !e.element => {
+            let mut sql = Sql::text("(");
+            sql.push_sql(e.sql.clone());
+            sql.push_text(")");
+            Some(sql)
+        }
+        _ => None,
+    }
+}
+
+/// The array of a one-argument `unnest(<array>)` call.
+///
+/// SAFETY: `node` is null or a valid expression.
+unsafe fn unnest_array(node: *mut pg_sys::Node) -> Option<*mut pg_sys::Node> {
+    // SAFETY: checked by tag before the cast.
+    unsafe {
+        let node = strip_relabel(node);
+        if tag(node) != Some(pg_sys::NodeTag::T_FuncExpr) {
+            return None;
+        }
+        let f = node.cast::<pg_sys::FuncExpr>();
+        if (*f).funcid != Oid::from(pg_sys::F_UNNEST_ANYARRAY) {
+            return None;
+        }
+        let [array] = elements::<pg_sys::Node>((*f).args)[..] else {
+            return None;
+        };
+        Some(array)
+    }
+}
+
 /// `a.col = b.col` with `=`, as written.
 ///
 /// SAFETY: `expr` is a valid expression.
-unsafe fn equality(expr: *mut pg_sys::Node, chosen: &[&Column]) -> Option<(Column, Column)> {
+unsafe fn equality(expr: *mut pg_sys::Node, chosen: &[&Resolved]) -> Option<(Column, Column)> {
     // SAFETY: checked by tag before each cast.
     unsafe {
-        if tag(expr) != Some(pg_sys::NodeTag::T_OpExpr) || chosen.len() != 2 {
+        let [Resolved::Col(x), Resolved::Col(y)] = chosen[..] else {
+            return None;
+        };
+        if tag(expr) != Some(pg_sys::NodeTag::T_OpExpr) {
             return None;
         }
         let op = expr.cast::<pg_sys::OpExpr>();
@@ -1604,8 +1977,7 @@ unsafe fn equality(expr: *mut pg_sys::Node, chosen: &[&Column]) -> Option<(Colum
                     Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param)
                 )
             });
-        (plain && cstr(pg_sys::get_opname((*op).opno)) == "=")
-            .then(|| (chosen[0].clone(), chosen[1].clone()))
+        (plain && cstr(pg_sys::get_opname((*op).opno)) == "=").then(|| (x.clone(), y.clone()))
     }
 }
 
