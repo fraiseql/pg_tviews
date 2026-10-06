@@ -482,7 +482,7 @@ impl Walker<'_> {
                             && (!(*query).hasDistinctOn
                                 || keyed(tle, (*query).distinctClause, &distinct_keys))));
                 outputs.push(if pass_through {
-                    self.resolve_expr((*tle).expr.cast())
+                    self.output((*tle).expr.cast())
                 } else {
                     Resolved::Opaque
                 });
@@ -1218,6 +1218,21 @@ impl Walker<'_> {
         }
     }
 
+    /// What an output column of the innermost level stands for. One that returns a
+    /// set is opaque: its value is not a column of the row it comes from.
+    ///
+    /// SAFETY: `node` is null or a valid expression of the innermost level.
+    unsafe fn output(&self, node: *mut pg_sys::Node) -> Resolved {
+        // SAFETY: a read-only check of a valid expression, then forwarded.
+        unsafe {
+            if pg_sys::expression_returns_set(node) {
+                Resolved::Opaque
+            } else {
+                self.resolve_expr(node)
+            }
+        }
+    }
+
     /// What an output expression stands for: a Var (maybe behind a cast) or opaque.
     ///
     /// SAFETY: `node` is null or a valid expression of the innermost level.
@@ -1473,7 +1488,13 @@ fn list_len(list: *mut pg_sys::List) -> usize {
     }
 }
 
-/// Why a level's columns cannot be seen through from the level above.
+/// Why none of a level's columns can be seen through from the level above: a
+/// window function, LIMIT/OFFSET or GROUPING SETS decide which rows exist, or what
+/// they hold, from rows other than their own.
+///
+/// A set-returning function in the select list only multiplies rows: the other
+/// output columns keep the values of the row they come from, so only the outputs
+/// that return a set are opaque (see `Walker::output`).
 ///
 /// SAFETY: `query` is a valid Query.
 unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
@@ -1483,8 +1504,6 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
             Some("read under a window function".to_string())
         } else if !(*query).limitCount.is_null() || !(*query).limitOffset.is_null() {
             Some("read under LIMIT/OFFSET".to_string())
-        } else if (*query).hasTargetSRFs {
-            Some("read under a set-returning function".to_string())
         } else if !(*query).groupingSets.is_null() {
             Some("read under GROUPING SETS".to_string())
         } else {
@@ -1493,12 +1512,21 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
     }
 }
 
-/// [`opaque_reason`] for a level whose output is the TVIEW itself.
+/// [`opaque_reason`] for a level whose output is the TVIEW itself, where a
+/// set-returning function is one too: the rows it makes share one key.
 ///
 /// SAFETY: `query` is a valid Query.
 unsafe fn top_opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
-    // SAFETY: forwarded.
-    unsafe { opaque_reason(query) }.map(|why| format!("{why} in the top-level SELECT"))
+    // SAFETY: fields of a valid Query.
+    unsafe {
+        opaque_reason(query)
+            .or_else(|| {
+                (*query)
+                    .hasTargetSRFs
+                    .then(|| "read under a set-returning function".to_string())
+            })
+            .map(|why| format!("{why} in the top-level SELECT"))
+    }
 }
 
 /// Whether sort/group reference `sortref` appears in a GROUP BY / DISTINCT clause.
