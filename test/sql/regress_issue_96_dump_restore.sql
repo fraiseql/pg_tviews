@@ -146,6 +146,17 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- The backing views came back in tviews (#181), and none is in an application schema.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m JOIN pg_class v ON v.oid = m.view_oid::oid
+             WHERE v.relnamespace <> 'tviews'::regnamespace) THEN
+    RAISE EXCEPTION '#96 FAIL: a restored backing view is outside tviews';
+  END IF;
+  IF to_regclass('public.v_author') IS NOT NULL OR to_regclass('app.v_post') IS NOT NULL THEN
+    RAISE EXCEPTION '#96 FAIL: a v_<entity> view was restored in an application schema';
+  END IF;
+END $$;
+
 -- ========================================================================
 -- Cycle 3: a CTAS under an empty search_path (restore-style) is converted
 -- ========================================================================
@@ -169,7 +180,32 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
+-- Cycle 4: a plain-format dump restores the backing views too (#181)
+-- ========================================================================
+\c postgres
+\! dropdb --if-exists "${PGTV_SRC}_plain" && createdb "${PGTV_SRC}_plain" && pg_dump -f "/tmp/${PGTV_SRC}.sql" "$PGTV_SRC" && psql -X -q -v ON_ERROR_STOP=1 -o /dev/null -d "${PGTV_SRC}_plain" -f "/tmp/${PGTV_SRC}.sql"
+\if :SHELL_ERROR
+  DO $$ BEGIN RAISE EXCEPTION '#96 FAIL: pg_dump (plain) / psql round trip failed'; END $$;
+\endif
+\getenv src PGTV_SRC
+\set plain_db :src '_plain'
+\c :plain_db
+SET client_min_messages TO WARNING;
+DO $$ BEGIN
+  IF (SELECT view_oid::oid FROM tviews.pg_tview_meta WHERE entity = 'post')
+       IS DISTINCT FROM 'tviews.app__tv_post'::regclass::oid THEN
+    RAISE EXCEPTION '#96 FAIL: the plain restore of tv_post does not point at tviews.app__tv_post';
+  END IF;
+END $$;
+UPDATE public.tb_author SET name = 'ann3' WHERE pk_author = 1;
+DO $$ BEGIN
+  IF (SELECT data->>'author_name' FROM app.tv_post WHERE pk_post = 1) IS DISTINCT FROM 'ann3' THEN
+    RAISE EXCEPTION '#96 FAIL: after the plain restore, an author rename did not cascade';
+  END IF;
+END $$;
+
+-- ========================================================================
 -- Cleanup
 -- ========================================================================
 \c postgres
-\! dropdb --if-exists "${PGTV_SRC}_restored"; rm -f "/tmp/${PGTV_SRC}.dump"
+\! dropdb --if-exists "${PGTV_SRC}_restored"; dropdb --if-exists "${PGTV_SRC}_plain"; rm -f "/tmp/${PGTV_SRC}.dump" "/tmp/${PGTV_SRC}.sql"
