@@ -28,21 +28,28 @@ UPDATE public.tb_shipment SET fk_order = 1 WHERE code = 's2';
 DO $$
 DECLARE
     tv TEXT;
+    view pg_catalog.regclass;
     diverging BIGINT;
 BEGIN
     FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.comment', 'public.user_orders',
                               'public.contract', 'public.shipment', 'app.note'] LOOP
         CONTINUE WHEN pg_catalog.to_regclass(pg_catalog.replace(tv, '.', '.tv_')) IS NULL;
         -- The backing view by OID: <schema>.v_<entity> before 0.1.0-beta.25, in
-        -- tviews after.
+        -- tviews after; the catalog is in the extension's schema (public in 0.1.0).
+        EXECUTE pg_catalog.format(
+            'SELECT view_oid::pg_catalog.oid::pg_catalog.regclass FROM %I.pg_tview_meta
+             WHERE entity = %L',
+            (SELECT n.nspname FROM pg_catalog.pg_extension e
+             JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_tviews'),
+            pg_catalog.split_part(tv, '.', 2))
+            INTO view;
         EXECUTE pg_catalog.format(
             'SELECT count(*) FROM ((SELECT pk_%2$s, data FROM %1$I.tv_%2$s
                                     EXCEPT SELECT pk_%2$s, data FROM %3$s)
                          UNION ALL (SELECT pk_%2$s, data FROM %3$s
                                     EXCEPT SELECT pk_%2$s, data FROM %1$I.tv_%2$s)) d',
             pg_catalog.split_part(tv, '.', 1), pg_catalog.split_part(tv, '.', 2),
-            (SELECT m.view_oid::pg_catalog.oid::pg_catalog.regclass FROM tviews.pg_tview_meta m
-             WHERE m.entity = pg_catalog.split_part(tv, '.', 2)))
+            view)
             INTO diverging;
         IF diverging <> 0 THEN
             RAISE EXCEPTION 'upgrade check: % diverges from its view (% rows)', tv, diverging;
