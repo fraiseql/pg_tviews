@@ -324,7 +324,7 @@ fn create_tview_inner(
     let schema_name = schema_name.to_string();
 
     // Step 3: Create the backing view
-    let (view_schema, view_name) = super::backing_view_name(&schema_name, entity_name);
+    let (view_schema, view_name) = super::backing_view_name(&schema_name, &tv_table_name);
     if relation_exists(&view_schema, &view_name)? {
         return Err(TViewError::InvalidInput {
             parameter: "tview definition".to_string(),

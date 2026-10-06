@@ -1,4 +1,3 @@
--- known-failing: #181
 -- Regression test for issue #181: a backing view in tviews follows its TVIEW
 -- through its life. Its name is derived from the TVIEW's table, so renaming the
 -- table or moving it to another schema renames the view; dropping the TVIEW, its

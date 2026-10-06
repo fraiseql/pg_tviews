@@ -27,16 +27,90 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
-/// Schema and name of the backing view of TVIEW `tv_<entity>` in `schema`:
-/// `tviews.<schema>__tv_<entity>`, fitted to 63 bytes (#181). The application's
-/// schema holds only its own objects, among them its `v_<entity>` query view.
-/// This is the only place a backing view's name is built; everything else finds
-/// it by OID (`pg_tview_meta.view_oid`).
-pub(crate) fn backing_view_name(schema: &str, entity: &str) -> (String, String) {
+/// Schema and name of the backing view of the TVIEW whose table is
+/// `schema.table`: `tviews.<schema>__<table>`, fitted to 63 bytes (#181). The
+/// application's schema holds only its own objects, among them its `v_<entity>`
+/// query view. This is the only place a backing view's name is built; everything
+/// else finds it by OID (`pg_tview_meta.view_oid`).
+pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
     (
         crate::utils::ext_schema().to_string(),
-        crate::utils::fit_identifier(format!("{schema}__tv_{entity}")),
+        crate::utils::fit_identifier(format!("{schema}__{table}")),
     )
+}
+
+/// After `ALTER TABLE … RENAME` or `SET SCHEMA` of relation `table`: if it is a
+/// TVIEW's table, give its backing view the name the table now derives (#181).
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read, the name is taken, or the
+/// rename fails.
+pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
+    let args = [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let view = Spi::get_one_with_args::<pg_sys::Oid>(
+        &format!(
+            "SELECT (SELECT m.view_oid::pg_catalog.oid FROM {} m \
+                     WHERE m.table_oid::pg_catalog.oid = $1)",
+            crate::utils::meta_table()
+        ),
+        &args,
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the TVIEW of a moved table".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    let Some(view) = view else {
+        return Ok(());
+    };
+    let (schema, name) = relation_name(table)?;
+    let (view_schema, wanted) = backing_view_name(&schema, &name);
+    let (_, current) = relation_name(view)?;
+    if current == wanted {
+        return Ok(());
+    }
+    let qualified = format!(
+        "{}.{}",
+        crate::utils::quote_identifier(&view_schema),
+        crate::utils::quote_identifier(&wanted)
+    );
+    let taken = Spi::get_one_with_args::<bool>(
+        "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
+        &[unsafe {
+            DatumWithOid::new(
+                qualified.as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        }],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Check {view_schema}.{wanted}"),
+        pg_error: e.to_string(),
+    })?
+    .unwrap_or(false);
+    if taken {
+        return Err(TViewError::InvalidInput {
+            parameter: "table name".to_string(),
+            reason: format!(
+                "the backing view of {schema}.{name} would be {view_schema}.{wanted}, which is \
+                 already taken by another relation"
+            ),
+        });
+    }
+    let sql = format!(
+        "ALTER VIEW {} RENAME TO {}",
+        crate::utils::qualified_relname_from_oid(view)?,
+        crate::utils::quote_identifier(&wanted)
+    );
+    {
+        let _owner = crate::owner::AsOwner::of_table(view)?;
+        crate::utils::spi_run_ddl(&sql)
+            .map_err(|error| TViewError::SpiError { query: sql, error })?;
+    }
+    // Names are cached by OID: here at once, in other backends at commit.
+    crate::queue::cache::invalidate_all_caches();
+    // SAFETY: `table` is the TVIEW's existing table.
+    unsafe { pg_sys::CacheInvalidateRelcacheByRelid(table) };
+    Ok(())
 }
 
 /// Run `ddl`, which creates or replaces a backing view in the extension's

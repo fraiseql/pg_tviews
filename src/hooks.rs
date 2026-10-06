@@ -194,10 +194,18 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     // A column rename is applied to TVIEW metadata once PostgreSQL has run it (issue #81),
     // and a partition added or removed gets or loses its triggers.
-    let (column_rename, partition_ddl) = if extension_installed() {
-        unsafe { (column_rename_of(pstmt), partition_ddl_of(pstmt)) }
+    // A TVIEW's table renamed or moved to another schema takes its backing view's
+    // name along (#181); its OID is resolved before the statement renames it.
+    let (column_rename, partition_ddl, table_move) = if extension_installed() {
+        unsafe {
+            (
+                column_rename_of(pstmt),
+                partition_ddl_of(pstmt),
+                table_move_of(pstmt),
+            )
+        }
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary.
@@ -395,6 +403,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             unsafe { HOOK_IN_PROGRESS = false };
             error!("pg_tviews: could not update the triggers of a partition: {e}");
         }
+        if let Some(table) = table_move
+            && let Err(e) = crate::ddl::follow_table_move(table)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not rename the backing view of a moved TVIEW: {e}");
+        }
     }
 
     // Release the reentrancy guard
@@ -554,6 +568,43 @@ unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ColumnRe
             old_name: CStr::from_ptr(stmt.subname).to_string_lossy().into_owned(),
             new_name: CStr::from_ptr(stmt.newname).to_string_lossy().into_owned(),
         })
+    }
+}
+
+/// The table an `ALTER TABLE … RENAME TO` or `ALTER TABLE … SET SCHEMA` renames or
+/// moves, resolved before the statement runs.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+unsafe fn table_move_of(pstmt: *const pg_sys::PlannedStmt) -> Option<pg_sys::Oid> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        let relation = match (*node).type_ {
+            pg_sys::NodeTag::T_RenameStmt => {
+                let stmt = &*node.cast::<pg_sys::RenameStmt>();
+                (stmt.renameType == pg_sys::ObjectType::OBJECT_TABLE).then_some(stmt.relation)
+            }
+            pg_sys::NodeTag::T_AlterObjectSchemaStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterObjectSchemaStmt>();
+                (stmt.objectType == pg_sys::ObjectType::OBJECT_TABLE).then_some(stmt.relation)
+            }
+            _ => None,
+        }?;
+        if relation.is_null() {
+            return None;
+        }
+        let relid = pg_sys::RangeVarGetRelidExtended(
+            relation,
+            pg_sys::NoLock.cast_signed(),
+            pg_sys::RVROption::RVR_MISSING_OK,
+            None,
+            std::ptr::null_mut(),
+        );
+        (relid != pg_sys::InvalidOid).then_some(relid)
     }
 }
 
