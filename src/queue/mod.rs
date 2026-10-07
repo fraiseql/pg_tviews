@@ -12,6 +12,7 @@ pub mod graph;
 pub mod key;
 mod ops;
 pub mod patch;
+mod savepoint;
 mod state;
 pub mod xact;
 

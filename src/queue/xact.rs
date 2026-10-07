@@ -5,7 +5,6 @@ use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::collections::HashSet;
 use std::os::raw::c_void;
-use std::panic::AssertUnwindSafe;
 
 /// Transaction event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,25 +42,17 @@ pub unsafe fn register_subxact_callback() {
     // so their end events pair with a savepoint.
     let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
     for _ in 0..usize::try_from(nest_level).unwrap_or(0).saturating_sub(1) {
-        state::savepoint_start();
+        super::savepoint::start();
     }
 }
 
 /// Transaction callback handler (invoked by `PostgreSQL`)
 ///
-/// This is called at transaction events (COMMIT, ABORT, etc.)
-///
-/// # Safety
-/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
-///
-/// # Error handling
-/// Errors from `handle_pre_commit`/`handle_prepare` are reported via pgrx's
-/// `error!()` macro, which triggers `ereport(ERROR)` and longjmps out of
-/// the callback.  `PostgreSQL` will then abort the transaction.
-///
-/// We intentionally avoid `catch_unwind` here: SPI operations in the
-/// pre-commit handler may trigger `PostgreSQL` longjmps, and intercepting
-/// those via `catch_unwind` corrupts `PG_exception_stack`, causing SIGABRT.
+/// Runs at the end of every transaction, however it ends. It only drops
+/// in-memory state and reports: no SPI is allowed here, and nothing in it may
+/// fail (`#[pg_guard]` turns a bug's panic into an ERROR instead of unwinding
+/// through `xact.c`).
+#[pg_guard]
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // Map PostgreSQL XactEvent C enum to our Rust enum.
@@ -125,7 +116,6 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
             crate::revision::reset();
             crate::hooks::release_hook_guard_on_abort(true);
-            crate::executor::reset();
             super::ops::clear_crash_recovery_cache();
             clear_transaction_state();
         }
@@ -137,6 +127,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// affected-rows report. Run when the transaction ends, however it ends.
 fn clear_transaction_state() {
     state::clear();
+    super::savepoint::clear();
+    crate::executor::reset();
+    FLUSHING.set(false);
     super::cache::cascade_cache::clear_cache();
     crate::audit::clear_audit_buffer();
     crate::metrics::metrics_api::reset_metrics();
@@ -171,12 +164,11 @@ fn warn_unflushed() {
 
 /// Subtransaction callback handler (invoked by `PostgreSQL` for savepoints)
 ///
-/// This is called when savepoints are created, released, or rolled back to.
-/// We need to maintain queue snapshots to properly handle ROLLBACK TO SAVEPOINT.
-///
-/// # Safety
-/// This is an extern "C-unwind" callback invoked by `PostgreSQL` internals.
-/// Must not panic or unwind.
+/// Keeps [`super::savepoint`] in step with the open subtransactions. The
+/// savepoint is popped and restored first; cache work comes after, so nothing
+/// that follows can leave the stack out of step. Infallible by construction;
+/// `#[pg_guard]` turns a bug's panic into an ERROR.
+#[pg_guard]
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn tview_subxact_callback(
     event: u32,
@@ -184,38 +176,18 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
     _parent_subid: pg_sys::SubTransactionId,
     _arg: *mut c_void,
 ) {
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        match event {
-            pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
-                // The pending work stays live: statements inside the
-                // subtransaction keep adding to it.
-                state::savepoint_start();
-            }
-            pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
-                // A CTAS that failed inside this subtransaction never reached the event
-                // trigger; its pending SELECT must not leak into a later statement.
-                crate::hooks::release_hook_guard_on_abort(false);
-
-                // DDL rolled back with the subtransaction: forget what was cached of it.
-                super::cache::invalidate_all_caches();
-
-                // Undo what the subtransaction queued, patched and journaled.
-                state::savepoint_abort();
-            }
-            pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
-                // What it queued now belongs to the parent.
-                state::savepoint_commit();
-            }
-            _ => {
-                // Ignore other subtransaction events
-            }
+    match event {
+        pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => super::savepoint::start(),
+        pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => super::savepoint::commit(),
+        pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
+            super::savepoint::abort();
+            // A CTAS that failed inside this subtransaction never reached the event
+            // trigger; its pending SELECT must not leak into a later statement.
+            crate::hooks::release_hook_guard_on_abort(false);
+            // DDL rolled back with the subtransaction: forget what was cached of it.
+            super::cache::invalidate_all_caches();
         }
-    }));
-
-    if result.is_err() {
-        // Non-fatal: savepoint tracking is defensive. Use warning instead of error
-        // to avoid SIGABRT from panic_any in raw extern "C-unwind" context.
-        warning!("PANIC in subtransaction callback - this is a bug!");
+        _ => {}
     }
 }
 
@@ -244,6 +216,39 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
 /// - Propagation coalesced (parents discovered during refresh added to queue)
 /// - Transaction-safe (fail-fast aborts transaction on first error)
 pub fn flush_refresh_queue() -> TViewResult<()> {
+    // A refresh write can fire a flush trigger (a TVIEW's table read by another
+    // TVIEW): that call returns at once, and the running flush drains what it
+    // queued before finishing.
+    let Some(_flushing) = Flushing::enter() else {
+        return Ok(());
+    };
+    flush_pending()
+}
+
+thread_local! {
+    static FLUSHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, a flush is running in this backend. Dropped when the flush
+/// returns or unwinds; the transaction's end clears it too.
+struct Flushing;
+
+impl Flushing {
+    fn enter() -> Option<Self> {
+        if FLUSHING.replace(true) {
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for Flushing {
+    fn drop(&mut self) {
+        FLUSHING.set(false);
+    }
+}
+
+fn flush_pending() -> TViewResult<()> {
     // Take what the triggers queued. The direct patches come with their queue
     // entries (issue #56): keys carrying a usable `Direct` chain are patched
     // straight into tv_<entity>; everything else recomputes.

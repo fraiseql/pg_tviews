@@ -75,6 +75,14 @@ unsafe fn view_query(view_oid: Oid) -> TViewResult<*mut pg_sys::Query> {
                 pg_error: "relation does not exist".to_string(),
             });
         }
+        // Only a view has the rewrite rule get_view_query reads.
+        if (*(*rel).rd_rel).relkind != pg_sys::RELKIND_VIEW.cast_signed() {
+            pg_sys::relation_close(rel, pg_sys::AccessShareLock.cast_signed());
+            return Err(TViewError::CatalogError {
+                operation: format!("Read the query of view {view_oid:?}"),
+                pg_error: "relation is not a view".to_string(),
+            });
+        }
         let query = pg_sys::get_view_query(rel);
         let copy = pg_sys::copyObjectImpl(query.cast()).cast::<pg_sys::Query>();
         pg_sys::relation_close(rel, pg_sys::NoLock.cast_signed());
@@ -2176,6 +2184,7 @@ fn time_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str>
 ///
 /// SAFETY: `node` is a valid Query.
 unsafe fn collect_time(node: *mut pg_sys::Node, out: &mut Vec<TimeNode>) {
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
@@ -2521,6 +2530,7 @@ unsafe fn referenced_columns(query: *mut pg_sys::Query) -> HashMap<usize, Option
         depth: u32,
         vars: Vec<(usize, i16)>,
     }
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
@@ -2629,6 +2639,7 @@ unsafe fn referenced_columns(query: *mut pg_sys::Query) -> HashMap<usize, Option
 ///
 /// SAFETY: `node` is null or a valid expression.
 unsafe fn collect_vars(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Var>) {
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
@@ -2654,6 +2665,7 @@ unsafe fn collect_vars(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Var>)
 ///
 /// SAFETY: `node` is null or a valid expression.
 unsafe fn collect_params(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Param>) {
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
@@ -2679,6 +2691,7 @@ unsafe fn collect_params(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Par
 ///
 /// SAFETY: `node` is null or a valid expression.
 unsafe fn collect_sublinks(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::SubLink>) {
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
@@ -2715,6 +2728,7 @@ unsafe fn has_sublink(node: *mut pg_sys::Node) -> bool {
 ///
 /// SAFETY: `node` is a valid Query.
 unsafe fn collect_functions(node: *mut pg_sys::Node, out: &mut Vec<Oid>) {
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,

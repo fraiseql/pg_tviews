@@ -54,20 +54,35 @@ SELECT pg_tviews_refresh('user');
 SELECT assert_fresh('tv_post', 'pk_post', 'pg_tviews_refresh');
 SELECT assert_fresh('tv_feed', 'pk_feed', 'pg_tviews_refresh');
 
--- A TRUNCATE runs no executor: its trigger flushes, and the refresh writes it
--- makes fire the flush triggers of tv_user and tv_post, read by other TVIEWs.
--- They leave the work to the flush already running: one flush in all.
+-- A user trigger on a TVIEW's table that writes a base table: under a flush no
+-- writing statement encloses (a TRUNCATE runs no executor), the refresh write
+-- (run as the TVIEW owner, with search_path pg_catalog, pg_temp)
+-- to tv_account fires it, and the base table's flush trigger fires inside the
+-- running flush. It leaves the work to that flush: one flush in all.
+CREATE TABLE tb_account (pk_account int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
+CREATE TABLE tb_log (pk_log serial PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), what text);
+INSERT INTO tb_account SELECT g, gen_random_uuid(), 'a' || g FROM generate_series(1, 3) g;
+SELECT pg_tviews_create('tv_account',
+  $q$SELECT pk_account, id, jsonb_build_object('name', name) AS data FROM tb_account$q$);
+SELECT pg_tviews_create('tv_log',
+  $q$SELECT pk_log, id, jsonb_build_object('what', what) AS data FROM tb_log$q$);
+CREATE FUNCTION log_account_change() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO public.tb_log (what) VALUES (TG_OP || ' tv_account');
+    RETURN NULL;
+END $$;
+CREATE TRIGGER log_account_change AFTER INSERT OR UPDATE OR DELETE ON tv_account
+    FOR EACH STATEMENT EXECUTE FUNCTION log_account_change();
 DO $$
 DECLARE before bigint := (pg_tviews_queue_stats()->>'flushes')::bigint;
 BEGIN
-    TRUNCATE tb_user;
+    TRUNCATE tb_account;
     IF (pg_tviews_queue_stats()->>'flushes')::bigint - before IS DISTINCT FROM 1 THEN
         RAISE EXCEPTION 'expected one flush for the TRUNCATE, got %',
             (pg_tviews_queue_stats()->>'flushes')::bigint - before;
     END IF;
 END $$;
-SELECT assert_fresh('tv_user', 'pk_user', 'TRUNCATE tb_user');
-SELECT assert_fresh('tv_post', 'pk_post', 'TRUNCATE tb_user');
-SELECT assert_fresh('tv_feed', 'pk_feed', 'TRUNCATE tb_user');
+SELECT assert_fresh('tv_account', 'pk_account', 'TRUNCATE tb_account');
+SELECT assert_fresh('tv_log', 'pk_log', 'TRUNCATE tb_account');
 
 \echo 'nested flush: all fresh'

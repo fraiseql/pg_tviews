@@ -59,7 +59,24 @@ pub fn flush_deferred() -> bool {
     })
 }
 
-/// Forget every frame: the transaction ended or aborted, so no query is running.
+/// Whether a writing statement is running: work queued now is flushed when
+/// the outermost one finishes.
+pub fn inside_writing_statement() -> bool {
+    FRAMES.with(|f| f.borrow().iter().any(|&writing| writing))
+}
+
+/// How many queries are running: a subtransaction records it when it starts.
+pub fn depth() -> usize {
+    FRAMES.with(|f| f.borrow().len())
+}
+
+/// A subtransaction that started at `depth` rolled back: the queries it ran are
+/// gone, even those whose frames an error skipped.
+pub fn truncate_to(depth: usize) {
+    FRAMES.with(|f| f.borrow_mut().truncate(depth));
+}
+
+/// Forget every frame: the transaction ended, so no query is running.
 pub fn reset() {
     FRAMES.with(|f| f.borrow_mut().clear());
 }
@@ -92,9 +109,13 @@ unsafe extern "C-unwind" fn executor_run(
     execute_once: bool,
 ) {
     let _frame = Frame::push(unsafe { writes_tracked_table(query_desc) });
+    // SAFETY: an error raised in the previous hook comes back as a Rust panic,
+    // which pops the frame on its way out.
     unsafe {
         match PREV_EXECUTOR_RUN {
-            Some(prev) => prev(query_desc, direction, count, execute_once),
+            Some(prev) => pg_sys::ffi::pg_guard_ffi_boundary(|| {
+                prev(query_desc, direction, count, execute_once);
+            }),
             None => pg_sys::standard_ExecutorRun(query_desc, direction, count, execute_once),
         }
     }
@@ -108,9 +129,11 @@ unsafe extern "C-unwind" fn executor_run(
     count: u64,
 ) {
     let _frame = Frame::push(unsafe { writes_tracked_table(query_desc) });
+    // SAFETY: an error raised in the previous hook comes back as a Rust panic,
+    // which pops the frame on its way out.
     unsafe {
         match PREV_EXECUTOR_RUN {
-            Some(prev) => prev(query_desc, direction, count),
+            Some(prev) => pg_sys::ffi::pg_guard_ffi_boundary(|| prev(query_desc, direction, count)),
             None => pg_sys::standard_ExecutorRun(query_desc, direction, count),
         }
     }
@@ -121,9 +144,10 @@ unsafe extern "C-unwind" fn executor_finish(query_desc: *mut pg_sys::QueryDesc) 
     let writing = unsafe { writes_tracked_table(query_desc) };
     {
         let _frame = Frame::push(writing);
+        // SAFETY: as in `executor_run`.
         unsafe {
             match PREV_EXECUTOR_FINISH {
-                Some(prev) => prev(query_desc),
+                Some(prev) => pg_sys::ffi::pg_guard_ffi_boundary(|| prev(query_desc)),
                 None => pg_sys::standard_ExecutorFinish(query_desc),
             }
         }

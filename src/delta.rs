@@ -139,6 +139,11 @@ fn pg_tview_truncate_trigger<'a>(
         return Ok(None);
     }
     crate::queue::enqueue_refresh_all(&entity);
+    // A TRUNCATE run inside a writing statement (by one of its triggers) leaves
+    // the flush to that statement, as its other nested statements do (#197).
+    if crate::executor::inside_writing_statement() {
+        return Ok(None);
+    }
     if let Err(e) = crate::queue::flush_refresh_queue() {
         error!("pg_tviews: could not refresh tv_{entity} after TRUNCATE: {e}");
     }

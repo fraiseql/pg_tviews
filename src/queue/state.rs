@@ -47,8 +47,10 @@ enum Undo {
     Drained(Pending),
 }
 
-/// Where a subtransaction started.
-struct Mark {
+/// Where a subtransaction started, in the pending work and the affected-rows
+/// journal.
+#[derive(Debug, Clone, Copy)]
+pub struct Mark {
     undo: usize,
     journal: usize,
 }
@@ -57,12 +59,13 @@ struct Mark {
 struct Txn {
     pending: Pending,
     undo: Vec<Undo>,
-    marks: Vec<Mark>,
+    /// Subtransactions open: changes are logged while there is one.
+    open: usize,
 }
 
 impl Txn {
-    fn logging(&self) -> bool {
-        !self.marks.is_empty()
+    const fn logging(&self) -> bool {
+        self.open > 0
     }
 
     fn revert(&mut self, undo: Undo) {
@@ -178,50 +181,47 @@ pub fn clear() {
     TXN.with(|t| *t.borrow_mut() = Txn::default());
 }
 
-/// A subtransaction started.
-pub fn savepoint_start() {
+/// A subtransaction started: where to roll back to.
+pub fn mark() -> Mark {
     let journal = super::affected::position();
     TXN.with(|t| {
         let mut t = t.borrow_mut();
-        let undo = t.undo.len();
-        t.marks.push(Mark { undo, journal });
-    });
+        t.open += 1;
+        Mark {
+            undo: t.undo.len(),
+            journal,
+        }
+    })
 }
 
-/// The innermost subtransaction committed: what it did now belongs to its
+/// The subtransaction of `mark` committed: what it did now belongs to its
 /// parent.
-pub fn savepoint_commit() {
+pub fn release(_mark: Mark) {
     TXN.with(|t| {
         let mut t = t.borrow_mut();
-        t.marks.pop();
-        if t.marks.is_empty() {
+        t.open = t.open.saturating_sub(1);
+        if t.open == 0 {
             t.undo.clear();
         }
     });
 }
 
-/// The innermost subtransaction rolled back: undo what it queued, patched and
+/// The subtransaction of `mark` rolled back: undo what it queued, patched and
 /// drained, and what it journaled.
-pub fn savepoint_abort() {
-    let journal = TXN.with(|t| {
+pub fn rollback(mark: Mark) {
+    TXN.with(|t| {
         let mut t = t.borrow_mut();
-        let mark = t.marks.pop()?;
+        t.open = t.open.saturating_sub(1);
         while t.undo.len() > mark.undo {
             if let Some(undo) = t.undo.pop() {
                 t.revert(undo);
             }
         }
-        Some(mark.journal)
+        if t.open == 0 {
+            t.undo.clear();
+        }
     });
-    if let Some(journal) = journal {
-        super::affected::rollback_to(journal);
-    }
-}
-
-/// How many subtransactions are open around the pending work.
-#[cfg(test)]
-pub fn savepoint_depth() -> usize {
-    TXN.with(|t| t.borrow().marks.len())
+    super::affected::rollback_to(mark.journal);
 }
 
 #[cfg(test)]
@@ -247,9 +247,9 @@ mod tests {
     fn commit_keeps_what_was_queued_before_and_inside() {
         clear();
         queue_insert(key(1));
-        savepoint_start();
+        let m = mark();
         queue_insert(key(2));
-        savepoint_commit();
+        release(m);
         assert_eq!(queued(), HashSet::from([key(1), key(2)]));
         clear();
     }
@@ -258,10 +258,10 @@ mod tests {
     fn abort_keeps_what_was_queued_before_only() {
         clear();
         queue_insert(key(1));
-        savepoint_start();
+        let m = mark();
         queue_insert(key(1));
         queue_insert(key(2));
-        savepoint_abort();
+        rollback(m);
         assert_eq!(queued(), HashSet::from([key(1)]));
         clear();
     }
@@ -270,15 +270,15 @@ mod tests {
     fn nested_inner_commit_then_outer_abort_undoes_both() {
         clear();
         queue_insert(key(1));
-        savepoint_start();
+        let outer = mark();
         queue_insert(key(2));
-        savepoint_start();
+        let inner = mark();
         queue_insert(key(3));
-        savepoint_commit();
+        release(inner);
         assert_eq!(queued(), HashSet::from([key(1), key(2), key(3)]));
-        savepoint_abort();
+        rollback(outer);
         assert_eq!(queued(), HashSet::from([key(1)]));
-        assert_eq!(savepoint_depth(), 0);
+        assert!(!TXN.with(|t| t.borrow().logging()));
         clear();
     }
 
@@ -286,10 +286,10 @@ mod tests {
     fn abort_restores_patches_changed_inside() {
         clear();
         update_patch(key(1), |slot| *slot = Some(direct("name")));
-        savepoint_start();
+        let m = mark();
         update_patch(key(1), |slot| *slot = Some(PatchState::Poisoned));
         update_patch(key(2), |slot| *slot = Some(direct("bio")));
-        savepoint_abort();
+        rollback(m);
         assert_eq!(patch_of(&key(1)), Some(direct("name")));
         assert_eq!(patch_of(&key(2)), None);
         clear();
@@ -302,11 +302,11 @@ mod tests {
         let mut before = Map::new();
         before.insert("name".to_string(), Value::from("a"));
         merge_fanout(fk.clone(), before.clone());
-        savepoint_start();
+        let m = mark();
         let mut inside = Map::new();
         inside.insert("name".to_string(), Value::from("b"));
         merge_fanout(fk.clone(), inside);
-        savepoint_abort();
+        rollback(m);
         assert_eq!(drain().fanout.get(&fk), Some(&before));
         clear();
     }
@@ -316,13 +316,13 @@ mod tests {
         clear();
         queue_insert(key(1));
         update_patch(key(1), |slot| *slot = Some(direct("name")));
-        savepoint_start();
+        let m = mark();
         queue_insert(key(2));
         let taken = drain();
         assert_eq!(taken.queue.len(), 2);
         queue_insert(key(1));
         queue_insert(key(3));
-        savepoint_abort();
+        rollback(m);
         assert_eq!(queued(), HashSet::from([key(1)]));
         assert_eq!(patch_of(&key(1)), Some(direct("name")));
         clear();
