@@ -1555,6 +1555,9 @@ fn populate_initial_data(
         "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
          SELECT {col_list} FROM {view}"
     );
+    // Rendered as every refresh renders (#200); the definition itself was parsed
+    // under the caller's settings, as CREATE VIEW parses it.
+    let _pin = crate::owner::RenderPin::new();
 
     let rows = Spi::connect_mut(|client| client.update(&insert_sql, None, &[]).map(|t| t.len()))
         .map_err(|e| TViewError::SpiError {

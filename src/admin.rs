@@ -199,6 +199,7 @@ pub fn rebuild_with_dependents(
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+    let _pin = crate::owner::RenderPin::new();
     let (qi_tv, insert) = rebuild_statements(entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&insert)?;
@@ -215,6 +216,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the insert fails.
 pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
+    let _pin = crate::owner::RenderPin::new();
     let (_, insert) = rebuild_statements(entity)?;
     Spi::run(&insert)?;
     Ok(())
