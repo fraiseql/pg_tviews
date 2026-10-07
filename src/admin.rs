@@ -190,7 +190,19 @@ pub fn rebuild_with_dependents(
             rebuild_one(entity)?;
         }
     }
+    flush_after_rebuilds()?;
     Ok(order)
+}
+
+/// Refresh what rebuilds queued before returning (#202): rewriting a `tv_*` table
+/// that another TVIEW reads queues that reader's rows (#191). No statement-level
+/// flush trigger follows a `SELECT` of a refresh function, so the work would
+/// otherwise reach `COMMIT` still queued.
+///
+/// # Errors
+/// Returns an error if the refresh fails.
+pub fn flush_after_rebuilds() -> TViewResult<()> {
+    crate::queue::flush_refresh_queue()
 }
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), with
@@ -354,6 +366,7 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
     for entity in &graph.topo_order {
         rebuild_one(entity)?;
     }
+    flush_after_rebuilds()?;
     Ok(graph.topo_order)
 }
 
