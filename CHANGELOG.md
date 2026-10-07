@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed (breaking)
 
+- **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as
+  the TVIEW's owner**, like `REFRESH MATERIALIZED VIEW`. A backing view runs the
+  functions it calls as the querying role, so a rebuild run as the caller let a TVIEW
+  owner's code run with the caller's privileges: a superuser's after the documented
+  post-migration `pg_tviews_refresh_all()`. `pg_tviews_refresh_all()`,
+  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()`,
+  `pg_tviews_recover_after_crash()` and `pg_tviews_cascade()` now read each backing
+  view as its owner; `pg_tviews_refresh(entity)` by a role that neither owns
+  `tv_<entity>` nor the extension fails with 42501 (it rebuilt the requested TVIEW
+  with the caller's privileges before).
 - **Refreshes render values under fixed settings, not the writer's** (#200):
   `TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`,
   `extra_float_digits` `1`, `bytea_output` `hex`, on every path that computes a
@@ -93,6 +103,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Fixed
 
+- **A subtransaction that commits inside a writing statement no longer drops the
+  refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
+  trigger on a base table, a function in the `SET` list) took the whole pending queue
+  aside when it started and threw it away when it committed: every row the statement
+  wrote before the block stayed stale, without a warning. Savepoints now leave the
+  pending work in place and undo only what was queued inside one that rolls back.
+- **A direct patch never calls a function outside jsonb_delta's schema.** When
+  jsonb_delta was dropped between capturing a patch and flushing it, the flush called
+  `public.jsonb_smart_patch_scalar`, which any role with `CREATE` on `public` could
+  have planted, as the TVIEW's owner. It now fails, naming jsonb_delta.
+- An error message cut a long query at byte 100 even inside a multi-byte character,
+  and the formatting panic replaced the real error.
 - **`DROP EXTENSION pg_tviews CASCADE` drops the backing views** (#199). They are not
   extension members (so `pg_dump` keeps them) and stayed in `tviews`, and
   re-creating the extension and a TVIEW then failed ("the backing view … is already
