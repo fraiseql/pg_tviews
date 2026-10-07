@@ -151,11 +151,12 @@ enum RteInfo {
     Base(usize),
     Outputs(Vec<Resolved>),
     Join(*mut pg_sys::List),
-    /// The table of another TVIEW: its columns are opaque, but an equality on its
-    /// key says where it is embedded.
+    /// The table of another TVIEW: an occurrence like a base table's (#191), and
+    /// an equality on its key says where it is embedded.
     Tview {
         entity: String,
         relid: Oid,
+        occ: usize,
     },
     Other,
 }
@@ -902,7 +903,20 @@ impl Walker<'_> {
             b'r' | b'p' if self.ctx.tview_tables.contains_key(&relid) => {
                 let entity = self.ctx.tview_tables[&relid].clone();
                 self.graph.tview_keys.entry(entity.clone()).or_default();
-                Ok(RteInfo::Tview { entity, relid })
+                self.graph.occurrences.push(Occurrence {
+                    relid: relid.to_u32(),
+                    relname,
+                    qualified,
+                    unions: flags.unions.clone(),
+                    via_view: flags.via_view.clone(),
+                    via_tview: flags.via_tview.clone(),
+                    in_sublink: flags.in_sublink,
+                    opaque_level: flags.opaque_level.clone(),
+                    matview: false,
+                    tview_table: Some(entity.clone()),
+                });
+                let occ = self.graph.occurrences.len() - 1;
+                Ok(RteInfo::Tview { entity, relid, occ })
             }
             b'r' | b'p' | b'm' => {
                 self.graph.occurrences.push(Occurrence {
@@ -915,6 +929,7 @@ impl Walker<'_> {
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
                     matview: relkind == b'm',
+                    tview_table: None,
                 });
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))
             }
@@ -1078,7 +1093,7 @@ impl Walker<'_> {
     fn occurrences_of(&self, rtindex: usize) -> HashSet<usize> {
         let level = self.levels.last().expect("inside a query level");
         match level.rtes.get(rtindex.wrapping_sub(1)) {
-            Some(RteInfo::Base(occ)) => HashSet::from([*occ]),
+            Some(RteInfo::Base(occ) | RteInfo::Tview { occ, .. }) => HashSet::from([*occ]),
             Some(RteInfo::Outputs(outputs)) => outputs.iter().flat_map(Resolved::occs).collect(),
             _ => HashSet::new(),
         }
@@ -1206,7 +1221,7 @@ impl Walker<'_> {
                 .len()
                 .checked_sub(1 + (*var).varlevelsup as usize)?;
             let rtindex = usize::try_from((*var).varno).ok()?;
-            let Some(RteInfo::Tview { entity, relid }) =
+            let Some(RteInfo::Tview { entity, relid, .. }) =
                 self.levels[index].rtes.get(rtindex.wrapping_sub(1))
             else {
                 return None;
@@ -1484,7 +1499,7 @@ impl Walker<'_> {
                 return Resolved::Opaque;
             }
             match level.rtes.get(rtindex.wrapping_sub(1)) {
-                Some(RteInfo::Base(occ)) => {
+                Some(RteInfo::Base(occ) | RteInfo::Tview { occ, .. }) => {
                     let relid = Oid::from(self.graph.occurrences[*occ].relid);
                     Resolved::Col(Column {
                         occ: *occ,

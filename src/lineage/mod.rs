@@ -164,6 +164,9 @@ pub struct Occurrence {
     /// A materialized view: `REFRESH MATERIALIZED VIEW` replaces its rows, and no
     /// trigger sees them (#189).
     pub matview: bool,
+    /// The table of another TVIEW, of that entity: its rows change when that
+    /// TVIEW is refreshed (#191).
+    pub tview_table: Option<String>,
 }
 
 /// A predicate linking two occurrences, `a` and `b`.
@@ -470,6 +473,8 @@ pub struct TableLineage {
     pub virtual_reads: Vec<String>,
     /// A materialized view: no trigger can be installed on it (#189).
     pub matview: bool,
+    /// The table of another TVIEW, of that entity (#191).
+    pub tview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,6 +563,42 @@ impl Graph {
     /// this TVIEW embeds it, and it maps the table itself.
     #[must_use]
     pub fn classify(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
+        let kind = self.classify_read(occ, propagates);
+        match &self.occurrences[occ].tview_table {
+            Some(inner) => self.tview_kind(occ, inner, kind, propagates),
+            None => kind,
+        }
+    }
+
+    /// The kind of a read of another TVIEW's table (#191): `propagated` when it
+    /// is joined on that TVIEW's `pk_<entity>` by a TVIEW embedding it (refreshing
+    /// the inner TVIEW looks the embedding rows up); otherwise its refreshes are
+    /// mapped like writes to a base table, never by a row trigger.
+    fn tview_kind(
+        &self,
+        occ: usize,
+        inner: &str,
+        kind: Kind,
+        propagates: &dyn Fn(&str, u32) -> bool,
+    ) -> Kind {
+        let path = match &kind {
+            Kind::Local(_) => self.occurrence_paths(occ, &kind).pop().unwrap_or_default(),
+            Kind::Mapped(path) => path.clone(),
+            _ => return kind,
+        };
+        let key = format!("pk_{inner}");
+        let by_key = path
+            .first()
+            .and_then(|&i| self.conjuncts[i].equality.as_ref())
+            .is_some_and(|(x, y)| [x, y].iter().any(|c| c.occ == occ && c.name == key));
+        if by_key && propagates(inner, self.occurrences[occ].relid) {
+            Kind::Propagated(inner.to_string())
+        } else {
+            Kind::Mapped(path)
+        }
+    }
+
+    fn classify_read(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
         if o.matview {
             let via = o
@@ -996,6 +1037,7 @@ impl Graph {
                     hop,
                     virtual_reads: Vec::new(),
                     matview: o.matview,
+                    tview: o.tview_table.clone(),
                     root: self
                         .roots
                         .iter()
@@ -1156,6 +1198,9 @@ impl Lineage {
                             }
                         }
                     }
+                    if let Some(inner) = &t.tview {
+                        entry["tview"] = inner.clone().into();
+                    }
                     entry["columns"] = t
                         .columns
                         .iter()
@@ -1254,6 +1299,7 @@ pub fn analyze(
     let found: HashSet<u32> = graph
         .occurrences
         .iter()
+        .filter(|o| o.tview_table.is_none())
         .map(|o| o.relid)
         .chain(graph.unread_tables.iter().copied())
         .collect();
@@ -1301,11 +1347,16 @@ pub fn analyze(
         )
         .collect();
     // Propagation from an embedded TVIEW covers a table only if that TVIEW maps it.
+    // Or, for a read of its table, only that it embeds it (#191).
     let propagates = |child: &str, relid: u32| {
         embeds.contains(&child)
-            && mapped_by
-                .get(child)
-                .is_some_and(|(mapped, full)| *full || mapped.contains(&relid))
+            && (tview_tables
+                .get(&pgrx::pg_sys::Oid::from(relid))
+                .map(String::as_str)
+                == Some(child)
+                || mapped_by
+                    .get(child)
+                    .is_some_and(|(mapped, full)| *full || mapped.contains(&relid)))
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
@@ -1481,6 +1532,9 @@ pub struct KeyMapping {
     /// How an UPDATE is written into every TVIEW row it reaches (issue #120).
     #[serde(default)]
     pub fanout: Option<crate::cascade_path::FanoutPatch>,
+    /// The table of another TVIEW, of that entity (#191): refreshed first.
+    #[serde(default)]
+    pub tview: Option<String>,
 }
 
 impl KeyMapping {
@@ -1736,6 +1790,7 @@ mod tests {
             in_sublink: false,
             opaque_level: None,
             matview: false,
+            tview_table: None,
         }
     }
 
@@ -2657,5 +2712,39 @@ mod tests {
         g.occurrences[1].matview = true;
         assert!(matches!(g.classify(1, NONE), Kind::AllKeys(r) if r.contains("materialized view")));
         assert!(g.tables(NONE)[1].matview);
+    }
+
+    // ── reads of another TVIEW's table (#191) ───────────────────────────────
+
+    /// `tb_note n` (root) and `tv_line l`, joined on `cond`.
+    fn note_and_line(cond: Conjunct) -> Graph {
+        let mut line = occ(2, "tv_line");
+        line.tview_table = Some("line".into());
+        graph(vec![occ(1, "tb_note"), line], vec![cond], col(0, "pk_note"))
+    }
+
+    #[test]
+    fn a_tview_table_joined_on_its_key_by_an_embed_is_propagated() {
+        let g = note_and_line(eq(col(1, "pk_line"), col(0, "fk_line"), true, true));
+        let embeds = |child: &str, _relid: u32| child == "line";
+        assert_eq!(g.classify(1, &embeds), Kind::Propagated("line".into()));
+        // Without the embed, its refreshes are mapped.
+        assert_eq!(g.classify(1, NONE), Kind::Mapped(vec![0]));
+    }
+
+    #[test]
+    fn a_tview_table_linked_otherwise_is_mapped_never_local() {
+        // l.order_id = n.pk_note: an equality with the key, which a base table
+        // would read off its row (local).
+        let g = note_and_line(eq(col(1, "order_id"), col(0, "pk_note"), true, true));
+        let embeds = |child: &str, _relid: u32| child == "line";
+        assert_eq!(g.classify(1, &embeds), Kind::Mapped(vec![0]));
+        let tables = g.tables(&embeds);
+        assert_eq!(tables[1].kind, TableKind::Mapped);
+        assert_eq!(tables[1].tview.as_deref(), Some("line"));
+        assert_eq!(
+            g.tables(&embeds)[1].sql.as_deref(),
+            Some("SELECT DISTINCT d.{c:2:1} FROM pg_tviews_delta d")
+        );
     }
 }

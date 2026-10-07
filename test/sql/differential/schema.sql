@@ -230,6 +230,13 @@ SELECT harness_create('tv_anytask', 'pk_anytask', $$
   SELECT v.pk_anytask, v.id, jsonb_build_object('title', v.title, 'archived', v.archived) AS data
   FROM v_anytask v $$, policy => 'error');
 
+-- another TVIEW's table read through an aggregating view, not on its key (#191)
+CREATE VIEW v_line_totals AS
+SELECT fk_order, count(*) AS n, sum((data ->> 'qty')::int) AS qty FROM tv_line GROUP BY fk_order;
+SELECT harness_create('tv_ordsum', 'pk_ordsum', $$
+  SELECT o.pk_order AS pk_ordsum, o.id, jsonb_build_object('n', t.n, 'qty', t.qty) AS data
+  FROM tb_order o LEFT JOIN v_line_totals t ON t.fk_order = o.pk_order $$, policy => 'error');
+
 -- ── writes ───────────────────────────────────────────────────────────────────
 -- `n` rows of `tbl` from a random offset, as a subquery of their pks.
 CREATE FUNCTION harness_pick(tbl text, pk text, n int) RETURNS text LANGUAGE sql AS $$
