@@ -143,6 +143,13 @@ SELECT pg_tviews_create('tv_holder', $$
     SELECT h.pk_holder, h.id, jsonb_build_object('badge', b.label) AS data
     FROM tb_holder h JOIN tb_badge b ON b.pk_badge = h.fk_badge $$);
 \endif
+-- A TVIEW dropped with its schema while its base table lives elsewhere: from
+-- 0.1.0-beta.25 its backing view was left in tviews (#186); the upgrade drops it.
+CREATE TABLE tb_scratch (pk_scratch int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), label text);
+CREATE SCHEMA scratch;
+SELECT pg_tviews_create('scratch.tv_scratch', $$
+    SELECT pk_scratch, id, jsonb_build_object('label', label) AS data FROM public.tb_scratch $$);
+DROP SCHEMA scratch CASCADE;
 -- Off the search_path.
 SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$

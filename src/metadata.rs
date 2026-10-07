@@ -345,7 +345,8 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 --
 -- Only objects dropped as dependents (original = false) count: pg_tviews' own drops of
 -- v_* / tv_* (pg_tviews_drop, DROP TABLE tv_* via the ProcessUtility hook) name them
--- directly, so they never re-enter here.
+-- directly, so they never re-enter here. DROP OWNED names a role's objects directly
+-- too, and pg_tviews never runs it: its drops count whatever their flag (#186).
 --
 -- PL/pgSQL (not #[pg_extern]) because pgrx cannot emit RETURNS event_trigger.  It fires for
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
@@ -367,7 +368,7 @@ BEGIN
         FROM pg_catalog.pg_event_trigger_dropped_objects() AS d
         JOIN @extschema@.pg_tview_meta AS m
           ON d.objid IN (m.view_oid, m.table_oid)
-        WHERE NOT d.original
+        WHERE (NOT d.original OR TG_TAG = 'DROP OWNED')
           AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
           AND d.objsubid = 0
     LOOP

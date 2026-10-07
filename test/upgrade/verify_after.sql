@@ -40,6 +40,23 @@ DO $$ BEGIN
 END $$;
 \endif
 
+-- No backing view outlives its TVIEW (#186), and the dropped TVIEW can be created again.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_class v
+               WHERE v.relnamespace = 'tviews'::pg_catalog.regnamespace AND v.relkind = 'v'
+                 AND NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m
+                                 WHERE m.view_oid::pg_catalog.oid = v.oid)
+                 AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                                 WHERE d.objid = v.oid AND d.deptype = 'e')) THEN
+        RAISE EXCEPTION 'upgrade check: a backing view in tviews belongs to no TVIEW';
+    END IF;
+END $$;
+CREATE SCHEMA scratch;
+SELECT tviews.pg_tviews_create('scratch.tv_scratch', $q$
+    SELECT pk_scratch, id, jsonb_build_object('label', label) AS data FROM public.tb_scratch $q$);
+SELECT tviews.pg_tviews_drop('scratch.tv_scratch');
+DROP SCHEMA scratch;
+
 CREATE VIEW public.v_user AS SELECT pk_user, name FROM public.tb_user;
 UPDATE public.tb_user SET name = name || '#';
 DO $$ BEGIN
