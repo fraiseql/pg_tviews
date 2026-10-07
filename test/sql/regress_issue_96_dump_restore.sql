@@ -19,6 +19,18 @@
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
 
+-- pg_dump/pg_restore must match the server's major version: a newer pg_dump
+-- writes settings an older server rejects on restore.
+SELECT current_setting('server_version_num')::int / 10000 AS server_major \gset
+\setenv PGTV_SERVER_MAJOR :server_major
+\! test "$(pg_dump --version | sed -E 's/^[^0-9]*([0-9]+).*/\1/')" = "$PGTV_SERVER_MAJOR"
+\if :SHELL_ERROR
+  \echo 'SKIP: pg_dump on PATH is not the server''s major version'
+  \quit
+\endif
+\set dumpdir `mktemp -d`
+\setenv PGTV_DUMPDIR :dumpdir
+
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
@@ -71,7 +83,7 @@ END $$;
 -- Round trip: pg_dump -Fc | pg_restore --exit-on-error into a fresh database
 -- ========================================================================
 \setenv PGTV_SRC :DBNAME
-\! dropdb --if-exists "${PGTV_SRC}_restored" && createdb "${PGTV_SRC}_restored" && pg_dump -Fc -f "/tmp/${PGTV_SRC}.dump" "$PGTV_SRC" && pg_restore --exit-on-error -d "${PGTV_SRC}_restored" "/tmp/${PGTV_SRC}.dump"
+\! dropdb --if-exists "${PGTV_SRC}_restored" && createdb "${PGTV_SRC}_restored" && pg_dump -Fc -f "$PGTV_DUMPDIR/src.dump" "$PGTV_SRC" && pg_restore --exit-on-error -d "${PGTV_SRC}_restored" "$PGTV_DUMPDIR/src.dump"
 \if :SHELL_ERROR
   \echo '#96 FAIL: pg_dump / pg_restore round trip exited with' :SHELL_EXIT_CODE
   DO $$ BEGIN RAISE EXCEPTION '#96 FAIL: pg_dump / pg_restore round trip failed'; END $$;
@@ -183,7 +195,7 @@ END $$;
 -- Cycle 4: a plain-format dump restores the backing views too (#181)
 -- ========================================================================
 \c postgres
-\! dropdb --if-exists "${PGTV_SRC}_plain" && createdb "${PGTV_SRC}_plain" && pg_dump -f "/tmp/${PGTV_SRC}.sql" "$PGTV_SRC" && psql -X -q -v ON_ERROR_STOP=1 -o /dev/null -d "${PGTV_SRC}_plain" -f "/tmp/${PGTV_SRC}.sql"
+\! dropdb --if-exists "${PGTV_SRC}_plain" && createdb "${PGTV_SRC}_plain" && pg_dump -f "$PGTV_DUMPDIR/src.sql" "$PGTV_SRC" && psql -X -q -v ON_ERROR_STOP=1 -o /dev/null -d "${PGTV_SRC}_plain" -f "$PGTV_DUMPDIR/src.sql"
 \if :SHELL_ERROR
   DO $$ BEGIN RAISE EXCEPTION '#96 FAIL: pg_dump (plain) / psql round trip failed'; END $$;
 \endif
@@ -208,4 +220,4 @@ END $$;
 -- Cleanup
 -- ========================================================================
 \c postgres
-\! dropdb --if-exists "${PGTV_SRC}_restored"; dropdb --if-exists "${PGTV_SRC}_plain"; rm -f "/tmp/${PGTV_SRC}.dump" "/tmp/${PGTV_SRC}.sql"
+\! dropdb --if-exists "${PGTV_SRC}_restored"; dropdb --if-exists "${PGTV_SRC}_plain"; rm -rf "$PGTV_DUMPDIR"
