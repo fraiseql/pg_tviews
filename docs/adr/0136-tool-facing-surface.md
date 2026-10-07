@@ -568,6 +568,16 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   `CREATE EXTENSION` and the tables they read. The 0.1.0-beta.25 upgrade script moves
   every existing backing view (`ALTER VIEW … SET SCHEMA tviews`, then the derived name),
   keeping its OID.
+  Not being members, they would outlive `DROP EXTENSION pg_tviews` (#199): the
+  `ProcessUtility` hook reads them before the statement and drops them after it; the
+  `tv_*` tables stay as plain tables. A session that never loaded the library cannot
+  run the hook, so a view at a backing name that no TVIEW is registered with and
+  nothing depends on is dropped, with a NOTICE, by the create that needs the name.
+- **Refresh context** (#200): besides the owner and `search_path`, every computation of
+  a TVIEW's rows pins the settings a value's text depends on (`TimeZone` `UTC`,
+  `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`, `extra_float_digits` `1`,
+  `bytea_output` `hex`), so the stored rows do not depend on the writer's session. Fixed
+  values rather than options: one rendering per database, comparable across TVIEWs.
 - **Options** (Decision 5) gain `uncascaded_policy`: a TVIEW declares what a write to a
   table no cascade reaches does (ADR 0157, amendment), instead of a file setting the
   session's `pg_tviews.uncascaded_policy` first. A different value is an `altered`

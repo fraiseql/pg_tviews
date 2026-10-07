@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed (breaking)
 
+- **Refreshes render values under fixed settings, not the writer's** (#200):
+  `TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`,
+  `extra_float_digits` `1`, `bytea_output` `hex`, on every path that computes a
+  TVIEW's rows (creation, writes, full and time refreshes, `create_or_replace`).
+  Before, a `timestamptz` in a JSONB document was stored with the offset of the
+  session that wrote last, so one database held several renderings and a TVIEW
+  differed from its definition read from another zone. `CURRENT_DATE` in a refresh is
+  now the UTC day. Rows written before the upgrade keep their rendering until
+  refreshed: run `SELECT tviews.pg_tviews_refresh_all()` once after upgrading if a
+  TVIEW renders dates, times, intervals, floats or `bytea` as text.
+
 - **A TVIEW that reads a materialized view goes through its `uncascaded_policy`**
   (#189). No trigger sees a matview's rows, so the matview is listed in
   `uncascaded_tables` and `cascade_kinds` (`all_keys`): under the default `error`
@@ -81,6 +92,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   through its partition key.
 
 ### Fixed
+
+- **`DROP EXTENSION pg_tviews CASCADE` drops the backing views** (#199). They are not
+  extension members (so `pg_dump` keeps them) and stayed in `tviews`, and
+  re-creating the extension and a TVIEW then failed ("the backing view … is already
+  taken by another relation"). The `tv_*` tables stay as plain tables. A backing view
+  left by a drop in a session that never loaded the library is dropped by the next
+  `pg_tviews_create()` of that TVIEW, with a NOTICE.
+- **A trigger writing its own table refreshes the TVIEWs once** (#197). Each statement
+  the trigger ran flushed the refresh queue, so a tree cascade (one nested `UPDATE`
+  per level) recomputed a row at depth *d* about *d* times, from intermediate states:
+  122 flushes and 2005 recomputes for a 364-node rename, now 1 and 364. A statement
+  nested in a write to a TVIEW's base table now leaves its work to that write; a query
+  that only reads (`SELECT f()`) still refreshes after each write in `f`.
 
 - **A refresh that fails fails the write.** The statement-level flush trigger turned
   an error the flush returned (rather than one PostgreSQL raised), such as
