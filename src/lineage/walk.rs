@@ -104,6 +104,12 @@ enum Resolved {
     Alt(Vec<Resolved>, Vec<Scope>),
     /// An output computed from columns (#182).
     Expr(Computed),
+    /// A column of a first-row level (`DISTINCT ON`, or windows all partitioned)
+    /// that is not its key (#194): which row carries it depends on the other rows
+    /// of its partition, so a predicate on it maps a row of another occurrence
+    /// toward the rows carrying it (a superset of the first ones, whose key then
+    /// maps on), never a row of its own occurrence away from it.
+    Inbound(Column),
     Opaque,
 }
 
@@ -125,7 +131,7 @@ impl Resolved {
     /// The occurrences a column or computed output reads.
     fn occs(&self) -> Vec<usize> {
         match self {
-            Self::Col(c) => vec![c.occ],
+            Self::Col(c) | Self::Inbound(c) => vec![c.occ],
             Self::Alt(terms, _) => terms.iter().flat_map(Self::occs).collect(),
             Self::Expr(e) => sql_occs(&e.sql),
             Self::Opaque => vec![],
@@ -568,7 +574,7 @@ impl Walker<'_> {
                 };
             let pass_through: Vec<bool> = tles
                 .iter()
-                .zip(skipped)
+                .zip(skipped.iter().copied())
                 .map(|(&tle, skip)| {
                     !skip
                         && (link == Link::Top
@@ -581,14 +587,24 @@ impl Walker<'_> {
                                     .all(|(clause, keys)| keyed(tle, *clause, keys))))
                 })
                 .collect();
+            // The other columns of a first-row level link inbound only (#194).
+            let first_row = link != Link::Top
+                && !opaque
+                && !grouped
+                && ((*query).hasDistinctOn || !partitions.is_empty());
             Ok(tles
                 .iter()
                 .zip(pass_through)
-                .map(|(&tle, pass)| {
+                .zip(skipped)
+                .map(|((&tle, pass), skip)| {
                     if pass {
-                        self.output((*tle).expr.cast())
-                    } else {
-                        Resolved::Opaque
+                        return self.output((*tle).expr.cast());
+                    }
+                    match self.resolve_expr((*tle).expr.cast()) {
+                        Resolved::Col(c) | Resolved::Inbound(c) if first_row && !skip => {
+                            Resolved::Inbound(c)
+                        }
+                        _ => Resolved::Opaque,
                     }
                 })
                 .collect())
@@ -706,7 +722,10 @@ impl Walker<'_> {
                                 holes.extend(hs);
                             }
                             Resolved::Expr(e) if e.element => holes.push(unions.clone()),
-                            term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                            term
+                            @ (Resolved::Col(_) | Resolved::Expr(_) | Resolved::Inbound(_)) => {
+                                terms.push(term);
+                            }
                             Resolved::Opaque => holes.push(unions.clone()),
                         }
                     }
@@ -1465,6 +1484,14 @@ impl Walker<'_> {
             _ => Maps::No,
         };
         let (a_to_b, b_to_a) = (maps(a_to_b, a, b), maps(b_to_a, b, a));
+        // Never away from an inbound column's occurrence (#194).
+        let inbound = |occ: usize| {
+            chosen
+                .iter()
+                .any(|c| matches!(c, Resolved::Inbound(col) if col.occ == occ))
+        };
+        let a_to_b = if inbound(a) { Maps::No } else { a_to_b };
+        let b_to_a = if inbound(b) { Maps::No } else { b_to_a };
         (a_to_b != Maps::No || b_to_a != Maps::No).then_some((a_to_b, b_to_a))
     }
 
@@ -1776,7 +1803,10 @@ impl Walker<'_> {
                     element: true,
                 });
             }
-            let column = matches!(term_at(strip_relabel(arg)), Some(Resolved::Col(_)));
+            let column = matches!(
+                term_at(strip_relabel(arg)),
+                Some(Resolved::Col(_) | Resolved::Inbound(_))
+            );
             Some(Operand {
                 sql: self.deparse(arg, term_of, next_var)?,
                 type_oid: pg_sys::exprType(arg),
@@ -2303,7 +2333,7 @@ unsafe fn is_required_sublink(node: *mut pg_sys::Node) -> bool {
 /// parentheses; `None` for an `unnest` element.
 fn term_sql(term: &Resolved) -> Option<Sql> {
     match term {
-        Resolved::Col(c) => Some(c.sql()),
+        Resolved::Col(c) | Resolved::Inbound(c) => Some(c.sql()),
         Resolved::Expr(e) if !e.element => {
             let mut sql = Sql::text("(");
             sql.push_sql(e.sql.clone());

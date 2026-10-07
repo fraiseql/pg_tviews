@@ -221,6 +221,16 @@ SELECT harness_create('tv_custfirst', 'pk_custfirst', $$
   SELECT c.pk_customer AS pk_custfirst, c.id, jsonb_build_object('first', f.ref, 'status', f.status) AS data
   FROM tb_customer c LEFT JOIN v_first_order f ON f.fk_customer = c.pk_customer $$,
   policy => 'error');
+-- the lines of each customer's first order: tb_line joined to a non-key column
+-- of the first-row level, mapped inbound (#194)
+SELECT harness_create('tv_custline', 'pk_custline', $$
+  SELECT c.pk_customer AS pk_custline, c.id,
+         jsonb_build_object('first', f.ref, 'lines', count(l.pk_line), 'qty', sum(l.qty)) AS data
+  FROM tb_customer c
+  LEFT JOIN (SELECT DISTINCT ON (o.fk_customer) o.fk_customer, o.pk_order, o.ref
+             FROM tb_order o ORDER BY o.fk_customer, o.status, o.pk_order) f ON f.fk_customer = c.pk_customer
+  LEFT JOIN tb_line l ON l.fk_order = f.pk_order
+  GROUP BY c.pk_customer, c.id, f.ref $$, policy => 'error');
 -- a materialized view, rebuilt by REFRESH MATERIALIZED VIEW (#189)
 CREATE MATERIALIZED VIEW mv_line_count AS SELECT fk_order, count(*) AS n FROM tb_line GROUP BY fk_order;
 SELECT harness_create('tv_ordcount', 'pk_ordcount', $$

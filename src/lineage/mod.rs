@@ -2747,4 +2747,44 @@ mod tests {
             Some("SELECT DISTINCT d.{c:2:1} FROM pg_tviews_delta d")
         );
     }
+
+    /// `p.pk_product = f.fk_product` with `f.fk_product` an inbound column of a
+    /// first-row level (#194): it maps a product toward the orders carrying it,
+    /// never an order away from it.
+    fn inbound(p: usize, f: usize) -> Conjunct {
+        let mut c = eq(col(p, "pk_product"), col(f, "fk_product"), true, false);
+        c.equality = None;
+        c
+    }
+
+    #[test]
+    fn a_table_joined_to_an_inbound_column_maps_through_the_first_row_key() {
+        // tb_customer c LEFT JOIN (first order per customer) f ON f.fk_customer = c.pk_customer
+        // LEFT JOIN tb_product p ON p.pk_product = f.fk_product
+        let g = graph(
+            vec![
+                occ(1, "tb_customer"),
+                occ(2, "tb_order"),
+                occ(3, "tb_product"),
+            ],
+            vec![
+                eq(col(1, "fk_customer"), col(0, "pk_customer"), true, false),
+                inbound(2, 1),
+            ],
+            col(0, "pk_customer"),
+        );
+        assert_eq!(g.classify(2, NONE), Kind::Mapped(vec![1, 0]));
+        assert_eq!(g.classify(1, NONE), Kind::Local("fk_customer".into()));
+    }
+
+    #[test]
+    fn a_first_row_level_does_not_map_away_through_an_inbound_column() {
+        // tb_product p, (SELECT count(*) FROM first orders f WHERE f.fk_product = p.pk_product)
+        let g = graph(
+            vec![occ(3, "tb_product"), occ(2, "tb_order")],
+            vec![inbound(0, 1)],
+            col(0, "pk_product"),
+        );
+        assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));
+    }
 }
