@@ -61,10 +61,13 @@ its rewrite rule's dependencies whose `relkind` is `r`, `p`, `f` or `m`:
 **`uncascaded_tables`** lists the `base_tables` that pg_tviews watches but cannot map
 to TVIEW keys: neither the TVIEW's own `tb_<entity>`, nor a join it traces, nor a
 TVIEW it embeds through `fk_<entity>` reaches them. An uncorrelated subquery, a
-window function or a recursive CTE is the typical case. Under the default
+window function not partitioned by a linked column, a recursive CTE or a
+materialized view (which `REFRESH MATERIALIZED VIEW` rewrites without triggers) is
+the typical case. Under the default
 `uncascaded_policy = 'error'` such a TVIEW is not created; under `'warn'` a write to
 one leaves the TVIEW's rows stale until something that is mapped changes; under
-`'full_refresh'` it refreshes the whole TVIEW at flush. The policy is declared with the
+`'full_refresh'` it refreshes the whole TVIEW at flush (for a materialized view: after
+each `REFRESH MATERIALIZED VIEW`). The policy is declared with the
 TVIEW (the `uncascaded_policy` option, else `pg_tviews.uncascaded_policy`);
 re-registration recomputes the set and keeps the policy.
 
@@ -74,9 +77,9 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)):
 | kind | meaning |
 |---|---|
 | `local` | the key is a column of the changed row: the TVIEW's own table, or a table linked by `col = <key>` (in a join, a subquery or a view) |
-| `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition, an array of keys, a computed column) |
+| `mapped` | a chain of conditions links the table to the key (several joins, a non-equality condition, an array of keys, a computed column, a UNION branch keyed by an expression of its table's row, a table joined to a UNION whose branches have their own keys) |
 | `propagated` | read through the backing view of a TVIEW this one embeds by `fk_<entity>`: refreshing that TVIEW refreshes this one |
-| `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function, a recursive CTE) |
+| `all_keys` | nothing selective links the table to the key (an uncorrelated subquery, a window function, a recursive CTE, a materialized view) |
 
 **`options`**:
 

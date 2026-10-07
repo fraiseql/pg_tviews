@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A TVIEW that reads a materialized view goes through its `uncascaded_policy`**
+  (#189). No trigger sees a matview's rows, so the matview is listed in
+  `uncascaded_tables` and `cascade_kinds` (`all_keys`): under the default `error`
+  policy the TVIEW is refused, under `warn` it is created with a WARNING. Before, it
+  was created silently and `REFRESH MATERIALIZED VIEW` left it stale for good.
+
+### Added
+
+- **`REFRESH MATERIALIZED VIEW` refreshes the TVIEWs that read the matview** under
+  `full_refresh` (#189), plain or `CONCURRENTLY`, in the REFRESH's transaction.
+- **A read under window functions partitioned by a linked column is traced** (#187):
+  `ROW_NUMBER() / RANK() / FIRST_VALUE() … OVER (PARTITION BY o.fk_customer …)` in a
+  view, joined on `fk_customer`, maps like `DISTINCT ON (o.fk_customer)`, refreshing
+  the partitions a write leaves and enters, instead of `all_keys` (refused under the
+  default policy, stale or rebuilt in full under the others).
+- **UNION branches keyed by their own tables** (#188): a branch may derive
+  `pk_<entity>` from an immutable expression of its table's row (`-l.pk_order_line`,
+  `l.pk_order_line + 1000000000`) when two entities have their own key spaces, and
+  the UNION may sit in a view the definition reads. A write to a branch's table
+  refreshes that branch's keys; a table joined to the union's output refreshes every
+  branch's. Before, such a branch had no key and the TVIEW was refused ("can never
+  be refreshed").
+
+### Fixed
+
+- **`DROP SCHEMA … CASCADE` and `DROP OWNED BY` drop a TVIEW's backing view** (#186).
+  Since backing views moved to `tviews` (beta.25), a TVIEW dropped with its schema
+  left its view there, and creating the TVIEW again failed ("tviews.s__tv_a is
+  already taken by another relation"). `DROP OWNED BY` also left the registration.
+- **Two rows for one key of a UNION TVIEW fail the write** (#188): the bulk refresh
+  that mapped keys use upserted both rows, the second silently winning, and the
+  `union_duplicate_policy` error of the single-key path reached the flush trigger as
+  a WARNING. Both paths now raise `cardinality_violation` (or keep the first row
+  under `union_duplicate_policy = 'first'`).
+- **A create after a failed create of the same TVIEW** inserted the failed
+  definition's columns (`column "qty" of relation "tv_attachment" does not exist`): the
+  columns of a backing view were cached by name across a rolled-back create. Caches
+  are now cleared when a transaction or subtransaction aborts.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` drops the backing views beta.25 left in
+  `tviews` after a `DROP SCHEMA … CASCADE` (views named `<schema>__tv_*` that no TVIEW
+  owns, unless something depends on them), and marks every TVIEW for
+  re-registration: run `SELECT * FROM tviews.pg_tviews_reregister_all();`.
+- A TVIEW that reads a materialized view under the `error` policy (the default
+  since beta.25) is listed by `pg_tviews_reregister_all()` with the refusal and keeps
+  its old registration (no refresh on `REFRESH MATERIALIZED VIEW`). Declare what a
+  REFRESH does: `SELECT tviews.pg_tviews_create_or_replace('<schema>.tv_<entity>',
+  <definition>, options => '{"uncascaded_policy": "full_refresh"}');` (`altered`, and
+  re-registered).
+
 ## [0.1.0-beta.25] - 2026-10-06
 
 ### Changed (breaking)

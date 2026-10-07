@@ -266,6 +266,14 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   grouping or `DISTINCT ON` key, or equal to one through a join condition
   (`DISTINCT ON (l.fk_order) o.pk_order` with `l.fk_order = o.pk_order`): its value
   is the key's on every row that can match
+- **Window functions partitioned by a linked column**, in a view or subquery: a
+  row's window values come from the rows of its partition, so a column in every
+  window's `PARTITION BY` passes through like a `DISTINCT ON` key, and the other
+  columns don't. "The first row per key", `ROW_NUMBER() OVER (PARTITION BY
+  o.fk_customer ORDER BY …) … WHERE rn = 1` joined on `fk_customer`, refreshes the
+  partitions a write leaves and enters, as `DISTINCT ON (o.fk_customer)` does; so do
+  `RANK`, `DENSE_RANK`, `FIRST_VALUE` and other window functions, whatever filters
+  their output
 - **View columns the TVIEW doesn't read**: a view, subquery or CTE is followed only
   for the columns read from it (in the select list, `WHERE`, joins, or through a
   whole-row reference). The tables behind the other columns get no trigger, so
@@ -274,8 +282,21 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
 - **Functions**: jsonb_build_object(), jsonb_array_elements(), etc.
 - **Operators**: Standard PostgreSQL operators
 - **UNION / UNION ALL**: incremental refresh cascades to every branch's base
-  table; branches must key on disjoint `pk_<entity>` values (otherwise
-  `pg_tviews.union_duplicate_policy` governs the duplicate)
+  table. Each branch derives `pk_<entity>` from its own table: a column, or an
+  immutable expression of that table's row when two entities have their own key
+  spaces (`p.pk_product` in one branch, `-l.pk_order_line` or
+  `l.pk_order_line + 1000000000` in the other). The UNION may be the definition
+  itself or a view it reads (`SELECT v.pk_attachment, … FROM v_attachment v`): a
+  write to a branch's table refreshes that branch's keys, and a table joined to
+  the union's output refreshes the keys of every branch. Branch keys must be
+  disjoint: overlapping ones fail the create (duplicate key) and, later, the
+  write that makes two rows share a key (`pg_tviews.union_duplicate_policy`,
+  `error` by default). A key computed from two tables (`COALESCE(p.pk_product,
+  -l.pk_order_line)` over two outer joins) is no branch table's: put it in the
+  branches instead. A key taken from one branch's table through an inner join
+  holds only that branch's rows, as the definition says. A branch keyed by an
+  expression is refreshed by filtering on it: an index on the expression
+  (`CREATE INDEX ON tb_order_line ((-pk_order_line))`) keeps that cheap
 - **INTERSECT / EXCEPT**: maintained branch by branch like UNION. A refresh
   recomputes the view's row for each changed key, and both operators compare whole
   rows, key included, so a row enters or leaves the TVIEW as the set operation says
@@ -294,12 +315,21 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   `<array> @> ARRAY[<key>]`, which a GIN index on the array expression serves; the
   create-time notice names it (below)
 - **Window functions, `LIMIT`/`OFFSET`, `GROUPING SETS`**: accepted, but a write to a
-  table read under one of them can change rows other than its own, so the table is
+  table read under one of them can change rows other than its own (a window without
+  `PARTITION BY`, or partitioned by a column nothing links to the key; any window in
+  the backing view's own SELECT), so the table is
   `all_keys` and the TVIEW's `uncascaded_policy` decides (see [Tables no cascade
   reaches](#tables-no-cascade-reaches)). The same holds for a set-returning function
   in the backing view's own select list. In a subquery's select list a set-returning
   function only multiplies rows: the other columns pass through, and an `unnest`
   output is an array element (above)
+- **Materialized views**: a materialized view the definition reads (directly or
+  through a view) is `all_keys`: `REFRESH MATERIALIZED VIEW` replaces its rows and
+  no trigger sees them. Under the default `error` policy the TVIEW is refused;
+  under `full_refresh`, `REFRESH MATERIALIZED VIEW` (plain or `CONCURRENTLY`)
+  refreshes the TVIEW in full, in the same transaction; under `warn` the TVIEW
+  keeps the rows it had. `REFRESH … WITH NO DATA` makes the matview unreadable and
+  refreshes nothing. No trigger is installed on a matview
 - **Recursive CTEs (`WITH RECURSIVE`)**, in the definition or in a view it reads: a
   row of a recursive CTE comes from rows of the step before, so the tables read
   inside it are `all_keys` (`read in a recursive CTE (public.v_category_path)`) and
@@ -406,8 +436,14 @@ listed in `tviews.registry.uncascaded_tables`. Common shapes:
   every row when one is inserted; `ORDER BY … LIMIT 10` changes which rows are in):
   the reason reads `read under a window function in the top-level SELECT`;
 - a subquery or view whose rows are not passed through to the key: under a window
-  function, `LIMIT`/`OFFSET` or `GROUPING SETS`, or joined on a column computed by a
-  volatile or stable expression;
+  function that is not partitioned by a linked column, `LIMIT`/`OFFSET` or
+  `GROUPING SETS`, or joined on a column computed by a volatile or stable
+  expression;
+- a materialized view (`a materialized view: REFRESH MATERIALIZED VIEW replaces its
+  rows without firing triggers`);
+- the rows of a UNION branch whose key is not a column or expression of one of
+  its tables (`the TVIEW key is not a column of a base table in every UNION
+  branch`);
 - a table read inside a recursive CTE (`read in a recursive CTE (…)`).
 
 A table read in several places is `all_keys` when one of them can't be traced, but
@@ -534,6 +570,13 @@ DROP TABLE tv_post;           -- Can now be dropped
 ```sql
 DROP TABLE tv_post CASCADE;  -- Drops tv_post and all dependent TVIEWs
 ```
+
+**Dropped with something else.** A TVIEW whose table goes as a dependent of another
+object, its schema (`DROP SCHEMA app CASCADE`), a base table or view its definition
+reads (`DROP TABLE tb_post CASCADE`), or its owner's objects (`DROP OWNED BY`), is
+deregistered with it: its triggers are removed and its backing view in `tviews` is
+dropped along with what depends on it, so the TVIEW can be created again under the
+same name.
 
 ## ALTER TVIEW
 
