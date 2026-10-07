@@ -625,7 +625,8 @@ fn capture_value(
 /// `ProcessUtility` hook may run. The flush is idempotent — the second call
 /// finds an empty queue and returns immediately.
 ///
-/// If triggers are suspended, this trigger skips the flush.
+/// A refresh error fails the statement. If triggers are suspended, this trigger
+/// skips the flush.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
@@ -636,8 +637,10 @@ fn pg_tview_flush_trigger<'a>(
         return Ok(None);
     }
 
+    // A refresh that fails fails the write, as an error PostgreSQL raises does:
+    // committing it would leave the TVIEWs stale.
     if let Err(e) = crate::queue::flush_refresh_queue() {
-        warning!("TVIEW refresh failed in statement trigger: {:?}", e);
+        error!("TVIEW refresh failed: {e}");
     }
     if let Err(e) = crate::audit::flush_audit_buffer() {
         warning!("Audit flush failed in statement trigger: {:?}", e);
