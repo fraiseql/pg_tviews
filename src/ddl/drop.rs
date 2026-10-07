@@ -192,18 +192,39 @@ fn drop_backing_view(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
-/// The backing views of every registered TVIEW, read before `DROP EXTENSION
-/// pg_tviews` removes the catalog (#199).
+/// The backing views of every registered TVIEW in the extension's schema, read
+/// before `DROP EXTENSION pg_tviews` removes the catalog (#199). A view outside
+/// it (a layout before #181) is the application's and stays.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
+    // An install older than the library (0.1.0 kept its catalog elsewhere, and
+    // its backing views were the application's `v_*` views): nothing to drop.
+    let current = Spi::get_one_with_args::<bool>(
+        "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
+        &[unsafe {
+            DatumWithOid::new(
+                crate::utils::meta_table().as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        }],
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: "the registration catalog".to_string(),
+        error: e.to_string(),
+    })?;
+    if current != Some(true) {
+        return Ok(Vec::new());
+    }
     Spi::connect(|client| {
         client
             .select(
                 &format!(
-                    "SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid",
-                    crate::utils::meta_table()
+                    "SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
+                     WHERE v.relnamespace = '{}'::pg_catalog.regnamespace",
+                    crate::utils::meta_table(),
+                    crate::utils::ext_schema()
                 ),
                 None,
                 &[],
