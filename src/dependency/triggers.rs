@@ -113,12 +113,11 @@ pub fn trigger_plan(
     Ok(base_tables
         .iter()
         .map(|&oid| {
-            let set = match lineage
-                .tables
-                .iter()
-                .find(|t| t.relid == oid.to_u32())
-                .map(|t| &t.kind)
-            {
+            let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
+            let set = match table.map(|t| &t.kind) {
+                // REFRESH MATERIALIZED VIEW fires no trigger: the ProcessUtility
+                // hook follows it (#189).
+                _ if table.is_some_and(|t| t.matview) => TriggerSet::None,
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
                 None if lineage.unread.contains(&oid.to_u32()) => TriggerSet::None,

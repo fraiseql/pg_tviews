@@ -812,7 +812,7 @@ impl Walker<'_> {
             (relkind, relname, qualified)
         };
         match relkind {
-            b'r' | b'p' if flags.unread => {
+            b'r' | b'p' | b'm' if flags.unread => {
                 self.graph.unread_tables.insert(relid.to_u32());
                 Ok(RteInfo::Other)
             }
@@ -821,7 +821,7 @@ impl Walker<'_> {
                 self.graph.tview_keys.entry(entity.clone()).or_default();
                 Ok(RteInfo::Tview { entity, relid })
             }
-            b'r' | b'p' => {
+            b'r' | b'p' | b'm' => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
                     relname,
@@ -831,6 +831,7 @@ impl Walker<'_> {
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
+                    matview: relkind == b'm',
                 });
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))
             }

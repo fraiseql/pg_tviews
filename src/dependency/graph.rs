@@ -278,11 +278,10 @@ fn filter_base_tables(
                     base_tables.insert(dep.oid);
                 }
                 "m" => {
-                    // Materialized views cannot have triggers — skip them.
-                    // TVIEWs that depend on a materialized view will not auto-refresh
-                    // when the materialized view is refreshed, which is acceptable:
-                    // the TVIEW will be refreshed when the base tables it ultimately
-                    // depends on change.
+                    // A materialized view's rows change only by REFRESH MATERIALIZED
+                    // VIEW, which fires no trigger: the lineage classifies it
+                    // `all_keys`, and the TVIEW's uncascaded_policy decides (#189).
+                    base_tables.insert(dep.oid);
                 }
                 _ => {
                     // Views and other object types: not base tables

@@ -161,6 +161,9 @@ pub struct Occurrence {
     /// Why nothing passes through the query level it sits in, if so (window
     /// function, LIMIT, …): its columns are not visible outside that level.
     pub opaque_level: Option<String>,
+    /// A materialized view: `REFRESH MATERIALIZED VIEW` replaces its rows, and no
+    /// trigger sees them (#189).
+    pub matview: bool,
 }
 
 /// A predicate linking two occurrences, `a` and `b`.
@@ -410,6 +413,8 @@ pub struct TableLineage {
     /// The virtual generated columns the TVIEW reads and their inputs: never
     /// copied by a fast path, which reads the changed row (#179).
     pub virtual_reads: Vec<String>,
+    /// A materialized view: no trigger can be installed on it (#189).
+    pub matview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -477,6 +482,17 @@ impl Graph {
     #[must_use]
     pub fn classify(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
+        if o.matview {
+            let via = o
+                .via_view
+                .as_ref()
+                .map(|view| format!(", read through view {view}"))
+                .unwrap_or_default();
+            return Kind::AllKeys(format!(
+                "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without \
+                 firing triggers{via}"
+            ));
+        }
         let Some(root) = self.root_of(occ) else {
             // A top level whose rows a write changes beyond its own (a window
             // function, LIMIT…) has no root; say why.
@@ -873,6 +889,7 @@ impl Graph {
                     index_hints,
                     hop,
                     virtual_reads: Vec::new(),
+                    matview: o.matview,
                     root: self
                         .roots
                         .iter()
@@ -1609,6 +1626,7 @@ mod tests {
             via_tview: None,
             in_sublink: false,
             opaque_level: None,
+            matview: false,
         }
     }
 
