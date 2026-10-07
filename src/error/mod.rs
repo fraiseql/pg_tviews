@@ -203,7 +203,7 @@ impl fmt::Display for TViewError {
                 write!(
                     f,
                     "Invalid SELECT statement: {reason}\nSQL: {}",
-                    if sql.len() > 100 { &sql[..100] } else { sql }
+                    truncate_chars(sql, 100)
                 )
             }
             Self::RequiredColumnMissing {
@@ -301,11 +301,7 @@ impl fmt::Display for TViewError {
                 write!(
                     f,
                     "SPI query failed: {error}\nQuery: {}",
-                    if query.len() > 100 {
-                        &query[..100]
-                    } else {
-                        query
-                    }
+                    truncate_chars(query, 100)
                 )
             }
             Self::SerializationError { message } => {
@@ -353,6 +349,11 @@ impl std::error::Error for TViewError {}
 pub type TViewResult<T> = Result<T, TViewError>;
 
 /// Convert `SpiError` to `TViewError`
+/// At most the first `max` bytes of `s`, cut on a character boundary.
+fn truncate_chars(s: &str, max: usize) -> &str {
+    &s[..s.floor_char_boundary(max)]
+}
+
 impl From<pgrx::spi::Error> for TViewError {
     fn from(e: pgrx::spi::Error) -> Self {
         Self::SpiError {
