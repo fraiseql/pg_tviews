@@ -248,6 +248,13 @@ Index the columns the view joins on, create the missing propagation indexes
 (`dry_run => false`), and keep the fan-out (TVIEW rows per base row) low. See
 [Performance Tuning](performance-tuning.md).
 
+**After a bulk load or a restore, run `ANALYZE` before judging refresh latency.** A
+refresh computes a few rows of the view; without statistics the planner may pick a
+plan made for an empty table. On one real tree, a row that takes 0.1 s took 39 s on a
+freshly built database, and every write touching it waited for it, until `VACUUM
+ANALYZE`. Autovacuum gets there eventually; a migration or restore script should not
+wait for it.
+
 ### Memory Issues
 
 **Symptoms**: out of memory during large writes or refreshes.
@@ -293,6 +300,10 @@ SELECT tviews.pg_tviews_refresh('post');
 ```
 
 Do not write to `tv_*` tables directly: the next refresh overwrites the rows.
+
+Compare under the settings refreshes render with (`TimeZone` `UTC`, `DateStyle` `ISO,
+YMD`, …, see [Rendering](../reference/ddl.md#rendering)): from another time zone a
+`timestamptz` in a JSONB document reads differently while the rows are right.
 
 ## Connection Pooling Issues
 

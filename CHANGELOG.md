@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   taken by another relation"). The `tv_*` tables stay as plain tables. A backing view
   left by a drop in a session that never loaded the library is dropped by the next
   `pg_tviews_create()` of that TVIEW, with a NOTICE.
+- **`pg_tviews_refresh_all()`, `pg_tviews_refresh()` and `pg_tviews_rebuild_all()` leave
+  nothing queued** (#202). Rebuilding a TVIEW whose table another TVIEW reads (#191)
+  queued refreshes of the reader that no flush followed, so the transaction committed
+  with "N queued refreshes … not applied (missing flush trigger?)". They now refresh
+  what their rebuilds queued before returning.
 - **A trigger writing its own table refreshes the TVIEWs once** (#197). Each statement
   the trigger ran flushed the refresh queue, so a tree cascade (one nested `UPDATE`
   per level) recomputed a row at depth *d* about *d* times, from intermediate states:
