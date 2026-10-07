@@ -9,7 +9,6 @@
 pub mod affected;
 pub mod cache;
 pub mod graph;
-mod integration_tests;
 pub mod key;
 mod ops;
 pub mod patch;

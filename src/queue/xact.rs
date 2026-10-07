@@ -1,34 +1,11 @@
-use super::ops::{
-    clear_queue, is_crash_recovery_checked, mark_crash_recovery_checked, take_queue_snapshot,
-};
+use super::ops::{is_crash_recovery_checked, mark_crash_recovery_checked};
+use super::state;
 use crate::TViewResult;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::panic::AssertUnwindSafe;
-
-// Thread-local storage for savepoint support
-thread_local! {
-    /// Current savepoint depth (0 = no savepoints)
-    static SAVEPOINT_DEPTH: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };
-
-    /// Queue snapshots for each savepoint level
-    static QUEUE_SNAPSHOTS: std::cell::RefCell<Vec<HashSet<super::key::RefreshKey>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-
-    /// Direct-patch map snapshots for each savepoint level (issue #56).
-    /// Kept in lockstep with `QUEUE_SNAPSHOTS` so a patch rolls back exactly when
-    /// its queue entry does.
-    static PATCH_SNAPSHOTS: std::cell::RefCell<
-        Vec<std::collections::HashMap<super::key::RefreshKey, super::patch::PatchState>>,
-    > = const { std::cell::RefCell::new(Vec::new()) };
-
-    /// Fan-out patch snapshots for each savepoint level (issue #120), in lockstep
-    /// with `QUEUE_SNAPSHOTS`.
-    static FANOUT_SNAPSHOTS: std::cell::RefCell<Vec<super::patch::FanoutMap>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
 
 /// Transaction event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,34 +39,12 @@ pub unsafe fn register_subxact_callback() {
         pg_sys::RegisterSubXactCallback(Some(tview_subxact_callback), std::ptr::null_mut());
     }
 
-    // Initialize SAVEPOINT_DEPTH from current transaction nest level
-    // When loaded inside a DO block, subtransactions may already be open
+    // Loaded inside a DO block: subtransactions may already be open. Mark them,
+    // so their end events pair with a savepoint.
     let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
-    SAVEPOINT_DEPTH.with(|d| {
-        *d.borrow_mut() = (nest_level as usize).saturating_sub(1);
-    });
-
-    // Push placeholder queue snapshots for existing subtransactions
-    QUEUE_SNAPSHOTS.with(|s| {
-        let mut snapshots = s.borrow_mut();
-        for _ in 0..(nest_level as usize).saturating_sub(1) {
-            snapshots.push(HashSet::new());
-        }
-    });
-
-    // Mirror the placeholders for the patch-map snapshot stacks (issues #56, #120).
-    PATCH_SNAPSHOTS.with(|s| {
-        let mut snapshots = s.borrow_mut();
-        for _ in 0..(nest_level as usize).saturating_sub(1) {
-            snapshots.push(std::collections::HashMap::new());
-        }
-    });
-    FANOUT_SNAPSHOTS.with(|s| {
-        let mut snapshots = s.borrow_mut();
-        for _ in 0..(nest_level as usize).saturating_sub(1) {
-            snapshots.push(std::collections::HashMap::new());
-        }
-    });
+    for _ in 0..usize::try_from(nest_level).unwrap_or(0).saturating_sub(1) {
+        state::savepoint_start();
+    }
 }
 
 /// Transaction callback handler (invoked by `PostgreSQL`)
@@ -181,9 +136,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// and fan-out patches, the cascade cache, the audit buffer, the metrics and the
 /// affected-rows report. Run when the transaction ends, however it ends.
 fn clear_transaction_state() {
-    clear_queue();
-    super::patch::clear_patch_map();
-    super::patch::clear_fanout_map();
+    state::clear();
     super::cache::cascade_cache::clear_cache();
     crate::audit::clear_audit_buffer();
     crate::metrics::metrics_api::reset_metrics();
@@ -234,33 +187,11 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         match event {
             pg_sys::SubXactEvent::SUBXACT_EVENT_START_SUB => {
-                // SAVEPOINT created: increment depth and snapshot current queue
-                SAVEPOINT_DEPTH.with(|d| {
-                    let mut depth = d.borrow_mut();
-                    *depth += 1;
-                });
-
-                // Take snapshot of current queue state
-                let snapshot = take_queue_snapshot();
-                QUEUE_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().push(snapshot);
-                });
-                super::affected::savepoint_start();
-
-                // Snapshot the patch map in lockstep (issue #56).
-                let patch_snapshot = super::patch::take_patch_snapshot();
-                PATCH_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().push(patch_snapshot);
-                });
-                let fanout_snapshot = super::patch::take_fanout_snapshot();
-                FANOUT_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().push(fanout_snapshot);
-                });
+                // The pending work stays live: statements inside the
+                // subtransaction keep adding to it.
+                state::savepoint_start();
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB => {
-                // ROLLBACK TO SAVEPOINT: restore queue to snapshot
-                decrement_savepoint_depth();
-
                 // A CTAS that failed inside this subtransaction never reached the event
                 // trigger; its pending SELECT must not leak into a later statement.
                 crate::hooks::release_hook_guard_on_abort(false);
@@ -268,36 +199,12 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 // DDL rolled back with the subtransaction: forget what was cached of it.
                 super::cache::invalidate_all_caches();
 
-                // Restore queue from snapshot
-                if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
-                    // Replace current queue with the snapshot
-                    super::state::replace_queue(snapshot);
-                }
-
-                // Restore the patch map in lockstep (issue #56).
-                if let Some(patch_snapshot) = PATCH_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
-                    super::patch::replace_patch_map(patch_snapshot);
-                }
-                if let Some(fanout_snapshot) = FANOUT_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {
-                    super::patch::replace_fanout_map(fanout_snapshot);
-                }
-                super::affected::savepoint_abort();
+                // Undo what the subtransaction queued, patched and journaled.
+                state::savepoint_abort();
             }
             pg_sys::SubXactEvent::SUBXACT_EVENT_COMMIT_SUB => {
-                // RELEASE SAVEPOINT: just decrement depth and discard snapshot
-                decrement_savepoint_depth();
-
-                // Discard the snapshots (savepoint committed)
-                QUEUE_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().pop();
-                });
-                PATCH_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().pop();
-                });
-                FANOUT_SNAPSHOTS.with(|s| {
-                    s.borrow_mut().pop();
-                });
-                super::affected::savepoint_commit();
+                // What it queued now belongs to the parent.
+                state::savepoint_commit();
             }
             _ => {
                 // Ignore other subtransaction events
@@ -310,20 +217,6 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
         // to avoid SIGABRT from panic_any in raw extern "C-unwind" context.
         warning!("PANIC in subtransaction callback - this is a bug!");
     }
-}
-
-/// Decrement `SAVEPOINT_DEPTH` with saturating subtraction.
-///
-/// Emits a warning if the depth is already 0, which indicates unexpected
-/// event ordering (e.g., extension loaded mid-transaction).
-fn decrement_savepoint_depth() {
-    SAVEPOINT_DEPTH.with(|d| {
-        let mut depth = d.borrow_mut();
-        if *depth == 0 {
-            warning!("pg_tviews: subxact depth underflow — event ordering unexpected");
-        }
-        *depth = depth.saturating_sub(1);
-    });
 }
 
 /// Flush the refresh queue: process all pending TVIEW refreshes.
@@ -351,9 +244,14 @@ fn decrement_savepoint_depth() {
 /// - Propagation coalesced (parents discovered during refresh added to queue)
 /// - Transaction-safe (fail-fast aborts transaction on first error)
 pub fn flush_refresh_queue() -> TViewResult<()> {
-    // Take initial snapshot from triggers
-    let mut pending = take_queue_snapshot();
-    let fanouts = super::patch::take_fanout_snapshot();
+    // Take what the triggers queued. The direct patches come with their queue
+    // entries (issue #56): keys carrying a usable `Direct` chain are patched
+    // straight into tv_<entity>; everything else recomputes.
+    let state::Pending {
+        queue: mut pending,
+        mut patches,
+        fanout: fanouts,
+    } = state::drain();
 
     if pending.is_empty() && fanouts.is_empty() {
         return Ok(());
@@ -361,11 +259,6 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     crate::revision::check();
     crate::config::warn_deprecated_settings();
     super::affected::begin_flush();
-
-    // Issue #56: drain the direct-patch map in lockstep with the queue so it never
-    // outlives its queue entries. Keys carrying a usable `Direct` chain are patched
-    // straight into tv_<entity>; everything else recomputes.
-    let mut patches = super::patch::take_patch_snapshot();
 
     // Start timing the entire refresh operation
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
@@ -596,17 +489,15 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
             }
         }
 
-        // Drain any items enqueued by triggers that fired during refresh
-        let late = take_queue_snapshot();
-        let late_fanouts = super::patch::take_fanout_snapshot();
-        if late.is_empty() && late_fanouts.is_empty() {
+        // Drain any items enqueued by triggers that fired during refresh, with
+        // the patches they captured (issue #56).
+        let late = state::drain();
+        if late.queue.is_empty() && late.fanout.is_empty() {
             break;
         }
-        // Merge patches captured by triggers that fired during refresh (issue #56).
-        for (k, v) in super::patch::take_patch_snapshot() {
-            patches.insert(k, v);
-        }
-        pending = late;
+        patches.extend(late.patches);
+        let late_fanouts = late.fanout;
+        pending = late.queue;
         apply_fanouts(late_fanouts, &graph, &mut patches, &mut pending, &processed)?;
     }
 
