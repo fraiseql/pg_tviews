@@ -190,6 +190,14 @@ SELECT harness_create('tv_nany', 'pk_nany', $$
   FROM tb_node n JOIN tb_node a ON a.pk_node = ANY (string_to_array(n.path, '.')::int[])
                                 AND a.deleted_at IS NULL
   WHERE n.deleted_at IS NULL GROUP BY n.pk_node, n.id, n.name $$);
+-- unnest cast outside the call, in a CTE (#196)
+SELECT harness_create('tv_ncast', 'pk_ncast', $$
+  WITH ids AS (SELECT n.pk_node, n.id, n.name, unnest(string_to_array(n.path, '.'))::int AS node_id
+               FROM tb_node n WHERE n.deleted_at IS NULL)
+  SELECT x.pk_node AS pk_ncast, x.id,
+         jsonb_build_object('name', x.name, 'up', array_agg(a.name ORDER BY a.pk_node)) AS data
+  FROM ids x JOIN tb_node a ON a.pk_node = x.node_id AND a.deleted_at IS NULL
+  GROUP BY x.pk_node, x.id, x.name $$, policy => 'error');
 -- a join on a computed output of a subquery (#182)
 SELECT harness_create('tv_nbadge', 'pk_nbadge', $$
   SELECT s.pk_node AS pk_nbadge, s.id,

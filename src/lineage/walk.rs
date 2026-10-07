@@ -1550,12 +1550,28 @@ impl Walker<'_> {
         // SAFETY: read-only checks of a valid expression, then forwarded.
         unsafe {
             if tag(strip_relabel(node)) == Some(pg_sys::NodeTag::T_Var) {
-                self.resolve_expr(node)
-            } else if pg_sys::expression_returns_set(node) {
-                unnest_array(node).map_or(Resolved::Opaque, |array| self.computed(array, true))
-            } else {
-                self.computed(node, false)
+                return self.resolve_expr(node);
             }
+            // `unnest(<array>)::T`, or a cast of an element (#196).
+            let (inner, casts) = strip_casts(node);
+            if pg_sys::expression_returns_set(node) {
+                if pg_sys::contain_mutable_functions(node) {
+                    return Resolved::Opaque;
+                }
+                return match unnest_array(inner) {
+                    Some(array) => match self.computed(array, true) {
+                        Resolved::Expr(e) => self.cast_element(e, &casts),
+                        _ => Resolved::Opaque,
+                    },
+                    None => Resolved::Opaque,
+                };
+            }
+            if let Some(e) = self.element_behind(inner, &casts)
+                && !pg_sys::contain_mutable_functions(node)
+            {
+                return self.cast_element(e, &casts);
+            }
+            self.computed(node, false)
         }
     }
 
@@ -1606,6 +1622,46 @@ impl Walker<'_> {
                 }),
                 None => Resolved::Opaque,
             }
+        }
+    }
+
+    /// An element of `unnest(<array>)` cast one cast after the other: an element of
+    /// the array cast to the arrays of those types, `(<array>)::T[]` (#196). Opaque
+    /// when a type has no array type.
+    fn cast_element(&mut self, mut element: Computed, casts: &[Cast]) -> Resolved {
+        for cast in casts {
+            // SAFETY: a catalog lookup by type OID.
+            let array_type = unsafe { pg_sys::get_array_type(cast.type_oid) };
+            if array_type == Oid::INVALID {
+                return Resolved::Opaque;
+            }
+            if array_type == element.type_oid {
+                continue;
+            }
+            let mut sql = Sql::text("(");
+            sql.push_sql(element.sql);
+            sql.push_text(&format!(")::{}", self.type_name(array_type)));
+            element = Computed {
+                sql,
+                element: true,
+                strict: element.strict && cast.strict,
+                type_oid: array_type,
+            };
+        }
+        Resolved::Expr(element)
+    }
+
+    /// The `unnest` element a Var under casts stands for, when there are casts.
+    ///
+    /// SAFETY: `inner` is a valid expression of the innermost level.
+    unsafe fn element_behind(&self, inner: *mut pg_sys::Node, casts: &[Cast]) -> Option<Computed> {
+        if casts.is_empty() {
+            return None;
+        }
+        // SAFETY: forwarded.
+        match unsafe { self.resolve_expr(inner) } {
+            Resolved::Expr(e) if e.element => Some(e),
+            _ => None,
         }
     }
 
@@ -1695,28 +1751,36 @@ impl Walker<'_> {
     ) -> Option<Operand> {
         // SAFETY: checked by tag; `term_of` only reads the node.
         unsafe {
-            let bare = strip_relabel(arg);
-            let term = match tag(bare) {
-                Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(bare),
+            // An element under casts compares as an element of the cast array (#196).
+            let (bare, casts) = strip_casts(arg);
+            let term_at = |node: *mut pg_sys::Node| match tag(node) {
+                Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(node),
                 _ => None,
             };
-            if let Some(Resolved::Expr(e)) = &term
+            if let Some(Resolved::Expr(e)) = term_at(bare)
                 && e.element
             {
+                if pg_sys::contain_mutable_functions(arg) {
+                    return None;
+                }
+                let Resolved::Expr(e) = self.cast_element(e, &casts) else {
+                    return None;
+                };
                 if tag(bare) == Some(pg_sys::NodeTag::T_Var) {
                     next_var();
                 }
                 return Some(Operand {
-                    sql: e.sql.clone(),
+                    sql: e.sql,
                     type_oid: e.type_oid,
                     column: false,
                     element: true,
                 });
             }
+            let column = matches!(term_at(strip_relabel(arg)), Some(Resolved::Col(_)));
             Some(Operand {
                 sql: self.deparse(arg, term_of, next_var)?,
                 type_oid: pg_sys::exprType(arg),
-                column: matches!(term, Some(Resolved::Col(_))),
+                column,
                 element: false,
             })
         }
@@ -2150,6 +2214,75 @@ unsafe fn strip_relabel(mut node: *mut pg_sys::Node) -> *mut pg_sys::Node {
         }
     }
     node
+}
+
+/// A cast of one value: the type it gives, and whether NULL stays NULL.
+#[derive(Debug, Clone, Copy)]
+struct Cast {
+    type_oid: Oid,
+    strict: bool,
+}
+
+/// `node` seen through the casts around it (binary, I/O, or a one-argument cast
+/// function), and those casts, innermost first.
+///
+/// SAFETY: `node` is null or a valid expression.
+unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::Node, Vec<Cast>) {
+    let mut casts = Vec::new();
+    // SAFETY: checked by tag before each cast.
+    unsafe {
+        loop {
+            let (arg, cast) = match tag(node) {
+                Some(pg_sys::NodeTag::T_RelabelType) => {
+                    let r = node.cast::<pg_sys::RelabelType>();
+                    (
+                        (*r).arg.cast(),
+                        Cast {
+                            type_oid: (*r).resulttype,
+                            strict: true,
+                        },
+                    )
+                }
+                Some(pg_sys::NodeTag::T_CoerceViaIO) => {
+                    let r = node.cast::<pg_sys::CoerceViaIO>();
+                    (
+                        (*r).arg.cast(),
+                        Cast {
+                            type_oid: (*r).resulttype,
+                            strict: true,
+                        },
+                    )
+                }
+                Some(pg_sys::NodeTag::T_FuncExpr) => {
+                    let f = node.cast::<pg_sys::FuncExpr>();
+                    let is_cast = matches!(
+                        (*f).funcformat,
+                        pg_sys::CoercionForm::COERCE_EXPLICIT_CAST
+                            | pg_sys::CoercionForm::COERCE_IMPLICIT_CAST
+                    );
+                    let [arg] = elements::<pg_sys::Node>((*f).args)[..] else {
+                        break;
+                    };
+                    if !is_cast {
+                        break;
+                    }
+                    let strict = pg_sys::func_strict((*f).funcid);
+                    (
+                        arg,
+                        Cast {
+                            type_oid: (*f).funcresulttype,
+                            strict,
+                        },
+                    )
+                }
+                _ => break,
+            };
+            casts.push(cast);
+            node = arg;
+        }
+    }
+    casts.reverse();
+    (node, casts)
 }
 
 /// A positive `EXISTS (…)` or `x IN (…)`.
