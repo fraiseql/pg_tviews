@@ -67,6 +67,8 @@ impl DirectPatchMetrics {
 /// Structure holding current transaction metrics
 #[derive(Debug, Default, Clone)]
 struct QueueMetrics {
+    /// Flushes that refreshed something in the current transaction
+    flushes: u64,
     /// Total number of refreshes processed in current transaction
     total_refreshes: u64,
     /// Total propagation iterations in current transaction
@@ -88,6 +90,7 @@ struct QueueMetrics {
 impl QueueMetrics {
     const fn new_const() -> Self {
         Self {
+            flushes: 0,
             total_refreshes: 0,
             total_iterations: 0,
             max_iterations: 0,
@@ -118,6 +121,7 @@ pub mod metrics_api {
     ) {
         METRICS.with(|m| {
             let mut metrics = m.borrow_mut();
+            metrics.flushes += 1;
             metrics.total_refreshes += refresh_count as u64;
             metrics.total_iterations += iteration_count as u64;
             metrics.max_iterations = metrics.max_iterations.max(iteration_count);
@@ -215,6 +219,7 @@ pub mod metrics_api {
             let metrics = m.borrow();
             QueueStats {
                 queue_size,
+                flushes: metrics.flushes,
                 total_refreshes: metrics.total_refreshes,
                 total_iterations: metrics.total_iterations,
                 max_iterations: metrics.max_iterations,
@@ -269,6 +274,7 @@ impl RefreshTimer {
 #[allow(dead_code)] // Reason: fields read via get_queue_stats() SQL function
 pub struct QueueStats {
     pub queue_size: usize,
+    pub flushes: u64,
     pub total_refreshes: u64,
     pub total_iterations: u64,
     pub max_iterations: usize,
