@@ -52,9 +52,11 @@ DO $$ BEGIN
     END IF;
 END $$;
 CREATE SCHEMA scratch;
+SET search_path TO public;
 SELECT tviews.pg_tviews_create('scratch.tv_scratch', $q$
     SELECT pk_scratch, id, jsonb_build_object('label', label) AS data FROM public.tb_scratch $q$);
 SELECT tviews.pg_tviews_drop('scratch.tv_scratch');
+SET search_path TO pg_catalog;
 DROP SCHEMA scratch;
 
 CREATE VIEW public.v_user AS SELECT pk_user, name FROM public.tb_user;

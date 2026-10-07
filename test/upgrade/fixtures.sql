@@ -77,7 +77,7 @@ SELECT pg_tviews_create('tv_post', $$
                    ORDER BY c.pk_comment) FILTER (WHERE c.pk_comment IS NOT NULL),
                    '[]'::jsonb)) AS data
     FROM tb_post p
-    JOIN v_user u ON u.pk_user = p.fk_user
+    JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_comment c ON c.fk_post = p.pk_post
     GROUP BY p.pk_post, p.id, p.fk_user, p.title, u.data $$);
 -- Two hops: tb_user -> tb_post -> tb_comment.

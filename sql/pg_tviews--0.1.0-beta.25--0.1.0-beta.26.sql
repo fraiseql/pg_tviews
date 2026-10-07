@@ -4,6 +4,13 @@
 -- statements here (docs/development/extension-versioning.md). Released scripts are
 -- never edited.
 
+-- Registration derives more (#187, #188, #189): a read under window functions
+-- all partitioned by a linked column maps through the partition, UNION branches
+-- keyed by their own tables (a column, or an expression of one row) get a root
+-- each, and a materialized view read is uncascaded (refused under the error
+-- policy). Re-derive every TVIEW with pg_tviews_reregister_all() after the update.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
+
 -- A TVIEW's table dropped by DROP OWNED (which names a role's objects directly)
 -- is deregistered like one dropped as a dependent (#186).
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_handle_drop_event()
