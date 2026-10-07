@@ -438,6 +438,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_long_query_truncates_on_a_char_boundary() {
+        // 'é' is two bytes; this puts it across byte 100.
+        let query = format!("{}é{}", "x".repeat(99), "y".repeat(50));
+        let err = TViewError::SpiError {
+            query: query.clone(),
+            error: "boom".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("boom"));
+        let select = TViewError::InvalidSelectStatement {
+            sql: query,
+            reason: "bad".to_string(),
+        };
+        assert!(select.to_string().contains("bad"));
+    }
+
+    #[test]
     fn test_metadata_not_found_message() {
         let err = TViewError::MetadataNotFound {
             entity: "post".to_string(),
