@@ -134,10 +134,26 @@ SELECT name, uncascaded_tables, uncascaded_policy
 FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
 ```
 
-Rewrite the join, or declare the policy:
-`pg_tviews_create_or_replace('tv_report', $$ … $$, options => '{"uncascaded_policy": "full_refresh"}')`,
+Rewrite the join, or declare the policy, for the tables named
+(`options => '{"uncascaded_tables": {"public.tb_flag": "full_refresh"}}'`) or the whole
+TVIEW (`options => '{"uncascaded_policy": "full_refresh"}'`) with
+`pg_tviews_create_or_replace('tv_report', $$ … $$, options => …)`,
 or `SET pg_tviews.uncascaded_policy = 'full_refresh'` before `CREATE TABLE … AS` (see
 [Tables no cascade reaches](../reference/ddl.md#tables-no-cascade-reaches)).
+
+**Error**: `public.tv_contract calls public.label_suffix(), not immutable: …: declare them in function_reads`
+
+A function the definition calls may read tables pg_tviews cannot see. Declare the
+tables it reads in `function_reads` and give them a policy (`[]` when it reads none),
+or make it `IMMUTABLE` if it reads nothing that changes: [Functions that read
+tables](../reference/ddl.md#functions-that-read-tables).
+
+**Error**: `public.tv_contract reads the time (CURRENT_DATE): its rows change with no write, which nothing refreshes: declare time_refresh`
+
+Declare `"time_refresh": "external"` (or `SET pg_tviews.time_refresh = 'external'`
+before `CREATE TABLE … AS`) and schedule
+`SELECT tviews.pg_tviews_refresh_time_dependent()` at the boundary:
+[Time-dependent TVIEWs](../reference/ddl.md#time-dependent-tviews).
 
 ### Dependency Cycle
 

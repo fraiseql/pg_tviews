@@ -244,3 +244,40 @@ the inner TVIEW was refreshed.
   outer TVIEW's keys, which the flush drains. `key_mappings` names the inner TVIEW,
   and the flush's dependency order refreshes it first, so the outer rows are
   recomputed from fresh inner rows, once.
+
+## Amendment (#193, #194, #196): first-row columns, unnest casts, invisible inputs
+
+Three more spellings of real read models were refused or silently stale: the product
+of each customer's first order, a table joined to a non-key column of a `DISTINCT ON`
+or `ROW_NUMBER … rn = 1` level (#194); a join through `unnest(<array>)::bigint`, the
+cast outside the call (#196); a definition reading the date, or calling a `STABLE`
+lookup that reads a table (#193).
+
+- **Inbound columns.** An output of a `DISTINCT ON` or partitioned-window level that
+  is not its key is no longer opaque but *inbound*: which row carries the value
+  depends on the other rows of the partition. A predicate on it maps a row of another
+  occurrence toward the level's rows carrying it, a superset of the first rows, whose
+  key then maps on to the TVIEW key (`p → f → c`); it never maps a row of the level's
+  own occurrence away from it (`f → p` is `No`), because a write that changes which
+  row is first changes another row's value. The level's own table keeps mapping
+  through its key. An inbound column is never a key, group key, identity, root or
+  equality, and an expression over it is opaque.
+- **Casts around `unnest`.** `unnest(a)::T` yields the elements of `a` cast one by
+  one, the elements of `a::T[]` (array coercion applies the element cast). A cast
+  (binary, I/O, or a one-argument cast function; several compose innermost first)
+  around `unnest` in a select list, or around an element in a select list or a
+  comparison, makes the output an element of `(<a>)::T[]`. A cast with a typmod
+  argument is not seen through.
+- **Invisible inputs.** Two inputs change rows with no write to a table the walk
+  sees. Calls to non-immutable functions outside `pg_catalog` are recorded by OID
+  (they were a NOTICE); undeclared, they are refused under `error` and
+  `full_refresh` and warned about under `warn`. The `function_reads` option names the
+  tables a function reads: they join the lineage as `all_keys` reads ("read inside
+  f()"), with triggers, so a policy, per table or the TVIEW's, decides. The time is
+  recorded from `SQLValueFunction` nodes and the `pg_catalog` functions returning the
+  current time; such a TVIEW needs `time_refresh = 'external'` under `error` and
+  `full_refresh`, and `pg_tviews_refresh_time_dependent()` refreshes it in full at
+  the boundary. Mapping only the rows whose time predicate can flip is not done.
+- **Per-table policy (#195).** The policy of an `all_keys` table is its own
+  `uncascaded_tables` entry, else the TVIEW's: the delta triggers, the matview
+  REFRESH hook and propagation coverage read it per table.

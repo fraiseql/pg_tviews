@@ -278,7 +278,14 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   o.fk_customer ORDER BY …) … WHERE rn = 1` joined on `fk_customer`, refreshes the
   partitions a write leaves and enters, as `DISTINCT ON (o.fk_customer)` does; so do
   `RANK`, `DENSE_RANK`, `FIRST_VALUE` and other window functions, whatever filters
-  their output
+  their output. A table joined to **another** column of that first row (the product
+  of each customer's first order, `LEFT JOIN tb_product p ON p.pk_product =
+  f.fk_product`) is mapped in two hops: a write to it reaches every row of the
+  subquery's table carrying it (a superset of the first rows), then their partition
+  or `DISTINCT ON` key. The subquery's own table maps only through that key: a write
+  that changes which row is first changes the partition it is in, while the other
+  column can belong to a row that was not written. So a table linked to the TVIEW
+  key *only* through such a column of its own first-row level stays `all_keys`
 - **View columns the TVIEW doesn't read**: a view, subquery or CTE is followed only
   for the columns read from it (in the select list, `WHERE`, joins, or through a
   whole-row reference). The tables behind the other columns get no trigger, so
@@ -315,10 +322,13 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   upper(n.name)`. A column computed by a volatile or stable expression (`now()`,
   `random()`) links nothing
 - **Arrays of keys**: `a.pk_node = ANY (<array>)`, a join on `unnest(<array>)` in a
-  subquery's select list, and `LATERAL unnest(<array>)` are the same condition:
-  the array's element equals the key. A write to the joined table maps through
-  `<array> @> ARRAY[<key>]`, which a GIN index on the array expression serves; the
-  create-time notice names it (below)
+  subquery's or CTE's select list, and `LATERAL unnest(<array>)` are the same
+  condition: the array's element equals the key. A write to the joined table maps
+  through `<array> @> ARRAY[<key>]`, which a GIN index on the array expression
+  serves; the create-time notice names it (below). A cast of the element,
+  `unnest(string_to_array(n.path, '.'))::bigint` or `u.x::bigint` for `LATERAL
+  unnest(…) AS u(x)`, is an element of the cast array,
+  `(string_to_array(n.path, '.'))::bigint[]`, and the index goes on that
 - **Window functions, `LIMIT`/`OFFSET`, `GROUPING SETS`**: accepted, but a write to a
   table read under one of them can change rows other than its own (a window without
   `PARTITION BY`, or partitioned by a column nothing links to the key; any window in
@@ -453,7 +463,10 @@ listed in `tviews.registry.uncascaded_tables`. Common shapes:
 - the rows of a UNION branch whose key is not a column or expression of one of
   its tables (`the TVIEW key is not a column of a base table in every UNION
   branch`);
-- a table read inside a recursive CTE (`read in a recursive CTE (…)`).
+- a table read inside a recursive CTE (`read in a recursive CTE (…)`);
+- a table read inside a function the definition calls, declared in
+  `function_reads` (`read inside public.label_suffix()`, see [Functions that read
+  tables](#functions-that-read-tables)).
 
 A table read in several places is `all_keys` when one of them can't be traced, but
 its other reads keep refreshing the rows they reach: a TVIEW's own table, read
@@ -505,6 +518,105 @@ Changing the option of an existing TVIEW with `pg_tviews_create_or_replace()` is
 `full_refresh` recomputes every row of the TVIEW: on a 100 000-row TVIEW that is about
 a second per flush that wrote to such a table. Use it for small TVIEWs, or rewrite the
 definition so that the table is joined on a column pg_tviews can trace.
+
+#### A policy per table
+
+A TVIEW that reads a locale table or a small reference list nothing links to the key
+can give that table its own policy, and keep refusing every other untraced read:
+
+```sql
+SELECT pg_tviews_create_or_replace('public.tv_x', $q$ … $q$, '{
+  "uncascaded_policy": "error",
+  "uncascaded_tables": {"public.tb_locale": "full_refresh", "catalog.tb_currency": "full_refresh"}
+}');
+```
+
+A write to a named table follows its policy; any other table no cascade reaches
+follows `uncascaded_policy`, so a later edit of a view that adds an untraced read is
+still refused. A named table the definition does not read, or whose writes it traces
+(`local`, `mapped`, `propagated`), is refused, so the list cannot rot; so is one that
+does not exist. `tviews.registry.uncascaded_table_policies` reports the map. Leaving
+`uncascaded_tables` out of a later `pg_tviews_create_or_replace()` keeps the map;
+passing another one is an `altered` change.
+
+### Functions that read tables
+
+A function the definition calls (directly, or in a view, subquery or CTE it reads)
+that is not `IMMUTABLE` and lives outside `pg_catalog` may read tables pg_tviews
+cannot see: a `STABLE` lookup of a setting, a translation. Writes to those tables
+would leave the TVIEW stale, so under the `error` and `full_refresh` policies such a
+call is refused unless it is declared, and under `warn` it is reported:
+
+```
+ERROR:  public.tv_contract calls public.label_suffix(), not immutable: the tables it reads are
+        invisible to pg_tviews, and writes to them would not refresh public.tv_contract: declare
+        them in function_reads
+```
+
+Declare the tables each function reads, naming the function with its argument types
+(`[]` for a function that reads none, such as one reading a setting):
+
+```sql
+SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
+    SELECT pk_contract, id, name || label_suffix() AS label FROM tb_contract $q$, '{
+  "function_reads": {"public.label_suffix()": ["public.tb_setting"], "public.app_tag()": []},
+  "uncascaded_tables": {"public.tb_setting": "full_refresh"}
+}');
+```
+
+The declared tables become tables the TVIEW reads that no cascade reaches
+(`all_keys`, `read inside public.label_suffix()`): they get the statement triggers,
+appear in `base_tables`, `uncascaded_tables` and `cascade_kinds`, and their policy
+decides what a write does. Above, `tb_setting` refreshes the TVIEW in full and any
+other untraced read is still refused. A table the view also reads directly keeps
+mapping the reads of it that can be traced. A declared function the definition does
+not call, or that does not exist, is refused; `tviews.registry.function_reads`
+reports the declarations.
+
+Refreshes run as the TVIEW's owner with `search_path = pg_catalog, pg_temp`: a
+function a definition calls must qualify the tables it reads (`public.tb_setting`) or
+`SET search_path` itself. pg_tviews sees calls, not function bodies: the time a
+function reads (`now()` inside it) is not detected.
+
+### Time-dependent TVIEWs
+
+A definition that reads the current time (`CURRENT_DATE`, `CURRENT_TIME`,
+`CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP`, `now()`, `clock_timestamp()`,
+`statement_timestamp()`, `transaction_timestamp()`, `timeofday()`, one-argument
+`age()`), directly or in a view, subquery or CTE it reads, has rows that change
+with no write: `end_date >= CURRENT_DATE AS is_current` flips at midnight. Under the
+`error` and `full_refresh` policies it is refused unless it declares who brings it
+up to date; under `warn` it is created with a WARNING.
+
+```sql
+SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
+    SELECT pk_contract, id, name, end_date >= CURRENT_DATE AS is_current FROM tb_contract $q$,
+    '{"time_refresh": "external"}');
+-- CREATE TABLE … AS, pg_tviews_create():
+SET pg_tviews.time_refresh = 'external';
+```
+
+`tviews.registry.time_dependent` reports such TVIEWs (also one created under `warn`),
+and `time_refresh` the declaration. Writes refresh it as usual; at the boundary,
+something outside calls
+
+```sql
+SELECT * FROM tviews.pg_tviews_refresh_time_dependent();               -- every one you own
+SELECT * FROM tviews.pg_tviews_refresh_time_dependent('public.tv_contract');
+```
+
+which refreshes it in full, as a write to a `full_refresh` table does (the TVIEWs
+reading it follow), and returns the TVIEWs refreshed. With pg_cron, just after
+midnight:
+
+```sql
+SELECT cron.schedule('tviews-day', '1 0 * * *',
+                     'SELECT tviews.pg_tviews_refresh_time_dependent()');
+```
+
+`time_refresh` on a definition that reads no time is refused; the setting is ignored
+for one. A literal evaluated at run time (`'now'::timestamptz`) is not detected: pass
+the date as data, or write `now()`.
 
 ### Limitations
 
