@@ -51,6 +51,8 @@ DO $$ BEGIN
         RAISE EXCEPTION 'upgrade check: a backing view in tviews belongs to no TVIEW';
     END IF;
 END $$;
+SELECT pg_catalog.to_regclass('public.tb_scratch') IS NOT NULL AS scratch_fixture \gset
+\if :scratch_fixture
 CREATE SCHEMA scratch;
 SET search_path TO public;
 SELECT tviews.pg_tviews_create('scratch.tv_scratch', $q$
@@ -58,6 +60,7 @@ SELECT tviews.pg_tviews_create('scratch.tv_scratch', $q$
 SELECT tviews.pg_tviews_drop('scratch.tv_scratch');
 SET search_path TO pg_catalog;
 DROP SCHEMA scratch;
+\endif
 
 CREATE VIEW public.v_user AS SELECT pk_user, name FROM public.tb_user;
 UPDATE public.tb_user SET name = name || '#';

@@ -145,11 +145,15 @@ SELECT pg_tviews_create('tv_holder', $$
 \endif
 -- A TVIEW dropped with its schema while its base table lives elsewhere: from
 -- 0.1.0-beta.25 its backing view was left in tviews (#186); the upgrade drops it.
+-- Schema-qualified TVIEW names need the tviews schema (0.1.0 has neither).
+SELECT pg_catalog.to_regclass('tviews.registry') IS NOT NULL AS scratch_fixture \gset
+\if :scratch_fixture
 CREATE TABLE tb_scratch (pk_scratch int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), label text);
 CREATE SCHEMA scratch;
 SELECT pg_tviews_create('scratch.tv_scratch', $$
     SELECT pk_scratch, id, jsonb_build_object('label', label) AS data FROM public.tb_scratch $$);
 DROP SCHEMA scratch CASCADE;
+\endif
 -- Off the search_path.
 SET search_path TO app, public, tviews;
 SELECT pg_tviews_create('tv_note', $$
