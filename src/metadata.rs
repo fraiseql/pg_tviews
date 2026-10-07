@@ -130,7 +130,12 @@ extension_sql!(
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
         -- backing view's query tree: an object with its kind (pk, distinct_on) and
         -- its columns (name, type). NULL for a row registered before it: pk_<entity>.
-        identity JSONB
+        identity JSONB,
+        -- Tables declared with a policy of their own (issue #195), in the
+        -- uncascaded_tables option: uncascaded_table_policies[i] applies to writes
+        -- to uncascaded_table_oids[i] instead of uncascaded_policy.
+        uncascaded_table_oids REGCLASS[] NOT NULL DEFAULT '{}',
+        uncascaded_table_policies TEXT[] NOT NULL DEFAULT '{}'
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -166,7 +171,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 3';
+    AS 'SELECT 4';
     ",
     name = "create_metadata_tables",
 );
@@ -265,7 +270,12 @@ SELECT
         '{}') AS cascade_kinds,
     CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
          ELSE ARRAY(SELECT c->>'name'
-                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
+         FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
+                         pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
+        '{}') AS uncascaded_table_policies
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

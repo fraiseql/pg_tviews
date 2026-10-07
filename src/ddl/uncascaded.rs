@@ -1,10 +1,11 @@
 //! Base tables a TVIEW reads whose writes no cascade maps to its keys (issues
 //! #157, #158): the tables its lineage classifies `all_keys` (ADR 0157). They are
-//! reported when the TVIEW is registered, and its `uncascaded_policy` decides
+//! reported when the TVIEW is registered, and its `uncascaded_policy`, or the
+//! policy declared for the table itself in `uncascaded_tables` (#195), decides
 //! what a write to one of them does: refused at create by default.
 
 use crate::config::UncascadedPolicy;
-use crate::error::TViewResult;
+use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
@@ -18,12 +19,94 @@ pub(crate) struct UncascadedTable {
     pub reason: String,
 }
 
+/// What a TVIEW declares about the reads no cascade reaches: its policy, and the
+/// tables with a policy of their own (#195).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Declarations {
+    pub policy: UncascadedPolicy,
+    /// Sorted by OID.
+    pub tables: Vec<(Oid, UncascadedPolicy)>,
+}
+
+impl Declarations {
+    /// The settings' declarations: `pg_tviews.uncascaded_policy`, no table.
+    pub(crate) fn from_settings() -> Self {
+        Self::new(crate::config::uncascaded_policy(), Vec::new())
+    }
+
+    pub(crate) fn new(policy: UncascadedPolicy, mut tables: Vec<(Oid, UncascadedPolicy)>) -> Self {
+        tables.sort_by_key(|(oid, _)| oid.to_u32());
+        tables.dedup_by_key(|(oid, _)| *oid);
+        Self { policy, tables }
+    }
+
+    /// The declarations stored with a TVIEW.
+    pub(crate) fn of(meta: &crate::catalog::TviewMeta) -> Self {
+        Self::new(meta.uncascaded_policy, meta.table_policies.clone())
+    }
+
+    /// The policy of writes to `table`.
+    pub(crate) fn policy_for(&self, table: Oid) -> UncascadedPolicy {
+        self.tables
+            .iter()
+            .find(|(oid, _)| *oid == table)
+            .map_or(self.policy, |(_, policy)| *policy)
+    }
+
+    /// Store them for `entity`, as the extension's owner (the caller's right to
+    /// change the TVIEW was checked).
+    pub(crate) fn store(&self, entity: &str) -> TViewResult<()> {
+        let _owner = crate::owner::AsOwner::of_extension()?;
+        let oids: Vec<Oid> = self.tables.iter().map(|(oid, _)| *oid).collect();
+        let policies: Vec<String> = self
+            .tables
+            .iter()
+            .map(|(_, policy)| policy.as_str().to_string())
+            .collect();
+        // SAFETY: each datum copies or borrows a value that outlives the call.
+        let args = unsafe {
+            [
+                pgrx::datum::DatumWithOid::new(
+                    entity,
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                ),
+                pgrx::datum::DatumWithOid::new(
+                    self.policy.as_str(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                ),
+                pgrx::datum::DatumWithOid::new(
+                    oids,
+                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+                ),
+                pgrx::datum::DatumWithOid::new(
+                    policies,
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
+                ),
+            ]
+        };
+        Spi::run_with_args(
+            &format!(
+                "UPDATE {} SET uncascaded_policy = $2, \
+                     uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     uncascaded_table_policies = $4 \
+                 WHERE entity = $1",
+                crate::utils::meta_table()
+            ),
+            &args,
+        )
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Store the uncascaded policies".to_string(),
+            pg_error: e.to_string(),
+        })
+    }
+}
+
 /// How the trigger and the flush learn what a TVIEW reached: the tables and the
-/// stored policy.
+/// stored declarations.
 #[derive(Debug, Clone)]
 pub(crate) struct Uncascaded {
     pub tables: Vec<UncascadedTable>,
-    pub policy: UncascadedPolicy,
+    pub declarations: Declarations,
 }
 
 impl Uncascaded {
@@ -33,7 +116,7 @@ impl Uncascaded {
 }
 
 /// `writes to a, b will not refresh tv (a: reason; b: reason)`.
-fn describe(tview: &str, tables: &[UncascadedTable], verb: &str) -> String {
+fn describe(tview: &str, tables: &[&UncascadedTable], verb: &str) -> String {
     let names = tables
         .iter()
         .map(|t| t.name.as_str())
@@ -50,71 +133,109 @@ fn describe(tview: &str, tables: &[UncascadedTable], verb: &str) -> String {
     format!("writes to {names} {verb} {tview} ({reasons})")
 }
 
-/// What to write to declare the policy of `tview`: the option of
-/// `pg_tviews_create_or_replace()`, or the setting `CREATE TABLE … AS` and
-/// `pg_tviews_create()` read.
-fn how_to_declare(tview: &str, policy: &str) -> String {
+/// What to write to declare the policy of `tables` of `tview`: the option of
+/// `pg_tviews_create_or_replace()`, for those tables or the whole TVIEW, or the
+/// setting `CREATE TABLE … AS` and `pg_tviews_create()` read.
+fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> String {
+    let named = tables
+        .iter()
+        .map(|t| format!("\"{}\": \"{policy}\"", t.name.replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"uncascaded_policy\": \"{policy}\"}}'); before CREATE TABLE … AS or \
+         '{{\"uncascaded_tables\": {{{named}}}}}'), or for the whole TVIEW \
+         '{{\"uncascaded_policy\": \"{policy}\"}}'; before CREATE TABLE … AS or \
          pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
     )
 }
 
-/// Report the uncascaded tables of `tview` (schema-qualified) under `policy`:
-/// a WARNING, a NOTICE, or an ERROR that aborts the create and says what to
-/// declare instead.
+/// Report the uncascaded tables of `tview` (schema-qualified), each under its
+/// policy: an ERROR that aborts the create and says what to declare instead, a
+/// WARNING, or a NOTICE.
 ///
 /// # Errors
 /// Never returns one: under the `error` policy the ERROR is raised here.
-pub(crate) fn report(
+pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
+    let under = |policy: UncascadedPolicy| -> Vec<&UncascadedTable> {
+        uncascaded
+            .tables
+            .iter()
+            .filter(|t| uncascaded.declarations.policy_for(t.oid) == policy)
+            .collect()
+    };
+    let refused = under(UncascadedPolicy::Error);
+    if !refused.is_empty() {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
+            format!(
+                "{}: declare what such a write does with the TVIEW's uncascaded_policy",
+                describe(tview, &refused, "would not refresh")
+            ),
+            function_name!(),
+        )
+        .set_hint(format!(
+            "To refresh {tview} in full on such writes: {}. \"warn\" accepts stale \
+             rows instead. Or join the tables on a column pg_tviews can trace.",
+            how_to_declare(tview, &refused, "full_refresh")
+        ))
+        .report(PgLogLevel::ERROR);
+    }
+    let warned = under(UncascadedPolicy::Warn);
+    if !warned.is_empty() {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_WARNING,
+            describe(tview, &warned, "will not refresh"),
+            function_name!(),
+        )
+        .set_hint(format!(
+            "To refresh it in full on such writes instead: {}.",
+            how_to_declare(tview, &warned, "full_refresh")
+        ))
+        .report(PgLogLevel::WARNING);
+    }
+    let refreshed = under(UncascadedPolicy::FullRefresh);
+    if !refreshed.is_empty() {
+        notice!(
+            "{}",
+            describe(tview, &refreshed, "will refresh all rows of")
+        );
+    }
+    Ok(())
+}
+
+/// Refuse a table declared in `uncascaded_tables` that `lineage` does not read,
+/// or whose writes it traces: the declaration would never apply (#195).
+///
+/// # Errors
+/// Returns an error naming the first such table.
+pub(crate) fn check_declared(
     tview: &str,
-    tables: &[UncascadedTable],
-    policy: UncascadedPolicy,
+    declarations: &Declarations,
+    lineage: &crate::lineage::Lineage,
 ) -> TViewResult<()> {
-    if tables.is_empty() {
-        return Ok(());
+    for (oid, _) in &declarations.tables {
+        let name = crate::utils::qualified_relname_from_oid(*oid)?;
+        let reason = match lineage.tables.iter().find(|t| t.relid == oid.to_u32()) {
+            None => format!("{tview} does not read it"),
+            Some(t) if !matches!(t.kind, crate::lineage::TableKind::AllKeys(_)) => format!(
+                "its writes to {tview} are traced ({}): no policy applies to them",
+                t.kind.name()
+            ),
+            Some(_) => continue,
+        };
+        return Err(TViewError::InvalidInput {
+            parameter: "uncascaded_tables".to_string(),
+            reason: format!(
+                "{name} is declared in uncascaded_tables, but {reason}: remove it from the list"
+            ),
+        });
     }
-    match policy {
-        UncascadedPolicy::Warn => {
-            pg_sys::panic::ErrorReport::new(
-                PgSqlErrorCode::ERRCODE_WARNING,
-                describe(tview, tables, "will not refresh"),
-                function_name!(),
-            )
-            .set_hint(format!(
-                "To refresh it in full on such writes instead: {}.",
-                how_to_declare(tview, "full_refresh")
-            ))
-            .report(PgLogLevel::WARNING);
-            Ok(())
-        }
-        UncascadedPolicy::FullRefresh => {
-            notice!("{}", describe(tview, tables, "will refresh all rows of"));
-            Ok(())
-        }
-        UncascadedPolicy::Error => {
-            pg_sys::panic::ErrorReport::new(
-                PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
-                format!(
-                    "{}: declare what such a write does with the TVIEW's uncascaded_policy",
-                    describe(tview, tables, "would not refresh")
-                ),
-                function_name!(),
-            )
-            .set_hint(format!(
-                "To refresh {tview} in full on such writes: {}. \"warn\" accepts stale \
-                 rows instead. Or join the tables on a column pg_tviews can trace.",
-                how_to_declare(tview, "full_refresh")
-            ))
-            .report(PgLogLevel::ERROR);
-            Ok(())
-        }
-    }
+    Ok(())
 }
 
 /// After `REFRESH MATERIALIZED VIEW matview`: refresh in full every TVIEW that
-/// reads it under the `full_refresh` policy, then flush the queue, as the flush
+/// reads it under the `full_refresh` policy (its own or the TVIEW's), then flush the queue, as the flush
 /// trigger does after a write (#189). Under `warn` the TVIEW was created knowing
 /// it would go stale; under `error` it was never created.
 ///
@@ -130,8 +251,10 @@ pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
             .select(
                 &format!(
                     "SELECT entity::text FROM {} \
-                     WHERE uncascaded_policy = 'full_refresh' \
-                       AND $1::pg_catalog.regclass = ANY (uncascaded_oids) \
+                     WHERE $1::pg_catalog.regclass = ANY (uncascaded_oids) \
+                       AND COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
+                               uncascaded_table_oids, $1::pg_catalog.regclass)], \
+                           uncascaded_policy) = 'full_refresh' \
                      ORDER BY entity",
                     crate::utils::meta_table()
                 ),
@@ -170,17 +293,42 @@ mod tests {
             name: n.to_string(),
             reason: r.to_string(),
         };
+        let (a, b) = (t("public.a", "x"), t("public.b", "y"));
         assert_eq!(
-            describe("public.tv_o", &[t("public.a", "x")], "will not refresh"),
+            describe("public.tv_o", &[&a], "will not refresh"),
             "writes to public.a will not refresh public.tv_o (x)"
         );
         assert_eq!(
-            describe(
-                "public.tv_o",
-                &[t("public.a", "x"), t("public.b", "y")],
-                "will not refresh"
-            ),
+            describe("public.tv_o", &[&a, &b], "will not refresh"),
             "writes to public.a, public.b will not refresh public.tv_o (public.a: x; public.b: y)"
+        );
+    }
+
+    #[test]
+    fn a_declared_table_overrides_the_policy() {
+        let (a, b) = (Oid::from(10_u32), Oid::from(20_u32));
+        let d = Declarations::new(
+            UncascadedPolicy::Error,
+            vec![
+                (b, UncascadedPolicy::FullRefresh),
+                (b, UncascadedPolicy::Warn),
+            ],
+        );
+        assert_eq!(d.tables, vec![(b, UncascadedPolicy::FullRefresh)]);
+        assert_eq!(d.policy_for(a), UncascadedPolicy::Error);
+        assert_eq!(d.policy_for(b), UncascadedPolicy::FullRefresh);
+    }
+
+    #[test]
+    fn the_hint_names_the_tables() {
+        let a = UncascadedTable {
+            oid: Oid::INVALID,
+            name: "public.tb_locale".to_string(),
+            reason: String::new(),
+        };
+        assert!(
+            how_to_declare("public.tv_x", &[&a], "full_refresh")
+                .contains(r#"'{"uncascaded_tables": {"public.tb_locale": "full_refresh"}}'"#)
         );
     }
 }

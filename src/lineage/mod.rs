@@ -1240,13 +1240,18 @@ pub fn analyze(
     // Every other registered TVIEW: its table, its view, what it maps.
     let mut tview_tables: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
     let mut tview_views: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
-    let mut mapped_by: HashMap<String, (HashSet<u32>, bool)> = HashMap::new();
+    // Per other TVIEW: the tables it maps, and those it refreshes in full.
+    let mut mapped_by: HashMap<String, (HashSet<u32>, HashSet<u32>)> = HashMap::new();
     let mut aggregates: Vec<String> = Vec::new();
     Spi::connect(|client| {
         for row in client.select(
             &format!(
                 "SELECT entity::text, table_oid::oid, view_oid::oid, key_mappings, \
-                        uncascaded_policy = 'full_refresh', group_keys IS NOT NULL \
+                        ARRAY(SELECT u::pg_catalog.oid FROM pg_catalog.unnest(uncascaded_oids) u \
+                              WHERE COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
+                                        uncascaded_table_oids, u)], uncascaded_policy) \
+                                    = 'full_refresh'), \
+                        group_keys IS NOT NULL \
                  FROM {} ORDER BY entity",
                 crate::utils::meta_table()
             ),
@@ -1276,7 +1281,13 @@ pub fn analyze(
                 .filter(|e| e["kind"] != "all_keys")
                 .filter_map(|e| e["relid"].as_u64().and_then(|r| u32::try_from(r).ok()))
                 .collect();
-            mapped_by.insert(other, (mapped, row.get::<bool>(5)?.unwrap_or(false)));
+            let full: HashSet<u32> = row
+                .get::<Vec<pgrx::pg_sys::Oid>>(5)?
+                .unwrap_or_default()
+                .iter()
+                .map(|oid| oid.to_u32())
+                .collect();
+            mapped_by.insert(other, (mapped, full));
         }
         Ok::<_, pgrx::spi::Error>(())
     })
@@ -1356,7 +1367,7 @@ pub fn analyze(
                 == Some(child)
                 || mapped_by
                     .get(child)
-                    .is_some_and(|(mapped, full)| *full || mapped.contains(&relid)))
+                    .is_some_and(|(mapped, full)| full.contains(&relid) || mapped.contains(&relid)))
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {

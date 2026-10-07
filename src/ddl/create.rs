@@ -1,6 +1,5 @@
-use super::uncascaded::Uncascaded;
+use super::uncascaded::{Declarations, Uncascaded};
 use crate::cascade_path;
-use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{
     TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
@@ -210,24 +209,23 @@ impl Storage {
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
-/// `policy` is the `uncascaded_policy` to store (a rebuilt TVIEW keeps its own);
-/// `None` reads `pg_tviews.uncascaded_policy`.
+/// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
+/// own); `None` reads `pg_tviews.uncascaded_policy`.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-    policy: Option<UncascadedPolicy>,
+    declarations: Option<Declarations>,
 ) -> TViewResult<u64> {
-    let policy = policy.unwrap_or_else(crate::config::uncascaded_policy);
     create_tview_inner(
         tview_name,
         select_sql,
         schema_name,
         group_keys,
         storage,
-        policy,
+        declarations.unwrap_or_else(Declarations::from_settings),
     )
 }
 
@@ -258,7 +256,7 @@ fn create_tview_inner(
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-    policy: UncascadedPolicy,
+    declarations: Declarations,
 ) -> TViewResult<u64> {
     crate::revision::check();
     log_debug!(
@@ -410,15 +408,14 @@ fn create_tview_inner(
     // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
     // reported under the policy; `error` aborts here, and the objects created above
     // roll back with it.
+    let qualified_tv =
+        crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?;
+    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
-        policy,
+        declarations,
     };
-    super::uncascaded::report(
-        &crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?,
-        &uncascaded.tables,
-        policy,
-    )?;
+    super::uncascaded::report(&qualified_tv, &uncascaded)?;
 
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
@@ -487,9 +484,9 @@ pub fn reregister_metadata(
     let (view_schema, view_name) = super::relation_name(view_oid)?;
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let group_keys = stored_group_keys(entity_name)?;
-    // The stored policy holds; an `error` TVIEW whose set is no longer empty
-    // aborts the re-registration (and the ALTER that caused it).
-    let policy = meta.uncascaded_policy;
+    // The stored policies hold; an `error` table no cascade reaches aborts the
+    // re-registration (and the ALTER that caused it).
+    let declarations = Declarations::of(&meta);
     let Derivation {
         lineage,
         key_mappings,
@@ -507,18 +504,16 @@ pub fn reregister_metadata(
         &format!("tv_{entity_name}"),
         &lineage.identity.name,
     )?;
+    let qualified_tv = crate::utils::qualified_relname_from_oid(relation_oid(
+        schema_name,
+        &format!("tv_{entity_name}"),
+    )?)?;
+    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
-        policy,
+        declarations,
     };
-    super::uncascaded::report(
-        &crate::utils::qualified_relname_from_oid(relation_oid(
-            schema_name,
-            &format!("tv_{entity_name}"),
-        )?)?,
-        &uncascaded.tables,
-        policy,
-    )?;
+    super::uncascaded::report(&qualified_tv, &uncascaded)?;
     register_metadata(
         entity_name,
         view_oid,
@@ -1725,12 +1720,15 @@ fn register_metadata(
             uncascaded_oids,
             uncascaded_policy,
             key_mappings,
-            identity
+            identity,
+            uncascaded_table_oids,
+            uncascaded_table_policies
         ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
                   pg_catalog.jsonb_build_object('kind', $8::pg_catalog.text, 'columns',
                       pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
                           'name', $9::pg_catalog.text,
-                          'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))))
+                          'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))),
+                  $11::pg_catalog.oid[]::pg_catalog.regclass[], $12)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1775,7 +1773,7 @@ fn register_metadata(
         },
         unsafe {
             DatumWithOid::new(
-                uncascaded.policy.as_str(),
+                uncascaded.declarations.policy.as_str(),
                 PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
             )
         },
@@ -1801,6 +1799,28 @@ fn register_metadata(
             DatumWithOid::new(
                 pg_sys::Oid::from(identity.type_oid),
                 PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded
+                    .declarations
+                    .tables
+                    .iter()
+                    .map(|(oid, _)| *oid)
+                    .collect::<Vec<_>>(),
+                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded
+                    .declarations
+                    .tables
+                    .iter()
+                    .map(|(_, policy)| policy.as_str().to_string())
+                    .collect::<Vec<_>>(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
             )
         },
     ];

@@ -96,6 +96,10 @@ pub struct TviewMeta {
     /// #157, #158): the policy stored when the TVIEW was created.
     pub uncascaded_policy: crate::config::UncascadedPolicy,
 
+    /// The tables declared with a policy of their own (#195), each overriding
+    /// `uncascaded_policy` for writes to it.
+    pub table_policies: Vec<(Oid, crate::config::UncascadedPolicy)>,
+
     /// How a write to each base table maps to keys (ADR 0157); empty for a TVIEW
     /// registered by a release without lineage, until it is re-registered.
     pub key_mappings: Vec<crate::lineage::KeyMapping>,
@@ -167,6 +171,7 @@ pub(crate) fn meta_select() -> String {
          dependency_types, dependency_paths, array_match_keys, \
          direct_map_columns, direct_map_keys, is_union, cascade_paths, \
          uncascaded_policy, key_mappings, identity, \
+         uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          distinct_on_keys <> '{{}}' AS legacy_distinct_on \
          FROM {}",
         crate::utils::meta_table()
@@ -240,6 +245,16 @@ impl TviewMeta {
         let key_type = name.map_or(KeyType::Int, KeyType::Text);
         KEY_TYPES.with(|c| c.borrow_mut().insert(self.tview_oid, key_type.clone()));
         Ok(key_type)
+    }
+
+    /// What a write to `table_oid`, a table no cascade reaches, does: its own
+    /// declared policy, else the TVIEW's (#195).
+    #[must_use]
+    pub fn policy_for(&self, table_oid: Oid) -> crate::config::UncascadedPolicy {
+        self.table_policies
+            .iter()
+            .find(|(oid, _)| *oid == table_oid)
+            .map_or(self.uncascaded_policy, |(_, policy)| *policy)
     }
 
     /// The mapping of base table `table_oid`, also found by name (a row restored
@@ -411,6 +426,18 @@ impl TviewMeta {
                 .unwrap_or_default(),
         );
 
+        let table_policies = row["uncascaded_table_oids"]
+            .value::<Vec<Oid>>()?
+            .unwrap_or_default()
+            .into_iter()
+            .zip(
+                row["uncascaded_table_policies"]
+                    .value::<Vec<String>>()?
+                    .unwrap_or_default(),
+            )
+            .map(|(oid, policy)| (oid, crate::config::UncascadedPolicy::from_stored(&policy)))
+            .collect();
+
         let key_mappings = row["key_mappings"]
             .value::<pgrx::JsonB>()?
             .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
@@ -456,6 +483,7 @@ impl TviewMeta {
             is_union,
             cascade_paths,
             uncascaded_policy,
+            table_policies,
             key_mappings,
             identity,
         })
@@ -558,6 +586,7 @@ impl Default for TviewMeta {
             is_union: false,
             cascade_paths: vec![],
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
+            table_policies: Vec::new(),
             key_mappings: vec![],
             identity: RowIdentity::from_catalog("", None, false),
         }

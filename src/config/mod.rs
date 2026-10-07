@@ -75,6 +75,17 @@ impl UncascadedPolicy {
         }
     }
 
+    /// Parse a name as written in an option; `None` for anything else.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "warn" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            "full_refresh" => Some(Self::FullRefresh),
+            _ => None,
+        }
+    }
+
     /// Parse a stored name; anything unknown is `warn`, the default.
     #[must_use]
     pub fn from_stored(name: &str) -> Self {

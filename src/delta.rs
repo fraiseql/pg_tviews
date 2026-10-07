@@ -201,7 +201,7 @@ fn map_statement(
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         return refresh_all(entity, "its mapping of a written table is unknown");
     };
-    let full_refresh = meta.uncascaded_policy == UncascadedPolicy::FullRefresh;
+    let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind.as_str() {
         "all_keys" if full_refresh => {
             let table = if event == Event::Delete {
@@ -341,7 +341,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
     let Some(mapping) = meta.key_mapping(table_oid, Some(root)) else {
         return Ok(false);
     };
-    let full_refresh = meta.uncascaded_policy == UncascadedPolicy::FullRefresh;
+    let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind.as_str() {
         "all_keys" if full_refresh => {
             crate::queue::enqueue_refresh_all(entity);
