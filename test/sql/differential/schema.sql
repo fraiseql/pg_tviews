@@ -202,6 +202,25 @@ SELECT harness_create('tv_item', 'pk_item', $$
   FROM tb_item i LEFT JOIN v_category_path cp ON cp.pk_category = i.fk_category $$,
   policy => 'full_refresh');
 
+-- the first order of each customer by ROW_NUMBER over a partition (#187)
+CREATE VIEW v_first_order AS
+SELECT fk_customer, ref, status FROM (
+  SELECT o.fk_customer, o.ref, o.status,
+         row_number() OVER (PARTITION BY o.fk_customer ORDER BY o.status, o.pk_order) AS rn
+  FROM tb_order o) s
+WHERE rn = 1;
+SELECT harness_create('tv_custfirst', 'pk_custfirst', $$
+  SELECT c.pk_customer AS pk_custfirst, c.id, jsonb_build_object('first', f.ref, 'status', f.status) AS data
+  FROM tb_customer c LEFT JOIN v_first_order f ON f.fk_customer = c.pk_customer $$,
+  policy => 'error');
+-- a materialized view, rebuilt by REFRESH MATERIALIZED VIEW (#189)
+CREATE MATERIALIZED VIEW mv_line_count AS SELECT fk_order, count(*) AS n FROM tb_line GROUP BY fk_order;
+SELECT harness_create('tv_ordcount', 'pk_ordcount', $$
+  SELECT o.pk_order AS pk_ordcount, o.id, jsonb_build_object('lines', coalesce(m.n, 0), 'c', c.name) AS data
+  FROM tb_order o LEFT JOIN tb_customer c ON c.pk_customer = o.fk_customer
+  LEFT JOIN mv_line_count m ON m.fk_order = o.pk_order $$,
+  policy => 'full_refresh');
+
 -- ── writes ───────────────────────────────────────────────────────────────────
 -- `n` rows of `tbl` from a random offset, as a subquery of their pks.
 CREATE FUNCTION harness_pick(tbl text, pk text, n int) RETURNS text LANGUAGE sql AS $$
@@ -214,7 +233,7 @@ CREATE FUNCTION harness_i(hi int) RETURNS int LANGUAGE sql AS $$
 
 -- One random statement.
 CREATE FUNCTION harness_statement(i int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r int := floor(random() * 42)::int;
+DECLARE r int := floor(random() * 43)::int;
 BEGIN
     RETURN CASE r
     WHEN 0 THEN format('INSERT INTO tb_customer (name) SELECT ''c%s_'' || g FROM generate_series(1, %s) g', i, harness_n())
@@ -258,6 +277,7 @@ BEGIN
     WHEN 38 THEN format('UPDATE tb_category SET name = name || ''.%s'' WHERE pk_category IN %s', i, harness_pick('tb_category', 'pk_category', harness_n()))
     WHEN 39 THEN format('INSERT INTO tb_category (pk_category, fk_parent, name) SELECT max(pk_category) + 1, %s, ''k%s'' FROM tb_category', harness_i(6), i)
     WHEN 40 THEN format('UPDATE tb_item SET fk_category = %s, name = name || ''.%s'' WHERE pk_item IN %s', harness_i(7), i, harness_pick('tb_item', 'pk_item', harness_n()))
+    WHEN 41 THEN 'REFRESH MATERIALIZED VIEW mv_line_count'
     ELSE format('UPDATE tb_vnote SET tag = chr(97 + %s), fk_customer = %s WHERE pk_vnote IN %s', floor(random() * 6)::int, harness_i(8), harness_pick('tb_vnote', 'pk_vnote', harness_n()))
     END;
 END $$;

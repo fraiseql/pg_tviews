@@ -449,9 +449,18 @@ impl Walker<'_> {
             if !(*query).setOperations.is_null() {
                 return self.union_outputs(query, flags);
             }
-            let opaque = (link != Link::Top).then(|| opaque_reason(query)).flatten();
+            // Window functions all partitioned leave the partition columns visible
+            // (#187); their occurrences keep the window as the reason they are not
+            // linked otherwise.
+            let partitioned = link != Link::Top && windows_partitioned(query);
+            let opaque = (link != Link::Top)
+                .then(|| opaque_reason(query, partitioned))
+                .flatten();
             let flags = Flags {
-                opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
+                opaque_level: opaque
+                    .clone()
+                    .or_else(|| partitioned.then(|| WINDOW_REASON.to_string()))
+                    .or_else(|| flags.opaque_level.clone()),
                 ..flags.clone()
             };
             self.push_level(query, Vec::new(), link);
@@ -542,6 +551,13 @@ impl Walker<'_> {
             };
             let group_keys = key_columns((*query).groupClause);
             let distinct_keys = key_columns((*query).distinctClause);
+            // A row's window values come from the rows of its partition: only a
+            // column of every window's PARTITION BY passes through (#187).
+            let partitions: Vec<(*mut pg_sys::List, Vec<Column>)> =
+                elements::<pg_sys::WindowClause>((*query).windowClause)
+                    .iter()
+                    .map(|w| ((**w).partitionClause, key_columns((**w).partitionClause)))
+                    .collect();
             let keyed =
                 |tle: *mut pg_sys::TargetEntry, clause: *mut pg_sys::List, keys: &[Column]| {
                     in_clause((*tle).ressortgroupref, clause)
@@ -557,7 +573,10 @@ impl Walker<'_> {
                             || (!opaque
                                 && (!grouped || keyed(tle, (*query).groupClause, &group_keys))
                                 && (!(*query).hasDistinctOn
-                                    || keyed(tle, (*query).distinctClause, &distinct_keys))))
+                                    || keyed(tle, (*query).distinctClause, &distinct_keys))
+                                && partitions
+                                    .iter()
+                                    .all(|(clause, keys)| keyed(tle, *clause, keys))))
                 })
                 .collect();
             Ok(tles
@@ -1932,20 +1951,25 @@ fn list_len(list: *mut pg_sys::List) -> usize {
     }
 }
 
+/// Why a level's occurrences sit under a window function.
+const WINDOW_REASON: &str = "read under a window function";
+
 /// Why none of a level's columns can be seen through from the level above: a
 /// window function, LIMIT/OFFSET or GROUPING SETS decide which rows exist, or what
-/// they hold, from rows other than their own.
+/// they hold, from rows other than their own. Window functions all partitioned
+/// (`partitioned`, see [`windows_partitioned`]) don't count: the level above sees
+/// their partition columns (#187).
 ///
 /// A set-returning function in the select list only multiplies rows: the other
 /// output columns keep the values of the row they come from, so only the outputs
 /// that return a set are opaque (see `Walker::output`).
 ///
 /// SAFETY: `query` is a valid Query.
-unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
+unsafe fn opaque_reason(query: *mut pg_sys::Query, partitioned: bool) -> Option<String> {
     // SAFETY: fields of a valid Query.
     unsafe {
-        if (*query).hasWindowFuncs {
-            Some("read under a window function".to_string())
+        if (*query).hasWindowFuncs && !partitioned {
+            Some(WINDOW_REASON.to_string())
         } else if !(*query).limitCount.is_null() || !(*query).limitOffset.is_null() {
             Some("read under LIMIT/OFFSET".to_string())
         } else if !(*query).groupingSets.is_null() {
@@ -1956,6 +1980,21 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
     }
 }
 
+/// Whether a level has window functions and every one of its windows has a
+/// PARTITION BY: a row's window values then come from the rows of its partition
+/// only.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn windows_partitioned(query: *mut pg_sys::Query) -> bool {
+    // SAFETY: fields of a valid Query and of its window clauses.
+    unsafe {
+        let windows = elements::<pg_sys::WindowClause>((*query).windowClause);
+        (*query).hasWindowFuncs
+            && !windows.is_empty()
+            && windows.iter().all(|w| list_len((**w).partitionClause) > 0)
+    }
+}
+
 /// [`opaque_reason`] for a level whose output is the TVIEW itself, where a
 /// set-returning function is one too: the rows it makes share one key.
 ///
@@ -1963,7 +2002,7 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
 unsafe fn top_opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
     // SAFETY: fields of a valid Query.
     unsafe {
-        opaque_reason(query)
+        opaque_reason(query, false)
             .or_else(|| {
                 (*query)
                     .hasTargetSRFs
