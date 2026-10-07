@@ -40,6 +40,9 @@ pub(crate) struct Options {
     uncascaded_policy: Option<UncascadedPolicy>,
     /// Tables with a policy of their own (#195), as named: resolved when used.
     uncascaded_tables: Option<Vec<(String, UncascadedPolicy)>>,
+    /// Functions the definition calls, each with the tables it reads (#193), as
+    /// named: resolved when used.
+    function_reads: Option<Vec<(String, Vec<String>)>>,
 }
 
 /// The `group_keys` option.
@@ -152,6 +155,30 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                 }
                 options.uncascaded_tables = Some(declared);
             }
+            "function_reads" => {
+                let shape = || {
+                    invalid(
+                        key,
+                        "must be an object mapping each function, with its argument types, \
+                         to the tables it reads, e.g. \
+                         {\"public.label_suffix()\": [\"public.tb_setting\"]}",
+                    )
+                };
+                let serde_json::Value::Object(functions) = value else {
+                    return Err(shape());
+                };
+                let mut declared = Vec::new();
+                for (function, tables) in functions {
+                    let tables = tables
+                        .as_array()
+                        .ok_or_else(shape)?
+                        .iter()
+                        .map(|t| t.as_str().map(str::to_string).ok_or_else(shape))
+                        .collect::<TViewResult<Vec<_>>>()?;
+                    declared.push((function.clone(), tables));
+                }
+                options.function_reads = Some(declared);
+            }
             "group_keys" => {
                 options.group_keys = match value {
                     serde_json::Value::Null => GroupKeysOption::Plain,
@@ -176,7 +203,8 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                     "options",
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
-                         data_gin_index, group_keys, uncascaded_policy, uncascaded_tables)"
+                         data_gin_index, group_keys, uncascaded_policy, uncascaded_tables, \
+                         function_reads)"
                     ),
                 ));
             }
@@ -191,41 +219,88 @@ const POLICIES: &str = "must be \"error\", \"full_refresh\" or \"warn\"";
 ///
 /// # Errors
 /// Returns an error naming a table that does not exist or is not a table.
-pub(crate) fn resolve_tables(
+fn resolve_tables(
     declared: &[(String, UncascadedPolicy)],
 ) -> TViewResult<Vec<(pg_sys::Oid, UncascadedPolicy)>> {
-    let mut tables = Vec::new();
-    for (name, policy) in declared {
-        let found = Spi::connect(|client| {
+    declared
+        .iter()
+        .map(|(name, policy)| Ok((resolve_table(name, "uncascaded_tables")?, *policy)))
+        .collect()
+}
+
+/// The table an option names, by OID.
+///
+/// # Errors
+/// Returns an error if it does not exist or is not a table.
+fn resolve_table(name: &str, option: &str) -> TViewResult<pg_sys::Oid> {
+    let found = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT c.oid, c.relkind IN ('r', 'p', 'm', 'f') \
+                 FROM (SELECT pg_catalog.to_regclass($1) AS relation) r \
+                 LEFT JOIN pg_catalog.pg_class c ON c.oid = r.relation",
+                None,
+                &[text(name)],
+            )?
+            .first()
+            .get_two::<pg_sys::Oid, bool>()
+    })
+    .map_err(|e| catalog(&format!("Look up a table of {option}"), &e))?;
+    match found {
+        (Some(oid), Some(true)) => Ok(oid),
+        (Some(_), _) => Err(invalid(
+            option,
+            format!("{name} is not a table: name the tables a view reads"),
+        )),
+        _ => Err(invalid(option, format!("relation {name} does not exist"))),
+    }
+}
+
+/// The functions of the `function_reads` option, as `schema.name(argument
+/// types)`, with their tables by OID.
+///
+/// # Errors
+/// Returns an error naming a function or table that does not exist.
+fn resolve_function_reads(
+    declared: &[(String, Vec<String>)],
+) -> TViewResult<Vec<(String, Vec<pg_sys::Oid>)>> {
+    let mut reads = Vec::new();
+    for (function, tables) in declared {
+        let signature = Spi::connect(|client| {
             client
                 .select(
-                    "SELECT c.oid, c.relkind IN ('r', 'p', 'm', 'f') \
-                     FROM (SELECT pg_catalog.to_regclass($1) AS relation) r \
-                     LEFT JOIN pg_catalog.pg_class c ON c.oid = r.relation",
+                    &format!(
+                        "SELECT {} FROM pg_catalog.pg_proc p \
+                         WHERE p.oid = pg_catalog.to_regprocedure($1)",
+                        crate::lineage::FUNCTION_SIGNATURE
+                    ),
                     None,
-                    &[text(name)],
+                    &[text(function)],
                 )?
                 .first()
-                .get_two::<pg_sys::Oid, bool>()
+                .get_one::<String>()
         })
-        .map_err(|e| catalog("Look up a table of uncascaded_tables", &e))?;
-        match found {
-            (Some(oid), Some(true)) => tables.push((oid, *policy)),
-            (Some(_), _) => {
-                return Err(invalid(
-                    "uncascaded_tables",
-                    format!("{name} is not a table: name the tables a view reads"),
-                ));
-            }
-            _ => {
-                return Err(invalid(
-                    "uncascaded_tables",
-                    format!("relation {name} does not exist"),
-                ));
-            }
-        }
+        .or_else(|e| match e {
+            spi::Error::InvalidPosition => Ok(None),
+            e => Err(e),
+        })
+        .map_err(|e| catalog("Look up a function of function_reads", &e))?
+        .ok_or_else(|| {
+            invalid(
+                "function_reads",
+                format!(
+                    "function {function} does not exist: name it with its argument types, \
+                     e.g. public.label_suffix() or public.price(bigint, date)"
+                ),
+            )
+        })?;
+        let tables = tables
+            .iter()
+            .map(|t| resolve_table(t, "function_reads"))
+            .collect::<TViewResult<Vec<_>>>()?;
+        reads.push((signature, tables));
     }
-    Ok(tables)
+    Ok(reads)
 }
 
 /// Split a TVIEW name, `tv_<entity>`, `<entity>` or `schema.tv_<entity>`, into
@@ -395,6 +470,10 @@ pub(crate) fn create_or_replace(
             Some(declared) => resolve_tables(declared)?,
             None => current_declarations.tables.clone(),
         },
+        match &options.function_reads {
+            Some(declared) => resolve_function_reads(declared)?,
+            None => current_declarations.function_reads.clone(),
+        },
     );
 
     if comparison.same_view && desired_keys == current_keys {
@@ -548,12 +627,20 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
         data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
     };
-    let declarations = match (options.uncascaded_policy, &options.uncascaded_tables) {
-        (None, None) => None,
-        (policy, tables) => Some(Declarations::new(
+    let declarations = match (
+        options.uncascaded_policy,
+        &options.uncascaded_tables,
+        &options.function_reads,
+    ) {
+        (None, None, None) => None,
+        (policy, tables, functions) => Some(Declarations::new(
             policy.unwrap_or_else(crate::config::uncascaded_policy),
             match tables {
                 Some(declared) => resolve_tables(declared)?,
+                None => Vec::new(),
+            },
+            match functions {
+                Some(declared) => resolve_function_reads(declared)?,
                 None => Vec::new(),
             },
         )),

@@ -77,7 +77,38 @@ ALTER TABLE @extschema@.pg_tview_meta
     ADD COLUMN uncascaded_table_oids REGCLASS[] NOT NULL DEFAULT '{}',
     ADD COLUMN uncascaded_table_policies TEXT[] NOT NULL DEFAULT '{}';
 
--- tviews.registry gains uncascaded_table_policies (#195), appended.
+-- The functions a TVIEW calls, declared with the tables each reads (#193).
+ALTER TABLE @extschema@.pg_tview_meta
+    ADD COLUMN function_read_functions TEXT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN function_read_tables REGCLASS[] NOT NULL DEFAULT '{}';
+
+-- The tables those functions read are read by the TVIEW (#193).
+-- pg_tview_reads: begin
+CREATE OR REPLACE VIEW @extschema@.pg_tview_reads AS
+WITH RECURSIVE reads(entity, relid) AS (
+    SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
+  UNION
+    -- Tables read inside the functions it calls, as declared (issue #193).
+    SELECT m.entity, t.relid::oid
+    FROM @extschema@.pg_tview_meta m,
+         pg_catalog.unnest(m.function_read_tables) AS t(relid)
+    WHERE t.relid IS NOT NULL
+  UNION
+    SELECT r.entity, d.refobjid
+    FROM reads r
+    JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v'
+    JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid
+    JOIN pg_catalog.pg_depend d
+      ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
+     AND d.objid = w.oid
+     AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+     AND d.refobjid <> v.oid
+)
+SELECT entity, relid FROM reads;
+-- pg_tview_reads: end
+
+-- tviews.registry gains uncascaded_table_policies (#195) and function_reads
+-- (#193), appended.
 -- registry: begin
 CREATE OR REPLACE VIEW @extschema@.registry AS
 SELECT
@@ -129,7 +160,18 @@ SELECT
         (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
          FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
                          pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
-        '{}') AS uncascaded_table_policies
+        '{}') AS uncascaded_table_policies,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
+         FROM (SELECT r.function,
+                      COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
+                                   FILTER (WHERE r.relation IS NOT NULL),
+                               '[]') AS tables
+               FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
+                               pg_catalog.unnest(m.function_read_tables))
+                    WITH ORDINALITY AS r(function, relation, n)
+               GROUP BY r.function) f),
+        '{}') AS function_reads
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

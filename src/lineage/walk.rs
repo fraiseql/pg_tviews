@@ -2102,9 +2102,9 @@ impl Walker<'_> {
             let (name, immutable) = self.function(funcid);
             if !immutable
                 && !name.starts_with("pg_catalog.")
-                && !self.graph.untracked_functions.contains(&name)
+                && !self.graph.untracked_functions.contains(&funcid.to_u32())
             {
-                self.graph.untracked_functions.push(name);
+                self.graph.untracked_functions.push(funcid.to_u32());
             }
         }
     }

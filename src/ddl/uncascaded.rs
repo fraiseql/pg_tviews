@@ -19,30 +19,68 @@ pub(crate) struct UncascadedTable {
     pub reason: String,
 }
 
-/// What a TVIEW declares about the reads no cascade reaches: its policy, and the
-/// tables with a policy of their own (#195).
+/// What a TVIEW declares about the reads no cascade reaches: its policy, the
+/// tables with a policy of their own (#195), and the tables the functions it
+/// calls read (#193).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declarations {
     pub policy: UncascadedPolicy,
     /// Sorted by OID.
     pub tables: Vec<(Oid, UncascadedPolicy)>,
+    /// `schema.name(argument types)` of each function, with the tables it reads;
+    /// sorted.
+    pub function_reads: Vec<(String, Vec<Oid>)>,
 }
 
 impl Declarations {
     /// The settings' declarations: `pg_tviews.uncascaded_policy`, no table.
     pub(crate) fn from_settings() -> Self {
-        Self::new(crate::config::uncascaded_policy(), Vec::new())
+        Self::new(crate::config::uncascaded_policy(), Vec::new(), Vec::new())
     }
 
-    pub(crate) fn new(policy: UncascadedPolicy, mut tables: Vec<(Oid, UncascadedPolicy)>) -> Self {
+    pub(crate) fn new(
+        policy: UncascadedPolicy,
+        mut tables: Vec<(Oid, UncascadedPolicy)>,
+        mut function_reads: Vec<(String, Vec<Oid>)>,
+    ) -> Self {
         tables.sort_by_key(|(oid, _)| oid.to_u32());
         tables.dedup_by_key(|(oid, _)| *oid);
-        Self { policy, tables }
+        for (_, read) in &mut function_reads {
+            read.sort_by_key(|oid| oid.to_u32());
+            read.dedup();
+        }
+        function_reads.sort_by(|(a, _), (b, _)| a.cmp(b));
+        function_reads.dedup_by(|(a, _), (b, _)| a == b);
+        Self {
+            policy,
+            tables,
+            function_reads,
+        }
     }
 
     /// The declarations stored with a TVIEW.
     pub(crate) fn of(meta: &crate::catalog::TviewMeta) -> Self {
-        Self::new(meta.uncascaded_policy, meta.table_policies.clone())
+        Self::new(
+            meta.uncascaded_policy,
+            meta.table_policies.clone(),
+            meta.function_reads.clone(),
+        )
+    }
+
+    /// `(function, table)` pairs, a function that reads no table paired with
+    /// `Oid::INVALID` (bound as NULL), as `pg_tview_meta` stores them.
+    pub(crate) fn function_read_pairs(&self) -> (Vec<String>, Vec<Oid>) {
+        self.function_reads
+            .iter()
+            .flat_map(|(function, tables)| {
+                let tables = if tables.is_empty() {
+                    vec![Oid::INVALID]
+                } else {
+                    tables.clone()
+                };
+                tables.into_iter().map(move |t| (function.clone(), t))
+            })
+            .unzip()
     }
 
     /// The policy of writes to `table`.
@@ -63,6 +101,7 @@ impl Declarations {
             .iter()
             .map(|(_, policy)| policy.as_str().to_string())
             .collect();
+        let (functions, function_tables) = self.function_read_pairs();
         // SAFETY: each datum copies or borrows a value that outlives the call.
         let args = unsafe {
             [
@@ -82,13 +121,22 @@ impl Declarations {
                     policies,
                     PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
                 ),
+                pgrx::datum::DatumWithOid::new(
+                    functions,
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
+                ),
+                pgrx::datum::DatumWithOid::new(
+                    function_tables,
+                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+                ),
             ]
         };
         Spi::run_with_args(
             &format!(
                 "UPDATE {} SET uncascaded_policy = $2, \
                      uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
-                     uncascaded_table_policies = $4 \
+                     uncascaded_table_policies = $4, function_read_functions = $5, \
+                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[] \
                  WHERE entity = $1",
                 crate::utils::meta_table()
             ),
@@ -204,6 +252,127 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
     Ok(())
 }
 
+/// Add the tables the declared functions read to `lineage` (#193), and return
+/// them with the functions the definition calls that are not declared.
+///
+/// # Errors
+/// Returns an error naming a declared function the definition does not call.
+pub(crate) fn apply_function_reads(
+    entity: &str,
+    declarations: &Declarations,
+    lineage: &mut crate::lineage::Lineage,
+) -> TViewResult<(Vec<Oid>, Vec<String>)> {
+    let mut reads = Vec::new();
+    for (function, tables) in &declarations.function_reads {
+        if !lineage.functions.iter().any(|(_, f)| f == function) {
+            return Err(TViewError::InvalidInput {
+                parameter: "function_reads".to_string(),
+                reason: format!(
+                    "{function} is declared in function_reads, but tv_{entity} does not call it: \
+                     remove it from the list"
+                ),
+            });
+        }
+        for &table in tables {
+            reads.push(function_read(function, table)?);
+        }
+    }
+    lineage.add_function_reads(&reads);
+    let tables = reads
+        .iter()
+        .filter(|r| r.tview.is_none())
+        .map(|r| Oid::from(r.relid))
+        .collect();
+    let undeclared = lineage
+        .functions
+        .iter()
+        .filter(|(_, f)| !declarations.function_reads.iter().any(|(d, _)| d == f))
+        .map(|(_, f)| f.clone())
+        .collect();
+    Ok((tables, undeclared))
+}
+
+/// Table `table`, read inside `function`, as the lineage records it.
+fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::FunctionRead> {
+    let (relname, relkind, tview) = Spi::connect(|client| {
+        client
+            .select(
+                &format!(
+                    "SELECT c.relname::text, c.relkind::text, \
+                            (SELECT m.entity::text FROM {} m WHERE m.table_oid::pg_catalog.oid = c.oid) \
+                     FROM pg_catalog.pg_class c WHERE c.oid = $1",
+                    crate::utils::meta_table()
+                ),
+                None,
+                // SAFETY: the datum copies the OID.
+                &[unsafe {
+                    pgrx::datum::DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+                }],
+            )?
+            .first()
+            .get_three::<String, String, String>()
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Read a table a function reads".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    Ok(crate::lineage::FunctionRead {
+        function: function.to_string(),
+        relid: table.to_u32(),
+        relname: relname.unwrap_or_default(),
+        qualified: crate::utils::qualified_relname_from_oid(table)?,
+        matview: relkind.as_deref() == Some("m"),
+        tview,
+    })
+}
+
+/// Report the functions `tview` calls that may read tables and are not declared
+/// (#193): nothing would refresh it when those tables change, so they are refused
+/// under `error` and `full_refresh`, and warned about under `warn`.
+///
+/// # Errors
+/// Never returns one: a refusal is raised here.
+pub(crate) fn report_functions(
+    tview: &str,
+    functions: &[String],
+    policy: UncascadedPolicy,
+) -> TViewResult<()> {
+    let Some(first) = functions.first() else {
+        return Ok(());
+    };
+    let names = functions.join(", ");
+    let (calls, it) = if functions.len() == 1 {
+        ("calls", "it reads")
+    } else {
+        ("calls functions", "they read")
+    };
+    let message = format!(
+        "{tview} {calls} {names}, not immutable: the tables {it} are invisible to pg_tviews, \
+         and writes to them would not refresh {tview}: declare them in function_reads"
+    );
+    let hint = format!(
+        "Declare them: pg_tviews_create_or_replace('{tview}', <definition>, options => \
+         '{{\"function_reads\": {{\"{}\": [\"<schema.table>\", …]}}}}'), [] for a function \
+         that reads no table; then give those tables a policy in uncascaded_tables. Or make \
+         the function IMMUTABLE if it reads nothing that changes.",
+        first.replace('"', "\\\"")
+    );
+    let level = if policy == UncascadedPolicy::Warn {
+        PgLogLevel::WARNING
+    } else {
+        PgLogLevel::ERROR
+    };
+    let code = if policy == UncascadedPolicy::Warn {
+        PgSqlErrorCode::ERRCODE_WARNING
+    } else {
+        PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE
+    };
+    pg_sys::panic::ErrorReport::new(code, message, function_name!())
+        .set_hint(hint)
+        .report(level);
+    Ok(())
+}
+
 /// Refuse a table declared in `uncascaded_tables` that `lineage` does not read,
 /// or whose writes it traces: the declaration would never apply (#195).
 ///
@@ -313,10 +482,37 @@ mod tests {
                 (b, UncascadedPolicy::FullRefresh),
                 (b, UncascadedPolicy::Warn),
             ],
+            Vec::new(),
         );
         assert_eq!(d.tables, vec![(b, UncascadedPolicy::FullRefresh)]);
         assert_eq!(d.policy_for(a), UncascadedPolicy::Error);
         assert_eq!(d.policy_for(b), UncascadedPolicy::FullRefresh);
+    }
+
+    #[test]
+    fn function_reads_are_stored_as_pairs() {
+        let (a, b) = (Oid::from(10_u32), Oid::from(20_u32));
+        let d = Declarations::new(
+            UncascadedPolicy::Error,
+            Vec::new(),
+            vec![
+                ("public.tag()".to_string(), Vec::new()),
+                ("public.label()".to_string(), vec![b, a, b]),
+            ],
+        );
+        assert_eq!(
+            d.function_reads,
+            vec![
+                ("public.label()".to_string(), vec![a, b]),
+                ("public.tag()".to_string(), Vec::new()),
+            ]
+        );
+        let (functions, tables) = d.function_read_pairs();
+        assert_eq!(
+            functions,
+            ["public.label()", "public.label()", "public.tag()"]
+        );
+        assert_eq!(tables, [a, b, Oid::INVALID]);
     }
 
     #[test]

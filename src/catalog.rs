@@ -100,6 +100,10 @@ pub struct TviewMeta {
     /// `uncascaded_policy` for writes to it.
     pub table_policies: Vec<(Oid, crate::config::UncascadedPolicy)>,
 
+    /// The functions the definition calls, declared with the tables each reads
+    /// (#193): `schema.name(argument types)`.
+    pub function_reads: Vec<(String, Vec<Oid>)>,
+
     /// How a write to each base table maps to keys (ADR 0157); empty for a TVIEW
     /// registered by a release without lineage, until it is re-registered.
     pub key_mappings: Vec<crate::lineage::KeyMapping>,
@@ -172,6 +176,7 @@ pub(crate) fn meta_select() -> String {
          direct_map_columns, direct_map_keys, is_union, cascade_paths, \
          uncascaded_policy, key_mappings, identity, \
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
+         function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          distinct_on_keys <> '{{}}' AS legacy_distinct_on \
          FROM {}",
         crate::utils::meta_table()
@@ -438,6 +443,25 @@ impl TviewMeta {
             .map(|(oid, policy)| (oid, crate::config::UncascadedPolicy::from_stored(&policy)))
             .collect();
 
+        let mut function_reads: Vec<(String, Vec<Oid>)> = Vec::new();
+        for (function, table) in row["function_read_functions"]
+            .value::<Vec<String>>()?
+            .unwrap_or_default()
+            .into_iter()
+            .zip(
+                row["function_read_tables"]
+                    .value::<Vec<Option<Oid>>>()?
+                    .unwrap_or_default(),
+            )
+        {
+            if function_reads.last().is_none_or(|(f, _)| *f != function) {
+                function_reads.push((function, Vec::new()));
+            }
+            if let (Some(table), Some((_, tables))) = (table, function_reads.last_mut()) {
+                tables.push(table);
+            }
+        }
+
         let key_mappings = row["key_mappings"]
             .value::<pgrx::JsonB>()?
             .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
@@ -484,6 +508,7 @@ impl TviewMeta {
             cascade_paths,
             uncascaded_policy,
             table_policies,
+            function_reads,
             key_mappings,
             identity,
         })
@@ -587,6 +612,7 @@ impl Default for TviewMeta {
             cascade_paths: vec![],
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
             table_policies: Vec::new(),
+            function_reads: Vec::new(),
             key_mappings: vec![],
             identity: RowIdentity::from_catalog("", None, false),
         }

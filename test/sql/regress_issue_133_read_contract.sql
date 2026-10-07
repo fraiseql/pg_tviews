@@ -74,7 +74,7 @@ SELECT must(
     = 'schema text, name text, entity text, query text, base_tables regclass[], '
       'logged boolean, options jsonb, needs_reregister boolean, view regclass, '
       'uncascaded_tables regclass[], uncascaded_policy text, cascade_kinds jsonb, identity text[], '
-      'uncascaded_table_policies jsonb',
+      'uncascaded_table_policies jsonb, function_reads jsonb',
     'tviews.registry columns differ from contract 1');
 
 -- 2. One row per TVIEW, with catalog truth.
