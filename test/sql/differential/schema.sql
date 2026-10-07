@@ -221,6 +221,15 @@ SELECT harness_create('tv_ordcount', 'pk_ordcount', $$
   LEFT JOIN mv_line_count m ON m.fk_order = o.pk_order $$,
   policy => 'full_refresh');
 
+-- a UNION read through a view, one branch keyed by its negated pk (#188)
+CREATE VIEW v_anytask AS
+SELECT t.pk_task AS pk_anytask, t.id, t.title, false AS archived FROM tb_task t
+UNION ALL
+SELECT -a.pk_task, a.id, a.title, true FROM tb_task_archive a;
+SELECT harness_create('tv_anytask', 'pk_anytask', $$
+  SELECT v.pk_anytask, v.id, jsonb_build_object('title', v.title, 'archived', v.archived) AS data
+  FROM v_anytask v $$, policy => 'error');
+
 -- ── writes ───────────────────────────────────────────────────────────────────
 -- `n` rows of `tbl` from a random offset, as a subquery of their pks.
 CREATE FUNCTION harness_pick(tbl text, pk text, n int) RETURNS text LANGUAGE sql AS $$

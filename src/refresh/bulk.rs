@@ -63,7 +63,19 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let qi_key = crate::utils::quote_identifier(key_col);
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{entity}"));
     let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
-    let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
+    // A UNION view can return several rows for one key: union_duplicate_policy
+    // decides (an error, or the first row), as for a single key.
+    let source_sql = if meta.is_union {
+        format!(
+            "SELECT DISTINCT ON ({qi_key}) {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}"
+        )
+    } else {
+        format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}")
+    };
+    let duplicate_sql = format!(
+        "SELECT (SELECT {qi_key}::text FROM {qi_view} WHERE {qi_key} = {any_key} \
+                 GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
+    );
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
         super::upsert_conflict_action(&qi_tv, &col_names, key_col, None)
@@ -87,6 +99,14 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let before = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
+        if meta.is_union
+            && let Some(key) = pgrx::Spi::get_one_with_args::<String>(
+                &duplicate_sql,
+                &[super::key_array(&key_type, chunk)?],
+            )?
+        {
+            super::main::union_duplicate(&meta, &key);
+        }
         let (_, written) = super::run_counted_upsert(
             entity,
             &qi_tv,

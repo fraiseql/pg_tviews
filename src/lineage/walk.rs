@@ -9,7 +9,7 @@
 
 use super::{
     Column, Conjunct, Graph, IdentityKind, Lookup, Maps, Occurrence, OutputColumn, Piece, Root,
-    Sql, WalkedIdentity,
+    Scope, Sql, WalkedIdentity,
 };
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
@@ -49,6 +49,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         wanted: None,
         identity_level: false,
         nullable: HashSet::new(),
+        unions: 0,
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -84,7 +85,8 @@ unsafe fn view_query(view_oid: Oid) -> TViewResult<*mut pg_sys::Query> {
 /// How a query level sits inside the occurrence's path from the top.
 #[derive(Debug, Clone, Default)]
 struct Flags {
-    branch: usize,
+    /// The UNION leaves the level sits in, outermost first.
+    unions: Scope,
     via_view: Option<String>,
     via_tview: Option<String>,
     in_sublink: bool,
@@ -97,8 +99,9 @@ struct Flags {
 #[derive(Debug, Clone)]
 enum Resolved {
     Col(Column),
-    /// One column per UNION branch of a subquery.
-    Alt(Vec<Column>),
+    /// What the column stands for in each UNION branch of a subquery (a column
+    /// or a computed output), and the scopes of the branches where it is opaque.
+    Alt(Vec<Resolved>, Vec<Scope>),
     /// An output computed from columns (#182).
     Expr(Computed),
     Opaque,
@@ -123,7 +126,7 @@ impl Resolved {
     fn occs(&self) -> Vec<usize> {
         match self {
             Self::Col(c) => vec![c.occ],
-            Self::Alt(cs) => cs.iter().map(|c| c.occ).collect(),
+            Self::Alt(terms, _) => terms.iter().flat_map(Self::occs).collect(),
             Self::Expr(e) => sql_occs(&e.sql),
             Self::Opaque => vec![],
         }
@@ -232,6 +235,8 @@ struct Walker<'c> {
     /// Occurrences on the nullable side of an outer join walked so far: their
     /// columns may be NULL-extended where a predicate above reads them.
     nullable: HashSet<usize>,
+    /// UNIONs entered so far: the next one's number.
+    unions: usize,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -358,12 +363,9 @@ impl Walker<'_> {
                     _ => key_position,
                 };
                 if opaque.is_none()
-                    && let Some(Resolved::Col(key)) = root_position.and_then(|p| outputs.get(p))
+                    && let Some(key) = root_position.and_then(|p| outputs.get(p))
                 {
-                    self.graph.roots.push(Root {
-                        branch: flags.branch,
-                        key: key.clone(),
-                    });
+                    self.add_roots(key, &flags.unions);
                 }
                 return Ok(());
             }
@@ -379,6 +381,7 @@ impl Walker<'_> {
             );
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
+            let union = self.next_union();
             let result: TViewResult<()> = (|| {
                 for (branch, rtindex) in leaves.into_iter().enumerate() {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
@@ -387,19 +390,17 @@ impl Walker<'_> {
                         continue;
                     };
                     let opaque = whole.clone().or_else(|| top_opaque_reason((*rte).subquery));
+                    let mut unions = flags.unions.clone();
+                    unions.push((union, branch));
                     let leaf_flags = Flags {
-                        branch,
+                        unions: unions.clone(),
                         opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
                         ..flags.clone()
                     };
                     let outputs = self.level((*rte).subquery, &leaf_flags, Link::Top)?;
-                    if opaque.is_none()
-                        && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
-                    {
-                        self.graph.roots.push(Root {
-                            branch,
-                            key: key.clone(),
-                        });
+                    match key_position.and_then(|p| outputs.get(p)) {
+                        Some(key) if opaque.is_none() => self.add_roots(key, &unions),
+                        _ => self.graph.holes.push(unions),
                     }
                 }
                 self.unread_ctes(flags)
@@ -679,20 +680,33 @@ impl Walker<'_> {
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
             let width = list_len((*query).targetList);
-            let mut columns: Vec<Vec<Column>> = vec![Vec::new(); width];
+            let union = self.next_union();
+            let mut columns: Vec<(Vec<Resolved>, Vec<Scope>)> =
+                vec![(Vec::new(), Vec::new()); width];
             let result: TViewResult<()> = (|| {
-                for rtindex in leaves {
+                for (leaf, rtindex) in leaves.into_iter().enumerate() {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
                         .get(rtindex.wrapping_sub(1))
                     else {
                         continue;
                     };
-                    let outputs = self.level((*rte).subquery, flags, Link::From)?;
+                    let mut unions = flags.unions.clone();
+                    unions.push((union, leaf));
+                    let leaf_flags = Flags {
+                        unions: unions.clone(),
+                        ..flags.clone()
+                    };
+                    let outputs = self.level((*rte).subquery, &leaf_flags, Link::From)?;
                     for (i, out) in outputs.into_iter().take(width).enumerate() {
+                        let (terms, holes) = &mut columns[i];
                         match out {
-                            Resolved::Col(c) => columns[i].push(c),
-                            Resolved::Alt(cs) => columns[i].extend(cs),
-                            Resolved::Expr(_) | Resolved::Opaque => {}
+                            Resolved::Alt(ts, hs) => {
+                                terms.extend(ts);
+                                holes.extend(hs);
+                            }
+                            Resolved::Expr(e) if e.element => holes.push(unions.clone()),
+                            term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                            Resolved::Opaque => holes.push(unions.clone()),
                         }
                     }
                 }
@@ -702,11 +716,11 @@ impl Walker<'_> {
             result?;
             Ok(columns
                 .into_iter()
-                .map(|cs| {
-                    if cs.is_empty() {
+                .map(|(terms, holes)| {
+                    if terms.is_empty() {
                         Resolved::Opaque
                     } else {
-                        Resolved::Alt(cs)
+                        Resolved::Alt(terms, holes)
                     }
                 })
                 .collect())
@@ -715,6 +729,56 @@ impl Walker<'_> {
 
     fn current(&mut self) -> &mut Level {
         self.levels.last_mut().expect("inside a query level")
+    }
+
+    fn next_union(&mut self) -> usize {
+        self.unions += 1;
+        self.unions
+    }
+
+    /// The key roots an output of the TVIEW's key stands for, in rows of `scope`:
+    /// a column, or an expression of one occurrence's row (a sign, an offset:
+    /// #188), once per UNION branch it comes from. A branch whose key is anything
+    /// else is a hole: its rows cannot be mapped.
+    fn add_roots(&mut self, key: &Resolved, scope: &Scope) {
+        match key {
+            Resolved::Col(c) => self.graph.roots.push(Root {
+                key: c.clone(),
+                expr: None,
+                scope: self.graph.occurrences[c.occ].unions.clone(),
+            }),
+            Resolved::Expr(e) if !e.element && sql_occs(&e.sql).len() == 1 => {
+                let Some(Piece::Column { occ, attnum }) = e
+                    .sql
+                    .0
+                    .iter()
+                    .find(|p| matches!(p, Piece::Column { .. }))
+                    .cloned()
+                else {
+                    self.graph.holes.push(scope.clone());
+                    return;
+                };
+                let relid = Oid::from(self.graph.occurrences[occ].relid);
+                // SAFETY: a catalog lookup by OID and attribute number.
+                let name = cstr(unsafe { pg_sys::get_attname(relid, attnum, true) });
+                self.graph.roots.push(Root {
+                    key: Column { occ, attnum, name },
+                    expr: Some(e.sql.clone()),
+                    scope: self.graph.occurrences[occ].unions.clone(),
+                });
+            }
+            Resolved::Alt(terms, holes) => {
+                for term in terms {
+                    let term_scope = term.occs().first().map_or_else(
+                        || scope.clone(),
+                        |&o| self.graph.occurrences[o].unions.clone(),
+                    );
+                    self.add_roots(term, &term_scope);
+                }
+                self.graph.holes.extend(holes.iter().cloned());
+            }
+            _ => self.graph.holes.push(scope.clone()),
+        }
     }
 
     /// Enter a query level. Its CTE parent is the level a pending CTE lookup
@@ -845,7 +909,7 @@ impl Walker<'_> {
                     relid: relid.to_u32(),
                     relname,
                     qualified,
-                    branch: flags.branch,
+                    unions: flags.unions.clone(),
                     via_view: flags.via_view.clone(),
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
@@ -888,7 +952,13 @@ impl Walker<'_> {
                     let key = unsafe { output_position(query, &format!("pk_{entity}")) };
                     let columns = match key.and_then(|i| outputs.get(i)) {
                         Some(Resolved::Col(c)) => vec![c.clone()],
-                        Some(Resolved::Alt(cs)) => cs.clone(),
+                        Some(Resolved::Alt(terms, _)) => terms
+                            .iter()
+                            .filter_map(|t| match t {
+                                Resolved::Col(c) => Some(c.clone()),
+                                _ => None,
+                            })
+                            .collect(),
                         _ => Vec::new(),
                     };
                     self.graph
@@ -1189,7 +1259,7 @@ impl Walker<'_> {
                     return None;
                 }
                 match outputs.get(usize::try_from(p.paramid).ok()?.checked_sub(1)?)? {
-                    Resolved::Alt(cs) => Some(cs.iter().cloned().map(Resolved::Col).collect()),
+                    Resolved::Alt(terms, _) => Some(terms.clone()),
                     Resolved::Opaque => None,
                     term => Some(vec![term.clone()]),
                 }
@@ -1230,7 +1300,7 @@ impl Walker<'_> {
                 let v = &*var;
                 let levelsup = v.varlevelsup as usize;
                 let candidates = match self.resolve_var(var, levelsup) {
-                    Resolved::Alt(cs) => cs.into_iter().map(Resolved::Col).collect(),
+                    Resolved::Alt(terms, _) => terms,
                     Resolved::Opaque => return false,
                     term => vec![term],
                 };
