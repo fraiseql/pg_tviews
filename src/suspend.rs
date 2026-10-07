@@ -91,7 +91,7 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
         return Ok(Vec::new());
     }
     // A TVIEW whose view reads a rebuilt one is stale too.
-    crate::admin::rebuild_with_dependents(&changed, false)
+    crate::admin::rebuild_with_dependents(&changed)
 }
 
 /// Force resume (used by transaction callback)

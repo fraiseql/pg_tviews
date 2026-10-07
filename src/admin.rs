@@ -47,16 +47,22 @@ fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
 /// Each rebuild is a `TRUNCATE` and an `INSERT … SELECT` with an explicit column
 /// list (the view's own columns, so not the table-only `created_at`/`updated_at`),
 /// and holds an ACCESS EXCLUSIVE lock on that TVIEW until the transaction ends.
-/// `entity` is rebuilt with the caller's privileges; the TVIEWs that read it are
-/// rebuilt as their owners, as a write's cascade is (issue #136).
+/// Like `REFRESH MATERIALIZED VIEW`, it requires owning the TVIEW (or the
+/// extension), and every TVIEW is rebuilt as its owner.
 ///
 /// # Errors
-/// Returns error if the entity is not registered, the dependency graph cannot be
-/// loaded, or a rebuild fails.
+/// Returns error if the caller does not own the TVIEW, the entity is not
+/// registered, the dependency graph cannot be loaded, or a rebuild fails.
 #[pg_extern]
 fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     crate::revision::check();
-    rebuild_with_dependents(&[entity.to_string()], true)?;
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+        TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+    })?;
+    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    rebuild_with_dependents(&[entity.to_string()])?;
     Ok(())
 }
 
@@ -148,16 +154,12 @@ fn pg_tviews_refresh_time_dependent(
 
 /// Rebuild `entities` and every TVIEW whose view reads one of them, transitively
 /// (the readers of a TVIEW come from the complete dependency relation, not the
-/// pruned one flush-time propagation follows), dependencies first. Readers are
-/// rebuilt as their owners; `entities` too unless `requested_as_caller`. Returns
-/// the rebuilt entities in order.
+/// pruned one flush-time propagation follows), dependencies first, each as its
+/// owner. Returns the rebuilt entities in order.
 ///
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
-pub fn rebuild_with_dependents(
-    entities: &[String],
-    requested_as_caller: bool,
-) -> TViewResult<Vec<String>> {
+pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
     let graph = crate::queue::graph::EntityDepGraph::load()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
@@ -183,12 +185,7 @@ pub fn rebuild_with_dependents(
             .unwrap_or(usize::MAX)
     });
     for entity in &order {
-        if requested_as_caller && entities.contains(entity) {
-            rebuild_one(entity)?;
-        } else {
-            let _owner = crate::owner::AsOwner::of_entity(entity)?;
-            rebuild_one(entity)?;
-        }
+        rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
     Ok(order)
@@ -205,20 +202,25 @@ pub fn flush_after_rebuilds() -> TViewResult<()> {
     crate::queue::flush_refresh_queue()
 }
 
-/// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), with
-/// the current role's privileges, and nothing that reads it.
+/// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
+/// its owner, and nothing that reads it.
+///
+/// The backing view runs the functions it calls as the querying role: rebuilding
+/// as the caller would run the owner's view code with the caller's privileges
+/// (a superuser's, after a migration).
 ///
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
-    let _pin = crate::owner::RenderPin::new();
-    let (qi_tv, insert) = rebuild_statements(entity)?;
+    let owner = crate::owner::AsOwner::of_entity(entity)?;
+    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&insert)?;
     Ok(())
 }
 
-/// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`.
+/// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,
+/// as its owner.
 ///
 /// Used when a TVIEW is found empty while its view is not (an UNLOGGED table reset
 /// by a crash restart or promotion, or a TVIEW created empty). Unlike
@@ -228,8 +230,8 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the insert fails.
 pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
-    let _pin = crate::owner::RenderPin::new();
-    let (_, insert) = rebuild_statements(entity)?;
+    let owner = crate::owner::AsOwner::of_entity(entity)?;
+    let (_, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&insert)?;
     Ok(())
 }
@@ -237,7 +239,12 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
 /// its backing view. The explicit column list comes from the view's own
 /// columns, which excludes the table-only `created_at`/`updated_at` columns.
-fn rebuild_statements(entity: &str) -> TViewResult<(String, String)> {
+/// Taking the owner's guard makes running the statements as anyone else
+/// unrepresentable.
+fn rebuild_statements(
+    _owner: &crate::owner::AsOwner,
+    entity: &str,
+) -> TViewResult<(String, String)> {
     use crate::catalog::TviewMeta;
 
     let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
