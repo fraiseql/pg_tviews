@@ -200,6 +200,20 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // the backing views (#181): their privileges are their tables'.
     // A materialized view refreshed rebuilds the TVIEWs that refresh in full on
     // its changes (#189).
+    // DROP EXTENSION pg_tviews leaves the backing views, which are not members
+    // (pg_dump keeps them): read them before the catalog goes, drop them after (#199).
+    let extension_drop = if extension_installed() && unsafe { drops_pg_tviews(pstmt) } {
+        match crate::ddl::drop::backing_views() {
+            Ok(views) => Some(views),
+            Err(e) => {
+                unsafe { HOOK_IN_PROGRESS = false };
+                error!("pg_tviews: could not read the backing views before DROP EXTENSION: {e}");
+            }
+        }
+    } else {
+        None
+    };
+
     let (column_rename, partition_ddl, table_move, privileges_change, matview_refresh) =
         if extension_installed() {
             unsafe {
@@ -421,6 +435,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         {
             unsafe { HOOK_IN_PROGRESS = false };
             error!("pg_tviews: could not give the backing views their tables' privileges: {e}");
+        }
+        if let Some(views) = extension_drop
+            && let Err(e) = crate::ddl::drop::drop_left_backing_views(&views)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!("pg_tviews: could not drop the backing views of the dropped extension: {e}");
         }
         if let Some(matview) = matview_refresh
             && let Err(e) = crate::ddl::uncascaded::refresh_readers_of(matview)
@@ -1180,6 +1200,21 @@ unsafe fn extension_statement_names(node: *mut pg_sys::Node) -> Option<Vec<Strin
             return Some(names);
         }
         None
+    }
+}
+
+/// Whether `pstmt` is a `DROP EXTENSION` naming `pg_tviews`.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt*`.
+unsafe fn drops_pg_tviews(pstmt: *const pg_sys::PlannedStmt) -> bool {
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return false;
+        }
+        let node = (*pstmt).utilityStmt;
+        (*node).type_ == pg_sys::NodeTag::T_DropStmt
+            && extension_statement_names(node)
+                .is_some_and(|names| names.iter().any(|n| n == "pg_tviews"))
     }
 }
 

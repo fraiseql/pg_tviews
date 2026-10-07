@@ -325,7 +325,9 @@ fn create_tview_inner(
 
     // Step 3: Create the backing view
     let (view_schema, view_name) = super::backing_view_name(&schema_name, &tv_table_name);
-    if relation_exists(&view_schema, &view_name)? {
+    if relation_exists(&view_schema, &view_name)?
+        && !super::drop::reclaim_leftover_view(&view_schema, &view_name)?
+    {
         return Err(TViewError::InvalidInput {
             parameter: "tview definition".to_string(),
             reason: format!(
