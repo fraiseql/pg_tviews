@@ -36,6 +36,7 @@ mod cascade_path;
 mod catalog;
 mod delta;
 mod event_trigger;
+mod executor;
 mod hooks;
 mod lineage;
 mod metrics;

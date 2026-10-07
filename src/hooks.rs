@@ -50,6 +50,7 @@ pub unsafe fn install_hook() {
     unsafe {
         PREV_PROCESS_UTILITY_HOOK = pg_sys::ProcessUtility_hook;
         pg_sys::ProcessUtility_hook = Some(tview_process_utility_hook);
+        crate::executor::install_hooks();
     }
 }
 

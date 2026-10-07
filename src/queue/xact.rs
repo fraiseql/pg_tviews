@@ -170,6 +170,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             crate::suspend::force_resume();
             crate::revision::reset();
             crate::hooks::release_hook_guard_on_abort(true);
+            crate::executor::reset();
             super::ops::clear_crash_recovery_cache();
             clear_transaction_state();
         }
