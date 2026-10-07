@@ -104,6 +104,10 @@ pub struct TviewMeta {
     /// (#193): `schema.name(argument types)`.
     pub function_reads: Vec<(String, Vec<Oid>)>,
 
+    /// A TVIEW that reads the current time declared `time_refresh: external`
+    /// (#193).
+    pub time_refresh_external: bool,
+
     /// How a write to each base table maps to keys (ADR 0157); empty for a TVIEW
     /// registered by a release without lineage, until it is re-registered.
     pub key_mappings: Vec<crate::lineage::KeyMapping>,
@@ -177,6 +181,7 @@ pub(crate) fn meta_select() -> String {
          uncascaded_policy, key_mappings, identity, \
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
+         time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
          distinct_on_keys <> '{{}}' AS legacy_distinct_on \
          FROM {}",
         crate::utils::meta_table()
@@ -509,6 +514,9 @@ impl TviewMeta {
             uncascaded_policy,
             table_policies,
             function_reads,
+            time_refresh_external: row["time_refresh_external"]
+                .value::<bool>()?
+                .unwrap_or(false),
             key_mappings,
             identity,
         })
@@ -613,6 +621,7 @@ impl Default for TviewMeta {
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
             table_policies: Vec::new(),
             function_reads: Vec::new(),
+            time_refresh_external: false,
             key_mappings: vec![],
             identity: RowIdentity::from_catalog("", None, false),
         }

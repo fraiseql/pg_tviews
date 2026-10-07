@@ -414,10 +414,12 @@ fn create_tview_inner(
     let qualified_tv =
         crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?;
     super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
+    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
     super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         declarations,
+        time_dependent: !lineage.time_reads.is_empty(),
     };
     super::uncascaded::report(&qualified_tv, &uncascaded)?;
 
@@ -516,10 +518,12 @@ pub fn reregister_metadata(
         &format!("tv_{entity_name}"),
     )?)?;
     super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
+    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
     super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
         declarations,
+        time_dependent: !lineage.time_reads.is_empty(),
     };
     super::uncascaded::report(&qualified_tv, &uncascaded)?;
     register_metadata(
@@ -1717,7 +1721,8 @@ fn register_metadata(
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
             group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
             uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings, \
-            identity = EXCLUDED.identity"
+            identity = EXCLUDED.identity, time_refresh = EXCLUDED.time_refresh, \
+            time_dependent = EXCLUDED.time_dependent"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1748,14 +1753,16 @@ fn register_metadata(
             uncascaded_table_oids,
             uncascaded_table_policies,
             function_read_functions,
-            function_read_tables
+            function_read_tables,
+            time_refresh,
+            time_dependent
         ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
                   pg_catalog.jsonb_build_object('kind', $8::pg_catalog.text, 'columns',
                       pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
                           'name', $9::pg_catalog.text,
                           'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))),
                   $11::pg_catalog.oid[]::pg_catalog.regclass[], $12,
-                  $13, $14::pg_catalog.oid[]::pg_catalog.regclass[])
+                  $13, $14::pg_catalog.oid[]::pg_catalog.regclass[], $15, $16)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1862,6 +1869,18 @@ fn register_metadata(
             DatumWithOid::new(
                 function_read_tables,
                 PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.time_refresh(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.time_dependent,
+                PgOid::BuiltIn(PgBuiltInOids::BOOLOID).value(),
             )
         },
     ];

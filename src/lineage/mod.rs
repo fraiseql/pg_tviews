@@ -398,6 +398,9 @@ pub struct Graph {
     /// Functions the view calls that may read tables `pg_tviews` does not see:
     /// not immutable, outside `pg_catalog` (by OID).
     pub untracked_functions: Vec<u32>,
+    /// How the view reads the current time, each construct once (#193):
+    /// `CURRENT_DATE`, `now()`…
+    pub time_reads: Vec<String>,
     /// Tables read only where the output never depends on them (a CTE the view
     /// does not use): not tracked.
     pub unread_tables: std::collections::BTreeSet<u32>,
@@ -1069,6 +1072,8 @@ pub struct Lineage {
     /// The functions it calls that may read tables it cannot see (not immutable,
     /// outside `pg_catalog`), as `(oid, schema.name(argument types))` (#193).
     pub functions: Vec<(u32, String)>,
+    /// How it reads the current time (#193): its rows change with no write.
+    pub time_reads: Vec<String>,
 }
 
 /// A table a function reads, declared with the TVIEW (#193).
@@ -1452,6 +1457,7 @@ pub fn analyze(
         set_operation: graph.set_operation || graph.roots.len() > 1,
         aggregate_embeds,
         functions,
+        time_reads: graph.time_reads.clone(),
     })
 }
 
@@ -1935,6 +1941,7 @@ mod tests {
             }],
             holes: vec![],
             untracked_functions: vec![],
+            time_reads: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
@@ -2066,6 +2073,7 @@ mod tests {
             roots: vec![],
             holes: vec![],
             untracked_functions: vec![],
+            time_reads: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
@@ -2931,6 +2939,7 @@ mod tests {
             set_operation: false,
             aggregate_embeds: vec![],
             functions: vec![],
+            time_reads: vec![],
         };
         let read = |relid: u32| FunctionRead {
             function: "public.f()".into(),

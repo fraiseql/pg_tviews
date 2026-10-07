@@ -142,7 +142,14 @@ extension_sql!(
         -- Functions as text, schema.name(argument types): a regprocedure column
         -- would block pg_upgrade.
         function_read_functions TEXT[] NOT NULL DEFAULT '{}',
-        function_read_tables REGCLASS[] NOT NULL DEFAULT '{}'
+        function_read_tables REGCLASS[] NOT NULL DEFAULT '{}',
+        -- How a TVIEW that reads the current time is brought up to date (issue
+        -- #193): 'external', pg_tviews_refresh_time_dependent() called at the
+        -- boundary; NULL for a TVIEW that reads no time or declared nothing.
+        time_refresh TEXT CHECK (time_refresh IN ('external')),
+        -- The definition reads the current time (CURRENT_DATE, now()…), so its
+        -- rows change with no write (issue #193).
+        time_dependent BOOLEAN NOT NULL DEFAULT false
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -299,7 +306,9 @@ SELECT
                                pg_catalog.unnest(m.function_read_tables))
                     WITH ORDINALITY AS r(function, relation, n)
                GROUP BY r.function) f),
-        '{}') AS function_reads
+        '{}') AS function_reads,
+    m.time_dependent,
+    m.time_refresh
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

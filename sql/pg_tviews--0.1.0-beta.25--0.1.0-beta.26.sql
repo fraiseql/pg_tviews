@@ -82,6 +82,18 @@ ALTER TABLE @extschema@.pg_tview_meta
     ADD COLUMN function_read_functions TEXT[] NOT NULL DEFAULT '{}',
     ADD COLUMN function_read_tables REGCLASS[] NOT NULL DEFAULT '{}';
 
+-- Whether a TVIEW reads the current time, and who brings it up to date (#193).
+ALTER TABLE @extschema@.pg_tview_meta
+    ADD COLUMN time_refresh TEXT CHECK (time_refresh IN ('external')),
+    ADD COLUMN time_dependent BOOLEAN NOT NULL DEFAULT false;
+
+-- Refreshes the TVIEWs that read the time, at the boundary (#193).
+CREATE  FUNCTION @extschema@."pg_tviews_refresh_time_dependent"(
+	"tview" TEXT DEFAULT NULL /* core::option::Option<&str> */
+) RETURNS SETOF TEXT /* alloc::string::String */
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_refresh_time_dependent_wrapper';
+
 -- The tables those functions read are read by the TVIEW (#193).
 -- pg_tview_reads: begin
 CREATE OR REPLACE VIEW @extschema@.pg_tview_reads AS
@@ -107,8 +119,8 @@ WITH RECURSIVE reads(entity, relid) AS (
 SELECT entity, relid FROM reads;
 -- pg_tview_reads: end
 
--- tviews.registry gains uncascaded_table_policies (#195) and function_reads
--- (#193), appended.
+-- tviews.registry gains uncascaded_table_policies (#195), function_reads,
+-- time_dependent and time_refresh (#193), appended.
 -- registry: begin
 CREATE OR REPLACE VIEW @extschema@.registry AS
 SELECT
@@ -171,7 +183,9 @@ SELECT
                                pg_catalog.unnest(m.function_read_tables))
                     WITH ORDINALITY AS r(function, relation, n)
                GROUP BY r.function) f),
-        '{}') AS function_reads
+        '{}') AS function_reads,
+    m.time_dependent,
+    m.time_refresh
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

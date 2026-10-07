@@ -30,18 +30,52 @@ pub(crate) struct Declarations {
     /// `schema.name(argument types)` of each function, with the tables it reads;
     /// sorted.
     pub function_reads: Vec<(String, Vec<Oid>)>,
+    /// How the TVIEW is brought up to date when it reads the current time.
+    pub time_refresh: TimeRefresh,
+}
+
+/// How a TVIEW that reads the current time is brought up to date (#193).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeRefresh {
+    /// Nothing declared: its policy refuses it, or warns.
+    None,
+    /// `pg_tviews_refresh_time_dependent()`, called at the boundary. `declared`:
+    /// passed in this call's options, so a definition reading no time refuses
+    /// it; from the setting or the catalog, it only applies to one that does.
+    External { declared: bool },
+}
+
+impl TimeRefresh {
+    /// The value the catalog stores.
+    pub(crate) const fn stored(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::External { .. } => Some("external"),
+        }
+    }
 }
 
 impl Declarations {
     /// The settings' declarations: `pg_tviews.uncascaded_policy`, no table.
     pub(crate) fn from_settings() -> Self {
-        Self::new(crate::config::uncascaded_policy(), Vec::new(), Vec::new())
+        Self::new(
+            crate::config::uncascaded_policy(),
+            Vec::new(),
+            Vec::new(),
+            match crate::config::time_refresh() {
+                crate::config::TimeRefreshSetting::None => TimeRefresh::None,
+                crate::config::TimeRefreshSetting::External => {
+                    TimeRefresh::External { declared: false }
+                }
+            },
+        )
     }
 
     pub(crate) fn new(
         policy: UncascadedPolicy,
         mut tables: Vec<(Oid, UncascadedPolicy)>,
         mut function_reads: Vec<(String, Vec<Oid>)>,
+        time_refresh: TimeRefresh,
     ) -> Self {
         tables.sort_by_key(|(oid, _)| oid.to_u32());
         tables.dedup_by_key(|(oid, _)| *oid);
@@ -55,6 +89,19 @@ impl Declarations {
             policy,
             tables,
             function_reads,
+            time_refresh,
+        }
+    }
+
+    /// As the catalog would store them: what this call's options declared is
+    /// no longer told apart.
+    pub(crate) fn stored(&self) -> Self {
+        Self {
+            time_refresh: match self.time_refresh {
+                TimeRefresh::None => TimeRefresh::None,
+                TimeRefresh::External { .. } => TimeRefresh::External { declared: false },
+            },
+            ..self.clone()
         }
     }
 
@@ -64,6 +111,11 @@ impl Declarations {
             meta.uncascaded_policy,
             meta.table_policies.clone(),
             meta.function_reads.clone(),
+            if meta.time_refresh_external {
+                TimeRefresh::External { declared: false }
+            } else {
+                TimeRefresh::None
+            },
         )
     }
 
@@ -129,6 +181,10 @@ impl Declarations {
                     function_tables,
                     PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
                 ),
+                pgrx::datum::DatumWithOid::new(
+                    self.time_refresh.stored(),
+                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+                ),
             ]
         };
         Spi::run_with_args(
@@ -136,7 +192,8 @@ impl Declarations {
                 "UPDATE {} SET uncascaded_policy = $2, \
                      uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
                      uncascaded_table_policies = $4, function_read_functions = $5, \
-                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[] \
+                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     time_refresh = $7 \
                  WHERE entity = $1",
                 crate::utils::meta_table()
             ),
@@ -155,6 +212,20 @@ impl Declarations {
 pub(crate) struct Uncascaded {
     pub tables: Vec<UncascadedTable>,
     pub declarations: Declarations,
+    /// The definition reads the current time (#193).
+    pub time_dependent: bool,
+}
+
+impl Uncascaded {
+    /// The `time_refresh` the catalog stores: only for a TVIEW that reads the
+    /// time.
+    pub(crate) fn time_refresh(&self) -> Option<&'static str> {
+        if self.time_dependent {
+            self.declarations.time_refresh.stored()
+        } else {
+            None
+        }
+    }
 }
 
 impl Uncascaded {
@@ -373,6 +444,59 @@ pub(crate) fn report_functions(
     Ok(())
 }
 
+/// Report how `tview` reads the current time (#193): its rows change at a
+/// boundary no write marks. Refused under `error` and `full_refresh` unless it
+/// declares `time_refresh`, warned about under `warn`; a declared `time_refresh`
+/// for a definition that reads no time is refused.
+///
+/// # Errors
+/// Returns an error for a declaration that does not apply; a refusal of the
+/// definition is raised here.
+pub(crate) fn report_time(
+    tview: &str,
+    time_reads: &[String],
+    declarations: &Declarations,
+) -> TViewResult<()> {
+    match (time_reads.is_empty(), declarations.time_refresh) {
+        (true, TimeRefresh::External { declared: true }) => Err(TViewError::InvalidInput {
+            parameter: "time_refresh".to_string(),
+            reason: format!(
+                "{tview} declares time_refresh, but its definition reads no time: remove it"
+            ),
+        }),
+        (true, _) | (false, TimeRefresh::External { .. }) => Ok(()),
+        (false, TimeRefresh::None) => {
+            let warn = declarations.policy == UncascadedPolicy::Warn;
+            pg_sys::panic::ErrorReport::new(
+                if warn {
+                    PgSqlErrorCode::ERRCODE_WARNING
+                } else {
+                    PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE
+                },
+                format!(
+                    "{tview} reads the time ({}): its rows change with no write, which nothing \
+                     refreshes: declare time_refresh",
+                    time_reads.join(", ")
+                ),
+                function_name!(),
+            )
+            .set_hint(format!(
+                "Declare who brings it up to date: pg_tviews_create_or_replace('{tview}', \
+                 <definition>, options => '{{\"time_refresh\": \"external\"}}'), or before \
+                 CREATE TABLE … AS / pg_tviews_create(): SET pg_tviews.time_refresh = \
+                 'external'; then call tviews.pg_tviews_refresh_time_dependent() at the \
+                 boundary (pg_cron, the application). Or pass the date as data instead."
+            ))
+            .report(if warn {
+                PgLogLevel::WARNING
+            } else {
+                PgLogLevel::ERROR
+            });
+            Ok(())
+        }
+    }
+}
+
 /// Refuse a table declared in `uncascaded_tables` that `lineage` does not read,
 /// or whose writes it traces: the declaration would never apply (#195).
 ///
@@ -483,6 +607,7 @@ mod tests {
                 (b, UncascadedPolicy::Warn),
             ],
             Vec::new(),
+            TimeRefresh::None,
         );
         assert_eq!(d.tables, vec![(b, UncascadedPolicy::FullRefresh)]);
         assert_eq!(d.policy_for(a), UncascadedPolicy::Error);
@@ -499,6 +624,7 @@ mod tests {
                 ("public.tag()".to_string(), Vec::new()),
                 ("public.label()".to_string(), vec![b, a, b]),
             ],
+            TimeRefresh::None,
         );
         assert_eq!(
             d.function_reads,

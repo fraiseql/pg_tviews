@@ -18,7 +18,7 @@
 
 use super::aggregate::GroupKeys;
 use super::create::{self, Storage};
-use super::uncascaded::Declarations;
+use super::uncascaded::{Declarations, TimeRefresh};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
@@ -43,6 +43,8 @@ pub(crate) struct Options {
     /// Functions the definition calls, each with the tables it reads (#193), as
     /// named: resolved when used.
     function_reads: Option<Vec<(String, Vec<String>)>>,
+    /// How the TVIEW is brought up to date when it reads the current time (#193).
+    time_refresh: Option<TimeRefresh>,
 }
 
 /// The `group_keys` option.
@@ -179,6 +181,21 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                 }
                 options.function_reads = Some(declared);
             }
+            "time_refresh" => {
+                options.time_refresh = Some(match value {
+                    serde_json::Value::Null => TimeRefresh::None,
+                    serde_json::Value::String(s) if s == "external" => {
+                        TimeRefresh::External { declared: true }
+                    }
+                    _ => {
+                        return Err(invalid(
+                            key,
+                            "must be \"external\" (pg_tviews_refresh_time_dependent() is \
+                             called at the boundary) or null",
+                        ));
+                    }
+                });
+            }
             "group_keys" => {
                 options.group_keys = match value {
                     serde_json::Value::Null => GroupKeysOption::Plain,
@@ -204,7 +221,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
                          data_gin_index, group_keys, uncascaded_policy, uncascaded_tables, \
-                         function_reads)"
+                         function_reads, time_refresh)"
                     ),
                 ));
             }
@@ -417,6 +434,7 @@ pub(crate) fn create_or_replace(
 ) -> TViewResult<&'static str> {
     let (schema, entity) = parse_name(name)?;
     let options = parse_options(options)?;
+    let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
     super::lock_entity(&entity)?;
     let schema = match schema {
         Some(schema) => schema,
@@ -474,11 +492,14 @@ pub(crate) fn create_or_replace(
             Some(declared) => resolve_function_reads(declared)?,
             None => current_declarations.function_reads.clone(),
         },
+        options
+            .time_refresh
+            .unwrap_or(current_declarations.time_refresh),
     );
 
     if comparison.same_view && desired_keys == current_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired == current && declarations == current_declarations {
+        if desired == current && declarations.stored() == current_declarations {
             return Ok(if retyped { "altered" } else { "unchanged" });
         }
         if desired != current {
@@ -491,13 +512,14 @@ pub(crate) fn create_or_replace(
                 desired,
             )?;
         }
-        if declarations != current_declarations {
+        if declarations.stored() != current_declarations {
             // The stored policies are re-checked by a re-registration, which also
             // brings the triggers in line: `error` still refuses a TVIEW with
             // tables no cascade reaches.
             declarations.store(&entity)?;
             create::reregister_tview(&entity)?;
         }
+        check_time_declared(&entity, declares_time)?;
         return Ok("altered");
     }
     declarations.store(&entity)?;
@@ -524,6 +546,7 @@ pub(crate) fn create_or_replace(
                 desired,
             )?;
         }
+        check_time_declared(&entity, declares_time)?;
         return Ok("replaced");
     }
 
@@ -536,7 +559,35 @@ pub(crate) fn create_or_replace(
         desired_keys.as_ref(),
         declarations,
     )?;
+    check_time_declared(&entity, declares_time)?;
     Ok("rebuilt")
+}
+
+/// Refuse `time_refresh` passed for a TVIEW whose definition, as registered,
+/// reads no time (#193): the declaration would never apply. A re-registration
+/// keeps a stored one silently.
+fn check_time_declared(entity: &str, declared: bool) -> TViewResult<()> {
+    if !declared {
+        return Ok(());
+    }
+    let dependent = Spi::get_one_with_args::<bool>(
+        &format!(
+            "SELECT time_dependent FROM {} WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[text(entity)],
+    )
+    .map_err(|e| catalog("Read whether a TVIEW reads the time", &e))?;
+    if dependent == Some(true) {
+        Ok(())
+    } else {
+        Err(invalid(
+            "time_refresh",
+            format!(
+                "tv_{entity} declares time_refresh, but its definition reads no time: remove it"
+            ),
+        ))
+    }
 }
 
 /// Give each column of the TVIEW the type of its backing view's column where the
@@ -627,31 +678,27 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
         data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
     };
-    let declarations = match (
-        options.uncascaded_policy,
-        &options.uncascaded_tables,
-        &options.function_reads,
-    ) {
-        (None, None, None) => None,
-        (policy, tables, functions) => Some(Declarations::new(
-            policy.unwrap_or_else(crate::config::uncascaded_policy),
-            match tables {
-                Some(declared) => resolve_tables(declared)?,
-                None => Vec::new(),
-            },
-            match functions {
-                Some(declared) => resolve_function_reads(declared)?,
-                None => Vec::new(),
-            },
-        )),
-    };
+    // What the options leave out comes from the settings.
+    let settings = Declarations::from_settings();
+    let declarations = Declarations::new(
+        options.uncascaded_policy.unwrap_or(settings.policy),
+        match &options.uncascaded_tables {
+            Some(declared) => resolve_tables(declared)?,
+            None => Vec::new(),
+        },
+        match &options.function_reads {
+            Some(declared) => resolve_function_reads(declared)?,
+            None => Vec::new(),
+        },
+        options.time_refresh.unwrap_or(settings.time_refresh),
+    );
     create::create_tview_in(
         &format!("tv_{entity}"),
         query,
         schema,
         options.group_keys.or(None).as_ref(),
         storage,
-        declarations,
+        Some(declarations),
     )
 }
 

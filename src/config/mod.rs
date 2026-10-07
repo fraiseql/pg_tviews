@@ -25,6 +25,7 @@
 //! | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
 //! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
 //! | `pg_tviews.uncascaded_policy` | enum | `error` | What a new TVIEW does about base tables no cascade reaches (issues #157, #158) |
+//! | `pg_tviews.time_refresh` | enum | `none` | How a new TVIEW that reads the current time is brought up to date (issue #193) |
 //!
 //! `pg_tviews.uncascaded_policy` is read once, when a TVIEW is created without an
 //! `uncascaded_policy` option, and stored with it: a tracked base table whose
@@ -97,6 +98,20 @@ impl UncascadedPolicy {
     }
 }
 
+/// How a TVIEW whose definition reads the current time is brought up to date
+/// (#193): its rows change with no write.
+#[derive(PostgresGucEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeRefreshSetting {
+    /// Nothing declared: the TVIEW's `uncascaded_policy` refuses (`error`,
+    /// `full_refresh`) or warns about it.
+    #[name = c"none"]
+    None,
+    /// Something outside calls `pg_tviews_refresh_time_dependent()` at the
+    /// boundary (`pg_cron`, the application).
+    #[name = c"external"]
+    External,
+}
+
 // ── GUC statics ──────────────────────────────────────────────────────────
 
 static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
@@ -124,6 +139,8 @@ static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
 static UNCASCADED_POLICY_GUC: GucSetting<UncascadedPolicy> =
     GucSetting::<UncascadedPolicy>::new(UncascadedPolicy::Error);
+static TIME_REFRESH_GUC: GucSetting<TimeRefreshSetting> =
+    GucSetting::<TimeRefreshSetting>::new(TimeRefreshSetting::None);
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -186,6 +203,18 @@ pub fn register_gucs() {
           TVIEW; warn: WARNING, rows stay stale on such writes. Read once at create time \
           when the TVIEW declares no uncascaded_policy option, and stored with it.",
         &UNCASCADED_POLICY_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_enum_guc(
+        c"pg_tviews.time_refresh",
+        c"How a new TVIEW that reads the current time is brought up to date.",
+        c"none (default): its uncascaded_policy refuses it (error, full_refresh) or warns \
+          (warn); external: pg_tviews_refresh_time_dependent() is called at the boundary. \
+          Read at create time when the TVIEW declares no time_refresh option, and stored \
+          with a TVIEW that reads the time.",
+        &TIME_REFRESH_GUC,
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -508,4 +537,10 @@ pub fn direct_patch_enabled() -> bool {
 /// without an `uncascaded_policy` option.
 pub fn uncascaded_policy() -> UncascadedPolicy {
     UNCASCADED_POLICY_GUC.get()
+}
+
+/// `pg_tviews.time_refresh` (default `none`): read when a TVIEW is created without
+/// a `time_refresh` option (#193).
+pub fn time_refresh() -> TimeRefreshSetting {
+    TIME_REFRESH_GUC.get()
 }
