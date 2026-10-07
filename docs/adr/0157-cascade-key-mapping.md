@@ -3,7 +3,8 @@
 - Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys);
   amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
   and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create)),
-  and for #187, #188 and #189 (see [Amendment](#amendment-187-188-189-window-partitions-union-branch-keys-materialized-views))
+  and for #187, #188 and #189 (see [Amendment](#amendment-187-188-189-window-partitions-union-branch-keys-materialized-views)),
+  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table))
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 
@@ -224,3 +225,22 @@ all, so no policy saw it and `REFRESH MATERIALIZED VIEW` left the TVIEW stale (#
   matview among their uncascaded tables after `REFRESH MATERIALIZED VIEW` (plain or
   `CONCURRENTLY`, not `WITH NO DATA`) and flushes the queue. Mapping the refreshed
   rows' keys (a diff of the matview before and after) is not done.
+
+## Amendment (#191): reads of another TVIEW's table
+
+A TVIEW's table read by another TVIEW was opaque: only an equality on its
+`pk_<entity>` was noticed, as an embed. Any other read, a view aggregating it by
+another column for one, had no kind and no policy, and the reader went stale when
+the inner TVIEW was refreshed.
+
+- Such a read is an occurrence like a base table's, its columns resolved, so the
+  walk links it through any predicate. Joined on the inner TVIEW's key by a TVIEW
+  that embeds it (`fk_<entity>`, an aggregate embed), it is `Propagated`: entity
+  propagation already refreshes the embedding rows. Otherwise it is `Mapped`, never
+  `Local`, or `AllKeys` under the policy.
+- The inner TVIEW's refreshes are its writes: the occurrence's table gets the
+  three delta triggers, and no flush or `TRUNCATE` trigger, which would flush from
+  inside the flush. They fire on the flush's own upserts and deletes and queue the
+  outer TVIEW's keys, which the flush drains. `key_mappings` names the inner TVIEW,
+  and the flush's dependency order refreshes it first, so the outer rows are
+  recomputed from fresh inner rows, once.

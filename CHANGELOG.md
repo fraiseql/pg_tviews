@@ -32,8 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   branch's. Before, such a branch had no key and the TVIEW was refused ("can never
   be refreshed").
 
+- **A TVIEW reading another TVIEW's table is maintained** (#191), directly or
+  through views: a view aggregating `tv_line` per order, joined on `order_id`, or a
+  correlated subquery on a column other than its key. A refresh of the inner TVIEW
+  refreshes the rows of the outer one it reaches, in the same flush; a read nothing
+  links to the key goes through the `uncascaded_policy`. Before, such a read had no
+  cascade kind, was not listed as uncascaded, and the outer TVIEW went stale even
+  under the `error` policy. An embed (`fk_<entity> = pk_<entity>`) is propagated as
+  before, with no trigger on the inner table.
+
 ### Fixed
 
+- **A refresh that fails fails the write.** The statement-level flush trigger turned
+  an error the flush returned (rather than one PostgreSQL raised), such as
+  `pg_tviews.max_propagation_depth` exceeded, into a WARNING and let the write commit,
+  leaving TVIEWs stale. It now raises it, as the refresh runbook says.
+- **Comments in a TVIEW definition** (#192): an apostrophe in a `--` or `/* */`
+  comment no longer hides the rest of the definition ("No FROM keyword found").
 - **`DROP SCHEMA … CASCADE` and `DROP OWNED BY` drop a TVIEW's backing view** (#186).
   Since backing views moved to `tviews` (beta.25), a TVIEW dropped with its schema
   left its view there, and creating the TVIEW again failed ("tviews.s__tv_a is

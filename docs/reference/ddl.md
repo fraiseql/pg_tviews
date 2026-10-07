@@ -61,7 +61,12 @@ Following FraiseQL patterns:
   whoever can `SELECT` from `tv_<entity>` can `SELECT` from it (see
   [Privileges](#privileges))
 - **Embedding another TVIEW**: read its table `tv_<entity>` (`JOIN tv_user u ON
-  u.pk_user = p.fk_user`)
+  u.pk_user = p.fk_user`). Any other read of another TVIEW's table, directly or
+  through views, is traced like a read of a base table: a view aggregating
+  `tv_line` by `order_id`, joined on `order_id = o.id`, or a correlated subquery on
+  a column other than its key. A refresh of the inner TVIEW then refreshes the rows
+  of this one it reaches, in the same flush; a read nothing links to the key goes
+  through the `uncascaded_policy`
 - **Entity name**: Derived from TVIEW name by removing `tv_` prefix
 
 ### Required Columns
@@ -403,7 +408,11 @@ The triggers follow the kind of each table:
 | `mapped`, `all_keys` | three statement triggers with transition tables (`INSERT`, `UPDATE`, `DELETE`) | one mapping query over the statement's changed rows; under `full_refresh` an `all_keys` write refreshes the whole TVIEW |
 | `propagated` | none | refreshing the embedded TVIEW refreshes this one |
 
-Every table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
+Another TVIEW's table read as `mapped` or `all_keys` gets the three statement
+triggers alone: they fire on the refreshes of that TVIEW, inside the flush, which
+then refreshes the rows of this one they map to.
+
+Every base table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
 refreshes the whole TVIEW. An `UPDATE` that changes none of the columns the TVIEW
 reads from a `mapped` table maps nothing (rows are matched to their old image by
 primary key).
