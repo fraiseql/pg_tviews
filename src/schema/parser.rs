@@ -1,3 +1,106 @@
+/// `sql` with its comments (`-- …` to the end of the line, `/* … */`, nested)
+/// replaced by spaces, so that text scans never read a quote or a keyword in a
+/// comment (#192). String literals (`'…'`, `E'…'`), quoted identifiers and
+/// dollar-quoted bodies are kept as they are; line breaks are kept, and every
+/// other byte keeps its offset.
+#[must_use]
+pub fn blank_comments(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut out = bytes.to_vec();
+    let len = bytes.len();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for b in &mut out[from..to] {
+            if *b != b'\n' && *b != b'\r' {
+                *b = b' ';
+            }
+        }
+    };
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                let end = bytes[i..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(len, |p| i + p);
+                blank(&mut out, i, end);
+                i = end;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let start = i;
+                let mut depth = 0_usize;
+                while i < len {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                blank(&mut out, start, i.min(len));
+            }
+            b'\'' => {
+                // E'…' takes backslash escapes; '' is a quote in any string.
+                let escapes =
+                    i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !word(bytes[i - 2]));
+                i += 1;
+                while i < len {
+                    if escapes && bytes[i] == b'\\' {
+                        i += 2;
+                    } else if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'$' if i == 0 || !word(bytes[i - 1]) => {
+                // $tag$ … $tag$, the tag an identifier or empty (not $1).
+                let tag_end = bytes[i + 1..]
+                    .iter()
+                    .position(|&b| !word(b))
+                    .map(|p| i + 1 + p);
+                match tag_end {
+                    Some(t)
+                        if bytes[t] == b'$'
+                            && !bytes.get(i + 1).is_some_and(u8::is_ascii_digit) =>
+                    {
+                        let tag = &bytes[i..=t];
+                        let body = t + 1;
+                        i = bytes[body..]
+                            .windows(tag.len())
+                            .position(|w| w == tag)
+                            .map_or(len, |p| body + p + tag.len());
+                    }
+                    _ => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    // Only ASCII bytes were replaced, by ASCII spaces: still UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| sql.to_string())
+}
+
 /// Parse SELECT statement to extract column names and expressions
 /// This is a simplified parser for v1 - uses regex-based extraction
 /// Future versions will use `PostgreSQL`'s native parser API
@@ -5,7 +108,7 @@
 /// # Errors
 /// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
 pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
-    extract_columns_regex(sql)
+    extract_columns_regex(&blank_comments(sql))
 }
 
 /// Parse SELECT statement to extract column names with their full expressions
@@ -14,7 +117,7 @@ pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
 /// # Errors
 /// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
 pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, String)>, String> {
-    extract_columns_with_expressions_regex(sql)
+    extract_columns_with_expressions_regex(&blank_comments(sql))
 }
 
 /// Simple regex-based column extraction from SELECT statement
@@ -1020,5 +1123,46 @@ mod tests {
         assert_eq!(cols[1], "id");
         assert_eq!(cols[2], "name");
         assert_eq!(cols[3], "data");
+    }
+
+    #[test]
+    fn comments_are_blanked_strings_kept() {
+        let sql = "SELECT a, -- the entity's name\n b /* it's */ FROM t";
+        let out = blank_comments(sql);
+        let spaces = |c: &str| " ".repeat(c.len());
+        assert_eq!(
+            out,
+            sql.replace("-- the entity's name", &spaces("-- the entity's name"))
+                .replace("/* it's */", &spaces("/* it's */"))
+        );
+        assert_eq!(
+            parse_select_columns(sql).unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn comment_markers_in_strings_and_dollar_bodies_are_kept() {
+        for sql in [
+            "SELECT 'not -- a comment' AS x FROM t",
+            "SELECT 'it''s /* no */' AS x FROM t",
+            "SELECT E'it\\'s -- no' AS x FROM t",
+            "SELECT $x$ -- body's $x$ AS x FROM t",
+            "SELECT $$ /* body */ $$ AS x FROM t",
+            "SELECT \"a--b\" FROM t",
+        ] {
+            assert_eq!(blank_comments(sql), sql, "{sql}");
+        }
+    }
+
+    #[test]
+    fn nested_block_comments_and_parameters() {
+        let comment = "/* a /* b's */ c's */";
+        let sql = format!("SELECT {comment} x FROM t WHERE y = $1 -- z");
+        let blank = " ".repeat(comment.len());
+        assert_eq!(
+            blank_comments(&sql),
+            format!("SELECT {blank} x FROM t WHERE y = $1     ")
+        );
     }
 }

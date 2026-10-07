@@ -241,7 +241,9 @@ pub(crate) fn normalize_definition(
     entity_name: &str,
     select_sql: &str,
 ) -> TViewResult<(String, TViewSchema)> {
-    let select_sql = expand_select_star_if_needed(select_sql)?;
+    // Comments are blanked: the text scans below would read a quote in one (#192).
+    let select_sql = crate::schema::parser::blank_comments(select_sql);
+    let select_sql = expand_select_star_if_needed(&select_sql)?;
     let schema = infer_schema(&select_sql)?;
     if schema.entity_name.is_none() {
         transform_raw_select_to_tview(entity_name, &select_sql)
