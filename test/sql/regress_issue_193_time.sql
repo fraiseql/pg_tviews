@@ -123,4 +123,19 @@ FROM tviews.registry WHERE entity = 'contract';
 SELECT must(array_agg(r) = ARRAY['public.tv_contract'], 'warn: refreshed ' || array_agg(r)::text)
 FROM tviews.pg_tviews_refresh_time_dependent() r;
 
+-- 8. A TVIEW registered before time was detected (an upgrade from beta.25, under
+--    error): pg_tviews_reregister_all() lists the refusal, and the TVIEW keeps its
+--    registration and keeps refreshing on writes.
+CREATE TABLE tb_legacy (pk_legacy bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                        end_date date);
+INSERT INTO tb_legacy VALUES (1, default, current_date);
+SELECT tviews.pg_tviews_create('tv_legacy', 'SELECT pk_legacy, id, end_date >= CURRENT_DATE AS is_current FROM tb_legacy');
+UPDATE tviews.pg_tview_meta SET uncascaded_policy = 'error', time_dependent = false WHERE entity = 'legacy';
+SELECT must(status LIKE '%reads the time (CURRENT_DATE)%', 'reregister_all: ' || status)
+FROM tviews.pg_tviews_reregister_all() WHERE entity = 'legacy';
+SELECT must(uncascaded_policy = 'error' AND NOT time_dependent, 'the old registration is kept')
+FROM tviews.registry WHERE entity = 'legacy';
+UPDATE tb_legacy SET end_date = current_date - 1;
+SELECT assert_fresh('tv_legacy', 'pk_legacy', 'a write after the refused re-registration');
+
 \echo issue #193 time: PASS

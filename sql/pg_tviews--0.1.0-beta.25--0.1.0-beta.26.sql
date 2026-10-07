@@ -95,7 +95,6 @@ LANGUAGE c /* Rust */
 AS 'MODULE_PATHNAME', 'pg_tviews_refresh_time_dependent_wrapper';
 
 -- The tables those functions read are read by the TVIEW (#193).
--- pg_tview_reads: begin
 CREATE OR REPLACE VIEW @extschema@.pg_tview_reads AS
 WITH RECURSIVE reads(entity, relid) AS (
     SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
@@ -117,11 +116,9 @@ WITH RECURSIVE reads(entity, relid) AS (
      AND d.refobjid <> v.oid
 )
 SELECT entity, relid FROM reads;
--- pg_tview_reads: end
 
 -- tviews.registry gains uncascaded_table_policies (#195), function_reads,
 -- time_dependent and time_refresh (#193), appended.
--- registry: begin
 CREATE OR REPLACE VIEW @extschema@.registry AS
 SELECT
     n.nspname::text AS schema,
@@ -190,7 +187,6 @@ FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
--- registry: end
 
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
 RETURNS integer
