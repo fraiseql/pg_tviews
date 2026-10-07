@@ -423,9 +423,10 @@ that looks like a TVIEW. Create TVIEWs with `pg_tviews_create_or_replace()` or
 **Signature**:
 ```sql
 pg_tviews_health_check() RETURNS TABLE (
-    check_name TEXT,
     status TEXT,
-    details TEXT
+    component TEXT,
+    message TEXT,
+    severity TEXT
 )
 ```
 
@@ -435,10 +436,12 @@ Performs comprehensive health checks on the pg_tviews installation and all TVIEW
 **Parameters**:
 - None
 
-**Returns**:
-- `check_name TEXT`: Name of the health check
-- `status TEXT`: 'OK', 'WARNING', or 'ERROR'
-- `details TEXT`: Detailed information about the check
+**Returns** one row per check:
+- `status TEXT`: `OK`, `WARNING` or `ERROR`
+- `component TEXT`: what was checked: `extension`, `jsonb_delta`, `catalog`,
+  `metadata`, `reregister`, `triggers`, `tviews`
+- `message TEXT`: what the check found
+- `severity TEXT`: `info`, `warning` or `error`
 
 **Example**:
 ```sql
@@ -446,7 +449,7 @@ Performs comprehensive health checks on the pg_tviews installation and all TVIEW
 SELECT * FROM pg_tviews_health_check();
 
 -- Check only critical issues
-SELECT * FROM pg_tviews_health_check()
+SELECT component, message FROM pg_tviews_health_check()
 WHERE status IN ('WARNING', 'ERROR');
 ```
 

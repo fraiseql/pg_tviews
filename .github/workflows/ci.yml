@@ -127,6 +127,10 @@ jobs:
       - name: Differential suite (test/sql/differential/run.sh)
         run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
 
+      # The SQL of the user docs, run as written on a fresh database.
+      - name: Documentation SQL (test/docs/run_doc_sql.sh)
+        run: ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md
+
       # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
       # pg_tviews_create_or_replace() and refresh work where the library is loaded
       # lazily (#134).

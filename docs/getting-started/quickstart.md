@@ -5,7 +5,7 @@ Get pg_tviews running in your FraiseQL application in 10 minutes.
 ## Prerequisites
 
 - PostgreSQL 16, 17 or 18 installed and running
-- Rust toolchain 1.70+ (for building the extension)
+- Rust toolchain (stable, for building the extension)
 - A database for testing
 
 ## 1. Install pg_tviews
@@ -34,17 +34,34 @@ cargo pgrx install --release
 
 ## 2. Enable the Extension
 
-Connect to your PostgreSQL database and enable pg_tviews:
+pg_tviews installs hooks when its library is loaded, so load it with the server:
+add it to `shared_preload_libraries` in `postgresql.conf` and restart PostgreSQL.
+
+```ini
+shared_preload_libraries = 'pg_tviews'
+```
+
+Its objects go to the schema `tviews`. Put that schema on the database's
+`search_path`, so its functions can be called unqualified (`your_database` is your
+database's name):
 
 ```bash
-psql -d your_database -c "CREATE EXTENSION pg_tviews;"
+psql -d your_database -c 'ALTER DATABASE your_database SET search_path = "$user", public, tviews;'
+```
+
+Then, connected to your database, create the extension:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+-- The ALTER DATABASE above applies to new sessions; this one sets it now.
+SET search_path = "$user", public, tviews;
 ```
 
 Verify installation:
 
 ```sql
 SELECT pg_tviews_version();
--- Returns the installed version, e.g. '0.1.0-beta.18'
+-- Returns the installed version
 ```
 
 ## 3. Create Your First TVIEW
@@ -137,10 +154,10 @@ VALUES ('bob', 'Bob Smith', 'bob@example.com');
 -- Add a post for the new user
 INSERT INTO tb_post (identifier, title, content, fk_user)
 VALUES ('bobs-first-post', 'Bob''s First Post', 'Hello from Bob!', 2);
-
--- Commit the transaction
-COMMIT;
 ```
+
+Each statement refreshes the TVIEW rows it changed when it ends; in a transaction
+block, the refreshes are part of the transaction.
 
 ### Verify Automatic Update
 
@@ -201,8 +218,11 @@ If you get "extension pg_tviews does not exist":
 ```sql
 -- Check if extension is installed
 \dx pg_tviews
+```
 
--- Reinstall if needed
+Reinstall it if needed, then restart PostgreSQL:
+
+```bash
 cargo pgrx install --release
 ```
 
@@ -219,10 +239,10 @@ If TVIEWs aren't updating:
 
 ```sql
 -- Check triggers are installed
-SELECT * FROM pg_trigger WHERE tgname LIKE 'tview%';
+SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
 -- Check for errors
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
 ```
 
 For more help, see the [troubleshooting guide](../operations/troubleshooting.md).
