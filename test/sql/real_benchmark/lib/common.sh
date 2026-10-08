@@ -33,6 +33,8 @@ db_fresh() {
   else
     psql -X -q -d postgres -c "CREATE DATABASE $1" >/dev/null
   fi
+  # The extension lives in schema tviews; the scripts call it unqualified.
+  db_exec "ALTER DATABASE $1 SET search_path = \"\$user\", public, tviews"
 }
 
 # Install extensions $2 (default "jsonb_delta pg_tviews") plus the snapshot
