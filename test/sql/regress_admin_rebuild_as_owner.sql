@@ -56,14 +56,12 @@ SELECT entity FROM pg_tviews_rebuild_all(true);
 TRUNCATE public.tv_thing;
 SET regress.via = 'recover_after_crash';
 SELECT pg_tviews_recover_after_crash('thing');
-SET regress.via = 'cascade';
-SELECT pg_tviews_cascade('public.tb_thing'::regclass::oid, 1);
 RESET regress.via;
 
 DO $$
 DECLARE
     want text[] := ARRAY['refresh_all', 'rebuild_all', 'refresh_all_entities', 'refresh',
-                         'rebuild_all_only_empty', 'recover_after_crash', 'cascade'];
+                         'rebuild_all_only_empty', 'recover_after_crash'];
     entry text;
     users text;
 BEGIN

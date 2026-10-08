@@ -25,7 +25,11 @@ BEGIN
           -- Text-pattern schema analysis (replaced by the query-tree analysis
           -- every TVIEW is registered with).
           'pg_tviews_analyze_select',
-          'pg_tviews_infer_types'
+          'pg_tviews_infer_types',
+          -- Name-guessing manual cascade (a write to the base table does it).
+          'pg_tviews_cascade',
+          'pg_tviews_insert',
+          'pg_tviews_delete'
       );
     IF found IS NOT NULL THEN
         RAISE EXCEPTION 'removed functions still declared: %', found;

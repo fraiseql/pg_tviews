@@ -512,7 +512,7 @@ impl CtasTarget {
     /// `"schema".tv_<entity>`.
     fn name(&self) -> String {
         match &self.schema {
-            Some(schema) => format!("\"{}\".{}", schema.replace('"', "\"\""), self.table),
+            Some(schema) => format!("{}.{}", crate::utils::quote_ident(schema), self.table),
             None => self.table.clone(),
         }
     }
@@ -1158,18 +1158,81 @@ unsafe fn statement_text(query_string: &str, pstmt: *const pg_sys::PlannedStmt) 
 }
 
 /// Extract the SELECT from the text of one `CREATE TABLE [schema.]tv_x AS SELECT …`
-/// statement: everything after the `AS` that follows the table name, without a trailing `;`.
-///
-/// Anchored at the statement start so an earlier occurrence of the table name (a comment,
-/// another statement) can't be matched.
+/// statement: everything after the `AS` that follows the table name, without a
+/// trailing `;`. The statement is tokenized, so comments, quoted names and string
+/// literals are read as PostgreSQL reads them.
 fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<String> {
-    let re = regex::Regex::new(&format!(
-        r#"(?is)^\s*create\s+(?:[a-z]+\s+){{0,2}}?table\s+(?:if\s+not\s+exists\s+)?(?:"?[^\s."]+"?\s*\.\s*)?"?{}"?\s+(?:with\s*\([^)]*\)\s*)?as\s+"#,
-        regex::escape(table_name)
-    ))
-    .ok()?;
-    let m = re.find(stmt_sql)?;
-    let select = stmt_sql[m.end()..].trim().trim_end_matches(';').trim();
+    use sqlparser::dialect::PostgreSqlDialect;
+    use sqlparser::keywords::Keyword;
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let tokens = Tokenizer::new(&PostgreSqlDialect {}, stmt_sql)
+        .tokenize_with_location()
+        .ok()?;
+    let offsets = crate::ddl::rename::byte_offsets(stmt_sql, &tokens);
+    let sig: Vec<usize> = (0..tokens.len())
+        .filter(|&i| !matches!(tokens[i].token, Token::Whitespace(_)))
+        .collect();
+    let word = |i: usize| match &tokens[sig[i]].token {
+        Token::Word(w) => Some(w),
+        _ => None,
+    };
+    let keyword =
+        |i: usize, k: Keyword| word(i).is_some_and(|w| w.keyword == k && w.quote_style.is_none());
+    if !keyword(0, Keyword::CREATE) {
+        return None;
+    }
+    // CREATE [TEMP | UNLOGGED …] TABLE
+    let mut i = (1..sig.len().min(4)).find(|&i| keyword(i, Keyword::TABLE))? + 1;
+    if keyword(i, Keyword::IF) && keyword(i + 1, Keyword::NOT) && keyword(i + 2, Keyword::EXISTS) {
+        i += 3;
+    }
+    // [schema .] name
+    let mut name = word(i)?;
+    while matches!(
+        sig.get(i + 1).map(|&j| &tokens[j].token),
+        Some(Token::Period)
+    ) {
+        i += 2;
+        name = word(i)?;
+    }
+    let matches = if name.quote_style.is_some() {
+        name.value == table_name
+    } else {
+        name.value.to_lowercase() == table_name
+    };
+    if !matches {
+        return None;
+    }
+    i += 1;
+    // [WITH ( … )]
+    if keyword(i, Keyword::WITH)
+        && matches!(
+            sig.get(i + 1).map(|&j| &tokens[j].token),
+            Some(Token::LParen)
+        )
+    {
+        let mut depth = 0;
+        i += 1;
+        while i < sig.len() {
+            match tokens[sig[i]].token {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    if !keyword(i, Keyword::AS) {
+        return None;
+    }
+    let start = offsets[*sig.get(i + 1)?];
+    let select = stmt_sql[start..].trim().trim_end_matches(';').trim();
     (!select.is_empty()).then(|| select.to_string())
 }
 
@@ -1507,8 +1570,11 @@ mod ctas_extraction_tests {
     #[test]
     fn ignores_earlier_occurrences_of_the_name() {
         let sql = "/* tv_post as */ CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
-        // Anchored at the statement start: a leading comment is not a CTAS prefix.
-        assert_eq!(extract_ctas_select(sql, "tv_post"), None);
+        // A comment is read as one: the SELECT starts after the statement's AS.
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("SELECT 'tv_post as x' FROM t")
+        );
         let sql = "CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
         assert_eq!(
             extract_ctas_select(sql, "tv_post").as_deref(),

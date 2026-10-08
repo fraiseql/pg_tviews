@@ -50,12 +50,18 @@ SELECT expect_code($$SELECT pg_tviews_create('tv_a', 'SELECT pk_a, id, jsonb_bui
 SELECT expect_code($$CREATE TABLE tv_a AS SELECT pk_a, id, jsonb_build_object('id', id) AS data FROM tb_a$$,
                    '42P07', 'CTAS existing');
 
--- 42601 syntax_error: a definition pg_tviews cannot read, from either entry point.
-SELECT expect_code($$SELECT pg_tviews_create('tv_b', 'SELECT 1 AS x')$$, '42601', 'create unreadable');
-SELECT expect_code($$CREATE TABLE tv_b AS SELECT 1 AS x$$, '42601', 'CTAS unreadable');
+-- 42601 syntax_error: not one SELECT; 42703 undefined_column: a column that does
+-- not exist, from either entry point (PostgreSQL analyzes CTAS before pg_tviews).
+SELECT expect_code($$SELECT pg_tviews_create('tv_b',
+    'SELECT pk_a AS pk_b, id, jsonb_build_object(''id'', id) AS data FROM tb_a; CREATE TABLE smuggled (x int)')$$,
+                   '42601', 'two statements');
+SELECT must(to_regclass('smuggled') IS NULL, 'a second statement in a definition ran');
+SELECT expect_code($$SELECT pg_tviews_create('tv_b', 'SELEC pk_a FROM tb_a')$$, '42601', 'misspelled');
+SELECT expect_code($$SELECT pg_tviews_create('tv_b', 'SELECT nope AS pk_b FROM tb_a')$$, '42703', 'create unknown column');
+SELECT expect_code($$CREATE TABLE tv_b AS SELECT nope AS pk_b FROM tb_a$$, '42703', 'CTAS unknown column');
 
 -- 0A000 feature_not_supported: a definition no write can ever refresh.
-SELECT expect_code($$SELECT pg_tviews_create('tv_c', 'SELECT pk_a AS pk_c, id, jsonb_build_object(''id'', id) AS data FROM tb_a')$$,
+SELECT expect_code($$SELECT pg_tviews_create('tv_c', 'SELECT 1::bigint AS pk_c, gen_random_uuid() AS id, ''{}''::jsonb AS data')$$,
                    '0A000', 'never refreshed');
 
 -- 55000 object_not_in_prerequisite_state: resume without suspend.

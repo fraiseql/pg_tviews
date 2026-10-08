@@ -212,8 +212,7 @@ SELECT data->'parent'->>'value' FROM tv_level_3 WHERE pk_level_3 = 1;
 \echo 'Test 4: Depth limit enforcement (conceptual)'
 
 -- We've created 5 levels (0-4), which is within the limit.
--- The actual depth limit enforcement happens when cascade_depth >= 10
--- in the pg_tviews_cascade function.
+-- The actual depth limit is pg_tviews.max_propagation_depth.
 
 -- For this test, we verify the limit is configurable
 \echo 'Verifying cascade depth limit configuration...'

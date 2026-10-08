@@ -25,7 +25,7 @@
 
 pub mod walk;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// A piece of generated SQL: text, or a column of a table occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +420,45 @@ pub struct Graph {
     /// The output columns of the backing view's own SELECT (none for a set
     /// operation), with the base column each stands for.
     pub outputs: Vec<(String, Option<Column>)>,
+    /// The shape of the `data` output of the backing view's own SELECT (`None` for
+    /// a set operation, or without a `data` column).
+    pub data: Option<DataShape>,
+}
+
+/// What the `data` output is built of, read from its expression tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DataShape {
+    /// The fields that copy a base column as it is: their JSON path, the column,
+    /// and whether the definition reads that column nowhere else (not in a join,
+    /// a filter, a grouping, another output or a subquery).
+    pub fields: Vec<DataField>,
+    /// Where another TVIEW's `data` lands.
+    pub embeds: Vec<DataEmbed>,
+    /// Some part of `data` is computed in a way this reading does not follow:
+    /// a patch could miss what it computes.
+    pub opaque: bool,
+}
+
+/// A field of `data` copying a base column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataField {
+    pub path: Vec<String>,
+    pub column: Column,
+    /// The table of `column`.
+    pub relid: u32,
+    /// `column` is read from the occurrence of the table holding the identity
+    /// (not from another occurrence of it, as in a self-join).
+    pub root: bool,
+    pub only_in_data: bool,
+}
+
+/// Another TVIEW's `data` inside this one's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataEmbed {
+    pub entity: String,
+    pub path: Vec<String>,
+    /// Inside `jsonb_agg`: one element per child row.
+    pub array: bool,
 }
 
 /// The identity the walk found: the output column, and the base column it stands
@@ -470,6 +509,10 @@ pub struct TableLineage {
     /// table, column of the root)`: the TVIEW rows can be found by that column
     /// when the TVIEW projects it (fan-out, issue #120).
     pub hop: Option<(String, String)>,
+    /// With `hop`: the output column equal to the root's column, and the `data`
+    /// keys copying this table's columns, read nowhere else (`(column, key)`):
+    /// what an UPDATE of it can write into every row with that value (#120).
+    pub fanout: Option<(String, Vec<(String, String)>)>,
     /// The table whose column is the key (of a branch, under UNION).
     pub root: bool,
     /// The virtual generated columns the TVIEW reads and their inputs: never
@@ -783,6 +826,34 @@ impl Graph {
             .then(|| (own.name.clone(), other.name.clone()))
     }
 
+    /// The fan-out of a write to `occ`, one equality from a root column: the
+    /// output column equal to that root column, and the top-level `data` keys
+    /// that copy columns of `occ` read nowhere else.
+    fn fanout(&self, occ: usize, path: &[usize]) -> Option<(String, Vec<(String, String)>)> {
+        let root = self.root_at(occ, path)?;
+        let [only] = path else { return None };
+        let (x, y) = self.conjuncts[*only].equality.as_ref()?;
+        let other = if x.occ == occ { y } else { x };
+        if other.occ != root.key.occ {
+            return None;
+        }
+        let lookup = self.output_equal_to(std::slice::from_ref(other))?;
+        let data = self.data.as_ref()?;
+        let fields: Vec<(String, String)> = data
+            .fields
+            .iter()
+            .filter(|f| f.column.occ == occ && f.only_in_data && f.path.len() == 1)
+            .filter(|f| {
+                data.fields
+                    .iter()
+                    .filter(|g| g.column == f.column)
+                    .all(|g| g.path.len() == 1)
+            })
+            .map(|f| (f.column.name.clone(), f.path[0].clone()))
+            .collect();
+        (!fields.is_empty()).then_some((lookup, fields))
+    }
+
     /// For each table a mapping query joins (not the changed one), the columns its
     /// conditions look up: what an index should cover.
     #[must_use]
@@ -1028,6 +1099,10 @@ impl Graph {
                     [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
                     _ => None,
                 };
+                let fanout = match paths.as_slice() {
+                    [(occ, path)] if hop.is_some() => self.fanout(*occ, path),
+                    _ => None,
+                };
                 TableLineage {
                     relid,
                     relname: o.relname.clone(),
@@ -1039,6 +1114,7 @@ impl Graph {
                     lookups,
                     index_hints,
                     hop,
+                    fanout,
                     virtual_reads: Vec::new(),
                     matview: o.matview,
                     tview: o.tview_table.clone(),
@@ -1074,6 +1150,116 @@ pub struct Lineage {
     pub functions: Vec<(u32, String)>,
     /// How it reads the current time (#193): its rows change with no write.
     pub time_reads: Vec<String>,
+    /// Every other TVIEW it reads, with the output column equal to that TVIEW's
+    /// key, if any.
+    pub tview_reads: BTreeMap<String, Option<String>>,
+    /// The TVIEWs it reads whose rows are named by a column other than
+    /// `pk_<entity>` (DISTINCT ON): the key it joins on is not theirs.
+    pub keyed_otherwise: BTreeSet<String>,
+    /// The shape of its `data` output.
+    pub data: Option<DataShape>,
+}
+
+/// How a TVIEW embeds another one's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedKind {
+    /// It reads some of the child's columns, not its document.
+    Scalar,
+    /// The child's `data` is a value of its own `data`.
+    Nested,
+    /// The children's `data` are aggregated into an array.
+    Array,
+}
+
+impl EmbedKind {
+    /// The name `pg_tview_meta.dependency_types` stores.
+    #[must_use]
+    pub const fn stored(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::Nested => "nested_object",
+            Self::Array => "array",
+        }
+    }
+}
+
+/// Another TVIEW this one embeds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Embed {
+    pub entity: String,
+    /// The output column of this TVIEW equal to the child's key.
+    pub lookup: String,
+    pub kind: EmbedKind,
+    /// Where its document lands in `data` (empty for a scalar embed).
+    pub path: Vec<String>,
+}
+
+impl Lineage {
+    /// The TVIEWs this one embeds, in entity order.
+    #[must_use]
+    pub fn embeds(&self, entity: &str) -> Vec<Embed> {
+        let placed = self.data.iter().flat_map(|d| &d.embeds);
+        self.tview_reads
+            .iter()
+            .filter(|(child, _)| child.as_str() != entity)
+            .filter_map(|(child, lookup)| {
+                let lookup = lookup.clone()?;
+                // The parent joins on the child's pk_<child>, which is not the key
+                // of a DISTINCT ON child: its document is read, not followed.
+                let found = placed
+                    .clone()
+                    .find(|e| &e.entity == child)
+                    .filter(|_| !self.keyed_otherwise.contains(child));
+                let kind = match found {
+                    Some(e) if e.array => EmbedKind::Array,
+                    Some(_) => EmbedKind::Nested,
+                    None => EmbedKind::Scalar,
+                };
+                Some(Embed {
+                    entity: child.clone(),
+                    lookup,
+                    kind,
+                    path: found.map(|e| e.path.clone()).unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    /// The direct-patch map: `(column, data key)` for each column of the table
+    /// holding the identity that `data` copies under a top-level key and that the
+    /// definition reads nowhere else. Never a virtual generated column or an input
+    /// of one: the trigger sees it NULL (#179). Empty for a set operation and a
+    /// DISTINCT ON TVIEW, whose rows are recomputed.
+    #[must_use]
+    pub fn direct_fields(&self) -> Vec<(String, String)> {
+        let Some(data) = &self.data else {
+            return Vec::new();
+        };
+        if self.set_operation || self.identity.kind == IdentityKind::DistinctOn {
+            return Vec::new();
+        }
+        let Some(&(root, _)) = self.identity.columns.first() else {
+            return Vec::new();
+        };
+        let virtual_reads: Vec<&String> = self
+            .tables
+            .iter()
+            .filter(|t| t.relid == root)
+            .flat_map(|t| &t.virtual_reads)
+            .collect();
+        data.fields
+            .iter()
+            .filter(|f| f.root && f.only_in_data && f.path.len() == 1)
+            .filter(|f| !virtual_reads.contains(&&f.column.name))
+            .filter(|f| {
+                data.fields
+                    .iter()
+                    .filter(|g| g.column == f.column)
+                    .all(|g| g.path.len() == 1 && g.only_in_data)
+            })
+            .map(|f| (f.column.name.clone(), f.path[0].clone()))
+            .collect()
+    }
 }
 
 /// A table a function reads, declared with the TVIEW (#193).
@@ -1182,6 +1368,7 @@ impl Lineage {
                     table.kind = TableKind::AllKeys(kind);
                     table.sql = sql;
                     table.hop = None;
+                    table.fanout = None;
                 }
                 None => self.tables.push(TableLineage {
                     relid: read.relid,
@@ -1194,6 +1381,7 @@ impl Lineage {
                     lookups: Vec::new(),
                     index_hints: Vec::new(),
                     hop: None,
+                    fanout: None,
                     root: false,
                     virtual_reads: Vec::new(),
                     matview: read.matview,
@@ -1201,18 +1389,6 @@ impl Lineage {
                 }),
             }
         }
-    }
-
-    /// Whether the TVIEW is a UNION whose branches have their own root tables.
-    #[must_use]
-    pub fn is_union(&self) -> bool {
-        self.tables.iter().filter(|t| t.root).count() > 1
-    }
-
-    /// Whether a table's writes map to keys through a query (`mapped`).
-    #[must_use]
-    pub fn has_mapped(&self) -> bool {
-        self.tables.iter().any(|t| t.kind == TableKind::Mapped)
     }
 
     /// The tables no cascade reaches (`all_keys`), with the reason, which says when
@@ -1283,9 +1459,9 @@ impl Lineage {
 
 /// Analyze the backing view `view_oid` of `entity`.
 ///
-/// `embeds` lists the TVIEWs it embeds through `fk_<entity>` columns; the
-/// aggregate TVIEWs it reads are embeds too, found by the walk. `base_tables` is
-/// what `pg_depend` says the view reads, which the analysis must find exactly.
+/// The TVIEWs it embeds are the ones it reads with an output column equal to
+/// their key, found by the walk. `base_tables` is what `pg_depend` says the view
+/// reads, which the analysis must find exactly.
 ///
 /// # Errors
 /// Returns an error if the view cannot be analyzed, or if the analysis and
@@ -1294,7 +1470,6 @@ pub fn analyze(
     entity: &str,
     view_oid: pgrx::pg_sys::Oid,
     base_tables: &[pgrx::pg_sys::Oid],
-    embeds: &[String],
 ) -> crate::TViewResult<Lineage> {
     use std::collections::{HashMap, HashSet};
 
@@ -1308,7 +1483,11 @@ pub fn analyze(
     // Per other TVIEW: the tables it maps, and those it refreshes in full.
     let mut mapped_by: HashMap<String, (HashSet<u32>, HashSet<u32>)> = HashMap::new();
     let mut aggregates: Vec<String> = Vec::new();
+    let mut keyed_otherwise: BTreeSet<String> = BTreeSet::new();
     for other in crate::catalog::registered::all()? {
+        if other.keyed_otherwise {
+            keyed_otherwise.insert(other.entity.clone());
+        }
         tview_tables.insert(other.table_oid, other.entity.clone());
         if other.entity == entity {
             continue;
@@ -1363,20 +1542,18 @@ pub fn analyze(
 
     // The aggregate TVIEWs the view reads embed through the output equal to their
     // key (#126).
-    let mut lookups = graph.embed_lookups();
+    let tview_reads = graph.embed_lookups();
+    let mut lookups = tview_reads.clone();
     let aggregate_embeds: Vec<(String, Option<String>)> = aggregates
         .into_iter()
         .filter_map(|a| lookups.remove(&a).map(|column| (a, column)))
         .collect();
-    let embeds: Vec<&str> = embeds
+    // A TVIEW read with an output column equal to its key is embedded: a refresh
+    // of its rows finds the parents by that column.
+    let embeds: Vec<&str> = tview_reads
         .iter()
-        .map(String::as_str)
-        .chain(
-            aggregate_embeds
-                .iter()
-                .filter(|(_, column)| column.is_some())
-                .map(|(a, _)| a.as_str()),
-        )
+        .filter(|(child, lookup)| lookup.is_some() && child.as_str() != entity)
+        .map(|(child, _)| child.as_str())
         .collect();
     // Propagation from an embedded TVIEW covers a table only if that TVIEW maps it.
     // Or, for a read of its table, only that it embeds it (#191).
@@ -1416,6 +1593,9 @@ pub fn analyze(
         aggregate_embeds,
         functions,
         time_reads: graph.time_reads.clone(),
+        tview_reads,
+        keyed_otherwise,
+        data: graph.data.clone(),
     })
 }
 
@@ -1837,6 +2017,7 @@ mod tests {
             set_operation: false,
             virtual_columns: std::collections::BTreeSet::new(),
             tview_keys: BTreeMap::new(),
+            data: None,
             outputs: vec![],
         }
     }
@@ -1969,6 +2150,7 @@ mod tests {
             set_operation: false,
             virtual_columns: std::collections::BTreeSet::new(),
             tview_keys: BTreeMap::new(),
+            data: None,
             outputs: vec![],
         };
         assert_eq!(
@@ -2805,6 +2987,7 @@ mod tests {
             lookups: vec![],
             index_hints: vec![],
             hop: None,
+            fanout: None,
             root: false,
             virtual_reads: vec![],
             matview: false,
@@ -2830,6 +3013,9 @@ mod tests {
             aggregate_embeds: vec![],
             functions: vec![],
             time_reads: vec![],
+            tview_reads: BTreeMap::new(),
+            keyed_otherwise: BTreeSet::new(),
+            data: None,
         };
         let read = |relid: u32| FunctionRead {
             function: "public.f()".into(),

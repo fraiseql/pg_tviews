@@ -113,24 +113,8 @@ fn load_entity_info_uncached(
         Vec::new()
     };
 
-    // A base column that also feeds a projected column outside `data` must
-    // recompute: a data-only patch would leave that column stale (#98).
-    let args = [crate::utils::spi::text(name.as_str())];
-    let definition: Option<String> = Spi::get_one_with_args(
-        &format!(
-            "SELECT definition FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &args,
-    )
-    .unwrap_or(None);
-    match definition
-        .as_deref()
-        .and_then(crate::schema::direct_map::columns_referenced_outside_data)
-    {
-        Some(projected) => direct_map.retain(|col, _| !projected.contains(&col.to_lowercase())),
-        None => direct_map.clear(),
-    }
+    // A column also read outside `data` (projected, joined on, filtered) is never
+    // in the map: registration keeps only columns read nowhere else (#98).
 
     Ok(Some(CachedEntityInfo {
         name,

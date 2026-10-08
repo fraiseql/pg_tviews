@@ -2,11 +2,12 @@
 --   "pg_tviews_create accepts an off-convention tview (entity ≠ base table); it
 --    never refreshes and shadows the sibling on the same base table."
 --
--- Correct behaviour: creating a tview whose derived entity has no matching
--- tb_<entity> base table with a pk_<entity> column is rejected at create time,
--- and the incumbent, correctly-named tview keeps working.
+-- A TVIEW keyed on another table's rows is refreshed through that table, whatever
+-- the names (ADR 0203): tv_order_summary over tb_order refreshes, and the
+-- incumbent tv_order on the same table keeps working.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_49_offconvention.sql
+-- expect-output: #49 PASS
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -50,36 +51,15 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Off-convention create: entity would be 'order_summary' (from pk_order_summary),
--- but there is no tb_order_summary. Must be rejected.
-DO $$
-BEGIN
-  PERFORM pg_tviews_create('tv_order_summary', $q$
-      SELECT o.pk_order AS pk_order_summary, o.id AS id,
-             jsonb_build_object('id', o.id::text, 'status', o.status) AS data
-      FROM tb_order o
-  $q$);
-  RAISE EXCEPTION '#49 FAIL: off-convention create was ACCEPTED (expected rejection)';
-EXCEPTION
-  WHEN OTHERS THEN
-    IF SQLERRM LIKE '%#49 FAIL%' THEN
-      RAISE;   -- re-raise our own assertion failure
-    END IF;
-    RAISE NOTICE '#49 ok: off-convention create rejected: %', SQLERRM;
-END $$;
+-- Off-convention create: the entity is 'order_summary' (from pk_order_summary),
+-- its rows are tb_order's.
+SELECT pg_tviews_create('tv_order_summary', $q$
+    SELECT o.pk_order AS pk_order_summary, o.id AS id,
+           jsonb_build_object('id', o.id::text, 'status', o.status) AS data
+    FROM tb_order o
+$q$);
 
--- The off-convention tview must not have been created.
-DO $$ BEGIN
-  IF to_regclass('tv_order_summary') IS NOT NULL THEN
-    RAISE EXCEPTION '#49 FAIL: tv_order_summary table exists after a rejected create';
-  END IF;
-  IF EXISTS (SELECT 1 FROM pg_tview_meta WHERE entity = 'order_summary') THEN
-    RAISE EXCEPTION '#49 FAIL: order_summary registered in pg_tview_meta after rejection';
-  END IF;
-END $$;
-
--- Sibling protection: the incumbent tv_order must still refresh after the rejected
--- create (both a new INSERT and an UPDATE to an existing row).
+-- Both refresh: a new INSERT and an UPDATE to an existing row.
 INSERT INTO tb_order (identifier, fk_tenant, status) VALUES ('o2', 1, 'draft');
 UPDATE tb_order SET status = 'shipped' WHERE identifier = 'o1';
 DO $$ BEGIN
@@ -93,4 +73,11 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-\echo '#49 PASS: off-convention create rejected; incumbent sibling unaffected'
+DO $$ BEGIN
+  IF (SELECT count(*) FROM tv_order_summary) <> 2
+     OR (SELECT data->>'status' FROM tv_order_summary WHERE pk_order_summary = 1) <> 'shipped' THEN
+    RAISE EXCEPTION '#49 FAIL: tv_order_summary did not follow tb_order';
+  END IF;
+END $$;
+
+\echo '#49 PASS: off-convention TVIEW refreshed; incumbent sibling unaffected'

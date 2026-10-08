@@ -50,13 +50,11 @@ mod refresh;
 mod replication;
 mod report;
 mod revision;
-mod sql_parser;
 mod trigger;
 mod utils;
 
 // Feature modules
 mod admin;
-mod cascade;
 mod health;
 mod lifecycle;
 mod suspend;
@@ -67,7 +65,6 @@ mod ddl;
 mod dependency;
 mod error;
 mod metadata;
-mod schema;
 mod validation;
 
 // Public re-exports

@@ -491,7 +491,7 @@ DROP TABLE tv_post;
 CREATE TABLE tv_post AS SELECT ...;
 
 -- Manual refresh if needed
-SELECT pg_tviews_cascade('tb_post'::regclass::oid, pk_value);
+SELECT tviews.pg_tviews_refresh('post');
 ```
 
 ## Scaling Strategies

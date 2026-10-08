@@ -7,8 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
+  text-pattern analysis that registration still used for columns, embeds and the
+  direct-patch map is gone, and with it the spelling rules it imposed:
+  - a parent may hold a child TVIEW's key in a column of any name (`author_pk`), and
+    a TVIEW whose rows are another table's (`pk_order_summary` over `tb_order`) is
+    accepted and refreshed (it was refused, #49);
+  - a child's document embedded under an alias (`'author', u.data`) is patched into
+    its parents instead of recomputing them;
+  - a column whose name holds an apostrophe, `SELECT *` over such a view, and a
+    JSON key holding a quote work; `SELECT * FROM t` lists the columns of the `t`
+    the `search_path` resolves, not those of every same-named table;
+  - a `fk_<entity>` column no longer makes a TVIEW depend on a TVIEW it does not read.
+- **A definition is exactly one SELECT** (42601). A second statement after the
+  SELECT was accepted and run.
+- `CREATE TABLE tv_* AS` accepts a comment before the statement.
+
+### Fixed
+
+- A column copied into `data` that the definition also joins or filters on was
+  patched in place, leaving the values that depend on it stale.
+
 ### Removed
 
+- `pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()`: they found
+  a TVIEW's rows by table-name conventions; a write to the base table already
+  refreshes them, and `pg_tviews_refresh(entity)` repairs changes the triggers did
+  not see.
 - `pg_tviews_analyze_select(text)` and `pg_tviews_infer_types(text, text[])`. They ran
   the text-pattern analysis that registration is moving away from, and
   `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The

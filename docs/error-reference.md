@@ -32,7 +32,7 @@ This document provides comprehensive reference for all error types that can occu
 **Example**:
 ```sql
 -- Error occurs when trying to refresh a non-existent TVIEW
-SELECT pg_tviews_cascade('unknown_entity'::regclass::oid, 123);
+SELECT pg_tviews_refresh('unknown_entity');
 -- ERROR: TVIEW metadata not found for entity 'unknown_entity'
 ```
 

@@ -16,6 +16,8 @@ pub struct Registered {
     pub full_refresh: HashSet<u32>,
     /// An aggregate TVIEW (declared group keys).
     pub aggregate: bool,
+    /// Its rows are named by a column other than `pk_<entity>` (DISTINCT ON).
+    pub keyed_otherwise: bool,
 }
 
 /// Every registered TVIEW, by entity.
@@ -29,7 +31,9 @@ pub fn all() -> TViewResult<Vec<Registered>> {
                       WHERE COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
                                 uncascaded_table_oids, u)], uncascaded_policy) \
                             = 'full_refresh'), \
-                group_keys IS NOT NULL \
+                group_keys IS NOT NULL, \
+                COALESCE(identity->>'kind' = 'distinct_on', false) \
+                    OR distinct_on_keys <> '{{}}' \
          FROM {} ORDER BY entity",
         crate::utils::meta_table()
     );
@@ -62,6 +66,7 @@ pub fn all() -> TViewResult<Vec<Registered>> {
             mapped,
             full_refresh,
             aggregate: row.get::<bool>(6)?.unwrap_or(false),
+            keyed_otherwise: row.get::<bool>(7)?.unwrap_or(false),
         }))
     })?;
     Ok(rows.into_iter().flatten().collect())

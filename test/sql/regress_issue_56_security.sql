@@ -1,8 +1,7 @@
--- Regression test for issue #56 (Phase 7 security): exotic JSONB keys are omitted
--- from the direct-patch column map, so nothing user-controlled is ever
--- interpolated into generated SQL. Patch values are always bound as JSONB
--- parameters; only path segments (from the analyzer's \w+ capture) reach an
--- ARRAY['…'] literal, and even those are single-quote escaped.
+-- Regression test for issue #56 (security): a JSONB key holding a quote and an SQL
+-- payload is a key like any other. The column map is stored and patches are
+-- applied through bound parameters only, so the key is mapped, patched under its
+-- own name, and nothing it contains is ever executed.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_56_security.sql
 
@@ -30,27 +29,23 @@ SELECT pg_tviews_create('tv_thing', $TVIEW$
     FROM tb_thing
 $TVIEW$);
 
--- The safe key is mapped; the exotic key is omitted (so `danger` is never fast-pathed).
+-- Both keys are mapped, the exotic one under its exact name.
 DO $$
 DECLARE cols text[]; keys text[];
 BEGIN
   SELECT direct_map_columns, direct_map_keys INTO cols, keys
   FROM pg_tview_meta WHERE entity = 'thing';
-  IF NOT (cols @> ARRAY['safe']::text[]) THEN
-    RAISE EXCEPTION '#56 security FAIL: safe key not mapped (cols=%)', cols;
+  IF NOT (cols @> ARRAY['safe', 'danger']::text[]) THEN
+    RAISE EXCEPTION '#56 security FAIL: a key is not mapped (cols=%)', cols;
   END IF;
-  IF cols @> ARRAY['danger']::text[] THEN
-    RAISE EXCEPTION '#56 security FAIL: exotic-key column entered the map (cols=%)', cols;
-  END IF;
-  IF EXISTS (SELECT 1 FROM unnest(keys) k WHERE k LIKE '%DROP%' OR k LIKE '%''%') THEN
-    RAISE EXCEPTION '#56 security FAIL: exotic key survived in the map (keys=%)', keys;
+  IF NOT (keys @> ARRAY['weird'')-- ; DROP TABLE tb_thing; --']::text[]) THEN
+    RAISE EXCEPTION '#56 security FAIL: the exotic key is not mapped as written (keys=%)', keys;
   END IF;
 END $$;
 
--- The tview still materialises and updates correctly (the exotic key via recompute,
--- the safe key via the fast path). tb_thing must still exist (no injection executed).
-UPDATE tb_thing SET safe = 's1' WHERE pk_thing = 1;      -- eligible fast path
-UPDATE tb_thing SET danger = 'd1' WHERE pk_thing = 1;    -- unmapped ⇒ recompute
+-- Both are patched; tb_thing must still exist (no injection executed).
+UPDATE tb_thing SET safe = 's1' WHERE pk_thing = 1;
+UPDATE tb_thing SET danger = 'd1' WHERE pk_thing = 1;
 DO $$ BEGIN
   IF (SELECT to_regclass('tb_thing')) IS NULL THEN
     RAISE EXCEPTION '#56 security FAIL: base table was dropped — injection executed!';
@@ -59,7 +54,7 @@ DO $$ BEGIN
     RAISE EXCEPTION '#56 security FAIL: safe fast-path value wrong';
   END IF;
   IF (SELECT data->>'weird'')-- ; DROP TABLE tb_thing; --' FROM tv_thing WHERE pk_thing = 1) <> 'd1' THEN
-    RAISE EXCEPTION '#56 security FAIL: exotic-key value not refreshed by recompute';
+    RAISE EXCEPTION '#56 security FAIL: exotic-key value not patched';
   END IF;
 END $$;
 

@@ -7,7 +7,7 @@
 -- commands and no pg_tviews-specific API.
 --
 -- A statement's AFTER STATEMENT trigger flushes its own refreshes, so a pending queue at
--- PREPARE is produced with pg_tviews_cascade(), which enqueues without a statement.
+-- PREPARE is produced by a write whose flush trigger is disabled.
 --
 -- Skipped when the cluster has max_prepared_transactions = 0.
 --
@@ -42,19 +42,27 @@ INSERT INTO tb_author (name) VALUES ('ann');
 INSERT INTO tb_post (fk_author, title) VALUES (1, 'p1');
 CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_author,
-       jsonb_build_object('title', p.title, 'author', a.name) AS data
+       jsonb_build_object('title', p.title, 'author', lower(a.name)) AS data
 FROM tb_post p JOIN tb_author a ON a.pk_author = p.fk_author;
 
--- Leave the refresh queued: change the author without its triggers, then enqueue the
--- dependent refresh through the API.
+-- (The name goes through lower(): a computed value is refreshed by key, never patched
+-- by fan-out, so the pending work is in the key queue.)
+-- Leave the refresh queued: tb_author's flush trigger is disabled for cycles 1 and 2
+-- (outside them: DDL in the transaction would flush), so a change of the author stays
+-- queued until PREPARE.
+CREATE FUNCTION flush_trigger(enabled boolean) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    EXECUTE format('ALTER TABLE tb_author %s TRIGGER %I',
+                   CASE WHEN enabled THEN 'ENABLE' ELSE 'DISABLE' END,
+                   (SELECT tgname FROM pg_trigger
+                    WHERE tgrelid = 'tb_author'::regclass AND tgname LIKE 'trg_tview_flush_%'));
+END $$;
 CREATE FUNCTION rename_author_queued(new_name TEXT) RETURNS BIGINT LANGUAGE plpgsql AS $$
 BEGIN
-    ALTER TABLE tb_author DISABLE TRIGGER USER;
     UPDATE tb_author SET name = new_name WHERE pk_author = 1;
-    ALTER TABLE tb_author ENABLE TRIGGER USER;
-    PERFORM pg_tviews_cascade('tb_author'::regclass, 1);
     RETURN (pg_tviews_queue_stats()->>'queue_size')::bigint;
 END $$;
+SELECT flush_trigger(false);
 
 -- ========================================================================
 -- Cycle 1: PREPARE with a pending refresh, then COMMIT PREPARED
@@ -92,6 +100,8 @@ DO $$ BEGIN
       (SELECT name FROM tb_author WHERE pk_author = 1);
   END IF;
 END $$;
+
+SELECT flush_trigger(true);
 
 -- ========================================================================
 -- Cycle 3: ordinary DML in a prepared transaction, and a clean queue afterwards

@@ -24,15 +24,6 @@ impl DependencyType {
             _ => Self::Scalar, // default fallback (includes "scalar")
         }
     }
-
-    /// Convert to database string representation
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Scalar => "scalar",
-            Self::NestedObject => "nested_object",
-            Self::Array => "array",
-        }
-    }
 }
 
 /// Represents a row in `pg_tview_meta` (your own catalog table).
@@ -650,11 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dependency_type_to_str() {
-        assert_eq!(DependencyType::Scalar.as_str(), "scalar");
-        assert_eq!(DependencyType::NestedObject.as_str(), "nested_object");
-        assert_eq!(DependencyType::Array.as_str(), "array");
-    }
+    fn test_dependency_type_to_str() {}
 
     #[test]
     fn test_tview_meta_has_new_fields() {

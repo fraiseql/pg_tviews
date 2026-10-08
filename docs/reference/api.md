@@ -280,70 +280,8 @@ is needed. Prepared transactions require `max_prepared_transactions > 0`.
 
 ## Manual Operations
 
-### pg_tviews_cascade()
-
-Low-level. The triggers already do this on every write; use it to repair a TVIEW
-after a change the triggers did not see (`session_replication_role = replica`,
-triggers disabled), or prefer `pg_tviews_refresh(entity)`, which rebuilds it.
-
-**Signature**:
-```sql
-pg_tviews_cascade(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-**Description**:
-Queues a refresh of the TVIEW rows that read the row `pk_value` of
-`base_table_oid`. Outside a transaction block it then refreshes them before
-returning. Inside one, the refresh stays queued and runs with the transaction's
-next flush: the next statement that writes a TVIEW's table, `COMMIT`, or
-`PREPARE TRANSACTION`.
-
-**Parameters**:
-- `base_table_oid` (OID): PostgreSQL OID of the base table
-- `pk_value` (BIGINT): primary key value of the changed row
-
-**Returns**:
-- `VOID`
-
-**Example**:
-```sql
--- The row pk_user = 123 changed while the triggers were off
-SELECT pg_tviews_cascade('tb_user'::regclass::oid, 123);
-```
-
-**Notes**:
-- The rows are found by the naming convention: `pk_<entity>` for the TVIEW's own
-  table, `fk_<entity>` columns for the tables it reads. A table whose rows map to
-  keys any other way is not covered; use `pg_tviews_refresh(entity)`.
-- Refresh work still queued when a transaction commits is dropped with a WARNING.
-
-### pg_tviews_insert()
-
-**Signature**:
-```sql
-pg_tviews_insert(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-Same as `pg_tviews_cascade()`, for an inserted row. Low-level.
-
-**Example**:
-```sql
-SELECT pg_tviews_insert('tb_user'::regclass::oid, 456);
-```
-
-### pg_tviews_delete()
-
-**Signature**:
-```sql
-pg_tviews_delete(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-Same as `pg_tviews_cascade()`, for a deleted row. Low-level.
-
-**Example**:
-```sql
-SELECT pg_tviews_delete('tb_user'::regclass::oid, 789);
-```
+A change the triggers did not see (`session_replication_role = replica`, triggers
+disabled) is repaired with `pg_tviews_refresh(entity)`, which rebuilds the TVIEW.
 
 ### pg_tviews_convert_table()
 
@@ -655,11 +593,8 @@ COMMIT PREPARED 'txn-123';       -- or ROLLBACK PREPARED 'txn-123'
 
 ### Manual Refresh Operations
 ```sql
--- Refresh the TVIEW rows that read one row of tb_user
-SELECT pg_tviews_cascade('tb_user'::regclass::oid, 123);
-
--- Process after manual data correction
-SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
+-- Rebuild a TVIEW after changes the triggers did not see
+SELECT pg_tviews_refresh('post');
 ```
 
 ## Important Notes
@@ -667,7 +602,6 @@ SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
 ### Performance Considerations
 - `pg_tviews_debug_queue()` reads thread-local state, no performance impact
 - `pg_tviews_queue_stats()` is fast, safe for frequent monitoring
-- Manual operations (`pg_tviews_cascade`, etc.) use the transaction queue; in autocommit they flush it before returning
 
 ### Common Pitfalls
 - Don't use manual operations in triggers (causes recursion)

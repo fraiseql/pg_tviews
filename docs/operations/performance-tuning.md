@@ -352,25 +352,13 @@ class TviewCache {
 Pre-populate caches for frequently accessed data:
 
 ```sql
--- Cache warming query
-CREATE OR REPLACE FUNCTION warm_tview_cache()
-RETURNS void AS $$
-DECLARE
-    rec record;
-BEGIN
-    -- Warm up frequently accessed posts
-    FOR rec IN
-        SELECT id FROM tv_post
-        WHERE (data->>'view_count')::int > 1000
-        ORDER BY (data->>'last_viewed')::timestamptz DESC
-        LIMIT 1000
-    LOOP
-        -- Touch each record to warm caches
-        PERFORM pg_tviews_cascade('tv_post'::regclass::oid,
-                                (SELECT pk_post FROM tv_post WHERE id = rec.id));
-    END LOOP;
-END;
-$$ LANGUAGE plpgsql;
+-- Cache warming: read the hot rows once
+SELECT count(*) FROM (
+    SELECT data FROM tv_post
+    WHERE (data->>'view_count')::int > 1000
+    ORDER BY (data->>'last_viewed')::timestamptz DESC
+    LIMIT 1000
+) hot;
 ```
 
 ## Load Testing

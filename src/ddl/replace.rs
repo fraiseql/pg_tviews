@@ -22,7 +22,6 @@ use super::uncascaded::{Declarations, TimeRefresh};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
-use crate::schema::TViewSchema;
 use crate::utils::quote_identifier;
 use pgrx::prelude::*;
 
@@ -606,7 +605,7 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
         if column == pk
             || column == "id"
             || column == "data"
-            || meta.fk_columns.contains(&column)
+            || column.starts_with("fk_")
             || stored.get(&column).is_none_or(|t| *t == view_type)
         {
             continue;
@@ -702,8 +701,8 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
 }
 
 /// The TVIEW's name must match the key its definition produces.
-fn check_key(entity: &str, normalized: &TViewSchema) -> TViewResult<()> {
-    match normalized.entity_name.as_deref() {
+fn check_key(entity: &str, normalized: &create::ViewColumns) -> TViewResult<()> {
+    match normalized.entity.as_deref() {
         Some(keyed) if keyed == entity => Ok(()),
         Some(keyed) => Err(invalid(
             "tview_name",
@@ -1327,9 +1326,13 @@ fn user_indexes(
     tv_name: &str,
     table: pg_sys::Oid,
 ) -> TViewResult<Vec<(String, String)>> {
-    let (definition, embed_columns) =
-        crate::catalog::registered::definition_and_embed_columns(entity)?;
-    let schema = crate::schema::inference::infer_schema(&definition)?;
+    let (_, embed_columns) = crate::catalog::registered::definition_and_embed_columns(entity)?;
+    let view_oid = TviewMeta::load_by_entity(entity)?
+        .ok_or_else(|| TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        })?
+        .view_oid;
+    let schema = create::ViewColumns::classify(crate::utils::column_types(view_oid)?);
     let managed = create::managed_index_names(tv_name, &schema, &embed_columns);
 
     Spi::connect(|client| {

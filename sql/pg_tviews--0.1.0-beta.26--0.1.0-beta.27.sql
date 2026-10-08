@@ -13,3 +13,13 @@ AS 'SELECT 5';
 -- tree when it is registered.
 DROP FUNCTION @extschema@.pg_tviews_analyze_select(text);
 DROP FUNCTION @extschema@.pg_tviews_infer_types(text, text[]);
+
+-- pg_tviews_cascade(), _insert() and _delete() guessed a TVIEW's rows from the
+-- table's name: a write to the base table refreshes them.
+DROP FUNCTION @extschema@.pg_tviews_cascade(oid, bigint);
+DROP FUNCTION @extschema@.pg_tviews_insert(oid, bigint);
+DROP FUNCTION @extschema@.pg_tviews_delete(oid, bigint);
+
+-- The text-pattern analysis's result type: every definition is read from its
+-- query tree.
+DROP TYPE @extschema@.tviewschema CASCADE;

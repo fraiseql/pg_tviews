@@ -232,14 +232,17 @@ fn describe(tview: &str, tables: &[&UncascadedTable], verb: &str) -> String {
 /// `pg_tviews_create_or_replace()`, for those tables or the whole TVIEW, or the
 /// setting `CREATE TABLE … AS` and `pg_tviews_create()` read.
 fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> String {
+    let json = |text: &str| serde_json::Value::from(text).to_string();
     let named = tables
         .iter()
-        .map(|t| format!("\"{}\": \"{policy}\"", t.name.replace('"', "\\\"")))
+        .map(|t| format!("{}: {}", json(&t.name), json(policy)))
         .collect::<Vec<_>>()
         .join(", ");
+    // The option as JSON, written as an SQL literal.
+    let option = format!("{{\"uncascaded_tables\": {{{named}}}}}").replace('\'', "''");
     format!(
         "pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"uncascaded_tables\": {{{named}}}}}'), or for the whole TVIEW \
+         '{option}'), or for the whole TVIEW \
          '{{\"uncascaded_policy\": \"{policy}\"}}'; before CREATE TABLE … AS or \
          pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
     )
@@ -396,10 +399,12 @@ pub(crate) fn report_functions(
     );
     let hint = format!(
         "Declare them: pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"function_reads\": {{\"{}\": [\"<schema.table>\", …]}}}}'), [] for a function \
+         '{{\"function_reads\": {{{}: [\"<schema.table>\", …]}}}}'), [] for a function \
          that reads no table; then give those tables a policy in uncascaded_tables. Or make \
          the function IMMUTABLE if it reads nothing that changes.",
-        first.replace('"', "\\\"")
+        serde_json::Value::from(first.as_str())
+            .to_string()
+            .replace('\'', "''")
     );
     let level = if policy == UncascadedPolicy::Warn {
         PgLogLevel::WARNING

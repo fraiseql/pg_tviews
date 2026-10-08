@@ -53,7 +53,7 @@
 
 use pgrx::prelude::*;
 
-use crate::catalog::{DependencyDetail, DependencyType, TviewMeta};
+use crate::catalog::{DependencyType, TviewMeta};
 use crate::queue::key::KeyValue;
 
 use crate::lifecycle::jsonb_delta_schema;
@@ -313,12 +313,8 @@ fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, sup
     let qi_key = quote_identifier(key_col);
     // The patch source is the freshly computed document the upsert already read
     // from the view (`EXCLUDED.data`), so the view is evaluated once (issue #91).
-    let patch_expr = build_smart_patch_expr(
-        &delta_schema,
-        &deps,
-        &format!("{qi_tv}.data"),
-        "EXCLUDED.\"data\"",
-    );
+    let patch_expr =
+        build_smart_patch_expr(&delta_schema, &format!("{qi_tv}.data"), "EXCLUDED.\"data\"");
 
     // $1 = the row's identity (selects the row to insert from the backing view). In the
     // DO UPDATE clause, `data` is patched in place while every other projected
@@ -342,74 +338,14 @@ fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, sup
     )
 }
 
-/// Build the nested `jsonb_smart_patch_*()` expression for a set of dependencies.
-///
-/// The returned SQL expression patches the tview's existing `data` column
-/// (starting from `base_data_expr`, which the caller qualifies as `tv_<entity>.data`
-/// so it is unambiguous inside `INSERT … SELECT … ON CONFLICT DO UPDATE`) with the
-/// freshly computed document `source`. Each dependency wraps the expression in
-/// one patch call, qualified with the quoted `jsonb_delta` `schema`:
-///    - `NestedObject` → `jsonb_smart_patch_nested(expr, $1, path)`
-///    - `Array` → `jsonb_smart_patch_array(expr, $1, path, key)`
-///    - `Scalar` → `jsonb_smart_patch_scalar(expr, $1)`
-///
-/// With no usable dependency it returns the bare column reference `data` (a no-op
-/// patch). The caller embeds the result in an `INSERT … ON CONFLICT DO UPDATE`.
-///
-/// # Example Output
-///
-/// For dependencies `[comments (array), author (nested)]`:
-///
-/// ```sql
-/// jsonb_smart_patch_nested(
-///     jsonb_smart_patch_array(data, $1::jsonb, ARRAY['comments'], 'id'),
-///     $1::jsonb, ARRAY['author'])
-/// ```
-fn build_smart_patch_expr(
-    schema: &str,
-    deps: &[DependencyDetail],
-    base_data_expr: &str,
-    source: &str,
-) -> String {
-    // Start with the target's current data column. The caller qualifies it (e.g.
-    // `tv_post.data`) because inside `INSERT … SELECT … ON CONFLICT DO UPDATE` a
-    // bare `data` is ambiguous with the SELECT source relation.
-    let mut patch_expr = base_data_expr.to_string();
-
-    // Apply patches for each dependency in order
-    for dep in deps {
-        patch_expr = match dep.dep_type {
-            DependencyType::NestedObject => {
-                // Unreachable in practice: apply_patch routes any tview with a
-                // NestedObject dependency to full replacement (issue #52), because a
-                // path-level nested patch misses the entity's own-column changes.
-                // Kept as a safe passthrough for match exhaustiveness.
-                if let Some(path) = &dep.path {
-                    let path_str = path.join(",");
-                    format!(
-                        "{schema}.jsonb_smart_patch_nested({patch_expr}, {source}, ARRAY['{path_str}'])"
-                    )
-                } else {
-                    warning!("NestedObject dependency missing path, skipping");
-                    patch_expr
-                }
-            }
-            DependencyType::Array => {
-                // Unreachable in practice: apply_patch routes any tview with an Array
-                // dependency to full replacement (issue #50), because jsonb_delta
-                // 0.1.0 cannot surgically sync a whole array and a path-level replace
-                // would miss the entity's own-column changes. Kept as a safe passthrough
-                // for match exhaustiveness.
-                patch_expr
-            }
-            DependencyType::Scalar => {
-                // Scalar = shallow merge (no nested paths affected)
-                format!("{schema}.jsonb_smart_patch_scalar({patch_expr}, {source})")
-            }
-        };
-    }
-
-    patch_expr
+/// The shallow merge of the freshly computed document `source` into the TVIEW's
+/// `data` (`base_data_expr`, which the caller qualifies as `tv_<entity>.data`, so
+/// it is unambiguous inside `INSERT … SELECT … ON CONFLICT DO UPDATE`), with the
+/// quoted `jsonb_delta` `schema`. Only a TVIEW whose embeds are all scalar gets
+/// here: nested and array embeds are recomputed in full, since a path-level patch
+/// would miss a change to the row's own columns (issues #50, #52).
+fn build_smart_patch_expr(schema: &str, base_data_expr: &str, source: &str) -> String {
+    format!("{schema}.jsonb_smart_patch_scalar({base_data_expr}, {source})")
 }
 
 /// Check if `jsonb_delta` extension is installed in the current database.

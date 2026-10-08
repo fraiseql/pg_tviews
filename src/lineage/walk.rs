@@ -8,8 +8,8 @@
 #![allow(clippy::cast_ptr_alignment)] // Reason: `Node *` is cast to the node type its tag names, as PostgreSQL does; palloc aligns every node for its own type.
 
 use super::{
-    Column, Conjunct, Graph, IdentityKind, Lookup, Maps, Occurrence, OutputColumn, Piece, Root,
-    Scope, Sql, WalkedIdentity,
+    Column, Conjunct, DataEmbed, DataField, DataShape, Graph, IdentityKind, Lookup, Maps,
+    Occurrence, OutputColumn, Piece, Root, Scope, Sql, WalkedIdentity,
 };
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
@@ -548,6 +548,7 @@ impl Walker<'_> {
             if identity_level {
                 let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
                 self.graph.identity = Some(self.identity(query, &tles));
+                self.graph.data = self.data_shape(query, &tles);
             }
 
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
@@ -616,6 +617,246 @@ impl Walker<'_> {
                     }
                 })
                 .collect())
+        }
+    }
+
+    // ── the shape of `data` ──────────────────────────────────────────────────
+
+    /// What the `data` output of the backing view's own SELECT is built of:
+    /// `jsonb_build_object` keys over base columns, other TVIEWs' `data` (as a
+    /// value or inside `jsonb_agg`), and anything else, which makes it opaque.
+    ///
+    /// SAFETY: `query` is the valid Query of the innermost level, whose RTEs are
+    /// known.
+    unsafe fn data_shape(
+        &mut self,
+        query: *mut pg_sys::Query,
+        tles: &[*mut pg_sys::TargetEntry],
+    ) -> Option<DataShape> {
+        // SAFETY: fields of valid target entries and of the Query.
+        unsafe {
+            let tle = tles
+                .iter()
+                .find(|t| !(***t).resjunk && cstr((***t).resname) == "data")?;
+            let mut shape = DataShape::default();
+            let mut fields: Vec<(Vec<String>, *mut pg_sys::Var)> = Vec::new();
+            self.data_value(
+                query,
+                (**tle).expr.cast(),
+                &mut Vec::new(),
+                &mut shape,
+                &mut fields,
+            );
+            // A column is read only as a field when the definition reads it as many
+            // times as the fields copy it. A windowed or DISTINCT level, or one
+            // grouped by something other than the identity, combines rows: none of
+            // its columns maps one row to one field. Grouped by the identity, each
+            // group is one row, and the GROUP BY entries only name the group.
+            let identity_grouped = match &self.graph.identity {
+                Some(Ok(identity)) => tles
+                    .get(identity.position)
+                    .is_some_and(|tle| in_clause((**tle).ressortgroupref, (*query).groupClause)),
+                _ => false,
+            };
+            let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
+            let combined = (*query).hasWindowFuncs
+                || !(*query).distinctClause.is_null()
+                || (grouped && !identity_grouped);
+            let reads = column_read_counts(query, grouped);
+            let mut copied: HashMap<(usize, i16), usize> = HashMap::new();
+            let resolved: Vec<Option<(usize, i16)>> = fields
+                .iter()
+                .map(|(_, var)| base_read(query, *var))
+                .collect();
+            for read in resolved.iter().flatten() {
+                *copied.entry(*read).or_default() += 1;
+            }
+            for ((path, var), read) in fields.into_iter().zip(resolved) {
+                match self.resolve_var(var, 0) {
+                    Resolved::Col(column) => {
+                        // Read off a table of this level, not through a view or a
+                        // subquery whose other clauses may read it too.
+                        let only_in_data = !combined
+                            && read.is_some_and(|r| {
+                                relation_entry(query, r.0) && reads.get(&r) == copied.get(&r)
+                            });
+                        let relid = self.graph.occurrences[column.occ].relid;
+                        let root = matches!(&self.graph.identity,
+                            Some(Ok(identity)) if identity.columns.first().is_some_and(|c| c.occ == column.occ));
+                        shape.fields.push(DataField {
+                            path,
+                            column,
+                            relid,
+                            root,
+                            only_in_data,
+                        });
+                    }
+                    _ => shape.opaque = true,
+                }
+            }
+            Some(shape)
+        }
+    }
+
+    /// Read one value of `data` at `path`.
+    ///
+    /// SAFETY: `node` is a valid expression of `query`, the innermost level.
+    unsafe fn data_value(
+        &mut self,
+        query: *mut pg_sys::Query,
+        node: *mut pg_sys::Node,
+        path: &mut Vec<String>,
+        shape: &mut DataShape,
+        fields: &mut Vec<(Vec<String>, *mut pg_sys::Var)>,
+    ) {
+        // SAFETY: checked by tag before each cast.
+        unsafe {
+            let node = strip_relabel(node);
+            match tag(node) {
+                Some(pg_sys::NodeTag::T_FuncExpr) => {
+                    let f = node.cast::<pg_sys::FuncExpr>();
+                    let args = elements::<pg_sys::Node>((*f).args);
+                    if self.function((*f).funcid).0 != "pg_catalog.jsonb_build_object"
+                        || !args.len().is_multiple_of(2)
+                    {
+                        shape.opaque = true;
+                        return;
+                    }
+                    for pair in args.chunks(2) {
+                        let Some(key) = const_text(pair[0]) else {
+                            shape.opaque = true;
+                            continue;
+                        };
+                        path.push(key);
+                        self.data_value(query, pair[1], path, shape, fields);
+                        path.pop();
+                    }
+                }
+                Some(pg_sys::NodeTag::T_Var) => {
+                    let var = node.cast::<pg_sys::Var>();
+                    if (*var).varlevelsup == 0
+                        && let Some(entity) = base_read(query, var)
+                            .and_then(|(varno, attno)| self.tview_data(query, varno, attno))
+                    {
+                        shape.embeds.push(DataEmbed {
+                            entity,
+                            path: path.clone(),
+                            array: false,
+                        });
+                    } else {
+                        fields.push((path.clone(), var));
+                    }
+                }
+                // `COALESCE(jsonb_agg(…), '[]')`: the fallback is a constant.
+                Some(pg_sys::NodeTag::T_CoalesceExpr) => {
+                    let args =
+                        elements::<pg_sys::Node>((*node.cast::<pg_sys::CoalesceExpr>()).args);
+                    if args[1..]
+                        .iter()
+                        .any(|a| tag(strip_relabel(*a)) != Some(pg_sys::NodeTag::T_Const))
+                    {
+                        shape.opaque = true;
+                    }
+                    if let Some(&first) = args.first() {
+                        self.data_value(query, first, path, shape, fields);
+                    }
+                }
+                Some(pg_sys::NodeTag::T_Aggref) => {
+                    match self.aggregated_tview_data(query, node.cast()) {
+                        Some(entity) => shape.embeds.push(DataEmbed {
+                            entity,
+                            path: path.clone(),
+                            array: true,
+                        }),
+                        None => shape.opaque = true,
+                    }
+                }
+                Some(pg_sys::NodeTag::T_SubLink) => {
+                    let sublink = node.cast::<pg_sys::SubLink>();
+                    let sub = (*sublink).subselect.cast::<pg_sys::Query>();
+                    let embedded = ((*sublink).subLinkType == pg_sys::SubLinkType::EXPR_SUBLINK
+                        && tag(sub.cast()) == Some(pg_sys::NodeTag::T_Query))
+                    .then(|| elements::<pg_sys::TargetEntry>((*sub).targetList))
+                    .and_then(|tles| match tles[..] {
+                        [tle]
+                            if tag(strip_relabel((*tle).expr.cast()))
+                                == Some(pg_sys::NodeTag::T_Aggref) =>
+                        {
+                            self.aggregated_tview_data(
+                                sub,
+                                strip_relabel((*tle).expr.cast()).cast(),
+                            )
+                        }
+                        _ => None,
+                    });
+                    match embedded {
+                        Some(entity) => shape.embeds.push(DataEmbed {
+                            entity,
+                            path: path.clone(),
+                            array: true,
+                        }),
+                        None => shape.opaque = true,
+                    }
+                }
+                Some(pg_sys::NodeTag::T_Const) => {}
+                _ => shape.opaque = true,
+            }
+        }
+    }
+
+    /// `jsonb_agg(<a TVIEW's data>)` over a level of `query`: that TVIEW.
+    ///
+    /// SAFETY: `aggref` is a valid Aggref of `query`.
+    unsafe fn aggregated_tview_data(
+        &mut self,
+        query: *mut pg_sys::Query,
+        aggref: *mut pg_sys::Aggref,
+    ) -> Option<String> {
+        // SAFETY: fields of a valid Aggref and its argument list.
+        unsafe {
+            if self.function((*aggref).aggfnoid).0 != "pg_catalog.jsonb_agg" {
+                return None;
+            }
+            let [arg] = elements::<pg_sys::TargetEntry>((*aggref).args)[..] else {
+                return None;
+            };
+            let value = strip_relabel((*arg).expr.cast());
+            if tag(value) != Some(pg_sys::NodeTag::T_Var)
+                || (*value.cast::<pg_sys::Var>()).varlevelsup != 0
+            {
+                return None;
+            }
+            let (varno, attno) = base_read(query, value.cast())?;
+            self.tview_data(query, varno, attno)
+        }
+    }
+
+    /// The TVIEW whose `data` column `(varno, attno)` of `query`'s own level is,
+    /// read through its table or its backing view.
+    ///
+    /// SAFETY: `query` is a valid Query.
+    unsafe fn tview_data(
+        &self,
+        query: *mut pg_sys::Query,
+        varno: usize,
+        attno: i16,
+    ) -> Option<String> {
+        // SAFETY: fields of an RTE of `query`'s level.
+        unsafe {
+            let rte =
+                *elements::<pg_sys::RangeTblEntry>((*query).rtable).get(varno.checked_sub(1)?)?;
+            if (*rte).rtekind != pg_sys::RTEKind::RTE_RELATION || attno <= 0 {
+                return None;
+            }
+            let relid = (*rte).relid;
+            if cstr(pg_sys::get_attname(relid, attno, true)) != "data" {
+                return None;
+            }
+            self.ctx
+                .tview_tables
+                .get(&relid)
+                .or_else(|| self.ctx.tview_views.get(&relid))
+                .cloned()
         }
     }
 
@@ -2495,11 +2736,7 @@ unsafe fn equality(expr: *mut pg_sys::Node, chosen: &[&Resolved]) -> Option<(Col
 
 /// `name` quoted only where SQL needs it, as `quote_ident()` does.
 fn quote_ident(name: &str) -> String {
-    let Ok(c) = std::ffi::CString::new(name) else {
-        return crate::utils::quote_identifier(name);
-    };
-    // SAFETY: a NUL-terminated string; the result is copied before `c` drops.
-    cstr(unsafe { pg_sys::quote_identifier(c.as_ptr()) })
+    crate::utils::quote_ident(name)
 }
 
 /// SQL string literal of `text`, quoted by PostgreSQL (`quote_literal()`).
@@ -2625,6 +2862,186 @@ unsafe fn referenced_columns(query: *mut pg_sys::Query) -> HashMap<usize, Option
         }
     }
     read
+}
+
+/// A text constant (a `jsonb_build_object` key): its value.
+///
+/// SAFETY: `node` is null or a valid expression.
+unsafe fn const_text(node: *mut pg_sys::Node) -> Option<String> {
+    // SAFETY: checked by tag before the cast; a non-null text datum.
+    unsafe {
+        let node = strip_relabel(node);
+        if tag(node) != Some(pg_sys::NodeTag::T_Const) {
+            return None;
+        }
+        let c = node.cast::<pg_sys::Const>();
+        if (*c).constisnull {
+            return None;
+        }
+        match (*c).consttype {
+            pg_sys::TEXTOID | pg_sys::VARCHAROID => String::from_datum((*c).constvalue, false),
+            pg_sys::UNKNOWNOID => Some(cstr((*c).constvalue.cast_mut_ptr())),
+            _ => None,
+        }
+    }
+}
+
+/// How many times `query` reads each base column of its own level, `(rtindex,
+/// attno)`, through join aliases (and PostgreSQL 18 group entries), in every
+/// clause and subquery.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn column_read_counts(
+    query: *mut pg_sys::Query,
+    skip_group_entries: bool,
+) -> HashMap<(usize, i16), usize> {
+    struct Refs {
+        depth: u32,
+        vars: Vec<*mut pg_sys::Var>,
+    }
+    #[pg_guard]
+    unsafe extern "C-unwind" fn walker(
+        node: *mut pg_sys::Node,
+        ctx: *mut std::ffi::c_void,
+    ) -> bool {
+        // SAFETY: `ctx` is the Refs passed below; `node` is valid.
+        unsafe {
+            let refs = &mut *ctx.cast::<Refs>();
+            match tag(node) {
+                None => false,
+                Some(pg_sys::NodeTag::T_Var) => {
+                    let var = node.cast::<pg_sys::Var>();
+                    if (*var).varlevelsup == refs.depth {
+                        refs.vars.push(var);
+                    }
+                    false
+                }
+                Some(pg_sys::NodeTag::T_Query) => {
+                    refs.depth += 1;
+                    let done = pg_sys::query_tree_walker(node.cast(), Some(walker), ctx, 0);
+                    refs.depth -= 1;
+                    done
+                }
+                Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
+            }
+        }
+    }
+    let mut refs = Refs {
+        depth: 0,
+        vars: Vec::new(),
+    };
+    #[cfg(feature = "pg18")]
+    let flags = pg_sys::QTW_IGNORE_JOINALIASES | pg_sys::QTW_IGNORE_GROUPEXPRS;
+    #[cfg(not(feature = "pg18"))]
+    let flags = pg_sys::QTW_IGNORE_JOINALIASES;
+    // SAFETY: a read-only walk of a valid Query.
+    unsafe {
+        pg_sys::query_tree_walker(
+            query,
+            Some(walker),
+            std::ptr::from_mut(&mut refs).cast(),
+            flags.cast_signed(),
+        );
+    }
+    // The hidden target entries a GROUP BY adds only name the groups.
+    let mut skipped: Vec<*mut pg_sys::Var> = Vec::new();
+    if skip_group_entries {
+        // SAFETY: the target list of a valid Query.
+        unsafe {
+            for tle in elements::<pg_sys::TargetEntry>((*query).targetList) {
+                if (*tle).resjunk && in_clause((*tle).ressortgroupref, (*query).groupClause) {
+                    collect_vars((*tle).expr.cast(), &mut skipped);
+                }
+            }
+        }
+    }
+    let mut counts: HashMap<(usize, i16), usize> = HashMap::new();
+    for var in refs.vars.into_iter().filter(|v| !skipped.contains(v)) {
+        // SAFETY: a Var collected above, of `query`'s level as seen from its own.
+        let (varno, attno) = unsafe { ((*var).varno as usize, (*var).varattno) };
+        for read in base_reads(query, varno, attno) {
+            *counts.entry(read).or_default() += 1;
+        }
+    }
+    counts
+}
+
+/// Whether entry `rtindex` of `query`'s range table is a table (not a view, whose
+/// other clauses may read the column too).
+fn relation_entry(query: *mut pg_sys::Query, rtindex: usize) -> bool {
+    // SAFETY: the range table of a valid Query.
+    unsafe {
+        elements::<pg_sys::RangeTblEntry>((*query).rtable)
+            .get(rtindex.wrapping_sub(1))
+            .is_some_and(|rte| {
+                (**rte).rtekind == pg_sys::RTEKind::RTE_RELATION
+                    && matches!(
+                        (**rte).relkind as u8,
+                        pg_sys::RELKIND_RELATION | pg_sys::RELKIND_PARTITIONED_TABLE
+                    )
+            })
+    }
+}
+
+/// The base column a Var of `query`'s own level reads, seen through join
+/// aliases; `None` when it stands for several (or for none).
+///
+/// SAFETY: `var` is a valid Var.
+unsafe fn base_read(query: *mut pg_sys::Query, var: *mut pg_sys::Var) -> Option<(usize, i16)> {
+    // SAFETY: fields of a valid Var.
+    let (varno, attno) = unsafe { ((*var).varno as usize, (*var).varattno) };
+    match base_reads(query, varno, attno)[..] {
+        [read] => Some(read),
+        _ => None,
+    }
+}
+
+/// The base columns `(rtindex, attno)` of `query`'s level that `(varno, attno)`
+/// stands for: itself, or what a join alias or group entry expands to.
+fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) -> Vec<(usize, i16)> {
+    // SAFETY: the range table of a valid Query.
+    let rtable = unsafe { elements::<pg_sys::RangeTblEntry>((*query).rtable) };
+    let Some(&rte) = rtable.get(varno.wrapping_sub(1)) else {
+        return Vec::new();
+    };
+    // SAFETY: fields of a valid RTE of this level.
+    let behind = unsafe {
+        match (*rte).rtekind {
+            pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
+            #[cfg(feature = "pg18")]
+            pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
+            _ => None,
+        }
+    };
+    let Some(list) = behind else {
+        return vec![(varno, attno)];
+    };
+    // SAFETY: the alias expressions of the entry; Vars there point at this level.
+    let exprs = unsafe { elements::<pg_sys::Node>(list) };
+    let chosen: Vec<*mut pg_sys::Node> = if attno <= 0 {
+        exprs
+    } else {
+        exprs
+            .get(usize::try_from(attno - 1).unwrap_or(usize::MAX))
+            .copied()
+            .into_iter()
+            .collect()
+    };
+    let mut out = Vec::new();
+    for expr in chosen {
+        let mut vars = Vec::new();
+        // SAFETY: a valid expression.
+        unsafe { collect_vars(expr, &mut vars) };
+        for var in vars {
+            // SAFETY: a Var collected above.
+            unsafe {
+                if (*var).varlevelsup == 0 {
+                    out.extend(base_reads(query, (*var).varno as usize, (*var).varattno));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The Vars of an expression, in walk order, not descending into subqueries.

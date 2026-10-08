@@ -163,6 +163,17 @@ fn defines_view(candidate: &str, view_oid: Oid) -> bool {
 /// nothing matched. The result is a candidate: the caller must verify it.
 #[must_use]
 pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
+    rewrite_with(sql, table, old, new, crate::utils::quote_ident)
+}
+
+/// [`rewrite_column_references`] with `quote` writing an identifier.
+fn rewrite_with(
+    sql: &str,
+    table: &str,
+    old: &str,
+    new: &str,
+    quote: impl Fn(&str) -> String,
+) -> Option<String> {
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
         .tokenize_with_location()
         .ok()?;
@@ -205,10 +216,10 @@ pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -
             k
         };
         let (from, to) = (offsets[sig[k]], offsets[sig[k] + 1]);
-        let mut replacement = quote_ident(new);
+        let mut replacement = quote(new);
         if select_items.contains(&(start, k)) {
             replacement.push_str(" AS ");
-            replacement.push_str(&quote_ident(old));
+            replacement.push_str(&quote(old));
         }
         edits.push((from, to, replacement));
     }
@@ -223,7 +234,7 @@ pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -
 }
 
 /// Byte offset of every token in `sql`, plus a final entry for the end of text.
-fn byte_offsets(sql: &str, tokens: &[TokenWithLocation]) -> Vec<usize> {
+pub(crate) fn byte_offsets(sql: &str, tokens: &[TokenWithLocation]) -> Vec<usize> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(sql.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
@@ -323,25 +334,27 @@ fn ident_eq(word: &sqlparser::tokenizer::Word, name: &str) -> bool {
     }
 }
 
-/// Quote an identifier only when `PostgreSQL` would need it.
-fn quote_ident(name: &str) -> String {
-    let plain = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if plain {
-        name.to_string()
-    } else {
-        crate::utils::quote_identifier(name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::rewrite_column_references as rw;
+    /// What `quote_ident()` writes for the identifiers of these tests (no keyword).
+    fn quote_plain(name: &str) -> String {
+        let plain = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if plain {
+            name.to_string()
+        } else {
+            crate::utils::quote_identifier(name)
+        }
+    }
+
+    fn rw(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
+        super::rewrite_with(sql, table, old, new, quote_plain)
+    }
 
     #[test]
     fn qualified_reference_inside_function_keeps_string_key() {
