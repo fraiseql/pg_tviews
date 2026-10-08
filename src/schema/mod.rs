@@ -10,8 +10,7 @@
 //!
 //! - `TViewSchema`: Complete schema information for a TVIEW
 //! - `infer_schema()`: Main entry point for schema analysis
-//! - `parse_select_columns()`: Column extraction from SQL
-//! - `infer_column_types()`: Type inference for columns
+//! - `parse_select_columns_with_expressions()`: Column extraction from SQL
 //!
 //! ## Example
 //!
@@ -29,9 +28,7 @@ pub mod analyzer;
 pub mod direct_map;
 pub mod inference;
 pub mod parser;
-pub mod types;
 
-use pgrx::JsonB;
 use pgrx::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -54,13 +51,6 @@ impl TViewSchema {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// # Errors
-    /// Returns error if schema serialization to JSON fails
-    pub fn to_jsonb(&self) -> Result<JsonB, serde_json::Error> {
-        let json_value = serde_json::to_value(self)?;
-        Ok(JsonB(json_value))
-    }
 }
 
 #[cfg(test)]
@@ -77,26 +67,5 @@ mod tests {
         assert!(schema.fk_columns.is_empty());
         assert!(schema.uuid_fk_columns.is_empty());
         assert!(schema.additional_columns.is_empty());
-    }
-
-    #[test]
-    fn test_tview_schema_serialization() {
-        let mut schema = TViewSchema::new();
-        schema.pk_column = Some("pk_post".to_string());
-        schema.id_column = Some("id".to_string());
-        schema.data_column = Some("data".to_string());
-        schema.entity_name = Some("post".to_string());
-        schema.fk_columns = vec!["fk_user".to_string()];
-        schema.uuid_fk_columns = vec!["user_id".to_string()];
-
-        let jsonb = schema.to_jsonb().unwrap();
-        let json_value = jsonb.0;
-
-        assert_eq!(json_value["pk_column"], "pk_post");
-        assert_eq!(json_value["id_column"], "id");
-        assert_eq!(json_value["data_column"], "data");
-        assert_eq!(json_value["entity_name"], "post");
-        assert_eq!(json_value["fk_columns"][0], "fk_user");
-        assert_eq!(json_value["uuid_fk_columns"][0], "user_id");
     }
 }

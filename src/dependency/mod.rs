@@ -17,13 +17,11 @@
 //!
 //! - `find_base_tables()`: Core dependency resolution
 //! - `install_triggers()`: Set up change tracking
-//! - `DependencyGraph`: Caches analysis results
 
 pub mod graph;
 pub mod triggers;
 
-pub use graph::{DependencyGraph, find_base_tables};
+pub use graph::find_base_tables;
 pub use triggers::{
-    TriggerPlan, TriggerSet, install_triggers, remove_entity_triggers, sync_entity_triggers,
-    trigger_plan,
+    TriggerPlan, install_triggers, remove_entity_triggers, sync_entity_triggers, trigger_plan,
 };

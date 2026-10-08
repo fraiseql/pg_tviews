@@ -48,122 +48,11 @@ pub fn validate_sql_identifier(identifier: &str, param_name: &str) -> TViewResul
     Ok(())
 }
 
-/// Validate JSONB path syntax (dot notation + array indices)
-///
-/// Allows: alphanumeric, dots, brackets, underscores.
-/// Rejects: quotes, semicolons, SQL patterns, mismatched brackets.
-pub fn validate_jsonb_path(path: &str, param_name: &str) -> TViewResult<()> {
-    if path.is_empty() {
-        return Err(TViewError::InvalidInput {
-            parameter: param_name.to_string(),
-            reason: "Path cannot be empty".to_string(),
-        });
-    }
-
-    if path.len() > 500 {
-        return Err(TViewError::InvalidInput {
-            parameter: param_name.to_string(),
-            reason: format!("Path too long ({} chars, max 500)", path.len()),
-        });
-    }
-
-    // Validate allowed characters
-    if !path
-        .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '.' | '[' | ']' | '_'))
-    {
-        return Err(TViewError::InvalidInput {
-            parameter: param_name.to_string(),
-            reason: format!(
-                "Path '{}' contains invalid characters (allowed: alphanumeric, dots, brackets, underscore)",
-                sanitize_for_logging(path)
-            ),
-        });
-    }
-
-    validate_bracket_matching(path, param_name)?;
-    validate_array_indices(path, param_name)?;
-
-    // Validate depth (max 100 levels)
-    let depth = path.split('.').count() + path.matches('[').count();
-    if depth > 100 {
-        return Err(TViewError::InvalidInput {
-            parameter: param_name.to_string(),
-            reason: format!("Path too deep (depth={depth}, max 100)"),
-        });
-    }
-
-    Ok(())
-}
-
-/// Validate bracket matching in paths
-fn validate_bracket_matching(path: &str, param_name: &str) -> TViewResult<()> {
-    let mut depth: i32 = 0;
-
-    for (pos, ch) in path.chars().enumerate() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth < 0 {
-                    return Err(TViewError::InvalidInput {
-                        parameter: param_name.to_string(),
-                        reason: format!("Unmatched closing bracket ']' at position {pos}"),
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if depth > 0 {
-        return Err(TViewError::InvalidInput {
-            parameter: param_name.to_string(),
-            reason: format!("Unmatched opening bracket '[' ({depth} unclosed)"),
-        });
-    }
-
-    Ok(())
-}
-
-/// Validate array indices are non-negative integers
-fn validate_array_indices(path: &str, param_name: &str) -> TViewResult<()> {
-    let mut in_brackets = false;
-    let mut current_index = String::new();
-
-    for (pos, ch) in path.chars().enumerate() {
-        match ch {
-            '[' => {
-                in_brackets = true;
-                current_index.clear();
-            }
-            ']' => {
-                if in_brackets && !current_index.is_empty() && current_index.parse::<u32>().is_err()
-                {
-                    return Err(TViewError::InvalidInput {
-                        parameter: param_name.to_string(),
-                        reason: format!(
-                            "Invalid array index '{current_index}' at position {pos} (must be non-negative integer)",
-                        ),
-                    });
-                }
-                in_brackets = false;
-            }
-            _ if in_brackets => {
-                current_index.push(ch);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-
 /// Sanitize string for logging (truncate, remove control chars)
 fn sanitize_for_logging(s: &str) -> String {
-    let max_len = 50;
-    let truncated = if s.len() > max_len {
-        format!("{}...", &s[..max_len])
+    let cut = crate::utils::truncate_chars(s, 50);
+    let truncated = if cut.len() < s.len() {
+        format!("{cut}...")
     } else {
         s.to_string()
     };
@@ -172,28 +61,6 @@ fn sanitize_for_logging(s: &str) -> String {
         .replace('\0', "\\0")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
-}
-
-/// Validate table name (stricter than generic identifier)
-pub fn validate_table_name(name: &str) -> TViewResult<()> {
-    validate_sql_identifier(name, "table_name")?;
-
-    if !name.starts_with("tv_") && !name.starts_with("tb_") && !name.starts_with("test_") {
-        return Err(TViewError::InvalidInput {
-            parameter: "table_name".to_string(),
-            reason: format!(
-                "Table name '{}' should start with tv_, tb_, or test_ prefix",
-                sanitize_for_logging(name)
-            ),
-        });
-    }
-
-    Ok(())
-}
-
-/// Validate column name (alias for identifier)
-pub fn validate_column_name(name: &str) -> TViewResult<()> {
-    validate_sql_identifier(name, "column_name")
 }
 
 #[cfg(test)]
@@ -219,17 +86,10 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_paths() {
-        assert!(validate_jsonb_path("author.name", "test").is_ok());
-        assert!(validate_jsonb_path("items[0]", "test").is_ok());
-        assert!(validate_jsonb_path("users[5].profile.email", "test").is_ok());
-        assert!(validate_jsonb_path("metadata.tags[0].value", "test").is_ok());
-    }
-
-    #[test]
-    fn test_invalid_paths() {
-        assert!(validate_jsonb_path("", "test").is_err());
-        assert!(validate_jsonb_path("items[", "test").is_err());
-        assert!(validate_jsonb_path("items]", "test").is_err());
+    fn test_rejected_multibyte_identifier_reports_without_panicking() {
+        // 'a' + 30 two-byte chars + ';' puts a char boundary mid-way through byte 50.
+        let name = format!("a{};", "é".repeat(30));
+        let err = validate_sql_identifier(&name, "test").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
     }
 }

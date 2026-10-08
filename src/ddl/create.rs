@@ -347,7 +347,7 @@ fn create_tview_inner(
     // aggregate TVIEW, one per declared group key, issue #58).
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
-    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
+    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let Derivation {
         lineage,
         key_mappings,
@@ -359,7 +359,7 @@ fn create_tview_inner(
         &final_select_sql,
         &final_schema,
         group_keys,
-        &dep_graph.base_tables,
+        &base_table_oids,
         view_oid,
         &declarations,
     )?;
@@ -490,7 +490,7 @@ pub fn reregister_metadata(
         })?;
     let view_oid = meta.view_oid;
     let (view_schema, view_name) = super::relation_name(view_oid)?;
-    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
+    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let group_keys = stored_group_keys(entity_name)?;
     // The stored policies hold; an `error` table no cascade reaches aborts the
     // re-registration (and the ALTER that caused it).
@@ -506,7 +506,7 @@ pub fn reregister_metadata(
         definition,
         &schema,
         group_keys.as_ref(),
-        &dep_graph.base_tables,
+        &base_table_oids,
         view_oid,
         &declarations,
     )?;
@@ -1007,8 +1007,8 @@ pub fn rebind_cascade_paths(view_oid: Oid, cascade_paths: &[String]) -> TViewRes
         });
     };
 
-    let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
-    let oid_map = build_oid_name_map(&dep_graph.base_tables)?;
+    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
+    let oid_map = build_oid_name_map(&base_table_oids)?;
 
     cascade_paths
         .iter()

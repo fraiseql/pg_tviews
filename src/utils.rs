@@ -49,7 +49,7 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     log_debug!(
         "spi_run_ddl() called with SQL ({} chars): {}",
         sql.len(),
-        &sql[..sql.len().min(200)]
+        truncate_chars(sql, 200)
     );
 
     let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
@@ -76,10 +76,6 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
                 "spi_run_ddl() FAILED: SPI_connect_ext returned error code: {}",
                 connect_result
             );
-            #[allow(unreachable_code)]
-            return Err(format!(
-                "SPI_connect_ext failed (error! should diverge): {connect_result}"
-            ));
         }
 
         let opts = pg_sys::SPIExecuteOptions {
@@ -100,10 +96,6 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
                 "spi_run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}",
                 execute_result, sql
             );
-            #[allow(unreachable_code)]
-            return Err(format!(
-                "SPI_execute_extended failed (error! should diverge): {execute_result}"
-            ));
         }
     }
 
@@ -528,11 +520,15 @@ pub fn fit_identifier(full: String) -> String {
         (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
     });
     let tag = format!("_{hash:08x}");
-    let mut cut = MAX_IDENTIFIER_BYTES - tag.len();
-    while !full.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}{tag}", &full[..cut])
+    format!(
+        "{}{tag}",
+        truncate_chars(&full, MAX_IDENTIFIER_BYTES - tag.len())
+    )
+}
+
+/// At most the first `max` bytes of `s`, cut on a character boundary.
+pub(crate) fn truncate_chars(s: &str, max: usize) -> &str {
+    &s[..s.floor_char_boundary(max)]
 }
 
 #[cfg(test)]

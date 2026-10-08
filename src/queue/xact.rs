@@ -73,7 +73,6 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // handled by the ProcessUtility hook intercepting COMMIT instead.
     match xact_event {
         XactEvent::PreCommit | XactEvent::Commit => {
-            #[allow(clippy::collapsible_if)]
             // Suspended without resuming: the hook caught up before an explicit
             // COMMIT; an implicit commit ends here, where no SPI is allowed.
             if crate::suspend::is_suspended() {

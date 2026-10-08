@@ -271,7 +271,6 @@ impl RefreshTimer {
 
 /// Statistics returned by metrics functions
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Reason: fields read via get_queue_stats() SQL function
 pub struct QueueStats {
     pub queue_size: usize,
     pub flushes: u64,
@@ -298,31 +297,29 @@ pub struct QueueStats {
 
 impl QueueStats {
     /// Convert timing to milliseconds
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss)] // Reason: a session's flush time stays far below 2^53 ns
     pub fn total_timing_ms(&self) -> f64 {
-        // Safe: Metrics counters won't exceed f64 precision (2^53)
         self.total_timing_ns as f64 / 1_000_000.0
     }
 
     /// Calculate cache hit rates
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss)] // Reason: a ratio; counters past 2^53 only lose precision
     pub fn graph_cache_hit_rate(&self) -> f64 {
         let total = self.graph_cache_hits + self.graph_cache_misses;
         if total == 0 {
             0.0
         } else {
-            // Safe: Cache counters won't exceed f64 precision (2^53)
             self.graph_cache_hits as f64 / total as f64
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    /// Calculate the table cache hit rate
+    #[allow(clippy::cast_precision_loss)] // Reason: a ratio; counters past 2^53 only lose precision
     pub fn table_cache_hit_rate(&self) -> f64 {
         let total = self.table_cache_hits + self.table_cache_misses;
         if total == 0 {
             0.0
         } else {
-            // Safe: Cache counters won't exceed f64 precision (2^53)
             self.table_cache_hits as f64 / total as f64
         }
     }

@@ -12,7 +12,7 @@ static JSONB_DELTA_SCHEMA: Mutex<(bool, Option<String>)> = Mutex::new((false, No
 
 /// Get the version of the `pg_tviews` extension
 #[pg_extern]
-#[allow(clippy::missing_const_for_fn)] // pgrx #[pg_extern] is incompatible with const fn
+#[allow(clippy::missing_const_for_fn)] // Reason: pgrx #[pg_extern] is incompatible with const fn
 fn pg_tviews_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

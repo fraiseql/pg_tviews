@@ -158,7 +158,6 @@ Add to README.md:
 ```
 test/sql/
 ├── 00_extension_loading.sql      # Basic extension tests
-├── 10_schema_inference_*.sql     # Schema analysis tests
 ├── 40_refresh_trigger_*.sql      # Trigger and refresh tests
 ├── 42_cascade_fk_*.sql           # Cascade functionality
 ├── 50_array_columns.sql          # Array column handling

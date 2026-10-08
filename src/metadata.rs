@@ -185,7 +185,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 4';
+    AS 'SELECT 5';
     ",
     name = "create_metadata_tables",
 );

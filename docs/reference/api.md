@@ -13,7 +13,6 @@ pg_tviews provides a comprehensive set of functions for managing transactional m
 - [Extension Management](#extension-management) - Version info, feature detection
 - [DDL Operations](#ddl-operations) - TVIEW creation and management
 - [Queue Management](#queue-management) - Monitor refresh queues
-- [Debugging & Introspection](#debugging--introspection) - Analyze queries, debug issues
 - [Two-Phase Commit (2PC)](#two-phase-commit-2pc) - Distributed transaction support
 - [Manual Operations](#manual-operations) - Force refresh operations
 
@@ -271,69 +270,6 @@ Returns JSONB like:
 - Shows entities and primary keys queued for refresh
 - Thread-local state (safe for concurrent connections)
 - Useful for debugging refresh cascades
-
-## Debugging & Introspection
-
-### pg_tviews_analyze_select()
-
-**Signature**:
-```sql
-pg_tviews_analyze_select(sql TEXT) RETURNS JSONB
-```
-
-**Description**:
-Analyzes a SELECT statement and returns inferred TVIEW schema information including column types and dependencies.
-
-**Parameters**:
-- `sql` (TEXT): SELECT statement to analyze
-
-**Returns**:
-- `JSONB`: Schema analysis results
-
-**Example**:
-```sql
-SELECT pg_tviews_analyze_select('
-    SELECT u.pk_user, u.id, u.name, p.title as post_title
-    FROM tb_user u
-    JOIN tb_post p ON u.pk_user = p.fk_user
-');
-```
-
-Returns JSONB with schema information including column types and table dependencies.
-
-**Notes**:
-- Validates SQL syntax and table existence
-- Infers column types from PostgreSQL catalog
-- Identifies base table dependencies for trigger setup
-
-### pg_tviews_infer_types()
-
-**Signature**:
-```sql
-pg_tviews_infer_types(table_name TEXT, columns TEXT[]) RETURNS JSONB
-```
-
-**Description**:
-Infers column types for specified columns in a table using PostgreSQL's type system.
-
-**Parameters**:
-- `table_name` (TEXT): Name of the table
-- `columns` (TEXT[]): Array of column names to analyze
-
-**Returns**:
-- `JSONB`: Type information for each column
-
-**Example**:
-```sql
-SELECT pg_tviews_infer_types('tb_user', ARRAY['id', 'name', 'created_at']);
-```
-
-Returns JSONB with type information for each requested column.
-
-**Notes**:
-- Uses PostgreSQL's pg_catalog for accurate type inference
-- Handles user-defined types and domains
-- Useful for TVIEW schema validation
 
 ## Two-Phase Commit (2PC)
 
@@ -708,18 +644,6 @@ SELECT pg_tviews_queue_stats();
 SELECT pg_tviews_debug_queue();
 ```
 
-### Debug View Definitions
-```sql
--- Analyze SELECT for TVIEW compatibility
-SELECT pg_tviews_analyze_select('
-    SELECT p.pk_post, p.id, p.title, u.name as author
-    FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user
-');
-
--- Check inferred column types
-SELECT pg_tviews_infer_types('tb_user', ARRAY['id', 'name']);
-```
-
 ### Two-Phase Commit Workflow
 ```sql
 BEGIN;
@@ -747,7 +671,6 @@ SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
 
 ### Common Pitfalls
 - Don't use manual operations in triggers (causes recursion)
-- `pg_tviews_analyze_select()` doesn't validate table existence
 - DDL operations require appropriate permissions
 
 ### Thread Safety

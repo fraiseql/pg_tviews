@@ -1,7 +1,5 @@
 use std::fmt;
 
-pub mod testing;
-
 /// Main error type for `pg_tviews` extension
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
@@ -203,7 +201,7 @@ impl fmt::Display for TViewError {
                 write!(
                     f,
                     "Invalid SELECT statement: {reason}\nSQL: {}",
-                    truncate_chars(sql, 100)
+                    crate::utils::truncate_chars(sql, 100)
                 )
             }
             Self::RequiredColumnMissing {
@@ -301,7 +299,7 @@ impl fmt::Display for TViewError {
                 write!(
                     f,
                     "SPI query failed: {error}\nQuery: {}",
-                    truncate_chars(query, 100)
+                    crate::utils::truncate_chars(query, 100)
                 )
             }
             Self::SerializationError { message } => {
@@ -349,11 +347,6 @@ impl std::error::Error for TViewError {}
 pub type TViewResult<T> = Result<T, TViewError>;
 
 /// Convert `SpiError` to `TViewError`
-/// At most the first `max` bytes of `s`, cut on a character boundary.
-fn truncate_chars(s: &str, max: usize) -> &str {
-    &s[..s.floor_char_boundary(max)]
-}
-
 impl From<pgrx::spi::Error> for TViewError {
     fn from(e: pgrx::spi::Error) -> Self {
         Self::SpiError {
@@ -368,15 +361,6 @@ impl From<serde_json::Error> for TViewError {
     fn from(e: serde_json::Error) -> Self {
         Self::SerializationError {
             message: format!("JSON serialization error: {e}"),
-        }
-    }
-}
-
-/// Convert `bincode::Error` to `TViewError`
-impl From<bincode::Error> for TViewError {
-    fn from(e: bincode::Error) -> Self {
-        Self::SerializationError {
-            message: format!("Binary serialization error: {e}"),
         }
     }
 }

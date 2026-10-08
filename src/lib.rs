@@ -60,23 +60,16 @@ mod lifecycle;
 mod suspend;
 
 // Public API modules
-pub mod config;
-pub mod ddl;
-pub mod dependency;
-pub mod error;
-pub mod metadata;
-pub mod parser;
-pub mod schema;
-pub mod validation;
+mod config;
+mod ddl;
+mod dependency;
+mod error;
+mod metadata;
+mod schema;
+mod validation;
 
 // Public re-exports
-pub use catalog::entity_for_table;
 pub use error::{TViewError, TViewResult};
-pub use lifecycle::check_jsonb_delta_available;
-pub use queue::RefreshKey;
-pub use suspend::{
-    clear_changed_entities, get_changed_entities, is_suspended, record_change, resume, suspend,
-};
 
 pg_module_magic!();
 
@@ -138,7 +131,7 @@ pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {}
 
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Vec allocation is not const-stable
+    #[allow(clippy::missing_const_for_fn)] // Reason: Vec allocation is not const-stable
     pub fn postgresql_conf_options() -> Vec<&'static str> {
         // The extension lives in schema tviews; tests call it unqualified.
         vec!["search_path = '\"$user\", public, tviews'"]
@@ -196,7 +189,7 @@ mod tests {
 
     #[pg_test]
     fn test_check_jsonb_delta_available_function() {
-        let _result = crate::check_jsonb_delta_available();
+        let _result = crate::lifecycle::check_jsonb_delta_available();
     }
 
     #[pg_test]

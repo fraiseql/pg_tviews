@@ -34,21 +34,9 @@
 //! whole TVIEW at flush (`full_refresh`, which recomputes every row of the TVIEW
 //! once per flush that wrote to such a table). The row trigger always uses the
 //! stored value, never the writing session's.
-//!
-//! ## Compile-time Constants
-//!
-//! - `MAX_DEPENDENCY_DEPTH`: default for `pg_tviews.max_dependency_depth`
-//! - `DEBUG_DEPENDENCIES`: Enable verbose dependency logging
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 use pgrx::prelude::PostgresGucEnum;
-
-/// Maximum depth for `pg_depend` traversal
-/// Prevents infinite recursion and overly complex view hierarchies
-pub const MAX_DEPENDENCY_DEPTH: usize = 10;
-
-/// Enable verbose dependency logging (for debugging)
-pub const DEBUG_DEPENDENCIES: bool = false;
 
 /// What a TVIEW does about a base table it reads whose writes no cascade maps to
 /// its keys (issues #157, #158). Fixed per TVIEW when it is created.
@@ -127,7 +115,6 @@ static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
-// Default must equal MAX_DEPENDENCY_DEPTH (10); GucSetting::new needs an i32 literal.
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
 static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);

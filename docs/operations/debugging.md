@@ -139,9 +139,6 @@ SELECT entity, relid::regclass FROM tviews.pg_tview_reads ORDER BY entity;
 
 -- The query used to map writes on a base table to TVIEW keys
 SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
-
--- Check a SELECT before creating a TVIEW from it
-SELECT tviews.pg_tviews_analyze_select('SELECT pk_user, id, jsonb_build_object(''name'', name) AS data FROM tb_user');
 ```
 
 ## Common Issues and Solutions
@@ -152,7 +149,6 @@ SELECT tviews.pg_tviews_analyze_select('SELECT pk_user, id, jsonb_build_object('
 1. Check the SELECT on its own: `EXPLAIN SELECT ...;`
 2. Required columns: `pk_<entity>` (bigint), `id` (uuid), `data` (jsonb)
 3. Check permissions on the base tables: `\dp tb_post`
-4. Run `SELECT tviews.pg_tviews_analyze_select('SELECT ...');`
 
 **Create it**:
 ```sql

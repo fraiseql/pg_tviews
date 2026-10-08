@@ -101,16 +101,6 @@ pub fn blank_comments(sql: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| sql.to_string())
 }
 
-/// Parse SELECT statement to extract column names and expressions
-/// This is a simplified parser for v1 - uses regex-based extraction
-/// Future versions will use `PostgreSQL`'s native parser API
-///
-/// # Errors
-/// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
-pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
-    extract_columns_regex(&blank_comments(sql))
-}
-
 /// Parse SELECT statement to extract column names with their full expressions
 /// Returns `Vec<(column_name, expression)>` for type inference
 ///
@@ -118,68 +108,6 @@ pub fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
 /// Returns error if SQL lacks SELECT/FROM keywords or has invalid syntax
 pub fn parse_select_columns_with_expressions(sql: &str) -> Result<Vec<(String, String)>, String> {
     extract_columns_with_expressions_regex(&blank_comments(sql))
-}
-
-/// Simple regex-based column extraction from SELECT statement
-/// Limitations:
-/// - Doesn't handle complex expressions
-/// - Future: Replace with `PostgreSQL` parser API
-fn extract_columns_regex(sql: &str) -> Result<Vec<String>, String> {
-    let mut columns = Vec::new();
-
-    // Normalize whitespace and case
-    let sql_lower = sql.to_lowercase();
-
-    // Skip CTE preamble (WITH ... AS (...)) if present
-    let cte_offset = skip_cte_preamble(&sql_lower)?;
-
-    // Find SELECT keyword starting from after any CTE preamble
-    let select_start = sql_lower[cte_offset..]
-        .find("select")
-        .map(|p| p + cte_offset)
-        .ok_or("No SELECT keyword found")?;
-
-    // Bound the FROM search to the first branch of any UNION / INTERSECT / EXCEPT
-    let union_bound = find_outer_set_operation(&sql_lower, select_start).unwrap_or(sql_lower.len());
-
-    // Find the outermost FROM — skip FROMs inside parentheses (e.g., ARRAY subqueries)
-    let from_start =
-        find_outer_from(&sql_lower, select_start, union_bound).ok_or("No FROM keyword found")?;
-
-    if from_start <= select_start {
-        return Err("FROM appears before SELECT".to_string());
-    }
-
-    // Skip DISTINCT ON (...) or plain DISTINCT if present after SELECT
-    let col_start = skip_distinct_clause(&sql_lower, select_start + 6);
-
-    // Extract SELECT clause (columns only, after any DISTINCT ON)
-    let select_clause = &sql[col_start..from_start].trim();
-
-    if select_clause.is_empty() {
-        return Err("No columns found in SELECT statement".to_string());
-    }
-
-    // Split by commas, respecting parentheses and quotes
-    let parts = split_by_top_level_comma(select_clause);
-
-    for part in parts {
-        let trimmed = part.trim();
-
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Extract column name or alias
-        let col_name = extract_column_name(trimmed)?;
-        columns.push(col_name);
-    }
-
-    if columns.is_empty() {
-        return Err("No columns found in SELECT statement".to_string());
-    }
-
-    Ok(columns)
 }
 
 /// Find the first occurrence of the `FROM` keyword at paren depth 0 (outermost level).
@@ -749,6 +677,11 @@ fn find_last_as(sql_lower: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_select_columns(sql: &str) -> Result<Vec<String>, String> {
+        parse_select_columns_with_expressions(sql)
+            .map(|columns| columns.into_iter().map(|(name, _)| name).collect())
+    }
 
     // ── existing tests ────────────────────────────────────────────────────────
 

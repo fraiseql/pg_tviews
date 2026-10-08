@@ -40,7 +40,6 @@ pub struct TviewMeta {
     pub view_oid: Oid,
     pub entity_name: String,
     pub fk_columns: Vec<String>,
-    #[allow(dead_code)] // Reason: loaded from pg_tview_meta for future UUID FK handling
     pub uuid_fk_columns: Vec<String>,
 
     /// Type of each dependency: Scalar (direct column), `NestedObject` (embedded JSONB),
@@ -364,7 +363,6 @@ impl TviewMeta {
     ///     // Use deps for smart patching
     /// }
     /// ```
-    #[allow(dead_code)] // Reason: May be useful in future optimization phases or external code
     pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
         // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
         // The OID is a validated PostgreSQL object identifier.
@@ -572,22 +570,6 @@ impl TviewMeta {
 
         details
     }
-
-    /// Build the direct-patch column→key lookup (issue #56): base-table column
-    /// name → JSONB key it feeds in this entity's own `data` object.
-    ///
-    /// Returns an empty map for entities without an extracted map (pre-#56 tviews,
-    /// or tviews whose `data` column isn't a bare `jsonb_build_object` of base
-    /// columns) — in which case the direct-patch fast path never engages.
-    #[allow(dead_code)] // Reason: public helper; the trigger reads the map off the cached EntityInfo
-    #[must_use]
-    pub fn direct_map(&self) -> std::collections::HashMap<&str, &str> {
-        self.direct_map_columns
-            .iter()
-            .zip(self.direct_map_keys.iter())
-            .map(|(col, key)| (col.as_str(), key.as_str()))
-            .collect()
-    }
 }
 
 /// Represents a single dependency with its type, path, and match key.
@@ -626,26 +608,6 @@ impl Default for TviewMeta {
             identity: RowIdentity::from_catalog("", None, false),
         }
     }
-}
-
-/// Map a base table OID to its entity name
-///
-/// Example: OID of `tb_user` → Some("user")
-///
-/// Returns:
-/// - Ok(Some(entity)) if table is tracked in `pg_tview_meta`
-/// - Ok(None) if table is not tracked
-/// - Err(...) on database error
-///
-/// # Cached Version
-///
-/// This function caches the mapping to avoid repeated `pg_class` queries.
-/// Performance improvement: 0.1ms → 0.001ms per trigger
-///
-/// # Errors
-/// Returns error if table OID lookup fails or cache access fails
-pub fn entity_for_table(table_oid: Oid) -> crate::TViewResult<Option<String>> {
-    crate::queue::cache::table_cache::entity_for_table_cached(table_oid)
 }
 
 /// Get entity name for table OID without caching (internal use)
@@ -749,12 +711,6 @@ mod tests {
         assert_eq!(meta.dependency_types.len(), 1);
         assert_eq!(meta.dependency_paths.len(), 1);
         assert_eq!(meta.array_match_keys.len(), 1);
-
-        // Direct-patch column map round-trips into a col→key lookup (issue #56).
-        let map = meta.direct_map();
-        assert_eq!(map.get("bio"), Some(&"bio"));
-        assert_eq!(map.get("name"), Some(&"display_name"));
-        assert_eq!(map.len(), 2);
     }
 
     #[test]

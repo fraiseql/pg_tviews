@@ -6,16 +6,7 @@ use std::collections::{HashSet, VecDeque};
 #[derive(Debug, Clone)]
 struct DependencyNode {
     oid: pg_sys::Oid,
-    depth: usize,
     relkind: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DependencyGraph {
-    pub base_tables: Vec<pg_sys::Oid>,
-    pub helper_views: Vec<String>,
-    pub all_dependencies: Vec<pg_sys::Oid>,
-    pub max_depth_reached: usize,
 }
 
 /// Find all base tables that a view depends on (transitively).
@@ -33,28 +24,18 @@ pub struct DependencyGraph {
 ///    - If it's a table (`relkind='r'`), add to `base_tables`
 ///    - If it's a view (`relkind='v'`), recurse
 /// 4. Track visited to detect cycles
-/// 5. Enforce `MAX_DEPENDENCY_DEPTH`
-///
-/// CORRECTED: Was using `refobjid` = {}, now uses `objid` = {}
+/// 5. Enforce `pg_tviews.max_dependency_depth`
 ///
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
 pub fn find_base_tables(
     view_name: &str,
     schema_hint: Option<&str>,
-) -> TViewResult<DependencyGraph> {
+) -> TViewResult<Vec<pg_sys::Oid>> {
     let view_oid = get_view_oid(view_name, schema_hint)?;
-    let dependencies = traverse_dependencies(view_oid, view_name, 0)?;
+    let dependencies = traverse_dependencies(view_oid)?;
     let tview_oids = load_tview_table_oids()?;
-    let base_tables = filter_base_tables(&dependencies, &tview_oids);
-    let max_depth = dependencies.iter().map(|d| d.depth).max().unwrap_or(0);
-
-    Ok(DependencyGraph {
-        base_tables,
-        helper_views: Vec::new(), // Filled in later
-        all_dependencies: dependencies.into_iter().map(|d| d.oid).collect(),
-        max_depth_reached: max_depth,
-    })
+    Ok(filter_base_tables(&dependencies, &tview_oids))
 }
 
 // Helper functions for find_base_tables()
@@ -113,17 +94,13 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
     })
 }
 
-fn traverse_dependencies(
-    view_oid: pg_sys::Oid,
-    _view_name: &str,
-    initial_depth: usize,
-) -> TViewResult<Vec<DependencyNode>> {
+fn traverse_dependencies(view_oid: pg_sys::Oid) -> TViewResult<Vec<DependencyNode>> {
     let mut all_dependencies = Vec::new();
     let mut visited = HashSet::new();
     let mut visiting = HashSet::new();
     let mut queue = VecDeque::new();
 
-    queue.push_back((view_oid, initial_depth));
+    queue.push_back((view_oid, 0));
 
     let max_dependency_depth = crate::config::max_dependency_depth();
     while let Some((current_oid, depth)) = queue.pop_front() {
@@ -156,7 +133,6 @@ fn traverse_dependencies(
             // Add to all dependencies
             all_dependencies.push(DependencyNode {
                 oid: dep_oid,
-                depth,
                 relkind: relkind_opt.clone(),
             });
 
@@ -330,12 +306,11 @@ mod tests {
         Spi::run("CREATE VIEW v_test AS SELECT * FROM tb_test").unwrap();
 
         // Find dependencies
-        let graph = find_base_tables("v_test", None).unwrap();
+        let base_tables = find_base_tables("v_test", None).unwrap();
 
-        assert_eq!(graph.base_tables.len(), 1);
-        assert_eq!(graph.max_depth_reached, 1);
+        assert_eq!(base_tables.len(), 1);
 
-        let table_name = get_object_name(graph.base_tables[0]).unwrap();
+        let table_name = get_object_name(base_tables[0]).unwrap();
         assert_eq!(table_name, "tb_test");
     }
 
@@ -358,45 +333,17 @@ mod tests {
         .unwrap();
 
         // Find dependencies
-        let graph = find_base_tables("v_post", None).unwrap();
+        let base_tables = find_base_tables("v_post", None).unwrap();
 
         // Should find both tb_user and tb_post
-        assert_eq!(graph.base_tables.len(), 2);
-        assert!(graph.max_depth_reached >= 1);
+        assert_eq!(base_tables.len(), 2);
 
-        let names: Vec<String> = graph
-            .base_tables
+        let names: Vec<String> = base_tables
             .iter()
             .map(|&oid| get_object_name(oid).unwrap())
             .collect();
 
         assert!(names.contains(&"tb_user".to_string()));
         assert!(names.contains(&"tb_post".to_string()));
-    }
-
-    #[pg_test]
-    fn test_circular_dependency_detected() {
-        // Create view that references itself (PostgreSQL allows this!)
-        Spi::run("CREATE TABLE tb_base (pk INTEGER PRIMARY KEY, value TEXT)").unwrap();
-        Spi::run("CREATE VIEW v_a AS SELECT * FROM tb_base WHERE value = 'a'").unwrap();
-
-        // This shouldn't create a cycle in normal cases, but let's test depth limit
-        // by creating a deep hierarchy
-
-        Spi::run("CREATE VIEW v_b AS SELECT * FROM v_a").unwrap();
-        Spi::run("CREATE VIEW v_c AS SELECT * FROM v_b").unwrap();
-        // ... would need 10+ levels to trigger depth limit
-
-        // For now, verify no cycle in simple case
-        let graph = find_base_tables("v_c", None).unwrap();
-        assert!(graph.max_depth_reached < crate::config::MAX_DEPENDENCY_DEPTH);
-    }
-
-    #[pg_test]
-    fn test_depth_limit_enforced() {
-        // This test would require creating 11+ nested views.
-        // Left as integration test — verifying the limit matches expectations.
-        let limit = crate::config::MAX_DEPENDENCY_DEPTH;
-        assert_eq!(limit, 10, "Expected depth limit of 10");
     }
 }

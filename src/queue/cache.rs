@@ -149,11 +149,6 @@ pub mod table_cache {
         Ok(info)
     }
 
-    /// Get cached entity name (backward compatibility)
-    pub fn entity_for_table_cached(table_oid: pg_sys::Oid) -> crate::TViewResult<Option<String>> {
-        entity_info_cached(table_oid).map(|info| info.map(|i| i.name))
-    }
-
     /// Load entity info from the database on a cache miss.
     ///
     /// Loads the full `TviewMeta` for the entity plus the `tv_<entity>` output

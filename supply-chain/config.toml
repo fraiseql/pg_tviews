@@ -11,16 +11,8 @@ url = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.t
 criteria = "safe-to-deploy"
 notes = "Core dependency, manually audited for PostgreSQL extension compatibility"
 
-[[exemptions.adler2]]
-version = "2.0.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.aho-corasick]]
 version = "1.1.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.android_system_properties]]
-version = "0.1.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.annotate-snippets]]
@@ -50,10 +42,6 @@ criteria = "safe-to-deploy"
 [[exemptions.base64]]
 version = "0.22.1"
 criteria = "safe-to-run"
-
-[[exemptions.bincode]]
-version = "1.3.3"
-criteria = "safe-to-deploy"
 
 [[exemptions.bindgen]]
 version = "0.70.1"
@@ -123,10 +111,6 @@ criteria = "safe-to-deploy"
 version = "1.0.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.chrono]]
-version = "0.4.42"
-criteria = "safe-to-deploy"
-
 [[exemptions.clang-sys]]
 version = "1.8.1"
 criteria = "safe-to-deploy"
@@ -155,17 +139,9 @@ criteria = "safe-to-run"
 version = "0.6.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.core-foundation-sys]]
-version = "0.8.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.cpufeatures]]
 version = "0.2.17"
 criteria = "safe-to-run"
-
-[[exemptions.crc32fast]]
-version = "1.5.0"
-criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-deque]]
 version = "0.8.6"
@@ -229,10 +205,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.fixedbitset]]
 version = "0.4.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.flate2]]
-version = "1.1.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.fnv]]
@@ -313,14 +285,6 @@ criteria = "safe-to-run"
 
 [[exemptions.home]]
 version = "0.5.12"
-criteria = "safe-to-deploy"
-
-[[exemptions.iana-time-zone]]
-version = "0.1.64"
-criteria = "safe-to-deploy"
-
-[[exemptions.iana-time-zone-haiku]]
-version = "0.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.icu_collections]]
@@ -425,10 +389,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.minimal-lexical]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.miniz_oxide]]
-version = "0.8.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.mio]]
@@ -703,10 +663,6 @@ criteria = "safe-to-run"
 version = "1.3.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.simd-adler32]]
-version = "0.3.8"
-criteria = "safe-to-deploy"
-
 [[exemptions.siphasher]]
 version = "1.0.1"
 criteria = "safe-to-run"
@@ -935,28 +891,8 @@ criteria = "safe-to-run"
 version = "0.52.0"
 criteria = "safe-to-run"
 
-[[exemptions.windows-core]]
-version = "0.62.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-implement]]
-version = "0.60.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-interface]]
-version = "0.59.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.windows-link]]
 version = "0.2.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-result]]
-version = "0.4.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-strings]]
-version = "0.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-sys]]

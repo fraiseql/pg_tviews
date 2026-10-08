@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Removed
+
+- `pg_tviews_analyze_select(text)` and `pg_tviews_infer_types(text, text[])`. They ran
+  the text-pattern analysis that registration is moving away from, and
+  `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The
+  upgrade script drops both; `docs/DEPRECATION_WARNINGS.md` lists what replaces them
+  and what the next catalog change removes, and states the oldest release
+  `ALTER EXTENSION pg_tviews UPDATE` starts from (0.1.0-beta.20).
+
 ### Changed (breaking)
 
 - **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as

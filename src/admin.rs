@@ -1,44 +1,8 @@
-//! Administrative SQL functions: refresh, migration, schema analysis, cascade path.
+//! Administrative SQL functions: refresh, migration, cascade path.
 
 use crate::{TViewError, TViewResult, utils::quote_identifier};
-use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-
-/// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
-///
-/// Returns a JSON object with schema details on success, or `{"error": "..."}` on
-/// failure. Never raises a `PostgreSQL` error so callers can use the result in
-/// expressions (e.g., `IS NOT NULL`, `->>'error'`).
-#[pg_extern]
-fn pg_tviews_analyze_select(sql: &str) -> JsonB {
-    match crate::schema::inference::infer_schema(sql) {
-        Ok(schema) => match schema.to_jsonb() {
-            Ok(jsonb) => jsonb,
-            Err(e) => {
-                JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
-            }
-        },
-        Err(e) => JsonB(serde_json::json!({"error": e.to_string()})),
-    }
-}
-
-/// Infer column types from `PostgreSQL` catalog
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires Vec by value
-fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
-    match crate::schema::types::infer_column_types(table_name, &columns) {
-        Ok(types) => match serde_json::to_value(&types) {
-            Ok(json_value) => JsonB(json_value),
-            Err(e) => {
-                error!("Failed to serialize types to JSONB: {}", e);
-            }
-        },
-        Err(e) => {
-            error!("Type inference failed: {}", e);
-        }
-    }
-}
 
 /// Rebuild a TVIEW from its backing view, then every TVIEW whose view reads it,
 /// directly or through others, in dependency order: a manual repair leaves
