@@ -1,7 +1,5 @@
 # Artifact Signing
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
 **Classification:** Public
 **Applicable Standards:** Sigstore, GPG, SLSA, ISO 27001
 

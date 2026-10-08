@@ -157,6 +157,25 @@ catalog rows older than ADR 0169, `pg_tviews.metrics_enabled`,
 - `test/sql/real_benchmark` (single-row, batch, two-hop mapping, scalar and document fan-out)
   stays within ±5% of the baseline measured before the change, or gets faster.
 
+### As implemented
+
+The stored document (`pg_tview_meta.plan`, `src/catalog/plan.rs`, version 1) keeps
+what the run-time paths read, not the whole analysis above:
+
+- `embeds`: per embedded TVIEW, its `lookups` (every output column equal to the
+  child's key), `kind` and `path`;
+- `direct`: the direct-patch map, `(column, data key)`;
+- `tables`: per base table, how its writes map to keys (`kind`: `local`,
+  `mapped`, `propagated`, `all_keys`; the mapping query of a `mapped` table, its
+  fan-out patch, the TVIEW it belongs to when it is another TVIEW's table);
+- `paths`: the tables whose changed row holds a key (the row trigger's input);
+- `set_operation`: the rows come from a UNION/INTERSECT/EXCEPT.
+
+The output columns and the identity are not in the plan: the backing view and
+`pg_tview_meta.identity` hold them. A plan that does not decode, or names a mapped
+table without its query, fails every write that needs it, naming the TVIEW;
+`pg_tviews_reregister` derives it again.
+
 ## Consequences
 
 - One place answers every question about a TVIEW's definition, and the answer follows

@@ -106,6 +106,10 @@ fn needing_rebuild(relations: &[TviewRelation]) -> TViewResult<HashSet<String>> 
     });
     let mut needing = HashSet::new();
     for rel in sorted {
+        // Probed as its owner, as the rebuild reads it: the caller may not read
+        // it, and its backing view's functions must not run with the caller's
+        // privileges.
+        let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
         let reads_one = graph
             .children
             .get(&rel.entity)
@@ -266,6 +270,8 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             crate::admin::rebuild_one(&rel.entity)?;
         }
         crate::queue::mark_crash_recovery_checked(&rel.entity);
+        // Counted as its owner, as it was rebuilt: the caller may not read it.
+        let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
         let count_sql = format!("SELECT count(*) FROM {}", rel.qualified(&rel.table));
         let rows = Spi::get_one::<i64>(&count_sql)
             .map_err(|e| TViewError::SpiError {

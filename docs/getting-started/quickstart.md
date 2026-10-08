@@ -1,11 +1,11 @@
 # Quick Start
 
-Get pg_tviews running in your FraiseQL application in 10 minutes.
+Install pg_tviews, create a TVIEW, and watch it follow writes to its tables.
 
 ## Prerequisites
 
 - PostgreSQL 16, 17 or 18 installed and running
-- Rust toolchain (stable, for building the extension)
+- Rust toolchain (the version pinned in `rust-toolchain.toml`, for building the extension)
 - A database for testing
 
 ## 1. Install pg_tviews
@@ -20,7 +20,7 @@ source ~/.cargo/env
 ### Install pgrx
 
 ```bash
-cargo install --locked cargo-pgrx
+cargo install --locked cargo-pgrx --version 0.17.0
 cargo pgrx init
 ```
 
@@ -29,7 +29,8 @@ cargo pgrx init
 ```bash
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-cargo pgrx install --release
+cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
+                               # --no-default-features --features pg16 (or pg17)
 ```
 
 ## 2. Enable the Extension
@@ -66,12 +67,13 @@ SELECT pg_tviews_version();
 
 ## 3. Create Your First TVIEW
 
-Let's create a simple blog application with users and posts, following FraiseQL patterns.
+A small blog with users and posts. The tables follow FraiseQL's naming (`tb_*`,
+`pk_*`, `fk_*`, `id`), which fits pg_tviews but is not required: the only rule is
+that the definition outputs a `pk_<entity>` column, here `pk_post` for `tv_post`.
 
 ### Create Base Tables
 
 ```sql
--- Create tables following FraiseQL conventions
 CREATE TABLE tb_user (
     pk_user BIGSERIAL PRIMARY KEY,
     id UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -111,11 +113,11 @@ VALUES
 ```sql
 CREATE TABLE tv_post AS
 SELECT
-    p.pk_post as pk_post,  -- Primary key for lineage (required)
-    p.id,                  -- GraphQL ID
-    p.identifier,          -- SEO-friendly slug
-    p.fk_user,             -- Foreign key for cascade propagation
-    u.id as user_id,       -- UUID FK for FraiseQL filtering
+    p.pk_post,             -- required: names the rows (the table's primary key)
+    p.id,                  -- public UUID
+    p.identifier,          -- slug
+    p.fk_user,             -- the author's key, for queries by author
+    u.id as user_id,       -- the author's UUID, for filtering
     jsonb_build_object(
         'id', p.id,
         'identifier', p.identifier,
@@ -128,7 +130,7 @@ SELECT
             'name', u.name,
             'email', u.email
         )
-    ) as data  -- JSONB data column (required)
+    ) as data              -- the JSONB read model
 FROM tb_post p
 JOIN tb_user u ON p.fk_user = u.pk_user;
 ```
@@ -157,7 +159,13 @@ VALUES ('bobs-first-post', 'Bob''s First Post', 'Hello from Bob!', 2);
 ```
 
 Each statement refreshes the TVIEW rows it changed when it ends; in a transaction
-block, the refreshes are part of the transaction.
+block, the refreshes are part of the transaction. pg_tviews read the join
+`p.fk_user = u.pk_user` from the definition, so renaming a user refreshes that user's
+posts too:
+
+```sql
+UPDATE tb_user SET name = 'Alice J.' WHERE identifier = 'alice';
+```
 
 ### Verify Automatic Update
 
@@ -169,44 +177,38 @@ FROM tv_post
 ORDER BY pk_post;
 ```
 
-You should see all 3 posts with their complete author information, including the new post by Bob that was automatically added to the TVIEW!
+All three posts are there, Bob's included, and Alice's two carry her new name.
 
-## 5. Enable Advanced Features
+## 5. Health Check
 
-### Statement-Level Triggers (Recommended)
-
-Bulk statements need nothing special: every TVIEW gets a statement-level trigger that
-refreshes the affected rows once, at the end of each statement.
-
-### Health Check
-
-Verify everything is working:
+Nothing needs enabling: the triggers were installed when the TVIEW was created.
+To check them:
 
 ```sql
 SELECT * FROM pg_tviews_health_check();
 ```
 
-## 6. GraphQL Cascade Usage
+## 6. Query It
 
-Your TVIEW is now ready for FraiseQL's GraphQL Cascade:
+`tv_post` is an ordinary table, indexed on `id` and `user_id`:
 
 ```sql
--- Example GraphQL query pattern
 SELECT data FROM tv_post
-WHERE data->>'identifier' = 'hello-world';
+WHERE identifier = 'hello-world';
 
--- UUID-based filtering (FraiseQL style)
+-- by public UUID
 SELECT data FROM tv_post
 WHERE id = '550e8400-e29b-41d4-a716-446655440000';
 
--- Author filtering using UUID FK
+-- by the author's UUID
 SELECT data FROM tv_post
 WHERE user_id = '550e8400-e29b-41d4-a716-446655440001';
 ```
 
 ## Next Steps
 
-- **[FraiseQL Integration Guide](fraiseql-integration.md)** - Learn framework patterns and best practices
+- **[DDL Reference](../reference/ddl.md)** - What a definition may contain
+- **[FraiseQL Integration Guide](fraiseql-integration.md)** - FraiseQL's conventions with pg_tviews
 - **[Developer Guide](../user-guides/developers.md)** - Application integration patterns
 - **[API Reference](../reference/api.md)** - Complete function reference
 
@@ -227,12 +229,12 @@ cargo pgrx install --release
 ```
 
 ### Permission Issues
-If you get permission errors:
 
-```sql
--- Make sure you're connected as a superuser or have appropriate permissions
--- Check current user: SELECT current_user;
-```
+`CREATE EXTENSION pg_tviews` needs `CREATE` on the database. Creating a TVIEW needs `CREATE` on its
+schema, `SELECT` on the tables it reads and `TRIGGER` on them; refreshing, replacing or
+dropping one requires owning it (SQLSTATE `42501` otherwise). The functions that act on
+every TVIEW (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`, …) are not
+executable by `PUBLIC`: see the [Operator role](../user-guides/operators.md#operator-role).
 
 ### No Automatic Updates
 If TVIEWs aren't updating:

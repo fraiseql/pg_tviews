@@ -1,7 +1,5 @@
 # Security Incident Response Plan
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
 **Classification:** Public
 **Applicable Standards:** ISO 27001, NIST SP 800-61, OWASP Incident Response
 

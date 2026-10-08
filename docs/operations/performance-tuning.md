@@ -2,8 +2,6 @@
 
 Advanced performance optimization strategies for pg_tviews in production.
 
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
-
 ## Overview
 
 This guide covers advanced performance tuning for pg_tviews. While pg_tviews provides excellent out-of-the-box performance, proper tuning can achieve even better results for high-throughput applications.

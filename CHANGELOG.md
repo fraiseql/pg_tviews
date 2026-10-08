@@ -3,7 +3,7 @@
 All notable changes to pg_tviews will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer).
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -66,8 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - `pg_tviews_health_check()` reports TVIEWs whose plan does not decode (component
   `plans`), and a count or catalog revision it cannot read as an ERROR row; a failed
   count read as 0 (healthy), and an unreadable revision as a 0.1.0 catalog.
-- `pg_tviews_mapping_query()` raises the error that stops it instead of returning
-  NULL; the rebuild worker restarts on an error instead of idling with a WARNING.
+- `pg_tviews_mapping_query()` raises the error that stops it (42704 for an unknown
+  TVIEW) instead of returning NULL; the rebuild worker restarts on an error instead
+  of idling with a WARNING.
+- An operator granted `pg_tviews_rebuild_all()` could not run it without `SELECT` on
+  every TVIEW: it checked and counted their rows as the caller.
 - A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or
   `CREATE TABLE AS` calls is intercepted like any other: the TVIEW was left
   registered with no table, or its definition kept the old column name.
@@ -95,6 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   raised errors; the event trigger reports a `CREATE TABLE tv_* AS` the hook did not
   intercept itself.
 - The `pg_tviews.metrics_enabled` setting, which had no effect.
+- `scripts/auto-convert/`: it turned existing `tv_*` tables into TVIEWs through the
+  conversion functions removed above, and no longer ran.
 
 ### Changed (breaking)
 
@@ -142,9 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   functions it calls as the querying role, so a rebuild run as the caller let a TVIEW
   owner's code run with the caller's privileges: a superuser's after the documented
   post-migration `pg_tviews_refresh_all()`. `pg_tviews_refresh_all()`,
-  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()`,
-  `pg_tviews_recover_after_crash()` and `pg_tviews_cascade()` now read each backing
-  view as its owner; `pg_tviews_refresh(entity)` by a role that neither owns
+  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()` and
+  `pg_tviews_recover_after_crash()` now read each backing view as its owner (the
+  emptiness checks of `pg_tviews_rebuild_all(true)` too); `pg_tviews_refresh(entity)` by a role that neither owns
   `tv_<entity>` nor the extension fails with 42501 (it rebuilt the requested TVIEW
   with the caller's privileges before).
 - **Refreshes render values under fixed settings, not the writer's** (#200):
@@ -858,9 +863,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `docs/` described 33 functions no release shipped (`pg_tviews_install_stmt_triggers`,
   `pg_tviews_refresh_one`, `pg_tviews_commit_prepared`, `pg_tviews_metadata`, …). Their
   passages now use the real functions (statement-level triggers are installed with
-  every TVIEW; two-phase commit needs no call; `tviews.registry` replaces the metadata
+  every TVIEW; prepared transactions need no call; `tviews.registry` replaces the metadata
   function) or are gone; the never-implemented v2.0 plans moved to `docs/archive/`.
-  `test/sql/regress_issue_138_documented_functions.sql` fails CI when a published doc
+  `test/sql/regress/docs/regress_documented_functions.sql` fails CI when a published doc
   (Markdown or JSON) names a `pg_tviews_*` / `pg_tview_*` object that `CREATE EXTENSION`
   does not create, apart from names users choose and the relations #150 tracks.
 - **`pg_tviews_drop(name, if_exists => true)` on a missing TVIEW** (#152) returned
@@ -1412,7 +1417,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Removed
 
-- **Two-Phase Commit (2PC) infrastructure**: Removed unimplemented 2PC support
+- **Prepared-transaction (2PC) infrastructure**: Removed unimplemented 2PC support
   (`pg_tviews_commit_prepared`, `pg_tviews_rollback_prepared`, `src/twophase.rs`,
   `src/queue/persistence.rs`, `src/refresh/cache.rs`). Implicit transaction commit
   via statement-level trigger flushing supersedes the 2PC design.
@@ -1437,6 +1442,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   process them iteratively in a clean SPI context. `refresh_pk()` no longer
   calls `propagate_from_row()` — parent discovery is handled exclusively by
   `find_parents_for()` in the queue's commit callback.
+- Tests: all `refresh_pk()` tests now use correct TVIEW OIDs (`tv_user` instead of
+  `tb_user`) and create dependency TVIEWs before parent TVIEWs; the metadata query
+  column name in test assertions is corrected (`entity_name` → `entity`).
 
 ### Removed
 
@@ -1450,13 +1458,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - **`get_relkind()`**: Unused dependency graph helper.
 - Stale `#[allow(dead_code)]` annotations on five queue functions now
   actively called from the trigger path.
-
-### Fixed (tests)
-
-- All `refresh_pk()` tests now use correct TVIEW OIDs (`tv_user` instead of
-  `tb_user`) and create dependency TVIEWs before parent TVIEWs.
-- Fixed metadata query column name `entity_name` → `entity` in test
-  assertions.
 
 ## [0.1.0-beta.8] - 2026-02-24
 
@@ -1494,7 +1495,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 - **Removed dead code**: `pg_tviews_debug_ddl`, `pg_tviews_debug_sequence`,
   `with_hook_bypassed`, `peek_pending_tview_select`
 - Removed empty `if let` blocks left over from logging removal
-- Removed all Phase N / TODO / FIXME markers from source and test files
+- Removed development markers (TODO / FIXME) from source and test files
 - Zero compiler warnings
 
 ## [0.1.0-beta.6] - 2026-02-24
@@ -1521,333 +1522,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   removed from individual test functions. Contributors can now run
   `cargo pgrx test` locally without E0432/E0433 errors.
 
+## [0.1.0-beta.4] - 2026-02-23
+
+This release also contains the changes prepared as 0.1.0-beta.3, which was never tagged.
+
+### Changed
+
+- **Actionable `pk_<entity>` error**: `CREATE TVIEW` on a view without the expected
+  `pk_<entity>` column now explains the naming convention instead of failing tersely
+  (#26).
+- **`jsonb_delta` naming**: The companion JSONB patching extension is referred to as
+  `jsonb_delta` (formerly `jsonb_ivm`) in all documentation and install instructions.
+  Its API is unchanged.
+- Package metadata (repository, homepage, documentation URLs) points to
+  `github.com/fraiseql/pg_tviews`.
+
+### Fixed
+
+- **Schema-aware DDL**: `CREATE TVIEW` resolves the target schema from `search_path`
+  instead of assuming `public`; `DROP TVIEW` resolves qualified names by OID; the
+  extension's catalog objects are created in the extension schema rather than `public`.
+- **`pg_tviews_refresh()`** uses an explicit column list, avoiding column-order
+  mismatches.
+- **`pg_tviews_version()`** returns the packaged version.
+- **Build failure from a duplicate `pg_tviews_refresh` definition** (#21).
+- **Backend crash (SIGABRT) on string SPI lookups** (#22): replaced with a safe wrapper.
+- **Invalid array literals** such as `'{,}'` when storing empty dependency paths (#23).
+- **Backend crash on a poisoned internal lock** (#25): caches recover instead of
+  aborting. Missing `id`, `data` or `pk_*` columns now return an error instead of
+  panicking (#26).
+
 ## [0.1.0-beta.2] - 2025-12-16
 
-### Code Quality & Refactoring
+### Changed
 
-#### Clippy Improvements
-- **Dependency graph refactoring**: Extracted helper functions for better code organization
-- **Error handling improvements**: Consistent use of `Self::` in error module patterns
-- **Code clarity**: Simplified match arms and removed unnecessary wrapping
-- **Documentation fixes**: Corrected backticks and added missing error documentation
-- **Must-use attributes**: Added to functions returning values that should not be ignored
-
-#### CI/CD Improvements
-- **prek migration**: Moved from bash-based pre-commit hooks to Rust-based prek
-- **Workflow optimizations**: Fixed PostgreSQL version handling and feature flags
-- **Security audit**: Enhanced vulnerability detection logic
-- **Coverage improvements**: Better test coverage reporting
-
-#### Modernization
-- **LazyLock migration**: Replaced deprecated `once_cell::Lazy` with `std::sync::LazyLock`
-- **Code style**: Inline format strings and consistent identifier patterns
-- **Boolean simplification**: Removed unnecessary boolean operations
-
-### 🔧 Technical Debt
-- **Known Issue**: Rust unit tests with `#[pg_test]` require pgrx test framework
-  - SQL-based integration tests in `test/sql/*.sql` provide comprehensive coverage
-  - CI uses `cargo build` verification instead of problematic `cargo test --lib`
+- Internal refactoring for strict Clippy compliance: dependency-graph helpers
+  extracted, consistent error-module patterns, `#[must_use]` on value-returning
+  functions, completed error documentation.
+- Replaced the deprecated `once_cell::Lazy` with `std::sync::LazyLock`.
+- Pre-commit hooks moved from bash scripts to prek; CI fixes for PostgreSQL version
+  handling, feature flags, security audit and coverage reporting.
+- CI verifies the extension with `cargo build`, since `#[pg_test]` unit tests need the
+  pgrx test framework; the SQL suites under `test/sql/` provide behavioural coverage.
 
 ## [0.1.0-beta.1] - 2025-12-10
 
-### 🚀 Beta Release: Feature-Complete TVIEW System
-
-This beta release completes all 10 development phases, delivering a feature-complete
-transactional materialized view system with comprehensive features, enterprise-grade
-code quality, and extensive performance optimizations. This release is ready for
-testing and evaluation in production-like environments.
-
-### Phase 10: Clippy-Strict Compliance and Code Quality ✅
-
-#### 🔒 Error Handling
-- **Complete unwrap() elimination**: All `.unwrap()` calls replaced with proper error handling
-- **NULL safety**: Comprehensive NULL checks for all SPI query results
-- **Error variants**: Added ConfigError, CacheError, CallbackError, MetricsError
-- **Error conversions**: From traits for serde_json, bincode, regex, io errors
-- **Context-rich errors**: File paths and line numbers in error messages
-
-#### 🛡️ FFI Safety
-- **Panic guards**: All FFI callbacks wrapped in `catch_unwind`
-- **tview_xact_callback**: Panic-safe transaction event handling
-- **tview_xact_start_callback**: Panic-safe transaction start handling
-- **tview_subxact_callback**: Panic-safe subtransaction handling
-- **Panic logging**: Error logging for panic events
-
-#### 📝 Documentation
-- **Module docs**: Comprehensive documentation for all major modules
-- **Architecture docs**: TVIEW system architecture and design principles
-- **Performance notes**: Design principles and optimization strategies
-- **Consistent style**: Fixed all doc comment positioning issues
-
-#### 🔧 Code Quality
-- **Clippy compliance**: `cargo clippy -- -D warnings` passes
-- **Lint configuration**: Cargo.toml [lints.clippy] section configured
-- **CI/CD integration**: GitHub Actions workflows for clippy and docs
-- **Pre-commit hooks**: Automated quality checks
-
-### Phase 9: Performance Optimizations and Production Readiness ✅
-
-#### 🚀 Statement-Level Triggers
-- **Bulk operations**: pg_tview_stmt_trigger_handler for batch processing
-- **Transition tables**: Extract PKs from OLD/NEW tables
-- **Bulk enqueue API**: `enqueue_refresh_bulk()` for batch operations
-- **100-500× reduction**: Trigger overhead dramatically reduced
-
-#### ⚡ Bulk Refresh API
-- **N→2 query optimization**: Refresh N rows with 2 queries instead of N
-- **Parameterized queries**: ANY($1) with array parameters
-- **Batch updates**: UPDATE ... FROM unnest() for bulk operations
-- **Entity grouping**: Automatic grouping for optimal processing
-
-#### 💾 Query Plan Caching
-- **Prepared statements**: Cache query plans for 10× performance
-- **Cache invalidation**: Automatic clearing on schema changes
-- **DISCARD ALL handling**: Connection pooling safety
-
-#### 🔄 Connection Pooling Safety
-- **DISCARD ALL support**: Clear all state on pooler reset
-- **XACT_EVENT_START**: Defensive cleanup at transaction start
-- **Thread-local clearing**: Prevent queue leakage between transactions
-
-#### 📊 Production Monitoring
-- **Monitoring views**: pg_tviews_queue_realtime, cache_stats, performance_summary
-- **Metrics table**: Historical performance data tracking
-- **Health checks**: pg_tviews_health_check() function
-- **pg_stat_statements**: Integration for query analysis
-
-### Phase 8: Two-Phase Commit (2PC) Support ✅
-
-#### 🔐 2PC Transaction Support
-- **PREPARE TRANSACTION**: Queue serialization to persistent storage
-- **COMMIT PREPARED**: Queue deserialization and refresh execution
-- **ROLLBACK PREPARED**: Queue cleanup without refresh
-- **GID tracking**: Transaction identifier linkage
-
-#### 💾 Queue Persistence
-- **pg_tview_pending_refreshes**: Persistent queue storage table
-- **Binary serialization**: Efficient queue state encoding
-- **Compression**: gzip compression for large queues
-- **Recovery API**: pg_tviews_recover_prepared_transactions()
-
-### Phase 7: Performance Optimizations and Monitoring ✅
-
-#### ⚡ Performance Improvements
-- **Graph caching**: Entity dependency graph caching (90% hit rate)
-- **Table caching**: Table OID caching (95% hit rate)
-- **Metrics tracking**: Performance counters and timing
-- **Iteration limiting**: Prevent infinite propagation loops
-
-#### 📈 Monitoring Infrastructure
-- **Queue statistics**: Real-time queue size and refresh counts
-- **Cache metrics**: Hit/miss ratios for all caches
-- **Timing data**: Per-transaction refresh timing
-- **Debug functions**: pg_tviews_debug_stats(), pg_tviews_debug_queue()
-
-### Phase 6: Queue-Based Refresh Architecture ✅
-
-#### 🏗️ Foundation
-- **Refresh queue**: Thread-local HashSet-based queue
-- **Transaction callbacks**: PostgreSQL transaction event handling
-- **Savepoint support**: ROLLBACK TO SAVEPOINT compatibility
-
-#### 🔄 Commit Processing
-- **Pre-commit handler**: Flush queue before transaction commits
-- **Dependency ordering**: Topological sort for refresh order
-- **Deduplication**: Automatic duplicate removal
-- **Error propagation**: Transaction abort on refresh failure
-
-#### 📊 Entity Graph
-- **Dependency resolution**: Build refresh order from dependencies
-- **Cycle detection**: Prevent infinite propagation loops
-- **Parent discovery**: Find parent entities for cascading
-
-### Phase 5: Array Handling and Performance (Previously Completed) ✅
-
-*See previous CHANGELOG entries for Phase 5 details*
-
-### Phase 4: Refresh Logic and Cascade Propagation (Previously Completed) ✅
-
-*See previous CHANGELOG entries for Phase 4 details*
-
-### Phase 3: Dependency Detection and Triggers (Previously Completed) ✅
-
-*See previous CHANGELOG entries for Phase 3 details*
-
-### Phase 2: View Creation and DDL Hooks (Previously Completed) ✅
-
-*See previous CHANGELOG entries for Phase 2 details*
-
-### Phase 1: Schema Inference (Previously Completed) ✅
-
-*See previous CHANGELOG entries for Phase 1 details*
-
-## [0.1.0-alpha] - 2025-12-09
-
-### Phase 5: Array Handling and Performance Optimization - COMPLETE ✅
-
-#### 🚀 Major Features
-
-**Array Handling Implementation**
-- **Automatic Type Inference**: Detects `ARRAY(...)` and `jsonb_agg()` patterns
-- **Array Element Operations**: Full INSERT/DELETE support with automatic type inference
-- **Schema Enhancement**: Added `additional_columns_with_types` for type tracking
-- **Dependency Analysis**: Array aggregation pattern detection (`jsonb_agg(v_table.data)`)
-- **Trigger Integration**: INSERT/DELETE operations routed to appropriate handlers
-
-**Performance Optimizations**
-- **Smart JSONB Patching**: 2.03× performance improvement validated
-- **Batch Processing**: 3-5× faster for large cascades (≥10 rows)
-- **Memory Efficiency**: Surgical updates vs full document replacement
-- **Adaptive Optimization**: Automatic switching between individual and batch updates
-
-#### 📊 Performance Results
-
-**Benchmark Results (VERIFIED 2025-12-10):**
-```
-Baseline Performance:     7.55 ms (medium cascade)
-Smart Patch Performance:  3.72 ms (medium cascade)
-Improvement:              2.03× faster (51% reduction)
-
-Batch Optimization:       3-5× faster for cascades ≥10 rows
-Memory Usage:             Surgical updates (no full replacement)
-Scalability:              Linear performance scaling
-```
-
-#### 🔧 Technical Improvements
-
-**Schema Inference Engine**
-- Enhanced column type detection for arrays
-- Improved SQL expression parsing
-- Better pattern recognition for complex queries
-
-**Dependency Tracking**
-- Array aggregation dependency detection
-- Smart patching support for array elements
-- Enhanced cascade propagation logic
-
-**Refresh Engine**
-- Batch optimization for large operations
-- Improved concurrency handling
-- Better error recovery mechanisms
-
-#### 🧪 Testing & Quality
-
-**Comprehensive Test Suite**
-- `50_array_columns.sql`: Array column materialization tests
-- `51_jsonb_array_update.sql`: JSONB array element update tests
-- `52_array_insert_delete.sql`: Array INSERT/DELETE operation tests
-- `53_batch_optimization.sql`: Batch update optimization tests
-
-**Quality Assurance**
-- 100% test coverage maintained for core functionality
-- Performance regression testing implemented
-- Comprehensive error handling validation
-
-#### 📚 Documentation
-
-**Updated Documentation**
-- README.md: Added array handling features and latest performance results
-- docs/arrays.md: Comprehensive array handling guide
-- Performance benchmarks documented with variance analysis
-- Migration guides for array operations
-
-#### 🏗️ Architecture
-
-**Code Organization**
-- `src/refresh/array_ops.rs`: Array operation functions
-- `src/refresh/batch.rs`: Batch optimization logic
-- Enhanced schema inference with type tracking
-- Improved dependency analysis for arrays
-
-#### ✅ Implementation Verification
-
-**Phase 5 Task 7: Array Handling Implementation - COMPLETE**
-- ✅ Fixed missing trigger handler (`pg_tview_trigger_handler_wrapper`)
-- ✅ Schema inference for arrays (UUID[], TEXT[], INTEGER[] detection)
-- ✅ Array element INSERT operations (`insert_array_element()`)
-- ✅ Array element DELETE operations (`delete_array_element()`)
-- ✅ Batch optimization (threshold detection and CASE statement updates)
-- ✅ Performance benchmarks verified (2.03× improvement achieved)
-- ✅ Documentation updated with verified results
-
-### Phase 4: Refresh Logic and Cascade Propagation - Previously Completed ✅
-
-#### Features
-- Complete cascade propagation system
-- JSONB smart patching with jsonb_delta integration
-- Transaction isolation support
-- Concurrency-safe refresh operations
-
-### Phase 3: Dependency Detection and Triggers - Previously Completed ✅
-
-#### Features
-- Automatic dependency graph construction
-- Trigger installation and management
-- Cycle detection and prevention
-- Metadata table management
-
-### Phase 2: View Creation and DDL Hooks - Previously Completed ✅
-
-#### Features
-- DDL hook system for automatic TVIEW creation
-- Materialized table management
-- View definition parsing
-- Schema inference foundation
-
-### Phase 1: Schema Inference - Previously Completed ✅
-
-#### Features
-- SQL statement parsing
-- Column type inference
-- Relationship detection
-- Foundation for dependency tracking
-
-## [0.0.1-alpha] - 2025-11-01
+First beta: a feature-complete transactional materialized JSONB view system.
 
 ### Added
-- Initial project structure
-- Basic PostgreSQL extension framework
-- pgrx integration
-- Development environment setup
 
----
+- **Queue-based refresh**: changes enqueue `(entity, pk)` pairs in a per-transaction,
+  deduplicated queue that is flushed before commit in dependency (topological) order.
+  `ROLLBACK TO SAVEPOINT` is honoured, a refresh failure aborts the transaction,
+  circular dependencies are detected, and parent entities are discovered for cascades.
+- **Statement-level triggers** reading transition tables, with a bulk enqueue API
+  (`enqueue_refresh_bulk()`), cutting trigger overhead 100-500x for bulk writes.
+- **Bulk refresh**: N rows refreshed with 2 queries (`ANY($1)`,
+  `UPDATE ... FROM unnest()`), grouped by entity.
+- **Query plan caching** with prepared statements, invalidated on schema changes and
+  on `DISCARD ALL`.
+- **Connection pooling safety**: session state is cleared on `DISCARD ALL` and at
+  transaction start, so queues never leak between transactions.
+- **Prepared transactions (2PC)**: the queue is persisted on `PREPARE TRANSACTION`
+  (`pg_tview_pending_refreshes`, compressed binary encoding), replayed on
+  `COMMIT PREPARED` and discarded on `ROLLBACK PREPARED`;
+  `pg_tviews_recover_prepared_transactions()` recovers pending entries.
+- **Caching** of the entity dependency graph and table OIDs; an iteration limit
+  prevents runaway propagation.
+- **Monitoring**: views `pg_tviews_queue_realtime`, `cache_stats` and
+  `performance_summary`, a metrics history table, `pg_tviews_health_check()`,
+  `pg_tviews_debug_stats()`, `pg_tviews_debug_queue()`, and `pg_stat_statements`
+  integration.
 
-## Development Phases
+### Changed
 
-### Phase 6 Planning (Next)
-**Decision Required:** Choose next major feature direction
-- **Option A:** Advanced Array Support (multi-dimensional, complex matching)
-- **Option B:** Query Optimization (partial refresh, incremental updates)
-- **Option C:** Enterprise Features (multi-tenant, audit logging)
-- **Option D:** Ecosystem Integration (ORMs, frameworks)
+- **Error handling**: no `unwrap()` left in the extension; every SPI result is
+  NULL-checked; new error variants (`ConfigError`, `CacheError`, `CallbackError`,
+  `MetricsError`) and conversions from serde_json, bincode, regex and I/O errors;
+  error messages carry context.
+- **Panic safety**: transaction, transaction-start and subtransaction callbacks are
+  guarded against panics and log them instead of crashing the backend.
+- Module and architecture documentation; `cargo clippy -- -D warnings` enforced in CI.
 
-### Phase 5 Achievements ✅
-- **Performance:** 2.03× improvement with smart patching
-- **Arrays:** Full INSERT/DELETE support with type inference
-- **Batch:** 3-5× faster for large cascades
-- **Testing:** Comprehensive benchmark suite
-- **Quality:** Production-ready code
+## 0.1.0-alpha - 2025-12-09
 
----
+### Added
 
-## Contributing
+- **`CREATE TVIEW` / `DROP TVIEW`** through DDL hooks, with management of the
+  materialized backing table and parsing of the view definition.
+- **Schema inference**: column types (including `UUID[]`, `TEXT[]`, `INTEGER[]`
+  arrays), `ARRAY(...)` and `jsonb_agg()` patterns, and relationships between tables.
+- **Dependency tracking**: automatic dependency graph, trigger installation,
+  circular-dependency detection and metadata tables, including array-aggregation
+  dependencies (`jsonb_agg(v_table.data)`).
+- **Cascade propagation** of refreshes, transaction-isolated and safe under
+  concurrency.
+- **Smart JSONB patching** with `jsonb_delta`: surgical updates instead of full
+  document replacement, about 2x faster on the medium-cascade benchmark
+  (7.55 ms to 3.72 ms).
+- **Array element INSERT/DELETE** (`insert_array_element()`,
+  `delete_array_element()`) with automatic type inference.
+- **Batch refresh** for cascades of 10 rows or more (3-5x faster), switching
+  automatically between per-row and batch updates.
+- Array handling guide in `docs/arrays.md`.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and TDD workflow.
+## 0.0.1-alpha - 2025-11-01
 
-## Performance Benchmarks
+### Added
 
-For detailed performance analysis, see:
-- [docs/PERFORMANCE_RESULTS.md](docs/PERFORMANCE_RESULTS.md)
-- [test/sql/benchmark_*.sql](test/sql/) test files
-- Phase 5 benchmark reports
+- Initial project structure on pgrx.
 
----
-
-**Legend:**
-- ✅ Completed
-- 🔄 In Progress
-- 📋 Planned
-- 🐛 Bug Fix
-- 🚀 New Feature
-- 📚 Documentation
-- 🏗️ Architecture
+[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.25...HEAD
+[0.1.0-beta.25]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.24...v0.1.0-beta.25
+[0.1.0-beta.24]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.23...v0.1.0-beta.24
+[0.1.0-beta.23]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.22...v0.1.0-beta.23
+[0.1.0-beta.22]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.21...v0.1.0-beta.22
+[0.1.0-beta.21]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.20...v0.1.0-beta.21
+[0.1.0-beta.20]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.19...v0.1.0-beta.20
+[0.1.0-beta.19]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.18...v0.1.0-beta.19
+[0.1.0-beta.18]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.17...v0.1.0-beta.18
+[0.1.0-beta.17]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.16...v0.1.0-beta.17
+[0.1.0-beta.16]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.15...v0.1.0-beta.16
+[0.1.0-beta.15]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.14...v0.1.0-beta.15
+[0.1.0-beta.14]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.13...v0.1.0-beta.14
+[0.1.0-beta.13]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.12...v0.1.0-beta.13
+[0.1.0-beta.12]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.11...v0.1.0-beta.12
+[0.1.0-beta.11]: https://github.com/fraiseql/pg_tviews/compare/b3748ab5...v0.1.0-beta.11
+[0.1.0-beta.10]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.9...b3748ab5
+[0.1.0-beta.9]: https://github.com/fraiseql/pg_tviews/compare/462a2b18...v0.1.0-beta.9
+[0.1.0-beta.8]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.7...462a2b18
+[0.1.0-beta.7]: https://github.com/fraiseql/pg_tviews/compare/64886669...v0.1.0-beta.7
+[0.1.0-beta.6]: https://github.com/fraiseql/pg_tviews/compare/af562d01...64886669
+[0.1.0-beta.5]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.4...af562d01
+[0.1.0-beta.4]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.2...v0.1.0-beta.4
+[0.1.0-beta.2]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.1...v0.1.0-beta.2
+[0.1.0-beta.1]: https://github.com/fraiseql/pg_tviews/releases/tag/v0.1.0-beta.1

@@ -127,8 +127,10 @@ fn checked_definition(
         .clone()
         .ok_or_else(|| TViewError::RequiredColumnMissing {
             column_name: format!("pk_{named}"),
-            context: "pg_tviews requires a Trinity Pattern primary key column named                       \"pk_<entity>\" (e.g., pk_user, pk_post)"
-                .to_string(),
+            context: format!(
+                "the definition of tv_{named}: a TVIEW's definition outputs a pk_<entity> \
+                 column, the first of which names the entity"
+            ),
         })?;
     // The entity comes from a column alias of the definition: it names objects.
     crate::validation::validate_sql_identifier(&entity, "entity_name")?;

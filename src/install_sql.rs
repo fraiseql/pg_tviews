@@ -109,7 +109,7 @@ extension_sql!(
         -- pg_tviews.uncascaded_policy when the TVIEW was created: what a write to
         -- one of uncascaded_oids does. The row trigger reads this, never the
         -- writing session's setting.
-        uncascaded_policy TEXT NOT NULL DEFAULT 'warn'
+        uncascaded_policy TEXT NOT NULL DEFAULT 'error'
             CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh')),
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
         -- backing view's query tree: an object with its kind (pk, distinct_on) and

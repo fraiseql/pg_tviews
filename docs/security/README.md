@@ -1,8 +1,5 @@
 # Security Documentation
 
-**Version:** 1.0
-**Last Updated:** 2025-12-11
-
 Welcome to pg_tviews security documentation. This hub provides comprehensive information about our security practices, compliance posture, and operational security measures.
 
 ## 🏗️ Security Architecture
@@ -50,7 +47,7 @@ Comprehensive dependency security policy and automated management.
 
 **Security Measures:**
 - cargo-audit vulnerability scanning
-- cargo-vet supply chain auditing
+- cargo-deny license, source and advisory checks
 - Automated dependency updates
 - Security patch prioritization
 
@@ -127,7 +124,7 @@ GPG key management and verification procedures.
 
 ### Automated Security Scanning
 - **Daily Vulnerability Scans**: cargo-audit runs automatically
-- **Dependency Audits**: cargo-vet supply chain verification
+- **Dependency Audits**: cargo-deny license, source and advisory checks
 - **Container Scanning**: Trivy scans container images for vulnerabilities
 - **Filesystem Scanning**: Trivy scans codebase for security issues
 - **SBOM Vulnerability Analysis**: Trivy analyzes SBOMs for known CVEs

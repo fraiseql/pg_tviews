@@ -482,6 +482,10 @@ BEGIN
 END;
 $$;
 
+-- The column default matches pg_tviews.uncascaded_policy's default; every
+-- registration writes the column, so no row changes.
+ALTER TABLE @extschema@.pg_tview_meta ALTER COLUMN uncascaded_policy SET DEFAULT 'error';
+
 -- Maintenance acting on every TVIEW is not for PUBLIC: an operator role is
 -- granted it (docs/user-guides/operators.md). Each function acting on one TVIEW
 -- checks that the caller owns it.

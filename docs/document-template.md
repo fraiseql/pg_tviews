@@ -1,7 +1,5 @@
 # Document Header Template
 
-**Template Version**: 1.0 • **Last Updated**: December 11, 2025
-
 Use this template for the header of all documentation pages.
 
 ---
@@ -10,8 +8,6 @@ Use this template for the header of all documentation pages.
 # Document Title
 
 Brief one-paragraph description of what this document covers and who it's for.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: YYYY-MM-DD
 
 ## Table of Contents
 
@@ -65,8 +61,6 @@ Content starts here...
 
 Complete reference for all public PostgreSQL functions exposed by pg_tviews.
 
-**Version**: 0.1.0-beta.1 • **Last Updated**: 2025-12-11
-
 ## Table of Contents
 
 - [Extension Management](#extension-management)
@@ -88,8 +82,6 @@ Content...
 
 Complete installation instructions for pg_tviews in different environments.
 
-**Version**: 0.1.0-beta.1 • **Last Updated**: 2025-12-11
-
 ## Table of Contents
 
 - [System Requirements](#system-requirements)
@@ -109,8 +101,6 @@ Content...
 # Architecture Overview
 
 High-level overview of pg_tviews internal architecture and design decisions.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: 2025-12-11
 
 ## Table of Contents
 

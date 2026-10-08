@@ -1,7 +1,5 @@
 # Compliance & Standards
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
 **Classification:** Public
 **Applicable Standards:** ISO 27001, NIST, PCI-DSS, GDPR, SOC 2
 
@@ -170,7 +168,7 @@ pg_tviews implements comprehensive compliance with industry standards and regula
     cargo audit --json
     
     # Dependency audit check
-    cargo vet check
+    cargo deny check
     
     # Reproducible build check
     ./scripts/reproducible-build.sh test

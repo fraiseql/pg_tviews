@@ -1,7 +1,5 @@
 # Function Documentation Template
 
-**Template Version**: 1.0 • **Last Updated**: December 11, 2025
-
 Use this template for all function documentation in API reference pages.
 
 ---

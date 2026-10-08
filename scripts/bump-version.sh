@@ -1,87 +1,38 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Open the next release right after one is tagged
+# (docs/development/extension-versioning.md, "The version is the release"):
+#
+#   - Cargo.toml's version becomes <next>;
+#   - sql/pg_tviews--<released>--<next>.sql is created, holding only a header;
+#   - README.md's version badge and "Current Version" line name <released>, the
+#     release just tagged.
+#
+# It commits and tags nothing: review the diff and commit it.
+#
+# Usage: scripts/bump-version.sh <next-version>     e.g. 0.1.0-beta.28
 set -euo pipefail
 
-# Semantic version bump script for pg_tviews
-# Usage: ./bump-version.sh major|minor|patch|prerelease [--dry-run]
+next="${1:?usage: $0 <next-version>}"
+cd "$(dirname "$0")/.."
 
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 major|minor|patch|prerelease|release [--dry-run]"
-    echo ""
-    echo "Examples:"
-    echo "  $0 minor          # 0.1.0 → 0.2.0"
-    echo "  $0 patch          # 0.1.0 → 0.1.1"
-    echo "  $0 prerelease     # 0.2.0 → 0.2.0-rc.1"
-    echo "  $0 release        # 0.2.0-rc.1 → 0.2.0"
-    exit 1
-fi
+released="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+[[ -n "$released" ]] || { echo "no version in Cargo.toml"; exit 1; }
+[[ "$next" != "$released" ]] || { echo "Cargo.toml is already at $next"; exit 1; }
+git rev-parse -q --verify "refs/tags/v$released" >/dev/null \
+  || { echo "v$released is not tagged: tag the release before opening the next one"; exit 1; }
 
-BUMP_TYPE=$1
-DRY_RUN=${2:-}
+sed -i "0,/^version = \".*\"/s//version = \"$next\"/" Cargo.toml
 
-# Parse current version
-CURRENT_VERSION=$(grep "^version" Cargo.toml | sed 's/.*version = "\(.*\)".*/\1/')
-echo "Current version: $CURRENT_VERSION"
+script="sql/pg_tviews--$released--$next.sql"
+[[ -e "$script" ]] || cat >"$script" <<EOF
+-- pg_tviews $released -> $next
+-- Upgrade script: statements that bring an install of $released to $next.
+EOF
 
-# Function to compare versions
-semver_bump() {
-    local version=$1
-    local bump_type=$2
+# The badge escapes '-' as '--' (shields.io).
+badge="${released//-/--}"
+sed -i -E "s#(img\.shields\.io/badge/version-)[^)]*(-orange\.svg)#\1${badge}\2#" README.md
+sed -i -E "s#^\*\*Current Version\*\*: \`[^\`]*\` \([^)]*\)#**Current Version**: \`$released\` ($(date +'%B %Y'))#" README.md
 
-    # Remove prerelease suffix
-    base_version=$(echo "$version" | sed 's/-.*$//')
-
-    # Parse components
-    major=$(echo "$base_version" | cut -d. -f1)
-    minor=$(echo "$base_version" | cut -d. -f2)
-    patch=$(echo "$base_version" | cut -d. -f3)
-
-    case "$bump_type" in
-        major)
-            echo "$((major + 1)).0.0"
-            ;;
-        minor)
-            echo "$major.$((minor + 1)).0"
-            ;;
-        patch)
-            echo "$major.$minor.$((patch + 1))"
-            ;;
-        prerelease)
-            echo "$major.$minor.$patch-rc.1"
-            ;;
-        release)
-            # Remove prerelease suffix
-            echo "$base_version"
-            ;;
-        *)
-            echo "Unknown bump type: $bump_type" >&2
-            exit 1
-            ;;
-    esac
-}
-
-NEW_VERSION=$(semver_bump "$CURRENT_VERSION" "$BUMP_TYPE")
-echo "New version: $NEW_VERSION"
-
-if [ -z "$DRY_RUN" ]; then
-    # Update Cargo.toml
-    sed -i.bak "s/^version = .*/version = \"$NEW_VERSION\"/" Cargo.toml
-    rm Cargo.toml.bak
-
-    # Update lock file
-    cargo update --offline || true
-
-    # Create commit
-    git add Cargo.toml Cargo.lock
-    git commit -m "chore: Bump version to $NEW_VERSION"
-
-    # Create tag if not prerelease
-    if [[ "$NEW_VERSION" != *"-"* ]]; then
-        git tag "v$NEW_VERSION"
-        echo "✅ Tag created: v$NEW_VERSION"
-    fi
-
-    echo "✅ Version bumped to $NEW_VERSION"
-    echo "Next: Push with: git push origin main --tags"
-else
-    echo "🔍 Dry run (no changes made)"
-fi
+echo "Cargo.toml: $released -> $next; created $script; README names $released."
+git --no-pager diff --stat

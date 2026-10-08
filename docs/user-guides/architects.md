@@ -1,578 +1,323 @@
 # Architect Guide
 
-Design patterns and architectural decisions for building CQRS systems with pg_tviews and FraiseQL.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
+Design patterns and trade-offs for building CQRS systems with pg_tviews and FraiseQL.
 
 ## Overview
 
-This guide helps system architects design CQRS applications using pg_tviews as the read model infrastructure. You'll learn about architectural patterns, performance characteristics, and design trade-offs for building scalable GraphQL applications.
+pg_tviews is the read-model side of a CQRS design that stays inside one PostgreSQL
+database. The application writes normalized tables; pg_tviews keeps denormalized `tv_*`
+tables (TVIEWs) up to date from them, in the writing transaction.
 
-## CQRS with pg_tviews
-
-### Architecture Overview
-
-pg_tviews enables efficient CQRS implementation by providing automatic read model maintenance:
-
-```
-Command Side (Write)          Query Side (Read)
-┌─────────────────┐          ┌─────────────────┐
-│   FraiseQL      │          │   GraphQL       │
-│   Mutations     │          │   Queries       │
-│                 │          │   (Cascade)     │
-└─────────┬───────┘          └─────────┬───────┘
-          │                            │
-          ▼                            ▼
-┌─────────────────┐          ┌─────────────────┐
-│   tb_* tables   │ ───────► │   tv_* tables   │
-│ (normalized)    │   auto   │ (denormalized)  │
-│ (write models)  │ refresh  │ (read models)   │
-└─────────────────┘          └─────────────────┘
-          ▲                            ▲
-          │                            │
-          └────────────── pg_tviews ───┘
-                    (incremental refresh)
+```text
+Command side (write)              Query side (read)
++------------------+              +------------------+
+| FraiseQL         |              | GraphQL          |
+| mutations        |              | queries          |
++--------+---------+              +--------+---------+
+         |                                 |
+         v                                 v
++------------------+   triggers   +------------------+
+| write tables     | -----------> | tv_* tables      |
+| (normalized)     |  same txn    | (denormalized)   |
++------------------+              +------------------+
 ```
 
-### Benefits for CQRS
+What this gives the design:
 
-1. **Automatic Consistency**: Read models always match write models
-2. **Performance**: 5,000-12,000× faster than traditional materialized views
-3. **Scalability**: Linear scaling with data size vs O(n) for full refresh
-4. **Developer Experience**: No manual refresh logic or cache invalidation
+- **Read-your-writes**: a TVIEW reflects a write at the end of the statement that made it,
+  in that transaction. Other transactions see both when it commits.
+- **Incremental cost**: a write refreshes the TVIEW rows it reaches, not the whole TVIEW.
+  [Benchmarks](../benchmarks/overview.md) compare this with `REFRESH MATERIALIZED VIEW`.
+- **No refresh code**: no cache invalidation or projection code in the application.
 
-## Design Patterns
+## How a TVIEW is maintained
 
-### Trinity Identifier Pattern
+`CREATE TABLE tv_<entity> AS SELECT …` (or `tviews.pg_tviews_create()`) stores the SELECT
+as a backing view, `tviews.<schema>__tv_<entity>`, fills the table from it, and analyses the
+definition's query tree into one stored **propagation plan**. The plan records, for each
+table the definition reads, how a write to it maps to TVIEW keys, and which other TVIEWs
+the TVIEW embeds. A trigger on each of those tables reads only the plan:
 
-Design entities following FraiseQL's trinity pattern for optimal performance:
+- A write to a table whose columns are copied into `data` unchanged is **patched in place**.
+- Any other write **recomputes** the affected rows from the backing view, filtered on their
+  keys.
+- A refreshed TVIEW row refreshes the rows of the TVIEWs that embed it (**propagation**).
+
+Refresh work is queued by row triggers and run by a statement trigger at the end of each
+statement. A commit with work still queued fails with SQLSTATE 55000 rather than committing
+stale TVIEWs.
+
+No naming convention is involved: a write table and its columns may have any names. The one
+fixed name is the TVIEW's row identity, `pk_<entity>` for `tv_<entity>` (or its
+`DISTINCT ON` key).
+
+## Design patterns
+
+The examples below run in order in one database.
 
 ```sql
--- Entity: Post
-CREATE TABLE tb_post (
-    pk_post INT GENERATED ALWAYS AS IDENTITY,    -- 1. Primary Key (integer)
-    id UUID NOT NULL DEFAULT gen_random_uuid(),  -- 2. Public ID (UUID)
-    identifier TEXT UNIQUE,           -- 3. SEO slug (optional)
-    title TEXT NOT NULL,
-    content TEXT,
-    fk_user BIGINT REFERENCES tb_user(pk_user),  -- Cascade FK
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+```
+
+### Identity
+
+FraiseQL's trinity pattern gives each entity three identifiers, which a TVIEW projects:
+
+- **`pk_<entity>`**: an integer key, the TVIEW's row identity, used to join and refresh.
+- **`id`**: a UUID, the public GraphQL ID.
+- **`identifier`**: an optional slug for URLs.
+
+The write tables need not follow it. Here the tables are `account`, `article` and `review`,
+and the foreign keys are `author_ref` and `article`:
+
+```sql
+CREATE TABLE account (
+    account_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    name TEXT NOT NULL
 );
 
--- Read Model: Post
-CREATE TABLE tv_post AS
-SELECT
-    p.pk_post as pk_post,  -- Required: lineage root
-    p.id,                  -- GraphQL ID
-    p.identifier,          -- SEO slug
-    p.fk_user,             -- Cascade propagation
-    u.id as user_id,       -- Filtering FK
-    jsonb_build_object(
-        'id', p.id,
-        'identifier', p.identifier,
-        'title', p.title,
-        'content', p.content,
-        'created_at', p.created_at,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'name', u.name
-        )
-    ) as data
-FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+CREATE TABLE article (
+    article_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    identifier TEXT UNIQUE,
+    title TEXT NOT NULL,
+    author_ref BIGINT NOT NULL REFERENCES account (account_id)
+);
+
+CREATE TABLE review (
+    review_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    article BIGINT NOT NULL REFERENCES article (article_id),
+    rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5)
+);
+
+INSERT INTO account (name) VALUES ('Alice'), ('Bob');
+INSERT INTO article (identifier, title, author_ref) VALUES
+    ('intro', 'Introduction', 1), ('design', 'Design notes', 2);
+INSERT INTO review (article, rating) VALUES (1, 5), (1, 3);
 ```
 
-**Design Principles**:
-- **pk_**: Integer primary keys for efficient joins and lineage
-- **id**: UUID public identifiers for GraphQL and APIs
-- **identifier**: Optional slugs for SEO-friendly URLs
-- **fk_**: Integer foreign keys for cascade propagation
-- **{parent}_id**: UUID FKs for efficient filtering
+### Composition: TVIEWs embedding TVIEWs
 
-### Aggregate Design
-
-Design aggregates that match your GraphQL schema boundaries:
+Model each GraphQL type once and embed it where it is used. `tv_author` is the `Author`
+type; `tv_article` embeds its `data` by joining on its key:
 
 ```sql
--- Product Aggregate (E-commerce)
-CREATE TABLE tv_product AS
-SELECT
-    p.pk_product,
-    p.id,
-    p.fk_category,
-    p.fk_supplier,
-    c.id as category_id,
-    s.id as supplier_id,
-    jsonb_build_object(
-        'id', p.id,
-        'name', p.name,
-        'price', jsonb_build_object('current', p.price_current),
-        'category', jsonb_build_object('id', c.id, 'name', c.name),
-        'supplier', jsonb_build_object('id', s.id, 'name', s.name),
-        'inventory', jsonb_build_object('quantity', i.quantity_available),
-        'reviews', COALESCE(jsonb_agg(
-            jsonb_build_object('id', r.id, 'rating', r.rating)
-        ) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb),
-        'avg_rating', COALESCE(AVG(r.rating), 0)
-    ) as data
-FROM tb_product p
-LEFT JOIN tb_category c ON p.fk_category = c.pk_category
-LEFT JOIN tb_supplier s ON p.fk_supplier = s.pk_supplier
-LEFT JOIN tb_inventory i ON p.pk_product = i.fk_product
-LEFT JOIN tb_review r ON p.pk_product = r.fk_product
-GROUP BY p.pk_product, p.id, p.fk_category, p.fk_supplier,
-         c.id, c.name, s.id, s.name, i.quantity_available;
+CREATE TABLE tv_author AS
+SELECT a.account_id AS pk_author,
+       a.id,
+       jsonb_build_object('id', a.id, 'name', a.name) AS data
+FROM account a;
+
+CREATE TABLE tv_article AS
+SELECT ar.article_id AS pk_article,
+       ar.id,
+       ar.identifier,
+       ar.author_ref AS author_pk,
+       au.id AS author_id,
+       jsonb_build_object(
+           'id', ar.id,
+           'title', ar.title,
+           'author', au.data,
+           'reviewCount', (SELECT count(*) FROM review r WHERE r.article = ar.article_id),
+           'rating', (SELECT round(avg(r.rating), 2) FROM review r
+                      WHERE r.article = ar.article_id)
+       ) AS data
+FROM article ar
+JOIN tv_author au ON au.pk_author = ar.author_ref;
 ```
 
-**Aggregate Guidelines**:
-- Include all data needed for GraphQL resolvers
-- Pre-compute relationships and aggregations
-- Keep aggregates focused on specific use cases
-- Consider cascade impact on aggregate size
-
-### Cascade Architecture
-
-Design cascade relationships for optimal performance:
+Renaming an account patches `tv_author`, which patches the `author` of every article
+embedding it. A new review recomputes its article's counts:
 
 ```sql
--- Shallow cascades (recommended)
-tb_user → tv_user (1:1)
-tb_post → tv_post (many:1 with user)
-tb_comment → tv_comment (many:1 with post+user)
+UPDATE account SET name = 'Alicia' WHERE account_id = 1;
+INSERT INTO review (article, rating) VALUES (1, 1);
 
--- Deep cascades (use carefully)
-tb_category → tv_category
-    ↓ cascade
-tb_product → tv_product (category updates affect all products)
-    ↓ cascade
-tb_review → tv_review (product updates affect all reviews)
+SELECT identifier, data->'author'->>'name' AS author, data->>'reviewCount' AS reviews
+FROM tv_article ORDER BY pk_article;
 ```
 
-**Cascade Design Principles**:
-- **Depth Limit**: Keep cascade chains < 3 levels
-- **Fan-out Control**: Limit high-fan-out cascades (1:N where N is large)
-- **Update Frequency**: Consider how often entities change
-- **Read Patterns**: Design cascades to match query patterns
-
-## Performance Architecture
-
-### Read Model Optimization
-
-Optimize for GraphQL query patterns:
+The registry shows what the plan derived: each table read, and how a write to it reaches
+the TVIEW (`local`: the rows read it directly; `mapped`: through a key mapping;
+`propagated`: through an embedded TVIEW).
 
 ```sql
--- Query Pattern: Get post with author
-SELECT data FROM tv_post WHERE id = ?;
--- Optimized: Direct UUID lookup, pre-joined author data
+SELECT entity, base_tables, cascade_kinds FROM tviews.registry ORDER BY entity;
 
--- Query Pattern: User's posts
-SELECT data FROM tv_post WHERE user_id = ? ORDER BY data->>'created_at' DESC;
--- Optimized: UUID FK index, JSONB ordering
-
--- Query Pattern: Posts by category
-SELECT data FROM tv_post WHERE data->'category'->>'id' = ?;
--- Consider: Add category_id UUID FK for better performance
+SELECT * FROM tviews.pg_tviews_show_cascade_path('author');
 ```
 
-### Indexing Strategy
+Create a TVIEW before the TVIEWs that embed it.
 
-Design indexes for your GraphQL query patterns:
+### Aggregates
+
+Per-entity aggregates (counts, averages, the last N items) fit in the entity's own TVIEW as
+correlated subqueries, as `reviewCount` above. A read model whose rows are groups (one row
+per customer per month) is an [aggregate TVIEW](aggregate-tviews.md), created with
+`tviews.pg_tviews_create_aggregate()` and refreshed group by group.
+
+### What a definition cannot do
+
+A TVIEW is refused when it is created, rather than going stale later, when a write could
+change its rows without pg_tviews knowing which ones:
+
+- a table read in a way no key traces back to the TVIEW's rows (the `uncascaded_policy`
+  option decides: `error` by default, `full_refresh`, or `warn`);
+- the current time (`now()`, `CURRENT_DATE`) unless it declares `"time_refresh": "external"`
+  and something calls `tviews.pg_tviews_refresh_time_dependent()`;
+- a non-immutable function that reads tables, unless the `function_reads` option names them;
+- TVIEWs reading each other in a cycle (42P17).
+
+Options are passed to `tviews.pg_tviews_create_or_replace()`; see the
+[API reference](../reference/api.md).
+
+## Cascade design
+
+Each write costs the rows it reaches. Two dimensions drive it:
+
+- **Fan-out**: a row embedded in many rows (a category in every product) refreshes all of
+  them on every write to it. `tviews.pg_tviews_profile()` reports the fan-out of each lookup
+  column and warns above a threshold.
+- **Depth**: each level of TVIEW embedding TVIEW adds a round of refreshes. Keep chains
+  short; `pg_tviews.max_propagation_depth` (default 100) stops a runaway chain.
+
+`pg_tviews.max_queue_size` (default 10,000 keys) bounds the work one transaction can queue:
+beyond it the write fails with SQLSTATE 54000. Split a write that reaches more rows into
+several transactions, or suspend triggers for it (below).
 
 ```sql
--- Primary lookup patterns
-CREATE UNIQUE INDEX idx_tv_post_id ON tv_post(id);
-CREATE INDEX idx_tv_post_user_id ON tv_post(user_id);
-
--- JSONB field queries
-CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
-CREATE INDEX idx_tv_post_title ON tv_post USING gin((data->'title'));
-
--- Composite patterns
-CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'created_at'));
-CREATE INDEX idx_tv_post_category_created ON tv_post((data->'category'->>'id'), (data->>'created_at'));
-
--- Full-text search
-CREATE INDEX idx_tv_post_content_fts ON tv_post USING gin(to_tsvector('english', data->>'content'));
+SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile();
 ```
 
-### Partitioning Strategy
+## Performance architecture
 
-Partition large TVIEWs for better performance:
+### Read side
+
+A TVIEW is a table: index it for the queries the API runs, on projected columns or
+expressions over `data`.
 
 ```sql
--- Time-based partitioning
-CREATE TABLE tv_post_y2024 PARTITION OF tv_post
-    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
-
-CREATE TABLE tv_post_y2025 PARTITION OF tv_post
-    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
-
--- Include partitioning key in TVIEW
-CREATE TABLE tv_post AS
-SELECT
-    pk_post,
-    id,
-    EXTRACT(YEAR FROM created_at) as partition_key,  -- For partitioning
-    jsonb_build_object(...) as data
-FROM tb_post;
+CREATE INDEX idx_tv_article_author ON tv_article (author_id);
+CREATE INDEX idx_tv_article_title ON tv_article ((data->>'title'));
+CREATE INDEX idx_tv_article_fts
+    ON tv_article USING gin (to_tsvector('english', data->>'title'));
 ```
 
-## Scalability Patterns
+Keep indexes on `data` few: nearly every refresh rewrites `data`, and every index on it makes
+the refresh a non-HOT update. New TVIEWs get a fillfactor of 85 (`pg_tviews.fillfactor`) to
+leave room for HOT updates.
 
-### Read Scaling
+### Write side
 
-Scale read workloads with read replicas:
+- A statement refreshes each affected TVIEW row once at its end, however many base rows it
+  wrote: prefer set-based statements to row-by-row loops.
+- For bulk loads, `tviews.pg_tviews_suspend_triggers()` defers refreshes, and
+  `tviews.pg_tviews_resume_triggers()` rebuilds the TVIEWs written meanwhile.
+- `tviews.pg_tviews_ensure_propagation_indexes()` creates the indexes the refresh lookups
+  need.
 
-```
-Primary (Write)
-├── tb_* tables (writes)
-└── TVIEW triggers (refresh)
+### Read replicas
 
-Read Replicas
-├── tv_* tables (reads)
-└── Automatic replication
-```
-
-**Read Scaling Benefits**:
-- Horizontal scaling for read workloads
-- TVIEWs automatically stay in sync
-- No application changes required
-- Standard PostgreSQL streaming replication
-
-### Write Scaling
-
-Handle high write throughput:
+TVIEWs are created UNLOGGED by default (`pg_tviews.unlogged_by_default`): cheaper to write,
+but a hot standby cannot read them, and promotion or a crash restart empties them. A TVIEW
+served from replicas must be LOGGED:
 
 ```sql
--- Batch writes in transactions
+SET pg_tviews.unlogged_by_default = off;   -- for TVIEWs created from now on
+SELECT tviews.pg_tviews_set_logged('article', true);  -- for an existing one
+
+SELECT * FROM tviews.pg_tviews_replication_status();
+```
+
+A replica never refreshes a TVIEW: it replays the primary's. See
+[Replication](../operations/replication.md).
+
+## Consistency model
+
+- **Transactional**: the write and its refreshes commit or roll back together.
+- **Read-your-writes**: within the writing transaction, the next statement reads fresh
+  TVIEWs.
+- **Isolation**: other sessions see the refreshed rows when the writer commits, under
+  PostgreSQL's usual rules. Concurrent writes reaching the same TVIEW row are serialized by
+  the row locks the refresh takes.
+- **Rendering**: refreshes render values under fixed settings (`TimeZone` UTC, `DateStyle`
+  ISO), so a TVIEW's text does not depend on the writer's session.
+
+```sql
 BEGIN;
-INSERT INTO tb_post (title, fk_user) VALUES (...);
-INSERT INTO tb_post (title, fk_user) VALUES (...);
--- ... more inserts
-COMMIT;  -- Single cascade operation
+UPDATE article SET title = 'Draft' WHERE identifier = 'design';
+SELECT data->>'title' AS title FROM tv_article WHERE identifier = 'design';  -- Draft
+ROLLBACK;
 ```
 
-### Data Partitioning
+## Security model
 
-Partition for large datasets:
+- A TVIEW is owned by its creator. Functions acting on one TVIEW (`pg_tviews_refresh`,
+  `pg_tviews_reregister`, `pg_tviews_set_logged`, …) require owning it or the extension
+  (42501 otherwise).
+- Functions acting on every TVIEW (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`,
+  `pg_tviews_reregister_all()`, …) are not executable by `PUBLIC`; grant them to the roles
+  that run maintenance.
+- Every rebuild runs as the TVIEW's owner, like `REFRESH MATERIALIZED VIEW`.
+
+See [Operator Guide](operators.md) and [Security](../operations/security.md).
+
+## Monitoring
 
 ```sql
--- Hash partitioning by user
-CREATE TABLE tv_post_0 PARTITION OF tv_post
-    FOR VALUES WITH (MODULUS 4, REMAINDER 0);
-CREATE TABLE tv_post_1 PARTITION OF tv_post
-    FOR VALUES WITH (MODULUS 4, REMAINDER 1);
--- etc.
-
--- Update TVIEW to include partitioning key
-CREATE TABLE tv_post AS
-SELECT
-    pk_post,
-    id,
-    abs(hashtext(user_id::text)) % 4 as partition_key,
-    jsonb_build_object(...) as data
-FROM tb_post;
+SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT entity, needs_reregister, uncascaded_tables FROM tviews.registry;
+SELECT * FROM tviews.pg_tviews_performance_stats();
 ```
 
-## Consistency Models
-
-### Eventual Consistency
-
-pg_tviews provides transactional consistency within the write transaction:
-
-```sql
--- Transactional consistency
-BEGIN;
-INSERT INTO tb_post (title, fk_user) VALUES ('New Post', 1);
--- TVIEW automatically updated here
-SELECT data FROM tv_post WHERE id = 'new-post-uuid';  -- Fresh data
-COMMIT;
-```
-
-### Read-after-Write Consistency
-
-For immediate consistency requirements:
-
-```sql
--- Same transaction read
-BEGIN;
-INSERT INTO tb_post (title, fk_user) VALUES ('New Post', 1);
--- TVIEW updated, immediate read returns fresh data
-COMMIT;
-```
-
-### Cross-Transaction Consistency
-
-For eventual consistency scenarios:
-
-```sql
--- Application handles eventual consistency
-app.post('/posts', async (req, res) => {
-  const postId = await createPost(req.body);  // Transaction 1
-  // TVIEW updated in transaction 1
-
-  // Immediate read gets fresh data (same connection)
-  const post = await getPost(postId);  // Fresh data
-  res.json(post);
-});
-```
-
-## Error Handling Architecture
-
-### Transaction Failure Handling
-
-Design for transaction rollback scenarios:
-
-```sql
--- Automatic rollback consistency
-BEGIN;
-INSERT INTO tb_post (title, fk_user) VALUES ('New Post', 1);
--- TVIEW updated
-ROLLBACK;  -- Both tb_post insert and TVIEW update rolled back
-```
-
-### Cascade Failure Handling
-
-Handle cascade failures gracefully:
-
-```sql
--- Monitor cascade performance
-SELECT pg_tviews_queue_stats();
-
--- Detect slow cascades
-SELECT CASE
-    WHEN (pg_tviews_queue_stats()->>'total_timing_ms')::float > 1000
-    THEN 'Slow cascade detected'
-    ELSE 'OK'
-END;
-```
-
-### Circuit Breaker Pattern
-
-Implement circuit breakers for cascade protection:
-
-```sql
--- Check cascade depth
-CREATE OR REPLACE FUNCTION check_cascade_depth()
-RETURNS trigger AS $$
-DECLARE
-    cascade_count int;
-BEGIN
-    -- Count pending cascades
-    SELECT (pg_tviews_queue_stats()->>'queue_size')::int INTO cascade_count;
-
-    IF cascade_count > 1000 THEN
-        RAISE EXCEPTION 'Cascade queue too large, rejecting update';
-    END IF;
-
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Install circuit breaker
-CREATE TRIGGER cascade_circuit_breaker
-    BEFORE INSERT ON tb_post
-    FOR EACH ROW EXECUTE FUNCTION check_cascade_depth();
-```
-
-## Migration Strategies
-
-### From Monolithic Applications
-
-**Before**: Single database with complex queries
-```sql
--- Complex joins on every query
-SELECT p.*, u.name, c.name, COUNT(r.id) as review_count
-FROM posts p
-JOIN users u ON p.user_id = u.id
-JOIN categories c ON p.category_id = c.id
-LEFT JOIN reviews r ON p.id = r.post_id
-GROUP BY p.id, u.name, c.name;
-```
-
-**After**: Pre-computed read models
-```sql
--- Simple lookup
-SELECT data FROM tv_post WHERE id = ?;
--- Data includes all relationships and aggregations
-```
-
-### From Manual Cache Management
-
-**Before**: Application-level caching
-```javascript
-// Manual cache invalidation
-app.post('/posts', async (req, res) => {
-  await db.insert('posts', req.body);
-  await cache.invalidate('posts:*');  // Manual!
-  await cache.invalidate('user:123:posts');  // Manual!
-  res.json(await getPostWithCache(id));
-});
-```
-
-**After**: Automatic cache consistency
-```javascript
-// No cache management needed
-app.post('/posts', async (req, res) => {
-  const postId = await fraiseql.create('Post', req.body);
-  // TVIEW automatically updated
-  res.json(await db.query('SELECT data FROM tv_post WHERE id = $1', [postId]));
-});
-```
-
-### From Event Sourcing
-
-**Before**: Event sourcing with manual projection
-```javascript
-// Manual event projection
-eventStore.on('PostCreated', (event) => {
-  db.insert('posts', event.data);
-  cache.update('post:' + event.data.id, event.data);
-});
-
-eventStore.on('PostUpdated', (event) => {
-  db.update('posts', event.data);
-  cache.invalidate('post:' + event.data.id);
-});
-```
-
-**After**: Automatic projection with pg_tviews
-```javascript
-// Events update tb_* tables
-// pg_tviews automatically maintains tv_* projections
-// No manual projection code needed
-```
-
-## Performance Trade-offs
-
-### Automatic vs Manual Refresh
-
-| Aspect | Automatic (pg_tviews) | Manual Refresh |
-|--------|----------------------|----------------|
-| **Consistency** | Transactional | Eventual |
-| **Performance** | 5,000-12,000× faster | 95% of automatic |
-| **Developer Effort** | Zero | High |
-| **Operational Complexity** | Low | High |
-| **Flexibility** | Fixed patterns | Full control |
-
-### Statement vs Row Triggers
-
-| Aspect | Statement Triggers | Row Triggers |
-|--------|-------------------|--------------|
-| **Bulk Performance** | 100-500× faster | Baseline |
-| **Single Operations** | Same performance | Same performance |
-| **Memory Usage** | Higher | Lower |
-| **Compatibility** | PostgreSQL 16+ | PostgreSQL 16+ |
-| **Use Case** | High-throughput | General purpose |
-
-### JSONB vs Normalized Storage
-
-| Aspect | JSONB (TVIEW) | Normalized |
-|--------|---------------|------------|
-| **Query Flexibility** | High | Low |
-| **Storage Efficiency** | Lower | Higher |
-| **Index Options** | GIN, GiST | B-tree, etc. |
-| **Update Performance** | Surgical | Full row |
-| **Schema Evolution** | Easy | Complex |
-
-## Monitoring and Observability
-
-### Key Metrics to Monitor
-
-```sql
--- Performance metrics
-SELECT pg_tviews_queue_stats();
-
--- Cache efficiency
-SELECT
-    (pg_tviews_queue_stats()->>'graph_cache_hit_rate')::float as graph_hit_rate,
-    (pg_tviews_queue_stats()->>'table_cache_hit_rate')::float as table_hit_rate;
-
--- Cascade depth monitoring
-SELECT pg_tviews_debug_queue();
-
--- TVIEW health
-SELECT * FROM pg_tviews_health_check();
-```
-
-### Alerting Strategy
-
-```sql
--- Performance alerts
-CREATE OR REPLACE FUNCTION tview_performance_alerts()
-RETURNS TABLE(alert_level text, message text) AS $$
-BEGIN
-    -- Slow refresh alert
-    IF (pg_tviews_queue_stats()->>'total_timing_ms')::float > 5000 THEN
-        RETURN QUERY SELECT 'WARNING'::text, 'TVIEW refresh > 5 seconds'::text;
-    END IF;
-
-    -- Large queue alert
-    IF (pg_tviews_queue_stats()->>'queue_size')::int > 1000 THEN
-        RETURN QUERY SELECT 'CRITICAL'::text, 'TVIEW queue > 1000'::text;
-    END IF;
-
-    -- Low cache hit rate
-    IF (pg_tviews_queue_stats()->>'graph_cache_hit_rate')::float < 0.8 THEN
-        RETURN QUERY SELECT 'WARNING'::text, 'Graph cache hit rate < 80%'::text;
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-## Best Practices
-
-### Architecture Principles
-
-1. **CQRS First**: Design with command-query separation from the start
-2. **Read Model Optimization**: Optimize TVIEWs for specific query patterns
-3. **Cascade Planning**: Design cascade relationships carefully
-4. **Monitoring First**: Implement observability from day one
-
-### Design Guidelines
-
-1. **Trinity Pattern**: Always use id/pk_/fk_ consistently
-2. **Aggregate Boundaries**: Match TVIEWs to GraphQL schema boundaries
-3. **Cascade Depth**: Keep dependency chains shallow (< 3 levels)
-4. **Index Strategically**: Index for actual query patterns, not assumptions
-
-### Performance Guidelines
-
-1. **Statement Triggers**: Use for high-throughput write scenarios
-2. **Partitioning**: Consider for tables > 100M rows
-3. **Read Replicas**: Scale reads with standard PostgreSQL replication
-4. **Monitoring**: Track performance metrics continuously
-
-### Operational Guidelines
-
-1. **Health Checks**: Implement comprehensive monitoring
-2. **Backup Strategy**: Include TVIEWs in regular backups
-3. **Disaster Recovery**: Test recovery procedures regularly
-4. **Version Compatibility**: Plan upgrades carefully
-
-## Case Studies
-
-### E-commerce Platform
-
-**Challenge**: Product catalog with complex relationships and frequent updates
-**Solution**: pg_tviews with category/supplier/product/review cascades
-**Result**: 8,000× performance improvement, real-time inventory updates
-
-### Social Media Platform
-
-**Challenge**: User timelines with nested relationships and high read load
-**Solution**: TVIEWs with user/post/comment cascades, read replica scaling
-**Result**: Sub-millisecond queries, 95% cache hit rates
-
-### Analytics Dashboard
-
-**Challenge**: Pre-aggregated reporting data that must stay fresh
-**Solution**: TVIEWs with automatic refresh on source data changes
-**Result**: Always-consistent reports, zero manual refresh burden
-
-## See Also
-
-- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md) - Framework patterns
-- [Performance Benchmarks](../benchmarks/overview.md) - Detailed performance data
-- [Performance Tuning](../operations/performance-tuning.md) - Optimization strategies
-- [Troubleshooting Guide](../operations/troubleshooting.md) - Common issues
+- `pg_tviews_health_check()`: catalog, plans, triggers, `jsonb_delta`; an empty result above
+  is healthy.
+- `tviews.registry`: one row per TVIEW, the stable read contract for tools
+  ([read contract](../reference/read-contract.md)).
+- `pg_tviews_profile()`: sizes, dead tuples, fan-out, with warnings.
+- `pg_tviews_queue_stats()`: the current transaction's refresh work, from the application.
+
+## Trade-offs
+
+### TVIEW or materialized view
+
+| Aspect | TVIEW | Materialized view |
+|--------|-------|-------------------|
+| Freshness | In the writing transaction | Until the next `REFRESH` |
+| Refresh cost | Rows a write reaches | The whole view |
+| Write cost | Each write pays its refresh | None until `REFRESH` |
+| Definitions | Refused if a write cannot be traced | Any query |
+
+A materialized view suits data refreshed on a schedule and read stale; a TVIEW suits data
+read right after it is written, where writes touch a small share of the rows.
+
+### JSONB documents or normalized read tables
+
+| Aspect | JSONB `data` | Normalized columns |
+|--------|--------------|--------------------|
+| GraphQL fit | One read returns the type | Joins at read time |
+| Storage | Repeats embedded values | Stores each value once |
+| Indexing | Expression and GIN indexes | B-tree on columns |
+| Schema changes | Change the definition | Migrate tables |
+
+A TVIEW can carry both: project the filter columns, and keep the document in `data`.
+
+## Best practices
+
+1. Model one TVIEW per GraphQL type, embed it where it is used.
+2. Project the columns the API filters on; index those, not every field.
+3. Keep embedding chains short and fan-out bounded; check `pg_tviews_profile()`.
+4. Make TVIEWs read from replicas LOGGED.
+5. Grant maintenance functions to the roles that run them; keep TVIEW ownership with the
+   schema owner.
+
+## See also
+
+- [Developer Guide](developers.md)
+- [Aggregate TVIEWs](aggregate-tviews.md)
+- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md)
+- [Performance Benchmarks](../benchmarks/overview.md)
+- [Performance Tuning](../operations/performance-tuning.md)
+- [Troubleshooting Guide](../operations/troubleshooting.md)

@@ -2,7 +2,9 @@
 
 ## Status
 
-**Accepted**
+**Superseded** by [ADR 0136](0136-tool-facing-surface.md), Decision 3 (one SQL version
+per release with upgrade scripts; breaking changes ship in betas and are listed in
+`CHANGELOG.md` and `docs/DEPRECATION_WARNINGS.md`). Never implemented; kept as history.
 
 ## Context
 

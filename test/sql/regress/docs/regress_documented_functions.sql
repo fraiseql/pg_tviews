@@ -32,12 +32,13 @@ CREATE TEMP TABLE known AS
     UNION SELECT tgname FROM pg_trigger
           WHERE tgrelid IN (SELECT oid FROM pg_class
                             WHERE relnamespace = 'tviews'::regnamespace)
-    -- Names the docs give to things users create: databases, roles, backups, and
-    -- the functions scripts/auto-convert/auto_convert_tviews.sql defines.
+    -- Names the docs give to things users create: databases, roles, backups.
     UNION SELECT unnest(ARRAY[
         'pg_tviews_test', 'pg_tviews_benchmark', 'pg_tviews_recovery_test',
         'pg_tviews_user', 'pg_tviews_admin', 'pg_tviews_test_user',
-        'pg_tview_meta_backup', 'pg_tviews_auto_convert', 'pg_tviews_auto_convert_plan']);
+        'pg_tview_meta_backup',
+        -- The relation a mapping query reads the changed rows from.
+        'pg_tviews_delta']);
 
 DO $$
 DECLARE

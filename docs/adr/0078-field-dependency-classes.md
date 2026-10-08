@@ -1,6 +1,7 @@
 # ADR 0078: Field dependency classes (widening the direct-patch path)
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0203](0203-propagation-plan.md): the class C fan-out patch
+  (Outcome, #120) is stored in the TVIEW's plan (`tables[].fanout`), not in a cascade path.
 - Issue: #78
 - Survey: `test/sql/real_benchmark/survey/field_classes.py`
 

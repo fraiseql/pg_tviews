@@ -74,8 +74,11 @@ jobs:
           mkdir -p dist/lib dist/extension
           cp "${pkg}$("$PG_CONFIG" --pkglibdir)/pg_tviews.so" dist/lib/
           cp "${pkg}$("$PG_CONFIG" --sharedir)"/extension/pg_tviews* dist/extension/
-          tar czf pg_tviews-${{ github.ref_name }}.tar.gz -C dist lib extension
+          # Deterministic archive (as scripts/reproducible-build.sh writes it).
+          tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
+            -cf - -C dist lib extension | gzip -n > pg_tviews-${{ github.ref_name }}.tar.gz
           tar tzf pg_tviews-${{ github.ref_name }}.tar.gz
+          sha256sum pg_tviews-${{ github.ref_name }}.tar.gz > SHA256SUMS
 
       - name: Install SBOM tools
         # scripts/generate-sbom.sh calls `cargo sbom` and `cargo cyclonedx`; the
@@ -115,6 +118,7 @@ jobs:
         with:
           files: |
             pg_tviews-${{ github.ref_name }}.tar.gz
+            SHA256SUMS
             pg_tviews-${{ github.ref_name }}.tar.gz.sigstore
             sbom/pg_tviews-${{ github.ref_name }}.spdx.json
             sbom/pg_tviews-${{ github.ref_name }}.spdx.json.sigstore

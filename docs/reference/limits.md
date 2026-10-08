@@ -1,8 +1,5 @@
 # Resource Limits and Recommendations
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
-
 ## Overview
 
 This document outlines tested resource limits, PostgreSQL configuration recommendations, and capacity planning guidelines for pg_tviews deployments.
@@ -92,43 +89,20 @@ Example: 1000 rows ≈ 505ms
 - **More CPU**: Increase max_parallel_workers for concurrent operations
 - **Faster Storage**: Reduce random_page_cost for SSD deployments
 
-### Partitioning Strategy
+### Partitioning
 
-For TVIEWs >5M rows:
+A TVIEW's table is a plain table pg_tviews creates and maintains; it cannot be
+partitioned. Base tables can be: a write to a partition is mapped to the keys of
+the TVIEWs that read its partitioned table.
 
-```sql
--- Partition by date (for time-series data)
--- Note: Use singular names (tv_event, not tv_events)
-CREATE TABLE tv_event_y2025_m01 PARTITION OF tv_event
-FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+## Performance
 
--- Partition by hash (for general data)
--- Note: Use singular names (tv_user, not tv_users)
-CREATE TABLE tv_user_0 PARTITION OF tv_user
-FOR VALUES WITH (MODULUS 10, REMAINDER 0);
-
-CREATE TABLE tv_user_1 PARTITION OF tv_user
-FOR VALUES WITH (MODULUS 10, REMAINDER 1);
-```
-
-## Performance Benchmarks
-
-### Single TVIEW Operations
-
-| Operation | 1K rows | 10K rows | 100K rows | 1M rows |
-|-----------|---------|----------|-----------|---------|
-| TVIEW Creation | <1s | <5s | <30s | <5min |
-| Single-row Update | <10ms | <10ms | <50ms | <100ms |
-| Batch Update (100) | <100ms | <500ms | <2s | <10s |
-| Full Scan | <100ms | <1s | <10s | <2min |
-
-### Cascade Performance
-
-| Cascade Depth | 1 Level | 3 Levels | 5 Levels |
-|---------------|---------|----------|----------|
-| 100 rows | <200ms | <500ms | <1s |
-| 1K rows | <2s | <5s | <10s |
-| 10K rows | <20s | <50s | <2min |
+Cost depends on the definition and the host: measure yours with
+`test/sql/real_benchmark` ([README](../../test/sql/real_benchmark/README.md)). On
+the reference host (PostgreSQL 18, product catalogue of 10K products and 50K
+reviews, 2026-10), a single-row write refreshing its TVIEW row takes about 1.7 ms
+with or without `jsonb_delta`, and an update of 100 rows about 36 ms. A cascade
+costs one row refresh per parent row reached.
 
 ## Memory Requirements
 
@@ -148,7 +122,7 @@ Cascade state: 1-5MB per active cascade
 SELECT
   (SELECT count(*) FROM pg_stat_activity WHERE state = 'active') * 5 as base_mb,
   current_setting('work_mem')::int / 1024 as work_mem_mb,
-  (SELECT count(*) FROM pg_tview_meta) * 2 as cascade_overhead_mb
+  (SELECT count(*) FROM tviews.pg_tview_meta) * 2 as cascade_overhead_mb
 FROM pg_settings
 WHERE name = 'work_mem';
 ```
@@ -187,7 +161,7 @@ FROM (
 
 ```bash
 # Metadata-only backup (fast, small)
-pg_dump -t pg_tview_meta -t pg_tview_helpers > tview_metadata.sql
+pg_dump -t tviews.pg_tview_meta -t tviews.pg_tview_helpers > tview_metadata.sql
 
 # Full database backup
 pg_dump dbname > full_backup.sql

@@ -1,111 +1,45 @@
-# Release Process for pg_tviews
+# Release process
 
-## Pre-Release Checklist (2 weeks before)
+`main` always carries the next release: its version is in `Cargo.toml`, its changes
+under `## [Unreleased]` in `CHANGELOG.md`, and its upgrade script in
+`sql/pg_tviews--<previous>--<next>.sql`. How the extension SQL is versioned, and what a
+pull request that changes it must do, is in
+[development/extension-versioning.md](development/extension-versioning.md).
 
-### Code Preparation
-- [ ] All features merged to main
-- [ ] All tests passing locally
-- [ ] Code review completed
-- [ ] No open blockers
+## Before tagging
 
-### Documentation
-- [ ] README.md updated for new features
-- [ ] API documentation up to date
-- [ ] Migration guides created (if breaking changes)
-- [ ] CHANGELOG.md drafted
+- [ ] CI is green on the commit to tag: every SQL suite on PostgreSQL 16, 17 and 18
+      (`ci.yml`), lints and unit tests (`clippy.yml`), the upgrade matrix
+      (`upgrade.yml`), the nightly assertion build (`nightly.yml`).
+- [ ] `CONFITURE_REF` in `.github/workflows/confiture.yml` pins the confiture commit
+      that matches this release.
+- [ ] A change that could cost time has been compared against a build of the previous
+      release on one machine (`test/sql/real_benchmark/README.md`).
+- [ ] `CHANGELOG.md`: `## [Unreleased]` becomes `## [<version>] - <date>`, and the
+      compare link at the bottom is added.
 
-### Quality Gates
-- [ ] All tests pass: `cargo pgrx test --all`
-- [ ] No clippy warnings: `cargo clippy --all-targets -- -D warnings`
-- [ ] Documentation builds: `cargo doc --no-deps`
-- [ ] Version bumped in Cargo.toml
+## Tagging
 
-## Release Candidate Steps
+Push the tag `v<version>`. `release.yml` then:
 
-1. Create release branch:
-```bash
-git checkout -b release/v1.2.0 main
+1. runs the CI, the lints and confiture's TVIEW suites on the tagged commit;
+2. checks that the tag matches `Cargo.toml` and that `CHANGELOG.md` has the stamped
+   heading;
+3. builds `pg_tviews-v<version>.tar.gz` (`lib/`, `extension/`), its SBOMs, signs them
+   with Sigstore, attests the tarball's build provenance, and creates the GitHub
+   release;
+4. publishes the crate to crates.io.
+
+Nothing is built or published when a step before it fails.
+
+## After the release
+
+Open the next one:
+
+```console
+$ scripts/bump-version.sh <next-version>
 ```
 
-2. Update version:
-```bash
-./scripts/bump-version.sh minor
-# Changes 1.1.0 → 1.2.0-rc.1
-```
-
-3. Update CHANGELOG.md with version header:
-```
-## [1.2.0-rc.1] - YYYY-MM-DD
-
-### Added
-...
-```
-
-4. Commit and tag:
-```bash
-git commit -am "chore: Prepare v1.2.0-rc.1"
-git tag v1.2.0-rc.1
-git push origin release/v1.2.0 --tags
-```
-
-5. Run full test suite on target versions:
-```bash
-cargo pgrx test --all
-```
-
-6. Address any issues and create RC.2, RC.3, etc. as needed
-
-## Release Day (When RC is Stable)
-
-### Final Steps
-
-1. Update version to final (remove -rc suffix):
-```bash
-./scripts/bump-version.sh release
-# Changes 1.2.0-rc.5 → 1.2.0
-```
-
-2. Update CHANGELOG.md:
-```
-## [1.2.0] - 2025-12-13  # ← Set actual date
-```
-
-3. Create final commit:
-```bash
-git commit -am "chore: Release v1.2.0"
-git tag v1.2.0
-git push origin release/v1.2.0 --tags
-```
-
-4. Create GitHub Release:
-- Copy CHANGELOG.md section
-- Add download links
-- Mark as pre-release if RC
-- Mark as latest release if final
-
-5. Publish binaries and artifacts
-
-### Post-Release
-
-1. Delete release branch:
-```bash
-git branch -d release/v1.2.0
-git push origin --delete release/v1.2.0
-```
-
-2. Update development version:
-```bash
-./scripts/bump-version.sh minor
-# Start development for next version
-git commit -am "chore: Start development for v1.3.0-dev"
-```
-
-3. Announce release:
-- GitHub release page
-- Community forums
-- Social media
-- Email newsletter (if applicable)
-
-4. Monitor for issues:
-- Watch bug reports
-- Prepare patch releases if needed
+It sets `Cargo.toml` to the next version, creates the empty
+`sql/pg_tviews--<released>--<next>.sql`, and points the README's version badge and
+"Current Version" line at the release just tagged. Review the diff and commit it.

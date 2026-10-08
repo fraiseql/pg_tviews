@@ -164,7 +164,8 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of TVIEW `tview` (ADR 0157), with the current names
 /// of what it reads. NULL when writes to the table do not map through a query of
-/// their own (`propagated`, `all_keys`) or the TVIEW does not read it.
+/// their own (`propagated`, `all_keys`) or the TVIEW does not read it; an error
+/// when no such TVIEW is registered.
 #[pg_extern]
 fn pg_tviews_mapping_query(
     tview: &str,
@@ -174,7 +175,9 @@ fn pg_tviews_mapping_query(
     let entity = tview.strip_prefix("tv_").unwrap_or(tview);
     let report = |e: TViewError| e.report_in(&format!("pg_tviews: the mapping query of {tview}"));
     let Some(meta) = TviewMeta::load_by_entity(entity).map_err(report)? else {
-        return Ok(None);
+        return Err(report(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }));
     };
     let Some(mapping) = meta.key_mapping(base_table, None) else {
         return Ok(None);

@@ -1,6 +1,5 @@
 # Documentation Style Guide
 
-**Version**: 1.0 • **Last Updated**: December 11, 2025
 **Applies to**: All pg_tviews documentation
 
 ---
@@ -169,12 +168,13 @@ TVIEW 'tv_example' created successfully
 
 ### Standard Document Header
 
+No version or date line: a page describes the release it ships with, and git
+dates every change.
+
 ```markdown
 # Document Title
 
 Brief one-paragraph description of what this document covers.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: YYYY-MM-DD
 
 ## Table of Contents
 

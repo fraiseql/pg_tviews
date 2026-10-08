@@ -1,35 +1,49 @@
 # TVIEW Creation Syntax Guide
 
-pg_tviews supports three equivalent ways to create TVIEWs:
+A TVIEW is created with DDL or with a function call. Both register the same TVIEW:
+same table, backing view, triggers and stored plan.
 
-## 1. DDL Syntax (Recommended for Interactive Use)
+## 1. `CREATE TABLE tv_<entity> AS`
 
 ```sql
 CREATE TABLE tv_post AS
 SELECT
-  tb_post.pk_post,          -- INTEGER primary key
-  tb_post.id,               -- UUID for GraphQL
-  tb_post.fk_user,          -- INTEGER foreign key
+  tb_post.pk_post,
+  tb_post.id,
+  tb_post.fk_user,
   jsonb_build_object(
     'id', tb_post.id,
     'title', tb_post.title,
-    'user_id', tb_user.id    -- Related UUID (from JOIN)
+    'user_id', tb_user.id
   ) as data
 FROM tb_post
 INNER JOIN tb_user ON tb_post.fk_user = tb_user.pk_user;
 ```
 
-**Pros**: Natural SQL syntax, familiar to DBAs
-**Cons**: Less explicit about TVIEW creation
-**Use when**: Working in psql, migrations, manual DDL
+**Use when**: working in psql, migrations, hand-written DDL.
 
-## 2. CREATE TVIEW Syntax (Planned - Not Yet Implemented)
+pg_tviews intercepts `CREATE TABLE [schema.]tv_<entity> AS SELECT …` and turns it into a
+TVIEW. This works:
 
-> **Note**: `CREATE TVIEW` syntax is planned for a future release but not currently implemented. PostgreSQL's parser cannot be extended to support custom DDL syntax through hooks.
+- as a top-level statement, including in a multi-statement batch (`psql -c "…; …"`) and in the
+  same batch as `CREATE EXTENSION pg_tviews`;
+- inside `DO` blocks, functions and procedures;
+- with `IF NOT EXISTS`: over an existing TVIEW or table the statement is a no-op.
 
-For now, use either DDL method (1) or function method (3) below.
+`CREATE TABLE tv_<entity> (col type, …)` (a column list, no `AS SELECT`) is an ordinary table
+and is never converted. `SELECT … INTO tv_<entity>`, `WITH NO DATA`, a temporary table and
+the other forms pg_tviews cannot make a TVIEW of fail with SQLSTATE `0A000`.
 
-## 3. Function Syntax (Programmatic)
+Interception needs the extension's library loaded in the session, so add it to
+`shared_preload_libraries` and restart PostgreSQL. If a `tv_*` CTAS reaches the server without
+being intercepted, the statement **fails** with an error that names the table and this fix,
+instead of leaving a plain table behind.
+
+The statement takes no options: it reads the settings `pg_tviews.uncascaded_policy`,
+`pg_tviews.time_refresh`, `pg_tviews.unlogged_by_default`, `pg_tviews.fillfactor` and
+`pg_tviews.data_gin_index`.
+
+## 2. Functions
 
 ```sql
 SELECT pg_tviews_create('tv_post', $$
@@ -47,15 +61,24 @@ SELECT pg_tviews_create('tv_post', $$
 $$);
 ```
 
-**Pros**: Best for dynamic SQL, scripting
-**Cons**: More verbose
-**Use when**: Application code, scripts, dynamic creation
+`pg_tviews_create_or_replace(tview_name, query, options)` creates the TVIEW or makes the
+smallest change to an existing one (`created`, `unchanged`, `altered`, `replaced`,
+`rebuilt`), and takes options (`logged`, `fillfactor`, `uncascaded_policy`, …):
 
-## Trinity Pattern Notes
+```sql
+SELECT pg_tviews_create_or_replace('tv_post', $$
+  SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
+         jsonb_build_object('id', tb_post.id, 'title', tb_post.title) AS data
+  FROM tb_post
+$$, options => '{"logged": true}');
+```
 
-- `pk_post` and `fk_user` are integers (SERIAL/INTEGER)
-- `id` is UUID (for external API)
-- All columns qualified with table name
-- JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
+**Use when**: application code, migration tools, scripts; anything that runs the same
+DDL more than once. See [Contract for tools](../reference/read-contract.md).
 
-All three methods produce identical results.
+## Naming
+
+The definition must output a `pk_<entity>` column named after the TVIEW (`pk_post` for
+`tv_post`). Nothing else is matched by name: base tables, link columns and the column
+holding an embedded TVIEW's key may be called anything. The `tb_*`, `fk_*` and `id`
+names above are FraiseQL's conventions. See the [DDL Reference](../reference/ddl.md#naming).

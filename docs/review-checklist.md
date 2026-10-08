@@ -1,7 +1,5 @@
 # Documentation Review Checklist
 
-**Template Version**: 1.0 • **Last Updated**: December 11, 2025
-
 Use this checklist for all documentation changes before committing.
 
 ---

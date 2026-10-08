@@ -145,7 +145,7 @@ Security review is **RECOMMENDED** for:
 - **CI Pipeline**: Security tests and scans run automatically
 - **Code Quality**: Clippy and rustfmt checks pass
 - **Vulnerability Scan**: cargo-audit passes
-- **Dependency Check**: cargo-vet audits pass
+- **Dependency Check**: `cargo deny check` passes
 
 #### 2. Self-Review
 - **Developer Checklist**: All security criteria reviewed
@@ -194,7 +194,7 @@ cargo clippy -- -D warnings
 cargo audit
 
 # Dependency auditing
-cargo vet check
+cargo deny check
 
 # Fuzz testing (if applicable)
 cargo fuzz run [target]

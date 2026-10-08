@@ -616,7 +616,13 @@ not own. Since 0.1.0-beta.27:
   before any lock: `pg_tviews_refresh`, `pg_tviews_reregister`, `pg_tviews_set_logged`,
   `pg_tviews_recover_after_crash`, `pg_tviews_ensure_propagation_indexes(entity)`,
   `pg_tviews_set_typename`, `pg_tviews_create_or_replace`, `pg_tviews_drop`.
-- Bulk rebuilds run each backing view as its TVIEW's owner, never as the caller.
+- Bulk rebuilds run each backing view as its TVIEW's owner, never as the caller,
+  and check and count its rows as that owner: a granted operator rebuilds every
+  TVIEW without reading any. The per-TVIEW work among the revoked functions
+  (`set_logged`, `ensure_propagation_indexes`, `reregister_all`, which re-registers
+  each TVIEW) still requires owning each TVIEW.
+- `pg_tviews_audit_write(jsonb)`, the audit writer, was never executable by
+  `PUBLIC`.
 
 `regress_security_surface.sql` runs each as a role that owns nothing, an operator and an
 owner, and fails when a new function of the extension is not classified.

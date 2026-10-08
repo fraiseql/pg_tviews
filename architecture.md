@@ -1,349 +1,214 @@
-# 🏛️ **TVIEW Extension — Architecture**
-
-The TVIEW extension (“`pg_tview`”) transforms PostgreSQL into a **real-time read model engine** for FraiseQL by:
-
-* Automatically materializing `v_*` views into `tv_*` tables
-* Incrementally updating those tables on `tb_*` table changes
-* Propagating changes upward through TVIEW dependencies
-* Supporting efficient PK-based lineage & UUID-based filtering
-
-Everything is deterministic, synchronous, and perfectly aligned with GraphQL Cascade.
-
----
-
-# 📘 1. High-Level Data Flow
-
-### GraphQL Mutation:
-
-```
-UUID input → FraiseQL resolves to PK → writes to tb_*
-```
-
-### TVIEW Extension:
-
-```
-AFTER UPDATE trigger on tb_* 
-    → recompute v_entity WHERE pk = X
-    → patch tv_entity via jsonb_delta
-    → propagate to parent tv_* using FK columns
-```
-
-### GraphQL Cascade:
-
-```
-FraiseQL queries tv_* (UUID-based filtering)
-→ returns updated nested JSONB read models
-```
-
-The system now acts like a **reactive relational graph**.
-
----
-
-# 🧱 2. The TVIEW Triple-Layer Model
-
-```
-tb_entity      → normalized write model
-v_entity       → pure SQL “read-model definition”
-tv_entity      → materialized + incrementally updated read model
-```
-
-### Developer workflow:
-
-1. Define `v_entity` as a **SQL view** exposing:
-
-   * `pk_entity`
-   * `id` (UUID)
-   * all **FK columns** (PK & UUID only where needed)
-   * read model JSONB (`data`)
-
-2. Register TVIEW:
-
-```sql
-CREATE TABLE tv_entity AS SELECT * FROM v_entity;
-```
-
-3. TVIEW engine auto-creates:
-
-   * `tv_entity` physical table
-   * triggers on underlying `tb_*` tables
-   * refresh pipeline
-
----
-
-# 🏗️ 3. TVIEW Table Schema (Standardized)
-
-For entity `post`:
-
-```sql
-CREATE TABLE tv_post (
-  pk_post    integer primary key,  -- lineage root
-  id         uuid not null,        -- for GraphQL
-  fk_user    integer not null,     -- lineage FK
-  user_id    uuid not null,        -- filtering FK for FraiseQL
-  data       jsonb not null,       -- read model
-  updated_at timestamptz not null
-);
-```
-
-### Key principles:
-
-* **PK integer** for lineage
-* **FK integer(s)** for propagation
-* **UUID id** for external exposure
-* **UUID FK(s)** *only where filtering is needed*
-* **JSONB** as full read model
-
-This solves:
-
-* GraphQL filtering
-* DB lineage
-* FraiseQL input/output
-
----
-
-# 🧠 4. Lineage Engine (Core Logic)
-
-Because we have PK/FK integer columns:
-
-### Lineage resolution is trivial:
-
-When a `tb_post` row changes:
-
-1. Update corresponding `tv_post` row.
-2. Using `fk_user`, update `tv_user` row.
-3. Using `fk_company`, update `tv_company` row (if defined).
-4. Continue until root of TVIEW DAG is reached.
-
-No JSON introspection.
-No dependency guesswork.
-No row-level lineage table needed.
-
-This is the *magic* that makes TVIEW viable.
-
----
-
-# ⚙️ 5. Update Pipeline (Synchronous)
-
-### Step 1 — Mutation writes to `tb_post`
-
-After FraiseQL resolves UUID → PK mapping.
-
-### Step 2 — Trigger fires
-
-Rust trigger receives:
-
-```rust
-source_oid = tb_post::oid
-pk = NEW.pk_post
-```
-
-### Step 3 — TVIEW recomputes view fragment
-
-Rust executes:
-
-```sql
-SELECT pk_post, id, fk_user, user_id, data
-FROM v_post
-WHERE pk_post = $1;
-```
-
-### Step 4 — TVIEW patches the materialized row
-
-```sql
-UPDATE tv_post
-SET data = jsonb_delta_patch(data, $new.data),
-    updated_at = now(),
-    user_id = $new.user_id,
-    fk_user = $new.fk_user
-WHERE pk_post = $1;
-```
-
-### Step 5 — Propagate
-
-Rust queries:
-
-```sql
-SELECT v_parent.pk_parent
-FROM tv_post
-JOIN ... -- using FK columns
-```
-
-Then:
-
-* recompute `v_user WHERE pk_user = X`
-* patch `tv_user`
-* propagate further if needed
-
-This is **fast** because:
-
-* lineage uses integers
-* view recomputation is scoped to ONE pk
-* patching is incremental
-
----
-
-# 🧩 6. Dependency Graph — Using v_* Dependencies
-
-TVIEWs don’t define dependencies themselves.
-
-### Instead:
-
-TVIEW follows **PostgreSQL's view dependency graph** for `v_*` views.
-
-This is far simpler:
-
-* No custom parsing
-* No custom DSL
-* No hidden magic
-
-For each TVIEW we can query:
-
-```sql
-SELECT referenced_objects
-FROM pg_depend 
-JOIN pg_rewrite
-WHERE view_oid = v_entity_oid;
-```
-
-Thus TVIEW discovers:
-
-```
-v_post depends on tb_post
-v_user depends on v_post and tb_user
-```
-
-Hence:
-
-```
-tv_post → tv_user propagation chain
-```
-
-This uses built-in PostgreSQL capabilities.
-Elegant and reliable.
-
----
-
-# 📦 7. TVIEW System Catalog
-
-We need minimal metadata:
-
-### `pg_tview_meta`
-
-| column     | description                   |
-| ---------- | ----------------------------- |
-| tview_oid  | OID of `tv_entity` table      |
-| view_oid   | OID of `v_entity` view        |
-| entity     | text name (“user”, “post”, …) |
-| sync_mode  | 'sync' (default) or 'async'   |
-| created_at | timestamp                     |
-
-### That’s it.
-
-### Why so small?
-
-Because:
-
-* Lineage = FK columns
-* Dependencies = PostgreSQL dependency tree
-* JSONB patching = delegated to jsonb_delta
-* View logic = stored in PostgreSQL views
-
-TVIEW does not reinvent anything.
-
----
-
-# 🦾 8. Rust Implementation Overview
-
-### Modules:
-
-```
-src/
- ├ catalog.rs       -- pg_tview_meta support
- ├ trigger.rs       -- sync update trigger for tb_*
- ├ refresh.rs       -- view recompute + jsonb_delta patch
- ├ propagate.rs     -- lineage propagation via FK columns
- ├ util.rs
- └ lib.rs           -- extension entrypoint
-```
-
-### Trigger (Rust)
-
-```rust
-#[pg_trigger]
-fn tview_after_change(trigger: &PgTrigger) -> ... {
-    let (rel_oid, old, new) = (...) ;
-    let pk = extract_pk(new.or(old));
-    tview_refresh_row(rel_oid, pk)?;
-    Ok(new)
-}
-```
-
-### Refresh (Rust)
-
-```rust
-fn tview_refresh_row(source_oid: Oid, pk: i64) {
-    let view_row = recompute_view_fragment(source_oid, pk)?;
-    apply_patch_to_tv(view_row)?;
-    propagate_to_parents(view_row)?;
-}
-```
-
-Everything is SPI-based.
-
----
-
-# 🧬 9. Synchronous Update Semantics
-
-Because GraphQL Cascade **expects immediate consistency**, TVIEW runs **inside the same transaction** as the mutation.
-
-This is safe because:
-
-* Each recompute is very small (one PK row)
-* JSONB patching is incremental
-* Lineage propagation is bounded (view DAG depth is small)
-
-Your architecture is optimized for synchronous behavior.
-
----
-
-# 🧹 10. What TVIEW **does not** do
-
-* Does not allow `tv_*` to be updated directly
-* Does not replace or modify `v_*`
-* Does not manage UUID/PK conversion (FraiseQL does)
-* Does not support arbitrary “multi-row” rebuilds beyond single-PK updates
-* Does not overwrite JSON logic—view SQL remains source of truth
-
-This keeps the extension small, reliable, and performant.
-
----
-
-# 🎉 11. Summary — What the TVIEW Extension *Is*
-
-### ✔ A synchronous, PK-driven incremental materialization engine
-
-### ✔ A companion to FraiseQL and jsonb_delta
-
-### ✔ An orchestrator that recomputes and patches `tv_*` tables
-
-### ✔ A lineage-aware update propagator
-
-### ✔ Built with Rust for safety and clarity
-
-### ✔ Aligned with GraphQL Cascade semantics
-
----
-
-# 🏗️ 12. Implementation Summary
-
-- **Error types**: `TViewError` enum with 19 variants, SQLSTATE mapping, `TViewResult<T>`
-- **Metadata**: `pg_tview_meta` and `pg_tview_helpers` tables, auto-created on load
-- **Schema inference**: Column detection, type inference from PostgreSQL catalog
-- **DDL hooks**: `ProcessUtility` hook for CREATE/DROP TABLE `tv_*` interception
-- **Triggers**: Row-level change detection + statement-level flush triggers
-- **Dependency graph**: Topological sort, cycle detection, cascade propagation
-- **Queue system**: Transaction-scoped refresh queue with bulk optimization
-- **Refresh engine**: Incremental JSONB patching, array aggregation support
-- **2PC support**: Queue persistence for distributed transactions
-- **Monitoring**: Metrics, health checks, performance views
-- **Testing**: Rust unit tests, pgrx integration tests, SQL test suite, CI/CD pipeline
+# pg_tviews architecture
+
+A TVIEW is a table, `tv_<entity>`, kept equal to what a SELECT over base tables
+computes, row by row, inside the transaction that writes the base tables. This page
+says how. The decisions behind it are in `docs/adr/`; the SQL surface is in
+[docs/reference/api.md](docs/reference/api.md), and what tools may read is in
+[docs/reference/read-contract.md](docs/reference/read-contract.md).
+
+## Objects
+
+| Object | What it is |
+|---|---|
+| `tv_<entity>` | The materialized table, in the schema the user chose. Its primary key is the TVIEW's identity column. UNLOGGED unless `pg_tviews.unlogged_by_default` is off. |
+| Backing view `tviews.<schema>__tv_<entity>` | The definition, as a view. Every refresh reads it. Owned like its table, `SELECT` granted as on its table ([ADR 0136, #181 amendment](docs/adr/0136-tool-facing-surface.md)). |
+| `tviews.pg_tview_meta` | One row per TVIEW: entity, OIDs, definition, identity, policies and declarations, and the propagation plan (`plan`). Internal: tools read `tviews.registry` instead. |
+| Triggers on base tables | Installed per TVIEW from its plan (below). |
+
+The extension lives in schema `tviews` and its version is the crate version, with one
+upgrade script per release ([ADR 0136](docs/adr/0136-tool-facing-surface.md),
+[docs/development/extension-versioning.md](docs/development/extension-versioning.md)).
+
+## Registration
+
+A TVIEW is created by `CREATE TABLE tv_<entity> AS SELECT …` (intercepted by the
+`ProcessUtility` hook, `src/hooks/ctas.rs`), by `pg_tviews_create()`, or by
+`pg_tviews_create_or_replace()` (`src/ddl/`). Each creates the backing view, then
+analyses it.
+
+### Analysis of the query tree
+
+`src/lineage/` reads PostgreSQL's analysed query of the backing view (views, CTEs and
+subqueries expanded); no SQL text is parsed to find a relationship
+([ADR 0157](docs/adr/0157-cascade-key-mapping.md), [ADR 0203](docs/adr/0203-propagation-plan.md)).
+`lineage/walk/` is the only code touching `pg_sys` nodes; it builds a graph of table
+occurrences, the TVIEW key, and the predicates linking them. Each base table is then
+classified:
+
+| Kind | Meaning | Trigger |
+|---|---|---|
+| `local` | The key is a column of the changed row (the table holding the identity, or a table joined on the key) | row |
+| `mapped` | A chain of predicates links the table to the key: a mapping query over the changed rows returns the keys | statement (delta) |
+| `tview` | Another TVIEW's table read like a base table (#191) | delta only, fired inside the flush |
+| `propagated` | Read only through a TVIEW this one embeds: parent propagation covers it | none |
+| `all_keys` | Nothing selective links it to the key | statement; `uncascaded_policy` decides (`error` refuses the TVIEW, `warn`, `full_refresh`) |
+
+Time-dependent definitions and calls to non-immutable functions are detected in the
+same walk and go through the same policy, with the `time_refresh` and `function_reads`
+declarations (`docs/reference/ddl.md`).
+
+### Row identity
+
+The identity is the output column naming the rows: `pk_<entity>`, or the `DISTINCT ON`
+key of a TVIEW whose top level has one. It is derived from the tree, is the table's
+primary key, and is the only key type at run time (`RefreshKey` with an integer or a
+text value) ([ADR 0169](docs/adr/0169-tview-row-identity.md)).
+
+### The stored plan
+
+`lineage::plan` returns a `TviewPlan` (`src/catalog/plan.rs`), stored as one versioned
+document in `pg_tview_meta.plan`:
+
+- `tables`: per base table, its kind, mapping query template, the columns read, and the
+  fan-out patch an UPDATE of it can write ([ADR 0078 outcome](docs/adr/0078-field-dependency-classes.md));
+- `paths`: the tables whose changed rows carry a key, and in which column;
+- `embeds`: each TVIEW this one embeds, the output columns holding the child's key
+  (any name: the relationship is the equality in the definition), the embed kind
+  (`nested`, `array`, `scalar`) and the path in `data`;
+- `direct`: the direct-patch map, the identity table's columns copied into `data` and
+  read nowhere else;
+- `set_operation`: rows from UNION/INTERSECT/EXCEPT branches are recomputed, never
+  patched.
+
+The triggers and the flush read only the plan, decoded once per backend per catalog
+generation. A plan names relations by OID and qualified name; a `BEFORE INSERT`
+trigger on `pg_tview_meta` rebinds a restored row's OIDs and attnums from the names and
+fails the insert, naming the TVIEW, when one no longer resolves. A plan of another
+version is re-derived by `ALTER EXTENSION pg_tviews UPDATE`, never read.
+
+A definition that makes TVIEWs read each other in a cycle is refused (42P17).
+
+## Triggers on base tables
+
+`src/dependency/triggers.rs` installs, per TVIEW and base table, the set the plan's
+kind asks for. Every trigger function takes the TVIEW's entity as its argument.
+
+- **Row trigger** (`src/trigger.rs`, `AFTER INSERT OR UPDATE OR DELETE FOR EACH ROW`):
+  for `local` tables, and for partitioned `mapped` tables (PostgreSQL copies only row
+  triggers onto partitions). It reads the key off the old and the new row by attribute
+  number, captures a direct patch when every changed column is in the plan's direct
+  map and the key is unchanged, and enqueues. No SPI per row.
+- **Delta triggers** (`src/delta.rs`, one statement trigger per event with transition
+  tables): for `mapped`, `all_keys` and `tview` tables. The handler runs the table's
+  mapping query (prepared once per backend) over the changed rows, as the TVIEW's
+  owner, and enqueues the keys; for an UPDATE it captures the fan-out patch instead
+  when the plan has one. Under `full_refresh`, an `all_keys` table enqueues the whole
+  TVIEW.
+- **Flush trigger** (`AFTER INSERT OR UPDATE OR DELETE FOR EACH STATEMENT`, named to
+  fire after the delta triggers): flushes the queue at the end of the statement.
+- **Truncate trigger** (`AFTER TRUNCATE FOR EACH STATEMENT`): refreshes the whole TVIEW,
+  once per statement.
+
+Every partition of a partitioned base table also gets the flush and truncate
+triggers, since statement triggers fire only on the table a statement names.
+
+`pg_tviews_suspend_triggers()` / `pg_tviews.suspend_triggers` make the triggers record
+which TVIEWs changed instead; resuming rebuilds them (`src/suspend.rs`).
+
+## The queue
+
+`src/queue/` holds the transaction's pending work in memory: refresh keys, the direct
+and fan-out patches riding on them, and the rows refreshes changed (for
+`pg_tviews_flush_and_report()`). A key whose change cannot be patched poisons its patch
+chain, which then recomputes. A savepoint leaves the pending work in place and logs
+changes made inside it; rolling it back undoes only those (`src/flush/savepoint.rs`).
+
+## The flush engine
+
+`src/flush/` applies the queue. It runs:
+
+- at the end of each outermost writing statement, from the flush trigger. The executor
+  hooks (`src/executor.rs`) defer the flush of a statement nested in another write to
+  that write, so a trigger cascade refreshes each row once;
+- before a top-level `COMMIT` or `PREPARE TRANSACTION`, from the `ProcessUtility` hook
+  (`src/hooks/mod.rs`). SPI is not available in transaction callbacks, so nothing is
+  flushed there.
+
+The loop (`flush/drain.rs`) takes one entity per pass in dependency order (the
+topological order of embeds and `tview` reads, `flush/graph.rs`), until neither the
+flush nor the triggers its writes fire left work. For each entity
+(`flush/apply.rs`), as the TVIEW's owner:
+
+1. a whole-TVIEW key rebuilds it from its view;
+2. keys carrying a usable direct patch are written straight into `tv_<entity>`
+   (`src/refresh/direct.rs`); a row not yet materialised is recomputed;
+3. other keys are recomputed from the backing view (`src/refresh/row.rs`,
+   `bulk.rs`): an upsert by identity that skips unchanged rows and deletes rows the view
+   no longer produces;
+4. fan-out patches write a parent's changed columns into every child row in one
+   `UPDATE`;
+5. parents are found through each embed's lookup columns (`src/propagate.rs`), pruned
+   when the child's refresh changed nothing they read, and queued: patched under the
+   embed's path when a patch can be derived, recomputed otherwise.
+
+A flush that fails fails the write. `pg_tviews.max_propagation_depth` bounds the
+passes.
+
+## Owner execution and render settings
+
+The flush acts for whoever wrote a base table, so every read and write of a TVIEW runs
+as its table's owner, in a security-restricted operation, with `search_path =
+pg_catalog, pg_temp` (`src/owner.rs`), as `REFRESH MATERIALIZED VIEW` does. The writer
+needs no privilege on the TVIEW or its view. Values are rendered under fixed settings
+(`TimeZone` UTC, `DateStyle` ISO/YMD, `IntervalStyle` postgres, `extra_float_digits`
+1, `bytea_output` hex), not the writer's.
+
+Functions acting on one TVIEW require owning it (or the extension); maintenance
+functions acting on every TVIEW are not granted to `PUBLIC`. Catalog writes run as the
+extension owner after that check. No pg_tviews function is `SECURITY DEFINER`
+([ADR 0136, maintenance-functions amendment](docs/adr/0136-tool-facing-surface.md)).
+
+## Patching with jsonb_delta
+
+Recomputing is always correct; patching skips the backing-view query. Both patch paths
+need the `jsonb_delta` extension and `pg_tviews.direct_patch_enabled`, and call only
+functions in jsonb_delta's own schema (`src/jsonb_delta.rs`):
+
+- **Direct patch**: an UPDATE of identity-table columns that `data` only copies becomes
+  `jsonb_smart_patch_scalar` on the TVIEW's own row, and `jsonb_smart_patch_nested`
+  under the embed path in its parents.
+- **Fan-out patch**: an UPDATE of a `mapped` table one equality away from a projected
+  column becomes one `UPDATE tv_child SET data = jsonb_smart_patch_scalar(…) WHERE
+  lookup = $key`.
+
+Anything the plan cannot express (an opaque `data`, a set operation, an array or scalar
+embed) recomputes. Why a whole `data` value is still written on every change is in
+[ADR 0094](docs/adr/0094-large-document-refresh.md); why there is no automatic bulk
+strategy is in [ADR 0077](docs/adr/0077-refresh-strategy-selection.md).
+
+## Fail loud
+
+- A commit with refresh work still queued fails with 55000 at `PRE_COMMIT`
+  (`src/flush/xact.rs`); only a missing or disabled flush trigger leaves work queued.
+- A write fails when its trigger cannot tell what to refresh: a plan, identity or
+  policy that does not decode, a mapping stored without its query, a trigger naming no
+  TVIEW. The error names the TVIEW and hints `pg_tviews_reregister`.
+- An untraceable read is refused at create under the default `error` policy.
+- Errors carry their SQLSTATE (`docs/error-reference.md`).
+
+## DDL and lifecycle
+
+The `ProcessUtility` hook (`src/hooks/`) also intercepts `DROP TABLE tv_*` (honouring
+`CASCADE`), renames and other `ALTER TABLE tv_*`, `REFRESH MATERIALIZED VIEW` of a
+matview a TVIEW reads, `DROP EXTENSION`, and `DISCARD ALL`, including statements run
+by functions. Event triggers report a `CREATE TABLE tv_* AS` the hook did not see and
+clean up after `DROP SCHEMA … CASCADE` / `DROP OWNED BY`. Per-backend caches check for
+invalidations on every read and are cleared when a transaction aborts. An UNLOGGED
+TVIEW emptied by a crash is refilled on its next flush (`src/lifecycle.rs`), and for
+the databases in `pg_tviews.auto_rebuild_databases` a background worker repopulates
+them once recovery ends (`src/rebuild_worker.rs`).
+
+## Source map
+
+| Path | Role |
+|---|---|
+| `src/lineage/` | Query-tree analysis, identity, mapping query templates |
+| `src/catalog/` | `TviewMeta`, `TviewPlan`, catalog reads |
+| `src/ddl/`, `src/hooks/` | Create, replace, drop, rename; utility hook |
+| `src/dependency/` | Base-table discovery, trigger installation |
+| `src/trigger.rs`, `src/delta.rs` | Row and statement triggers |
+| `src/queue/` | Transaction-local pending work |
+| `src/flush/`, `src/propagate.rs`, `src/executor.rs` | Flush engine, parents, statement nesting |
+| `src/refresh/` | Recompute, bulk, direct patch |
+| `src/owner.rs` | Owner execution, render settings, ownership checks |
+| `src/admin.rs`, `src/health.rs`, `src/report.rs` | Maintenance, health check, change reports |

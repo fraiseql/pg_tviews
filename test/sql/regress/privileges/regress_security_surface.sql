@@ -164,6 +164,23 @@ SELECT public.must_refuse(ARRAY[
     'SELECT tviews.pg_tviews_refresh(''doc'')'
 ], 'an operator');
 RESET ROLE;
+-- The bulk rebuilds work for it, whatever it may read: a deploy or restore tool
+-- refills emptied TVIEWs (each read as its owner).
+TRUNCATE public.tv_doc;
+SET ROLE regress_sec_operator;
+SELECT public.must_allow(ARRAY[
+    'SELECT * FROM tviews.pg_tviews_rebuild_all(true)',
+    'SELECT * FROM tviews.pg_tviews_rebuild_all(false)',
+    'SELECT tviews.pg_tviews_refresh_all()',
+    'SELECT tviews.pg_tviews_refresh_all_entities()'
+], 'an operator');
+RESET ROLE;
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM public.tv_doc) <> 1 THEN
+        RAISE EXCEPTION 'FAIL: the operator''s rebuild did not refill tv_doc';
+    END IF;
+END $$;
 
 -- ── The owner ───────────────────────────────────────────────────────────────
 SET ROLE regress_sec_owner;

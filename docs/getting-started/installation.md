@@ -1,396 +1,179 @@
 # Installation Guide
 
-Complete installation instructions for pg_tviews in different environments.
+Building pg_tviews from source, enabling it in a database, upgrading and removing it.
 
-## System Requirements
+## Requirements
 
-- **PostgreSQL**: 13, 14, 15, 16, 17, or 18
-- **Rust**: 1.70+ (for building from source)
-- **Memory**: 2GB RAM minimum, 4GB recommended
-- **Disk**: 500MB free space for build artifacts
+- **PostgreSQL** 16, 17 or 18, with its server development files (`pg_config`);
+  `CREATE EXTENSION` refuses older versions
+- **Rust**: the toolchain pinned in `rust-toolchain.toml` (rustup installs it on the
+  first build)
+- **cargo-pgrx** 0.17.0, the version the extension is built with
+- **jsonb_delta** (optional): enables the direct-patch fast path (below)
 
-## Quick Install (Recommended)
-
-### 1. Install Rust
+## 1. Build and install
 
 ```bash
-# Install Rust toolchain
+# Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
-# Verify installation
-rustc --version  # Should show 1.70+
-cargo --version  # Should show 1.70+
-```
+# pgrx, at the version pg_tviews uses
+cargo install --locked cargo-pgrx --version 0.17.0
 
-### 2. Install pgrx
+# Point pgrx at the PostgreSQL you install into (here 17)
+cargo pgrx init --pg17 "$(command -v pg_config)"
 
-```bash
-# Install pgrx PostgreSQL extension framework
-cargo install --locked cargo-pgrx
-
-# Initialize pgrx with your PostgreSQL version
-cargo pgrx init
-```
-
-### 3. Build and Install pg_tviews
-
-```bash
-# Clone the repository
+# Build and install into that PostgreSQL
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-
-# Build and install (release mode for production)
-cargo pgrx install --release
+cargo pgrx install --release --pg-config "$(command -v pg_config)" \
+    --no-default-features --features pg17
 ```
 
-### 4. Enable in Database
+The default feature is `pg18`: for PostgreSQL 18, leave out
+`--no-default-features --features …`; for 16, use `pg16`. Pass `--pg-config`
+explicitly so the files go to the server you run, not to a PostgreSQL that pgrx
+manages.
 
-```sql
--- Connect to your database
+The server development files come from your distribution:
+
+| Platform | Package |
+|---|---|
+| Debian, Ubuntu (PGDG) | `postgresql-server-dev-17` |
+| RHEL, Rocky (PGDG) | `postgresql17-devel` |
+| macOS (Homebrew) | `postgresql@17` |
+
+## 2. Load the library
+
+pg_tviews installs its hooks (the interception of `CREATE TABLE tv_* AS`, `DROP TABLE
+tv_*` and `COMMIT`) when its library is loaded. Load it with the server, in
+`postgresql.conf`, then restart PostgreSQL:
+
+```ini
+shared_preload_libraries = 'pg_tviews'
+```
+
+Without it, a `CREATE TABLE tv_* AS` that reaches the server un-intercepted fails,
+naming the fix; the SQL functions still work.
+
+## 3. Create the extension
+
+```bash
 psql -d your_database
+```
 
--- Enable the extension (its objects go to schema tviews)
-CREATE EXTENSION pg_tviews;
+```sql
+-- Optional, before or after pg_tviews: the direct-patch fast path
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
--- Call its functions unqualified in this database's sessions
-ALTER DATABASE your_database SET search_path = "$user", public, tviews;
+-- Its objects go to the schema tviews
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
 
--- Verify installation
 SELECT tviews.pg_tviews_version();
-
--- Check jsonb_delta status (optional performance enhancement)
-SELECT tviews.pg_tviews_check_jsonb_delta();
+SELECT tviews.pg_tviews_check_jsonb_delta();   -- true when jsonb_delta is installed
 ```
 
-## Optional: Install jsonb_delta for Better Performance
-
-pg_tviews works without any additional extensions, but installing `jsonb_delta` provides **1.5-3× faster** JSONB updates:
-
-### Performance Impact
-
-| Operation | Without jsonb_delta | With jsonb_delta | Improvement |
-|-----------|-------------------|----------------|-------------|
-| JSONB field updates | Full document replacement | Surgical patching | 1.5-3× faster |
-| Memory usage | Higher | Lower | 30-50% reduction |
-| CPU usage | Higher | Lower | 40-60% reduction |
-
-### Installation
+`CREATE EXTENSION pg_tviews` needs `CREATE` on the database. Every object goes to the
+schema `tviews`; to call the functions unqualified, add it to the database's
+`search_path` (it applies to new sessions):
 
 ```sql
--- Install jsonb_delta extension
-CREATE EXTENSION jsonb_delta;
-
--- Verify pg_tviews detects it
-SELECT pg_tviews_check_jsonb_delta();  -- Should return true
+DO $$ BEGIN
+    EXECUTE format('ALTER DATABASE %I SET search_path = "$user", public, tviews',
+                   current_database());
+END $$;
 ```
 
-### When You Need jsonb_delta
+## jsonb_delta
 
-**Required for**:
-- High-frequency JSONB updates (>100 ops/sec)
-- Large JSONB objects (>100 fields)
-- Performance-critical applications
-
-**Optional for**:
-- Read-heavy workloads
-- Small JSONB objects (<20 fields)
-- Infrequent updates (<10 ops/sec)
-
-### Without jsonb_delta
-
-pg_tviews still works perfectly - it just uses PostgreSQL's standard `jsonb_set()` function for updates, which replaces the entire JSONB document. This is slower but functionally identical.
-
-## Platform-Specific Installation
-
-### Ubuntu/Debian
-
-```bash
-# Install PostgreSQL (choose your version)
-sudo apt-get update
-sudo apt-get install postgresql-17 postgresql-server-dev-17
-
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install pgrx and build
-cargo install --locked cargo-pgrx
-cargo pgrx init
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
-cargo pgrx install --release
-```
-
-### CentOS/RHEL/Rocky Linux
-
-```bash
-# Install PostgreSQL from PGDG repository
-sudo yum install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
-sudo yum install -y postgresql17-server postgresql17-devel
-
-# Initialize and start PostgreSQL
-sudo /usr/pgsql-17/bin/postgresql-17-setup initdb
-sudo systemctl start postgresql-17
-
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install pgrx and build
-cargo install --locked cargo-pgrx
-cargo pgrx init
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
-cargo pgrx install --release
-```
-
-### macOS (Homebrew)
-
-```bash
-# Install PostgreSQL
-brew install postgresql@17
-brew services start postgresql@17
-
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install pgrx and build
-cargo install --locked cargo-pgrx
-cargo pgrx init
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
-cargo pgrx install --release
-```
-
-### Docker
-
-```dockerfile
-# Use PostgreSQL with pg_tviews pre-installed
-FROM postgres:17
-
-# Copy pg_tviews extension files
-COPY --from=pgtviews-builder /usr/share/postgresql/17/extension/pg_tviews* /usr/share/postgresql/17/extension/
-COPY --from=pgtviews-builder /usr/lib/postgresql/17/lib/pg_tviews.so /usr/lib/postgresql/17/lib/
-
-# Enable extension in database initialization
-COPY init.sql /docker-entrypoint-initdb.d/
-```
-
-```sql
--- init.sql
-CREATE EXTENSION pg_tviews;
-```
-
-## Development Installation
-
-For contributors and development:
-
-### Clone and Setup
-
-```bash
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
-
-# Install development dependencies
-cargo install --locked cargo-pgrx cargo-watch cargo-expand
-
-# Initialize pgrx
-cargo pgrx init
-```
-
-### Development Build
-
-```bash
-# Debug build (slower but with debug symbols)
-cargo pgrx install
-
-# Release build (optimized)
-cargo pgrx install --release
-
-# Development with live reload
-cargo watch -x 'pgrx install'
-```
-
-### Testing Setup
-
-```bash
-# Run tests
-cargo pgrx test
-
-# Run specific test
-cargo pgrx test --package pg_tviews --lib
-
-# Run integration tests
-./run_red_tests.sh
-```
-
-## Production Deployment
-
-### Multi-Server Setup
-
-For production environments with multiple PostgreSQL servers:
-
-```bash
-# Build on a dedicated build server
-cargo pgrx install --release --pg-config /path/to/pg_config
-
-# Copy extension files to production servers
-# - pg_tviews.so → $libdir/
-# - pg_tviews.control → $sharedir/extension/
-# - pg_tviews--*.sql → $sharedir/extension/
-```
-
-### Connection Pooling
-
-pg_tviews is compatible with popular connection poolers:
-
-#### PgBouncer
-
-```ini
-# pgbouncer.ini
-[databases]
-mydb = host=localhost port=5432 dbname=mydb
-
-[pgbouncer]
-pool_mode = transaction
-server_reset_query = DISCARD ALL  # pg_tviews handles this automatically
-```
-
-#### pgpool-II
-
-```ini
-# pgpool.conf
-server_reset_query = DISCARD ALL
-```
-
-### High Availability
-
-pg_tviews works with PostgreSQL streaming replication and logical replication. Each server maintains its own TVIEWs and triggers.
+pg_tviews works without other extensions. Without `jsonb_delta`, every TVIEW row a
+write affects is recomputed from its backing view, and `CREATE EXTENSION pg_tviews`
+says so with a WARNING. With it, an eligible single-row `UPDATE` (a changed column
+copied as-is into `data`, a child's document embedded in its parents) patches the
+stored documents in place instead of recomputing them; the result is the same
+document. The conditions and the measured figures are in the
+[README](../../README.md) and [Benchmark results](../benchmarks/results.md).
+`SET pg_tviews.direct_patch_enabled = off` turns the fast path off.
 
 ## Verification
 
-After installation, verify everything is working:
-
 ```sql
--- Check extension is installed
 \dx pg_tviews
 
--- Check version
-SELECT pg_tviews_version();
+SELECT * FROM tviews.pg_tviews_health_check();
 
--- Run health check
-SELECT * FROM pg_tviews_health_check();
-
--- Test basic functionality
-CREATE TABLE test_table (id SERIAL PRIMARY KEY, data TEXT);
-CREATE TABLE test_tview AS SELECT id, data::jsonb as data FROM test_table;
-INSERT INTO test_table (data) VALUES ('test');
-SELECT * FROM test_tview;
+CREATE TABLE tb_install_check (pk_install_check bigint PRIMARY KEY, label text);
+CREATE TABLE tv_install_check AS
+SELECT pk_install_check, jsonb_build_object('label', label) AS data
+FROM tb_install_check;
+INSERT INTO tb_install_check VALUES (1, 'it works');
+SELECT data FROM tv_install_check;        -- {"label": "it works"}
+DROP TABLE tv_install_check;
+DROP TABLE tb_install_check;
 ```
 
-## Troubleshooting Installation
+## Production notes
 
-### Build Errors
+**Connection poolers.** Refresh work is queued and flushed inside the writing
+transaction, so PgBouncer in `transaction` pool mode works. Session settings
+(`SET pg_tviews.uncascaded_policy`, `SET pg_tviews.suspend_triggers`) follow the usual
+pooling rules: set them in the transaction that needs them (`SET LOCAL`).
 
-**pgrx not found:**
+**Replication.** TVIEW tables are `UNLOGGED` by default
+(`pg_tviews.unlogged_by_default = on`): a hot standby cannot read them, and they are
+empty after a crash or a promotion until rebuilt. Create the TVIEWs a standby serves
+with `options => '{"logged": true}'`, or switch one with
+`tviews.pg_tviews_set_logged(entity, true)`. See
+[Replication](../operations/replication.md).
+
+**Several servers.** Build once per PostgreSQL major version and copy the files
+`cargo pgrx package` produces (`pg_tviews.so` to `pg_config --pkglibdir`,
+`pg_tviews.control` and `pg_tviews--*.sql` to `pg_config --sharedir`/extension).
+
+## Troubleshooting installation
+
+| Symptom | Check |
+|---|---|
+| `extension "pg_tviews" is not available` | the files are not in this server's directories: `pg_config --pkglibdir --sharedir` of the server you run, and reinstall with `--pg-config` |
+| `could not access file "pg_tviews"` at startup | `shared_preload_libraries` names a library that is not installed for this server |
+| `CREATE TABLE tv_* AS` fails asking for `shared_preload_libraries` | add `pg_tviews` there and restart |
+| `function pg_tviews_… does not exist` | qualify it (`tviews.pg_tviews_…`) or add `tviews` to the `search_path` |
+| permission denied (`42501`) on a maintenance function | it is not executable by `PUBLIC`: [Operator role](../user-guides/operators.md#operator-role) |
+| `cargo pgrx` version mismatch | `cargo install --locked cargo-pgrx --version 0.17.0 --force` |
+
+## Upgrading
+
 ```bash
-cargo install --locked cargo-pgrx
+cd pg_tviews && git pull
+cargo pgrx install --release --pg-config "$(command -v pg_config)"   # plus the feature flags above
+sudo systemctl restart postgresql                                      # the library is preloaded
 ```
 
-**PostgreSQL development headers missing:**
-```bash
-# Ubuntu/Debian
-sudo apt-get install postgresql-server-dev-17
+Then, in each database:
 
-# CentOS/RHEL
-sudo yum install postgresql17-devel
-```
-
-**Rust version too old:**
-```bash
-rustup update
-```
-
-### Runtime Errors
-
-**Extension not found:**
 ```sql
--- Check if files are in correct locations
-SHOW shared_preload_libraries;
-\getenv sharedir
-\getenv libdir
-```
-
-**Permission denied:**
-```sql
--- Check database user permissions
-SELECT current_user;
--- May need to run as superuser or grant permissions
-```
-
-**Library not loaded:**
-```sql
--- Check PostgreSQL logs for dynamic loading errors
--- Verify pg_tviews.so is in $libdir and has correct permissions
-```
-
-## Updating pg_tviews
-
-To update to a new version:
-
-```bash
-# Stop PostgreSQL
-sudo systemctl stop postgresql
-
-# Update source
-cd pg_tviews
-git pull
-cargo pgrx install --release
-
-# Start PostgreSQL
-sudo systemctl start postgresql
-
-# Update extension in database
 ALTER EXTENSION pg_tviews UPDATE;
 ```
 
-## Uninstallation
+The update re-derives every TVIEW from its stored definition and fails, naming the
+TVIEW, when one no longer analyses. It starts from 0.1.0-beta.20 or later
+([Deprecation warnings](../DEPRECATION_WARNINGS.md)). Until the database is updated,
+pg_tviews functions fail with `55000`, naming the fix.
 
-To remove pg_tviews:
+## Uninstalling
 
 ```sql
--- Drop all TVIEWs first
-DROP TABLE tv_my_view;
-
--- Drop extension
-DROP EXTENSION pg_tviews;
-
--- Remove files (if installed manually)
-rm /usr/lib/postgresql/17/lib/pg_tviews.so
-rm /usr/share/postgresql/17/extension/pg_tviews*
+DROP EXTENSION pg_tviews CASCADE;
 ```
+
+This drops the triggers and the backing views; the `tv_*` tables stay as plain tables
+with their rows (drop them if you no longer need them). Then remove `pg_tviews` from
+`shared_preload_libraries` and restart.
 
 ## Next Steps
 
 - **[Quick Start](quickstart.md)** - Create your first TVIEW
-- **[FraiseQL Integration](fraiseql-integration.md)** - Framework integration patterns
+- **[DDL Reference](../reference/ddl.md)** - What a definition may contain
 - **[Monitoring](../operations/monitoring.md)** - Production monitoring setup
-## Creating TVIEWs with `CREATE TABLE tv_<entity> AS`
-
-pg_tviews intercepts `CREATE TABLE [schema.]tv_<entity> AS SELECT …` and turns it into a
-TVIEW. This works:
-
-- as a top-level statement, including in a multi-statement batch (`psql -c "…; …"`) and in the
-  same batch as `CREATE EXTENSION pg_tviews`;
-- inside `DO` blocks, functions and procedures;
-- with `IF NOT EXISTS`: over an existing TVIEW or table the statement is a no-op.
-
-`CREATE TABLE tv_<entity> (col type, …)` (a column list, no `AS SELECT`) is an ordinary table and
-is never converted. `SELECT … INTO tv_<entity>` is treated like a CTAS.
-
-Interception needs the extension's library loaded in the session, so add it to
-`shared_preload_libraries` and restart PostgreSQL. If a `tv_*` CTAS reaches the server without
-being intercepted, the statement **fails** with an error that names the table and this fix,
-instead of leaving a plain table behind. Migration tools no longer need a preflight check for it.
+- **[Development](../development.md)** - Building and running the test suites
