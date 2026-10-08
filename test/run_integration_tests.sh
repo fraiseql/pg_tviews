@@ -37,6 +37,8 @@ shopt -u nullglob
 
 unflushed="queued refreshes for"
 pass=0 fail=0 failed_names=""
+out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 for f in "${files[@]}"; do
   name="$(basename "$f")"
   psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
@@ -44,16 +46,16 @@ for f in "${files[@]}"; do
   # The extension lives in schema tviews; tests call its functions unqualified.
   psql -d postgres -qc "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null \
     || { echo "ERROR: could not create test database $tmpdb"; exit 2; }
-  if psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >/tmp/$tmpdb.out 2>&1; then
+  if psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >"$out" 2>&1; then
     # Refresh work still queued at COMMIT fails it; never expected here, even
     # behind ON_ERROR_STOP off.
-    if grep -qF "$unflushed" /tmp/$tmpdb.out; then
-      echo "FAIL  $name -> $(grep -F "$unflushed" /tmp/$tmpdb.out | head -1)"
+    if grep -qF "$unflushed" "$out"; then
+      echo "FAIL  $name -> $(grep -F "$unflushed" "$out" | head -1)"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue
     fi
     echo "PASS  $name"; pass=$((pass+1))
   else
-    echo "FAIL  $name -> $(grep -E 'psql:.*(ERROR|FATAL):' /tmp/$tmpdb.out | head -1)"
+    echo "FAIL  $name -> $(grep -E 'psql:.*(ERROR|FATAL):' "$out" | head -1)"
     fail=$((fail+1)); failed_names="$failed_names $name"
   fi
 done

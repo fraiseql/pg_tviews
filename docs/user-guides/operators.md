@@ -138,8 +138,7 @@ mismatched library. The full procedure is in [Upgrades](../operations/upgrades.m
 
 ```sql
 -- Registered TVIEWs: tables, backing views, and whether they need re-registering
-SELECT entity, table_oid, view_oid, needs_reregister, plan ->> 'version' AS plan_version
-FROM tviews.pg_tview_meta ORDER BY entity;
+SELECT entity, schema, name, view, needs_reregister FROM tviews.registry ORDER BY entity;
 
 -- pg_tviews triggers on base tables, with the entity each one serves
 SELECT t.tgrelid::regclass AS base_table, t.tgname, p.proname

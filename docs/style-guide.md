@@ -149,8 +149,8 @@ TVIEW 'tv_example' created successfully
 | "Obviously" | Remove |
 | "Easy" | Remove |
 | "Basically" | Remove |
-| "TODO" | Fix or remove |
-| "FIXME" | Fix or remove |
+| A to-do marker | Fix or remove |
+| A fix-me marker | Fix or remove |
 
 ### PostgreSQL Terms
 

@@ -1,4 +1,4 @@
--- Regression test for issue #56 (Phase 1): direct-patch column→key catalog map.
+-- Regression test for issue #56: direct-patch column→key catalog map.
 --
 -- CREATE-time extraction records, per entity, which base-table columns map
 -- identity-style to top-level keys of the entity's own `data` object. Bare base

@@ -129,4 +129,10 @@ psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
 echo "----------------------------------------"
 echo "regression: $pass passed, $fail failed, $skip skipped, $xfail known-failing"
 [[ -n "$failed_names" ]] && echo "failed:$failed_names"
+# A run that tested nothing fails; with REGRESS_NO_SKIP=1 (CI, where every
+# prerequisite is installed) so does a skipped test.
+[[ "$pass" -gt 0 ]] || { echo "ERROR: no regress test passed"; exit 1; }
+if [[ "${REGRESS_NO_SKIP:-0}" == 1 && "$skip" -gt 0 ]]; then
+  echo "ERROR: $skip test(s) skipped, and REGRESS_NO_SKIP=1"; exit 1
+fi
 [[ "$fail" -eq 0 ]]

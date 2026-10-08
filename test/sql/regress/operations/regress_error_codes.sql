@@ -94,4 +94,10 @@ SELECT expect_code($$SELECT tviews.pg_tviews_refresh('a')$$, '42501', 'refresh n
 RESET ROLE;
 DROP ROLE regress_error_codes_stranger;
 
+-- Diagnostics name an unknown TVIEW instead of returning nothing.
+SELECT expect_code($$SELECT * FROM tviews.pg_tviews_show_cascade_path('nope')$$, '42704',
+                   'show_cascade_path unknown');
+SELECT expect_code($$SELECT tviews.pg_tviews_mapping_query('nope', 'pg_class'::regclass)$$,
+                   '42704', 'mapping_query unknown');
+
 SELECT 'error codes: PASS' AS result;

@@ -1,4 +1,4 @@
--- Regression test for issue #56 (Phase 5, scenario #19): jsonb_delta NOT installed.
+-- Regression test for issue #56: jsonb_delta NOT installed.
 --
 -- The direct-patch fast path requires the jsonb_smart_patch_* primitives, so with
 -- jsonb_delta absent capture must decline (no patch captured, none applied) and the

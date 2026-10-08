@@ -348,18 +348,27 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
 #[pg_extern]
 fn pg_tviews_show_cascade_path(
     entity: &str,
-) -> TableIterator<
-    'static,
-    (
-        name!(depth, i32),
-        name!(entity_name, String),
-        name!(depends_on, String),
-    ),
+) -> Result<
+    TableIterator<
+        'static,
+        (
+            name!(depth, i32),
+            name!(entity_name, String),
+            name!(depends_on, String),
+        ),
+    >,
+    ErrorReport,
 > {
     crate::revision::check();
+    if crate::catalog::TviewMeta::load_by_entity(entity)?.is_none() {
+        return Err(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+        .into());
+    }
     let results = Spi::connect(|client| {
         let args = vec![crate::utils::spi::text(entity)];
-        match client.select(
+        let rows = client.select(
             &format!(
                 "WITH RECURSIVE dep_tree AS (
                 SELECT
@@ -390,24 +399,17 @@ fn pg_tviews_show_cascade_path(
             ),
             None,
             &args,
-        ) {
-            Ok(rows) => {
-                let mut paths = Vec::new();
-                for row in rows {
-                    let depth = row["depth"].value::<i32>()?.unwrap_or(0);
-                    let entity_name = row["entity_name"].value::<String>()?.unwrap_or_default();
-                    let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
-                    paths.push((depth, entity_name, depends_on));
-                }
-                Ok::<_, spi::Error>(paths)
-            }
-            Err(e) => {
-                warning!("Failed to query cascade path: {}", e);
-                Ok(Vec::new())
-            }
+        )?;
+        let mut paths = Vec::new();
+        for row in rows {
+            let depth = row["depth"].value::<i32>()?.unwrap_or(0);
+            let entity_name = row["entity_name"].value::<String>()?.unwrap_or_default();
+            let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
+            paths.push((depth, entity_name, depends_on));
         }
+        Ok::<_, spi::Error>(paths)
     })
-    .unwrap_or_default();
+    .map_err(|e| crate::utils::spi::catalog_error("Read the cascade path", &e))?;
 
-    TableIterator::new(results)
+    Ok(TableIterator::new(results))
 }

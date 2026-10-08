@@ -69,6 +69,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pg_tviews_mapping_query()` raises the error that stops it (42704 for an unknown
   TVIEW) instead of returning NULL; the rebuild worker restarts on an error instead
   of idling with a WARNING.
+- `pg_tviews_create_or_replace()` called by a superuser (or any member of the owner's
+  role) on another role's TVIEW recomputed its rows as the caller: the owner's view
+  functions and the triggers on its table ran with the caller's privileges. Rows are
+  now reconciled, and a rebuilt table filled, as the TVIEW's owner.
+- Work queued again during a flush, by a trigger on a TVIEW's table writing a base
+  table, was dropped for a key the flush had already refreshed, and the TVIEW stayed
+  stale with no error. It is refreshed again.
+- `DROP TABLE tv_*` of a TVIEW whose plan does not decode treated it as a plain table
+  and left its catalog row, backing view and triggers behind (and with them failing
+  writes); it and `pg_tviews_drop()` drop it cleanly.
+- `pg_tviews_health_check()` reports a disabled `pg_tviews` trigger, and a missing
+  one, as an ERROR (it reported disabled ones as healthy, missing ones as a WARNING).
+- A column named `fk_*` keeps the type its definition gives it: it was forced to
+  `bigint`, and a TVIEW with a UUID or text `fk_*` column could not be created.
+- `pg_tviews_show_cascade_path()` raises 42704 for an unknown TVIEW and its errors
+  instead of returning no rows; an audit-log write that fails after a create or a
+  drop fails it, as it fails any other statement.
 - An operator granted `pg_tviews_rebuild_all()` could not run it without `SELECT` on
   every TVIEW: it checked and counted their rows as the caller.
 - A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or

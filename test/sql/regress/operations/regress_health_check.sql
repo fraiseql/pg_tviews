@@ -108,7 +108,7 @@ BEGIN
     EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
 END $$;
 DO $$ BEGIN
-    IF public.trigger_check() NOT LIKE 'WARNING: 1 missing trigger%user_orders (pg_tview_flush_trigger) on app.tb_order%' THEN
+    IF public.trigger_check() NOT LIKE 'ERROR: 1 missing trigger%user_orders (pg_tview_flush_trigger) on app.tb_order%' THEN
         RAISE EXCEPTION '#139 FAIL: missing trigger not reported: %', public.trigger_check();
     END IF;
 END $$;

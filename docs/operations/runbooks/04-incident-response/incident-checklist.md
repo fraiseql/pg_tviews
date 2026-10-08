@@ -14,7 +14,7 @@ way and fully resolved.
 - Access to the incident tracker, the PostgreSQL log and `psql`
 - Contact list for stakeholders
 
-## Phase 1: Detection & Assessment (5 minutes)
+## Stage 1: Detection & Assessment (5 minutes)
 
 ### Step 1: Confirm the incident
 - [ ] Reproduce or confirm the symptom (error text, stale row, latency)
@@ -46,7 +46,7 @@ Save the output of [health-check.sql](../scripts/health-check.sql) and
 | **SEV 3** | Stale data in a non-critical TVIEW, health warnings | 4 hours | Team notification |
 | **SEV 4** | No user impact | 24 hours | Document only |
 
-## Phase 2: Investigation (15-30 minutes)
+## Stage 2: Investigation (15-30 minutes)
 
 ### Step 4: Analyse
 - [ ] PostgreSQL log: refresh errors carry the failing statement in `CONTEXT`
@@ -78,7 +78,7 @@ and see [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooti
 - [ ] Missing index on a join or mapping query, or high fan-out
 - [ ] Lock contention between writers refreshing the same TVIEW rows
 
-## Phase 3: Containment (30-60 minutes)
+## Stage 3: Containment (30-60 minutes)
 
 ### Step 7: Mitigate
 - [ ] Unblock writers if needed: suspend refresh for the affected session or role
@@ -92,7 +92,7 @@ and see [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooti
 - [ ] Undo any suspension
 - [ ] Refresh affected TVIEWs: `SELECT tviews.pg_tviews_refresh_all();`
 
-## Phase 4: Resolution (1-4 hours)
+## Stage 4: Resolution (1-4 hours)
 
 ### Step 9: Permanent fix
 - [ ] Fix the definition (`pg_tviews_create_or_replace`), data, indexes or configuration
@@ -107,7 +107,7 @@ FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';   -- expect no ro
 - [ ] Writes succeed at normal latency
 - [ ] Monitor for 30-60 minutes; confirm with the users who reported it
 
-## Phase 5: Closure (30 minutes)
+## Stage 5: Closure (30 minutes)
 - [ ] Document what happened, the root cause and the fix
 - [ ] Notify stakeholders of resolution and impact
 - [ ] Record follow-up actions and schedule a [Post-Incident Review](post-incident-review.md) for SEV 1-2

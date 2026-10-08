@@ -312,7 +312,8 @@ pub fn quote_identifier(name: &str) -> String {
 /// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:
 /// quotes doubled, and an `E''` literal with backslashes doubled when it holds a
 /// backslash, so it reads the same whatever `standard_conforming_strings` is.
-/// The one place a literal is built by hand: values passed to a query are bind
+/// For code that cannot call the server (pure Rust, unit-tested); the query-tree
+/// walker uses the server's `quote_literal_cstr`. Values passed to a query are bind
 /// parameters.
 #[must_use]
 pub fn quote_literal(text: &str) -> String {

@@ -1,9 +1,9 @@
--- Regression test for issue #56 (Phase 2/3): savepoint safety of the patch map.
+-- Regression test for issue #56: savepoint safety of the patch map.
 --
 -- The direct-patch map snapshots/restores in lockstep with the refresh queue on
 -- SAVEPOINT / ROLLBACK TO. A change captured inside a rolled-back savepoint must
 -- not survive; the final tview reflects only the pre-savepoint change. This holds
--- whether the flush recomputes (Phase 2) or applies a direct patch (Phase 3),
+-- whether the flush recomputes or applies a direct patch,
 -- because the tview write is itself transactional.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_direct_patch_savepoint.sql

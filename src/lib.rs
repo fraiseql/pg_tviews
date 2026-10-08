@@ -60,7 +60,6 @@ mod health;
 mod lifecycle;
 mod suspend;
 
-// Public API modules
 mod config;
 mod ddl;
 mod dependency;
@@ -69,7 +68,6 @@ mod install_sql;
 mod jsonb_delta;
 mod validation;
 
-// Public re-exports
 use error::{TViewError, TViewResult};
 
 pg_module_magic!();

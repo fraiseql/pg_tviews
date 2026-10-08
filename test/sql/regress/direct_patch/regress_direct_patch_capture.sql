@@ -1,10 +1,10 @@
--- Regression test for issue #56 (Phase 2): trigger diff + patch capture.
+-- Regression test for issue #56: trigger diff + patch capture.
 --
 -- The row trigger captures a direct patch only for an eligible single-row UPDATE
 -- (every changed column maps identity-style into the entity's own `data`, no
 -- FK/PK/projected-column change). Observed via the session-cumulative
 -- `direct_patch_captured` counter in pg_tviews_queue_stats(). Patches are captured
--- but NOT yet applied here (Phase 3) — the recompute path still produces the data.
+-- but NOT yet applied here — the recompute path still produces the data.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_direct_patch_capture.sql
 -- expect-output: direct_patch_capture: PASS
@@ -112,7 +112,7 @@ UPDATE tb_user SET bio = 'b3' WHERE pk_user = 1;
 SELECT _dp_assert(0, 'guc off suppresses capture');
 SET pg_tviews.direct_patch_enabled = on;
 
--- Sanity: recompute path still produces correct data in Phase 2 (patches unused).
+-- Sanity: the recompute path still produces correct data (patches unused).
 DO $$ BEGIN
   IF (SELECT data->>'bio' FROM tv_user WHERE pk_user = 1) <> 'b3' THEN
     RAISE EXCEPTION '#56 FAIL: tv_user.bio not refreshed by recompute (got %)',

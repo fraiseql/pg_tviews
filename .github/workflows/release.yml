@@ -5,10 +5,10 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default: the called workflows build third-party code (jsonb_delta,
+# confiture's dependencies). Only build-and-sign may write.
 permissions:
-  contents: write
-  id-token: write       # Required for Sigstore keyless signing
-  attestations: write   # Required for actions/attest-build-provenance to persist the attestation
+  contents: read
 
 jobs:
   # Nothing is built or published unless the tagged commit passes every suite,
@@ -19,10 +19,16 @@ jobs:
     uses: ./.github/workflows/clippy.yml
   confiture:
     uses: ./.github/workflows/confiture.yml
+  upgrade:
+    uses: ./.github/workflows/upgrade.yml
 
   build-and-sign:
-    needs: [ci, lint, confiture]
+    needs: [ci, lint, confiture, upgrade]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release
+      id-token: write       # Sigstore keyless signing
+      attestations: write   # actions/attest-build-provenance
     steps:
       - uses: actions/checkout@v4
 

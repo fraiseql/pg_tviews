@@ -42,12 +42,17 @@ pub(super) fn flush_pending() -> TViewResult<()> {
         }
         // Work queued by triggers the flush's own writes fired (a TVIEW's table
         // read by another, a user trigger writing a base table), with the patches
-        // they captured. Keys already refreshed are not refreshed again.
+        // they captured. A key refreshed earlier in this flush is refreshed again:
+        // its source changed after that refresh read it. The propagation depth
+        // bounds a trigger that keeps writing.
         let late = state::drain();
         if late.queue.is_empty() && late.fanout.is_empty() {
             break;
         }
         flush.patches.extend(late.patches);
+        for key in &late.queue {
+            flush.processed.remove(key);
+        }
         flush.pending = late.queue;
         flush.apply_fanouts(late.fanout)?;
     }

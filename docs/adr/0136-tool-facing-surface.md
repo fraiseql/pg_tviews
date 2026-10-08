@@ -30,7 +30,7 @@ database with pg_tviews installed.** Everything pg_tviews does runs as the curre
   because the trigger reads the catalog as the writing role.
 - A `DROP … CASCADE` that takes a `v_*` with it runs `pg_tviews_drop` from the `sql_drop`
   event trigger, and then its fallback `DELETE FROM pg_tview_meta`, as the dropping role
-  (`src/metadata.rs:183-201`). Both fail, and the user's `DROP` aborts.
+  (`src/metadata.rs` at the time, now `src/install_sql.rs`). Both fail, and the user's `DROP` aborts.
 - With `pg_tviews.audit_enabled`, the flush inserts into `pg_tview_audit_log` as the
   writing role.
 - The refresh writes `tv_*` as the writing role, so every writer would need write access to
@@ -48,7 +48,7 @@ schemas and `CREATE SCHEMA pg_tviews` fails.
 - The extension SQL uses `@extschema@` everywhere, or no qualification inside the install
   script (where `search_path` is the target schema). No `public.` remains.
 - The schema is fixed, so `utils::ext_schema()` returns the constant `tviews` and its
-  per-backend cache (`EXT_SCHEMA_CACHE`, `src/utils.rs:342`) goes away. A cache filled
+  per-backend cache (`EXT_SCHEMA_CACHE` in `src/utils.rs` at the time) goes away. A cache filled
   before a migration could otherwise still say `public`.
 - Every reference from outside the extension's own script is qualified: the base-table
   triggers (`tviews.pg_tview_trigger_handler()`, `tviews.pg_tview_flush_trigger()`), the
@@ -301,6 +301,13 @@ SELECT * FROM tviews.registry;      -- one row per registered TVIEW
 | `needs_reregister` | boolean | a release changed what registration derives since this TVIEW was last registered |
 | `identity` | text[] | the column that names its rows and keys its table: `pk_<entity>`, or a `DISTINCT ON` key (appended in 0.1.0-beta.23, [ADR 0169](0169-tview-row-identity.md)) |
 
+Columns appended since, each in a later release and listed with its meaning in
+[read-contract.md](../reference/read-contract.md): `view` (the backing view, which
+lives in `tviews` since the #181 amendment), `uncascaded_tables`,
+`uncascaded_policy`, `cascade_kinds`, `uncascaded_table_policies`,
+`function_reads`, `time_dependent` and `time_refresh`. Columns are only appended:
+existing ones keep their position and meaning.
+
 **`query`** is the definition as pg_tviews stores it: the author's text after the creation
 pipeline, with `SELECT *` expanded and a raw SELECT rewritten to the `pk_<entity>, id,
 data` shape, and after column-rename rewrites (#81). It is not the author's original
@@ -309,7 +316,8 @@ text. The pipeline leaves its own output unchanged, so passing `query` back to
 `test/sql/regress/ddl/regress_create_or_replace.sql` checks this round trip for a plain, a raw-SELECT, a `SELECT *` and
 an aggregate TVIEW.
 
-**`base_tables`** is every relation reached from the backing view `v_<entity>` through its
+**`base_tables`** is every relation reached from the backing view (`v_<entity>` when this
+was decided, `tviews.<schema>__tv_<entity>` since the #181 amendment) through its
 rewrite rule's dependencies (`pg_depend` on `pg_rewrite`) whose `relkind` is `r`, `p`, `f`
 or `m`:
 - views (`relkind = 'v'`) are recursed into; the walk stops at the four relkinds above;

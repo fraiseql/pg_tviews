@@ -71,8 +71,12 @@ here are [internal](#internal-functions).
 
 ## Creating and changing TVIEWs
 
-`tview_name` is `tv_<entity>`, `<entity>` or `schema.tv_<entity>`; an entity names one
-TVIEW in the whole database. The definition is exactly one `SELECT` with a
+An entity names one TVIEW in the whole database. The functions in this section take
+`tview_name` as `tv_<entity>`, `<entity>` or `schema.tv_<entity>`, except
+`pg_tviews_reregister`, which takes `tv_<entity>` or `<entity>`. The functions acting
+on an existing TVIEW elsewhere take the bare entity (`'post'`), except
+`pg_tviews_refresh_time_dependent`, which takes the table (`'tv_post'` or
+`'app.tv_post'`). The definition is exactly one `SELECT` with a
 `pk_<entity>` key column; see the [DDL reference](ddl.md) for what it may contain.
 `CREATE TABLE tv_<entity> AS SELECT …` is the same as `pg_tviews_create`.
 
@@ -259,7 +263,8 @@ tviews.pg_tviews_refresh_time_dependent(tview text DEFAULT NULL) RETURNS SETOF t
 Refreshes in full the TVIEWs whose definitions read the current time
 (`tviews.registry.time_dependent`): `tview`, or every such TVIEW the caller owns.
 The TVIEWs reading them follow in the same flush. Returns the TVIEWs refreshed,
-dependencies first. A named TVIEW that is not one, or reads no time, is `22023`.
+dependencies first. A name that is no relation is `42P01`; a relation that is not a
+TVIEW, or a TVIEW that reads no time, is `22023`.
 Call it at the boundary the rows depend on, from pg_cron or the application
 ([Time-dependent TVIEWs](ddl.md#time-dependent-tviews)).
 
@@ -296,7 +301,7 @@ tviews.pg_tviews_show_cascade_path(entity text)
 ```
 
 `entity` at depth 0, then the TVIEWs that read it, with their depth: what
-`pg_tviews_refresh(entity)` rebuilds.
+`pg_tviews_refresh(entity)` rebuilds. An unknown entity is `42704`.
 
 ```sql
 SELECT * FROM tviews.pg_tviews_show_cascade_path('user');
@@ -312,7 +317,7 @@ The query that maps the rows a statement changed in `base_table`, read from a
 relation named `pg_tviews_delta`, to keys of `tview`, from the TVIEW's stored plan.
 NULL when writes to that table do not map through a query of their own (a table
 propagated through an embed, or one refreshing every key), when the TVIEW does not
-read the table, or when `tview` is not a TVIEW. See
+read the table. An unknown `tview` is `42704`. See
 [How a write finds the TVIEW rows to refresh](ddl.md#how-a-write-finds-the-tview-rows-to-refresh).
 
 ```sql
@@ -419,9 +424,9 @@ tviews.pg_tviews_recover_after_crash(entity_name text) RETURNS boolean
   and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore left empty (every TVIEW with `only_empty => false`), dependencies first,
-  each as its owner; it refuses to run during recovery. Operator function; it also
-  reads each TVIEW as the caller (to find the empty ones and count rows), so the
-  caller needs `SELECT` on the `tv_*` tables.
+  each as its owner, which also finds the empty ones and counts their rows; it refuses
+  to run during recovery. Operator function: the caller needs no privilege on the
+  `tv_*` tables.
 - `pg_tviews_recover_after_crash` does the same for one entity, returning whether it
   had to. Requires owning the TVIEW.
 

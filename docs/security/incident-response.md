@@ -180,7 +180,7 @@ Security Incident Response Team
 
 ## Response Timeline
 
-### Phase 1: Detection & Assessment (0-4 hours)
+### Stage 1: Detection & Assessment (0-4 hours)
 
 1. **Detection**: Automated monitoring or manual report
 2. **Triage**: Initial severity assessment
@@ -193,7 +193,7 @@ Security Incident Response Team
 - Response team activation
 - Communication plan initiation
 
-### Phase 2: Containment & Analysis (4-24 hours)
+### Stage 2: Containment & Analysis (4-24 hours)
 
 1. **Containment**: Isolate affected systems
 2. **Evidence Collection**: Preserve forensic data
@@ -206,7 +206,7 @@ Security Incident Response Team
 - Root cause identified
 - Complete impact assessment
 
-### Phase 3: Recovery & Remediation (24-72 hours)
+### Stage 3: Recovery & Remediation (24-72 hours)
 
 1. **Fix Development**: Security patch creation
 2. **Testing**: Comprehensive validation
@@ -219,7 +219,7 @@ Security Incident Response Team
 - Monitoring systems activated
 - Recovery procedures documented
 
-### Phase 4: Communication & Closure (72 hours+)
+### Stage 4: Communication & Closure (72 hours+)
 
 1. **Public Disclosure**: Security advisory release
 2. **User Notification**: Impact and remediation guidance

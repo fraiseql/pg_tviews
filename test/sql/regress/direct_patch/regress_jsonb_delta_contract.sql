@@ -1,4 +1,4 @@
--- Contract probe for issue #56 (Phase 4 Cycle 0): jsonb_smart_patch_nested must
+-- Contract probe for issue #56: jsonb_smart_patch_nested must
 -- MERGE the source at the target path, preserving sibling keys — NOT replace the
 -- object at the path. Parent patch derivation applies the child's changed fields
 -- at the embedding path; replace-at-path would clobber the embedded object's other

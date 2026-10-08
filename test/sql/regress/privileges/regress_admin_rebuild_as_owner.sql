@@ -56,12 +56,25 @@ SELECT entity FROM pg_tviews_rebuild_all(true);
 TRUNCATE public.tv_thing;
 SET regress.via = 'recover_after_crash';
 SELECT pg_tviews_recover_after_crash('thing');
+-- A deploy re-applying the definition: the same columns (rows reconciled in
+-- place), then a new column (the table rebuilt).
+SET regress.via = 'replace';
+SELECT pg_tviews_create_or_replace('public.tv_thing',
+  $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n || '!', 's', public.spy()) AS data
+     FROM public.tb_thing$q$,
+  options => '{"function_reads": {"public.spy()": []}}');
+SET regress.via = 'replace_rebuild';
+SELECT pg_tviews_create_or_replace('public.tv_thing',
+  $q$SELECT pk_thing, id, n, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
+     FROM public.tb_thing$q$,
+  options => '{"function_reads": {"public.spy()": []}}');
 RESET regress.via;
 
 DO $$
 DECLARE
     want text[] := ARRAY['refresh_all', 'rebuild_all', 'refresh_all_entities', 'refresh',
-                         'rebuild_all_only_empty', 'recover_after_crash'];
+                         'rebuild_all_only_empty', 'recover_after_crash', 'replace',
+                         'replace_rebuild'];
     entry text;
     users text;
 BEGIN

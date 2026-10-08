@@ -1,4 +1,4 @@
--- Regression test for issue #56 (Phase 3): flush-time direct patch, direct entity.
+-- Regression test for issue #56: flush-time direct patch, direct entity.
 --
 -- An eligible UPDATE patches tv_<entity> directly via jsonb_smart_patch_scalar with
 -- ZERO backing-view queries; untouched JSONB keys stay byte-identical; missing rows,

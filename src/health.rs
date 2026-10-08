@@ -169,8 +169,8 @@ fn plan_check() -> Check {
         Ok(unreadable) => error(
             "plans",
             format!(
-                "{} unreadable, writes to the tables they read fail: {}; run \
-                 SELECT tviews.pg_tviews_reregister(entity) for each",
+                "{} unreadable; until re-registered, writes to the base tables of every \
+                 TVIEW fail: {}; run SELECT tviews.pg_tviews_reregister(entity) for each",
                 count(unreadable.len(), "TVIEW"),
                 unreadable
                     .iter()
@@ -210,19 +210,31 @@ fn reregister_check() -> Check {
 }
 
 /// `pg_tviews`' triggers against the tables the TVIEWs read.
+/// `pg_tviews`' triggers against the plans: a missing or disabled one leaves a
+/// TVIEW stale (an error); an orphaned or untagged one does no harm (a warning).
 fn trigger_check() -> Check {
     match crate::dependency::triggers::trigger_problems() {
-        Ok(p) if p.orphaned.is_empty() && p.missing.is_empty() && p.untagged.is_empty() => {
+        Ok(p)
+            if p.orphaned.is_empty()
+                && p.missing.is_empty()
+                && p.untagged.is_empty()
+                && p.disabled.is_empty() =>
+        {
             ok("triggers", "All triggers properly linked")
         }
         Ok(p) => {
             let parts: Vec<String> = [
-                (&p.orphaned, "orphaned trigger", "found"),
+                (
+                    &p.disabled,
+                    "disabled trigger",
+                    "(ALTER TABLE … ENABLE TRIGGER)",
+                ),
                 (
                     &p.missing,
                     "missing trigger",
                     "(run pg_tviews_reregister_all())",
                 ),
+                (&p.orphaned, "orphaned trigger", "found"),
                 (
                     &p.untagged,
                     "trigger without an entity",
@@ -235,7 +247,11 @@ fn trigger_check() -> Check {
                 format!("{} {action}: {}", count(list.len(), what), sample(list))
             })
             .collect();
-            warning("triggers", parts.join("; "))
+            if p.disabled.is_empty() && p.missing.is_empty() {
+                warning("triggers", parts.join("; "))
+            } else {
+                error("triggers", parts.join("; "))
+            }
         }
         Err(e) => error("triggers", format!("could not check triggers: {e}")),
     }

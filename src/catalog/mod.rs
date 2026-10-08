@@ -237,26 +237,19 @@ impl TviewMeta {
         })
     }
 
-    /// The catalog row of the TVIEW whose table is `tview_oid`.
+    /// The entity of the TVIEW whose table is `tview_oid`, read without decoding
+    /// its plan: what dropping a TVIEW needs.
     ///
     /// # Errors
-    /// The catalog cannot be read, or its plan does not decode.
-    pub fn load_for_tview(tview_oid: Oid) -> crate::TViewResult<Option<Self>> {
-        Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
-            let args = vec![crate::utils::spi::oid(tview_oid)];
-            let mut rows = client.select(
-                &format!("{} WHERE table_oid = $1", meta_select()),
-                None,
-                &args,
-            )?;
-
-            let result = if let Some(row) = rows.next() {
-                Some(Self::from_spi_row(&row)?)
-            } else {
-                None
-            };
-            Ok(result)
-        })
+    /// The catalog cannot be read.
+    pub fn entity_of_table(tview_oid: Oid) -> crate::TViewResult<Option<String>> {
+        crate::utils::spi::one::<String>(
+            &format!(
+                "SELECT entity FROM {} WHERE table_oid::pg_catalog.oid = $1",
+                crate::utils::meta_table()
+            ),
+            &[crate::utils::spi::oid(tview_oid)],
+        )
     }
 
     /// The catalog row of `entity_name` for re-registration, which derives its

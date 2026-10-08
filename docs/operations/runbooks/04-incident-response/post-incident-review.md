@@ -14,7 +14,7 @@ prevent it from recurring.
 - The participants
 - PostgreSQL logs for the incident window
 
-## Phase 1: Preparation (30 minutes)
+## Stage 1: Preparation (30 minutes)
 
 ### Step 1: Reconstruct the timeline
 Record when the incident started, was detected, was contained and was resolved,
@@ -56,7 +56,7 @@ ORDER BY performed_at;
 - [ ] TVIEW definitions involved (`SELECT name, query FROM tviews.registry`)
 - [ ] Actions taken and their effect
 
-## Phase 2: Root Cause Analysis (1 hour)
+## Stage 2: Root Cause Analysis (1 hour)
 
 ### Step 4: 5-Why analysis
 Ask "why" from the symptom until you reach a cause you can act on:
@@ -82,7 +82,7 @@ ones to check:
 - [ ] Contributing causes listed
 - [ ] Preventable causes identified
 
-## Phase 3: Response Review (45 minutes)
+## Stage 3: Response Review (45 minutes)
 
 ### Step 7: Timeline analysis
 Compare detection, containment and resolution times with the severity's response
@@ -100,7 +100,7 @@ time in the [Incident Checklist](incident-checklist.md).
 - [ ] Were the needed tools and access available?
 - [ ] Could a check have detected it earlier (health check, TVIEW-vs-view comparison)?
 
-## Phase 4: Improvements (45 minutes)
+## Stage 4: Improvements (45 minutes)
 
 ### Step 10: Corrective actions
 Fix this incident's cause: definition, data, index, configuration, missing
@@ -122,7 +122,7 @@ Examples:
 - [ ] Resolution: runbook fixes
 - [ ] Prevention: tests and reviews
 
-## Phase 5: Action Planning (30 minutes)
+## Stage 5: Action Planning (30 minutes)
 
 ### Step 13: Assign actions
 Track each action in the team's tracker with an owner, priority and target date.

@@ -119,22 +119,27 @@ jobs:
       # These scripts create a throwaway database per test and exit non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
       - name: Regression suite (test/sql/regress/)
-        run: ./test/run_regression_tests.sh
+        if: ${{ !cancelled() }}
+        run: REGRESS_NO_SKIP=1 ./test/run_regression_tests.sh
 
       - name: Integration suite (test/sql/[0-9]*.sql)
+        if: ${{ !cancelled() }}
         run: ./test/run_integration_tests.sh
 
       # Every TVIEW shape equals its backing view after each of a few hundred
       # seeded random writes.
       - name: Differential suite (test/sql/differential/run.sh)
+        if: ${{ !cancelled() }}
         run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
 
       # Concurrent writers, DDL and snapshot isolation levels.
       - name: Isolation suite (test/isolation/run.sh)
+        if: ${{ !cancelled() }}
         run: PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" ./test/isolation/run.sh
 
       # The SQL of the user docs, run as written on a fresh database.
       - name: Documentation SQL (test/docs/run_doc_sql.sh)
+        if: ${{ !cancelled() }}
         run: |
           ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md \
             docs/reference/api.md docs/user-guides/*.md
@@ -143,11 +148,13 @@ jobs:
       # pg_tviews_create_or_replace() and refresh work where the library is loaded
       # lazily (#134).
       - name: No-preload suite (test/no_preload/run.sh)
+        if: ${{ !cancelled() }}
         run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
 
       # A pg_basebackup standby on a spare port: UNLOGGED TVIEWs on a hot standby,
       # after promotion and after a crash restart (issue #75).
       - name: Replication suite (test/replication/promote_rebuild.sh)
+        if: ${{ !cancelled() }}
         run: |
           hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
           sudo sed -i '1i host replication all 127.0.0.1/32 trust\nhost replication all ::1/128 trust' "$hba"

@@ -69,9 +69,11 @@ pub(super) unsafe fn handle_drop_table(
                 continue;
             }
 
-            match crate::catalog::TviewMeta::load_for_tview(relid) {
-                Ok(Some(meta)) => tv_entries.push((i, format!("tv_{}", meta.entity_name))),
-                _ => has_non_tv = true,
+            // A catalog that cannot be read fails the DROP rather than leaving a
+            // TVIEW's catalog row, view and triggers behind its table.
+            match crate::catalog::TviewMeta::entity_of_table(relid)? {
+                Some(entity) => tv_entries.push((i, format!("tv_{entity}"))),
+                None => has_non_tv = true,
             }
         }
 

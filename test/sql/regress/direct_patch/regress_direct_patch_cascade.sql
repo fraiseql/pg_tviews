@@ -1,4 +1,4 @@
--- Regression test for issue #56 (Phase 4): cascade patch propagation to parents.
+-- Regression test for issue #56: cascade patch propagation to parents.
 --
 -- The headline win. A patched child entity embedded in parents via nested_object
 -- dependencies propagates a DERIVED patch (child fields at the dependency path) —

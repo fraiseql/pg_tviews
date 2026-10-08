@@ -8,7 +8,7 @@ Use this checklist for all documentation changes before committing.
 
 ### Content Validation
 - [ ] **Technical accuracy**: All information verified against code
-- [ ] **Completeness**: No missing information or TODO placeholders
+- [ ] **Completeness**: No missing information or placeholders
 - [ ] **Examples tested**: All code examples run successfully
 - [ ] **Links valid**: All internal and external links work
 - [ ] **Spelling/grammar**: Spell check and grammar review completed

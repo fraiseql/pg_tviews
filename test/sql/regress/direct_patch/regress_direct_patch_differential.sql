@@ -1,4 +1,4 @@
--- Regression test for issue #56 (Phase 5): differential byte-identity + fallbacks.
+-- Regression test for issue #56: differential byte-identity + fallbacks.
 --
 -- Acceptance criterion: an eligible fast-path UPDATE yields tv_*.data byte-identical
 -- to a full recompute. Each eligible scenario runs the mutation, snapshots the data,

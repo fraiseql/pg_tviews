@@ -9,11 +9,11 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 \ir lib/security_helpers.sql
 -- Comprehensive Security Test Suite
--- Tests all phases for SQL injection vulnerabilities
+-- SQL injection through every entry point that takes a name or a definition
 
 \echo '=========================================='
 \echo 'Comprehensive Security Test Suite'
-\echo 'Tests all phases for SQL injection'
+\echo 'SQL injection through every entry point'
 \echo '=========================================='
 
 -- SQL-injection rejection for the public pg_tviews functions that take

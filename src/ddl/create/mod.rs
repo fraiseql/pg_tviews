@@ -15,7 +15,23 @@ use relations::{
 #[cfg(test)]
 mod tests;
 
+thread_local! {
+    /// Set by [`without_rows`]: the TVIEW is created empty.
+    static WITHOUT_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `create` with the new TVIEW's table left empty: a rebuild by a role that
+/// is not the TVIEW's owner fills it as the owner once the owner is restored,
+/// so the owner's view functions never run with the caller's privileges.
+pub(crate) fn without_rows<T>(create: impl FnOnce() -> T) -> T {
+    WITHOUT_ROWS.with(|w| w.set(true));
+    let result = create();
+    WITHOUT_ROWS.with(|w| w.set(false));
+    result
+}
+
 pub use select::ViewColumns;
+pub(crate) use select::check_one_select;
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
@@ -226,8 +242,13 @@ fn create_tview_inner(
         view_oid,
     )?;
 
-    // Populate initial data
-    let rows = populate_initial_data(&tv_table_name, &schema_name, view_oid)?;
+    // Populate initial data, unless the caller fills the table itself as its
+    // owner (a rebuild by another role).
+    let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
+        0
+    } else {
+        populate_initial_data(&tv_table_name, &schema_name, view_oid)?
+    };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
     // table. Any table it reads, whatever it is called, maps its writes
@@ -270,9 +291,7 @@ fn create_tview_inner(
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_create(entity_name, &final_select_sql);
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        warning!("Failed to flush audit after CREATE: {}", e);
-    }
+    crate::audit::flush_audit_buffer()?;
 
     Ok(rows)
 }

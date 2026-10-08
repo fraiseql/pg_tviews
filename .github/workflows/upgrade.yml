@@ -11,6 +11,8 @@ on:
     branches: [ main ]
   # Every pull request, stacked ones included (their base is not main).
   pull_request:
+  # The release runs it before building anything.
+  workflow_call:
 
 env:
   PG_MAJOR: "18"

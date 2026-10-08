@@ -216,6 +216,8 @@ pub struct TriggerProblems {
     /// `pg_tviews` triggers without an entity argument (installed by an older
     /// release): `pg_tviews_reregister_all()` replaces them.
     pub untagged: Vec<String>,
+    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`.
+    pub disabled: Vec<String>,
 }
 
 /// Check `pg_tviews`' triggers against the tables each registered TVIEW reads
@@ -231,7 +233,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
     let kind = crate::catalog::registered::mapping_kind_sql("m", "r.relid");
     let query = format!(
         "WITH ours AS ( \
-             SELECT t.tgname, t.tgrelid, p.proname, \
+             SELECT t.tgname, t.tgrelid, p.proname, t.tgenabled, \
                     CASE WHEN t.tgnargs = 1 THEN pg_catalog.convert_from( \
                         pg_catalog.substring(t.tgargs, 1, pg_catalog.length(t.tgargs) - 1), \
                         pg_catalog.getdatabaseencoding()) END AS entity \
@@ -291,6 +293,10 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          SELECT 'untagged', pg_catalog.format('%I on %s', o.tgname, \
                                               o.tgrelid::pg_catalog.regclass) \
          FROM ours o WHERE o.entity IS NULL \
+         UNION ALL \
+         SELECT 'disabled', pg_catalog.format('%I on %s', o.tgname, \
+                                              o.tgrelid::pg_catalog.regclass) \
+         FROM ours o WHERE o.tgenabled = 'D' \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
         meta = crate::utils::meta_table(),
@@ -302,6 +308,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                 match kind.as_str() {
                     "orphaned" => problems.orphaned.push(what),
                     "missing" => problems.missing.push(what),
+                    "disabled" => problems.disabled.push(what),
                     _ => problems.untagged.push(what),
                 }
             }

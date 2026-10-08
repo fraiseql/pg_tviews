@@ -47,7 +47,8 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     }
 
     // Load metadata to get OIDs for schema-safe drops
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name).map_err(|e| {
+    // Read leniently: dropping a TVIEW needs its relations, not its plan.
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name).map_err(|e| {
         TViewError::SpiError {
             query: "Load TviewMeta by entity".to_string(),
             error: e.to_string(),
@@ -86,9 +87,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_drop(entity_name);
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        warning!("Failed to flush audit after DROP: {}", e);
-    }
+    crate::audit::flush_audit_buffer()?;
 
     Ok(true)
 }
