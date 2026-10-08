@@ -13,6 +13,7 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
 
 \echo '=========================================='
 \echo 'Test 42: FK Lineage Cascade'
@@ -90,7 +91,15 @@ SELECT
     COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Alice') = 3 as alice_has_3_posts,
     COUNT(*) FILTER (WHERE data->'author'->>'name' = 'Bob') = 1 as bob_has_1_post
 FROM tv_post;
--- Expected: 3 posts with author 'Alice', 1 post with author 'Bob'
+SELECT assert_fresh('tv_user', 'pk_user', 'pg_tviews_create');
+SELECT assert_fresh('tv_post', 'pk_post', 'pg_tviews_create');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_user) <> 2 OR (SELECT COUNT(*) FROM tv_post) <> 4
+       OR (SELECT COUNT(*) FROM tv_post WHERE data->'author'->>'name' = 'Alice') <> 3
+       OR (SELECT COUNT(*) FROM tv_post WHERE data->'author'->>'name' = 'Bob') <> 1 THEN
+        RAISE EXCEPTION 'FAIL: initial users/posts or nested authors wrong';
+    END IF;
+END $$;
 
 \echo '✓ Test 1 passed: Initial population correct'
 
@@ -116,6 +125,20 @@ SELECT
     (SELECT COUNT(*) FROM tv_post WHERE fk_user = 2) = 1 as bob_posts_unchanged,
     (SELECT data->'author'->>'name' FROM tv_post WHERE fk_user = 2) = 'Bob' as bob_name_correct;
 
+SELECT assert_fresh('tv_user', 'pk_user', 'an UPDATE of tb_user.name');
+SELECT assert_fresh('tv_post', 'pk_post', 'an UPDATE of tb_user.name');
+DO $$ BEGIN
+    IF (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'Alice Updated' THEN
+        RAISE EXCEPTION 'FAIL: tv_user row 1 not refreshed';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_post WHERE fk_user = 1 AND data->'author'->>'name' = 'Alice Updated') <> 3 THEN
+        RAISE EXCEPTION 'FAIL: user rename did not reach all 3 of her posts';
+    END IF;
+    IF (SELECT data->'author'->>'name' FROM tv_post WHERE fk_user = 2) IS DISTINCT FROM 'Bob' THEN
+        RAISE EXCEPTION 'FAIL: Bob''s post changed by Alice''s rename';
+    END IF;
+END $$;
+
 \echo '✓ Test 2 passed: Parent update cascaded to children'
 
 -- Test 3: Update multiple fields in parent
@@ -133,17 +156,25 @@ SELECT
 FROM tv_post
 WHERE pk_post = 1;
 
+SELECT assert_fresh('tv_user', 'pk_user', 'an UPDATE of two tb_user fields');
+SELECT assert_fresh('tv_post', 'pk_post', 'an UPDATE of two tb_user fields');
+DO $$ BEGIN
+    IF (SELECT (data->'author'->>'name', data->'author'->>'email') FROM tv_post WHERE pk_post = 1)
+       IS DISTINCT FROM ('Alice V2'::text, 'alice.v2@example.com'::text) THEN
+        RAISE EXCEPTION 'FAIL: post 1 author not (Alice V2, alice.v2@example.com)';
+    END IF;
+END $$;
+
 \echo '✓ Test 3 passed: Multiple fields cascaded'
 
 -- Test 4: Update child (post) - should NOT cascade to user
 \echo ''
 \echo 'Test 4: Child update does not cascade to parent'
 
--- Record user timestamp before post update
-SELECT updated_at AS user_before FROM tv_user WHERE pk_user = 1 \gset
-
--- Wait briefly
-SELECT pg_sleep(0.1);
+-- Record the user row's tuple id before the post update: the file runs in one
+-- transaction, where updated_at (now()) cannot change, but any rewrite of the
+-- row gives it a new ctid.
+CREATE TEMP TABLE user_before AS SELECT ctid AS tid FROM tv_user WHERE pk_user = 1;
 
 -- Update post
 UPDATE tb_post SET title = 'Alice Post 1 Updated' WHERE pk_post = 1;
@@ -152,10 +183,20 @@ UPDATE tb_post SET title = 'Alice Post 1 Updated' WHERE pk_post = 1;
 SELECT data->>'title' FROM tv_post WHERE pk_post = 1;
 -- Expected: 'Alice Post 1 Updated'
 
--- Verify user NOT updated (timestamp unchanged)
-SELECT updated_at = :'user_before'::timestamptz AS user_unchanged
+-- Verify user NOT updated (row not rewritten)
+SELECT ctid = (SELECT tid FROM user_before) AS user_unchanged
 FROM tv_user WHERE pk_user = 1;
--- Expected: true (user should not have been touched)
+
+SELECT assert_fresh('tv_user', 'pk_user', 'an UPDATE of tb_post.title');
+SELECT assert_fresh('tv_post', 'pk_post', 'an UPDATE of tb_post.title');
+DO $$ BEGIN
+    IF (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'Alice Post 1 Updated' THEN
+        RAISE EXCEPTION 'FAIL: post 1 title not refreshed';
+    END IF;
+    IF (SELECT ctid FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM (SELECT tid FROM user_before) THEN
+        RAISE EXCEPTION 'FAIL: a post update rewrote its parent user row';
+    END IF;
+END $$;
 
 \echo '✓ Test 4 passed: Child update did not cascade to parent'
 
@@ -183,6 +224,18 @@ SELECT COUNT(*) FROM tv_post WHERE fk_user = 1;
 SELECT COUNT(*) FROM tv_post WHERE fk_user = 2;
 -- Expected: 2
 
+SELECT assert_fresh('tv_user', 'pk_user', 're-pointing tb_post.fk_user');
+SELECT assert_fresh('tv_post', 'pk_post', 're-pointing tb_post.fk_user');
+DO $$ BEGIN
+    IF (SELECT data->'author'->>'name' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'Bob' THEN
+        RAISE EXCEPTION 'FAIL: moved post 1 does not show Bob as author';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_post WHERE fk_user = 1) <> 2
+       OR (SELECT COUNT(*) FROM tv_post WHERE fk_user = 2) <> 2 THEN
+        RAISE EXCEPTION 'FAIL: post counts per user not 2/2 after the move';
+    END IF;
+END $$;
+
 \echo '✓ Test 5 passed: FK change handled correctly'
 
 -- Test 6: INSERT new child - should use parent data
@@ -201,6 +254,16 @@ FROM tv_post
 WHERE data->>'title' = 'New Alice Post';
 -- Expected: 'New Alice Post', 'Alice V2', 'alice.v2@example.com'
 
+SELECT assert_fresh('tv_user', 'pk_user', 'an INSERT into tb_post');
+SELECT assert_fresh('tv_post', 'pk_post', 'an INSERT into tb_post');
+DO $$ BEGIN
+    IF (SELECT (data->'author'->>'name', data->'author'->>'email') FROM tv_post
+        WHERE data->>'title' = 'New Alice Post')
+       IS DISTINCT FROM ('Alice V2'::text, 'alice.v2@example.com'::text) THEN
+        RAISE EXCEPTION 'FAIL: new post does not embed the current Alice';
+    END IF;
+END $$;
+
 \echo '✓ Test 6 passed: INSERT uses current parent data'
 
 -- Test 7: DELETE child - should not affect parent
@@ -217,6 +280,17 @@ SELECT COUNT(*) FROM tv_post WHERE pk_post = 2;
 SELECT COUNT(*) FROM tv_user WHERE pk_user = 1;
 -- Expected: 1
 
+SELECT assert_fresh('tv_user', 'pk_user', 'a DELETE from tb_post');
+SELECT assert_fresh('tv_post', 'pk_post', 'a DELETE from tb_post');
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM tv_post WHERE pk_post = 2) THEN
+        RAISE EXCEPTION 'FAIL: deleted post 2 still in tv_post';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM tv_user WHERE pk_user = 1) THEN
+        RAISE EXCEPTION 'FAIL: deleting a post removed its user';
+    END IF;
+END $$;
+
 \echo '✓ Test 7 passed: Child deletion handled correctly'
 
 -- Test 8: Verify dependency metadata
@@ -230,6 +304,21 @@ SELECT
 FROM pg_tview_meta
 ORDER BY entity;
 -- Expected: user (1 local path, 0 embeds), post (1 local path, 0 embeds: it reads tb_user)
+
+-- post reads tb_user through a plain view, not through tv_user: that is a
+-- mapped table in its plan (keyed back through fk_user), not an embed.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tview_meta
+               WHERE jsonb_array_length(plan->'paths') <> 1
+                  OR jsonb_array_length(plan->'embeds') <> 0) THEN
+        RAISE EXCEPTION 'FAIL: expected 1 local path and 0 embeds per TVIEW';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_tview_meta m, jsonb_array_elements(m.plan->'tables') t
+                   WHERE m.entity = 'post' AND t->>'kind' = 'mapped'
+                     AND (t->>'relid')::oid = 'tb_user'::regclass::oid) THEN
+        RAISE EXCEPTION 'FAIL: post plan does not map tb_user';
+    END IF;
+END $$;
 
 \echo '✓ Test 8 passed: Metadata correct'
 

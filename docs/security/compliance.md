@@ -21,7 +21,8 @@ pg_tviews implements comprehensive compliance with industry standards and regula
 - **Public Verifiable**: ✅ Open provenance format
 
 **Evidence**:
-- SLSA Level 3 workflow: `.github/workflows/slsa-provenance.yml`
+- Build provenance: `actions/attest-build-provenance` in `.github/workflows/release.yml`
+  attests the released tarball itself (`gh attestation verify pg_tviews-<tag>.tar.gz -R fraiseql/pg_tviews`)
 - Build provenance docs: `docs/security/provenance.md`
 - Reproducible builds: `scripts/reproducible-build.sh`
 

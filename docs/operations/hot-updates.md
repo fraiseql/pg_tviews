@@ -33,7 +33,7 @@ condition 2.
 The indexes a TVIEW does get (`pk_<entity>`, `id`, UUID FKs, and the
 `(fk_<x>, pk_<entity>)` propagation indexes) are all on columns that a `data`
 refresh doesn't change. `updated_at` is never indexed. With these defaults,
-single-row refreshes measure **100 % HOT** (`regress_issue_70_73_hot_defaults.sql`).
+single-row refreshes measure **100 % HOT** (`regress_hot_defaults.sql`).
 
 Both settings apply when a TVIEW is created, through `pg_tviews_create()` or
 `CREATE TABLE tv_* AS SELECT …`. **Existing TVIEWs are not changed.**

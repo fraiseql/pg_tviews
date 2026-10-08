@@ -7,7 +7,7 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
-\ir 00-security-test-helpers.sql
+\ir lib/security_helpers.sql
 -- Comprehensive Security Test Suite
 -- Tests all phases for SQL injection vulnerabilities
 

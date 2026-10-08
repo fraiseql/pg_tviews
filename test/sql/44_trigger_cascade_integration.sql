@@ -13,6 +13,15 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
+
+-- All three TVIEWs must match their backing views.
+CREATE FUNCTION assert_all_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM assert_fresh('tv_company', 'pk_company', label);
+    PERFORM assert_fresh('tv_user', 'pk_user', label);
+    PERFORM assert_fresh('tv_post', 'pk_post', label);
+END $$;
 
 \echo '=========================================='
 \echo 'Test 44: Full Integration Test'
@@ -144,6 +153,19 @@ FROM tv_post
 WHERE pk_post = 1;
 -- Expected: 'Welcome to Acme', 'Alice Johnson', 'Acme Corp'
 
+SELECT assert_all_fresh('creating the hierarchy');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_company) <> 2 OR (SELECT COUNT(*) FROM tv_user) <> 4
+       OR (SELECT COUNT(*) FROM tv_post) <> 5 THEN
+        RAISE EXCEPTION 'FAIL: initial row counts not 2/4/5';
+    END IF;
+    IF (SELECT (data->>'title', data->'author'->>'name', data->'author'->'company'->>'name')
+        FROM tv_post WHERE pk_post = 1)
+       IS DISTINCT FROM ('Welcome to Acme'::text, 'Alice Johnson'::text, 'Acme Corp'::text) THEN
+        RAISE EXCEPTION 'FAIL: post 1 nested author/company wrong';
+    END IF;
+END $$;
+
 \echo '✓ Test 1 passed: Initial population correct'
 
 -- Test 2: Company update cascades through 2 levels
@@ -178,6 +200,19 @@ WHERE data->'author'->'company'->>'name' = 'Acme Corporation'
 ORDER BY pk_post;
 -- Expected: 4 posts with 'Acme Corporation'
 
+SELECT assert_all_fresh('an UPDATE of tb_company.name');
+DO $$ BEGIN
+    IF (SELECT data->>'name' FROM tv_company WHERE pk_company = 1) IS DISTINCT FROM 'Acme Corporation' THEN
+        RAISE EXCEPTION 'FAIL: tv_company row 1 not renamed';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_user WHERE fk_company = 1 AND data->'company'->>'name' = 'Acme Corporation') <> 3 THEN
+        RAISE EXCEPTION 'FAIL: rename did not reach all 3 Acme users';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_post WHERE data->'author'->'company'->>'name' = 'Acme Corporation') <> 4 THEN
+        RAISE EXCEPTION 'FAIL: rename did not reach all 4 Acme posts';
+    END IF;
+END $$;
+
 \echo '✓ Test 2 passed: 2-level cascade works (company -> user -> post)'
 
 -- Test 3: User update cascades to posts only
@@ -207,17 +242,30 @@ FROM tv_post
 WHERE fk_user = 2;
 -- Expected: 'Bob Smith' (unchanged)
 
+SELECT assert_all_fresh('an UPDATE of tb_user.name');
+DO $$ BEGIN
+    IF (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'Alice J. Updated' THEN
+        RAISE EXCEPTION 'FAIL: tv_user row 1 not renamed';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_post WHERE fk_user = 1 AND data->'author'->>'name' = 'Alice J. Updated') <> 2 THEN
+        RAISE EXCEPTION 'FAIL: rename did not reach both of Alice''s posts';
+    END IF;
+    IF (SELECT data->'author'->>'name' FROM tv_post WHERE fk_user = 2) IS DISTINCT FROM 'Bob Smith' THEN
+        RAISE EXCEPTION 'FAIL: Bob''s post changed by Alice''s rename';
+    END IF;
+END $$;
+
 \echo '✓ Test 3 passed: 1-level cascade works (user -> post)'
 
 -- Test 4: Post update does NOT cascade
 \echo ''
 \echo 'Test 4: Post update does not cascade upward'
 
--- Record timestamps
-SELECT updated_at FROM tv_user WHERE pk_user = 1 \gset user_ts_
-SELECT updated_at FROM tv_company WHERE pk_company = 1 \gset company_ts_
-
-SELECT pg_sleep(0.1);
+-- Record tuple ids: the file runs in one transaction, where updated_at
+-- (now()) cannot change, but any rewrite of a row gives it a new ctid.
+CREATE TEMP TABLE before_post_update AS
+SELECT (SELECT ctid FROM tv_user WHERE pk_user = 1) AS user_tid,
+       (SELECT ctid FROM tv_company WHERE pk_company = 1) AS company_tid;
 
 -- Update post
 UPDATE tb_post SET title = 'Updated Welcome', view_count = 999 WHERE pk_post = 1;
@@ -230,14 +278,26 @@ FROM tv_post
 WHERE pk_post = 1;
 -- Expected: 'Updated Welcome', 999
 
--- Verify user and company NOT updated (timestamps unchanged)
-SELECT updated_at = :'user_ts_updated_at'::timestamptz AS user_unchanged
+-- Verify user and company NOT updated (rows not rewritten)
+SELECT ctid = (SELECT user_tid FROM before_post_update) AS user_unchanged
 FROM tv_user WHERE pk_user = 1;
 -- Expected: true
 
-SELECT updated_at = :'company_ts_updated_at'::timestamptz AS company_unchanged
+SELECT ctid = (SELECT company_tid FROM before_post_update) AS company_unchanged
 FROM tv_company WHERE pk_company = 1;
 -- Expected: true
+
+SELECT assert_all_fresh('an UPDATE of tb_post');
+DO $$ BEGIN
+    IF (SELECT (data->>'title', (data->>'view_count')::int) FROM tv_post WHERE pk_post = 1)
+       IS DISTINCT FROM ('Updated Welcome'::text, 999) THEN
+        RAISE EXCEPTION 'FAIL: post 1 not (Updated Welcome, 999)';
+    END IF;
+    IF (SELECT ctid FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM (SELECT user_tid FROM before_post_update)
+       OR (SELECT ctid FROM tv_company WHERE pk_company = 1) IS DISTINCT FROM (SELECT company_tid FROM before_post_update) THEN
+        RAISE EXCEPTION 'FAIL: a post update rewrote its user or company row';
+    END IF;
+END $$;
 
 \echo '✓ Test 4 passed: Post update does not cascade upward'
 
@@ -257,6 +317,14 @@ FROM tv_user
 WHERE data->>'email' = 'eve@acme.com';
 -- Expected: 'Eve Wilson', 'Acme Corporation'
 
+SELECT assert_all_fresh('an INSERT into tb_user');
+DO $$ BEGIN
+    IF (SELECT data->'company'->>'name' FROM tv_user WHERE data->>'email' = 'eve@acme.com')
+       IS DISTINCT FROM 'Acme Corporation' THEN
+        RAISE EXCEPTION 'FAIL: new user Eve does not embed Acme Corporation';
+    END IF;
+END $$;
+
 -- Add post by new user
 INSERT INTO tb_post (fk_user, title, content, status)
 VALUES (5, 'First Post by Eve', 'Hello world', 'published');
@@ -269,6 +337,15 @@ SELECT
 FROM tv_post
 WHERE data->>'title' = 'First Post by Eve';
 -- Expected: 'First Post by Eve', 'Eve Wilson', 'Acme Corporation'
+
+SELECT assert_all_fresh('an INSERT into tb_post');
+DO $$ BEGIN
+    IF (SELECT (data->'author'->>'name', data->'author'->'company'->>'name') FROM tv_post
+        WHERE data->>'title' = 'First Post by Eve')
+       IS DISTINCT FROM ('Eve Wilson'::text, 'Acme Corporation'::text) THEN
+        RAISE EXCEPTION 'FAIL: Eve''s post nested author/company wrong';
+    END IF;
+END $$;
 
 \echo '✓ Test 5 passed: INSERT operations work'
 
@@ -286,6 +363,16 @@ SELECT COUNT(*) FROM tv_post WHERE pk_post = 5;
 -- Verify user still exists
 SELECT COUNT(*) FROM tv_user WHERE pk_user = 4;
 -- Expected: 1
+
+SELECT assert_all_fresh('a DELETE from tb_post');
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM tv_post WHERE pk_post = 5) THEN
+        RAISE EXCEPTION 'FAIL: deleted post 5 still in tv_post';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM tv_user WHERE pk_user = 4) THEN
+        RAISE EXCEPTION 'FAIL: deleting a post removed its user';
+    END IF;
+END $$;
 
 \echo '✓ Test 6 passed: DELETE operations work'
 
@@ -312,6 +399,16 @@ FROM tv_post
 WHERE fk_user = 2;
 -- Expected: 'Engineering Blog', 'Globex Inc'
 
+SELECT assert_all_fresh('re-pointing tb_user.fk_company');
+DO $$ BEGIN
+    IF (SELECT data->'company'->>'name' FROM tv_user WHERE pk_user = 2) IS DISTINCT FROM 'Globex Inc' THEN
+        RAISE EXCEPTION 'FAIL: moved user Bob does not embed Globex Inc';
+    END IF;
+    IF (SELECT data->'author'->'company'->>'name' FROM tv_post WHERE fk_user = 2) IS DISTINCT FROM 'Globex Inc' THEN
+        RAISE EXCEPTION 'FAIL: Bob''s post does not show Globex Inc';
+    END IF;
+END $$;
+
 \echo '✓ Test 7 passed: FK change updates nested data'
 
 -- Test 8: Bulk update performance
@@ -337,7 +434,18 @@ WHERE pk_company = 1;
 SELECT COUNT(*) AS affected_posts
 FROM tv_post
 WHERE data->'author'->'company'->>'industry' = 'Tech & Innovation';
--- Expected: 4+ (posts by Acme users)
+-- Expected: 4 (posts 1, 2, 4 and Eve's; Bob's moved to Globex, post 5 deleted)
+
+SELECT assert_all_fresh('an UPDATE of two tb_company fields');
+DO $$ BEGIN
+    IF (SELECT ((data->>'employee_count')::int, data->>'industry') FROM tv_company WHERE pk_company = 1)
+       IS DISTINCT FROM (200, 'Tech & Innovation'::text) THEN
+        RAISE EXCEPTION 'FAIL: tv_company row 1 not (200, Tech & Innovation)';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_post WHERE data->'author'->'company'->>'industry' = 'Tech & Innovation') <> 4 THEN
+        RAISE EXCEPTION 'FAIL: industry change did not reach the 4 Acme posts';
+    END IF;
+END $$;
 
 \echo '✓ Test 8 passed: Bulk update performs well'
 
@@ -351,8 +459,17 @@ SELECT
     jsonb_array_length(plan->'embeds') AS embeds
 FROM pg_tview_meta
 ORDER BY entity;
--- Expected: one local path per table holding a key, no embeds (the
--- definitions read base tables, not other TVIEWs).
+-- Expected: one local path each; user embeds tv_company and post embeds
+-- tv_user (their definitions join those TVIEWs), company embeds nothing.
+
+DO $$ BEGIN
+    IF (SELECT string_agg(format('%s:%s/%s', entity, jsonb_array_length(plan->'paths'),
+                                 jsonb_array_length(plan->'embeds')), ',' ORDER BY entity)
+        FROM pg_tview_meta)
+       IS DISTINCT FROM 'company:1/0,post:1/1,user:1/1' THEN
+        RAISE EXCEPTION 'FAIL: unexpected local paths/embeds per TVIEW';
+    END IF;
+END $$;
 
 \echo '✓ Test 9 passed: Metadata integrity correct'
 
@@ -368,6 +485,18 @@ FROM pg_trigger
 WHERE tgname LIKE 'trg_tview_%'
 ORDER BY tgname;
 -- Expected: triggers on tb_company, tb_user, tb_post
+
+-- Each base table carries an enabled row trigger and statement-level flush trigger.
+DO $$
+DECLARE t regclass;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['tb_company'::regclass, 'tb_user'::regclass, 'tb_post'::regclass] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'trg_tview_row_%' AND tgenabled = 'O')
+           OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'trg_tview_flush_%' AND tgenabled = 'O') THEN
+            RAISE EXCEPTION 'FAIL: row or flush trigger missing on %', t;
+        END IF;
+    END LOOP;
+END $$;
 
 \echo '✓ Test 10 passed: Triggers installed correctly'
 

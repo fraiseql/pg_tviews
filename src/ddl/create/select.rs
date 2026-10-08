@@ -297,7 +297,13 @@ fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewR
     let fields: Vec<String> = columns
         .columns
         .iter()
-        .map(|(c, _)| format!("{}, source.{}", quote_literal(c), quote_ident(c)))
+        .map(|(c, _)| {
+            format!(
+                "{}, source.{}",
+                crate::utils::quote_literal(c),
+                quote_ident(c)
+            )
+        })
         .collect();
     Ok(format!(
         "SELECT source.{} AS {}, gen_random_uuid() AS id, jsonb_build_object({}) AS data \
@@ -306,11 +312,6 @@ fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewR
         quote_identifier(&format!("pk_{entity}")),
         fields.join(", ")
     ))
-}
-
-/// `text` as an SQL string literal.
-fn quote_literal(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "''"))
 }
 
 #[cfg(test)]
@@ -348,10 +349,5 @@ mod tests {
         assert_eq!(after_star("SELECT pk_x FROM tb_x"), None);
         assert_eq!(after_star("SELECT *, 1 FROM tb_x"), None);
         assert_eq!(after_star("selection * from x"), None);
-    }
-
-    #[test]
-    fn quote_literal_doubles_quotes() {
-        assert_eq!(quote_literal("it's"), "'it''s'");
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the pg_tviews regression suite (test/sql/regress_*.sql).
+# Run the pg_tviews regression suite (test/sql/regress/<feature>/regress_*.sql).
 #
 # Each test runs in a throwaway database. Tests that require the real jsonb_delta
 # extension are skipped (not failed) when it is not installed in the cluster, so
@@ -8,7 +8,7 @@
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/run_regression_tests.sh [file ...]
 #
-# With file names, only those tests run. A test fails when psql exits non-zero,
+# With file names (a path or a bare file name), only those tests run. A test fails when psql exits non-zero,
 # whatever it printed. A test that cannot run here echoes `SKIP: <reason>` and
 # quits; it is counted as skipped.
 #
@@ -97,11 +97,16 @@ report_result() {
 }
 
 # Run every regress file, or only the ones named on the command line.
+regressdir="$sqldir/regress"
 if [[ $# -gt 0 ]]; then
   files=()
-  for arg in "$@"; do files+=("$sqldir/$(basename "$arg")"); done
+  for arg in "$@"; do
+    found="$(find "$regressdir" -name "$(basename "$arg")" -print -quit)"
+    [[ -n "$found" ]] || { echo "ERROR: no regress test named $(basename "$arg")"; exit 2; }
+    files+=("$found")
+  done
 else
-  files=("$sqldir"/regress_*.sql)
+  mapfile -t files < <(find "$regressdir" -name 'regress_*.sql' | sort)
 fi
 out="$(mktemp)"
 for f in "${files[@]}"; do

@@ -1,0 +1,42 @@
+# cargo-deny policy (`cargo deny check`, run by .github/workflows/security-audit.yml).
+
+[graph]
+all-features = false
+no-default-features = true
+features = ["pg18"]
+
+[advisories]
+# Every RustSec advisory fails the check: vulnerabilities, unmaintained and
+# unsound crates and yanked versions alike, unless listed here with the reason.
+ignore = [
+    # serde_cbor is unmaintained, with no known vulnerability; pgrx 0.17 depends on
+    # it, and the advisory goes when pgrx drops it.
+    { id = "RUSTSEC-2021-0127", reason = "transitive through pgrx 0.17; no vulnerability" },
+]
+
+[licenses]
+# The licenses of the dependency tree (`cargo deny list`), all compatible with
+# pg_tviews' MIT license.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# pgrx and its build dependencies pull two versions of a few crates; reported,
+# not failed.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

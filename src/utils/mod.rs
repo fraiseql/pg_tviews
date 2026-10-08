@@ -302,17 +302,26 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> 
     })
 }
 
-/// Quote a SQL identifier for safe use in queries.
-///
-/// Doubles any internal double-quotes and wraps the identifier in double-quotes.
-/// This is safe for identifiers that are already constrained by `PostgreSQL`
-/// (entity names, column names, etc. which match `\w+`).
-///
-/// # Examples
-///
+/// Quote a SQL identifier for safe use in queries: always double-quoted, with
+/// internal double quotes doubled, as `quote_ident` does for any name.
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:
+/// quotes doubled, and an `E''` literal with backslashes doubled when it holds a
+/// backslash, so it reads the same whatever `standard_conforming_strings` is.
+/// The one place a literal is built by hand: values passed to a query are bind
+/// parameters.
+#[must_use]
+pub fn quote_literal(text: &str) -> String {
+    let quoted = text.replace('\'', "''");
+    if text.contains('\\') {
+        format!("E'{}'", quoted.replace('\\', "\\\\"))
+    } else {
+        format!("'{quoted}'")
+    }
 }
 
 /// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
@@ -346,6 +355,13 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_literal_reads_the_same_under_any_string_setting() {
+        assert_eq!(quote_literal("post"), "'post'");
+        assert_eq!(quote_literal("it's"), "'it''s'");
+        assert_eq!(quote_literal(r"a\b'c"), r"E'a\\b''c'");
+    }
 
     #[test]
     fn quote_identifier_always_quotes_and_doubles_quotes() {

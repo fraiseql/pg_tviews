@@ -1,6 +1,12 @@
 name: Clippy Strict
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+  # Every pull request, stacked ones included (their base is not main).
+  pull_request:
+  # The release runs it before building anything.
+  workflow_call:
 
 jobs:
   fmt:
@@ -15,32 +21,35 @@ jobs:
         run: scripts/check-ffi-guards.sh
 
   unit:
+    name: unit (pg${{ matrix.pg }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["16", "17", "18"]
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Install PostgreSQL 18 (PGDG)
+      - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 mold
+          sudo apt-get install -y "postgresql-${{ matrix.pg }}" "postgresql-server-dev-${{ matrix.pg }}" mold
       - name: Install pgrx
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+          cargo pgrx init "--pg${{ matrix.pg }}" "/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config"
       - name: Run pure-Rust unit tests
         run: |
           # PostgreSQL symbols only resolve inside a server, so let the linker
           # ignore them. Link with mold: GNU ld and lld keep the unresolved
           # symbols as dynamic imports, and the test binary then fails to load
-          # ("symbol lookup error"); mold resolves them statically. #[pg_test]s
-          # (named pg_test_*) need a server and are covered by the SQL suites
-          # instead; skipping them also avoids pgrx reinstalling a pg_test build
-          # of the extension.
+          # ("symbol lookup error"); mold resolves them statically. Behaviour that
+          # needs a server is tested by the SQL suites (ci.yml).
           RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--unresolved-symbols=ignore-all" \
-            cargo test --lib --no-default-features --features pg18 -- --skip pg_test_
+            cargo test --lib --no-default-features --features "pg${{ matrix.pg }}"
 
   clippy:
     name: clippy (pg${{ matrix.pg }})
@@ -72,8 +81,9 @@ jobs:
           cargo clippy --all-targets --no-default-features --features "pg${{ matrix.pg }}" -- -D warnings
       - name: Check for SQL quote-doubling anti-pattern
         run: |
-          # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast
-          if grep -rn "replace.*'\\\\''.*''" src/ | grep -v 'ddl/convert.rs.*escaped_data'; then
+          # utils::quote_literal is the one literal built by hand (PostgreSQL's
+          # quote_literal rules); everything else binds parameters.
+          if grep -rn "replace.*'\\\\''.*''" src/ | grep -v '^src/utils/mod.rs:.*let quoted = text.replace'; then
             echo "::error::Found quote-doubling pattern. Use parameterized queries instead."
             exit 1
           fi

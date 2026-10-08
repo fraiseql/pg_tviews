@@ -33,14 +33,13 @@ jobs:
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       # Linked as clippy.yml's unit job links its tests: PostgreSQL symbols only
-      # resolve inside a server, mold keeps them out of the dynamic imports, and
-      # #[pg_test]s (pg_test_*) need a server.
+      # resolve inside a server, and mold keeps them out of the dynamic imports.
       - name: Measure unit-test coverage
         run: |
           set -o pipefail
           RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--unresolved-symbols=ignore-all" \
             cargo llvm-cov --lib --no-default-features --features pg18 --summary-only \
-              -- --skip pg_test_ | tee coverage-summary.txt
+              | tee coverage-summary.txt
           cargo llvm-cov report --lcov --output-path lcov.info
           {
             echo "## Unit-test coverage (PostgreSQL 18)"

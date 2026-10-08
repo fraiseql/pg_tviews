@@ -6,9 +6,14 @@
 --   SELECT assert_fresh('tv_order', 'pk_order', 'an UPDATE of tb_line');
 
 -- NULL when tv_<entity> and its backing view agree; otherwise how they differ,
--- with the `key` values of the offending rows.
+-- with the `key` values of the offending rows. The view is read under the
+-- settings refreshes render values under (RENDER_SETTINGS in src/owner.rs), not
+-- the session's: a timestamptz in `data` is stored in UTC whatever zone wrote it.
 CREATE OR REPLACE FUNCTION fresh_diff(tv regclass, key text) RETURNS text
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET TimeZone = 'UTC' SET DateStyle = 'ISO, YMD' SET IntervalStyle = 'postgres'
+SET extra_float_digits = 1 SET bytea_output = 'hex'
+AS $$
 DECLARE
     v regclass;
     cols text;

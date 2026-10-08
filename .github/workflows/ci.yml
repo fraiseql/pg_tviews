@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   # Every pull request, stacked ones included (their base is not main).
   pull_request:
+  # The release runs it before building anything.
+  workflow_call:
 
 env:
   PGRX_VERSION: "0.17.0"
@@ -38,8 +40,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Install PostgreSQL ${{ env.PG_MAJOR }} (PGDG)
         run: |
@@ -116,7 +118,7 @@ jobs:
 
       # These scripts create a throwaway database per test and exit non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
-      - name: Regression suite (test/sql/regress_*.sql)
+      - name: Regression suite (test/sql/regress/)
         run: ./test/run_regression_tests.sh
 
       - name: Integration suite (test/sql/[0-9]*.sql)
@@ -126,6 +128,10 @@ jobs:
       # seeded random writes.
       - name: Differential suite (test/sql/differential/run.sh)
         run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+
+      # Concurrent writers, DDL and snapshot isolation levels.
+      - name: Isolation suite (test/isolation/run.sh)
+        run: PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" ./test/isolation/run.sh
 
       # The SQL of the user docs, run as written on a fresh database.
       - name: Documentation SQL (test/docs/run_doc_sql.sh)

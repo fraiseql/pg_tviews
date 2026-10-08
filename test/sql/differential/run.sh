@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Differential suite: every TVIEW shape of schema.sql must equal its backing view
 # after each of N seeded random statements (single- and multi-row writes, key
-# changes, rows moving between parents).
+# changes, rows moving between parents, MERGE, INSERT ... ON CONFLICT, COPY), some
+# grouped in transactions with savepoints that commit or roll back.
 #
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/sql/differential/run.sh [N] [SEEDS]

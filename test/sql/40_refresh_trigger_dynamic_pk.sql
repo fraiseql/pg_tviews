@@ -16,6 +16,7 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 -- Load extensions
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
 
 \echo '=========================================='
 \echo 'Test 40: Dynamic PK Extraction'
@@ -50,6 +51,13 @@ SELECT
     (SELECT COUNT(*) FROM tv_post) = 1 as correct_row_count,
     (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'Original Post' as correct_title,
     (SELECT data->>'content' FROM tv_post WHERE pk_post = 1) = 'Original Content' as correct_content;
+SELECT assert_fresh('tv_post', 'pk_post', 'CREATE TABLE tv_post AS');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_post) <> 1
+       OR (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'Original Post' THEN
+        RAISE EXCEPTION 'FAIL: tv_post not populated with the original post';
+    END IF;
+END $$;
 
 -- Test: UPDATE should trigger refresh
 UPDATE tb_post
@@ -61,6 +69,13 @@ SELECT
     (SELECT COUNT(*) FROM tv_post WHERE pk_post = 1) = 1 as row_exists,
     (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'Updated Post' as title_updated,
     (SELECT data->>'content' FROM tv_post WHERE pk_post = 1) = 'Updated Content' as content_updated;
+SELECT assert_fresh('tv_post', 'pk_post', 'UPDATE tb_post');
+DO $$ BEGIN
+    IF (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'Updated Post'
+       OR (SELECT data->>'content' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'Updated Content' THEN
+        RAISE EXCEPTION 'FAIL: tv_post row 1 not refreshed by UPDATE tb_post';
+    END IF;
+END $$;
 
 -- Verify metadata and triggers
 SELECT
@@ -72,6 +87,15 @@ SELECT
     COUNT(*) >= 1 as triggers_created
 FROM pg_trigger
 WHERE tgname LIKE '%tview%';
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_tview_meta WHERE entity = 'post') <> 1 THEN
+        RAISE EXCEPTION 'FAIL: no pg_tview_meta row for post';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                   WHERE tgrelid = 'tb_post'::regclass AND tgname LIKE 'trg_tview_%') THEN
+        RAISE EXCEPTION 'FAIL: no pg_tviews trigger on tb_post';
+    END IF;
+END $$;
 
 \echo '✓ Test 1 passed: pk_post extraction works'
 
@@ -104,6 +128,13 @@ SELECT
     (SELECT COUNT(*) FROM tv_user) = 1 as correct_row_count,
     (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) = 'Alice' as correct_name,
     (SELECT data->>'email' FROM tv_user WHERE pk_user = 1) = 'alice@example.com' as correct_email;
+SELECT assert_fresh('tv_user', 'pk_user', 'CREATE TABLE tv_user AS');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_user) <> 1
+       OR (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'Alice' THEN
+        RAISE EXCEPTION 'FAIL: tv_user not populated with Alice';
+    END IF;
+END $$;
 
 -- Test: UPDATE should trigger refresh (different PK column)
 UPDATE tb_user
@@ -115,12 +146,25 @@ SELECT
     (SELECT COUNT(*) FROM tv_user WHERE pk_user = 1) = 1 as row_exists,
     (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) = 'Alice Updated' as name_updated,
     (SELECT data->>'email' FROM tv_user WHERE pk_user = 1) = 'alice.updated@example.com' as email_updated;
+SELECT assert_fresh('tv_user', 'pk_user', 'UPDATE tb_user');
+-- The user TVIEW keys on pk_user, not pk_post: the update must land on it too.
+DO $$ BEGIN
+    IF (SELECT data->>'name' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'Alice Updated'
+       OR (SELECT data->>'email' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'alice.updated@example.com' THEN
+        RAISE EXCEPTION 'FAIL: tv_user row 1 not refreshed by UPDATE tb_user';
+    END IF;
+END $$;
 
 -- Verify metadata for user TVIEW
 SELECT
     COUNT(*) = 1 as user_metadata_created
 FROM pg_tview_meta
 WHERE entity = 'user';
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_tview_meta WHERE entity = 'user') <> 1 THEN
+        RAISE EXCEPTION 'FAIL: no pg_tview_meta row for user';
+    END IF;
+END $$;
 
 \echo '✓ Test 2 passed: pk_user extraction works'
 
@@ -137,6 +181,13 @@ SELECT COUNT(*) = 2 as correct_post_count FROM tv_post;
 SELECT
     (SELECT COUNT(*) FROM tv_post WHERE data->>'title' = 'New Post') = 1 as new_post_added,
     (SELECT data->>'title' FROM tv_post WHERE data->>'title' = 'New Post') = 'New Post' as correct_title;
+SELECT assert_fresh('tv_post', 'pk_post', 'INSERT INTO tb_post');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_post) <> 2
+       OR (SELECT COUNT(*) FROM tv_post WHERE data->>'title' = 'New Post') <> 1 THEN
+        RAISE EXCEPTION 'FAIL: inserted post missing from tv_post';
+    END IF;
+END $$;
 
 \echo '✓ Test 3 passed: INSERT triggers refresh'
 
@@ -147,7 +198,13 @@ DELETE FROM tb_post WHERE pk_post = 2;
 
 -- Should have 1 row now
 SELECT COUNT(*) AS post_count FROM tv_post;
--- Expected: 1
+SELECT assert_fresh('tv_post', 'pk_post', 'DELETE FROM tb_post');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_post) <> 1
+       OR EXISTS (SELECT 1 FROM tv_post WHERE pk_post = 2) THEN
+        RAISE EXCEPTION 'FAIL: deleted post still in tv_post';
+    END IF;
+END $$;
 
 \echo '✓ Test 4 passed: DELETE removes from TVIEW'
 
@@ -161,7 +218,17 @@ SELECT
 FROM pg_trigger
 WHERE tgname LIKE 'trg_tview_%'
 ORDER BY tgname;
--- Expected: triggers on tb_post and tb_user
+-- Each base table carries a row trigger and a statement-level flush trigger.
+DO $$
+DECLARE t regclass;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['tb_post'::regclass, 'tb_user'::regclass] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'trg_tview_row_%' AND tgenabled = 'O')
+           OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = t AND tgname LIKE 'trg_tview_flush_%' AND tgenabled = 'O') THEN
+            RAISE EXCEPTION 'FAIL: row or flush trigger missing on %', t;
+        END IF;
+    END LOOP;
+END $$;
 
 \echo '✓ Test 5 passed: Triggers installed correctly'
 

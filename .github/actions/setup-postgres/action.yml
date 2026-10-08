@@ -15,8 +15,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Install pinned Rust toolchain
+      shell: bash
+      run: rustup show active-toolchain || rustup toolchain install
 
     - name: Install PostgreSQL (PGDG)
       shell: bash

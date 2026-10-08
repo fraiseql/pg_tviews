@@ -6,6 +6,7 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
 -- Test jsonb_delta performance impact
 -- Compare TVIEW update performance with and without jsonb_delta
 
@@ -42,10 +43,21 @@ SELECT
     data
 FROM tb_perf_test
 ');
+SELECT assert_fresh('tv_perf_test', 'pk_perf_test', 'pg_tviews_create');
+DO $$ BEGIN
+    IF (SELECT count(*) FROM tv_perf_test) <> 1000 THEN
+        RAISE EXCEPTION 'FAIL: tv_perf_test does not hold the 1000 seeded rows';
+    END IF;
+END $$;
 
 -- Check current jsonb_delta status
 SELECT 'Current jsonb_delta status:' as status;
 SELECT pg_tviews_check_jsonb_delta();
+DO $$ BEGIN
+    IF pg_tviews_check_jsonb_delta() IS DISTINCT FROM true THEN
+        RAISE EXCEPTION 'FAIL: jsonb_delta not detected; this file measures it enabled';
+    END IF;
+END $$;
 
 -- Test update performance (measure time for 100 updates)
 SELECT 'Testing update performance...' as test;
@@ -79,11 +91,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Run performance test
+-- Run performance test. The timings are information only (the host may be
+-- noisy); what must hold is that every timed UPDATE refreshed the TVIEW.
 SELECT * FROM test_update_performance(50);
+SELECT assert_fresh('tv_perf_test', 'pk_perf_test', 'the 50 timed UPDATEs');
+DO $$ BEGIN
+    IF (SELECT count(*) FROM tv_perf_test) <> 1000
+       OR (SELECT count(*) FROM tv_perf_test
+           WHERE data #>> '{field2,nested1}' = 'updated_' || pk_perf_test) <> 50
+       OR (SELECT data #>> '{field2,nested1}' FROM tv_perf_test WHERE pk_perf_test = 51)
+          IS DISTINCT FROM 'nested_value_51' THEN
+        RAISE EXCEPTION 'FAIL: tv_perf_test does not show exactly rows 1-50 updated';
+    END IF;
+END $$;
 
 -- Clean up
 DROP TABLE IF EXISTS tb_perf_test CASCADE;
 DROP VIEW IF EXISTS v_perf_test CASCADE;
 DROP TABLE IF EXISTS tv_perf_test CASCADE;
 DROP FUNCTION IF EXISTS test_update_performance(INT);
+
+-- Dropping the base table CASCADE removes the TVIEW and its registration.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tview_meta) OR to_regclass('tv_perf_test') IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: tv_perf_test survived the cleanup';
+    END IF;
+END $$;

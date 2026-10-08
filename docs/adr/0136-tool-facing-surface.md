@@ -97,7 +97,7 @@ them on abort as well.
   checked as the owner, which already needs them to have created the TVIEW.
 - Application roles can be given `SELECT` only on `tv_*`, so they cannot edit TVIEW rows.
 - `SECURITY_RESTRICTED_OPERATION` forbids temporary objects and some session-state changes
-  during the refresh. The refresh path must not create temp objects; `regress_issue_136_*`
+  during the refresh. The refresh path must not create temp objects; `regress_ordinary_roles.sql`
   covers each refresh kind (full row, scalar patch, fan-out, aggregate, array) to prove it.
 - The row-level trigger only reads the catalog and enqueues. It needs nothing beyond the
   grants below.
@@ -131,7 +131,8 @@ extension owner (`SetUserIdAndSecContext`, as for the refresh) for the write its
   library checks ownership as the caller and then writes the catalog as the extension
   owner. No SQL-callable function writes the catalog on a caller's behalf.
 
-`regress_issue_136_*` runs as a role with only table privileges on `tb_*`:
+`test/sql/regress/privileges/regress_ordinary_roles.sql` runs as a role with only table
+privileges on `tb_*`:
 - DML that cascades into two TVIEWs, with auditing off and then on;
 - an unrelated `CREATE TABLE` and `DROP TABLE`;
 - a `DROP TABLE tb_x CASCADE` that takes the `v_*` of a TVIEW another role owns;
@@ -305,7 +306,7 @@ pipeline, with `SELECT *` expanded and a raw SELECT rewritten to the `pk_<entity
 data` shape, and after column-rename rewrites (#81). It is not the author's original
 text. The pipeline leaves its own output unchanged, so passing `query` back to
 `pg_tviews_create_or_replace()` with the same `options` returns `unchanged`.
-`regress_issue_134_*` checks this round trip for a plain, a raw-SELECT, a `SELECT *` and
+`test/sql/regress/ddl/regress_create_or_replace.sql` checks this round trip for a plain, a raw-SELECT, a `SELECT *` and
 an aggregate TVIEW.
 
 **`base_tables`** is every relation reached from the backing view `v_<entity>` through its

@@ -1,0 +1,53 @@
+Parsed test spec with 2 sessions
+
+starting permutation: rr_begin o_rename s_title s_commit o_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step rr_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM tb_post;
+count
+-----
+    1
+(1 row)
+
+step o_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
+ERROR:  could not serialize access due to concurrent update
+step s_commit: COMMIT;
+step o_check: 
+  SELECT t.data AS tview, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post);
+
+tview                             |fresh
+----------------------------------+-----
+{"title": "p1", "author": "grace"}|t    
+(1 row)
+
+
+starting permutation: ser_begin o_rename s_title s_commit o_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step ser_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM tb_post;
+count
+-----
+    1
+(1 row)
+
+step o_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
+ERROR:  could not serialize access due to concurrent update
+step s_commit: COMMIT;
+step o_check: 
+  SELECT t.data AS tview, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post);
+
+tview                             |fresh
+----------------------------------+-----
+{"title": "p1", "author": "grace"}|t    
+(1 row)
+

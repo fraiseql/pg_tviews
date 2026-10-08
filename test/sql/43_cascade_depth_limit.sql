@@ -1,6 +1,6 @@
 -- Test 43: Cascade Depth Limiting
 -- Purpose: Verify cascade depth is limited to prevent infinite loops
--- Expected: Cascade stops at MAX_CASCADE_DEPTH (10)
+-- Expected: a cascade deeper than pg_tviews.max_propagation_depth is refused
 
 \set ECHO all
 \set ON_ERROR_STOP on
@@ -13,13 +13,22 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
+
+-- Every level of the chain must match its backing view.
+CREATE FUNCTION assert_levels_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    FOR i IN 0..5 LOOP
+        PERFORM assert_fresh(format('tv_level_%s', i)::regclass, format('pk_level_%s', i), label);
+    END LOOP;
+END $$;
 
 \echo '=========================================='
 \echo 'Test 43: Cascade Depth Limiting'
 \echo '=========================================='
 
--- Create a deep dependency chain (12 levels to exceed limit of 10)
--- level_0 -> level_1 -> level_2 -> ... -> level_11
+-- Create a dependency chain of 6 levels
+-- level_0 -> level_1 -> level_2 -> ... -> level_5
 
 CREATE TABLE tb_level_0 (
     pk_level_0 INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -159,6 +168,13 @@ SELECT
 FROM tb_level_5 l5
 JOIN tv_level_4 ON tv_level_4.pk_level_4 = l5.fk_level_4;
 
+SELECT assert_levels_fresh('creating the chain');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_tview_meta) <> 6 THEN
+        RAISE EXCEPTION 'FAIL: expected 6 TVIEWs in the chain';
+    END IF;
+END $$;
+
 \echo '✓ Test 1 passed: 5-level hierarchy created successfully'
 
 -- Test 2: Verify initial cascade works (within limit)
@@ -187,6 +203,14 @@ SELECT data->'parent'->'parent'->'parent'->'parent'->>'value' FROM tv_level_4 WH
 SELECT data->'parent'->'parent'->'parent'->'parent'->'parent'->>'value' FROM tv_level_5 WHERE pk_level_5 = 1;
 -- Expected: 'Root Updated'
 
+SELECT assert_levels_fresh('an UPDATE of the root');
+DO $$ BEGIN
+    IF (SELECT data #>> '{parent,parent,parent,parent,parent,value}' FROM tv_level_5 WHERE pk_level_5 = 1)
+       IS DISTINCT FROM 'Root Updated' THEN
+        RAISE EXCEPTION 'FAIL: root update did not reach level 5';
+    END IF;
+END $$;
+
 \echo '✓ Test 2 passed: Cascade propagated through 5 levels'
 
 -- Test 3: Verify depth counter increments correctly
@@ -203,27 +227,70 @@ SELECT data->>'value' FROM tv_level_2 WHERE pk_level_2 = 1;
 SELECT data->'parent'->>'value' FROM tv_level_3 WHERE pk_level_3 = 1;
 -- Expected: 'Level 2 Updated'
 
+SELECT assert_levels_fresh('an UPDATE of level 2');
+DO $$ BEGIN
+    IF (SELECT data->>'value' FROM tv_level_2 WHERE pk_level_2 = 1) IS DISTINCT FROM 'Level 2 Updated'
+       OR (SELECT data #>> '{parent,parent,parent,value}' FROM tv_level_5 WHERE pk_level_5 = 1)
+          IS DISTINCT FROM 'Level 2 Updated' THEN
+        RAISE EXCEPTION 'FAIL: level 2 update did not reach levels 2..5';
+    END IF;
+    -- Levels above the write are not touched.
+    IF (SELECT data #>> '{parent,value}' FROM tv_level_1 WHERE pk_level_1 = 1) IS DISTINCT FROM 'Root Updated' THEN
+        RAISE EXCEPTION 'FAIL: level 1 changed by a level 2 update';
+    END IF;
+END $$;
+
 \echo '✓ Test 3 passed: Depth tracking works'
 
--- Test 4: Create deeper hierarchy (beyond limit)
--- Note: This test will be skipped if implementing the full 12 levels
--- would exceed complexity. Instead, we test the depth limit enforcement.
+-- Test 4: Depth limit enforcement
+-- Rather than build a chain longer than the default limit, lower the limit
+-- below this chain's depth.
 \echo ''
-\echo 'Test 4: Depth limit enforcement (conceptual)'
+\echo 'Test 4: Depth limit enforcement'
 
--- We've created 5 levels (0-4), which is within the limit.
--- The actual depth limit is pg_tviews.max_propagation_depth.
-
--- For this test, we verify the limit is configurable
+-- We've created 6 levels (0-5), which is within the default limit.
+-- The depth limit is pg_tviews.max_propagation_depth.
 \echo 'Verifying cascade depth limit configuration...'
 
--- Check that MAX_CASCADE_DEPTH is documented
+-- Every level is registered
 SELECT
     COUNT(*) > 0 AS has_depth_limit
 FROM pg_tview_meta;
 -- Expected: true (metadata exists)
 
-\echo '✓ Test 4 passed: Depth limit mechanism exists'
+-- The default limit leaves room for this chain (a root write takes one
+-- propagation pass per level).
+DO $$ BEGIN
+    IF current_setting('pg_tviews.max_propagation_depth')::int < 6 THEN
+        RAISE EXCEPTION 'FAIL: default max_propagation_depth below the 6-level chain';
+    END IF;
+END $$;
+
+-- Below the chain's depth, a root write is refused rather than leaving the
+-- lower levels stale.
+SET pg_tviews.max_propagation_depth = 3;
+DO $$
+DECLARE refused text;
+BEGIN
+    BEGIN
+        UPDATE tb_level_0 SET value = 'Too Deep' WHERE pk_level_0 = 1;
+    EXCEPTION WHEN OTHERS THEN
+        refused := SQLERRM;
+    END;
+    IF refused IS NULL OR refused NOT LIKE '%depth%' THEN
+        RAISE EXCEPTION 'FAIL: a 6-level cascade was not refused at depth 3: %', refused;
+    END IF;
+END $$;
+RESET pg_tviews.max_propagation_depth;
+
+SELECT assert_levels_fresh('a write refused by the depth limit');
+DO $$ BEGIN
+    IF (SELECT value FROM tb_level_0 WHERE pk_level_0 = 1) IS DISTINCT FROM 'Root Updated' THEN
+        RAISE EXCEPTION 'FAIL: the refused write changed tb_level_0';
+    END IF;
+END $$;
+
+\echo '✓ Test 4 passed: Depth limit enforced'
 
 -- Test 5: Verify cascade stops at appropriate depth
 \echo ''
@@ -233,6 +300,12 @@ FROM pg_tview_meta;
 -- (This is indirect - we verify all levels were updated)
 SELECT COUNT(*) AS tview_count FROM pg_tview_meta;
 -- Expected: 6 (levels 0-5)
+
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_tview_meta) <> 6 THEN
+        RAISE EXCEPTION 'FAIL: expected 6 TVIEWs';
+    END IF;
+END $$;
 
 \echo '✓ Test 5 passed: Cascade depth tracking correct'
 
@@ -251,13 +324,15 @@ FROM tv_level_5
 WHERE pk_level_5 = 1;
 -- Expected: 'Root Performance Test'
 
-\echo '✓ Test 6 passed: Deep cascade completed'
+SELECT assert_levels_fresh('a second UPDATE of the root');
+DO $$ BEGIN
+    IF (SELECT data #>> '{parent,parent,parent,parent,parent,value}' FROM tv_level_5 WHERE pk_level_5 = 1)
+       IS DISTINCT FROM 'Root Performance Test' THEN
+        RAISE EXCEPTION 'FAIL: second root update did not reach level 5';
+    END IF;
+END $$;
 
--- Note about actual depth limit testing:
-\echo ''
-\echo 'NOTE: Full depth limit (10+ levels) requires more complex setup.'
-\echo 'The actual CascadeDepthExceeded error will be tested in integration.'
-\echo 'This test verifies the infrastructure is in place.'
+\echo '✓ Test 6 passed: Deep cascade completed'
 
 \echo ''
 \echo '=========================================='

@@ -1,7 +1,8 @@
 name: Upgrade
 
-# An install of the previous release, and of the oldest release ALTER EXTENSION
-# UPDATE supports (0.1.0-beta.20), upgraded to the commit under test, must have
+# An install of the previous release, of 0.1.0-beta.25 (the last release before
+# the propagation plan), and of the oldest release ALTER EXTENSION UPDATE supports
+# (0.1.0-beta.20), upgraded to the commit under test, must have
 # exactly the catalog of a fresh install and keep its TVIEWs working
 # (docs/development/extension-versioning.md, ADR 0136).
 
@@ -27,7 +28,7 @@ jobs:
       matrix:
         # `previous`: the latest release. A fixed tag: upgraded through the chain of
         # scripts from it.
-        from: [ previous, v0.1.0-beta.20 ]
+        from: [ previous, v0.1.0-beta.25, v0.1.0-beta.20 ]
     steps:
       - uses: actions/checkout@v4
 

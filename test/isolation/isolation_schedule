@@ -1,0 +1,3 @@
+test: direct-patch-vs-write
+test: snapshot-writers
+test: replace-vs-write

@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the insert, naming the TVIEW, instead of mapping nothing.
 - A TVIEW that reads only other TVIEWs' tables (`SELECT … FROM tv_user`) got no
   trigger, only a "No base table dependencies" WARNING, and was never refreshed.
+- A recomputed row's document replaces the stored one whole. A TVIEW whose embeds
+  are all scalar, with `jsonb_delta` installed, merged the fresh document into the
+  stored one: a NULL document stayed NULL, and a key the view no longer produced
+  stayed in the document.
+- `pg_tviews_drop()` recorded the drop twice in the audit log.
+- A raw-SELECT definition expanded with a column name holding a backslash is quoted
+  as PostgreSQL's `quote_literal()` would, whatever `standard_conforming_strings` is.
 - `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_profile()` find the columns a
   TVIEW's rows are looked up by in its plan (embed lookups, fan-out patch columns): a
   lookup column not called `fk_*` got no index and no fan-out estimate, and an `fk_*`

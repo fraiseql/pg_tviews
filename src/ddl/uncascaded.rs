@@ -238,10 +238,10 @@ fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> Str
         .collect::<Vec<_>>()
         .join(", ");
     // The option as JSON, written as an SQL literal.
-    let option = format!("{{\"uncascaded_tables\": {{{named}}}}}").replace('\'', "''");
+    let option = crate::utils::quote_literal(&format!("{{\"uncascaded_tables\": {{{named}}}}}"));
     format!(
         "pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{option}'), or for the whole TVIEW \
+         {option}), or for the whole TVIEW \
          '{{\"uncascaded_policy\": \"{policy}\"}}'; before CREATE TABLE … AS or \
          pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
     )
@@ -398,12 +398,12 @@ pub(crate) fn report_functions(
     );
     let hint = format!(
         "Declare them: pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"function_reads\": {{{}: [\"<schema.table>\", …]}}}}'), [] for a function \
-         that reads no table; then give those tables a policy in uncascaded_tables. Or make \
-         the function IMMUTABLE if it reads nothing that changes.",
-        serde_json::Value::from(first.as_str())
-            .to_string()
-            .replace('\'', "''")
+         {}), [] for a function that reads no table; then give those tables a policy in \
+         uncascaded_tables. Or make the function IMMUTABLE if it reads nothing that changes.",
+        crate::utils::quote_literal(&format!(
+            "{{\"function_reads\": {{{}: [\"<schema.table>\", …]}}}}",
+            serde_json::Value::from(first.as_str())
+        ))
     );
     let level = if policy == UncascadedPolicy::Warn {
         PgLogLevel::WARNING

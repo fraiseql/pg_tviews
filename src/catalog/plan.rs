@@ -137,14 +137,6 @@ impl TviewPlan {
     pub fn embed(&self, child: &str) -> Option<&PlanEmbed> {
         self.embeds.iter().find(|e| e.entity == child)
     }
-
-    /// Whether every embed is scalar (a smart patch merges the document).
-    #[must_use]
-    pub fn only_scalar_embeds(&self) -> bool {
-        self.embeds
-            .iter()
-            .all(|e| e.kind == crate::lineage::EmbedKind::Scalar)
-    }
 }
 
 #[cfg(test)]

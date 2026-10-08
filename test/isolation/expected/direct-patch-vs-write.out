@@ -1,0 +1,43 @@
+Parsed test spec with 2 sessions
+
+starting permutation: p_begin p_patch w_write p_commit w_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_user' created successfully
+(1 row)
+
+step p_begin: BEGIN;
+step p_patch: UPDATE tb_user SET bio = 'b1' WHERE pk_user = 1;
+step w_write: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1; <waiting ...>
+step p_commit: COMMIT;
+step w_write: <... completed>
+step w_check: 
+  SELECT t.data AS tview, t.data = v.data AS fresh
+  FROM tv_user t JOIN tviews.public__tv_user v USING (pk_user);
+
+tview                         |fresh
+------------------------------+-----
+{"bio": "b1", "name": "grace"}|t    
+(1 row)
+
+
+starting permutation: p_begin p_patch w_write p_rollback w_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_user' created successfully
+(1 row)
+
+step p_begin: BEGIN;
+step p_patch: UPDATE tb_user SET bio = 'b1' WHERE pk_user = 1;
+step w_write: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1; <waiting ...>
+step p_rollback: ROLLBACK;
+step w_write: <... completed>
+step w_check: 
+  SELECT t.data AS tview, t.data = v.data AS fresh
+  FROM tv_user t JOIN tviews.public__tv_user v USING (pk_user);
+
+tview                         |fresh
+------------------------------+-----
+{"bio": "b0", "name": "grace"}|t    
+(1 row)
+

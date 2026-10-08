@@ -2,10 +2,8 @@
 # Run the pg_tviews numbered integration suite (test/sql/[0-9]*.sql).
 #
 # Each file is run standalone in a throwaway database (it sets up its own
-# extensions). Files under test/sql/quarantine/ are intentionally excluded
-# (see that directory's README). These integration tests require the real
-# jsonb_delta extension; if it is not installed the whole suite is skipped
-# (not failed) so this script is safe to run before jsonb_delta is wired in.
+# extensions). These integration tests require the real jsonb_delta extension;
+# if it is not installed the whole suite is skipped (not failed).
 #
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/run_integration_tests.sh
@@ -32,7 +30,7 @@ if [[ "$have_jsonb_delta" == "0" ]]; then
   exit 0
 fi
 
-# Only files directly in sql/ (the quarantine subdir is excluded by the glob).
+# Only the numbered files directly in sql/ (not lib/, regress/ or differential/).
 shopt -s nullglob
 files=("$sqldir"/[0-9]*.sql)
 shopt -u nullglob

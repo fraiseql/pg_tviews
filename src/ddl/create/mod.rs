@@ -12,7 +12,7 @@ use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,
 };
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(test)]
 mod tests;
 
 pub use select::ViewColumns;

@@ -1,5 +1,6 @@
 # Reproducible build environment for pg_tviews
-FROM rust:1.91.1-slim-bookworm
+# The toolchain of rust-toolchain.toml.
+FROM rust:1.98-slim-bookworm
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
