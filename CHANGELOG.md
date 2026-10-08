@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the insert, naming the TVIEW, instead of mapping nothing.
 - A TVIEW that reads only other TVIEWs' tables (`SELECT … FROM tv_user`) got no
   trigger, only a "No base table dependencies" WARNING, and was never refreshed.
+- `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_profile()` find the columns a
+  TVIEW's rows are looked up by in its plan (embed lookups, fan-out patch columns): a
+  lookup column not called `fk_*` got no index and no fan-out estimate, and an `fk_*`
+  column nothing looks up through got an index.
 - `pg_tviews_create_or_replace()` with a new column set failed with "array contains
   NULL" on a TVIEW that embeds another one.
 - `pg_tviews_reregister(entity)` re-derives a TVIEW whose stored plan does not
@@ -87,6 +91,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed (breaking)
 
+- **Maintenance functions that act on every TVIEW are no longer executable by
+  `PUBLIC`**: `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()`,
+  `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`, `pg_tviews_set_logged()`,
+  `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_invalidate_caches()`. A role
+  that is neither a superuser nor the extension's owner needs `GRANT EXECUTE`
+  (`docs/user-guides/operators.md`), or gets 42501. A deploy or restore tool calling
+  `pg_tviews_rebuild_all()` as such a role must be granted it before upgrading.
+- **Every function acting on one TVIEW requires owning it** (or the extension), checked
+  before any lock: `pg_tviews_set_logged()`, `pg_tviews_recover_after_crash()` and
+  `pg_tviews_ensure_propagation_indexes(entity)` join `pg_tviews_refresh()`,
+  `pg_tviews_reregister()` (which took the TVIEW's registration lock before checking)
+  and the rest.
 - **A commit with refresh work still queued fails** (55000), every time. It
   committed with a WARNING, shown once per backend, and the TVIEWs named stayed
   stale. Only a missing or disabled flush trigger leaves work queued.

@@ -1,6 +1,7 @@
 # ADR 0136: A stable surface for tools
 
 - Status: Accepted; amended for #181 (see [Amendment](#amendment-181-pg_tviews-objects-live-in-tviews))
+  and for the maintenance functions (see [Amendment](#amendment-maintenance-functions-and-the-real-privilege-model))
 - Issues: #136 (fixed schema, privileges), #139 (health check), #137 (upgrade path),
   #133 (read contract), #134 (create-or-replace)
 
@@ -88,8 +89,10 @@ maintains it, whoever triggered the change.**
 **Refresh runs as the TVIEW owner.** The flush refreshes one entity at a time. For each,
 it switches to the owner of that `tv_*` with
 `SetUserIdAndSecContext(owner, SECURITY_LOCAL_USERID_CHANGE | SECURITY_RESTRICTED_OPERATION)`,
-as `REFRESH MATERIALIZED VIEW` does, and restores the previous user after that entity.
-PostgreSQL restores it on abort as well.
+as `REFRESH MATERIALIZED VIEW` does, with `search_path` set to `pg_catalog, pg_temp`
+(a writer cannot get the owner to run a function it planted on its own path), and
+restores the previous user, context and path after that entity. PostgreSQL restores
+them on abort as well.
 - The writer then needs nothing on `tv_*`, `v_*` or the tables `v_*` reads. Those are
   checked as the owner, which already needs them to have created the TVIEW.
 - Application roles can be given `SELECT` only on `tv_*`, so they cannot edit TVIEW rows.
@@ -111,20 +114,22 @@ PostgreSQL restores it on abort as well.
 The internal tables stay writable only by the extension owner. The metadata granted is not
 secret: it is view definitions that `pg_views` already shows to everyone.
 
-**Writes to internal tables go through narrow `SECURITY DEFINER` functions.** Each is
-owned by the extension owner, has `SET search_path = pg_catalog, tviews`, and does one
-thing after checking its caller:
-- `pg_tviews_handle_drop_event()` (the `sql_drop` handler) runs `SECURITY DEFINER`.
-  PostgreSQL has already checked that the role may drop the objects. The handler only
-  deregisters entities whose `v_*` or `tv_*` appear in `pg_event_trigger_dropped_objects()`.
-- The audit flush calls an internal `SECURITY DEFINER` function that inserts the buffered
-  rows, filling `performed_by` from `session_user`, not from the caller.
+**Writes to internal tables run as the extension owner, inside the library.** No SQL
+function is `SECURITY DEFINER`. The library checks its caller, then switches to the
+extension owner (`SetUserIdAndSecContext`, as for the refresh) for the write itself:
+- The `sql_drop` handler (`pg_tviews_handle_drop_event()`, PL/pgSQL) runs as the dropping
+  role: PostgreSQL has already checked that the role may drop the objects. It calls
+  `pg_tviews_handle_dropped(entity)`, which acts only when the current statement dropped
+  that TVIEW's `v_*` or `tv_*` (`pg_event_trigger_dropped_objects()`), and removes its
+  catalog row as the extension owner.
+- The audit flush calls `pg_tviews_audit_write(jsonb)` as the extension owner. The
+  function is revoked from `PUBLIC` and fills `performed_by` from `session_user`, not
+  from the caller.
 - Registration writes (Decision 5) require the caller to own the TVIEW, as `ALTER TABLE`
   would. A SQL `SECURITY DEFINER` function cannot see which role called it (inside it,
   `current_user` is the definer, and `session_user` is wrong under `SET ROLE`), so the
-  library checks ownership as the caller and then runs the catalog write itself as the
-  extension owner (`SetUserIdAndSecContext`, as for the refresh). No SQL-callable
-  function writes the catalog on a caller's behalf.
+  library checks ownership as the caller and then writes the catalog as the extension
+  owner. No SQL-callable function writes the catalog on a caller's behalf.
 
 `regress_issue_136_*` runs as a role with only table privileges on `tb_*`:
 - DML that cascades into two TVIEWs, with auditing off and then on;
@@ -476,8 +481,8 @@ and coverage only run for PRs into main). Each starts with a failing
 1. **#136 schema:** control file, `@extschema@` / qualification, `ext_schema()` constant,
    trigger naming by bytes and removal by `tgfoid`, install-script hardening, test runners
    and `search_path = ''` test.
-2. **#136 privileges:** grants, `SECURITY DEFINER` drop handler and audit writer, refresh
-   as the TVIEW owner, the ordinary-role regression test.
+2. **#136 privileges:** grants, drop handler and audit writer, refresh as the TVIEW
+   owner, the ordinary-role regression test.
 3. **#139 health check:** match the real `trg_tview_*` names (by `tgfoid`), resolve base
    tables from the catalog instead of `('tb_'||entity)::regclass`, and stop failing on an
    unrelated `tview_*` trigger. It lands before #137, which makes `health_check` report
@@ -589,3 +594,28 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   1. A change to any of the three options alone is an `altered` change. Functions are
   stored as `schema.name(argument types)` text: a `regprocedure` column in a dumped
   configuration table would block `pg_upgrade`.
+
+## Amendment: maintenance functions and the real privilege model
+
+Decision 2 described the drop handler and the audit writer as `SECURITY DEFINER`
+functions. None was ever shipped: the model is the one Decision 2 now states, a check as
+the caller and a write as the extension owner inside the library.
+
+Decision 2 also left every maintenance function executable by `PUBLIC`. Most failed on a
+missing table privilege, but a role could force rebuilds and take locks on TVIEWs it does
+not own. Since 0.1.0-beta.27:
+- The functions that act on every TVIEW are revoked from `PUBLIC`:
+  `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()`,
+  `pg_tviews_rebuild_all(boolean)`, `pg_tviews_reregister_all(boolean)`,
+  `pg_tviews_set_logged(text, boolean)`, `pg_tviews_ensure_propagation_indexes(text,
+  boolean)` and `pg_tviews_invalidate_caches(oid)`. An operator role is granted them
+  (`docs/user-guides/operators.md`); the install and the upgrade script carry the same
+  `REVOKE`, and the upgrade check compares the ACLs.
+- Every function acting on one TVIEW requires owning it (or the extension), checked
+  before any lock: `pg_tviews_refresh`, `pg_tviews_reregister`, `pg_tviews_set_logged`,
+  `pg_tviews_recover_after_crash`, `pg_tviews_ensure_propagation_indexes(entity)`,
+  `pg_tviews_set_typename`, `pg_tviews_create_or_replace`, `pg_tviews_drop`.
+- Bulk rebuilds run each backing view as its TVIEW's owner, never as the caller.
+
+`regress_security_surface.sql` runs each as a role that owns nothing, an operator and an
+owner, and fails when a new function of the extension is not classified.

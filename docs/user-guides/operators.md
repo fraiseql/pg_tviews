@@ -547,6 +547,40 @@ REVOKE INSERT, UPDATE, DELETE ON tv_post FROM public;
 GRANT EXECUTE ON FUNCTION pg_tviews_health_check() TO monitoring_user;
 ```
 
+### Operator role
+
+The functions that act on every TVIEW are not executable by `PUBLIC`: only
+superusers, the extension's owner and the roles granted them may run them.
+
+| Function | What it does |
+|---|---|
+| `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()` | Rebuild every TVIEW |
+| `pg_tviews_rebuild_all(only_empty)` | Rebuild every (empty) TVIEW, e.g. after a restore |
+| `pg_tviews_reregister_all(strict)` | Re-derive every TVIEW's plan and triggers |
+| `pg_tviews_set_logged(entity, logged)` | Switch a TVIEW between LOGGED and UNLOGGED |
+| `pg_tviews_ensure_propagation_indexes(entity, dry_run)` | Create missing lookup indexes |
+| `pg_tviews_invalidate_caches(relid)` | Internal: invalidate cached metadata |
+
+A deploy or restore tool that runs as a non-superuser role gets them with a
+grant (the extension lives in schema `tviews`):
+
+```sql
+GRANT EXECUTE ON FUNCTION
+    tviews.pg_tviews_refresh_all(),
+    tviews.pg_tviews_refresh_all_entities(),
+    tviews.pg_tviews_rebuild_all(boolean),
+    tviews.pg_tviews_reregister_all(boolean),
+    tviews.pg_tviews_set_logged(text, boolean),
+    tviews.pg_tviews_ensure_propagation_indexes(text, boolean)
+TO deploy_role;
+```
+
+Bulk rebuilds run each TVIEW's backing view as that TVIEW's owner, never as the
+caller. A function acting on one TVIEW (`pg_tviews_refresh`, `pg_tviews_reregister`,
+`pg_tviews_set_logged`, `pg_tviews_recover_after_crash`, `pg_tviews_drop`, …)
+requires owning it, or being a member of its owner or of the extension's owner,
+whoever may execute it; anyone else gets SQLSTATE 42501.
+
 ### Audit Logging
 
 ```sql

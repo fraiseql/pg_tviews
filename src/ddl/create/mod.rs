@@ -340,13 +340,14 @@ pub fn reregister_metadata(
 /// Returns an error if the TVIEW is not registered, the caller does not own it,
 /// or the definition cannot be analyzed.
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
-    super::lock_entity(entity)?;
+    // Ownership first: a role that may not re-register the TVIEW takes no lock.
     let meta = crate::catalog::TviewMeta::load_to_rederive(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
             entity: entity.to_string(),
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    super::lock_entity(entity)?;
     let (definition, schema_name) = Spi::connect(|client| {
         let args = [crate::utils::spi::text(entity)];
         client

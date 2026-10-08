@@ -116,6 +116,22 @@ impl TviewPlan {
         Ok(plan)
     }
 
+    /// The columns of the TVIEW's table its rows are looked up by: those holding
+    /// an embedded TVIEW's key, and those a fan-out patch writes through. Each
+    /// needs an index leading with it.
+    #[must_use]
+    pub fn lookup_columns(&self) -> std::collections::BTreeSet<&str> {
+        self.embeds
+            .iter()
+            .flat_map(|e| e.lookups.iter().map(String::as_str))
+            .chain(
+                self.tables
+                    .iter()
+                    .filter_map(|t| t.fanout.as_ref().map(|f| f.lookup_col.as_str())),
+            )
+            .collect()
+    }
+
     /// How this TVIEW embeds `child`, if it does.
     #[must_use]
     pub fn embed(&self, child: &str) -> Option<&PlanEmbed> {
@@ -160,6 +176,25 @@ mod tests {
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);
+    }
+
+    #[test]
+    fn lookup_columns_are_embed_lookups_and_fanout_columns() {
+        let plan = TviewPlan::decode(
+            "post",
+            serde_json::json!({
+                "version": PLAN_VERSION,
+                "embeds": [{"entity": "user", "lookups": ["author_pk", "editor_pk"],
+                            "kind": "nested_object", "path": ["author"]}],
+                "tables": [{"relid": 1, "table": "public.tb_tag", "kind": "mapped", "sql": "",
+                            "fanout": {"lookup_col": "tag_pk", "fields": []}}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.lookup_columns().into_iter().collect::<Vec<_>>(),
+            ["author_pk", "editor_pk", "tag_pk"]
+        );
     }
 
     fn with_table(table: &serde_json::Value) -> serde_json::Value {

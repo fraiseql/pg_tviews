@@ -324,6 +324,7 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
         .ok_or_else(|| TViewError::MetadataNotFound {
             entity: entity.to_string(),
         })?;
+    crate::owner::require_owner(rel.table_oid, &format!("tv_{entity}"))?;
     let persistence = if logged { "LOGGED" } else { "UNLOGGED" };
     let sql = format!(
         "ALTER TABLE {} SET {persistence}",
