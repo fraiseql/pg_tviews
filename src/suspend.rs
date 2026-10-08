@@ -22,21 +22,22 @@ thread_local! {
 }
 
 /// Suspend trigger-based refresh.
-pub fn suspend() -> Result<(), String> {
+pub fn suspend() {
     SUSPENSION.with_borrow_mut(|s| {
         s.depth += 1;
         if s.depth == 1 {
             s.changed.clear();
         }
     });
-    Ok(())
 }
 
 /// Resume trigger-based refresh (one level of nesting).
-pub fn resume() -> Result<(), String> {
+pub fn resume() -> crate::TViewResult<()> {
     SUSPENSION.with_borrow_mut(|s| {
         if s.depth == 0 {
-            return Err("Cannot resume: not suspended".to_string());
+            return Err(crate::TViewError::WrongState {
+                reason: "Cannot resume: not suspended".to_string(),
+            });
         }
         s.depth -= 1;
         Ok(())
@@ -110,14 +111,14 @@ mod tests {
         force_resume();
         clear_changed_entities();
         let before = snapshot();
-        suspend().unwrap();
+        suspend();
         record_change("post");
         assert!(is_suspended());
         restore(before.clone());
         assert!(!is_suspended());
         assert!(get_changed_entities().is_empty());
 
-        suspend().unwrap();
+        suspend();
         let suspended = snapshot();
         resume().unwrap();
         assert!(!is_suspended());

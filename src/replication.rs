@@ -11,6 +11,7 @@
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -146,7 +147,7 @@ fn in_recovery() -> bool {
 /// # Errors
 /// Returns an error if the catalog query fails.
 #[pg_extern]
-fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, TViewError> {
+fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorReport> {
     Ok(TviewRelation::load(Some(entity))?
         .first()
         .map(|r| !r.unlogged))
@@ -173,7 +174,7 @@ fn pg_tviews_replication_status() -> Result<
             name!(needs_rebuild, Option<bool>),
         ),
     >,
-    TViewError,
+    ErrorReport,
 > {
     let recovering = in_recovery();
     let relations = TviewRelation::load(None)?;
@@ -216,7 +217,7 @@ fn pg_tviews_replication_status() -> Result<
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_rebuild_all(
     only_empty: default!(bool, true),
-) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, TViewError> {
+) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, ErrorReport> {
     crate::revision::check();
     Ok(TableIterator::new(rebuild_all(only_empty)?))
 }
@@ -319,7 +320,7 @@ fn dependencies_first(depends_on: &HashMap<String, Vec<String>>) -> Vec<String> 
 /// # Errors
 /// Returns an error if the entity is unknown or the `ALTER TABLE` fails.
 #[pg_extern]
-fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), TViewError> {
+fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
     crate::revision::check();
     let rel = TviewRelation::load(Some(entity))?
         .into_iter()
@@ -332,7 +333,8 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), TViewError> {
         "ALTER TABLE {} SET {persistence}",
         rel.qualified(&rel.table)
     );
-    crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })
+    crate::utils::spi_run_ddl(&sql)
+        .map_err(|error| TViewError::SpiError { query: sql, error }.into())
 }
 
 #[cfg(test)]

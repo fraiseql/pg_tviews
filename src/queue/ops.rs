@@ -1,22 +1,25 @@
 use super::key::{KeyValue, RefreshKey};
 use super::state::{self, TX_CRASH_RECOVERY_CHECKED};
 
-/// Check queue size against a limit and raise ERROR if exceeded.
-/// Returns Ok(()) if the queue size is still below the limit.
-/// Returns Err with a descriptive message if the limit would be exceeded.
-fn check_queue_backpressure(limit: usize) -> Result<(), String> {
-    let current_size = state::get_queue_size();
-    if current_size >= limit {
-        return Err(format!(
-            "refresh queue backpressure: queue size ({current_size}) would exceed max_queue_size ({limit})"
-        ));
+/// `QueueFull` when one more entry would take the queue past `limit`.
+fn check_queue_backpressure(limit: usize) -> crate::TViewResult<()> {
+    let size = state::get_queue_size();
+    if size >= limit {
+        return Err(crate::TViewError::QueueFull {
+            size,
+            max_size: limit,
+        });
     }
     Ok(())
 }
 
 /// Internal helper: enqueue a single refresh with explicit limit.
 /// Used for testability and backpressure enforcement.
-pub fn enqueue_refresh_with_limit(entity: &str, key: KeyValue, limit: usize) -> Result<(), String> {
+pub fn enqueue_refresh_with_limit(
+    entity: &str,
+    key: KeyValue,
+    limit: usize,
+) -> crate::TViewResult<()> {
     check_queue_backpressure(limit)?;
     state::queue_insert(RefreshKey::new(entity, key));
     Ok(())
@@ -31,10 +34,9 @@ pub fn enqueue_refresh_with_limit(entity: &str, key: KeyValue, limit: usize) -> 
 /// A plain enqueue **poisons** any direct patch for this key (issue #56): the key
 /// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
 pub fn enqueue_refresh(entity: &str, key: KeyValue) {
-    if let Err(msg) =
-        enqueue_refresh_with_limit(entity, key.clone(), crate::config::max_queue_size())
+    if let Err(e) = enqueue_refresh_with_limit(entity, key.clone(), crate::config::max_queue_size())
     {
-        pgrx::error!("{}", msg);
+        e.raise();
     }
     super::patch::poison(RefreshKey::new(entity, key));
 }
@@ -51,10 +53,10 @@ pub fn enqueue_refresh_patched(
     pk: i64,
     fields: serde_json::Map<String, serde_json::Value>,
 ) {
-    if let Err(msg) =
+    if let Err(e) =
         enqueue_refresh_with_limit(entity, KeyValue::Int(pk), crate::config::max_queue_size())
     {
-        pgrx::error!("{}", msg);
+        e.raise();
     }
     // Count the capture once per fresh key: a base table feeding several tviews
     // has several row triggers that each re-record the same key in one statement.
@@ -71,9 +73,9 @@ pub fn enqueue_refresh_all(entity: &str) {
     if state::queue_contains(&key) {
         return;
     }
-    check_queue_backpressure(crate::config::max_queue_size()).unwrap_or_else(|msg| {
-        pgrx::error!("{}", msg);
-    });
+    if let Err(e) = check_queue_backpressure(crate::config::max_queue_size()) {
+        e.raise();
+    }
     state::queue_insert(key);
 }
 
@@ -83,9 +85,9 @@ pub fn enqueue_refresh_all(entity: &str) {
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `max_queue_size` would be exceeded.
 pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
-    check_queue_backpressure(crate::config::max_queue_size()).unwrap_or_else(|msg| {
-        pgrx::error!("{}", msg);
-    });
+    if let Err(e) = check_queue_backpressure(crate::config::max_queue_size()) {
+        e.raise();
+    }
     for key in &keys {
         state::queue_insert(RefreshKey::new(entity, key.clone()));
     }

@@ -1,5 +1,6 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::sync::Mutex;
 
@@ -30,11 +31,11 @@ pub fn check_jsonb_delta_available() -> bool {
 /// Quoted schema of the `jsonb_delta` extension, for a patch about to be applied.
 ///
 /// # Errors
-/// [`crate::TViewError::JsonbIvmNotInstalled`] when it is not installed (dropped
+/// [`crate::TViewError::JsonbDeltaMissing`] when it is not installed (dropped
 /// since the patch was captured): an unqualified or `public` fallback would call
 /// whatever function of that name a role with CREATE there planted.
 pub fn require_jsonb_delta_schema() -> crate::TViewResult<String> {
-    jsonb_delta_schema().ok_or(crate::TViewError::JsonbIvmNotInstalled)
+    jsonb_delta_schema().ok_or(crate::TViewError::JsonbDeltaMissing)
 }
 
 /// Quoted schema of the `jsonb_delta` extension (cached), `None` when it is not
@@ -80,7 +81,7 @@ pub fn jsonb_delta_schema() -> Option<String> {
 /// # Returns
 /// `Ok(true)` if recovery was performed, `Ok(false)` if no recovery needed
 #[pg_extern]
-pub fn pg_tviews_recover_after_crash(entity_name: &str) -> crate::TViewResult<bool> {
+pub fn pg_tviews_recover_after_crash(entity_name: &str) -> Result<bool, ErrorReport> {
     crate::revision::check();
     if detect_post_crash_truncation(entity_name)? {
         // Only this TVIEW was reset; what reads it is unchanged.

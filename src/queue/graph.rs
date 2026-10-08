@@ -72,7 +72,7 @@ impl EntityDepGraph {
         let mut document_edges: HashSet<(String, String)> = HashSet::new();
         let mut lookup_columns: HashMap<(String, String), String> = HashMap::new();
 
-        Spi::connect(|client| {
+        Spi::connect(|client| -> crate::TViewResult<_> {
             let rows = client.select(&query, None, &[])?;
 
             for row in rows {
@@ -220,7 +220,7 @@ impl EntityDepGraph {
                 }
             }
 
-            Ok::<_, spi::SpiError>(())
+            Ok(())
         })?;
 
         // Compute topological order
@@ -348,9 +348,14 @@ fn topological_sort(
     }
 
     if result.len() != entities.len() {
-        return Err(crate::TViewError::DependencyCycle {
-            entities: entities.iter().cloned().collect(),
-        });
+        // What never became ready: the cycle, and whatever waits on it.
+        let mut stuck: Vec<String> = in_degree
+            .into_iter()
+            .filter(|&(_, degree)| degree > 0)
+            .map(|(e, _)| e.to_string())
+            .collect();
+        stuck.sort_unstable();
+        return Err(crate::TViewError::DependencyCycle { entities: stuck });
     }
 
     Ok(result)

@@ -109,7 +109,7 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
 /// owned by the SPI memory context. The `String` conversion attempts to free that
 /// pointer after the SPI call returns, causing an abort. This helper keeps the SPI
 /// context alive during value extraction.
-pub fn spi_get_string(query: &str) -> spi::Result<Option<String>> {
+pub fn spi_get_string(query: &str) -> crate::TViewResult<Option<String>> {
     Spi::connect(|client| {
         let mut rows = client.select(query, Some(1), &[])?;
         match rows.next() {
@@ -219,7 +219,7 @@ pub fn bound_cache<K, V>(cache: &mut HashMap<K, V>) {
 /// Returns `"schema"."table"` using `quote_ident` on each part so the result is safe
 /// for direct embedding in a FROM clause regardless of `search_path` or special characters.
 /// Results are cached per session.
-pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
+pub fn qualified_relname_from_oid(oid: Oid) -> crate::TViewResult<String> {
     // Fast path: check cache
     {
         let cache = OID_QUALIFIED_RELNAME_CACHE
@@ -232,7 +232,7 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
 
     // Slow path: resolve via pg_class + pg_namespace
     crate::metrics::metrics_api::record_catalog_lookup();
-    let qname: String = Spi::connect(|client| {
+    let qname: String = Spi::connect(|client| -> crate::TViewResult<_> {
         let args =
             vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
         let mut rows = client.select(
@@ -245,17 +245,17 @@ pub fn qualified_relname_from_oid(oid: Oid) -> spi::Result<String> {
         )?;
 
         if let Some(row) = rows.next() {
-            row["qname"].value::<String>()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
+            row["qname"]
+                .value::<String>()?
+                .ok_or_else(|| crate::TViewError::SpiError {
                     query: "qualified_relname_from_oid".to_string(),
                     error: "qname column is NULL".to_string(),
                 })
-            })
         } else {
-            Err(spi::Error::from(crate::TViewError::SpiError {
+            Err(crate::TViewError::SpiError {
                 query: "qualified_relname_from_oid".to_string(),
                 error: format!("No pg_class entry for oid: {oid:?}"),
-            }))
+            })
         }
     })?;
 
@@ -372,7 +372,7 @@ pub const fn ext_schema() -> &'static str {
 ///
 /// The cache key includes the schema name to avoid collisions when multiple views
 /// have the same name in different schemas.
-pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<String>> {
+pub fn get_view_columns(schema_name: &str, view_name: &str) -> crate::TViewResult<Vec<String>> {
     let cache_key = format!("{schema_name}.{view_name}");
 
     // Fast path: check cache
@@ -387,7 +387,7 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
 
     // Slow path: query and cache
     crate::metrics::metrics_api::record_catalog_lookup();
-    let cols: Vec<String> = Spi::connect(|client| -> spi::Result<Vec<String>> {
+    let cols: Vec<String> = Spi::connect(|client| -> crate::TViewResult<Vec<String>> {
         let args = vec![
             unsafe {
                 DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
@@ -427,7 +427,7 @@ pub fn get_view_columns(schema_name: &str, view_name: &str) -> spi::Result<Vec<S
 
 /// Get column names for a relation by OID. Resolves schema and name from the OID,
 /// then delegates to `get_view_columns` for caching.
-pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
+pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
     // Fast path: the columns of this relation were resolved before.
     let oid_key = format!("oid:{}", rel_oid.to_u32());
     {
@@ -440,40 +440,41 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> spi::Result<Vec<String>> {
     }
     crate::metrics::metrics_api::record_catalog_lookup();
     // Get schema and table name from OID
-    let (schema_name, table_name): (String, String) = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
-        let mut rows = client.select(
-            "SELECT n.nspname::text, c.relname::text \
+    let (schema_name, table_name): (String, String) =
+        Spi::connect(|client| -> crate::TViewResult<_> {
+            let args = vec![unsafe {
+                DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+            }];
+            let mut rows = client.select(
+                "SELECT n.nspname::text, c.relname::text \
              FROM pg_class c \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE c.oid = $1",
-            None,
-            &args,
-        )?;
+                None,
+                &args,
+            )?;
 
-        if let Some(row) = rows.next() {
-            let schema = row["nspname"].value::<String>()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: "get_view_columns_by_oid schema lookup".to_string(),
-                    error: "nspname column is NULL".to_string(),
+            if let Some(row) = rows.next() {
+                let schema = row["nspname"].value::<String>()?.ok_or_else(|| {
+                    crate::TViewError::SpiError {
+                        query: "get_view_columns_by_oid schema lookup".to_string(),
+                        error: "nspname column is NULL".to_string(),
+                    }
+                })?;
+                let table = row["relname"].value::<String>()?.ok_or_else(|| {
+                    crate::TViewError::SpiError {
+                        query: "get_view_columns_by_oid table lookup".to_string(),
+                        error: "relname column is NULL".to_string(),
+                    }
+                })?;
+                Ok((schema, table))
+            } else {
+                Err(crate::TViewError::SpiError {
+                    query: "get_view_columns_by_oid".to_string(),
+                    error: format!("No pg_class entry for oid: {rel_oid:?}"),
                 })
-            })?;
-            let table = row["relname"].value::<String>()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: "get_view_columns_by_oid table lookup".to_string(),
-                    error: "relname column is NULL".to_string(),
-                })
-            })?;
-            Ok((schema, table))
-        } else {
-            Err(spi::Error::from(crate::TViewError::SpiError {
-                query: "get_view_columns_by_oid".to_string(),
-                error: format!("No pg_class entry for oid: {rel_oid:?}"),
-            }))
-        }
-    })?;
+            }
+        })?;
 
     let cols = get_view_columns(&schema_name, &table_name)?;
     VIEW_COLUMNS_CACHE

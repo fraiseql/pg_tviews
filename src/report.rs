@@ -11,6 +11,7 @@ use crate::queue::affected::{self, Change, NetChange};
 use crate::utils::quote_identifier;
 use pgrx::JsonB;
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
@@ -33,7 +34,7 @@ fn pg_tviews_flush_and_report(
     max_entities: default!(i32, 500),
     include_data: default!(bool, true),
     reset: default!(bool, true),
-) -> Result<JsonB, TViewError> {
+) -> Result<JsonB, ErrorReport> {
     crate::revision::check();
     crate::queue::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
@@ -52,7 +53,7 @@ fn pg_tviews_flush_and_report(
 /// # Errors
 /// Returns an error if the entity is unknown or the name is not a GraphQL name.
 #[pg_extern]
-fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TViewError> {
+fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), ErrorReport> {
     crate::revision::check();
     if let Some(name) = typename {
         let valid = name
@@ -64,7 +65,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
             return Err(TViewError::InvalidInput {
                 parameter: "typename".to_string(),
                 reason: format!("'{name}' is not a GraphQL name ([_A-Za-z][_0-9A-Za-z]*)"),
-            });
+            }
+            .into());
         }
     }
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
@@ -97,7 +99,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
     if updated == 0 {
         return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),
-        });
+        }
+        .into());
     }
     Ok(())
 }

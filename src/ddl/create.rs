@@ -112,14 +112,7 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
             )?;
             let mut result = Vec::new();
             for row in rows {
-                if let Some(col) =
-                    row[1]
-                        .value::<String>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "expand_select_star: read column_name".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?
-                {
+                if let Some(col) = row[1].value::<String>()? {
                     result.push(col);
                 }
             }
@@ -147,14 +140,7 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
             )?;
             let mut result = Vec::new();
             for row in rows {
-                if let Some(col) =
-                    row[1]
-                        .value::<String>()
-                        .map_err(|e| TViewError::CatalogError {
-                            operation: "expand_select_star: read column_name".to_string(),
-                            pg_error: format!("{e:?}"),
-                        })?
-                {
+                if let Some(col) = row[1].value::<String>()? {
                     result.push(col);
                 }
             }
@@ -270,7 +256,7 @@ fn create_tview_inner(
     // Step 1: Check if TVIEW already exists
     let exists = tview_exists(tview_name)?;
     if exists {
-        return Err(TViewError::TViewAlreadyExists {
+        return Err(TViewError::RelationExists {
             name: tview_name.to_string(),
         });
     }
@@ -328,8 +314,7 @@ fn create_tview_inner(
     if relation_exists(&view_schema, &view_name)?
         && !super::drop::reclaim_leftover_view(&view_schema, &view_name)?
     {
-        return Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
+        return Err(TViewError::DefinitionRefused {
             reason: format!(
                 "the backing view of {schema_name}.{tv_table_name}, {view_schema}.{view_name}, \
                  is already taken by another relation"
@@ -395,8 +380,7 @@ fn create_tview_inner(
         && !lineage.has_mapped()
         && !entity_base_table_exists(entity_name, &schema_name)?
     {
-        return Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
+        return Err(TViewError::DefinitionRefused {
             reason: format!(
                 "TVIEW '{tv_table_name}' (entity '{entity_name}') can never be refreshed: \
                  there is no base table 'tb_{entity_name}', and no cascade path routes any \
@@ -660,8 +644,7 @@ fn aggregate_embeds(
         .iter()
         .map(|(aggregate, column)| match column {
             Some(column) => Ok((aggregate.clone(), column.clone())),
-            None => Err(TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
+            None => Err(TViewError::DefinitionRefused {
                 reason: format!(
                     "TVIEW 'tv_{entity_name}' reads aggregate TVIEW '{aggregate}' but no output \
                      column carries the value it is joined to on pk_{aggregate}, so a change to \
@@ -869,8 +852,7 @@ fn key_table_on_identity(schema_name: &str, tview_name: &str, identity: &str) ->
                 error: e,
             })
         }
-        _ => Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
+        _ => Err(TViewError::DefinitionRefused {
             reason: format!(
                 "{qualified} is keyed on ({}), but its rows are named by {identity}: \
                  pg_tviews_create_or_replace() with the same query rebuilds it",
@@ -1126,7 +1108,7 @@ fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW exists: {tview_name}"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })
     .map(|opt| opt.unwrap_or(false))
 }
@@ -1165,7 +1147,7 @@ fn entity_base_table_exists(entity_name: &str, schema_name: &str) -> TViewResult
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check base table exists for entity '{entity_name}'"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })
     .map(|opt| opt.unwrap_or(false))
 }
@@ -1196,7 +1178,6 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
                 view_name,
                 e
             );
-            // Note: error!() macro diverges, so this return is unreachable but needed for type checking
             return Err(TViewError::SpiError {
                 query: create_view_sql.clone(),
                 error: e,
@@ -1247,7 +1228,6 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
                 "verification query FAILED - could not check pg_class: {}",
                 e
             );
-            // Note: error!() macro diverges, so this return is unreachable but needed for type checking
             return Err(TViewError::SpiError {
                 query: format!("Check view {schema_name}.{view_name} exists"),
                 error: e.to_string(),
@@ -1347,8 +1327,7 @@ fn create_materialized_table(
         ));
     }
     if !columns.iter().any(|c| c.ends_with(" PRIMARY KEY")) {
-        return Err(TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
+        return Err(TViewError::DefinitionRefused {
             reason: format!("{tview_name} has no column {identity} to key its rows on"),
         });
     }
@@ -1897,6 +1876,10 @@ fn register_metadata(
         error: e.to_string(),
     })?;
 
+    // TVIEWs that read each other in a cycle could never be refreshed in order:
+    // refuse the definition that closes one, before any row is written.
+    crate::queue::graph::EntityDepGraph::load()?;
+
     Ok(())
 }
 
@@ -1964,29 +1947,25 @@ fn transform_raw_select_to_tview(
             PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
         )
     }];
-    let columns: Vec<(String, String)> = Spi::connect(|client| {
+    let columns: Vec<(String, String)> = Spi::connect(|client| -> crate::TViewResult<_> {
         let rows = client.select(get_columns_sql, None, &temp_view_args)?;
         let mut result = Vec::new();
         for row in rows {
-            let col_name: String = row[1].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: get_columns_sql.to_string(),
-                    error: "column name is NULL".to_string(),
-                })
+            let col_name: String = row[1].value()?.ok_or_else(|| crate::TViewError::SpiError {
+                query: get_columns_sql.to_string(),
+                error: "column name is NULL".to_string(),
             })?;
-            let data_type: String = row[2].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
-                    query: get_columns_sql.to_string(),
-                    error: "data type is NULL".to_string(),
-                })
+            let data_type: String = row[2].value()?.ok_or_else(|| crate::TViewError::SpiError {
+                query: get_columns_sql.to_string(),
+                error: "data type is NULL".to_string(),
             })?;
             result.push((col_name, data_type));
         }
         Ok(result)
     })
-    .map_err(|e: spi::Error| TViewError::CatalogError {
+    .map_err(|e: TViewError| TViewError::CatalogError {
         operation: "Get columns from temp view".to_string(),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })?;
 
     // Drop temp view

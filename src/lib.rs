@@ -28,6 +28,7 @@ between base tables and derived views through trigger-based change tracking.
 - Memory safety through Rust's ownership system
 */
 
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 // Core modules
@@ -69,7 +70,7 @@ mod schema;
 mod validation;
 
 // Public re-exports
-pub use error::{TViewError, TViewResult};
+use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
@@ -81,37 +82,35 @@ pub fn pg_tviews_is_suspended() -> bool {
 
 #[pg_extern]
 pub fn pg_tviews_suspend_triggers() {
-    if let Err(e) = crate::suspend::suspend() {
-        error!("{}", e);
-    }
+    crate::suspend::suspend();
 }
 
 /// Resume trigger-based refresh. When the outermost suspension ends, every TVIEW
 /// changed while suspended (and every TVIEW embedding one of them) is rebuilt.
 #[pg_extern]
-pub fn pg_tviews_resume_triggers() {
+pub fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
     crate::revision::check();
-    if let Err(e) = crate::suspend::resume() {
-        error!("{}", e);
+    crate::suspend::resume()?;
+    if !crate::suspend::is_suspended() {
+        crate::suspend::catch_up()?;
     }
-    if !crate::suspend::is_suspended()
-        && let Err(e) = crate::suspend::catch_up()
-    {
-        error!("{}", e);
-    }
+    Ok(())
 }
 
 /// Rebuild every TVIEW, dependencies first, and report how many were rebuilt,
 /// in which order, and how long it took.
 #[pg_extern]
-pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
+pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     crate::revision::check();
     if crate::suspend::is_suspended() {
-        return Err("Cannot refresh: triggers are suspended".to_string());
+        return Err(TViewError::WrongState {
+            reason: "Cannot refresh: triggers are suspended".to_string(),
+        }
+        .into());
     }
 
     let start = std::time::Instant::now();
-    let order = crate::admin::refresh_all_in_dependency_order().map_err(|e| e.to_string())?;
+    let order = crate::admin::refresh_all_in_dependency_order()?;
 
     Ok(pgrx::datum::JsonB(serde_json::json!({
         "refreshed_count": order.len(),

@@ -79,7 +79,7 @@ pub fn log_refresh(entity: &str, rows_affected: i64) {
 ///
 /// **MUST be called from `ProcessUtility` hook COMMIT path** (where SPI is safe).
 /// MUST NOT be called from xact callbacks.
-pub fn flush_audit_buffer() -> spi::Result<()> {
+pub fn flush_audit_buffer() -> crate::TViewResult<()> {
     let entries: Vec<AuditEntry> = AUDIT_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect());
 
     if entries.is_empty() || !crate::config::audit_enabled() {
@@ -105,7 +105,7 @@ pub fn flush_audit_buffer() -> spi::Result<()> {
 
     // The log is writable only by the extension owner, which inserts the entries
     // and records the session user (issue #136).
-    let _owner = crate::owner::AsOwner::of_extension().map_err(spi::Error::from)?;
+    let _owner = crate::owner::AsOwner::of_extension()?;
     Spi::run_with_args(
         &format!(
             "SELECT {}.pg_tviews_audit_write($1::jsonb)",

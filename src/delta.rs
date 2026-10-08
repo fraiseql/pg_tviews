@@ -92,10 +92,12 @@ fn pg_tview_delta_trigger<'a>(
     };
     let table_oid = match trigger.relation() {
         Ok(rel) => rel.oid(),
-        Err(e) => error!("pg_tviews: delta trigger without a relation: {e:?}"),
+        Err(e) => error!("pg_tviews: delta trigger without a relation: {e}"),
     };
     if let Err(e) = map_statement(trigger, &entity, table_oid, event) {
-        error!("pg_tviews: could not map the changed rows to tv_{entity} keys: {e}");
+        e.raise_in(&format!(
+            "pg_tviews: could not map the changed rows to tv_{entity} keys"
+        ));
     }
     Ok(None)
 }
@@ -145,7 +147,9 @@ fn pg_tview_truncate_trigger<'a>(
         return Ok(None);
     }
     if let Err(e) = crate::queue::flush_refresh_queue() {
-        error!("pg_tviews: could not refresh tv_{entity} after TRUNCATE: {e}");
+        e.raise_in(&format!(
+            "pg_tviews: could not refresh tv_{entity} after TRUNCATE"
+        ));
     }
     Ok(None)
 }
@@ -399,7 +403,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 for row in client.select(&sql, None, &images)? {
                     keys.extend(key_of(&row, key_type)?);
                 }
-                Ok::<_, spi::Error>(keys)
+                Ok::<_, TViewError>(keys)
             })
             .map_err(|e| spi_error(&sql, &e))?;
             if !keys.is_empty() {
@@ -618,7 +622,10 @@ const fn key_sql_type(key_type: &KeyType) -> &'static str {
 }
 
 /// The key in the first column of `row`, cast by [`key_sql_type`].
-fn key_of(row: &spi::SpiHeapTupleData<'_>, key_type: &KeyType) -> spi::Result<Option<KeyValue>> {
+fn key_of(
+    row: &spi::SpiHeapTupleData<'_>,
+    key_type: &KeyType,
+) -> crate::TViewResult<Option<KeyValue>> {
     Ok(match key_type {
         KeyType::Int => row.get::<i64>(1)?.map(KeyValue::Int),
         KeyType::Text(_) => row.get::<String>(1)?.map(KeyValue::Text),
@@ -647,7 +654,7 @@ fn run_with_transition_tables(
 fn with_transition_tables<T>(
     trigger: &PgTrigger<'_>,
     entity: &str,
-    f: impl FnOnce(&spi::SpiClient<'_>) -> spi::Result<T>,
+    f: impl FnOnce(&spi::SpiClient<'_>) -> crate::TViewResult<T>,
 ) -> TViewResult<T> {
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
     Spi::connect(|client| {
@@ -657,10 +664,10 @@ fn with_transition_tables<T>(
             pg_sys::SPI_register_trigger_data(std::ptr::from_ref(trigger.trigger_data()).cast_mut())
         };
         if registered != pg_sys::SPI_OK_TD_REGISTER.cast_signed() {
-            return Err(spi::Error::from(TViewError::SpiError {
+            return Err(TViewError::SpiError {
                 query: "SPI_register_trigger_data".to_string(),
                 error: format!("returned {registered}"),
-            }));
+            });
         }
         f(client)
     })

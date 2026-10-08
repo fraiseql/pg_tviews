@@ -53,7 +53,7 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
             Spi::get_one::<String>("SELECT current_schema()::text")
                 .map_err(|e| TViewError::CatalogError {
                     operation: "Resolve current_schema()".to_string(),
-                    pg_error: format!("{e:?}"),
+                    pg_error: e.to_string(),
                 })
                 .and_then(|opt| {
                     opt.ok_or_else(|| TViewError::CatalogError {
@@ -86,11 +86,11 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get OID for '{view_name}'"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })?
-    .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: view_name.to_string(),
-        reason: format!("Object not found in schema '{schema}'"),
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Get OID for '{view_name}'"),
+        pg_error: format!("not found in schema '{schema}'"),
     })
 }
 
@@ -106,7 +106,8 @@ fn traverse_dependencies(view_oid: pg_sys::Oid) -> TViewResult<Vec<DependencyNod
     while let Some((current_oid, depth)) = queue.pop_front() {
         // Check depth limit (tunable via pg_tviews.max_dependency_depth)
         if depth > max_dependency_depth {
-            return Err(TViewError::DependencyDepthExceeded {
+            return Err(TViewError::DepthExceeded {
+                what: "dependency",
                 depth,
                 max_depth: max_dependency_depth,
             });
@@ -115,7 +116,7 @@ fn traverse_dependencies(view_oid: pg_sys::Oid) -> TViewResult<Vec<DependencyNod
         // Check for cycles
         if visiting.contains(&current_oid) {
             let cycle = reconstruct_cycle(&visiting, current_oid);
-            return Err(TViewError::CircularDependency { cycle });
+            return Err(TViewError::DependencyCycle { entities: cycle });
         }
 
         // Skip if already visited
@@ -161,7 +162,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
            AND c.oid != {current_oid:?}"
     );
 
-    let deps = Spi::connect(|client| {
+    let deps = Spi::connect(|client| -> crate::TViewResult<_> {
         let rows = client.select(&deps_query, None, &[])?;
         let mut results = Vec::new();
 
@@ -170,7 +171,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
                 .value::<pg_sys::Oid>()
                 .map_err(|e| TViewError::CatalogError {
                     operation: "Extract refobjid".to_string(),
-                    pg_error: format!("{e:?}"),
+                    pg_error: e.to_string(),
                 })?
                 .ok_or_else(|| TViewError::CatalogError {
                     operation: "Extract refobjid".to_string(),
@@ -183,7 +184,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
                 .value::<i8>()
                 .map_err(|e| TViewError::CatalogError {
                     operation: "Extract relkind".to_string(),
-                    pg_error: format!("{e:?}"),
+                    pg_error: e.to_string(),
                 })?
                 .map(|c| (c as u8 as char).to_string());
 
@@ -192,7 +193,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
 
         Ok(Some(results))
     })
-    .map_err(|e: pgrx::spi::Error| TViewError::SpiError {
+    .map_err(|e: TViewError| TViewError::SpiError {
         query: deps_query.clone(),
         error: e.to_string(),
     })?
@@ -207,7 +208,7 @@ fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid,
 /// as base tables for trigger installation — cascade is metadata-driven via
 /// `find_parents_for()`, not trigger-driven.
 fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
-    Spi::connect(|client| {
+    Spi::connect(|client| -> crate::TViewResult<_> {
         let rows = client.select(
             &format!(
                 "SELECT table_oid::oid AS table_oid FROM {}",
@@ -223,7 +224,7 @@ fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
                     .value::<pg_sys::Oid>()
                     .map_err(|e| TViewError::CatalogError {
                         operation: "load_tview_table_oids".to_string(),
-                        pg_error: format!("{e:?}"),
+                        pg_error: e.to_string(),
                     })?
             {
                 oids.insert(oid);
@@ -231,9 +232,9 @@ fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
         }
         Ok(oids)
     })
-    .map_err(|e: pgrx::spi::Error| TViewError::CatalogError {
+    .map_err(|e: TViewError| TViewError::CatalogError {
         operation: "load_tview_table_oids".to_string(),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })
 }
 
@@ -284,11 +285,11 @@ fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
     ))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Get name for OID {oid:?}"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })?
-    .ok_or_else(|| TViewError::DependencyResolutionFailed {
-        view_name: format!("OID {oid:?}"),
-        reason: "Object not found".to_string(),
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Get name for OID {oid:?}"),
+        pg_error: "not found".to_string(),
     })
 }
 

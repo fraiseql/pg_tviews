@@ -86,7 +86,7 @@ mod tests {
         crate::suspend::force_resume();
         state::queue_insert(RefreshKey::pk("user", 1));
         start();
-        crate::suspend::suspend().unwrap();
+        crate::suspend::suspend();
         state::queue_insert(RefreshKey::pk("user", 2));
         abort();
         assert!(!crate::suspend::is_suspended());

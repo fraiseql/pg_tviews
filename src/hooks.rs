@@ -184,16 +184,18 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                         crate::suspend::force_resume();
                         if let Err(e) = crate::suspend::catch_up() {
                             unsafe { HOOK_IN_PROGRESS = false };
-                            error!("TVIEW catch-up after suspension failed before {stmt}: {e:?}");
+                            e.raise_in(&format!(
+                                "TVIEW catch-up after suspension failed before {stmt}"
+                            ));
                         }
                     }
                     if let Err(e) = crate::queue::flush_refresh_queue() {
                         unsafe { HOOK_IN_PROGRESS = false };
-                        error!("TVIEW refresh failed before {stmt}: {e:?}");
+                        e.raise_in(&format!("TVIEW refresh failed before {stmt}"));
                     }
                     if let Err(e) = crate::audit::flush_audit_buffer() {
                         unsafe { HOOK_IN_PROGRESS = false };
-                        error!("Audit flush failed before {stmt}: {e:?}");
+                        e.raise_in(&format!("Audit flush failed before {stmt}"));
                     }
                 }
             }
@@ -215,7 +217,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             Ok(views) => Some(views),
             Err(e) => {
                 unsafe { HOOK_IN_PROGRESS = false };
-                error!("pg_tviews: could not read the backing views before DROP EXTENSION: {e}");
+                e.raise_in("pg_tviews: could not read the backing views before DROP EXTENSION");
             }
         }
     } else {
@@ -365,7 +367,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 Ok(handled) => !handled,
                 Err(e) => {
                     unsafe { HOOK_IN_PROGRESS = false };
-                    error!("{e}");
+                    e.raise();
                 }
             }
         }
@@ -373,11 +375,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             // Handler returned an error — reset guard BEFORE raising error!()
             // so that subsequent statements in this session are still intercepted.
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("{handler_err}");
-            #[allow(unreachable_code)] // Reason: pgrx error!() diverges via longjmp, not Rust's !
-            {
-                true
-            }
+            handler_err.raise()
         }
         Err(panic_info) => {
             // Something unwound out of the handler. Reset the guard BEFORE re-raising
@@ -438,38 +436,38 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             && let Err(e) = crate::ddl::rename::handle_column_rename(relid, &old_name, &new_name)
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("pg_tviews: could not follow the column rename: {e}");
+            e.raise_in("pg_tviews: could not follow the column rename");
         }
         if let Some(ddl) = partition_ddl
             && let Err(e) = unsafe { ddl.apply() }
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("pg_tviews: could not update the triggers of a partition: {e}");
+            e.raise_in("pg_tviews: could not update the triggers of a partition");
         }
         if let Some(table) = table_move
             && let Err(e) = crate::ddl::follow_table_move(table)
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("pg_tviews: could not rename the backing view of a moved TVIEW: {e}");
+            e.raise_in("pg_tviews: could not rename the backing view of a moved TVIEW");
         }
         if let Some(PrivilegesChange { owners }) = privileges_change
             && let Err(e) = crate::ddl::privileges::follow(None, owners)
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("pg_tviews: could not give the backing views their tables' privileges: {e}");
+            e.raise_in("pg_tviews: could not give the backing views their tables' privileges");
         }
         if let Some(views) = extension_drop
             && let Err(e) = crate::ddl::drop::drop_left_backing_views(&views)
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("pg_tviews: could not drop the backing views of the dropped extension: {e}");
+            e.raise_in("pg_tviews: could not drop the backing views of the dropped extension");
         }
         if let Some(matview) = matview_refresh
             && let Err(e) = crate::ddl::uncascaded::refresh_readers_of(matview)
         {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!(
-                "pg_tviews: could not refresh the TVIEWs reading a refreshed materialized view: {e}"
+            e.raise_in(
+                "pg_tviews: could not refresh the TVIEWs reading a refreshed materialized view",
             );
         }
     }
@@ -1101,7 +1099,7 @@ unsafe fn option_integer(option: *mut pg_sys::DefElem) -> Option<i32> {
 fn skipped_or_raise(target: &CtasTarget) -> bool {
     target.skipped().unwrap_or_else(|e| {
         unsafe { HOOK_IN_PROGRESS = false };
-        error!("{e}")
+        e.raise()
     })
 }
 
@@ -1144,7 +1142,7 @@ unsafe fn create_tview_from_ctas(ctas: &Ctas, qc: *mut pg_sys::QueryCompletion) 
         }
         Err(e) => {
             unsafe { HOOK_IN_PROGRESS = false };
-            error!("{e}");
+            e.raise();
         }
     }
 }

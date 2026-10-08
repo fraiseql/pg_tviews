@@ -607,7 +607,7 @@ fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResu
 /// Returns error if any trigger drop or creation fails.
 pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
     // Collect (entity, table_oid) pairs from pg_tview_meta
-    let pairs: Vec<(String, pg_sys::Oid)> = Spi::connect(|client| {
+    let pairs: Vec<(String, pg_sys::Oid)> = Spi::connect(|client| -> crate::TViewResult<_> {
         let rows = client.select(
             &format!(
                 "SELECT m.entity, d.refobjid::oid AS table_oid \
@@ -623,25 +623,24 @@ pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
 
         let mut out = Vec::new();
         for row in rows {
-            let entity: String = row["entity"].value()?.ok_or_else(|| {
-                spi::Error::from(TViewError::SpiError {
-                    query: "migrate: SELECT entity".to_string(),
-                    error: "entity column is NULL".to_string(),
-                })
+            let entity: String = row["entity"].value()?.ok_or_else(|| TViewError::SpiError {
+                query: "migrate: SELECT entity".to_string(),
+                error: "entity column is NULL".to_string(),
             })?;
-            let table_oid: pg_sys::Oid = row["table_oid"].value()?.ok_or_else(|| {
-                spi::Error::from(TViewError::SpiError {
-                    query: "migrate: SELECT table_oid".to_string(),
-                    error: "table_oid column is NULL".to_string(),
-                })
-            })?;
+            let table_oid: pg_sys::Oid =
+                row["table_oid"]
+                    .value()?
+                    .ok_or_else(|| TViewError::SpiError {
+                        query: "migrate: SELECT table_oid".to_string(),
+                        error: "table_oid column is NULL".to_string(),
+                    })?;
             out.push((entity, table_oid));
         }
         Ok(out)
     })
-    .map_err(|e: spi::Error| TViewError::CatalogError {
+    .map_err(|e: TViewError| TViewError::CatalogError {
         operation: "Migrate triggers: read pg_tview_meta".to_string(),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })?;
 
     for (entity, table_oid) in pairs {
@@ -718,9 +717,9 @@ fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String, bool)> {
         (Some(schema), Some(relname), partitioned) => {
             Ok((schema, relname, partitioned.unwrap_or(false)))
         }
-        _ => Err(TViewError::DependencyResolutionFailed {
-            view_name: format!("OID {oid:?}"),
-            reason: "Table not found".to_string(),
+        _ => Err(TViewError::CatalogError {
+            operation: format!("Get table name for OID {oid:?}"),
+            pg_error: "not found".to_string(),
         }),
     }
 }

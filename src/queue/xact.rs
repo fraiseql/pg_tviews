@@ -334,9 +334,10 @@ fn flush_pending() -> TViewResult<()> {
                             entity: entity.clone(),
                         }
                     })?;
+                // Parents are found by integer keys: a text key has none to find.
                 let changed: Vec<i64> = crate::ddl::replace::reconcile(&entity, &meta)?
-                    .iter()
-                    .filter_map(|k| k.parse::<i64>().ok())
+                    .into_iter()
+                    .filter_map(|k| super::key::KeyValue::Text(k).to_int())
                     .collect();
                 // A full refresh may bring rows back: look their parents up in the
                 // parents' views too.
@@ -486,9 +487,10 @@ fn flush_pending() -> TViewResult<()> {
             // Safety check: prevent infinite loops
             let max_depth = crate::config::max_propagation_depth();
             if iteration > max_depth {
-                return Err(crate::TViewError::PropagationDepthExceeded {
+                return Err(crate::TViewError::DepthExceeded {
+                    what: "propagation",
+                    depth: iteration,
                     max_depth,
-                    processed: processed.len(),
                 });
             }
         }
@@ -535,7 +537,7 @@ fn flush_pending() -> TViewResult<()> {
 fn load_meta_cached(
     entity: &str,
     cache: &mut std::collections::HashMap<String, Option<crate::catalog::TviewMeta>>,
-) -> spi::Result<Option<crate::catalog::TviewMeta>> {
+) -> crate::TViewResult<Option<crate::catalog::TviewMeta>> {
     if let Some(meta) = cache.get(entity) {
         return Ok(meta.clone());
     }

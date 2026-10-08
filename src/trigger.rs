@@ -135,7 +135,7 @@ fn pg_tview_trigger_handler<'a>(
     let table_oid = match trigger.relation() {
         Ok(rel) => rel.oid(),
         Err(e) => {
-            warning!("Failed to get trigger relation: {:?}", e);
+            warning!("Failed to get trigger relation: {}", e);
             return Ok(None);
         }
     };
@@ -210,7 +210,9 @@ fn pg_tview_trigger_handler<'a>(
     if let Some(entity) = &served
         && let Err(e) = crate::delta::map_row(trigger, entity, table_oid)
     {
-        error!("pg_tviews: could not map the changed row to tv_{entity} keys: {e}");
+        e.raise_in(&format!(
+            "pg_tviews: could not map the changed row to tv_{entity} keys"
+        ));
     }
 
     Ok(None)
@@ -648,9 +650,9 @@ pub fn flush_after_statement() {
         return;
     }
     if let Err(e) = crate::queue::flush_refresh_queue() {
-        error!("TVIEW refresh failed: {e}");
+        e.raise_in("TVIEW refresh failed");
     }
     if let Err(e) = crate::audit::flush_audit_buffer() {
-        warning!("Audit flush failed in statement trigger: {:?}", e);
+        e.raise_in("Audit flush failed");
     }
 }

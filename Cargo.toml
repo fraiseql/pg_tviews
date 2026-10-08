@@ -61,4 +61,5 @@ panic = "unwind"
  manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
  match_same_arms = "allow"  # XactEvent / NodeTag arms kept explicit for clarity
  cast_sign_loss = "allow"  # PostgreSQL OID/SPI integer casts are intentional and bounded
+ result_large_err = "allow"  # pgrx keeps an extern's SQLSTATE only for Result<_, ErrorReport>, a large type
 

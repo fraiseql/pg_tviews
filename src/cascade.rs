@@ -16,7 +16,7 @@ fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
     crate::revision::check();
     let dependent_tviews = match find_dependent_tviews(base_table_oid) {
         Ok(tv) => tv,
-        Err(e) => error!("Failed to find dependent TVIEWs: {:?}", e),
+        Err(e) => error!("Failed to find dependent TVIEWs: {}", e),
     };
 
     if dependent_tviews.is_empty() {
@@ -61,7 +61,7 @@ fn pg_tviews_cascade(base_table_oid: pg_sys::Oid, pk_value: i64) {
     if !unsafe { pg_sys::IsTransactionBlock() }
         && let Err(e) = queue::flush_refresh_queue()
     {
-        error!("TVIEW refresh failed in pg_tviews_cascade: {e:?}");
+        error!("TVIEW refresh failed in pg_tviews_cascade: {e}");
     }
 }
 
@@ -82,7 +82,9 @@ fn pg_tviews_delete(base_table_oid: pg_sys::Oid, pk_value: i64) {
 }
 
 /// Find all TVIEWs that have the given base table as a dependency
-fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog::TviewMeta>> {
+fn find_dependent_tviews(
+    base_table_oid: pg_sys::Oid,
+) -> crate::TViewResult<Vec<catalog::TviewMeta>> {
     // The shared column list keeps this loader in step with `TviewMeta::from_spi_row`.
     let query = format!(
         "{} WHERE $1 IN (SELECT (cp::jsonb->>'source_oid')::oid FROM unnest(cascade_paths) AS cp) \
@@ -90,7 +92,7 @@ fn find_dependent_tviews(base_table_oid: pg_sys::Oid) -> spi::Result<Vec<catalog
                       WHERE e->>'kind' IN ('local', 'mapped'))",
         catalog::meta_select()
     );
-    Spi::connect(|client| {
+    Spi::connect(|client| -> crate::TViewResult<_> {
         // SAFETY: the oid datum is passed by value for the duration of the select.
         let args = [unsafe {
             pgrx::datum::DatumWithOid::new(
@@ -112,7 +114,7 @@ fn find_affected_tview_rows(
     tview_meta: &catalog::TviewMeta,
     base_table_oid: pg_sys::Oid,
     base_pk: i64,
-) -> spi::Result<Vec<i64>> {
+) -> crate::TViewResult<Vec<i64>> {
     let base_table_name = crate::utils::spi_get_string(&format!(
         "SELECT relname::text FROM pg_class WHERE oid = {base_table_oid:?}"
     ))?
@@ -125,7 +127,7 @@ fn find_affected_tview_rows(
 
     // The backing view may call its owner's functions: read it as the owner.
     let _owner = crate::owner::AsOwner::of_table(tview_meta.tview_oid)?;
-    let collect_pks = |query: &str| -> spi::Result<Vec<i64>> {
+    let collect_pks = |query: &str| -> crate::TViewResult<Vec<i64>> {
         let col = tview_pk_col.clone();
         Spi::connect(|client| {
             let rows = client.select(query, None, &[])?;
@@ -135,7 +137,7 @@ fn find_affected_tview_rows(
                     pks.push(pk);
                 }
             }
-            Ok(pks)
+            Ok::<_, crate::TViewError>(pks)
         })
     };
 

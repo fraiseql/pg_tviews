@@ -1388,8 +1388,7 @@ pub fn analyze(
         };
         let missing: Vec<String> = expected.difference(&found).map(name).collect();
         let extra: Vec<String> = found.difference(&expected).map(name).collect();
-        return Err(crate::TViewError::InvalidInput {
-            parameter: "tview definition".to_string(),
+        return Err(crate::TViewError::DefinitionRefused {
             reason: format!(
                 "pg_tviews could not follow how tv_{entity} reads its base tables \
                  (not found in the view's query: [{}]; not in pg_depend: [{}])",
@@ -1432,11 +1431,9 @@ pub fn analyze(
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
-        let virtual_columns = virtual_inputs(table.relid).map_err(catalog)?;
-        table.columns = expand_read_columns(
-            referenced_columns(view_oid, table.relid).map_err(catalog)?,
-            &virtual_columns,
-        );
+        let virtual_columns = virtual_inputs(table.relid)?;
+        table.columns =
+            expand_read_columns(referenced_columns(view_oid, table.relid)?, &virtual_columns);
         table.virtual_reads = virtual_reads(&table.columns, &virtual_columns);
         if let Some(sql) = &table.sql {
             explain(entity, table, sql)?;
@@ -1557,8 +1554,7 @@ fn identity_of(
                 pg_error: e.to_string(),
             })?
             .unwrap_or_default();
-            Err(crate::TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
+            Err(crate::TViewError::DefinitionRefused {
                 reason: identity_refusal(entity, error, &distinct_on_list(&viewdef)),
             })
         }
@@ -1570,7 +1566,7 @@ fn identity_of(
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn render_template(template: &str) -> pgrx::spi::Result<Option<String>> {
+pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
     use pgrx::prelude::*;
     let mut names: std::collections::HashMap<(u32, i16), Option<String>> =
         std::collections::HashMap::new();
@@ -1801,7 +1797,7 @@ pub fn virtual_reads(
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn virtual_inputs(relid: u32) -> pgrx::spi::Result<VirtualInputs> {
+pub fn virtual_inputs(relid: u32) -> crate::TViewResult<VirtualInputs> {
     use pgrx::prelude::*;
     Spi::connect(|client| {
         let mut out: VirtualInputs = Vec::new();
@@ -1844,7 +1840,7 @@ pub fn virtual_inputs(relid: u32) -> pgrx::spi::Result<VirtualInputs> {
 fn referenced_columns(
     view_oid: pgrx::pg_sys::Oid,
     relid: u32,
-) -> pgrx::spi::Result<Vec<(String, i16)>> {
+) -> crate::TViewResult<Vec<(String, i16)>> {
     use pgrx::prelude::*;
     Spi::connect(|client| {
         let mut columns = Vec::new();

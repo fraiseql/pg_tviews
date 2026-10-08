@@ -89,7 +89,7 @@ fn find_affected_keys_batch(
     lookup_col: &str,
     child_pks: &[i64],
     in_view: &[i64],
-) -> spi::Result<HashMap<i64, Vec<KeyValue>>> {
+) -> crate::TViewResult<HashMap<i64, Vec<KeyValue>>> {
     let meta = crate::catalog::TviewMeta::load_by_entity(parent)?.ok_or_else(|| {
         crate::TViewError::MetadataNotFound {
             entity: parent.to_string(),

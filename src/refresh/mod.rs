@@ -31,20 +31,17 @@ pub(crate) fn key_cast(key_type: &KeyType, param: &str, array: bool) -> String {
 
 /// The values of `keys` as the identity binds them; a text key of an integer
 /// identity that is not an integer is an error.
-fn key_values(key_type: &KeyType, keys: &[KeyValue]) -> spi::Result<KeyValues> {
+fn key_values(key_type: &KeyType, keys: &[KeyValue]) -> crate::TViewResult<KeyValues> {
     Ok(match key_type {
         KeyType::Int => KeyValues::Int(
             keys.iter()
-                .map(|k| match k {
-                    KeyValue::Int(v) => Ok(*v),
-                    KeyValue::Text(t) => t.parse::<i64>().map_err(|_| {
-                        spi::Error::from(crate::TViewError::InvalidInput {
-                            parameter: "key".to_string(),
-                            reason: format!("{t} is not a value of an integer identity"),
-                        })
-                    }),
+                .map(|k| {
+                    k.to_int().ok_or_else(|| crate::TViewError::InvalidInput {
+                        parameter: "key".to_string(),
+                        reason: format!("{k} is not a value of an integer identity"),
+                    })
                 })
-                .collect::<spi::Result<_>>()?,
+                .collect::<crate::TViewResult<_>>()?,
         ),
         KeyType::Text(_) => KeyValues::Text(keys.iter().map(ToString::to_string).collect()),
     })
@@ -59,7 +56,7 @@ enum KeyValues {
 pub(crate) fn key_array(
     key_type: &KeyType,
     keys: &[KeyValue],
-) -> spi::Result<DatumWithOid<'static>> {
+) -> crate::TViewResult<DatumWithOid<'static>> {
     // SAFETY: the datums own their arrays.
     Ok(match key_values(key_type, keys)? {
         KeyValues::Int(v) => unsafe { DatumWithOid::new(v, PgBuiltInOids::INT8ARRAYOID.value()) },
@@ -68,7 +65,10 @@ pub(crate) fn key_array(
 }
 
 /// One key as a parameter, for [`key_cast`]`(…, false)`.
-pub(crate) fn key_scalar(key_type: &KeyType, key: &KeyValue) -> spi::Result<DatumWithOid<'static>> {
+pub(crate) fn key_scalar(
+    key_type: &KeyType,
+    key: &KeyValue,
+) -> crate::TViewResult<DatumWithOid<'static>> {
     // SAFETY: the datums own their values.
     Ok(match key_values(key_type, std::slice::from_ref(key))? {
         KeyValues::Int(v) => unsafe { DatumWithOid::new(v[0], PgBuiltInOids::INT8OID.value()) },
@@ -235,7 +235,7 @@ pub(crate) fn run_counted_upsert(
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
-) -> spi::Result<(i64, Written)> {
+) -> crate::TViewResult<(i64, Written)> {
     let qi_pk = quote_identifier(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
@@ -279,7 +279,7 @@ pub(crate) fn lock_rows(
     qi_tv: &str,
     keys: &[KeyValue],
     with_pks: bool,
-) -> spi::Result<Vec<i64>> {
+) -> crate::TViewResult<Vec<i64>> {
     // SAFETY: reads the backend's isolation level.
     let transaction_snapshot =
         unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
@@ -318,7 +318,7 @@ pub(crate) fn run_journaled_delete(
     entity: &str,
     sql: &str,
     args: &[DatumWithOid],
-) -> spi::Result<Vec<i64>> {
+) -> crate::TViewResult<Vec<i64>> {
     let deleted = Spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in client.update(sql, None, args)? {

@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed (breaking)
 
+- **Errors carry their SQLSTATE.** Every pg_tviews function reported its errors as
+  22000 (`data_exception`) or XX000, whatever went wrong, so `WHEN undefined_object`
+  or `WHEN sqlstate '42P07'` never matched. Now: no such TVIEW 42704, TVIEW already
+  exists 42P07 (`pg_tviews_create` and `CREATE TABLE tv_* AS` alike), unreadable
+  definition 42601, definition pg_tviews cannot maintain 0A000, not allowed 42501,
+  TVIEWs reading each other in a cycle 42P17, nesting too deep 54001, refresh queue
+  full 54000, resume without suspend or refresh while suspended 55000, `jsonb_delta`
+  missing 42883, invalid argument 22023; internal failures stay XX000. Messages are
+  one line, with the query or definition in DETAIL and the fix in HINT. Internal
+  errors no longer reach the client as `SPI error: OpUnknown`.
+- **A definition that makes TVIEWs read each other in a cycle is refused** (42P17)
+  when it is created or replaced. Before, it was accepted and every later write to
+  the tables involved failed.
 - **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as
   the TVIEW's owner**, like `REFRESH MATERIALIZED VIEW`. A backing view runs the
   functions it calls as the querying role, so a rebuild run as the caller let a TVIEW

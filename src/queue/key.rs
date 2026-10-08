@@ -18,6 +18,15 @@ impl KeyValue {
             Self::Text(_) => None,
         }
     }
+
+    /// The key as an integer: an `Int` key, or a `Text` key that spells one.
+    #[must_use]
+    pub fn to_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(v) => Some(*v),
+            Self::Text(t) => t.parse().ok(),
+        }
+    }
 }
 
 impl std::fmt::Display for KeyValue {

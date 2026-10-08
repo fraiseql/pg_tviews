@@ -223,7 +223,7 @@ impl TviewMeta {
     ///
     /// # Errors
     /// Returns an error if the catalog cannot be read.
-    pub fn key_type(&self) -> spi::Result<KeyType> {
+    pub fn key_type(&self) -> crate::TViewResult<KeyType> {
         if let Some(key_type) = KEY_TYPES.with(|c| c.borrow().get(&self.tview_oid).cloned()) {
             return Ok(key_type);
         }
@@ -303,14 +303,14 @@ impl TviewMeta {
     }
 
     /// Look up metadata by entity name (cached per backend).
-    pub fn load_by_entity(entity_name: &str) -> spi::Result<Option<Self>> {
+    pub fn load_by_entity(entity_name: &str) -> crate::TViewResult<Option<Self>> {
         crate::queue::cache::sync_generation();
         if let Some(meta) = cached(|m| m.entity_name == entity_name) {
             return Ok(Some(meta));
         }
         // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
         // The entity name is validated before this call.
-        let loaded = Spi::connect(|client| -> spi::Result<Option<Self>> {
+        let loaded = Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
             let args = vec![unsafe {
                 DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
             }];
@@ -326,8 +326,8 @@ impl TviewMeta {
     }
 
     /// Load all TVIEW metadata
-    pub fn load_all() -> spi::Result<Vec<Self>> {
-        Spi::connect(|client| {
+    pub fn load_all() -> crate::TViewResult<Vec<Self>> {
+        Spi::connect(|client| -> crate::TViewResult<Vec<Self>> {
             let rows = client.select(&format!("{} ORDER BY entity", meta_select()), None, &[])?;
 
             let mut result = Vec::new();
@@ -363,10 +363,10 @@ impl TviewMeta {
     ///     // Use deps for smart patching
     /// }
     /// ```
-    pub fn load_for_tview(tview_oid: Oid) -> spi::Result<Option<Self>> {
+    pub fn load_for_tview(tview_oid: Oid) -> crate::TViewResult<Option<Self>> {
         // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
         // The OID is a validated PostgreSQL object identifier.
-        Spi::connect(|client| {
+        Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
             let args = vec![unsafe {
                 DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
             }];
@@ -389,7 +389,7 @@ impl TviewMeta {
     ///
     /// Expects columns: `tview_oid`, `view_oid`, `entity`, `fk_columns`,
     /// `uuid_fk_columns`, `dependency_types`, `dependency_paths`, `array_match_keys`.
-    pub fn from_spi_row(row: &spi::SpiHeapTupleData) -> spi::Result<Self> {
+    pub fn from_spi_row(row: &spi::SpiHeapTupleData) -> crate::TViewResult<Self> {
         // Extract existing arrays
         let fk_cols_val: Option<Vec<String>> = row["fk_columns"].value()?;
         let uuid_fk_cols_val: Option<Vec<String>> = row["uuid_fk_columns"].value()?;
@@ -422,8 +422,7 @@ impl TviewMeta {
             json_strings
                 .into_iter()
                 .map(|json| serde_json::from_str(&json))
-                .collect::<Result<Vec<CascadePath>, _>>()
-                .map_err(|_e| spi::Error::InvalidPosition)? // Use appropriate error type
+                .collect::<Result<Vec<CascadePath>, _>>()?
         } else {
             Vec::new()
         };
@@ -470,12 +469,13 @@ impl TviewMeta {
             .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
             .unwrap_or_default();
 
-        let entity_name: String = row["entity"].value()?.ok_or_else(|| {
-            spi::Error::from(crate::TViewError::SpiError {
-                query: String::new(),
-                error: "entity column is NULL".to_string(),
-            })
-        })?;
+        let entity_name: String =
+            row["entity"]
+                .value()?
+                .ok_or_else(|| crate::TViewError::SpiError {
+                    query: String::new(),
+                    error: "entity column is NULL".to_string(),
+                })?;
         let identity = RowIdentity::from_catalog(
             &entity_name,
             row["identity"]
@@ -486,18 +486,18 @@ impl TviewMeta {
         );
 
         Ok(Self {
-            tview_oid: row["tview_oid"].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
+            tview_oid: row["tview_oid"]
+                .value()?
+                .ok_or_else(|| crate::TViewError::SpiError {
                     query: String::new(),
                     error: "tview_oid column is NULL".to_string(),
-                })
-            })?,
-            view_oid: row["view_oid"].value()?.ok_or_else(|| {
-                spi::Error::from(crate::TViewError::SpiError {
+                })?,
+            view_oid: row["view_oid"]
+                .value()?
+                .ok_or_else(|| crate::TViewError::SpiError {
                     query: String::new(),
                     error: "view_oid column is NULL".to_string(),
-                })
-            })?,
+                })?,
             entity_name,
 
             fk_columns: fk_cols_val.unwrap_or_default(),
@@ -662,7 +662,7 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     })
     .map_err(|e: spi::Error| crate::TViewError::SpiError {
         query: "entity_for_table_uncached".to_string(),
-        error: format!("{e:?}"),
+        error: e.to_string(),
     })
 }
 

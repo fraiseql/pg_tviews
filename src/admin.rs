@@ -2,6 +2,7 @@
 
 use crate::{TViewError, TViewResult, utils::quote_identifier};
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 /// Rebuild a TVIEW from its backing view, then every TVIEW whose view reads it,
@@ -18,7 +19,7 @@ use pgrx::prelude::*;
 /// Returns error if the caller does not own the TVIEW, the entity is not
 /// registered, the dependency graph cannot be loaded, or a rebuild fails.
 #[pg_extern]
-fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
+fn pg_tviews_refresh(entity: &str) -> Result<(), ErrorReport> {
     crate::revision::check();
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
@@ -43,7 +44,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
 #[pg_extern]
 fn pg_tviews_refresh_time_dependent(
     tview: default!(Option<&str>, "NULL"),
-) -> Result<SetOfIterator<'static, String>, TViewError> {
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     crate::revision::check();
     let rows: Vec<(String, pgrx::pg_sys::Oid, bool, bool)> = Spi::connect(|client| {
         let mut rows = Vec::new();
@@ -83,13 +84,15 @@ fn pg_tviews_refresh_time_dependent(
                 return Err(TViewError::InvalidInput {
                     parameter: "tview".to_string(),
                     reason: format!("{name} is not a TVIEW"),
-                });
+                }
+                .into());
             };
             if !dependent {
                 return Err(TViewError::InvalidInput {
                     parameter: "tview".to_string(),
                     reason: format!("{name} does not read the time: nothing to refresh"),
-                });
+                }
+                .into());
             }
             crate::owner::require_owner(table, name)?;
             vec![(entity, table)]
@@ -256,9 +259,9 @@ fn rebuild_statements(
 fn pg_tviews_ensure_propagation_indexes(
     entity: default!(Option<&str>, "NULL"),
     dry_run: default!(bool, false),
-) -> Result<SetOfIterator<'static, String>, TViewError> {
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     crate::revision::check();
-    let missing = Spi::connect(|client| {
+    let missing = Spi::connect(|client| -> crate::TViewResult<_> {
         let args = vec![unsafe {
             DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
         }];
@@ -297,12 +300,12 @@ fn pg_tviews_ensure_propagation_indexes(
                 ));
             }
         }
-        Ok::<_, spi::Error>(ddl)
+        Ok(ddl)
     })?;
 
     if !dry_run {
         for ddl in &missing {
-            Spi::run(ddl)?;
+            Spi::run(ddl).map_err(TViewError::from)?;
         }
     }
     Ok(SetOfIterator::new(missing))
@@ -315,7 +318,7 @@ fn pg_tviews_ensure_propagation_indexes(
 /// # Errors
 /// Returns error if any TVIEW cannot be refreshed
 #[pg_extern]
-fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
+fn pg_tviews_refresh_all_entities() -> Result<(), ErrorReport> {
     crate::revision::check();
     let order = refresh_all_in_dependency_order()?;
     if order.is_empty() {
@@ -352,7 +355,7 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
 fn pg_tviews_migrate_triggers() {
     crate::revision::check();
     if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
-        error!("Failed to migrate triggers: {:?}", e);
+        e.raise_in("Failed to migrate triggers");
     }
 }
 

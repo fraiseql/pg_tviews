@@ -83,7 +83,7 @@ use crate::utils::{qualified_relname_from_oid, quote_identifier};
 /// # Errors
 ///
 /// - Update to `tv_entity` table failed
-pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> spi::Result<super::Touched> {
+pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Touched> {
     let keys = std::slice::from_ref(key);
     // Wait for a concurrent writer of this row before reading the view.
     let before = super::lock_rows(
@@ -118,7 +118,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> spi::Result<super::Touch
 ///
 /// Removing the row here is what makes DELETE propagate to the tview instead of
 /// leaving a stale row (issue #48).
-fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> spi::Result<Vec<i64>> {
+fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<i64>> {
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = quote_identifier(&meta.identity.column);
@@ -143,7 +143,7 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> spi::Result<Vec<i64>> {
 /// ```sql
 /// SELECT 1 FROM v_post WHERE pk_post = $1 LIMIT 2
 /// ```
-fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> spi::Result<bool> {
+fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<bool> {
     let key_type = meta.key_type()?;
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
 
@@ -257,7 +257,7 @@ pub(super) fn union_duplicate(meta: &TviewMeta, key: &str) {
 /// // WHERE pk_post = $2
 /// apply_patch(&view_row, &meta)?;
 /// ```
-fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, super::Written)> {
     let key_type = meta.key_type()?;
     let key_col = &meta.identity.column;
 
@@ -456,7 +456,10 @@ fn build_smart_patch_expr(
 /// SET data = $1, updated_at = now()
 /// WHERE pk_entity = $2
 /// ```
-fn apply_full_replacement(meta: &TviewMeta, key: &KeyValue) -> spi::Result<(i64, super::Written)> {
+fn apply_full_replacement(
+    meta: &TviewMeta,
+    key: &KeyValue,
+) -> crate::TViewResult<(i64, super::Written)> {
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
@@ -497,7 +500,10 @@ mod tests {
     use pgrx::prelude::*;
 
     /// Refresh the row `key` of the TVIEW whose table or view is `source`.
-    fn refresh_row(source: pg_sys::Oid, key: &KeyValue) -> spi::Result<crate::refresh::Touched> {
+    fn refresh_row(
+        source: pg_sys::Oid,
+        key: &KeyValue,
+    ) -> crate::TViewResult<crate::refresh::Touched> {
         let entity = Spi::get_one::<String>(&format!(
             "SELECT entity FROM {} WHERE view_oid::oid = {1} OR table_oid::oid = {1}",
             crate::utils::meta_table(),

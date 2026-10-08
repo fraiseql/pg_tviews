@@ -453,8 +453,7 @@ impl Walker<'_> {
     ) -> TViewResult<Vec<Resolved>> {
         let wanted = self.wanted.take();
         if self.levels.len() >= MAX_DEPTH {
-            return Err(TViewError::InvalidInput {
-                parameter: "tview definition".to_string(),
+            return Err(TViewError::DefinitionRefused {
                 reason: format!(
                     "the backing view nests views, subqueries and CTEs more than {MAX_DEPTH} levels deep"
                 ),
@@ -971,8 +970,7 @@ impl Walker<'_> {
                     ) == pg_sys::AclResult::ACLCHECK_OK
                 };
                 if !readable {
-                    return Err(TViewError::InvalidInput {
-                        parameter: "tview definition".to_string(),
+                    return Err(TViewError::PermissionDenied {
                         reason: format!("permission denied to read view {qualified}"),
                     });
                 }

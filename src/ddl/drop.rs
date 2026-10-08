@@ -355,7 +355,7 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW metadata: {entity_name}"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })
     .map(|opt| opt.unwrap_or(false))
 }

@@ -200,7 +200,7 @@ pub fn apply_fanout_patch(
             .update(&sql, None, &args)?
             .map(|row| row[1].value::<i64>())
             .filter_map(Result::transpose)
-            .collect::<spi::Result<_>>()
+            .collect::<pgrx::spi::Result<_>>()
     })?;
 
     crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);

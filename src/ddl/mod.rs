@@ -26,6 +26,7 @@ pub use drop::drop_tview;
 
 use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 /// Schema and name of the backing view of the TVIEW whose table is
@@ -230,7 +231,7 @@ pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
 ///
 /// Usage: `SELECT tviews.pg_tviews_create('tv_post', 'SELECT pk_post, id, … AS data FROM tb_post');`
 #[pg_extern]
-fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, String> {
+fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, ErrorReport> {
     crate::revision::check();
     create_reported(tview_name, select_sql, replace::Options::default())
 }
@@ -250,15 +251,16 @@ fn pg_tviews_create_aggregate(
     tview_name: &str,
     select_sql: &str,
     group_keys: pgrx::JsonB,
-) -> Result<String, String> {
+) -> Result<String, ErrorReport> {
     crate::revision::check();
     let keys: aggregate::GroupKeys = serde_json::from_value(group_keys.0)
         .ok()
         .filter(|keys: &aggregate::GroupKeys| !keys.is_empty())
-        .ok_or_else(|| {
-            "group_keys must be a JSON object mapping source table names to column names, e.g. \
-             '{\"tb_order\": \"fk_user\"}'"
-                .to_string()
+        .ok_or_else(|| TViewError::InvalidInput {
+            parameter: "group_keys".to_string(),
+            reason: "a JSON object mapping source table names to column names is expected, \
+                     e.g. '{\"tb_order\": \"fk_user\"}'"
+                .to_string(),
         })?;
     create_reported(tview_name, select_sql, replace::Options::aggregate(keys))
 }
@@ -268,7 +270,7 @@ fn create_reported(
     tview_name: &str,
     select_sql: &str,
     options: replace::Options,
-) -> Result<String, String> {
+) -> Result<String, ErrorReport> {
     // A session that loaded the library lazily gets the ProcessUtility hook now.
     // SAFETY: called from a backend function, where installing the hook is valid.
     unsafe {
@@ -278,18 +280,17 @@ fn create_reported(
         Ok(replace::Created::Rows(_) | replace::Created::Skipped) => {
             Ok(format!("TVIEW '{tview_name}' created successfully"))
         }
-        Ok(replace::Created::Exists(name)) => Err(format!(
-            "TVIEW {name} already exists; pg_tviews_create_or_replace() changes an existing TVIEW"
-        )),
-        Err(e) => Err(format!("Failed to create TVIEW: {e}")),
+        Ok(replace::Created::Exists(name)) => Err(TViewError::RelationExists { name }.into()),
+        Err(e) => Err(e.report_in("Failed to create TVIEW")),
     }
 }
 
 /// Internal: called by the `sql_drop` event trigger for a TVIEW whose backing view
 /// or table was dropped as a dependent (see [`drop::handle_dropped`]).
 #[pg_extern]
-fn pg_tviews_handle_dropped(entity: &str) -> Result<(), String> {
-    drop::handle_dropped(entity).map_err(|e| format!("Failed to deregister TVIEW '{entity}': {e}"))
+fn pg_tviews_handle_dropped(entity: &str) -> Result<(), ErrorReport> {
+    drop::handle_dropped(entity)
+        .map_err(|e| e.report_in(&format!("Failed to deregister TVIEW '{entity}'")))
 }
 
 /// SQL function: create a TVIEW, or bring an existing one to `query` and
@@ -304,11 +305,11 @@ fn pg_tviews_create_or_replace(
     tview_name: &str,
     query: &str,
     options: default!(pgrx::JsonB, "'{}'"),
-) -> Result<String, String> {
+) -> Result<String, ErrorReport> {
     crate::revision::check();
     replace::create_or_replace(tview_name, query, &options.0)
         .map(str::to_string)
-        .map_err(|e| format!("Failed to create or replace TVIEW '{tview_name}': {e}"))
+        .map_err(|e| e.report_in(&format!("Failed to create or replace TVIEW '{tview_name}'")))
 }
 
 /// SQL function: Drop a TVIEW
@@ -321,14 +322,14 @@ fn pg_tviews_drop(
     tview_name: &str,
     if_exists: default!(bool, false),
     cascade: default!(bool, false),
-) -> Result<String, String> {
+) -> Result<String, ErrorReport> {
     crate::revision::check();
     match drop_tview(tview_name, if_exists, cascade) {
         Ok(true) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
         Ok(false) => Ok(format!(
             "TVIEW '{tview_name}' does not exist, nothing dropped"
         )),
-        Err(e) => Err(format!("Failed to drop TVIEW: {e}")),
+        Err(e) => Err(e.report_in("Failed to drop TVIEW")),
     }
 }
 
@@ -339,14 +340,13 @@ fn pg_tviews_drop(
 ///
 /// Usage: `SELECT tviews.pg_tviews_reregister('post');`
 #[pg_extern]
-fn pg_tviews_reregister(tview_name: &str) -> Result<String, String> {
+fn pg_tviews_reregister(tview_name: &str) -> Result<String, ErrorReport> {
     crate::revision::check();
-    crate::validation::validate_sql_identifier(tview_name, "tview_name")
-        .map_err(|e| format!("Invalid TVIEW name: {e}"))?;
+    crate::validation::validate_sql_identifier(tview_name, "tview_name")?;
     let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
     create::reregister_tview(entity)
         .map(|()| "reregistered".to_string())
-        .map_err(|e| format!("Failed to re-register TVIEW '{entity}': {e}"))
+        .map_err(|e| e.report_in(&format!("Failed to re-register TVIEW '{entity}'")))
 }
 
 // Every TVIEW, dependencies first: an entity comes after every TVIEW its backing
@@ -413,10 +413,10 @@ $$;
 fn pg_tviews_rebind_cascade_paths(
     view_oid: pg_sys::Oid,
     cascade_paths: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ErrorReport> {
     crate::revision::check();
     create::rebind_cascade_paths(view_oid, &cascade_paths)
-        .map_err(|e| format!("Failed to rebind cascade paths: {e}"))
+        .map_err(|e| e.report_in("Failed to rebind cascade paths"))
 }
 
 /// SQL function: deprecated, always raises an error.
@@ -426,12 +426,15 @@ fn pg_tviews_rebind_cascade_paths(
 /// `CREATE TABLE tv_x AS SELECT ...` instead. The function is kept only so that
 /// callers get this message; it is removed in the next breaking release.
 #[pg_extern]
-fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, String> {
-    crate::validation::validate_sql_identifier(table_name, "table_name")
-        .map_err(|e| format!("Invalid table name: {e}"))?;
+fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, ErrorReport> {
+    crate::validation::validate_sql_identifier(table_name, "table_name")?;
 
-    Err(format!(
-        "pg_tviews_convert_existing_table() is deprecated and no longer converts '{table_name}'; \
-         use pg_tviews_create() or CREATE TABLE tv_<entity> AS SELECT ... instead"
-    ))
+    Err(TViewError::DefinitionRefused {
+        reason: format!(
+            "pg_tviews_convert_existing_table() is deprecated and no longer converts \
+             '{table_name}'; use pg_tviews_create() or CREATE TABLE tv_<entity> AS SELECT ... \
+             instead"
+        ),
+    }
+    .into())
 }
