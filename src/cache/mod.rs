@@ -8,13 +8,9 @@
 //! callback only touches a `Cell`: it can run in the middle of a catalog access, so
 //! it must neither take a lock nor call SPI.
 
-mod entity;
-
-pub use entity::{CachedEntityInfo, LegacyRoot, entity_info};
-
-use crate::cascade_path::CascadePath;
+use crate::catalog::plan::LocalPath;
 use crate::catalog::{KeyType, TviewMeta};
-use crate::queue::graph::EntityDepGraph;
+use crate::flush::EntityDepGraph;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -67,12 +63,10 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
 }
 
 thread_local! {
-    /// Table → what the row trigger needs about the TVIEW it is the root of.
-    pub static ENTITIES: Memo<Oid, Option<CachedEntityInfo>> = Memo::new();
     /// The entity dependency graph (one entry, keyed by `()`).
     pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
-    /// Table → the cascade paths starting at it. Also cleared at transaction end.
-    pub static CASCADE_PATHS: Memo<Oid, Vec<CascadePath>> = Memo::new();
+    /// Table → the local paths starting at it. Also cleared at transaction end.
+    pub static CASCADE_PATHS: Memo<Oid, Vec<LocalPath>> = Memo::new();
     /// Every `TviewMeta` read so far (keyed by entity).
     pub static METAS: Memo<String, TviewMeta> = Memo::new();
     /// TVIEW table → the type of its identity column.
@@ -110,17 +104,17 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
     Ok(graph)
 }
 
-/// The cascade paths starting at `table_oid`, across every TVIEW (cached for the
-/// transaction).
+/// The local paths starting at `table_oid`, across every TVIEW's plan (cached
+/// for the transaction).
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<Vec<CascadePath>> {
+pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<Vec<LocalPath>> {
     CASCADE_PATHS.with(|m| {
         m.get_or_load(table_oid, || {
             Ok(TviewMeta::load_all()?
                 .into_iter()
-                .flat_map(|meta| meta.cascade_paths)
+                .flat_map(|meta| meta.plan.paths)
                 .filter(|path| path.source_oid == table_oid)
                 .collect())
         })
@@ -129,7 +123,6 @@ pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<Vec<CascadePath>> {
 
 /// Forget every cached value of this backend.
 pub fn invalidate_all() {
-    ENTITIES.with(Memo::clear);
     GRAPH.with(Memo::clear);
     CASCADE_PATHS.with(Memo::clear);
     METAS.with(Memo::clear);

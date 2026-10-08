@@ -2,12 +2,12 @@
 //! `GROUP BY` groups of its source tables.
 //!
 //! The caller names, for each source table, the column whose value **is** the group
-//! key (`group_keys`). Each becomes a cascade path from that table straight to the
+//! key (`group_keys`). Each becomes a local path from that table straight to the
 //! entity, so the ordinary row trigger enqueues the affected groups (both the old and
 //! the new group when a row moves) and the ordinary pk refresh recomputes them from
 //! the backing view: a new group is inserted, an emptied one deleted.
 
-use crate::cascade_path::CascadePath;
+use crate::catalog::plan::LocalPath;
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -16,17 +16,17 @@ use std::collections::BTreeMap;
 /// Source table name → the column whose value is the group key.
 pub type GroupKeys = BTreeMap<String, String>;
 
-/// One cascade path per group key: a change to a row of `table` refreshes the
+/// One local path per group key: a change to a row of `table` refreshes the
 /// group named by that row's `column`.
 ///
 /// # Errors
 /// Returns an error if a named table is not a source of the view or lacks the column.
-pub fn cascade_paths(
+pub fn local_paths(
     entity: &str,
     group_keys: &GroupKeys,
     base_tables: &[Oid],
     view_oid: Oid,
-) -> TViewResult<Vec<CascadePath>> {
+) -> TViewResult<Vec<LocalPath>> {
     let mut paths = Vec::with_capacity(group_keys.len());
     for (table, column) in group_keys {
         let oid =
@@ -40,15 +40,12 @@ pub fn cascade_paths(
                 reason: format!("table '{table}' has no column '{column}'"),
             });
         }
-        paths.push(CascadePath {
+        paths.push(LocalPath {
             source_oid: oid,
             source_table: table.clone(),
             entity_name: entity.to_string(),
             initial_col: column.clone(),
-            hops: Vec::new(),
-            unresolvable: false,
             source_columns: crate::ddl::create::view_source_columns(view_oid, oid),
-            fanout: None,
             root: false,
             initial_attnum: None,
         });

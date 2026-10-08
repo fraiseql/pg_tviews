@@ -68,7 +68,7 @@ JOIN public.tb_author a ON a.pk_author = p.fk_author;
 
 DO $$ BEGIN
   -- tb_author maps to tv_post keys through a query over app.tb_post (ADR 0157).
-  IF NOT EXISTS (SELECT 1 FROM pg_tview_meta, jsonb_array_elements(key_mappings) e
+  IF NOT EXISTS (SELECT 1 FROM pg_tview_meta, jsonb_array_elements(plan->'tables') e
                  WHERE entity = 'post' AND e->>'kind' = 'mapped'
                    AND (e->>'relid')::oid = 'tb_author'::regclass::oid) THEN
     RAISE EXCEPTION '#96 setup FAIL: tv_post has no mapping of tb_author';
@@ -113,10 +113,12 @@ DO $$ BEGIN
        IS DISTINCT FROM 'tviews.app__tv_post'::regclass::oid THEN
     RAISE EXCEPTION '#96 FAIL: post catalog row does not point at the restored app.tv_post / tviews.app__tv_post';
   END IF;
-  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, unnest(m.cascade_paths) cp
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'paths') cp
              WHERE m.entity = 'post'
-               AND (cp::jsonb->>'source_oid')::oid <> 'app.tb_post'::regclass::oid) THEN
-    RAISE EXCEPTION '#96 FAIL: post cascade path still carries a source database OID';
+               AND (cp->>'source_oid')::oid <> 'app.tb_post'::regclass::oid)
+     OR NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'paths') cp
+                    WHERE m.entity = 'post') THEN
+    RAISE EXCEPTION '#96 FAIL: post local path still carries a source database OID';
   END IF;
   -- The mapping query names app.tb_post by its relid: rebound with it.
   IF tviews.pg_tviews_mapping_query('post', 'tb_author'::regclass) NOT LIKE '%FROM pg_tviews_delta d, app.tb_post o1%' THEN
@@ -126,13 +128,13 @@ DO $$ BEGIN
   IF (SELECT count(*) FROM tv_author) <> 2 OR (SELECT count(*) FROM app.tv_post) <> 2 THEN
     RAISE EXCEPTION '#96 FAIL: restored TVIEW rows missing';
   END IF;
-  -- The lineage (ADR 0157) names each table by relid: rebound like cascade_paths.
-  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.key_mappings) e
+  -- The plan (ADR 0203) names each table by relid: rebound by its name.
+  IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'tables') e
              WHERE (e->>'relid')::oid IS DISTINCT FROM to_regclass(e->>'table')::oid)
-     OR NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.key_mappings) e
+     OR NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'tables') e
                     WHERE m.entity = 'post')
   THEN
-    RAISE EXCEPTION '#96 FAIL: key_mappings still carry the source database''s relids';
+    RAISE EXCEPTION '#96 FAIL: the plan still carries the source database''s relids';
   END IF;
 END $$;
 

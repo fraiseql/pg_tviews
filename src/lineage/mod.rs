@@ -546,14 +546,24 @@ impl TableKind {
 }
 
 impl Graph {
-    /// Every TVIEW the view reads, with the output column equal to its key: a
-    /// change to its row `k` changes the rows whose column holds `k`. `None` when
-    /// no output column carries its key.
+    /// Every TVIEW the view reads, with the output columns equal to its key (one
+    /// per read of it that has one): a change to its row `k` changes the rows
+    /// where one of them holds `k`. Empty when no output column carries its key.
     #[must_use]
-    pub fn embed_lookups(&self) -> BTreeMap<String, Option<String>> {
+    pub fn embed_lookups(&self) -> BTreeMap<String, Vec<String>> {
         self.tview_keys
             .iter()
-            .map(|(entity, keys)| (entity.clone(), self.output_equal_to(keys)))
+            .map(|(entity, keys)| {
+                let mut lookups: Vec<String> = Vec::new();
+                for key in keys {
+                    if let Some(output) = self.output_equal_to(std::slice::from_ref(key))
+                        && !lookups.contains(&output)
+                    {
+                        lookups.push(output);
+                    }
+                }
+                (entity.clone(), lookups)
+            })
             .collect()
     }
 
@@ -1150,9 +1160,9 @@ pub struct Lineage {
     pub functions: Vec<(u32, String)>,
     /// How it reads the current time (#193): its rows change with no write.
     pub time_reads: Vec<String>,
-    /// Every other TVIEW it reads, with the output column equal to that TVIEW's
-    /// key, if any.
-    pub tview_reads: BTreeMap<String, Option<String>>,
+    /// Every other TVIEW it reads, with the output columns equal to that TVIEW's
+    /// key (none when no output carries it).
+    pub tview_reads: BTreeMap<String, Vec<String>>,
     /// The TVIEWs it reads whose rows are named by a column other than
     /// `pk_<entity>` (DISTINCT ON): the key it joins on is not theirs.
     pub keyed_otherwise: BTreeSet<String>,
@@ -1161,34 +1171,26 @@ pub struct Lineage {
 }
 
 /// How a TVIEW embeds another one's rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EmbedKind {
     /// It reads some of the child's columns, not its document.
+    #[serde(rename = "scalar")]
     Scalar,
     /// The child's `data` is a value of its own `data`.
+    #[serde(rename = "nested_object")]
     Nested,
     /// The children's `data` are aggregated into an array.
+    #[serde(rename = "array")]
     Array,
-}
-
-impl EmbedKind {
-    /// The name `pg_tview_meta.dependency_types` stores.
-    #[must_use]
-    pub const fn stored(self) -> &'static str {
-        match self {
-            Self::Scalar => "scalar",
-            Self::Nested => "nested_object",
-            Self::Array => "array",
-        }
-    }
 }
 
 /// Another TVIEW this one embeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Embed {
     pub entity: String,
-    /// The output column of this TVIEW equal to the child's key.
-    pub lookup: String,
+    /// The output columns of this TVIEW equal to the child's key: one per read
+    /// of the child.
+    pub lookups: Vec<String>,
     pub kind: EmbedKind,
     /// Where its document lands in `data` (empty for a scalar embed).
     pub path: Vec<String>,
@@ -1202,25 +1204,33 @@ impl Lineage {
         self.tview_reads
             .iter()
             .filter(|(child, _)| child.as_str() != entity)
-            .filter_map(|(child, lookup)| {
-                let lookup = lookup.clone()?;
+            .filter(|(_, lookups)| !lookups.is_empty())
+            .map(|(child, lookups)| {
                 // The parent joins on the child's pk_<child>, which is not the key
                 // of a DISTINCT ON child: its document is read, not followed.
-                let found = placed
-                    .clone()
-                    .find(|e| &e.entity == child)
-                    .filter(|_| !self.keyed_otherwise.contains(child));
-                let kind = match found {
-                    Some(e) if e.array => EmbedKind::Array,
-                    Some(_) => EmbedKind::Nested,
-                    None => EmbedKind::Scalar,
+                let placements: Vec<&DataEmbed> = if self.keyed_otherwise.contains(child) {
+                    Vec::new()
+                } else {
+                    placed.clone().filter(|e| &e.entity == child).collect()
                 };
-                Some(Embed {
+                let kind = if placements.iter().any(|e| e.array) {
+                    EmbedKind::Array
+                } else if placements.is_empty() {
+                    EmbedKind::Scalar
+                } else {
+                    EmbedKind::Nested
+                };
+                // A document placed at two paths has no single path to patch.
+                let path = match placements.as_slice() {
+                    [one] => one.path.clone(),
+                    _ => Vec::new(),
+                };
+                Embed {
                     entity: child.clone(),
-                    lookup,
+                    lookups: lookups.clone(),
                     kind,
-                    path: found.map(|e| e.path.clone()).unwrap_or_default(),
-                })
+                    path,
+                }
             })
             .collect()
     }
@@ -1546,13 +1556,17 @@ pub fn analyze(
     let mut lookups = tview_reads.clone();
     let aggregate_embeds: Vec<(String, Option<String>)> = aggregates
         .into_iter()
-        .filter_map(|a| lookups.remove(&a).map(|column| (a, column)))
+        .filter_map(|a| {
+            lookups
+                .remove(&a)
+                .map(|columns| (a, columns.first().cloned()))
+        })
         .collect();
     // A TVIEW read with an output column equal to its key is embedded: a refresh
     // of its rows finds the parents by that column.
     let embeds: Vec<&str> = tview_reads
         .iter()
-        .filter(|(child, lookup)| lookup.is_some() && child.as_str() != entity)
+        .filter(|(child, lookups)| !lookups.is_empty() && child.as_str() != entity)
         .map(|(child, _)| child.as_str())
         .collect();
     // Propagation from an embedded TVIEW covers a table only if that TVIEW maps it.
@@ -1733,18 +1747,22 @@ pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
 }
 
 /// One table of a registered TVIEW's `key_mappings`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeyMapping {
     pub relid: u32,
+    /// The table's qualified name: what a restore rebinds `relid` from.
     pub table: String,
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<String>,
+    /// `all_keys`: why no cascade maps the table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// `mapped` (and `all_keys` for its traceable reads): the query template (see
     /// [`render_template`]).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql: Option<String>,
     /// Columns of the table the TVIEW reads; empty when unknown.
     #[serde(default)]
@@ -1753,32 +1771,17 @@ pub struct KeyMapping {
     pub columns: Vec<String>,
     /// `mapped` through one equality onto a column of the root: `(this table's
     /// column, the root's column)`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hop: Option<(String, String)>,
     /// The column of this table whose value the fan-out patch looks up.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_col: Option<String>,
     /// How an UPDATE is written into every TVIEW row it reaches (issue #120).
-    #[serde(default)]
-    pub fanout: Option<crate::cascade_path::FanoutPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout: Option<crate::catalog::plan::FanoutPatch>,
     /// The table of another TVIEW, of that entity (#191): refreshed first.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tview: Option<String>,
-}
-
-impl KeyMapping {
-    /// Parse `pg_tview_meta.key_mappings`; anything malformed is skipped.
-    #[must_use]
-    pub fn parse_all(json: &serde_json::Value) -> Vec<Self> {
-        json.as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|e| serde_json::from_value(e.clone()).ok())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
 }
 
 /// Rows above which a sequential scan in a mapping query is worth an index.
@@ -2314,7 +2317,7 @@ mod tests {
         );
         assert_eq!(
             g.embed_lookups(),
-            BTreeMap::from([("user_summary".to_string(), Some("pk_user".to_string()))])
+            BTreeMap::from([("user_summary".to_string(), vec!["pk_user".to_string()])])
         );
     }
 
@@ -2330,7 +2333,29 @@ mod tests {
         ];
         assert_eq!(
             g.embed_lookups(),
-            BTreeMap::from([("tag_count".to_string(), Some("author".to_string()))])
+            BTreeMap::from([("tag_count".to_string(), vec!["author".to_string()])])
+        );
+    }
+
+    #[test]
+    fn an_embed_read_twice_has_both_lookups() {
+        // tb_doc d JOIN tv_user a ON a.pk_user = d.fk_author JOIN tv_user e ON e.pk_user = d.fk_editor
+        let mut g = graph(vec![occ(1, "tb_doc")], vec![], col(0, "pk_doc"));
+        g.tview_keys.insert(
+            "user".into(),
+            vec![col(0, "fk_author"), col(0, "fk_editor")],
+        );
+        g.outputs = vec![
+            ("pk_doc".into(), Some(col(0, "pk_doc"))),
+            ("fk_author".into(), Some(col(0, "fk_author"))),
+            ("fk_editor".into(), Some(col(0, "fk_editor"))),
+        ];
+        assert_eq!(
+            g.embed_lookups(),
+            BTreeMap::from([(
+                "user".to_string(),
+                vec!["fk_author".to_string(), "fk_editor".to_string()]
+            )])
         );
     }
 
@@ -2343,7 +2368,7 @@ mod tests {
         );
         assert_eq!(
             g.embed_lookups(),
-            BTreeMap::from([("user_summary".to_string(), None)])
+            BTreeMap::from([("user_summary".to_string(), Vec::new())])
         );
     }
 

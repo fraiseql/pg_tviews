@@ -70,24 +70,24 @@ SELECT pg_tviews_create('order', $$
     GROUP BY o.pk_order, o.id, o.customer
 $$);
 
--- Verify cascade_paths were stored
+-- Verify the plan has local paths
 \echo ''
-\echo '### Test 1: cascade_paths stored in pg_tview_meta'
+\echo '### Test 1: local paths stored in the plan'
 
 DO $$
 DECLARE
     path_count INTEGER;
 BEGIN
-    SELECT array_length(cascade_paths, 1)
+    SELECT jsonb_array_length(plan->'paths')
     INTO path_count
     FROM pg_tview_meta
     WHERE entity = 'order';
 
     IF path_count IS NULL OR path_count < 1 THEN
-        RAISE EXCEPTION 'Expected at least 1 cascade path, got %', COALESCE(path_count::text, 'NULL');
+        RAISE EXCEPTION 'Expected at least 1 local path, got %', COALESCE(path_count::text, 'NULL');
     END IF;
 
-    RAISE NOTICE 'cascade_paths count: %', path_count;
+    RAISE NOTICE 'local path count: %', path_count;
 END $$;
 
 -- Verify initial data

@@ -79,7 +79,7 @@ $TVIEW$);
 
 -- Precondition: the author embed is a scalar (base-table) dependency, not nested_object.
 DO $$ BEGIN
-  IF (SELECT dependency_types @> ARRAY['nested_object']::text[]
+  IF (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) @> ARRAY['nested_object']::text[]
       FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION 'setup FAIL: post classified nested_object (expected scalar/base-table embed)';
   END IF;

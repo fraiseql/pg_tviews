@@ -16,15 +16,7 @@ re-create the TVIEWs.
 | `pg_tviews_analyze_select(text)` | 0.1.0-beta.27 | None. `pg_tviews_create` analyses the definition and reports what it refuses; `tviews.pg_tview_reads` and `pg_tviews_mapping_query()` show what a TVIEW reads and how writes map to its rows. |
 | `pg_tviews_infer_types(text, text[])` | 0.1.0-beta.27 | `format_type(atttypid, atttypmod)` from `pg_attribute`. |
 | `pg_tviews_cascade(oid, bigint)`, `pg_tviews_insert(oid, bigint)`, `pg_tviews_delete(oid, bigint)` | 0.1.0-beta.27 | None needed: a write to a base table refreshes every TVIEW that reads it. `pg_tviews_refresh(entity)` rebuilds one TVIEW after changes the triggers did not see. |
-
-## Scheduled for removal in 0.1.0-beta.27
-
-These remain until the release that changes the catalog, which re-derives every TVIEW
-at `ALTER EXTENSION pg_tviews UPDATE`.
-
-| Item | Replacement |
-|---|---|
-| `pg_tviews_convert_existing_table(text)`, `pg_tviews_convert_table(text, text)` | `pg_tviews_create_or_replace(name, select)`, or `CREATE TABLE tv_<entity> AS SELECT …` with the extension preloaded. Both already raise an error. |
-| `pg_tviews_migrate_triggers()`, `pg_tviews_rebind_cascade_paths(…)` | The upgrade re-derives every TVIEW and its triggers. |
-| `pg_tviews.metrics_enabled` | None: metrics are always collected. The setting has no effect. |
-| Catalog columns of the text-pattern analysis (`fk_columns`, `uuid_fk_columns`, `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_*`, `cascade_paths`, `distinct_on_*`) | One stored propagation plan per TVIEW, derived from its query tree. |
+| `pg_tviews_convert_existing_table(text)`, `pg_tviews_convert_table(text, text)` | 0.1.0-beta.27 | `pg_tviews_create_or_replace(name, select)`, or `CREATE TABLE tv_<entity> AS SELECT …` with the extension preloaded. Both raised an error since 0.1.0-beta.18. |
+| `pg_tviews_migrate_triggers()`, `pg_tviews_rebind_cascade_paths(…)` | 0.1.0-beta.27 | None needed: the update to 0.1.0-beta.27 re-derives every TVIEW and its triggers, and the catalog trigger rebinds a restored TVIEW's plan. |
+| `pg_tviews.metrics_enabled` | 0.1.0-beta.27 | None: metrics are always collected. Remove the setting from `postgresql.conf`. |
+| `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`, `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`, `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`, `aggregate_embeds`, `key_mappings` | 0.1.0-beta.27 | `pg_tview_meta.plan`: one versioned document per TVIEW, derived from its query tree (ADR 0203). `tviews.registry` and `pg_tviews_mapping_query()` stay the stable way to read it. |

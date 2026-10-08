@@ -35,7 +35,7 @@ fn pg_tviews_flush_and_report(
     reset: default!(bool, true),
 ) -> Result<JsonB, ErrorReport> {
     crate::revision::check();
-    crate::queue::flush_refresh_queue()?;
+    crate::flush::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
     Ok(JsonB(build_report(

@@ -6,7 +6,7 @@
 //! ([`commit`]) keeps what it did. The subtransaction callback is the only
 //! caller, so the stack depth always equals the number of open subtransactions.
 
-use super::state;
+use crate::queue::state;
 use std::cell::RefCell;
 
 /// The session state a subtransaction started from.

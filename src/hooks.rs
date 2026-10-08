@@ -188,7 +188,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                             ));
                         }
                     }
-                    if let Err(e) = crate::queue::flush_refresh_queue() {
+                    if let Err(e) = crate::flush::flush_refresh_queue() {
                         unsafe { HOOK_IN_PROGRESS = false };
                         e.raise_in(&format!("TVIEW refresh failed before {stmt}"));
                     }

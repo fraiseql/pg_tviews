@@ -101,7 +101,7 @@ fn pg_tviews_refresh_time_dependent(
             .map(|(entity, table, _, _)| (entity, table))
             .collect(),
     };
-    let order = crate::queue::graph::EntityDepGraph::load()?.topo_order;
+    let order = crate::flush::EntityDepGraph::load()?.topo_order;
     let mut chosen = chosen;
     chosen.sort_by_key(|(entity, _)| order.iter().position(|e| e == entity).unwrap_or(usize::MAX));
     let mut refreshed = Vec::new();
@@ -113,7 +113,7 @@ fn pg_tviews_refresh_time_dependent(
         }
         refreshed.push(crate::utils::qualified_relname_from_oid(*table)?);
     }
-    crate::queue::flush_refresh_queue()?;
+    crate::flush::flush_refresh_queue()?;
     Ok(SetOfIterator::new(refreshed))
 }
 
@@ -125,7 +125,7 @@ fn pg_tviews_refresh_time_dependent(
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
         for entity in read {
@@ -164,7 +164,7 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
 /// # Errors
 /// Returns an error if the refresh fails.
 pub fn flush_after_rebuilds() -> TViewResult<()> {
-    crate::queue::flush_refresh_queue()
+    crate::flush::flush_refresh_queue()
 }
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
@@ -332,27 +332,12 @@ fn pg_tviews_refresh_all_entities() -> Result<(), ErrorReport> {
 /// # Errors
 /// Returns error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     for entity in &graph.topo_order {
         rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
     Ok(graph.topo_order)
-}
-
-/// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
-/// Rust `pg_tview_trigger_handler()`.
-///
-/// Call this once after upgrading `pg_tviews` to convert triggers installed by
-/// prior versions. The operation is idempotent and safe to re-run.
-///
-/// Raises a `PostgreSQL` ERROR if any trigger cannot be migrated.
-#[pg_extern]
-fn pg_tviews_migrate_triggers() {
-    crate::revision::check();
-    if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
-        e.raise_in("Failed to migrate triggers");
-    }
 }
 
 /// Show cascade dependency path for a given entity
@@ -391,7 +376,8 @@ fn pg_tviews_show_cascade_path(
                     dt.path || m.entity,
                     dt.entity as depends_on
                 FROM dep_tree dt
-                JOIN {meta} m ON ('fk_' || dt.entity) = ANY(m.fk_columns)
+                JOIN {meta} m ON m.plan->'embeds'
+                    @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('entity', dt.entity))
                 WHERE NOT (m.entity = ANY(dt.path))
                   AND dt.depth < 10
             )

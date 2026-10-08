@@ -80,7 +80,7 @@ $TVIEW$);
 
 -- Precondition: post is classified nested_object on the author dependency.
 DO $$ BEGIN
-  IF NOT (SELECT dependency_types @> ARRAY['nested_object']::text[]
+  IF NOT (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) @> ARRAY['nested_object']::text[]
           FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION '#56 cascade setup FAIL: post not nested_object';
   END IF;

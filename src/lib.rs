@@ -34,11 +34,10 @@ use pgrx::prelude::*;
 // Core modules
 mod audit;
 mod cache;
-mod cascade_path;
 mod catalog;
 mod delta;
-mod event_trigger;
 mod executor;
+mod flush;
 mod hooks;
 mod lineage;
 mod metrics;

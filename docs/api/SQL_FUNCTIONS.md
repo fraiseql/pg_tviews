@@ -2,15 +2,6 @@
 
 ## STABLE Functions
 
-### pg_tviews_convert_existing_table(table_name TEXT)
-**Status**: DEPRECATED (since v0.1.0-beta.18; removed in the next breaking release)
-**Description**: Always raises an error. It could not run on PostgreSQL 18, and its design
-replaced the table with a frozen snapshot view (no triggers, no refresh).
-**Use instead**: `pg_tviews_create_or_replace('tv_entity', 'SELECT ...')` or
-`CREATE TABLE tv_entity AS SELECT ...`.
-
----
-
 ### pg_tviews_version()
 **Status**: STABLE (v0.1+)
 **Description**: Get the pg_tviews extension version
@@ -104,6 +95,6 @@ EXCLUSIVE lock held until the transaction ends
 
 ---
 
-## DEPRECATED Functions
+## Removed Functions
 
-- `pg_tviews_convert_existing_table()` (see above).
+See [Deprecations and removals](../DEPRECATION_WARNINGS.md).

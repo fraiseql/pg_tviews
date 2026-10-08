@@ -132,10 +132,10 @@ END $$;
 SELECT must(to_regclass('tv_note') IS NULL, 'rejected create left no tv_note');
 
 -- The recorded lookup columns, and an index for the one that is not the pk.
-SELECT must((SELECT aggregate_embeds FROM pg_tview_meta WHERE entity = 'user')
-            = '{"user_summary": "pk_user"}', 'tv_user records its lookup column');
-SELECT must((SELECT aggregate_embeds FROM pg_tview_meta WHERE entity = 'post')
-            = '{"user_summary": "author_pk"}', 'tv_post records its aliased lookup column');
+SELECT must((SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'user')
+            = '{"user_summary": ["pk_user"]}', 'tv_user records its lookup column');
+SELECT must((SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'post')
+            = '{"user_summary": ["author_pk"]}', 'tv_post records its aliased lookup column');
 SELECT must(to_regclass('idx_tv_post_author_pk_pk_post') IS NOT NULL,
             'tv_post has a propagation index on its lookup column');
 

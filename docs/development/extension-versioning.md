@@ -58,6 +58,23 @@ of every `#[pg_extern]` / `#[pg_trigger]`. A PR that changes any of it also:
   error, not a silent reuse. Upgrade scripts may use `CREATE OR REPLACE` to redefine a
   function they change.
 
+## The 0.1.0-beta.27 exception (ADR 0203)
+
+The update to 0.1.0-beta.27 breaks two of the rules above, once. It replaces thirteen
+derived columns of `pg_tview_meta` with one versioned `plan` document, so it
+re-derives every TVIEW inside `ALTER EXTENSION` (`pg_tviews_reregister_all()`, which
+runs each registration as the TVIEW's owner) and then drops the replaced columns. A
+TVIEW that no longer analyses fails the update, named with its error; nothing is left
+half-migrated. Re-deriving lazily, after the update, would have kept both catalog
+shapes readable for a release, which is the drift the plan removes.
+
+A dump of an older release restores into 0.1.0-beta.27 only through
+`ALTER EXTENSION pg_tviews UPDATE` on the older release first: restore the dump into
+the release that made it, then update.
+
+A later change to what the plan holds bumps `PLAN_VERSION` (`src/catalog/plan.rs`) and
+re-derives the same way: a plan of another version is never read.
+
 ## The library/catalog guard
 
 Before pg_tviews does real work in a backend (the row trigger, a non-empty flush, a
@@ -72,7 +89,8 @@ comparison without raising.
 
 ## CI
 
-- **`upgrade-path`** installs the previous release from its release tarball, creates the
+- **`upgrade-path`** installs the previous release, and 0.1.0-beta.20 (the oldest one
+  `ALTER EXTENSION pg_tviews UPDATE` supports), from its release tarball, creates the
   fixture TVIEWs (`test/upgrade/fixtures.sql`), installs the commit under test, runs
   `ALTER EXTENSION pg_tviews UPDATE` and `pg_tviews_reregister_all(strict => true)`,
   compares `test/upgrade/catalog_snapshot.sql` with a fresh install, and writes to the

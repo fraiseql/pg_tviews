@@ -125,7 +125,7 @@ fn pg_tview_truncate_trigger<'a>(
     if crate::executor::inside_writing_statement() {
         return Ok(None);
     }
-    if let Err(e) = crate::queue::flush_refresh_queue() {
+    if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in(&format!(
             "pg_tviews: could not refresh tv_{entity} after TRUNCATE"
         ));
@@ -152,7 +152,7 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
             crate::queue::enqueue_refresh_all(entity);
         }
     }
-    crate::queue::flush_refresh_queue()
+    crate::flush::flush_refresh_queue()
 }
 
 /// The query that maps changed rows of `base_table`, read from a relation named

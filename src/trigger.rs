@@ -1,7 +1,5 @@
-use crate::cache::CachedEntityInfo;
 use crate::queue::key::KeyValue;
 use crate::queue::{enqueue_refresh, enqueue_refresh_patched};
-use crate::utils::{IntExtraction, tuple_get_i64};
 use pgrx::PgTupleDesc;
 use pgrx::prelude::*;
 /// Trigger Handler: Change Detection and Queue Management
@@ -157,8 +155,7 @@ fn pg_tview_trigger_handler<'a>(
         }
     };
 
-    let paths: Vec<crate::cascade_path::CascadePath> = match crate::cache::cascade_paths(table_oid)
-    {
+    let paths: Vec<crate::catalog::plan::LocalPath> = match crate::cache::cascade_paths(table_oid) {
         Ok(p) => p.into_iter().filter(|p| serves(&p.entity_name)).collect(),
         Err(e) => {
             warning!(
@@ -169,28 +166,11 @@ fn pg_tview_trigger_handler<'a>(
             vec![]
         }
     };
-    // The TVIEW over tb_<entity>, when this is its table: direct patches (#56), and
-    // a TVIEW registered before its root table had a cascade path of its own.
-    let own = match crate::cache::entity_info(table_oid) {
-        Ok(info) => info.filter(|i| serves(&i.name)),
-        Err(e) => {
-            warning!(
-                "Failed to resolve entity for table OID {:?}: {:?}",
-                table_oid,
-                e
-            );
-            None
-        }
-    };
-
     // If triggers are suspended, record the change instead of enqueuing
     if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
         if let Some(entity) = &served {
             crate::suspend::record_change(entity);
             return Ok(None);
-        }
-        if let Some(info) = &own {
-            crate::suspend::record_change(&info.name);
         }
         for path in &paths {
             crate::suspend::record_change(&path.entity_name);
@@ -198,12 +178,8 @@ fn pg_tview_trigger_handler<'a>(
         return Ok(None);
     }
 
-    if let Some((info, legacy)) = own.as_ref().and_then(|i| i.legacy_root.map(|l| (i, l))) {
-        enqueue_legacy_root(trigger, info, legacy);
-    }
-
     // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
-    enqueue_cascade_parents(trigger, own.as_ref(), &paths);
+    enqueue_local_keys(trigger, &paths);
 
     // A partitioned table whose writes map through a query (ADR 0157): the
     //    row trigger is the one copied onto every partition, so map this row.
@@ -218,69 +194,19 @@ fn pg_tview_trigger_handler<'a>(
     Ok(None)
 }
 
-/// The key of a TVIEW registered before its root table had a cascade path of its
-/// own (ADR 0169): `pk_<entity>` read by name off the old and new rows of
-/// `tb_<entity>`, until `pg_tviews_reregister()` re-derives it. A DISTINCT ON one
-/// is refreshed in full.
-fn enqueue_legacy_root(
-    trigger: &PgTrigger,
-    info: &CachedEntityInfo,
-    legacy: crate::cache::LegacyRoot,
-) {
-    let entity = &info.name;
-    let reregister = format!(
-        "tv_{entity} was registered by an older release: SELECT * FROM \
-         tviews.pg_tviews_reregister_all() re-registers it"
-    );
-    if legacy == crate::cache::LegacyRoot::DistinctOn {
-        crate::utils::log_once(
-            &format!("legacy_distinct_on:{entity}"),
-            &format!("{reregister}; until then it is refreshed in full on writes"),
-        );
-        crate::queue::enqueue_refresh_all(entity);
-        return;
-    }
-    let pk_col = format!("pk_{entity}");
-    let Some(tupdesc) = trigger_tupdesc(trigger) else {
-        return;
-    };
-    if let Some(fields) =
-        try_capture_direct_patch(trigger, info, &pk_col, changed_columns(trigger).as_deref())
-        && let Some(new) = new_image(trigger)
-        // SAFETY: the new image of the trigger's row.
-        && let KeyExtraction::Value(KeyValue::Int(pk)) =
-            unsafe { tuple_key(new, &tupdesc, &pk_col, None) }
-    {
-        enqueue_refresh_patched(entity, pk, fields);
-        return;
-    }
-    for image in row_images(trigger) {
-        // SAFETY: an image of the trigger's row, of its relation's descriptor.
-        match unsafe { tuple_key(image, &tupdesc, &pk_col, None) } {
-            KeyExtraction::Value(key) => enqueue_refresh(entity, key),
-            KeyExtraction::Null => {}
-            KeyExtraction::Missing => warning!("{pk_col} not found on the changed row"),
-        }
-    }
-}
-
 /// The new image of an UPDATE's row.
 fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
     let new = trigger.trigger_data().tg_newtuple;
     (!new.is_null()).then_some(new)
 }
 
-/// Enqueue the TVIEW keys a changed row holds, one per cascade path of its
-/// table: the TVIEW's own rows (a root path), a table joined on a key column, and
-/// paths registered before ADR 0157.
+/// Enqueue the TVIEW keys a changed row holds, one per local path of its table:
+/// the TVIEW's own rows (a root path) and a table joined on a key column.
 ///
 /// Each path is followed from the old and the new row: an UPDATE that moves the
-/// row to another key (a changed FK, a changed DISTINCT ON key) refreshes both.
-fn enqueue_cascade_parents(
-    trigger: &PgTrigger,
-    own: Option<&CachedEntityInfo>,
-    paths: &[crate::cascade_path::CascadePath],
-) {
+/// row to another key (a changed join key, a changed DISTINCT ON key) refreshes
+/// both.
+fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalPath]) {
     if paths.is_empty() {
         return;
     }
@@ -315,9 +241,7 @@ fn enqueue_cascade_parents(
         // Issue #56: an UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
         if path.root
-            && let Some(info) = own.filter(|i| i.name == path.entity_name)
-            && let Some(fields) =
-                try_capture_direct_patch(trigger, info, &path.initial_col, changed.as_deref())
+            && let Some(fields) = try_capture_direct_patch(trigger, path, changed.as_deref())
             && let Some(new) = new_image(trigger)
             // SAFETY: the new image of the trigger's row.
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
@@ -326,99 +250,34 @@ fn enqueue_cascade_parents(
             enqueue_refresh_patched(&path.entity_name, pk, fields);
             continue;
         }
-        // Issue #120: write the change into all target rows at flush time, in one
-        // statement, instead of recomputing each.
-        if let Some(changed) = &changed
-            && let Some((fanout, key, fields)) = try_capture_fanout(trigger, path, changed)
-        {
-            crate::queue::patch::record_fanout(
-                (path.entity_name.clone(), fanout.lookup_col.clone(), key),
-                fields,
-            );
-            continue;
-        }
         for &image in &images {
-            follow_cascade_path(path, image, &tupdesc);
+            follow_local_path(path, image, &tupdesc);
         }
     }
 }
 
-/// Capture a fan-out patch (issue #120) for an UPDATE of a cascade path's source
-/// row: the path's key and, for every changed column the target reads, the value
-/// to write into its `data` key. `None` (recompute every target row) unless the
-/// path has a fan-out patch, the join key is unchanged, and every changed column
-/// the target reads is copied unchanged and has a whitelisted type.
-fn try_capture_fanout<'p>(
-    trigger: &PgTrigger,
-    path: &'p crate::cascade_path::CascadePath,
-    changed: &[String],
-) -> Option<(
-    &'p crate::cascade_path::FanoutPatch,
-    i64,
-    serde_json::Map<String, serde_json::Value>,
-)> {
-    let fanout = path.fanout.as_ref()?;
-    if !crate::config::direct_patch_enabled()
-        || !crate::lifecycle::check_jsonb_delta_available()
-        || changed.contains(&path.initial_col)
-    {
-        return None;
-    }
-    let new_tuple = trigger.new()?;
-    let IntExtraction::Value(key) = tuple_get_i64(&new_tuple, &path.initial_col) else {
-        return None;
-    };
-    let mut fields = serde_json::Map::new();
-    for col in changed.iter().filter(|c| path.source_columns.contains(c)) {
-        let (_, data_key) = fanout.fields.iter().find(|(c, _)| c == col)?;
-        fields.insert(data_key.clone(), capture_value(&new_tuple, col)?);
-    }
-    (!fields.is_empty()).then_some((fanout, key, fields))
-}
-
-/// Enqueue the key a cascade path reads off one image of the changed row (its
+/// Enqueue the key a local path reads off one image of the changed row (its
 /// `initial_col`).
-///
-/// A path with hops comes from metadata registered before ADR 0157, which mapped
-/// such tables hop by hop; until `pg_tviews_reregister()` gives the table a
-/// mapping query, its writes refresh the whole TVIEW.
-fn follow_cascade_path(
-    path: &crate::cascade_path::CascadePath,
+fn follow_local_path(
+    path: &crate::catalog::plan::LocalPath,
     image: *mut pg_sys::HeapTupleData,
     tupdesc: &PgTupleDesc<'_>,
 ) {
-    // A path whose table is gone maps nothing; the table is reported as uncascaded
-    // when the TVIEW is re-registered.
-    if path.unresolvable {
-        return;
-    }
-    if !path.hops.is_empty() {
-        crate::utils::log_once(
-            &format!("legacy_hops:{}", path.entity_name),
-            &format!(
-                "tv_{0} was registered by an older release: writes to {1} refresh it in full \
-                 until SELECT * FROM tviews.pg_tviews_reregister_all() re-registers it",
-                path.entity_name, path.source_table
-            ),
-        );
-        crate::queue::enqueue_refresh_all(&path.entity_name);
-        return;
-    }
-
     // SAFETY: an image of the trigger's row, of its relation's descriptor.
     match unsafe { tuple_key(image, tupdesc, &path.initial_col, path.initial_attnum) } {
         KeyExtraction::Value(key) => enqueue_refresh(&path.entity_name, key),
         KeyExtraction::Null => {} // FK is NULL, cascade stops
-        KeyExtraction::Missing => {
-            crate::utils::log_once(
-                &format!("initial_col:{}:{}", path.source_table, path.initial_col),
-                &format!(
-                    "column '{}' of {} is gone: its writes no longer cascade to tv_{}; \
-                     re-register it with pg_tviews_reregister('{}')",
-                    path.initial_col, path.source_table, path.entity_name, path.entity_name
-                ),
-            );
+        KeyExtraction::Missing => crate::TViewError::CatalogError {
+            operation: format!(
+                "Read the key of tv_{} off a row of {}",
+                path.entity_name, path.source_table
+            ),
+            pg_error: format!(
+                "the table has no column \"{}\" for tv_{} to read its key from",
+                path.initial_col, path.entity_name
+            ),
         }
+        .raise(),
     }
 }
 
@@ -440,69 +299,38 @@ unsafe extern "C" {
 /// Try to capture a direct patch for an eligible row-level UPDATE (issue #56).
 ///
 /// Returns `Some(fields)` — a `key → value` JSONB map ready to merge into the
-/// entity's own `data` — only when **every** eligibility condition holds; `None`
-/// (fall back to recompute) otherwise. Pure in-memory: cached `EntityInfo`, a raw
-/// datum diff, and typed value extraction — no SPI.
+/// entity's own `data` — only when every changed column is in the plan's
+/// direct-patch map (columns of the table holding the identity that `data`
+/// copies and the definition reads nowhere else, ADR 0203) and the key is
+/// unchanged; `None` (fall back to recompute) otherwise. Pure in-memory: the
+/// cached plan, a raw datum diff, and typed value extraction — no SPI.
 fn try_capture_direct_patch(
     trigger: &PgTrigger,
-    entity_info: &CachedEntityInfo,
-    key_col: &str,
+    path: &crate::catalog::plan::LocalPath,
     changed: Option<&[String]>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    use std::collections::HashSet;
-
-    // Entity-level gates (cheapest first).
-    if !crate::config::direct_patch_enabled()
-        || entity_info.direct_map.is_empty()
-        || entity_info.distinct_on
-        || entity_info.is_union
+    if !crate::config::direct_patch_enabled() {
+        return None;
+    }
+    // Full-tuple diff — `None` unless this is a row-level UPDATE (OLD and NEW both
+    // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
+    let changed = changed.filter(|c| !c.is_empty())?;
+    if changed.contains(&path.initial_col) {
+        return None;
+    }
+    let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name).ok()??;
+    let direct = &meta.plan.direct;
+    let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
+    if direct.is_empty()
+        || !changed.iter().all(|c| data_key(c).is_some())
+        || !crate::lifecycle::check_jsonb_delta_available()
     {
         return None;
     }
-    if !crate::lifecycle::check_jsonb_delta_available() {
-        return None;
-    }
-
-    // Full-tuple diff — `None` unless this is a row-level UPDATE (OLD and NEW both
-    // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
-    let changed = changed?;
-    if changed.is_empty() {
-        return None;
-    }
-
-    // Eligibility: every changed column must feed the entity's own `data` via the
-    // direct map, and none may be a membership/identity/projected column that a
-    // data-only patch would leave stale.
-    let fk_set: HashSet<&str> = entity_info.fk_columns.iter().map(String::as_str).collect();
-    let uuid_fk_set: HashSet<&str> = entity_info
-        .uuid_fk_columns
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let output_set: HashSet<&str> = entity_info
-        .output_columns
-        .iter()
-        .map(String::as_str)
-        .collect();
-
-    for col in changed {
-        if col == key_col
-            || fk_set.contains(col.as_str())
-            || uuid_fk_set.contains(col.as_str())
-            || output_set.contains(col.as_str())
-            || !entity_info.direct_map.contains_key(col.as_str())
-        {
-            return None;
-        }
-    }
-
-    // Capture NEW's value for each changed column with the type whitelist.
     let new_tuple = trigger.new()?;
     let mut fields = serde_json::Map::with_capacity(changed.len());
     for col in changed {
-        let key = entity_info.direct_map.get(col.as_str())?;
-        let value = capture_value(&new_tuple, col)?;
-        fields.insert(key.clone(), value);
+        fields.insert(data_key(col)?.clone(), capture_value(&new_tuple, col)?);
     }
     Some(fields)
 }
@@ -649,7 +477,7 @@ pub fn flush_after_statement() {
     if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
         return;
     }
-    if let Err(e) = crate::queue::flush_refresh_queue() {
+    if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in("TVIEW refresh failed");
     }
     if let Err(e) = crate::audit::flush_audit_buffer() {

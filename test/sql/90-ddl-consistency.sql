@@ -85,7 +85,7 @@ SELECT
     entity,
     view_oid,
     table_oid,
-    array_length(cascade_paths, 1) as cascade_count
+    jsonb_array_length(plan->'paths') as local_paths
 FROM pg_tview_meta
 WHERE entity IN ('ddl_user', 'fn_user')
 ORDER BY entity;

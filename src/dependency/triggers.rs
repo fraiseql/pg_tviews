@@ -227,15 +227,14 @@ pub struct TriggerProblems {
 /// Check `pg_tviews`' triggers against the tables each registered TVIEW reads
 /// (`tviews.pg_tview_reads`: ordinary and partitioned tables reached from the
 /// backing view through views, other TVIEWs' tables excepted) and the triggers
-/// its lineage gives each table ([`TriggerSet`]); a TVIEW registered before
-/// lineage expects the row and flush triggers on every table. Every partition of
+/// its lineage gives each table ([`TriggerSet`]). Every partition of
 /// a partitioned table carrying a row trigger expects the `PARTITION_MEMBER`
 /// triggers; the copies `PostgreSQL` makes of the row trigger are not counted.
 ///
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn trigger_problems() -> TViewResult<TriggerProblems> {
-    let (legacy, kind) = crate::catalog::registered::mapping_kind_sql("m", "r.relid");
+    let kind = crate::catalog::registered::mapping_kind_sql("m", "r.relid");
     let query = format!(
         "WITH ours AS ( \
              SELECT t.tgname, t.tgrelid, p.proname, \
@@ -252,7 +251,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          reads AS ( \
              SELECT DISTINCT r.entity, r.relid, c.relkind, \
                     r.relid IN (SELECT table_oid::oid FROM {meta}) AS tview, \
-                    {legacy} AS legacy, {kind} AS kind \
+                    {kind} AS kind \
              FROM {schema}.pg_tview_reads r \
              JOIN {meta} m ON m.entity = r.entity \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
@@ -265,7 +264,6 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
              WHERE CASE \
                  WHEN r.tview THEN r.kind IN ('mapped', 'all_keys') \
                                    AND f.proname = '{DELTA_HANDLER}' \
-                 WHEN r.legacy THEN f.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}') \
                  WHEN r.kind = 'local' OR (r.kind IN ('mapped', 'all_keys') AND r.relkind = 'p') \
                      THEN f.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}', '{TRUNCATE_HANDLER}') \
                  WHEN r.kind IN ('mapped', 'all_keys') \
@@ -581,99 +579,6 @@ fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResu
     crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
         operation: format!("Drop trigger {trigger} from {table}"),
         pg_error: e,
-    })
-}
-
-/// Migrate all existing triggers from the old PL/pgSQL `tview_trigger_handler()`
-/// to the Rust `pg_tview_trigger_handler()`.
-///
-/// Iterates over every `(entity, dependency)` pair in `pg_tview_meta`, drops the
-/// table's legacy triggers (those of the PL/pgSQL handler, and `pg_tviews` triggers
-/// that carry no entity), and installs the entity's triggers. Legacy triggers are
-/// found by their function, never by name, so no current trigger of another
-/// entity is touched. The operation is idempotent.
-///
-/// # Errors
-/// Returns error if any trigger drop or creation fails.
-pub fn migrate_all_triggers_to_rust_handler() -> TViewResult<()> {
-    // Collect (entity, table_oid) pairs from pg_tview_meta
-    let pairs: Vec<(String, pg_sys::Oid)> = Spi::connect(|client| -> crate::TViewResult<_> {
-        let rows = client.select(
-            &format!(
-                "SELECT m.entity, d.refobjid::oid AS table_oid \
-                 FROM {} m \
-                 JOIN pg_depend d ON d.objid = m.view_oid \
-                 JOIN pg_class c ON c.oid = d.refobjid AND c.relkind = 'r' \
-                 WHERE d.deptype = 'n'",
-                crate::utils::meta_table()
-            ),
-            None,
-            &[],
-        )?;
-
-        let mut out = Vec::new();
-        for row in rows {
-            let entity: String = row["entity"].value()?.ok_or_else(|| TViewError::SpiError {
-                query: "migrate: SELECT entity".to_string(),
-                error: "entity column is NULL".to_string(),
-            })?;
-            let table_oid: pg_sys::Oid =
-                row["table_oid"]
-                    .value()?
-                    .ok_or_else(|| TViewError::SpiError {
-                        query: "migrate: SELECT table_oid".to_string(),
-                        error: "table_oid column is NULL".to_string(),
-                    })?;
-            out.push((entity, table_oid));
-        }
-        Ok(out)
-    })
-    .map_err(|e: TViewError| TViewError::CatalogError {
-        operation: "Migrate triggers: read pg_tview_meta".to_string(),
-        pg_error: e.to_string(),
-    })?;
-
-    for (entity, table_oid) in pairs {
-        for (table, trigger) in legacy_triggers(table_oid)? {
-            drop_trigger(table_oid, &table, &trigger)?;
-        }
-        install_triggers(&[(table_oid, TriggerSet::Row)], &entity)?;
-    }
-
-    Ok(())
-}
-
-/// Legacy triggers on `table_oid`, as `(quoted table, trigger)`: those calling a
-/// `tview_trigger_handler()` (the old PL/pgSQL handler) and `pg_tviews` triggers
-/// installed without the entity argument.
-fn legacy_triggers(table_oid: pg_sys::Oid) -> TViewResult<Vec<(String, String)>> {
-    let query = format!(
-        "SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname), \
-                t.tgname::text \
-         FROM pg_catalog.pg_trigger t \
-         JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
-         JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
-         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-         WHERE t.tgrelid = $1 AND NOT t.tgisinternal \
-           AND (p.proname = 'tview_trigger_handler' \
-                OR (p.pronamespace = '{schema}'::pg_catalog.regnamespace \
-                    AND p.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}') \
-                    AND t.tgnargs = 0))",
-        schema = crate::utils::ext_schema(),
-    );
-    Spi::connect(|client| {
-        let args = [crate::utils::spi::oid(table_oid)];
-        let mut found = Vec::new();
-        for row in client.select(&query, None, &args)? {
-            if let (Some(table), Some(trigger)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
-                found.push((table, trigger));
-            }
-        }
-        Ok::<_, spi::Error>(found)
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Find legacy triggers on {table_oid:?}"),
-        pg_error: e.to_string(),
     })
 }
 

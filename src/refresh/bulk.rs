@@ -65,7 +65,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
     // A UNION view can return several rows for one key: union_duplicate_policy
     // decides (an error, or the first row), as for a single key.
-    let source_sql = if meta.is_union {
+    let source_sql = if meta.plan.set_operation {
         format!(
             "SELECT DISTINCT ON ({qi_key}) {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}"
         )
@@ -99,7 +99,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let before = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
-        if meta.is_union
+        if meta.plan.set_operation
             && let Some(key) = pgrx::Spi::get_one_with_args::<String>(
                 &duplicate_sql,
                 &[super::key_array(&key_type, chunk)?],

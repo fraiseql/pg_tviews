@@ -201,9 +201,10 @@ pg_restore -d mydb_restored mydb.dump
 ```
 
 The catalog rows are restored with the rest of the data. `view_oid` and
-`table_oid` are `regclass`, and the relation OIDs inside `cascade_paths` are
-rebound by an insert trigger on `pg_tview_meta`, so the restored TVIEWs point at
-the restored relations and keep propagating. Do not restore with
+`table_oid` are `regclass`, and the relation OIDs inside each TVIEW's `plan` are
+rebound by name by an insert trigger on `pg_tview_meta`, so the restored TVIEWs
+point at the restored relations and keep propagating. A plan naming a table the
+restore did not create fails the insert, naming the TVIEW. Do not restore with
 `--disable-triggers`: it skips that rebind.
 
 A database whose extension was created before this catalog layout (beta.18 and

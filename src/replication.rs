@@ -95,7 +95,7 @@ impl TviewRelation {
 /// rebuild (its view is empty until that one is filled). Found dependencies
 /// first.
 fn needing_rebuild(relations: &[TviewRelation]) -> TViewResult<HashSet<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     let mut sorted: Vec<&TviewRelation> = relations.iter().collect();
     sorted.sort_by_key(|rel| {
@@ -247,7 +247,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
     }
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order

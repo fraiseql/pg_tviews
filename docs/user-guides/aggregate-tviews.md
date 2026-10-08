@@ -55,7 +55,8 @@ $$);
 When a group changes, the rows whose output column on the other side of that equality
 holds the group key are refreshed: here `tv_user` rows with `pk_user` equal to the group
 key, including a user whose first order just created the group. The column is recorded
-in `pg_tview_meta.aggregate_embeds` and indexed if it is not the primary key.
+in the TVIEW's plan (`pg_tview_meta.plan`, its `embeds`) and indexed if it is not the
+primary key.
 
 That column must be projected (`u.pk_user` above, possibly under an alias), and the join
 must be in the `FROM` clause of a plain `SELECT` (not in a subquery or CTE). Otherwise

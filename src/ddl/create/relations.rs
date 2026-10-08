@@ -5,7 +5,6 @@ use super::Storage;
 use super::ViewColumns;
 use super::index_name;
 use super::indexes::{create_tview_indexes, storage_clause};
-use crate::cascade_path;
 use crate::error::TViewError;
 use crate::error::TViewResult;
 use crate::utils::log_debug;
@@ -14,7 +13,6 @@ use pgrx::pg_sys;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::Spi;
 use pgrx::prelude::notice;
-use pgrx::spi;
 
 /// Make a TVIEW's table keyed on its identity at re-registration (ADR 0169): drop
 /// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had (#164), and
@@ -117,95 +115,6 @@ pub(crate) fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_s
 /// the current catalog, using the same relname → OID map that creation built
 /// from the backing view's base tables.
 ///
-/// Cascade paths carry raw OIDs inside JSON text, which `pg_dump` copies
-/// verbatim. After a restore those OIDs name nothing (or an unrelated
-/// relation), so `pg_tview_meta`'s insert trigger calls this to rebind them.
-/// For a freshly created TVIEW the result is identical to the input. A path
-/// whose table can no longer be found is marked `unresolvable` (full-refresh
-/// fallback) rather than left pointing at a stale OID.
-pub fn rebind_cascade_paths(view_oid: Oid, cascade_paths: &[String]) -> TViewResult<Vec<String>> {
-    if cascade_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let args = [crate::utils::spi::oid(view_oid)];
-    let (view_name, schema_name) = Spi::get_two_with_args::<String, String>(
-        "SELECT c.relname::text, n.nspname::text FROM pg_class c \
-         JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Resolve backing view {view_oid:?}"),
-        pg_error: e.to_string(),
-    })?;
-    let (Some(view_name), Some(schema_name)) = (view_name, schema_name) else {
-        return Err(TViewError::CatalogError {
-            operation: format!("Resolve backing view {view_oid:?}"),
-            pg_error: "view not found".to_string(),
-        });
-    };
-
-    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&schema_name))?;
-    let oid_map = build_oid_name_map(&base_table_oids)?;
-
-    cascade_paths
-        .iter()
-        .map(|json| {
-            let mut path: cascade_path::CascadePath =
-                serde_json::from_str(json).map_err(|e| TViewError::CatalogError {
-                    operation: "Parse cascade path".to_string(),
-                    pg_error: e.to_string(),
-                })?;
-            match oid_map.get(&path.source_table) {
-                Some(oid) => path.source_oid = *oid,
-                None => path.unresolvable = true,
-            }
-            for hop in &mut path.hops {
-                match oid_map.get(&hop.table_name) {
-                    Some(oid) => hop.table_oid = *oid,
-                    None => path.unresolvable = true,
-                }
-            }
-            serde_json::to_string(&path).map_err(|e| TViewError::CatalogError {
-                operation: "Serialize cascade path".to_string(),
-                pg_error: e.to_string(),
-            })
-        })
-        .collect()
-}
-
-/// Build a map from table name → OID for a set of base table OIDs.
-pub(crate) fn build_oid_name_map(
-    oids: &[pg_sys::Oid],
-) -> TViewResult<std::collections::HashMap<String, pg_sys::Oid>> {
-    use std::collections::HashMap;
-
-    if oids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let oid_list = oids
-        .iter()
-        .map(|o| o.to_u32().to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let query = format!("SELECT oid, relname::text FROM pg_class WHERE oid IN ({oid_list})");
-
-    let mut map = HashMap::new();
-    Spi::connect(|client| {
-        let rows = client.select(&query, None, &[])?;
-        for row in rows {
-            let oid: pg_sys::Oid = row["oid"].value()?.unwrap_or(pg_sys::Oid::INVALID);
-            let name: String = row["relname"].value()?.unwrap_or_default();
-            map.insert(name, oid);
-        }
-        Ok::<_, spi::Error>(())
-    })?;
-
-    Ok(map)
-}
-
 /// Columns of `source_table` that the backing view `view_oid` reads, directly or
 /// through views, from `PostgreSQL`'s own column-level `pg_depend` records: the
 /// exact set of source columns whose change can alter a target TVIEW row.

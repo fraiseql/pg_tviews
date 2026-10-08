@@ -358,7 +358,6 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory metadata cache |
 | `pg_tviews.graph_cache_enabled` | bool | on | Cache dependency graphs |
 | `pg_tviews.table_cache_enabled` | bool | on | Cache table→entity mappings |
-| `pg_tviews.metrics_enabled` | bool | off | Deprecated, has no effect (metrics are always collected); will be removed |
 | `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
 | `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED (not readable on standbys) |
 | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart required) |

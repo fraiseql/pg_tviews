@@ -6,12 +6,12 @@ mod select;
 
 use derive::{Derivation, derive, uncascaded_tables};
 pub(crate) use indexes::{index_ddl, index_name, managed_index_names, propagation_index_ddl};
-use register::register_metadata;
+use register::{MetaRow, index_embed_lookups};
+pub(crate) use relations::view_source_columns;
 use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,
 };
-pub(crate) use relations::{rebind_cascade_paths, view_source_columns};
 #[cfg(any(test, feature = "pg_test"))]
 mod tests;
 
@@ -197,8 +197,7 @@ fn create_tview_inner(
     let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let Derivation {
         lineage,
-        key_mappings,
-        cascade_paths,
+        plan,
         base_tables,
         undeclared_functions,
     } = derive(
@@ -249,21 +248,26 @@ fn create_tview_inner(
     };
     super::uncascaded::report(&qualified_tv, &uncascaded)?;
 
-    // Step 7: Register metadata (with cascade paths)
-    register_metadata(
+    // Step 7: Register metadata (with its plan)
+    index_embed_lookups(
         entity_name,
-        view_oid,
-        &tv_table_name,
-        &final_select_sql,
-        &final_schema,
-        &cascade_paths,
-        &schema_name,
-        group_keys,
-        &uncascaded,
-        &key_mappings,
         &lineage,
-        false,
+        &plan,
+        &final_schema,
+        &tv_table_name,
+        &schema_name,
     )?;
+    MetaRow {
+        entity: entity_name,
+        view_oid,
+        table_oid: relation_oid(&schema_name, &tv_table_name)?,
+        definition: &final_select_sql,
+        plan: &plan,
+        group_keys,
+        uncascaded: &uncascaded,
+        identity: &lineage.identity,
+    }
+    .write(false)?;
 
     // Step 7.5: Whoever reads the TVIEW's table reads its backing view (#181).
     super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
@@ -324,8 +328,7 @@ pub fn reregister_metadata(
     let declarations = Declarations::of(&meta);
     let Derivation {
         lineage,
-        key_mappings,
-        cascade_paths,
+        plan,
         base_tables,
         undeclared_functions,
     } = derive(
@@ -353,20 +356,26 @@ pub fn reregister_metadata(
         time_dependent: !lineage.time_reads.is_empty(),
     };
     super::uncascaded::report(&qualified_tv, &uncascaded)?;
-    register_metadata(
+    let tview_name = format!("tv_{entity_name}");
+    index_embed_lookups(
         entity_name,
-        view_oid,
-        &format!("tv_{entity_name}"),
-        definition,
-        &schema,
-        &cascade_paths,
-        schema_name,
-        group_keys.as_ref(),
-        &uncascaded,
-        &key_mappings,
         &lineage,
-        true,
+        &plan,
+        &schema,
+        &tview_name,
+        schema_name,
     )?;
+    MetaRow {
+        entity: entity_name,
+        view_oid,
+        table_oid: relation_oid(schema_name, &tview_name)?,
+        definition,
+        plan: &plan,
+        group_keys: group_keys.as_ref(),
+        uncascaded: &uncascaded,
+        identity: &lineage.identity,
+    }
+    .write(true)?;
     crate::cache::invalidate_all();
     crate::dependency::trigger_plan(&base_tables, &lineage)
 }
@@ -429,6 +438,10 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 }
 
 /// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] naming the entity when the catalog cannot be
+/// read or the stored keys do not decode: never read as "not an aggregate".
 pub(crate) fn stored_group_keys(
     entity_name: &str,
 ) -> TViewResult<Option<super::aggregate::GroupKeys>> {
@@ -443,5 +456,12 @@ pub(crate) fn stored_group_keys(
         operation: "Read group_keys".to_string(),
         pg_error: e.to_string(),
     })?;
-    Ok(stored.and_then(|j| serde_json::from_value(j.0).ok()))
+    stored
+        .map(|j| {
+            serde_json::from_value(j.0).map_err(|e| TViewError::CatalogError {
+                operation: format!("Read the group keys of tv_{entity_name}"),
+                pg_error: e.to_string(),
+            })
+        })
+        .transpose()
 }

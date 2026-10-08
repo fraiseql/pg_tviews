@@ -51,7 +51,7 @@ SELECT assert_fresh('tv_item', 'pk_item', 'an item soft delete');
 UPDATE tb_category SET name = 'top' WHERE pk_category = 1;
 SELECT assert_fresh('tv_item', 'pk_item', 'a category rename (full refresh)');
 DO $$
-DECLARE m jsonb := (SELECT key_mappings FROM tviews.pg_tview_meta WHERE entity = 'item');
+DECLARE m jsonb := (SELECT plan->'tables' FROM tviews.pg_tview_meta WHERE entity = 'item');
 BEGIN
     IF (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'item')
        <> '{"tb_item": "local", "tb_category": "all_keys"}' THEN
@@ -86,7 +86,7 @@ INSERT INTO tb_category VALUES (4, DEFAULT, 3, 'deeper');
 UPDATE tb_listing SET fk_category = 4 WHERE pk_listing = 1;
 SELECT assert_fresh('tv_listing', 'pk_listing', 'a new category and a listing moved into it');
 DO $$
-DECLARE m jsonb := (SELECT key_mappings FROM tviews.pg_tview_meta WHERE entity = 'listing');
+DECLARE m jsonb := (SELECT plan->'tables' FROM tviews.pg_tview_meta WHERE entity = 'listing');
 BEGIN
     IF (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'listing')
        <> '{"tb_listing": "local", "tb_category": "all_keys"}' THEN

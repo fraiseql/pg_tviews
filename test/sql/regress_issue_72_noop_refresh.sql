@@ -85,10 +85,10 @@ $TV$);
 
 -- Preconditions: the classifications that route refreshes to the intended paths.
 DO $$ BEGIN
-    IF (SELECT dependency_types FROM pg_tview_meta WHERE entity = 'article') <> ARRAY['scalar'] THEN
+    IF (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'article') <> ARRAY['scalar'] THEN
         RAISE EXCEPTION 'setup: tv_article is not a scalar-dependency tview';
     END IF;
-    IF (SELECT dependency_types FROM pg_tview_meta WHERE entity = 'item') <> '{}' THEN
+    IF (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'item') <> '{}' THEN
         RAISE EXCEPTION 'setup: tv_item has dependencies';
     END IF;
 END $$;

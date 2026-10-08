@@ -150,11 +150,11 @@ pub(crate) fn storage_clause(fillfactor: i32) -> String {
     }
 }
 
-/// Index each aggregate-embed lookup column that is neither the TVIEW's primary
+/// Index each embed lookup column that is neither the TVIEW's primary
 /// key nor already indexed as an `fk_*` propagation column, so propagation from
-/// the aggregate does not scan the whole TVIEW.
+/// the embedded TVIEW does not scan the whole TVIEW.
 pub(crate) fn create_embed_lookup_indexes(
-    embeds: &std::collections::BTreeMap<String, String>,
+    lookups: &[String],
     schema: &ViewColumns,
     tview_name: &str,
     schema_name: &str,
@@ -162,8 +162,8 @@ pub(crate) fn create_embed_lookup_indexes(
     let Some(pk) = &schema.pk else {
         return Ok(());
     };
-    let columns: std::collections::BTreeSet<&String> = embeds
-        .values()
+    let columns: std::collections::BTreeSet<&String> = lookups
+        .iter()
         .filter(|c| *c != pk && !schema.fk.contains(c))
         .collect();
     for column in columns {

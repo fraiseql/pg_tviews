@@ -53,7 +53,7 @@
 
 use pgrx::prelude::*;
 
-use crate::catalog::{DependencyType, TviewMeta};
+use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
 
 use crate::lifecycle::jsonb_delta_schema;
@@ -95,7 +95,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
 
     // A UNION view can return several rows for one key: read it first so the
     // union_duplicate_policy applies before the upsert.
-    let (written, deleted) = if meta.is_union && !view_row_exists(meta, key)? {
+    let (written, deleted) = if meta.plan.set_operation && !view_row_exists(meta, key)? {
         (super::Written::default(), delete_tview_row(meta, key)?)
     } else {
         // Upsert straight from v_entity: the view is evaluated once (issue #91). No
@@ -165,7 +165,7 @@ fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<bool>
         }
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
-        if meta.is_union && rows.next().is_some() {
+        if meta.plan.set_operation && rows.next().is_some() {
             union_duplicate(meta, &key.to_string());
         }
 
@@ -271,29 +271,19 @@ fn apply_patch(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, sup
         return apply_full_replacement(meta, key);
     };
 
-    // Parse dependencies
-    let deps = meta.parse_dependencies();
-
-    // If no dependencies, use full replacement
-    if deps.is_empty() {
+    // A TVIEW embedding no other one: its document is replaced whole.
+    if meta.plan.embeds.is_empty() {
         return apply_full_replacement(meta, key);
     }
 
-    // Array (issue #50) and nested-object (issue #52) dependencies cannot be
+    // Array (issue #50) and nested-object (issue #52) embeds cannot be
     // surgically patched correctly. A path-level smart patch only touches the
-    // dependency sub-path (`jsonb_smart_patch_nested(data, $1, ARRAY['author'])`
-    // for nested; the array element sync for array), so a change to one of the
-    // entity's OWN columns — recomputed correctly into `$1` but living outside the
-    // patched path — is silently dropped. Recompute the whole row instead: correct
-    // for both dependency-path changes and own-column changes. Only pure-scalar
-    // dependency sets stay on the smart-patch path below, where the shallow
-    // `jsonb_smart_patch_scalar` merge already carries own columns along.
-    if deps.iter().any(|d| {
-        matches!(
-            d.dep_type,
-            DependencyType::Array | DependencyType::NestedObject
-        )
-    }) {
+    // embed's sub-path, so a change to one of the entity's OWN columns —
+    // recomputed correctly into `$1` but living outside the patched path — is
+    // silently dropped. Recompute the whole row instead. Only scalar embeds stay on
+    // the smart-patch path below, where the shallow `jsonb_smart_patch_scalar`
+    // merge already carries own columns along.
+    if !meta.plan.only_scalar_embeds() {
         return apply_full_replacement(meta, key);
     }
 
@@ -503,7 +493,7 @@ mod tests {
         // Verify metadata captured nested dependency
         let meta = crate::utils::spi_get_string(
             "
-            SELECT dependency_types::text FROM pg_tview_meta
+            SELECT plan->>'embeds' FROM pg_tview_meta
             WHERE entity = 'post'
         ",
         )
@@ -646,7 +636,7 @@ mod tests {
         // Verify metadata captured array dependency
         let meta = crate::utils::spi_get_string(
             "
-            SELECT dependency_types::text FROM pg_tview_meta
+            SELECT plan->>'embeds' FROM pg_tview_meta
             WHERE entity = 'post'
         ",
         )
@@ -759,7 +749,7 @@ mod tests {
         // Verify metadata shows scalar dependency
         let meta = crate::utils::spi_get_string(
             "
-            SELECT dependency_types::text FROM pg_tview_meta
+            SELECT plan->>'embeds' FROM pg_tview_meta
             WHERE entity ='post'
         ",
         )
@@ -1049,7 +1039,7 @@ mod tests {
         // Verify metadata is still captured (even without jsonb_delta)
         let meta = crate::utils::spi_get_string(
             "
-            SELECT dependency_types::text FROM pg_tview_meta WHERE entity = 'post'
+            SELECT plan->>'embeds' FROM pg_tview_meta WHERE entity = 'post'
         ",
         );
         // Metadata should exist regardless of jsonb_delta availability
@@ -1082,60 +1072,6 @@ mod tests {
             .unwrap();
         assert_eq!(updated.0["author"]["name"], "Alice Fallback");
         assert_eq!(updated.0["title"], "Hello");
-    }
-
-    /// Test metadata handling for legacy TVIEWs without dependency info.
-    ///
-    /// Verifies graceful fallback when TVIEW metadata is missing or incomplete.
-    #[pg_test]
-    fn test_legacy_tview_fallback() {
-        // Note: This test documents legacy behavior but may not run due to
-        // test infrastructure issues. The implementation is complete and correct.
-
-        // Create simple test case
-        Spi::run("CREATE TABLE tb_user (pk_user BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-
-        Spi::run("INSERT INTO tb_user VALUES (1, 'Alice')").unwrap();
-
-        // Create TVIEW
-        Spi::run(
-            "
-            SELECT pg_tviews_create('user', $$
-                SELECT pk_user, jsonb_build_object('name', name) AS data
-                FROM tb_user
-            $$)
-        ",
-        )
-        .unwrap();
-
-        // Simulate legacy TVIEW by removing dependency metadata
-        Spi::run(
-            "
-            UPDATE pg_tview_meta
-            SET dependency_types = NULL,
-                dependency_paths = NULL,
-                array_match_keys = NULL
-            WHERE entity ='user'
-        ",
-        )
-        .unwrap();
-
-        // Update should still work via fallback
-        Spi::run("UPDATE tb_user SET name = 'Alice Legacy' WHERE pk_user = 1").unwrap();
-
-        let user_oid: pgrx::pg_sys::Oid = Spi::get_one("SELECT 'tv_user'::regclass::oid")
-            .unwrap()
-            .unwrap();
-
-        // Should succeed using full replacement fallback
-        let result = refresh_row(user_oid, &KeyValue::Int(1));
-        assert!(result.is_ok(), "Should handle legacy TVIEW gracefully");
-
-        // Verify data was updated
-        let updated = Spi::get_one::<JsonB>("SELECT data FROM tv_user WHERE pk_user = 1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.0["name"], "Alice Legacy");
     }
 
     /// Test DISTINCT ON TVIEW refresh by its DISTINCT ON key.

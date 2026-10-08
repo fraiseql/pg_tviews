@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
     JSON key holding a quote work; `SELECT * FROM t` lists the columns of the `t`
     the `search_path` resolves, not those of every same-named table;
   - a `fk_<entity>` column no longer makes a TVIEW depend on a TVIEW it does not read.
+- **One stored propagation plan per TVIEW** (ADR 0203). `pg_tview_meta` keeps what
+  registration derives from the query tree in one versioned `plan` document (how a
+  write to each base table maps to keys, the tables whose rows carry a key, the TVIEWs
+  it embeds, the direct-patch map) instead of thirteen columns. The triggers and the
+  flush read only the plan: no table or column name is matched to find a
+  relationship. `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW, and fails
+  naming any TVIEW that no longer analyses (`docs/development/extension-versioning.md`).
+  A TVIEW whose rows are another table's (`tv_purchase` over `tb_order`) now gets the
+  direct patch (#56) like any other.
 - **A definition is exactly one SELECT** (42601). A second statement after the
   SELECT was accepted and run.
 - `CREATE TABLE tv_* AS` accepts a comment before the statement.
@@ -29,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 - A column copied into `data` that the definition also joins or filters on was
   patched in place, leaving the values that depend on it stale.
+- A TVIEW embedding another one twice (an author and an editor, both `tv_user`) was
+  refreshed only through the first column: renaming the editor left it stale. Every
+  output column equal to the child's key is followed.
+- A write to a table whose key column the plan no longer finds raises an ERROR naming
+  the TVIEW, with the `pg_tviews_reregister` hint; it was a log line once per backend,
+  and the TVIEW went stale.
+- A restored catalog row whose plan names a table the restore did not create fails
+  the insert, naming the TVIEW, instead of mapping nothing.
 
 ### Removed
 
@@ -40,8 +57,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   the text-pattern analysis that registration is moving away from, and
   `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The
   upgrade script drops both; `docs/DEPRECATION_WARNINGS.md` lists what replaces them
-  and what the next catalog change removes, and states the oldest release
-  `ALTER EXTENSION pg_tviews UPDATE` starts from (0.1.0-beta.20).
+  and states the oldest release `ALTER EXTENSION pg_tviews UPDATE` starts from
+  (0.1.0-beta.20).
+- `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`,
+  `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`,
+  `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`,
+  `aggregate_embeds` and `key_mappings`: replaced by `plan`.
+- `pg_tviews_rebind_cascade_paths()`, `pg_tviews_migrate_triggers()` and the
+  migration of triggers installed by releases before 0.1.0-beta.20: the update drops
+  those triggers and re-installs one per TVIEW.
+- `pg_tviews_convert_existing_table()` and `pg_tviews_convert_table()`, which only
+  raised errors; the event trigger reports a `CREATE TABLE tv_* AS` the hook did not
+  intercept itself.
+- The `pg_tviews.metrics_enabled` setting, which had no effect.
 
 ### Changed (breaking)
 

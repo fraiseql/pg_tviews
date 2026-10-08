@@ -10,8 +10,7 @@
 //! |-----------|------|---------|-------------|
 //! | `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | Cache dependency graphs |
-//! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
-//! | `pg_tviews.metrics_enabled` | bool | false | Deprecated, no effect (metrics are always collected) |
+//! | `pg_tviews.table_cache_enabled` | bool | true | Cache TVIEW catalog rows and plans |
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | `debug` shows internal diagnostics as NOTICE |
 //! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
@@ -105,7 +104,6 @@ pub enum TimeRefreshSetting {
 static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
-static METRICS_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"info"));
 static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
@@ -158,18 +156,9 @@ pub fn register_gucs() {
 
     GucRegistry::define_bool_guc(
         c"pg_tviews.table_cache_enabled",
-        c"Enable in-memory caching of table OID to entity name mappings.",
-        c"When false, entity lookups query pg_tview_meta on every trigger.",
+        c"Enable in-memory caching of TVIEW catalog rows and their plans.",
+        c"When false, every lookup reads pg_tview_meta.",
         &TABLE_CACHE_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.metrics_enabled",
-        c"Deprecated: has no effect; will be removed.",
-        c"Refresh metrics are always collected (pg_tviews_queue_stats()).",
-        &METRICS_ENABLED_GUC,
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -420,18 +409,6 @@ pub fn log_level() -> String {
         || "info".to_owned(),
         |cstr| cstr.to_str().unwrap_or("info").to_owned(),
     )
-}
-
-/// Log once per backend that the deprecated `pg_tviews.metrics_enabled` is set:
-/// it has no effect.
-pub fn warn_deprecated_settings() {
-    if METRICS_ENABLED_GUC.get() {
-        crate::utils::log_once(
-            "metrics_enabled deprecated",
-            "pg_tviews.metrics_enabled is deprecated and has no effect (metrics are always \
-             collected); it will be removed",
-        );
-    }
 }
 
 /// Policy for UNION ALL backing views that return duplicate rows for the same key.

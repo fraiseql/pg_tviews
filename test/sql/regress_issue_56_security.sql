@@ -33,7 +33,7 @@ $TVIEW$);
 DO $$
 DECLARE cols text[]; keys text[];
 BEGIN
-  SELECT direct_map_columns, direct_map_keys INTO cols, keys
+  SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d), ARRAY(SELECT d->>1 FROM jsonb_array_elements(plan->'direct') d) INTO cols, keys
   FROM pg_tview_meta WHERE entity = 'thing';
   IF NOT (cols @> ARRAY['safe', 'danger']::text[]) THEN
     RAISE EXCEPTION '#56 security FAIL: a key is not mapped (cols=%)', cols;

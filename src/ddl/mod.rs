@@ -391,37 +391,3 @@ $$;
         "tview_reads"
     ],
 );
-
-/// SQL function: rebind the relation OIDs inside `cascade_paths` to the current
-/// catalog. Called by the `pg_tview_meta` insert trigger so that rows loaded by
-/// `pg_restore` point at the restored relations; not meant to be called directly.
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires Vec by value
-fn pg_tviews_rebind_cascade_paths(
-    view_oid: pg_sys::Oid,
-    cascade_paths: Vec<String>,
-) -> Result<Vec<String>, ErrorReport> {
-    crate::revision::check();
-    create::rebind_cascade_paths(view_oid, &cascade_paths)
-        .map_err(|e| e.report_in("Failed to rebind cascade paths"))
-}
-
-/// SQL function: deprecated, always raises an error.
-///
-/// It replaced `tv_x` with a view over a literal `VALUES` snapshot (no triggers,
-/// no refresh), and could not run on PG18. Use [`pg_tviews_create`] or
-/// `CREATE TABLE tv_x AS SELECT ...` instead. The function is kept only so that
-/// callers get this message; it is removed in the next breaking release.
-#[pg_extern]
-fn pg_tviews_convert_existing_table(table_name: &str) -> Result<String, ErrorReport> {
-    crate::validation::validate_sql_identifier(table_name, "table_name")?;
-
-    Err(TViewError::DefinitionRefused {
-        reason: format!(
-            "pg_tviews_convert_existing_table() is deprecated and no longer converts \
-             '{table_name}'; use pg_tviews_create() or CREATE TABLE tv_<entity> AS SELECT ... \
-             instead"
-        ),
-    }
-    .into())
-}

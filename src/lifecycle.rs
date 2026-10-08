@@ -127,7 +127,7 @@ pub extern "C-unwind" fn _PG_init() {
     // so registering per-transaction would accumulate N copies after N transactions.
     // SAFETY: Transaction callbacks are registered in backend initialization context.
     unsafe {
-        crate::queue::xact::register_xact_callback();
-        crate::queue::xact::register_subxact_callback();
+        crate::flush::register_xact_callback();
+        crate::flush::register_subxact_callback();
     }
 }

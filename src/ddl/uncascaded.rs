@@ -547,7 +547,7 @@ pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
             crate::queue::enqueue_refresh_all(entity);
         }
     }
-    crate::queue::flush_refresh_queue()
+    crate::flush::flush_refresh_queue()
 }
 
 #[cfg(test)]

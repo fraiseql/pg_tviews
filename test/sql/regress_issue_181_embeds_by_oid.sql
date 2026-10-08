@@ -63,15 +63,15 @@ INSERT INTO tb_order (pk_order, fk_user, total) VALUES (3, 2, 1);
 SELECT check_fresh('user', 'an order insert'), check_fresh('post', 'an order insert');
 
 DO $$ BEGIN
-    IF (SELECT aggregate_embeds FROM tviews.pg_tview_meta WHERE entity = 'user')
-       IS DISTINCT FROM '{"user_summary": "pk_user"}' THEN
+    IF (SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM tviews.pg_tview_meta WHERE entity = 'user')
+       IS DISTINCT FROM '{"user_summary": ["pk_user"]}' THEN
         RAISE EXCEPTION '#181 FAIL: the embed through a renamed backing view is %',
-            (SELECT aggregate_embeds FROM tviews.pg_tview_meta WHERE entity = 'user');
+            (SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM tviews.pg_tview_meta WHERE entity = 'user');
     END IF;
-    IF (SELECT aggregate_embeds FROM tviews.pg_tview_meta WHERE entity = 'post')
-       IS DISTINCT FROM '{"user_summary": "fk_user"}' THEN
+    IF (SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM tviews.pg_tview_meta WHERE entity = 'post')
+       IS DISTINCT FROM '{"user_summary": ["fk_user"]}' THEN
         RAISE EXCEPTION '#181 FAIL: the embed in a correlated subquery is %',
-            (SELECT aggregate_embeds FROM tviews.pg_tview_meta WHERE entity = 'post');
+            (SELECT (SELECT jsonb_object_agg(e->>'entity', e->'lookups') FROM jsonb_array_elements(plan->'embeds') e) FROM tviews.pg_tview_meta WHERE entity = 'post');
     END IF;
 END $$;
 

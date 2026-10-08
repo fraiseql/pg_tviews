@@ -54,7 +54,7 @@ $TVIEW$);
 DO $$
 DECLARE cols text[]; keys text[];
 BEGIN
-  SELECT direct_map_columns, direct_map_keys INTO cols, keys
+  SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d), ARRAY(SELECT d->>1 FROM jsonb_array_elements(plan->'direct') d) INTO cols, keys
   FROM pg_tview_meta WHERE entity = 'user';
 
   IF NOT (cols @> ARRAY['name','bio']::text[] AND cols <@ ARRAY['name','bio']::text[]) THEN
@@ -74,7 +74,7 @@ END $$;
 DO $$
 DECLARE cols text[]; keys text[];
 BEGIN
-  SELECT direct_map_columns, direct_map_keys INTO cols, keys
+  SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d), ARRAY(SELECT d->>1 FROM jsonb_array_elements(plan->'direct') d) INTO cols, keys
   FROM pg_tview_meta WHERE entity = 'post';
 
   IF NOT (cols @> ARRAY['title']::text[]) THEN
@@ -86,14 +86,6 @@ BEGIN
   IF keys[array_position(cols, 'title')] <> 'title' THEN
     RAISE EXCEPTION '#56 FAIL: post map misaligned for title (got %)',
       keys[array_position(cols, 'title')];
-  END IF;
-END $$;
-
--- (3) Column/key arrays are always aligned in length for every tview.
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_tview_meta
-             WHERE cardinality(direct_map_columns) <> cardinality(direct_map_keys)) THEN
-    RAISE EXCEPTION '#56 FAIL: direct_map_columns / direct_map_keys length mismatch';
   END IF;
 END $$;
 

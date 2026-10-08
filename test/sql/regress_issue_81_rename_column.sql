@@ -51,9 +51,9 @@ DO $$ BEGIN
     RAISE EXCEPTION '#81 FAIL: definition after renaming title: %',
       (SELECT definition FROM pg_tview_meta WHERE entity = 'post');
   END IF;
-  IF NOT (SELECT 'headline' = ANY (direct_map_columns) FROM pg_tview_meta WHERE entity = 'post') THEN
+  IF NOT (SELECT 'headline' = ANY (ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d)) FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION '#81 FAIL: direct_map_columns still names the old column: %',
-      (SELECT direct_map_columns FROM pg_tview_meta WHERE entity = 'post');
+      (SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d) FROM pg_tview_meta WHERE entity = 'post');
   END IF;
 END $$;
 

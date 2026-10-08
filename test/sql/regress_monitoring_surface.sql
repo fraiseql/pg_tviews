@@ -1,7 +1,7 @@
 -- The monitoring surface reports only real data. pg_tviews_performance_stats()
 -- works where query_to_xml/xpath are unusable (a server built without libxml);
 -- the placeholder views and pg_tviews_hook_status() are gone; an unknown
--- pg_tviews.* setting is refused; pg_tviews.metrics_enabled is deprecated.
+-- pg_tviews.* setting is refused.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_monitoring_surface.sql
 --
@@ -75,16 +75,5 @@ BEGIN
         EXECUTE format('SET %s = %L', g.name, g.setting);
     END LOOP;
 END $$;
-
--- ── D5: metrics_enabled is deprecated, and still sets ───────────────────────
-SET pg_tviews.metrics_enabled = off;
-DO $$ BEGIN
-    IF (SELECT short_desc FROM pg_settings WHERE name = 'pg_tviews.metrics_enabled')
-       NOT LIKE 'Deprecated%' THEN
-        RAISE EXCEPTION 'D5 FAIL: pg_tviews.metrics_enabled is not described as deprecated: %',
-            (SELECT short_desc FROM pg_settings WHERE name = 'pg_tviews.metrics_enabled');
-    END IF;
-END $$;
-RESET pg_tviews.metrics_enabled;
 
 \echo 'monitoring surface: PASS'

@@ -57,10 +57,10 @@ $TVIEW$);
 
 -- Precondition: this test only exercises the bug if the dependency is nested.
 DO $$ BEGIN
-  IF NOT (SELECT dependency_types @> ARRAY['nested_object']::text[]
+  IF NOT (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) @> ARRAY['nested_object']::text[]
           FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION '#52 setup FAIL: tv_post is not classified nested_object (got %)',
-      (SELECT dependency_types FROM pg_tview_meta WHERE entity = 'post');
+      (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'post');
   END IF;
 END $$;
 

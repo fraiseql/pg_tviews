@@ -283,15 +283,6 @@ is needed. Prepared transactions require `max_prepared_transactions > 0`.
 A change the triggers did not see (`session_replication_role = replica`, triggers
 disabled) is repaired with `pg_tviews_refresh(entity)`, which rebuilds the TVIEW.
 
-### pg_tviews_convert_table()
-
-Internal: called by the `pg_tviews_ddl_end` event trigger. A `CREATE TABLE tv_* AS`
-is turned into a TVIEW by the ProcessUtility hook before PostgreSQL creates any table;
-if a plain `tv_*` table reaches the event trigger anyway (pg_tviews not in
-`shared_preload_libraries`), this function raises an error instead of leaving a table
-that looks like a TVIEW. Create TVIEWs with `pg_tviews_create_or_replace()` or
-`CREATE TABLE tv_<entity> AS SELECT …`.
-
 ### pg_tviews_health_check()
 
 **Signature**:
@@ -544,11 +535,8 @@ See [Replication](../operations/replication.md).
 Called by triggers, event triggers and restore; don't call them directly:
 `pg_tviews_audit_write`, `pg_tviews_defines_view`, `pg_tviews_handle_dropped`,
 `pg_tviews_invalidate_caches`, `pg_tviews_meta_changed`, `pg_tviews_meta_rebind`,
-`pg_tviews_migrate_triggers`, `pg_tviews_rebind_cascade_paths`, and the trigger
-functions `pg_tview_trigger_handler`, `pg_tview_flush_trigger`,
-`pg_tview_delta_trigger`, `pg_tview_truncate_trigger`.
-`pg_tviews_convert_existing_table` is deprecated and always raises an error: use
-`pg_tviews_create()` or `CREATE TABLE tv_x AS SELECT …`.
+`pg_tviews_handle_ddl_event`, and the trigger functions `pg_tview_trigger_handler`,
+`pg_tview_flush_trigger`, `pg_tview_delta_trigger`, `pg_tview_truncate_trigger`.
 
 ## Views
 

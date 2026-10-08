@@ -154,15 +154,12 @@ ALTER EXTENSION pg_tviews ADD FUNCTION tviews.pg_tviews_catalog_revision();
 --    triggers gone (as after the 0.1.0 migration), plus a stray trigger. It does not
 --    follow its base tables until it is re-registered.
 CREATE TABLE meta_at_create AS
-    SELECT entity, cascade_paths, fk_columns, dependency_types, dependency_paths,
-           direct_map_columns, direct_map_keys, aggregate_embeds
-    FROM tviews.pg_tview_meta;
+    SELECT entity, plan FROM tviews.pg_tview_meta;
 CREATE TABLE triggers_at_create AS
     SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger
     WHERE tgfoid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'tviews'::regnamespace);
 UPDATE tviews.pg_tview_meta
-   SET cascade_paths = '{}', direct_map_columns = '{}', direct_map_keys = '{}',
-       aggregate_embeds = '{}', needs_reregister = true
+   SET plan = '{"version": 1}', needs_reregister = true
  WHERE entity IN ('post', 'user_orders');
 DO $$
 DECLARE t record;
@@ -227,9 +224,7 @@ DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE needs_reregister) THEN
         RAISE EXCEPTION '#137 FAIL: needs_reregister not cleared';
     END IF;
-    IF EXISTS (SELECT entity, cascade_paths, fk_columns, dependency_types, dependency_paths,
-                      direct_map_columns, direct_map_keys, aggregate_embeds
-               FROM tviews.pg_tview_meta
+    IF EXISTS (SELECT entity, plan FROM tviews.pg_tview_meta
                EXCEPT SELECT * FROM meta_at_create) THEN
         RAISE EXCEPTION '#137 FAIL: re-derived metadata differs from creation';
     END IF;

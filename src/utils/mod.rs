@@ -1,6 +1,4 @@
-use pgrx::AllocatedByPostgres;
 use pgrx::datum::DatumWithOid;
-use pgrx::heap_tuple::PgHeapTuple;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 
@@ -139,40 +137,6 @@ pub fn spi_get_string(query: &str) -> crate::TViewResult<Option<String>> {
 /// - Minimal dependencies on global state
 /// - Reusable across different modules
 use pgrx::pg_sys::Oid;
-
-/// Result of extracting an integer column from a tuple.
-///
-/// Parallels `KeyExtraction` in `trigger.rs` but for integer (PK/FK) columns.
-pub enum IntExtraction {
-    /// Column exists and has a non-NULL integer value.
-    Value(i64),
-    /// Column exists but the value is NULL.
-    Null,
-    /// Column not found or type is not integer (i32/i64).
-    Missing,
-}
-
-/// Extract an integer column value as i64, supporting both INTEGER and BIGINT columns.
-///
-/// Tries BIGINT (i64) first, then falls back to INTEGER (i32) with promotion.
-/// This allows triggers to work regardless of whether the PK/FK column is
-/// `INTEGER`/`SERIAL` or `BIGINT`/`BIGSERIAL`.
-///
-/// Returns `IntExtraction::Null` when the column exists but is NULL (normal for
-/// optional FKs), and `IntExtraction::Missing` when the column is absent entirely
-/// (likely a misconfiguration).
-pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) -> IntExtraction {
-    match tuple.get_by_name::<i64>(col) {
-        Ok(Some(v)) => return IntExtraction::Value(v),
-        Ok(None) => return IntExtraction::Null,
-        Err(_) => {} // not i64, try i32
-    }
-    match tuple.get_by_name::<i32>(col) {
-        Ok(Some(v)) => IntExtraction::Value(i64::from(v)),
-        Ok(None) => IntExtraction::Null,
-        Err(_) => IntExtraction::Missing,
-    }
-}
 
 /// The schema-qualified, quoted name of relation `oid` (`quote_ident` on each
 /// part), read from the syscache, so it is current after a rename or a move made

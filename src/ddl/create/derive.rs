@@ -1,19 +1,17 @@
-//! What registration derives from a TVIEW's lineage: cascade paths, fan-out
-//! patches, and the tables no cascade reaches.
+//! What registration derives from a TVIEW's lineage: its propagation plan (ADR
+//! 0203) and the tables no cascade reaches.
 
-use crate::cascade_path;
+use crate::catalog::plan::{LocalPath, PLAN_VERSION, PlanEmbed, TviewPlan};
 use crate::ddl::uncascaded::Declarations;
 use crate::error::TViewError;
 use crate::error::TViewResult;
 use pgrx::pg_sys;
 
-/// What registration derives from a definition: how a write to each base table
-/// maps to keys (stored as `key_mappings`), and the cascade paths the row trigger
-/// follows for local tables.
+/// What registration derives from a definition: its lineage, and the plan stored
+/// from it.
 pub(crate) struct Derivation {
     pub(crate) lineage: crate::lineage::Lineage,
-    pub(crate) key_mappings: serde_json::Value,
-    pub(crate) cascade_paths: Vec<cascade_path::CascadePath>,
+    pub(crate) plan: TviewPlan,
     /// The base tables the view reads (`pg_depend`), and those the functions it
     /// calls read (#193): the tables its triggers go on.
     pub(crate) base_tables: Vec<pg_sys::Oid>,
@@ -53,9 +51,10 @@ pub(crate) fn aggregate_embeds(
         .collect()
 }
 
-/// Analyze the backing view `view_oid` (ADR 0157) and derive the cascade paths of
-/// its local tables, or for an aggregate TVIEW one per declared group key (issue
-/// #58).
+/// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local
+/// paths of its local tables (for an aggregate TVIEW, one per declared group key,
+/// issue #58), the mapping of every base table, its embeds and its direct-patch
+/// map.
 pub(crate) fn derive(
     entity_name: &str,
     group_keys: Option<&crate::ddl::aggregate::GroupKeys>,
@@ -73,18 +72,36 @@ pub(crate) fn derive(
             all_base_tables.push(table);
         }
     }
-    let cascade_paths = match group_keys {
-        Some(keys) => {
-            crate::ddl::aggregate::cascade_paths(entity_name, keys, base_tables, view_oid)?
-        }
-        None => local_cascade_paths(entity_name, &lineage),
+    let paths = match group_keys {
+        Some(keys) => crate::ddl::aggregate::local_paths(entity_name, keys, base_tables, view_oid)?,
+        None => local_paths(entity_name, &lineage),
     };
     let mut key_mappings = lineage.to_json();
     add_fanout_patches(&mut key_mappings, &lineage);
+    let tables = serde_json::from_value(key_mappings).map_err(|e| TViewError::CatalogError {
+        operation: format!("Derive the key mappings of tv_{entity_name}"),
+        pg_error: e.to_string(),
+    })?;
+    let plan = TviewPlan {
+        version: PLAN_VERSION,
+        set_operation: lineage.set_operation,
+        embeds: lineage
+            .embeds(entity_name)
+            .into_iter()
+            .map(|e| PlanEmbed {
+                entity: e.entity,
+                lookups: e.lookups,
+                kind: e.kind,
+                path: e.path,
+            })
+            .collect(),
+        direct: lineage.direct_fields(),
+        tables,
+        paths,
+    };
     Ok(Derivation {
         lineage,
-        key_mappings,
-        cascade_paths,
+        plan,
         base_tables: all_base_tables,
         undeclared_functions,
     })
@@ -117,7 +134,7 @@ pub(crate) fn add_fanout_patches(
         if fields.is_empty() {
             continue;
         }
-        let fanout = cascade_path::FanoutPatch {
+        let fanout = crate::catalog::plan::FanoutPatch {
             lookup_col: lookup_col.clone(),
             fields,
         };
@@ -131,27 +148,21 @@ pub(crate) fn add_fanout_patches(
     }
 }
 
-/// One cascade path per local table: the key is the table's `column`, read off the
+/// One local path per local table: the key is the table's `column`, read off the
 /// changed row; an UPDATE that touches none of the columns the TVIEW reads is
 /// skipped. The table holding the key (of each UNION branch) gets one too, marked
 /// `root`: its own rows are the TVIEW's rows (ADR 0169).
-pub(crate) fn local_cascade_paths(
-    entity_name: &str,
-    lineage: &crate::lineage::Lineage,
-) -> Vec<cascade_path::CascadePath> {
+pub(crate) fn local_paths(entity_name: &str, lineage: &crate::lineage::Lineage) -> Vec<LocalPath> {
     lineage
         .tables
         .iter()
         .filter_map(|t| match &t.kind {
-            crate::lineage::TableKind::Local(column) => Some(cascade_path::CascadePath {
+            crate::lineage::TableKind::Local(column) => Some(LocalPath {
                 source_oid: pg_sys::Oid::from(t.relid),
                 source_table: t.relname.clone(),
                 entity_name: entity_name.to_string(),
                 initial_col: column.clone(),
-                hops: Vec::new(),
-                unresolvable: false,
                 source_columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
-                fanout: None,
                 root: t.root,
                 initial_attnum: t.columns.iter().find(|(n, _)| n == column).map(|(_, a)| *a),
             }),
