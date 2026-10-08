@@ -1,21 +1,6 @@
-//! Dependency Analysis: Base Table Discovery and Trigger Management
-//!
-//! This module analyzes `PostgreSQL's` system catalogs to understand view dependencies:
-//! - **Base Table Discovery**: Finds all tables a view depends on
-//! - **Trigger Management**: Installs/removes change-tracking triggers
-//!
-//! ## Architecture
-//!
-//! Dependency analysis uses `PostgreSQL's` `pg_depend` and `pg_rewrite` catalogs:
-//! 1. Start from a view's OID
-//! 2. Follow dependency chains through `pg_depend`
-//! 3. Identify base tables (non-view objects)
-//! 4. Build trigger installation plan
-//!
-//! ## Key Functions
-//!
-//! - `find_base_tables()`: Core dependency resolution
-//! - `install_triggers()`: Set up change tracking
+//! The base tables a backing view reads (through other views, from `pg_depend`),
+//! and the triggers `pg_tviews` installs on them for each TVIEW, as its plan says
+//! (`trigger_plan`).
 
 pub mod base_tables;
 pub mod triggers;

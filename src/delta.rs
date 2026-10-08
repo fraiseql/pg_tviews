@@ -62,6 +62,7 @@ fn suspended() -> bool {
 /// Statement-level trigger over the transition tables of a `mapped` or
 /// `all_keys` table.
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_delta_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -113,6 +114,7 @@ fn first_truncate_refresh(entity: &str) -> bool {
 /// follows a `TRUNCATE`). `TRUNCATE` of a partitioned table fires this on each
 /// truncated partition too, after all of them are empty: the first one refreshes.
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_truncate_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
@@ -208,7 +210,8 @@ fn map_statement(
         entity: entity.to_string(),
     })?;
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
-        return refresh_all(entity, "its mapping of a written table is unknown");
+        refresh_all(entity, "its mapping of a written table is unknown");
+        return Ok(());
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind {
@@ -238,7 +241,8 @@ fn map_statement(
                 return Ok(());
             }
             let Some(keys_sql) = rendered(entity, mapping)? else {
-                return refresh_all(entity, "a relation its mapping reads is gone");
+                refresh_all(entity, "a relation its mapping reads is gone");
+                return Ok(());
             };
             let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
             let key_type = &meta
@@ -361,7 +365,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
         // that can be traced.
         MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
             let Some(keys_sql) = rendered(entity, mapping)? else {
-                refresh_all(entity, "a relation its mapping reads is gone")?;
+                refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(true);
             };
             // SAFETY: inside a row trigger the TriggerData, its relation and the
@@ -418,7 +422,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
 }
 
 /// Refresh `entity` in full because its mapping cannot run, and say once why.
-fn refresh_all(entity: &str, why: &str) -> TViewResult<()> {
+fn refresh_all(entity: &str, why: &str) {
     crate::utils::log_once(
         &format!("unmapped:{entity}"),
         &format!(
@@ -427,7 +431,6 @@ fn refresh_all(entity: &str, why: &str) -> TViewResult<()> {
         ),
     );
     crate::queue::enqueue_refresh_all(entity);
-    Ok(())
 }
 
 /// The mapping query of `mapping`, with the current names of what it reads

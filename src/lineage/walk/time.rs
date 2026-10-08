@@ -50,7 +50,7 @@ pub(super) enum TimeNode {
 
 /// How a SQL value function of the time is written, `None` for another one
 /// (`CURRENT_USER`…).
-pub(super) fn time_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str> {
+pub(super) const fn time_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str> {
     use pg_sys::SQLValueFunctionOp as Op;
     match op {
         Op::SVFOP_CURRENT_DATE => Some("CURRENT_DATE"),

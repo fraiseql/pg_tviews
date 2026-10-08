@@ -20,6 +20,12 @@ use std::ffi::CStr;
 /// Query levels (views, subqueries, CTEs) followed before giving up.
 pub const MAX_DEPTH: usize = 32;
 
+/// A range-table index, or an attribute number, as a `usize`: positive in a query
+/// tree; 0 (which names no entry) for anything else.
+pub(super) fn index(n: impl TryInto<usize>) -> usize {
+    n.try_into().unwrap_or(0)
+}
+
 /// What the walk needs to know about the registered TVIEWs.
 pub struct Context<'a> {
     /// Tables of TVIEWs (`tv_*`) → their entity: not base tables, as in
@@ -109,7 +115,7 @@ enum Resolved {
     Col(Column),
     /// What the column stands for in each UNION branch of a subquery (a column
     /// or a computed output), and the scopes of the branches where it is opaque.
-    Alt(Vec<Resolved>, Vec<Scope>),
+    Alt(Vec<Self>, Vec<Scope>),
     /// An output computed from columns.
     Expr(Computed),
     /// A column of a first-row level (`DISTINCT ON`, or windows all partitioned)

@@ -95,7 +95,7 @@ pub(super) unsafe fn setop_leaves(node: *mut pg_sys::Node, leaves: &mut Vec<usiz
     unsafe {
         match tag(node) {
             Some(pg_sys::NodeTag::T_RangeTblRef) => {
-                leaves.push((*node.cast::<pg_sys::RangeTblRef>()).rtindex as usize);
+                leaves.push(super::index((*node.cast::<pg_sys::RangeTblRef>()).rtindex));
             }
             Some(pg_sys::NodeTag::T_SetOperationStmt) => {
                 let op = node.cast::<pg_sys::SetOperationStmt>();

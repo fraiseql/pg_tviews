@@ -168,6 +168,8 @@ impl Drop for RenderPin {
 ///
 /// SAFETY: a GUC nest level must be open.
 unsafe fn set_local(name: &CStr, value: &CStr) {
+    // SAFETY: NUL-terminated name and value; the caller opened the nest level
+    // that GUC_ACTION_SAVE restores at.
     unsafe {
         pg_sys::set_config_option(
             name.as_ptr(),
@@ -185,6 +187,7 @@ unsafe fn set_local(name: &CStr, value: &CStr) {
 /// SAFETY: a GUC nest level must be open.
 unsafe fn pin_settings() {
     for (name, value) in RENDER_SETTINGS {
+        // SAFETY: the caller opened the nest level.
         unsafe { set_local(name, value) };
     }
 }

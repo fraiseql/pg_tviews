@@ -275,6 +275,8 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
 ///
 /// SAFETY: `node` must be a valid, non-null `Node*`.
 pub(super) unsafe fn extension_statement_names(node: *mut pg_sys::Node) -> Option<Vec<String>> {
+    // SAFETY: the caller's node; each cast follows its tag, and the lists hold
+    // the node types PostgreSQL's grammar puts there.
     unsafe {
         let tag = (*node).type_;
         if tag == pg_sys::NodeTag::T_CreateExtensionStmt {
@@ -314,6 +316,7 @@ pub(super) unsafe fn extension_statement_names(node: *mut pg_sys::Node) -> Optio
 ///
 /// SAFETY: `pstmt` must be null or a valid `PlannedStmt*`.
 pub(super) unsafe fn drops_pg_tviews(pstmt: *const pg_sys::PlannedStmt) -> bool {
+    // SAFETY: the caller's statement and its utility node, both checked for null.
     unsafe {
         if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
             return false;
@@ -335,6 +338,8 @@ pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys
     if rv.is_null() {
         return pg_sys::InvalidOid;
     }
+    // SAFETY: the caller's RangeVar, checked for null; NoLock with MISSING_OK
+    // neither locks nor raises for a missing relation.
     unsafe {
         pg_sys::RangeVarGetRelidExtended(
             rv,

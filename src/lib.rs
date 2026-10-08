@@ -23,9 +23,10 @@ between base tables and derived views through trigger-based change tracking.
 
 ## Safety
 
-- No panics in FFI callbacks (all wrapped in `catch_unwind`)
-- Transaction rollback on refresh failures
-- Memory safety through Rust's ownership system
+- Every callback `PostgreSQL` calls carries `#[pg_guard]`; previous hooks are
+  called across `pg_guard_ffi_boundary` (`scripts/check-ffi-guards.sh` checks it).
+- A refresh that fails fails the write; refresh work still queued fails the commit.
+- `unsafe` is confined to FFI with `PostgreSQL`, each block with its `SAFETY:` reason.
 */
 
 use pgrx::pg_sys::panic::ErrorReport;
@@ -73,12 +74,15 @@ use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
+/// Whether this session's trigger-based refresh is suspended.
 #[pg_extern]
 #[must_use]
 pub fn pg_tviews_is_suspended() -> bool {
     crate::suspend::is_suspended()
 }
 
+/// Suspend trigger-based refresh in this session: writes record which TVIEWs
+/// they change instead of refreshing them, until the matching resume.
 #[pg_extern]
 pub fn pg_tviews_suspend_triggers() {
     crate::suspend::suspend();
@@ -118,6 +122,7 @@ pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     })))
 }
 
+/// The TVIEWs changed while this session's refresh is suspended.
 #[pg_extern]
 #[must_use]
 pub fn pg_tviews_suspended_entities() -> Vec<String> {

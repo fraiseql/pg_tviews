@@ -261,7 +261,7 @@ fn create_tview_inner(
     // Install triggers on the tables it reads, as their lineage needs them: base
     // tables, and other TVIEWs' tables it maps like them.
     crate::dependency::install_triggers(
-        &crate::dependency::trigger_plan(&derivation.base_tables, lineage)?,
+        &crate::dependency::trigger_plan(&derivation.base_tables, lineage),
         entity_name,
     )?;
 
@@ -332,7 +332,10 @@ pub fn reregister_metadata(
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();
-    crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage)
+    Ok(crate::dependency::trigger_plan(
+        &derivation.base_tables,
+        &derivation.lineage,
+    ))
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its

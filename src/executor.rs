@@ -40,6 +40,8 @@ const FLUSH_FUNCTION_NAME: &CStr = c"pg_tview_flush_trigger";
 ///
 /// SAFETY: called once, from backend context, while installing the other hooks.
 pub unsafe fn install_hooks() {
+    // SAFETY: plain writes of the backend's hook globals, saving the previous
+    // values first, from the one place that installs them.
     unsafe {
         PREV_EXECUTOR_RUN = pg_sys::ExecutorRun_hook;
         pg_sys::ExecutorRun_hook = Some(executor_run);
@@ -108,6 +110,7 @@ unsafe extern "C-unwind" fn executor_run(
     count: u64,
     execute_once: bool,
 ) {
+    // SAFETY: the executor passes the started query it runs.
     let _frame = Frame::push(unsafe { writes_tracked_table(query_desc) });
     // SAFETY: an error raised in the previous hook comes back as a Rust panic,
     // which pops the frame on its way out.
@@ -128,6 +131,7 @@ unsafe extern "C-unwind" fn executor_run(
     direction: pg_sys::ScanDirection::Type,
     count: u64,
 ) {
+    // SAFETY: the executor passes the started query it runs.
     let _frame = Frame::push(unsafe { writes_tracked_table(query_desc) });
     // SAFETY: an error raised in the previous hook comes back as a Rust panic,
     // which pops the frame on its way out.
@@ -141,6 +145,7 @@ unsafe extern "C-unwind" fn executor_run(
 
 #[pg_guard]
 unsafe extern "C-unwind" fn executor_finish(query_desc: *mut pg_sys::QueryDesc) {
+    // SAFETY: the executor passes the query it finishes.
     let writing = unsafe { writes_tracked_table(query_desc) };
     {
         let _frame = Frame::push(writing);
@@ -165,6 +170,8 @@ unsafe extern "C-unwind" fn executor_finish(query_desc: *mut pg_sys::QueryDesc) 
 ///
 /// SAFETY: `query_desc` must be a started query.
 unsafe fn writes_tracked_table(query_desc: *mut pg_sys::QueryDesc) -> bool {
+    // SAFETY: the caller's started query; every pointer is checked before use,
+    // and the list holds `ResultRelInfo`s the executor opened.
     unsafe {
         if query_desc.is_null() || (*query_desc).estate.is_null() {
             return false;
@@ -182,6 +189,8 @@ unsafe fn writes_tracked_table(query_desc: *mut pg_sys::QueryDesc) -> bool {
 
 /// SAFETY: `desc` must be null or a valid `TriggerDesc*`.
 unsafe fn has_flush_trigger(desc: *const pg_sys::TriggerDesc) -> bool {
+    // SAFETY: the caller's descriptor, checked for null; `numtriggers` bounds the
+    // `triggers` array.
     unsafe {
         if desc.is_null() {
             return false;

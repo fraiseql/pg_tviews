@@ -41,20 +41,27 @@ panic = "unwind"
  lto = "fat"
  codegen-units = 1
 
- [lints.clippy]
- all = { level = "deny", priority = -1 }
- pedantic = { level = "deny", priority = -1 }
- # Disable specific lints that conflict with PostgreSQL FFI / pgrx idioms.
- # These are the project's deliberate, reviewed exceptions to clippy::pedantic.
- missing_errors_doc = "allow"  # FFI functions often can't document all Postgres errors
- missing_panics_doc = "allow"  # internal invariants; most "panics" are pgrx error!() conversions
- module_name_repetitions = "allow"  # pg_tviews_ prefix is intentional
- too_many_lines = "allow"  # SQL-generating and FFI dispatch functions are long by nature
- similar_names = "allow"  # pk/fk/oid/tv/tb domain names are intentionally similar
- struct_field_names = "allow"  # catalog structs mirror PostgreSQL column names
- unnecessary_wraps = "allow"  # Result-returning signatures kept uniform across the DDL API
- manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
- match_same_arms = "allow"  # XactEvent / NodeTag arms kept explicit for clarity
- cast_sign_loss = "allow"  # PostgreSQL OID/SPI integer casts are intentional and bounded
- result_large_err = "allow"  # pgrx keeps an extern's SQLSTATE only for Result<_, ErrorReport>, a large type
+ [lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+# The project's reviewed exceptions, each with its reason. Anything narrower is
+# allowed on the item, with a `// Reason:` comment.
+missing_errors_doc = "allow"  # an extern's errors are the SQLSTATEs in docs/error-reference.md
+missing_panics_doc = "allow"  # internal invariants; most "panics" are pgrx error!() conversions
+too_many_lines = "allow"  # the walker's node dispatch and SQL builders are long by nature
+similar_names = "allow"  # pk/fk/oid/tv/tb domain names are intentionally similar
+struct_field_names = "allow"  # catalog structs mirror PostgreSQL column names
+manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
+match_same_arms = "allow"  # XactEvent / NodeTag arms kept explicit for clarity
+result_large_err = "allow"  # pgrx keeps an extern's SQLSTATE only for Result<_, ErrorReport>, a large type
+multiple_crate_versions = "allow"  # pgrx's build dependencies pull two hashbrown versions; not ours to unify
+redundant_pub_crate = "allow"  # pub(crate) marks what other modules use, inside private modules too
+option_if_let_else = "allow"  # if let / else over side-effecting branches reads clearer than map_or_else closures
 

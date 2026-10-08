@@ -1,6 +1,6 @@
-//! `DROP TABLE tv_*` and `ALTER TABLE tv_*`.
+//! `DROP TABLE tv_*`.
 
-use super::{CStr, TViewError, drop_tview, pg_sys, resolve_relation_oid};
+use super::{TViewError, drop_tview, pg_sys, resolve_relation_oid};
 
 /// Handle DROP TABLE tv_*
 ///
@@ -97,74 +97,4 @@ pub(super) unsafe fn handle_drop_table(
         // All tables were tv_* — we handled everything
         Ok(true)
     } // unsafe
-}
-
-/// Handle ALTER TABLE statements on TVIEW tables
-///
-/// SAFETY: This function operates on raw `PostgreSQL` C pointers from the `ProcessUtility` hook.
-/// All pointers are validated with null checks before dereferencing.
-pub(super) unsafe fn handle_alter_table(
-    alter_stmt: *mut pg_sys::AlterTableStmt,
-    _query_string: *const ::std::os::raw::c_char,
-) -> Result<bool, TViewError> {
-    // SAFETY: All pointer dereferences are guarded by null checks.
-    unsafe {
-        if alter_stmt.is_null() {
-            return Ok(false);
-        }
-
-        let alter_ref = &*alter_stmt;
-
-        // Get the table name
-        let relation = alter_ref.relation;
-        if relation.is_null() {
-            return Ok(false);
-        }
-
-        let rel_ref = &*relation;
-        let table_name_cstr = rel_ref.relname;
-        if table_name_cstr.is_null() {
-            return Ok(false);
-        }
-
-        let table_name = CStr::from_ptr(table_name_cstr).to_str().unwrap_or("");
-
-        // Check if it's a TVIEW table (starts with tv_)
-        if !table_name.starts_with("tv_") {
-            return Ok(false);
-        }
-
-        // Check the ALTER TABLE commands for SET UNLOGGED/LOGGED
-        let cmds = alter_ref.cmds;
-        if cmds.is_null() {
-            return Ok(false);
-        }
-
-        let num_cmds = pg_sys::list_length(cmds);
-        for i in 0..num_cmds {
-            let cmd_node = pg_sys::list_nth(cmds, i);
-            if cmd_node.is_null() {
-                continue;
-            }
-
-            let cmd = cmd_node.cast::<pg_sys::AlterTableCmd>();
-            if cmd.is_null() {
-                continue;
-            }
-
-            let cmd_ref = &*cmd;
-
-            // Check for SET UNLOGGED or SET LOGGED
-            if cmd_ref.subtype == pg_sys::AlterTableType::AT_SetUnLogged {
-                // SET UNLOGGED - data is preserved, no special handling needed
-                return Ok(false); // Let PostgreSQL handle it normally
-            } else if cmd_ref.subtype == pg_sys::AlterTableType::AT_SetLogged {
-                // SET LOGGED preserves data — no special handling needed
-                return Ok(false); // Let PostgreSQL handle it normally
-            }
-        }
-
-        // Not a SET UNLOGGED/LOGGED command we care about
-        Ok(false)
-    }
 }

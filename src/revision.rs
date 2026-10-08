@@ -83,7 +83,7 @@ pub fn is_current() -> bool {
 
 /// What fixes a catalog of `revision` for this library.
 #[must_use]
-pub fn remedy(revision: i32) -> &'static str {
+pub const fn remedy(revision: i32) -> &'static str {
     if revision > CATALOG_REVISION {
         "the installed extension is newer than this library: install the pg_tviews package \
          that matches it"

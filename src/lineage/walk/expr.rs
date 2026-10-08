@@ -32,12 +32,12 @@ impl Walker<'_> {
                     })
                 }
                 Some(RteInfo::Outputs(outputs)) => outputs
-                    .get(attno as usize - 1)
+                    .get(super::index(attno).wrapping_sub(1))
                     .cloned()
                     .unwrap_or(Resolved::Opaque),
                 Some(RteInfo::Join(aliases)) => {
                     let alias = elements::<pg_sys::Node>(*aliases)
-                        .get(attno as usize - 1)
+                        .get(super::index(attno).wrapping_sub(1))
                         .copied()
                         .unwrap_or(std::ptr::null_mut());
                     self.resolve_alias(alias, index)
@@ -236,12 +236,11 @@ impl Walker<'_> {
                         let r = self.operand(r, term_of, next_var)?;
                         return match (l.element, r.element) {
                             (false, false) => Some(self.comparison((*op).opno, &l, &r)),
-                            (false, true) => self.membership((*op).opno, &l, &r),
+                            (false, true) => Some(self.membership((*op).opno, &l, &r)),
                             (true, false) => {
                                 let commutator = pg_sys::get_commutator((*op).opno);
                                 (commutator != Oid::INVALID)
                                     .then(|| self.membership(commutator, &r, &l))
-                                    .flatten()
                             }
                             (true, true) => None,
                         };
@@ -257,7 +256,7 @@ impl Walker<'_> {
                         if l.element || r.element {
                             return None;
                         }
-                        return self.membership((*op).opno, &l, &r);
+                        return Some(self.membership((*op).opno, &l, &r));
                     }
                 }
                 _ => {}
@@ -349,7 +348,7 @@ impl Walker<'_> {
         opno: Oid,
         scalar: &Operand,
         array: &Operand,
-    ) -> Option<(Sql, Vec<Lookup>)> {
+    ) -> (Sql, Vec<Lookup>) {
         let name = self.operator_name(opno);
         let mut sql = Sql::text("(");
         sql.push_sql(scalar.sql.clone());
@@ -383,6 +382,6 @@ impl Walker<'_> {
                 });
             }
         }
-        Some((sql, lookups))
+        (sql, lookups)
     }
 }

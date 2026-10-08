@@ -416,7 +416,7 @@ pub fn analyze(
         time_reads: graph.time_reads.clone(),
         tview_reads,
         keyed_otherwise,
-        data: graph.data.clone(),
+        data: graph.data,
     })
 }
 

@@ -92,7 +92,7 @@ pub enum TriggerSet {
 }
 
 impl TriggerSet {
-    fn specs(self, partitioned: bool) -> &'static [TriggerSpec] {
+    const fn specs(self, partitioned: bool) -> &'static [TriggerSpec] {
         match (self, partitioned) {
             (Self::Row, _) | (Self::Delta, true) => &[ROW, FLUSH, TRUNCATE],
             (Self::Delta, false) => &[DELTA_INSERT, DELTA_UPDATE, DELTA_DELETE, FLUSH, TRUNCATE],
@@ -106,19 +106,13 @@ impl TriggerSet {
 pub type TriggerPlan = Vec<(pg_sys::Oid, TriggerSet)>;
 
 /// The trigger plan of a TVIEW reading `base_tables`, from its lineage.
-///
-/// # Errors
-/// Never; kept fallible for callers that chain catalog work.
-pub fn trigger_plan(
-    base_tables: &[pg_sys::Oid],
-    lineage: &crate::lineage::Lineage,
-) -> TViewResult<TriggerPlan> {
+pub fn trigger_plan(base_tables: &[pg_sys::Oid], lineage: &crate::lineage::Lineage) -> TriggerPlan {
     use crate::lineage::TableKind;
     // Other TVIEWs' tables the lineage maps: they are not base tables.
     let tview_tables = lineage.tables.iter().filter(|t| {
         t.tview.is_some() && matches!(t.kind, TableKind::Mapped | TableKind::AllKeys(_))
     });
-    Ok(tview_tables
+    tview_tables
         .map(|t| (pg_sys::Oid::from(t.relid), TriggerSet::TviewDelta))
         .chain(base_tables.iter().map(|&oid| {
             let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
@@ -133,7 +127,7 @@ pub fn trigger_plan(
             };
             (oid, set)
         }))
-        .collect())
+        .collect()
 }
 
 /// Name of a trigger for `entity` on `schema.relname`:

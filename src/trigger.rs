@@ -1,27 +1,13 @@
+//! The row-level trigger of base tables: it reads the TVIEW keys a changed row
+//! holds (one local path per key column, the TVIEW's own rows included, read off
+//! the old and the new row), captures a direct patch when the UPDATE allows one,
+//! and enqueues them; and the statement-level trigger that flushes the queue at
+//! the end of the statement. A lookup that fails fails the write.
+
 use crate::queue::key::KeyValue;
 use crate::queue::{enqueue_refresh, enqueue_refresh_patched};
 use pgrx::PgTupleDesc;
 use pgrx::prelude::*;
-/// Trigger Handler: Change Detection and Queue Management
-///
-/// This module implements `PostgreSQL` triggers for TVIEW change tracking:
-/// - **Row-level Triggers**: Detects INSERT/UPDATE/DELETE on base tables
-/// - **Key Extraction**: reads the TVIEW key a changed row maps to
-/// - **Queue Enqueueing**: Adds refresh requests to transaction queue
-///
-/// ## Trigger Lifecycle
-///
-/// 1. `PostgreSQL` calls trigger for each changed row
-/// 2. For each cascade path of the table (one per TVIEW key column it holds,
-///    the TVIEW's own rows included), read the key off the old and new row
-/// 3. Enqueue `(entity, key)` for refresh
-/// 4. The statement's flush (or COMMIT) processes the queue
-///
-/// ## Performance Considerations
-///
-/// - Triggers run in critical path - must be fast
-/// - Minimal database queries during trigger execution
-/// - Queue processing deferred to the end of the statement
 use pgrx::spi;
 
 /// A key read off a changed row.
@@ -213,8 +199,9 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalP
         if path.root
             && let Some(fields) = try_capture_direct_patch(trigger, path, changed.as_deref())
             && let Some(new) = new_image(trigger)
-            // SAFETY: the new image of the trigger's row.
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
+                // SAFETY: the new image of the trigger's row, of its relation's
+                // descriptor.
                 unsafe { tuple_key(new, &tupdesc, &path.initial_col, path.initial_attnum) }
         {
             enqueue_refresh_patched(&path.entity_name, pk, fields);

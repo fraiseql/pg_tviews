@@ -31,7 +31,8 @@ pub(super) unsafe fn referenced_columns(
                 Some(pg_sys::NodeTag::T_Var) => {
                     let var = node.cast::<pg_sys::Var>();
                     if (*var).varlevelsup == refs.depth {
-                        refs.vars.push(((*var).varno as usize, (*var).varattno));
+                        refs.vars
+                            .push((super::index((*var).varno), (*var).varattno));
                     }
                     false
                 }
@@ -106,7 +107,7 @@ pub(super) unsafe fn referenced_columns(
                     // SAFETY: a Var collected above.
                     unsafe {
                         if (*var).varlevelsup == 0 {
-                            pending.push(((*var).varno as usize, (*var).varattno));
+                            pending.push((super::index((*var).varno), (*var).varattno));
                         }
                     }
                 }
@@ -217,7 +218,7 @@ pub(super) unsafe fn column_read_counts(
     let mut counts: HashMap<(usize, i16), usize> = HashMap::new();
     for var in refs.vars.into_iter().filter(|v| !skipped.contains(v)) {
         // SAFETY: a Var collected above, of `query`'s level as seen from its own.
-        let (varno, attno) = unsafe { ((*var).varno as usize, (*var).varattno) };
+        let (varno, attno) = unsafe { (super::index((*var).varno), (*var).varattno) };
         for read in base_reads(query, varno, attno) {
             *counts.entry(read).or_default() += 1;
         }
@@ -235,7 +236,7 @@ pub(super) fn relation_entry(query: *mut pg_sys::Query, rtindex: usize) -> bool 
             .is_some_and(|rte| {
                 (**rte).rtekind == pg_sys::RTEKind::RTE_RELATION
                     && matches!(
-                        (**rte).relkind as u8,
+                        (**rte).relkind.cast_unsigned(),
                         pg_sys::RELKIND_RELATION | pg_sys::RELKIND_PARTITIONED_TABLE
                     )
             })
@@ -251,7 +252,7 @@ pub(super) unsafe fn base_read(
     var: *mut pg_sys::Var,
 ) -> Option<(usize, i16)> {
     // SAFETY: fields of a valid Var.
-    let (varno, attno) = unsafe { ((*var).varno as usize, (*var).varattno) };
+    let (varno, attno) = unsafe { (super::index((*var).varno), (*var).varattno) };
     match base_reads(query, varno, attno)[..] {
         [read] => Some(read),
         _ => None,
@@ -298,7 +299,11 @@ pub(super) fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) ->
             // SAFETY: a Var collected above.
             unsafe {
                 if (*var).varlevelsup == 0 {
-                    out.extend(base_reads(query, (*var).varno as usize, (*var).varattno));
+                    out.extend(base_reads(
+                        query,
+                        super::index((*var).varno),
+                        (*var).varattno,
+                    ));
                 }
             }
         }

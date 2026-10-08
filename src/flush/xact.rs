@@ -81,6 +81,7 @@ pub unsafe fn register_subxact_callback() {
 
     // Loaded inside a DO block: subtransactions may already be open. Mark them,
     // so their end events pair with a savepoint.
+    // SAFETY: reads the backend's transaction state.
     let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
     for _ in 0..usize::try_from(nest_level).unwrap_or(0).saturating_sub(1) {
         super::savepoint::start();

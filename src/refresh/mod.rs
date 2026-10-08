@@ -49,7 +49,7 @@ enum KeyValues {
     Text(Vec<String>),
 }
 
-/// `keys` as one array parameter, for [`key_cast`]`(…, true)`.
+/// `keys` as one array parameter, for `key_cast(…, true)`.
 pub(crate) fn key_array(
     key_type: &KeyType,
     keys: &[KeyValue],
@@ -60,7 +60,7 @@ pub(crate) fn key_array(
     })
 }
 
-/// One key as a parameter, for [`key_cast`]`(…, false)`.
+/// One key as a parameter, for `key_cast(…, false)`.
 pub(crate) fn key_scalar(
     key_type: &KeyType,
     key: &KeyValue,

@@ -354,6 +354,7 @@ pub(super) unsafe fn statement_text(query_string: &str, pstmt: *const pg_sys::Pl
     if pstmt.is_null() {
         return query_string;
     }
+    // SAFETY: the caller's statement, checked for null above.
     let (location, len) = unsafe { ((*pstmt).stmt_location, (*pstmt).stmt_len) };
     let Ok(start) = usize::try_from(location) else {
         return query_string;
