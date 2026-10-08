@@ -316,7 +316,7 @@ pub(super) fn user_indexes(
     tv_name: &str,
     table: pg_sys::Oid,
 ) -> TViewResult<Vec<(String, String)>> {
-    let (_, embed_columns) = crate::catalog::registered::definition_and_embed_columns(entity)?;
+    let embed_columns = crate::catalog::registered::embed_columns(entity)?;
     let view_oid = TviewMeta::load_by_entity(entity)?
         .ok_or_else(|| TViewError::MetadataNotFound {
             entity: entity.to_string(),

@@ -43,12 +43,15 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::connect_worker_to_spi(Some(&database), None);
 
     BackgroundWorker::transaction(|| {
+        // An SPI error here is not "not installed": it ends the worker, which
+        // restarts.
         let schema = Spi::get_one::<String>(
             "SELECT n.nspname::text FROM pg_extension e \
              JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_tviews'",
         )
-        .ok()
-        .flatten();
+        .unwrap_or_else(|e| {
+            error!("pg_tviews: could not look up the extension in database \"{database}\": {e}")
+        });
         let Some(schema) = schema else {
             log!(
                 "pg_tviews: extension not installed in database \"{database}\"; nothing to rebuild"
@@ -60,10 +63,15 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
         let remedy = match crate::revision::installed() {
             crate::revision::Installed::Matches => None,
             crate::revision::Installed::Differs(revision) => {
-                Some(crate::revision::remedy(revision))
+                Some(crate::revision::remedy(revision).to_string())
             }
             crate::revision::Installed::Unversioned => {
-                Some("run scripts/migrate-from-0.1.0.sql from the pg_tviews release")
+                Some("run scripts/migrate-from-0.1.0.sql from the pg_tviews release".to_string())
+            }
+            crate::revision::Installed::Unreadable(why) => {
+                error!(
+                    "pg_tviews: could not read the catalog revision in database \"{database}\": {why}"
+                )
             }
         };
         if let Some(remedy) = remedy {
@@ -80,8 +88,7 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             "SELECT pg_catalog.set_config('search_path', $1, true)",
             &args,
         ) {
-            warning!("pg_tviews: could not set search_path in database \"{database}\": {e}");
-            return;
+            error!("pg_tviews: could not set search_path in database \"{database}\": {e}");
         }
         match crate::replication::rebuild_all(true) {
             Ok(rebuilt) if rebuilt.is_empty() => {
@@ -92,7 +99,9 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
                     log!("pg_tviews: rebuilt tv_{entity} ({rows} rows) in database \"{database}\"");
                 }
             }
-            Err(e) => warning!("pg_tviews: rebuild in database \"{database}\" failed: {e}"),
+            // The worker ends and restarts: emptied TVIEWs are never left behind
+            // a log line.
+            Err(e) => error!("pg_tviews: rebuild in database \"{database}\" failed: {e}"),
         }
     });
 

@@ -256,15 +256,12 @@ fn create_tview_inner(
     // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
 
-    // Install triggers on base tables, as their lineage needs them.
-    if derivation.base_tables.is_empty() {
-        warning!("No base table dependencies found for {}", tv_table_name);
-    } else {
-        crate::dependency::install_triggers(
-            &crate::dependency::trigger_plan(&derivation.base_tables, lineage)?,
-            entity_name,
-        )?;
-    }
+    // Install triggers on the tables it reads, as their lineage needs them: base
+    // tables, and other TVIEWs' tables it maps like them.
+    crate::dependency::install_triggers(
+        &crate::dependency::trigger_plan(&derivation.base_tables, lineage)?,
+        entity_name,
+    )?;
 
     // Invalidate caches since new TVIEW was created
     crate::cache::invalidate_all();
@@ -291,7 +288,7 @@ pub fn reregister_metadata(
     schema_name: &str,
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name)
         .map_err(|e| TViewError::CatalogError {
             operation: format!("Read the metadata of tv_{entity_name}"),
             pg_error: e.to_string(),
@@ -344,7 +341,7 @@ pub fn reregister_metadata(
 /// or the definition cannot be analyzed.
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     super::lock_entity(entity)?;
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
             entity: entity.to_string(),
         }

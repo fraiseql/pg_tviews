@@ -51,18 +51,37 @@ pub enum KeyType {
 }
 
 impl RowIdentity {
-    /// Read `pg_tview_meta.identity` (NULL for a row registered before it:
-    /// `pk_<entity>`).
-    #[must_use]
-    pub fn from_catalog(entity: &str, json: Option<&serde_json::Value>) -> Self {
-        let column = json
-            .and_then(|j| j["columns"][0]["name"].as_str())
-            .map_or_else(|| format!("pk_{entity}"), str::to_string);
-        let kind = match json.and_then(|j| j["kind"].as_str()) {
-            Some("distinct_on") => crate::lineage::IdentityKind::DistinctOn,
-            _ => crate::lineage::IdentityKind::Pk,
+    /// Read `pg_tview_meta.identity`, which every registration writes.
+    ///
+    /// # Errors
+    /// It is NULL, names no column, or has an unknown kind.
+    pub fn from_catalog(
+        entity: &str,
+        json: Option<&serde_json::Value>,
+    ) -> crate::TViewResult<Self> {
+        let unreadable = |why: &str| crate::TViewError::CatalogError {
+            operation: format!("Read the row identity of tv_{entity}"),
+            pg_error: why.to_string(),
         };
-        Self { column, kind }
+        let json = json.ok_or_else(|| unreadable("it is NULL"))?;
+        let column = json["columns"][0]["name"]
+            .as_str()
+            .ok_or_else(|| unreadable("it names no column"))?
+            .to_string();
+        let kind = match json["kind"].as_str() {
+            Some("pk") => crate::lineage::IdentityKind::Pk,
+            Some("distinct_on") => crate::lineage::IdentityKind::DistinctOn,
+            other => return Err(unreadable(&format!("unknown kind {other:?}"))),
+        };
+        Ok(Self { column, kind })
+    }
+
+    /// No identity: what a catalog row awaiting re-registration has.
+    const fn unknown() -> Self {
+        Self {
+            column: String::new(),
+            kind: crate::lineage::IdentityKind::Pk,
+        }
     }
 
     /// Whether the identity is `pk_<entity>`, the column parents join on.
@@ -200,6 +219,24 @@ impl TviewMeta {
         })
     }
 
+    /// The TVIEWs whose catalog row does not decode, each with why.
+    ///
+    /// # Errors
+    /// The catalog cannot be read.
+    pub fn unreadable() -> crate::TViewResult<Vec<(String, String)>> {
+        Spi::connect(|client| -> crate::TViewResult<Vec<(String, String)>> {
+            let rows = client.select(&format!("{} ORDER BY entity", meta_select()), None, &[])?;
+            let mut unreadable = Vec::new();
+            for row in rows {
+                if let Err(e) = Self::from_spi_row(&row) {
+                    let entity = row["entity"].value::<String>()?.unwrap_or_default();
+                    unreadable.push((entity, e.to_string()));
+                }
+            }
+            Ok(unreadable)
+        })
+    }
+
     /// The catalog row of the TVIEW whose table is `tview_oid`.
     ///
     /// # Errors
@@ -222,13 +259,49 @@ impl TviewMeta {
         })
     }
 
+    /// The catalog row of `entity_name` for re-registration, which derives its
+    /// plan and identity again: either one that does not decode reads as empty, so
+    /// re-registering is the remedy for it. Never cached.
+    ///
+    /// # Errors
+    /// The catalog cannot be read.
+    pub fn load_to_rederive(entity_name: &str) -> crate::TViewResult<Option<Self>> {
+        Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
+            let args = vec![crate::utils::spi::text(entity_name)];
+            let mut rows =
+                client.select(&format!("{} WHERE entity = $1", meta_select()), None, &args)?;
+            rows.next()
+                .map(|row| Self::decode(&row, Derived::Rederive))
+                .transpose()
+        })
+    }
+
     /// Parse a row of [`meta_select`] into a `TviewMeta`.
     pub fn from_spi_row(row: &spi::SpiHeapTupleData) -> crate::TViewResult<Self> {
-        let uncascaded_policy = crate::config::UncascadedPolicy::from_stored(
+        Self::decode(row, Derived::Strict)
+    }
+
+    fn decode(row: &spi::SpiHeapTupleData, derived: Derived) -> crate::TViewResult<Self> {
+        let entity_name: String =
+            row["entity"]
+                .value()?
+                .ok_or_else(|| crate::TViewError::SpiError {
+                    query: String::new(),
+                    error: "entity column is NULL".to_string(),
+                })?;
+        let policy = |name: &str| {
+            crate::config::UncascadedPolicy::parse(name).ok_or_else(|| {
+                crate::TViewError::CatalogError {
+                    operation: format!("Read the uncascaded policies of tv_{entity_name}"),
+                    pg_error: format!("unknown policy {name:?}"),
+                }
+            })
+        };
+        let uncascaded_policy = policy(
             &row["uncascaded_policy"]
                 .value::<String>()?
                 .unwrap_or_default(),
-        );
+        )?;
 
         let table_policies = row["uncascaded_table_oids"]
             .value::<Vec<Oid>>()?
@@ -239,8 +312,8 @@ impl TviewMeta {
                     .value::<Vec<String>>()?
                     .unwrap_or_default(),
             )
-            .map(|(oid, policy)| (oid, crate::config::UncascadedPolicy::from_stored(&policy)))
-            .collect();
+            .map(|(oid, name)| Ok((oid, policy(&name)?)))
+            .collect::<crate::TViewResult<_>>()?;
 
         let mut function_reads: Vec<(String, Vec<Oid>)> = Vec::new();
         for (function, table) in row["function_read_functions"]
@@ -261,13 +334,6 @@ impl TviewMeta {
             }
         }
 
-        let entity_name: String =
-            row["entity"]
-                .value()?
-                .ok_or_else(|| crate::TViewError::SpiError {
-                    query: String::new(),
-                    error: "entity column is NULL".to_string(),
-                })?;
         let identity = RowIdentity::from_catalog(
             &entity_name,
             row["identity"]
@@ -275,12 +341,22 @@ impl TviewMeta {
                 .map(|j| j.0)
                 .as_ref(),
         );
+        let identity = match (identity, derived) {
+            (Ok(identity), _) => identity,
+            (Err(_), Derived::Rederive) => RowIdentity::unknown(),
+            (Err(e), Derived::Strict) => return Err(e),
+        };
         let plan = plan::TviewPlan::decode(
             &entity_name,
             row["plan"]
                 .value::<pgrx::JsonB>()?
                 .map_or(serde_json::Value::Null, |j| j.0),
-        )?;
+        );
+        let plan = match (plan, derived) {
+            (Ok(plan), _) => plan,
+            (Err(_), Derived::Rederive) => plan::TviewPlan::default(),
+            (Err(e), Derived::Strict) => return Err(e),
+        };
 
         Ok(Self {
             tview_oid: row["tview_oid"]
@@ -309,6 +385,16 @@ impl TviewMeta {
     }
 }
 
+/// How [`TviewMeta::decode`] treats what registration derived (the plan, the
+/// identity) when it does not decode.
+#[derive(Clone, Copy)]
+enum Derived {
+    /// An error naming the TVIEW.
+    Strict,
+    /// Empty: the caller derives it again.
+    Rederive,
+}
+
 impl Default for TviewMeta {
     fn default() -> Self {
         Self {
@@ -321,7 +407,7 @@ impl Default for TviewMeta {
             table_policies: Vec::new(),
             function_reads: Vec::new(),
             time_refresh_external: false,
-            identity: RowIdentity::from_catalog("", None),
+            identity: RowIdentity::unknown(),
         }
     }
 }
@@ -331,18 +417,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn row_identity_reads_the_catalog_and_defaults_to_pk() {
+    fn row_identity_reads_the_catalog() {
         use crate::lineage::IdentityKind;
         let doc =
             serde_json::json!({"kind": "distinct_on", "columns": [{"name": "id", "type": "uuid"}]});
-        let id = RowIdentity::from_catalog("doc", Some(&doc));
+        let id = RowIdentity::from_catalog("doc", Some(&doc)).unwrap();
         assert_eq!(id.column, "id");
         assert_eq!(id.kind, IdentityKind::DistinctOn);
         assert!(!id.is_pk("doc"));
 
-        let absent = RowIdentity::from_catalog("doc", None);
-        assert_eq!(absent.column, "pk_doc");
-        assert_eq!(absent.kind, IdentityKind::Pk);
-        assert!(absent.is_pk("doc"));
+        let pk = serde_json::json!({"kind": "pk", "columns": [{"name": "pk_doc"}]});
+        assert!(
+            RowIdentity::from_catalog("doc", Some(&pk))
+                .unwrap()
+                .is_pk("doc")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_row_identity_is_a_catalog_error() {
+        let unknown = serde_json::json!({"kind": "natural", "columns": [{"name": "id"}]});
+        for json in [
+            None,
+            Some(&serde_json::json!({"kind": "pk"})),
+            Some(&unknown),
+        ] {
+            let err = RowIdentity::from_catalog("doc", json).unwrap_err();
+            assert!(err.to_string().contains("tv_doc"), "{err}");
+        }
     }
 }

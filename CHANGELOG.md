@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   and the TVIEW went stale.
 - A restored catalog row whose plan names a table the restore did not create fails
   the insert, naming the TVIEW, instead of mapping nothing.
+- A TVIEW that reads only other TVIEWs' tables (`SELECT … FROM tv_user`) got no
+  trigger, only a "No base table dependencies" WARNING, and was never refreshed.
+- `pg_tviews_create_or_replace()` with a new column set failed with "array contains
+  NULL" on a TVIEW that embeds another one.
+- `pg_tviews_reregister(entity)` re-derives a TVIEW whose stored plan does not
+  decode; it failed on the plan it was meant to replace.
+- `pg_tviews_health_check()` reports TVIEWs whose plan does not decode (component
+  `plans`), and a count or catalog revision it cannot read as an ERROR row; a failed
+  count read as 0 (healthy), and an unreadable revision as a 0.1.0 catalog.
+- `pg_tviews_mapping_query()` raises the error that stops it instead of returning
+  NULL; the rebuild worker restarts on an error instead of idling with a WARNING.
 - A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or
   `CREATE TABLE AS` calls is intercepted like any other: the TVIEW was left
   registered with no table, or its definition kept the old column name.
@@ -76,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ### Changed (breaking)
 
+- **A commit with refresh work still queued fails** (55000), every time. It
+  committed with a WARNING, shown once per backend, and the TVIEWs named stayed
+  stale. Only a missing or disabled flush trigger leaves work queued.
+- **A write fails when its row trigger cannot tell what to refresh**: a stored plan,
+  identity or uncascaded policy of any TVIEW that does not decode (a catalog edited
+  by hand, a restore out of step), a mapping stored without its query, a
+  `pg_tviews` trigger that names no TVIEW. The error names the TVIEW, with the
+  `pg_tviews_reregister` hint. The write committed with nothing queued, behind a
+  WARNING, or the value was read as a default (`warn`, `pk_<entity>`).
 - **Errors carry their SQLSTATE.** Every pg_tviews function reported its errors as
   22000 (`data_exception`) or XX000, whatever went wrong, so `WHEN undefined_object`
   or `WHEN sqlstate '42P07'` never matched. Now: no such TVIEW 42704, TVIEW already

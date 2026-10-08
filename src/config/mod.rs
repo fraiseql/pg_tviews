@@ -73,16 +73,6 @@ impl UncascadedPolicy {
             _ => None,
         }
     }
-
-    /// Parse a stored name; anything unknown is `warn`, the default.
-    #[must_use]
-    pub fn from_stored(name: &str) -> Self {
-        match name {
-            "error" => Self::Error,
-            "full_refresh" => Self::FullRefresh,
-            _ => Self::Warn,
-        }
-    }
 }
 
 /// How a TVIEW whose definition reads the current time is brought up to date:

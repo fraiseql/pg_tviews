@@ -196,6 +196,19 @@ END
 $$;
 
 -- Re-derive every TVIEW, dependencies first. Until then a row's plan is empty.
+-- A row registered before the row identity (ADR 0169) names its rows by
+-- pk_<entity>, which the library no longer assumes: record it, so each TVIEW
+-- re-derived below reads the rows of those not re-derived yet.
+UPDATE @extschema@.pg_tview_meta m
+   SET identity = pg_catalog.jsonb_build_object('kind', 'pk', 'columns',
+           pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+               'name', a.attname::pg_catalog.text,
+               'type', pg_catalog.format_type(a.atttypid, NULL))))
+  FROM pg_catalog.pg_attribute a
+ WHERE m.identity IS NULL
+   AND a.attrelid = m.table_oid::pg_catalog.oid
+   AND a.attname = 'pk_' || m.entity
+   AND NOT a.attisdropped;
 UPDATE @extschema@.pg_tview_meta SET plan = '{"version": 1}';
 DO $$
 DECLARE

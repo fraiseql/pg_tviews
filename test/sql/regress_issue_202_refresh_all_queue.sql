@@ -1,7 +1,7 @@
 -- Regression test for issue #202: pg_tviews_refresh_all() and pg_tviews_refresh()
 -- rebuild TVIEWs whose tables other TVIEWs read (#191). The rebuild's writes queue
 -- refreshes of the readers; nothing may be left queued when the call returns, so
--- the transaction does not commit with a "queued refreshes … not applied" WARNING.
+-- the transaction's COMMIT does not fail with "queued refreshes for".
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_issue_202_refresh_all_queue.sql
 --

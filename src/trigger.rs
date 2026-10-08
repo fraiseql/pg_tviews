@@ -129,52 +129,26 @@ fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
-    // Extract table OID
-    let table_oid = match trigger.relation() {
-        Ok(rel) => rel.oid(),
-        Err(e) => {
-            warning!("Failed to get trigger relation: {}", e);
-            return Ok(None);
-        }
-    };
-    // The TVIEW this trigger serves (its argument; none for a trigger an older
-    // release installed, which serves every TVIEW reading the table). A table read
-    // by several TVIEWs has one trigger each.
+    // A lookup that fails fails the write: committing it with nothing queued would
+    // leave the TVIEWs over the table stale.
+    let table_oid = trigger
+        .relation()
+        .unwrap_or_else(|e| error!("pg_tviews: the row trigger has no relation: {e}"))
+        .oid();
+    // The TVIEW this trigger serves (its argument). A table read by several
+    // TVIEWs has one trigger each.
     let served = crate::delta::trigger_entity(trigger);
-    let serves = |entity: &str| served.as_deref().is_none_or(|e| e == entity);
     // A row of a partition: what pg_tviews knows is its partitioned table.
-    let table_oid = match crate::delta::partition_root(table_oid) {
-        Ok(root) => root,
-        Err(e) => {
-            warning!(
-                "Failed to resolve the partition root of {:?}: {}",
-                table_oid,
-                e
-            );
-            table_oid
-        }
-    };
-
-    let paths: Vec<crate::catalog::plan::LocalPath> = match crate::cache::cascade_paths(table_oid) {
-        Ok(p) => p.into_iter().filter(|p| serves(&p.entity_name)).collect(),
-        Err(e) => {
-            warning!(
-                "Failed to load cascade paths for table {:?}: {:?}",
-                table_oid,
-                e
-            );
-            vec![]
-        }
-    };
+    let table_oid = crate::delta::partition_root(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
+    let paths: Vec<crate::catalog::plan::LocalPath> = crate::cache::cascade_paths(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"))
+        .into_iter()
+        .filter(|p| p.entity_name == served)
+        .collect();
     // If triggers are suspended, record the change instead of enqueuing
     if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
-        if let Some(entity) = &served {
-            crate::suspend::record_change(entity);
-            return Ok(None);
-        }
-        for path in &paths {
-            crate::suspend::record_change(&path.entity_name);
-        }
+        crate::suspend::record_change(&served);
         return Ok(None);
     }
 
@@ -183,11 +157,9 @@ fn pg_tview_trigger_handler<'a>(
 
     // A partitioned table whose writes map through a query (ADR 0157): the
     //    row trigger is the one copied onto every partition, so map this row.
-    if let Some(entity) = &served
-        && let Err(e) = crate::delta::map_row(trigger, entity, table_oid)
-    {
+    if let Err(e) = crate::delta::map_row(trigger, &served, table_oid) {
         e.raise_in(&format!(
-            "pg_tviews: could not map the changed row to tv_{entity} keys"
+            "pg_tviews: could not map the changed row to tv_{served} keys"
         ));
     }
 
@@ -211,13 +183,11 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalP
         return;
     }
     let Some(tupdesc) = trigger_tupdesc(trigger) else {
-        warning!("No relation in trigger context");
-        return;
+        error!("pg_tviews: the row trigger has no relation");
     };
     let images = row_images(trigger);
     if images.is_empty() {
-        warning!("No tuple available in trigger context");
-        return;
+        error!("pg_tviews: the row trigger has no row");
     }
 
     // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
@@ -318,7 +288,8 @@ fn try_capture_direct_patch(
     if changed.contains(&path.initial_col) {
         return None;
     }
-    let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name).ok()??;
+    let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
     let direct = &meta.plan.direct;
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
     if direct.is_empty()

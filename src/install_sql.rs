@@ -113,7 +113,7 @@ extension_sql!(
             CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh')),
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
         -- backing view's query tree: an object with its kind (pk, distinct_on) and
-        -- its columns (name, type). NULL for a row registered before it: pk_<entity>.
+        -- its columns (name, type). Every registration writes it.
         identity JSONB,
         -- Tables declared with a policy of their own, in the
         -- uncascaded_tables option: uncascaded_table_policies[i] applies to writes

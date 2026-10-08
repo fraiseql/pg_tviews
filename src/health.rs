@@ -58,6 +58,7 @@ fn pg_tviews_health_check() -> TableIterator<
     if !unversioned {
         results.extend([
             metadata_check(),
+            plan_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -66,11 +67,22 @@ fn pg_tviews_health_check() -> TableIterator<
     TableIterator::new(results)
 }
 
+/// The count `sql` returns, or the error row of `component` saying it could
+/// not be read.
+fn count_of(component: &str, sql: &str) -> Result<i64, Check> {
+    Spi::get_one::<i64>(sql)
+        .map(Option::unwrap_or_default)
+        .map_err(|e| error(component, format!("could not be checked: {e}")))
+}
+
 fn jsonb_delta_check() -> Check {
-    let installed =
-        Spi::get_one::<bool>("SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'")
-            .unwrap_or(Some(false))
-            .unwrap_or(false);
+    let installed = match count_of(
+        "jsonb_delta",
+        "SELECT COUNT(*) FROM pg_extension WHERE extname = 'jsonb_delta'",
+    ) {
+        Ok(n) => n > 0,
+        Err(check) => return check,
+    };
     if installed {
         ok(
             "jsonb_delta",
@@ -117,17 +129,28 @@ fn catalog_check() -> (Check, bool) {
             ),
             true,
         ),
+        crate::revision::Installed::Unreadable(why) => (
+            error(
+                "catalog",
+                format!("the catalog revision could not be read: {why}"),
+            ),
+            false,
+        ),
     }
 }
 
 fn metadata_check() -> Check {
-    let orphaned = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM {} m
-         WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
-        crate::utils::meta_table()
-    ))
-    .unwrap_or(Some(0))
-    .unwrap_or(0);
+    let orphaned = match count_of(
+        "metadata",
+        &format!(
+            "SELECT COUNT(*) FROM {} m
+             WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
+            crate::utils::meta_table()
+        ),
+    ) {
+        Ok(n) => n,
+        Err(check) => return check,
+    };
     if orphaned > 0 {
         error(
             "metadata",
@@ -138,24 +161,40 @@ fn metadata_check() -> Check {
     }
 }
 
+/// TVIEWs whose stored plan or identity does not decode: every write to the
+/// tables they read fails until they are re-registered.
+fn plan_check() -> Check {
+    match crate::catalog::TviewMeta::unreadable() {
+        Ok(unreadable) if unreadable.is_empty() => ok("plans", "Every propagation plan reads"),
+        Ok(unreadable) => error(
+            "plans",
+            format!(
+                "{} unreadable, writes to the tables they read fail: {}; run \
+                 SELECT tviews.pg_tviews_reregister(entity) for each",
+                count(unreadable.len(), "TVIEW"),
+                unreadable
+                    .iter()
+                    .map(|(entity, why)| format!("tv_{entity} ({why})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        Err(e) => error("plans", format!("could not be checked: {e}")),
+    }
+}
+
 /// TVIEWs registered before a release that changed what registration derives.
 fn reregister_check() -> Check {
-    let stale = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT count(*) FROM {} WHERE needs_reregister",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &[],
-            )?
-            .first()
-            .get_one::<i64>()
-    })
-    .ok()
-    .flatten()
-    .unwrap_or(0);
+    let stale = match count_of(
+        "reregister",
+        &format!(
+            "SELECT count(*) FROM {} WHERE needs_reregister",
+            crate::utils::meta_table()
+        ),
+    ) {
+        Ok(n) => n,
+        Err(check) => return check,
+    };
     if stale == 0 {
         ok("reregister", "No TVIEW needs re-registration")
     } else {
@@ -203,13 +242,13 @@ fn trigger_check() -> Check {
 }
 
 fn count_check() -> Check {
-    let tviews = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM {}",
-        crate::utils::meta_table()
-    ))
-    .unwrap_or(Some(0))
-    .unwrap_or(0);
-    ok("tviews", format!("{tviews} TVIEWs registered"))
+    match count_of(
+        "tviews",
+        &format!("SELECT COUNT(*) FROM {}", crate::utils::meta_table()),
+    ) {
+        Ok(tviews) => ok("tviews", format!("{tviews} TVIEWs registered")),
+        Err(check) => check,
+    }
 }
 
 /// Get current queue statistics

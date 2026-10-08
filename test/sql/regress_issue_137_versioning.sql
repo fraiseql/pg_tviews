@@ -150,6 +150,31 @@ END $$;
 ALTER FUNCTION tviews.saved_catalog_revision() RENAME TO pg_tviews_catalog_revision;
 ALTER EXTENSION pg_tviews ADD FUNCTION tviews.pg_tviews_catalog_revision();
 
+-- A revision that cannot be read is reported as such, not as a 0.1.0 install.
+ALTER EXTENSION pg_tviews DROP FUNCTION tviews.pg_tviews_catalog_revision();
+ALTER FUNCTION tviews.pg_tviews_catalog_revision() RENAME TO saved_catalog_revision;
+CREATE FUNCTION tviews.pg_tviews_catalog_revision() RETURNS integer
+    LANGUAGE sql IMMUTABLE AS 'SELECT NULL::integer';
+\c
+SET client_min_messages TO WARNING;
+DO $$
+DECLARE msg text;
+BEGIN
+    BEGIN
+        PERFORM tviews.pg_tviews_refresh('user');
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+    END;
+    IF msg IS NULL OR msg NOT LIKE '%could not read the installed catalog revision%' THEN
+        RAISE EXCEPTION 'FAIL: an unreadable revision is not reported as such: %', msg;
+    END IF;
+END $$;
+DROP FUNCTION tviews.pg_tviews_catalog_revision();
+ALTER FUNCTION tviews.saved_catalog_revision() RENAME TO pg_tviews_catalog_revision;
+ALTER EXTENSION pg_tviews ADD FUNCTION tviews.pg_tviews_catalog_revision();
+\c
+SET client_min_messages TO WARNING;
+
 -- 3. A TVIEW registered by an older release: derived metadata missing and base-table
 --    triggers gone (as after the 0.1.0 migration), plus a stray trigger. It does not
 --    follow its base tables until it is re-registered.

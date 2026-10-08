@@ -82,9 +82,9 @@ report_result() {
       [[ -n "$want" ]] && ! grep -qF -- "$want" "$out" && { why="expected output containing '$want'"; break; }
     done < <(sed -n 's/^-- expect-output: //p' "$f")
   fi
-  # Refresh work still queued at COMMIT is a missing flush: rejected unless the
-  # file expects it.
-  if [[ -z "$why" ]] && ! grep -qF -- "-- expect-once: queued refreshes" "$f" \
+  # Refresh work still queued at COMMIT fails it: a file that turns
+  # ON_ERROR_STOP off must not hide that.
+  if [[ -z "$why" ]] && ! grep -q '^-- expect-output: missed flush at commit' "$f" \
      && grep -qF "queued refreshes for" "$out"; then
     why="unexpected output containing 'queued refreshes for'"
   fi

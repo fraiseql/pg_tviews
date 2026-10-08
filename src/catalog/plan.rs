@@ -100,6 +100,19 @@ impl TviewPlan {
                 ),
             });
         }
+        if let Some(table) = plan
+            .tables
+            .iter()
+            .find(|t| t.kind == crate::lineage::MappingKind::Mapped && t.sql.is_none())
+        {
+            return Err(TViewError::CatalogError {
+                operation: format!("Read the propagation plan of tv_{entity}"),
+                pg_error: format!(
+                    "writes to {} map through a query, and the plan stores none",
+                    table.table
+                ),
+            });
+        }
         Ok(plan)
     }
 
@@ -147,6 +160,44 @@ mod tests {
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);
+    }
+
+    fn with_table(table: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"version": PLAN_VERSION, "tables": [table]})
+    }
+
+    #[test]
+    fn a_mapping_kind_decodes_by_name() {
+        let plan = TviewPlan::decode(
+            "post",
+            with_table(&serde_json::json!({
+                "relid": 1, "table": "public.tb_tag", "kind": "all_keys", "reason": "r"
+            })),
+        )
+        .unwrap();
+        assert_eq!(plan.tables[0].kind, crate::lineage::MappingKind::AllKeys);
+    }
+
+    #[test]
+    fn an_unknown_mapping_kind_is_refused() {
+        let err = TviewPlan::decode(
+            "post",
+            with_table(&serde_json::json!({"relid": 1, "table": "public.tb_tag", "kind": "fk"})),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("tv_post"), "{err}");
+    }
+
+    #[test]
+    fn a_mapped_table_without_its_query_is_refused() {
+        let err = TviewPlan::decode(
+            "post",
+            with_table(
+                &serde_json::json!({"relid": 1, "table": "public.tb_tag", "kind": "mapped"}),
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("public.tb_tag"), "{err}");
     }
 
     #[test]

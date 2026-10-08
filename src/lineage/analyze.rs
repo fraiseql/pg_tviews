@@ -453,13 +453,29 @@ pub const FUNCTION_SIGNATURE: &str = "pg_catalog.format('%s.%s(%s)', \
      pg_catalog.quote_ident(p.proname::pg_catalog.text), \
      pg_catalog.oidvectortypes(p.proargtypes))";
 
+/// How writes to a table map to a registered TVIEW's keys: the stored form of a
+/// [`TableKind`]. Any other name fails to decode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingKind {
+    /// The key is a column of the changed row (row trigger).
+    #[default]
+    Local,
+    /// A mapping query over the transition table (`sql`).
+    Mapped,
+    /// Reached only through an embed: no trigger.
+    Propagated,
+    /// No cascade maps the table: the policy applies.
+    AllKeys,
+}
+
 /// One table of a registered TVIEW's `key_mappings`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeyMapping {
     pub relid: u32,
     /// The table's qualified name: what a restore rebinds `relid` from.
     pub table: String,
-    pub kind: String,
+    pub kind: MappingKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

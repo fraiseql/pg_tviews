@@ -74,7 +74,7 @@ impl EntityDepGraph {
             // refreshed first.
             for table in &meta.plan.tables {
                 if let Some(inner) = &table.tview
-                    && table.kind != "propagated"
+                    && table.kind != crate::lineage::MappingKind::Propagated
                 {
                     children
                         .entry(entity.clone())

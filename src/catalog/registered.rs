@@ -71,23 +71,26 @@ pub fn all() -> TViewResult<Vec<Registered>> {
     Ok(rows.into_iter().flatten().collect())
 }
 
-/// The definition of `entity` and the output columns holding the keys of the
-/// TVIEWs it embeds.
+/// The output columns of `entity` holding the keys of the TVIEWs it embeds.
 ///
 /// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn definition_and_embed_columns(entity: &str) -> TViewResult<(String, Vec<String>)> {
+/// The catalog cannot be read, or `entity` is not registered.
+pub fn embed_columns(entity: &str) -> TViewResult<Vec<String>> {
     let sql = format!(
-        "SELECT definition, \
-                ARRAY(SELECT e->>'lookup' FROM pg_catalog.jsonb_array_elements(plan->'embeds') e) \
+        "SELECT ARRAY(SELECT pg_catalog.jsonb_array_elements_text(e->'lookups') \
+                      FROM pg_catalog.jsonb_array_elements(plan->'embeds') e) \
          FROM {} WHERE entity = $1",
         crate::utils::meta_table()
     );
     let mut rows = crate::utils::spi::rows(&sql, &[crate::utils::spi::text(entity)], |row| {
-        Ok((row.get::<String>(1)?, row.get::<Vec<String>>(2)?))
+        Ok(row.get::<Vec<String>>(1)?)
     })?;
-    let (definition, columns) = rows.pop().unwrap_or_default();
-    Ok((definition.unwrap_or_default(), columns.unwrap_or_default()))
+    let Some(columns) = rows.pop() else {
+        return Err(crate::TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        });
+    };
+    Ok(columns.unwrap_or_default())
 }
 
 /// SQL over a `pg_tview_meta` row aliased `meta`: the mapping kind of table

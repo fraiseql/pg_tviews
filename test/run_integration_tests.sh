@@ -47,7 +47,8 @@ for f in "${files[@]}"; do
   psql -d postgres -qc "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null \
     || { echo "ERROR: could not create test database $tmpdb"; exit 2; }
   if psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >/tmp/$tmpdb.out 2>&1; then
-    # Refresh work still queued at COMMIT is a missing flush, never expected here.
+    # Refresh work still queued at COMMIT fails it; never expected here, even
+    # behind ON_ERROR_STOP off.
     if grep -qF "$unflushed" /tmp/$tmpdb.out; then
       echo "FAIL  $name -> $(grep -F "$unflushed" /tmp/$tmpdb.out | head -1)"
       fail=$((fail+1)); failed_names="$failed_names $name"; continue

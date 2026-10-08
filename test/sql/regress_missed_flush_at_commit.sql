@@ -1,14 +1,13 @@
--- Nothing queued survives a commit. pg_tviews_cascade() run in autocommit (no
--- statement trigger follows a SELECT) refreshes before it returns. Refresh work a
--- transaction queued without flushing is dropped at COMMIT with a WARNING; it is
--- never applied later, in another transaction, with a patch recorded earlier.
+-- Nothing queued survives a commit. Refresh work a transaction queued without
+-- flushing fails the COMMIT with SQLSTATE 55000, every time: committing it would
+-- leave the TVIEWs stale, and it is never applied later, in another
+-- transaction, with a patch recorded earlier.
 --
 -- Runs in autocommit on purpose: each statement is its own transaction.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_missed_flush_at_commit.sql
 --
 -- expect-output: missed flush at commit: PASS
--- expect-once: queued refreshes
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -39,35 +38,56 @@ BEGIN
     END IF;
 END $$;
 
--- ── N2: the next transaction starts with an empty queue ─────────────────────
+-- ── a session starts with an empty queue ────────────────────────────────────
 DO $$ BEGIN
     IF jsonb_array_length(tviews.pg_tviews_debug_queue()) <> 0 THEN
-        RAISE EXCEPTION 'N2 FAIL: work queued by an earlier transaction is still queued: %',
+        RAISE EXCEPTION 'FAIL: work queued by an earlier transaction is still queued: %',
             tviews.pg_tviews_debug_queue();
     END IF;
 END $$;
 
--- ── N2: a patch recorded in one transaction is never applied in another ─────
--- The row trigger records the change (with a direct patch); tb_post's flush
--- trigger is disabled, so the statement commits with the work still queued.
+-- ── a commit with queued work fails, every time ─────────────────────────────
+-- The row trigger records the change; tb_post's flush trigger is disabled, so
+-- the statement reaches its commit with the work still queued.
 DO $$
 DECLARE flush_trigger name := (SELECT tgname FROM pg_trigger
                                WHERE tgrelid = 'tb_post'::regclass AND tgname LIKE 'trg_tview_flush_%');
 BEGIN
     EXECUTE format('ALTER TABLE tb_post DISABLE TRIGGER %I', flush_trigger);
 END $$;
+\set ON_ERROR_STOP off
 UPDATE tb_post SET title = 'stale' WHERE pk_post = 1;
--- The row changes again, unseen, then a write to tb_author flushes.
-SET session_replication_role = replica;
-UPDATE tb_post SET title = 'newer' WHERE pk_post = 1;
-RESET session_replication_role;
-UPDATE tb_author SET name = 'ben (renamed)' WHERE pk_author = 2;
+\set ON_ERROR_STOP on
+SELECT :'LAST_ERROR_SQLSTATE' = '55000' AS failed_loud \gset
+\if :failed_loud
+\else
+    \echo 'FAIL: a commit with queued refreshes did not fail with 55000:' :'LAST_ERROR_SQLSTATE'
+    \quit
+\endif
+\set ON_ERROR_STOP off
+UPDATE tb_post SET title = 'stale again' WHERE pk_post = 2;
+\set ON_ERROR_STOP on
+SELECT :'LAST_ERROR_SQLSTATE' = '55000' AS failed_loud \gset
+\if :failed_loud
+\else
+    \echo 'FAIL: the second commit with queued refreshes in a session did not fail:' :'LAST_ERROR_SQLSTATE'
+    \quit
+\endif
 DO $$ BEGIN
-    IF (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) = 'stale' THEN
-        RAISE EXCEPTION 'N2 FAIL: a patch recorded by an earlier transaction was applied later';
+    IF EXISTS (SELECT 1 FROM tb_post WHERE title LIKE 'stale%') THEN
+        RAISE EXCEPTION 'FAIL: a write whose refresh was never applied committed';
     END IF;
 END $$;
-SELECT pg_tviews_refresh('post');
-SELECT check_fresh('control: after a full refresh');
+
+-- ── the next transaction starts with an empty queue ─────────────────────────
+DO $$ BEGIN
+    IF jsonb_array_length(tviews.pg_tviews_debug_queue()) <> 0 THEN
+        RAISE EXCEPTION 'FAIL: work queued by a failed transaction is still queued: %',
+            tviews.pg_tviews_debug_queue();
+    END IF;
+END $$;
+UPDATE tb_author SET name = 'ben (renamed)' WHERE pk_author = 2;
+SELECT check_fresh('a write after the failed commits');
+
 
 \echo 'missed flush at commit: PASS'
