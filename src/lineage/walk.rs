@@ -2057,13 +2057,7 @@ impl Walker<'_> {
                      FROM pg_catalog.pg_operator o \
                      JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace \
                      WHERE o.oid = $1",
-                    // SAFETY: the datum is a plain OID.
-                    &[unsafe {
-                        pgrx::datum::DatumWithOid::new(
-                            opno,
-                            PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                        )
-                    }],
+                    &[crate::utils::spi::oid(opno)],
                 )
                 .ok()
                 .flatten()

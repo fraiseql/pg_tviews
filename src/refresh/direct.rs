@@ -115,8 +115,6 @@ pub fn apply_direct_patch(
 
     // Params (all bound, nothing interpolated): one JSONB per chain entry, then the
     // pk array, then one text[] per nested-entry path.
-    // SAFETY: DatumWithOid wraps validated structured data (JSONB documents, a
-    // BIGINT[], and TEXT[] paths from catalog-parsed dependency metadata) for SPI.
     let json_args: Vec<pgrx::JsonB> = chain
         .iter()
         .map(|(_, fields)| pgrx::JsonB(Value::Object(fields.clone())))
@@ -126,26 +124,11 @@ pub fn apply_direct_patch(
     Spi::connect(|client| {
         let mut args: Vec<DatumWithOid> = Vec::with_capacity(chain.len() + 1 + path_args.len());
         for j in &json_args {
-            args.push(unsafe {
-                DatumWithOid::new(
-                    pgrx::JsonB(j.0.clone()),
-                    PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-                )
-            });
+            args.push(crate::utils::spi::jsonb(pgrx::JsonB(j.0.clone())));
         }
-        args.push(unsafe {
-            DatumWithOid::new(
-                pk_vec.clone(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        });
+        args.push(crate::utils::spi::int8_array(pk_vec.clone()));
         for path in &path_args {
-            args.push(unsafe {
-                DatumWithOid::new(
-                    path.clone(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                )
-            });
+            args.push(crate::utils::spi::text_array(path.clone()));
         }
 
         let rows = client.select(&sql, None, &args)?;
@@ -189,13 +172,7 @@ pub fn apply_fanout_patch(
         .collect();
 
     let changed: Vec<i64> = Spi::connect_mut(|client| {
-        // SAFETY: DatumWithOid wraps a JSONB document built above for SPI.
-        let args = [unsafe {
-            DatumWithOid::new(
-                pgrx::JsonB(Value::Object(by_key)),
-                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-            )
-        }];
+        let args = [crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
         client
             .update(&sql, None, &args)?
             .map(|row| row[1].value::<i64>())

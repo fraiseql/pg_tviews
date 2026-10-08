@@ -9,7 +9,6 @@
 
 use crate::cascade_path::CascadePath;
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use sqlparser::ast::{Expr, GroupByExpr, SelectItem, SetExpr, Statement};
@@ -132,13 +131,8 @@ pub fn cascade_paths(
 
 fn source_table_oid(table: &str, base_tables: &[Oid]) -> TViewResult<Option<Oid>> {
     let args = [
-        unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe {
-            DatumWithOid::new(
-                base_tables.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-            )
-        },
+        crate::utils::spi::text(table),
+        crate::utils::spi::oid_array(base_tables.to_vec()),
     ];
     Spi::connect(|client| {
         let mut rows = client.select(
@@ -159,8 +153,8 @@ fn source_table_oid(table: &str, base_tables: &[Oid]) -> TViewResult<Option<Oid>
 
 fn column_exists(table: Oid, column: &str) -> TViewResult<bool> {
     let args = [
-        unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-        unsafe { DatumWithOid::new(column, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        crate::utils::spi::oid(table),
+        crate::utils::spi::text(column),
     ];
     Spi::connect(|client| {
         client

@@ -1,4 +1,4 @@
-use crate::queue::cache::CachedEntityInfo;
+use crate::cache::CachedEntityInfo;
 use crate::queue::key::KeyValue;
 use crate::queue::{enqueue_refresh, enqueue_refresh_patched};
 use crate::utils::{IntExtraction, tuple_get_i64};
@@ -157,21 +157,21 @@ fn pg_tview_trigger_handler<'a>(
         }
     };
 
-    let paths: Vec<crate::cascade_path::CascadePath> =
-        match crate::queue::cache::cascade_cache::cascade_paths_for_table(table_oid) {
-            Ok(p) => p.into_iter().filter(|p| serves(&p.entity_name)).collect(),
-            Err(e) => {
-                warning!(
-                    "Failed to load cascade paths for table {:?}: {:?}",
-                    table_oid,
-                    e
-                );
-                vec![]
-            }
-        };
+    let paths: Vec<crate::cascade_path::CascadePath> = match crate::cache::cascade_paths(table_oid)
+    {
+        Ok(p) => p.into_iter().filter(|p| serves(&p.entity_name)).collect(),
+        Err(e) => {
+            warning!(
+                "Failed to load cascade paths for table {:?}: {:?}",
+                table_oid,
+                e
+            );
+            vec![]
+        }
+    };
     // The TVIEW over tb_<entity>, when this is its table: direct patches (#56), and
     // a TVIEW registered before its root table had a cascade path of its own.
-    let own = match crate::queue::cache::table_cache::entity_info_cached(table_oid) {
+    let own = match crate::cache::entity_info(table_oid) {
         Ok(info) => info.filter(|i| serves(&i.name)),
         Err(e) => {
             warning!(
@@ -225,14 +225,14 @@ fn pg_tview_trigger_handler<'a>(
 fn enqueue_legacy_root(
     trigger: &PgTrigger,
     info: &CachedEntityInfo,
-    legacy: crate::queue::cache::LegacyRoot,
+    legacy: crate::cache::LegacyRoot,
 ) {
     let entity = &info.name;
     let reregister = format!(
         "tv_{entity} was registered by an older release: SELECT * FROM \
          tviews.pg_tviews_reregister_all() re-registers it"
     );
-    if legacy == crate::queue::cache::LegacyRoot::DistinctOn {
+    if legacy == crate::cache::LegacyRoot::DistinctOn {
         crate::utils::log_once(
             &format!("legacy_distinct_on:{entity}"),
             &format!("{reregister}; until then it is refreshed in full on writes"),

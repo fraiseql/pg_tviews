@@ -1,13 +1,6 @@
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use std::collections::{HashSet, VecDeque};
-
-#[derive(Debug, Clone)]
-struct DependencyNode {
-    oid: pg_sys::Oid,
-    relkind: Option<String>,
-}
+use std::collections::HashSet;
 
 /// Find all base tables that a view depends on (transitively).
 ///
@@ -17,14 +10,8 @@ struct DependencyNode {
 /// `search_path` starts with `"app"` but the view lives in `"public"`).
 /// When `None`, the lookup falls back to `current_schema()`.
 ///
-/// ALGORITHM:
-/// 1. Start from view OID
-/// 2. Query `pg_depend` WHERE `objid` = `current_oid` (objects THIS depends on)
-/// 3. For each dependency:
-///    - If it's a table (`relkind='r'`), add to `base_tables`
-///    - If it's a view (`relkind='v'`), recurse
-/// 4. Track visited to detect cycles
-/// 5. Enforce `pg_tviews.max_dependency_depth`
+/// The view's rewrite rule is followed through `pg_depend`, through views, at most
+/// `pg_tviews.max_dependency_depth` views deep.
 ///
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
@@ -33,9 +20,28 @@ pub fn find_base_tables(
     schema_hint: Option<&str>,
 ) -> TViewResult<Vec<pg_sys::Oid>> {
     let view_oid = get_view_oid(view_name, schema_hint)?;
-    let dependencies = traverse_dependencies(view_oid)?;
-    let tview_oids = load_tview_table_oids()?;
-    Ok(filter_base_tables(&dependencies, &tview_oids))
+    let max_depth = crate::config::max_dependency_depth();
+    let depth = crate::catalog::reads::view_nesting(view_oid)?;
+    if depth > max_depth {
+        return Err(TViewError::DepthExceeded {
+            what: "dependency",
+            depth,
+            max_depth,
+        });
+    }
+    let tview_tables = load_tview_table_oids()?;
+    Ok(crate::catalog::reads::view_relations_read(view_oid)?
+        .into_iter()
+        .filter_map(|(oid, relkind)| match relkind {
+            // A TVIEW's table is followed through the TVIEW's own refresh.
+            b'r' | b'p' if !tview_tables.contains(&oid) => Some(oid),
+            // A materialized view's rows change only by REFRESH MATERIALIZED VIEW,
+            // which fires no trigger: the lineage classifies it `all_keys`, and the
+            // TVIEW's uncascaded_policy decides (#189).
+            b'm' => Some(oid),
+            _ => None,
+        })
+        .collect())
 }
 
 // Helper functions for find_base_tables()
@@ -65,16 +71,9 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
         |s| Ok(s.to_string()),
     )?;
 
-    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-    // The view/schema names are validated before this call.
     let args = vec![
-        unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe {
-            DatumWithOid::new(
-                schema.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
+        crate::utils::spi::text(view_name),
+        crate::utils::spi::text(schema.as_str()),
     ];
     Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
@@ -92,114 +91,6 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
         operation: format!("Get OID for '{view_name}'"),
         pg_error: format!("not found in schema '{schema}'"),
     })
-}
-
-fn traverse_dependencies(view_oid: pg_sys::Oid) -> TViewResult<Vec<DependencyNode>> {
-    let mut all_dependencies = Vec::new();
-    let mut visited = HashSet::new();
-    let mut visiting = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    queue.push_back((view_oid, 0));
-
-    let max_dependency_depth = crate::config::max_dependency_depth();
-    while let Some((current_oid, depth)) = queue.pop_front() {
-        // Check depth limit (tunable via pg_tviews.max_dependency_depth)
-        if depth > max_dependency_depth {
-            return Err(TViewError::DepthExceeded {
-                what: "dependency",
-                depth,
-                max_depth: max_dependency_depth,
-            });
-        }
-
-        // Check for cycles
-        if visiting.contains(&current_oid) {
-            let cycle = reconstruct_cycle(&visiting, current_oid);
-            return Err(TViewError::DependencyCycle { entities: cycle });
-        }
-
-        // Skip if already visited
-        if visited.contains(&current_oid) {
-            continue;
-        }
-
-        visiting.insert(current_oid);
-
-        // Query dependencies
-        let deps = query_dependencies(current_oid)?;
-
-        // Process each dependency
-        for (dep_oid, relkind_opt) in deps {
-            // Add to all dependencies
-            all_dependencies.push(DependencyNode {
-                oid: dep_oid,
-                relkind: relkind_opt.clone(),
-            });
-
-            if relkind_opt.as_deref() == Some("v") {
-                // View - recurse
-                queue.push_back((dep_oid, depth + 1));
-            }
-            // Base tables and others handled later
-        }
-
-        visiting.remove(&current_oid);
-        visited.insert(current_oid);
-    }
-
-    Ok(all_dependencies)
-}
-
-fn query_dependencies(current_oid: pg_sys::Oid) -> TViewResult<Vec<(pg_sys::Oid, Option<String>)>> {
-    let deps_query = format!(
-        "SELECT DISTINCT d.refobjid, c.relkind
-         FROM pg_rewrite r
-         JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass::oid
-          LEFT JOIN pg_class c ON d.refobjid = c.oid AND d.refclassid = 'pg_class'::regclass::oid
-          WHERE r.ev_class = {current_oid:?}
-           AND d.refclassid = 'pg_class'::regclass::oid
-           AND c.oid != {current_oid:?}"
-    );
-
-    let deps = Spi::connect(|client| -> crate::TViewResult<_> {
-        let rows = client.select(&deps_query, None, &[])?;
-        let mut results = Vec::new();
-
-        for row in rows {
-            let refobjid = row["refobjid"]
-                .value::<pg_sys::Oid>()
-                .map_err(|e| TViewError::CatalogError {
-                    operation: "Extract refobjid".to_string(),
-                    pg_error: e.to_string(),
-                })?
-                .ok_or_else(|| TViewError::CatalogError {
-                    operation: "Extract refobjid".to_string(),
-                    pg_error: "NULL OID in pg_depend".to_string(),
-                })?;
-
-            #[allow(clippy::cast_sign_loss)]
-            // Reason: pg_class.relkind is stored as i8, cast to u8 for char
-            let relkind = row["relkind"]
-                .value::<i8>()
-                .map_err(|e| TViewError::CatalogError {
-                    operation: "Extract relkind".to_string(),
-                    pg_error: e.to_string(),
-                })?
-                .map(|c| (c as u8 as char).to_string());
-
-            results.push((refobjid, relkind));
-        }
-
-        Ok(Some(results))
-    })
-    .map_err(|e: TViewError| TViewError::SpiError {
-        query: deps_query.clone(),
-        error: e.to_string(),
-    })?
-    .unwrap_or_default();
-
-    Ok(deps)
 }
 
 /// Load OIDs of all TVIEW-managed tables from `pg_tview_meta`.
@@ -238,65 +129,24 @@ fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
     })
 }
 
-fn filter_base_tables(
-    dependencies: &[DependencyNode],
-    tview_oids: &HashSet<pg_sys::Oid>,
-) -> Vec<pg_sys::Oid> {
-    let mut base_tables = HashSet::new();
-
-    for dep in dependencies {
-        if let Some(relkind) = &dep.relkind {
-            match relkind.as_str() {
-                "r" | "p" => {
-                    // Skip TVIEW-managed tables — cascade is metadata-driven
-                    if tview_oids.contains(&dep.oid) {
-                        continue;
-                    }
-                    base_tables.insert(dep.oid);
-                }
-                "m" => {
-                    // A materialized view's rows change only by REFRESH MATERIALIZED
-                    // VIEW, which fires no trigger: the lineage classifies it
-                    // `all_keys`, and the TVIEW's uncascaded_policy decides (#189).
-                    base_tables.insert(dep.oid);
-                }
-                _ => {
-                    // Views and other object types: not base tables
-                }
-            }
-        }
-    }
-
-    base_tables.into_iter().collect()
-}
-
-fn reconstruct_cycle(visiting: &HashSet<pg_sys::Oid>, current: pg_sys::Oid) -> Vec<String> {
-    // Simple cycle representation: just list the OIDs in visiting set + current
-    visiting
-        .iter()
-        .chain(std::iter::once(&current))
-        .filter_map(|oid| get_object_name(*oid).ok())
-        .collect()
-}
-
-fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
-    crate::utils::spi_get_string(&format!(
-        "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
-    ))
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Get name for OID {oid:?}"),
-        pg_error: e.to_string(),
-    })?
-    .ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Get name for OID {oid:?}"),
-        pg_error: "not found".to_string(),
-    })
-}
-
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
     use super::*;
+
+    fn get_object_name(oid: pg_sys::Oid) -> TViewResult<String> {
+        crate::utils::spi_get_string(&format!(
+            "SELECT relname::text FROM pg_class WHERE oid = {oid:?}"
+        ))
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Get name for OID {oid:?}"),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| TViewError::CatalogError {
+            operation: format!("Get name for OID {oid:?}"),
+            pg_error: "not found".to_string(),
+        })
+    }
 
     #[pg_test]
     fn test_find_base_tables_single() {

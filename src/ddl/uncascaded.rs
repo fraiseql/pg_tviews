@@ -154,39 +154,15 @@ impl Declarations {
             .map(|(_, policy)| policy.as_str().to_string())
             .collect();
         let (functions, function_tables) = self.function_read_pairs();
-        // SAFETY: each datum copies or borrows a value that outlives the call.
-        let args = unsafe {
-            [
-                pgrx::datum::DatumWithOid::new(
-                    entity,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    self.policy.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    oids,
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    policies,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    functions,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    function_tables,
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    self.time_refresh.stored(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-            ]
-        };
+        let args = [
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(self.policy.as_str()),
+            crate::utils::spi::oid_array(oids),
+            crate::utils::spi::text_array(policies),
+            crate::utils::spi::text_array(functions),
+            crate::utils::spi::oid_array(function_tables),
+            crate::utils::spi::text(self.time_refresh.stored()),
+        ];
         Spi::run_with_args(
             &format!(
                 "UPDATE {} SET uncascaded_policy = $2, \
@@ -375,10 +351,7 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
                     crate::utils::meta_table()
                 ),
                 None,
-                // SAFETY: the datum copies the OID.
-                &[unsafe {
-                    pgrx::datum::DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-                }],
+                &[crate::utils::spi::oid(table)],
             )?
             .first()
             .get_three::<String, String, String>()
@@ -535,10 +508,7 @@ pub(crate) fn check_declared(
 /// # Errors
 /// Returns an error if the catalog cannot be read or a refresh fails.
 pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
-    // SAFETY: a plain OID datum.
-    let args = [unsafe {
-        pgrx::datum::DatumWithOid::new(matview, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-    }];
+    let args = [crate::utils::spi::oid(matview)];
     let entities: Vec<String> = Spi::connect(|client| {
         client
             .select(

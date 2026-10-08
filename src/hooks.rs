@@ -20,7 +20,6 @@
 //! - Proper error handling to avoid corrupting transactions
 //! - Thread-safe global state management
 
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::ffi::CStr;
@@ -263,12 +262,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // batch the text is the whole batch, so a text test would also skip every other
         // statement in it (issue #80).
         if let Some(extensions) = unsafe { extension_statement_names(utility_stmt) } {
-            // Invalidate the jsonb_delta availability latch first, so a backend that
-            // cached availability re-checks on its next refresh after CREATE/DROP
-            // EXTENSION jsonb_delta (issue #50). This is a pair of atomic stores — no
-            // SPI — and runs before the pass-through so the stale value cannot survive.
+            // Forget the cached jsonb_delta schema first, so this backend re-checks it
+            // on its next refresh after CREATE/DROP EXTENSION jsonb_delta (issue #50).
+            // Memory only, no SPI, before the pass-through so the stale value cannot
+            // survive.
             if extensions.iter().any(|e| e == "jsonb_delta") {
-                crate::lifecycle::invalidate_jsonb_delta_cache();
+                crate::cache::invalidate_all();
             }
             if extensions.iter().any(|e| e == "pg_tviews") {
                 crate::revision::reset();
@@ -526,19 +525,8 @@ impl CtasTarget {
             return Ok(false);
         }
         let args = [
-            // SAFETY: the datums borrow `self`, which outlives the query.
-            unsafe {
-                DatumWithOid::new(
-                    self.schema.as_deref(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
-            unsafe {
-                DatumWithOid::new(
-                    self.table.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
+            crate::utils::spi::text(self.schema.as_deref()),
+            crate::utils::spi::text(self.table.as_str()),
         ];
         Spi::connect(|client| {
             client
@@ -786,7 +774,7 @@ impl PartitionDdl {
     /// the statement.
     unsafe fn apply(self) -> TViewResult<()> {
         // Partition roots are cached per backend.
-        crate::delta::clear_caches();
+        crate::cache::invalidate_all();
         for rv in self.tables {
             // SAFETY: see above.
             let oid = unsafe { resolve_relation_oid(rv) };

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   missing 42883, invalid argument 22023; internal failures stay XX000. Messages are
   one line, with the query or definition in DETAIL and the fix in HINT. Internal
   errors no longer reach the client as `SPI error: OpUnknown`.
+- **A backend's caches follow DDL made in another backend.** A TVIEW replaced, or
+  the extension dropped and created again, in one session left another session
+  patching with the old column map: the row trigger's cache never checked for
+  invalidations. Every cache now checks on every read, relation names come from the
+  syscache, and the catalog is re-watched after the extension is created again.
 - **A definition that makes TVIEWs read each other in a cycle is refused** (42P17)
   when it is created or replaced. Before, it was accepted and every later write to
   the tables involved failed.

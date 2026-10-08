@@ -1,6 +1,5 @@
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
 /// Row-level trigger function: enqueues refreshes.
@@ -182,11 +181,9 @@ fn entity_triggers(
         schema = crate::utils::ext_schema(),
     );
     Spi::connect(|client| {
-        // SAFETY: the datums borrow `entity` and copy `table_oid`, both outliving
-        // the select.
         let args = [
-            unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-            unsafe { DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
+            crate::utils::spi::text(entity),
+            crate::utils::spi::oid(table_oid),
         ];
         let mut found = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -238,6 +235,7 @@ pub struct TriggerProblems {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn trigger_problems() -> TViewResult<TriggerProblems> {
+    let (legacy, kind) = crate::catalog::registered::mapping_kind_sql("m", "r.relid");
     let query = format!(
         "WITH ours AS ( \
              SELECT t.tgname, t.tgrelid, p.proname, \
@@ -254,9 +252,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          reads AS ( \
              SELECT DISTINCT r.entity, r.relid, c.relkind, \
                     r.relid IN (SELECT table_oid::oid FROM {meta}) AS tview, \
-                    pg_catalog.jsonb_array_length(m.key_mappings) = 0 AS legacy, \
-                    (SELECT e->>'kind' FROM pg_catalog.jsonb_array_elements(m.key_mappings) e \
-                     WHERE (e->>'relid')::pg_catalog.oid = r.relid LIMIT 1) AS kind \
+                    {legacy} AS legacy, {kind} AS kind \
              FROM {schema}.pg_tview_reads r \
              JOIN {meta} m ON m.entity = r.entity \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
@@ -395,9 +391,7 @@ pub fn row_trigger_entities(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
         schema = crate::utils::ext_schema(),
     );
     Spi::connect(|client| {
-        // SAFETY: the datum copies `table`.
-        let args =
-            [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let args = [crate::utils::spi::oid(table)];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
             if let Some(entity) = row.get::<String>(1)? {
@@ -467,29 +461,25 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
                            AND b.proname IN ('{ROW_HANDLER}', '{DELTA_HANDLER}'))",
         schema = crate::utils::ext_schema(),
     );
-    let changes: Vec<Change> =
-        Spi::connect(|client| {
-            // SAFETY: the datum copies `rel`.
-            let args = [unsafe {
-                DatumWithOid::new(rel, PgOid::BuiltIn(PgBuiltInOids::REGCLASSOID).value())
-            }];
-            let mut out = Vec::new();
-            for row in client.select(&query, None, &args)? {
-                if let (Some(action), Some(entity), Some(relid), Some(proname)) = (
-                    row.get::<String>(1)?,
-                    row.get::<String>(2)?,
-                    row.get::<pg_sys::Oid>(3)?,
-                    row.get::<String>(4)?,
-                ) {
-                    out.push((action, entity, relid, proname, row.get::<String>(5)?));
-                }
+    let changes: Vec<Change> = Spi::connect(|client| {
+        let args = [crate::utils::spi::regclass(rel)];
+        let mut out = Vec::new();
+        for row in client.select(&query, None, &args)? {
+            if let (Some(action), Some(entity), Some(relid), Some(proname)) = (
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<pg_sys::Oid>(3)?,
+                row.get::<String>(4)?,
+            ) {
+                out.push((action, entity, relid, proname, row.get::<String>(5)?));
             }
-            Ok::<_, spi::Error>(out)
-        })
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Find the partition triggers to change".to_string(),
-            pg_error: e.to_string(),
-        })?;
+        }
+        Ok::<_, spi::Error>(out)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the partition triggers to change".to_string(),
+        pg_error: e.to_string(),
+    })?;
 
     for (action, entity, relid, proname, tgname) in changes {
         let (schema, relname, _) = get_table_name(relid)?;
@@ -672,10 +662,7 @@ fn legacy_triggers(table_oid: pg_sys::Oid) -> TViewResult<Vec<(String, String)>>
         schema = crate::utils::ext_schema(),
     );
     Spi::connect(|client| {
-        // SAFETY: the datum copies `table_oid`.
-        let args = [unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
+        let args = [crate::utils::spi::oid(table_oid)];
         let mut found = Vec::new();
         for row in client.select(&query, None, &args)? {
             if let (Some(table), Some(trigger)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
@@ -694,9 +681,7 @@ fn legacy_triggers(table_oid: pg_sys::Oid) -> TViewResult<Vec<(String, String)>>
 /// Schema, name and whether `oid` is a partitioned table.
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String, bool)> {
     let names = Spi::connect(|client| {
-        // SAFETY: the datum copies `oid`.
-        let args =
-            [unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let args = [crate::utils::spi::oid(oid)];
         client
             .select(
                 "SELECT n.nspname::text, c.relname::text, c.relkind = 'p' \

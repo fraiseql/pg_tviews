@@ -6,7 +6,6 @@ use crate::schema::{
     inference::infer_schema,
 };
 use crate::utils::{log_debug, quote_identifier};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 
@@ -84,22 +83,9 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
 
     // Query information_schema.columns for the column names in order
     let columns: Vec<String> = if let Some(ref schema) = schema_name {
-        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-        // The OID parameter ensures correct type handling in PostgreSQL. Validated strings
-        // from table/schema names are passed as text OID parameters.
         let args = vec![
-            unsafe {
-                pgrx::datum::DatumWithOid::new(
-                    table_name.as_str(),
-                    pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
-                )
-            },
-            unsafe {
-                pgrx::datum::DatumWithOid::new(
-                    schema.as_str(),
-                    pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
-                )
-            },
+            crate::utils::spi::text(table_name.as_str()),
+            crate::utils::spi::text(schema.as_str()),
         ];
         pgrx::prelude::Spi::connect(|client| {
             let rows = client.select(
@@ -123,12 +109,7 @@ fn expand_select_star_if_needed(select_sql: &str) -> TViewResult<String> {
             error: e.to_string(),
         })?
     } else {
-        let args = vec![unsafe {
-            pgrx::datum::DatumWithOid::new(
-                table_name.as_str(),
-                pgrx::prelude::PgOid::BuiltIn(pgrx::prelude::PgBuiltInOids::TEXTOID).value(),
-            )
-        }];
+        let args = vec![crate::utils::spi::text(table_name.as_str())];
         pgrx::prelude::Spi::connect(|client| {
             let rows = client.select(
                 "SELECT column_name::text \
@@ -439,7 +420,7 @@ fn create_tview_inner(
     }
 
     // Invalidate caches since new TVIEW was created
-    crate::queue::cache::invalidate_all_caches();
+    crate::cache::invalidate_all();
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_create(entity_name, &final_select_sql);
@@ -526,8 +507,7 @@ pub fn reregister_metadata(
         &lineage,
         true,
     )?;
-    crate::queue::cache::invalidate_all_caches();
-    crate::queue::cache::invalidate_all_caches();
+    crate::cache::invalidate_all();
     crate::dependency::trigger_plan(&base_tables, &lineage)
 }
 
@@ -545,32 +525,28 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
-    let (definition, schema_name) =
-        Spi::connect(|client| {
-            // SAFETY: the datum borrows `entity`, which outlives the select.
-            let args = [unsafe {
-                DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }];
-            client
-                .select(
-                    &format!(
-                        "SELECT m.definition, n.nspname::text \
+    let (definition, schema_name) = Spi::connect(|client| {
+        let args = [crate::utils::spi::text(entity)];
+        client
+            .select(
+                &format!(
+                    "SELECT m.definition, n.nspname::text \
                      FROM {} m \
                      JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                      WHERE m.entity = $1",
-                        crate::utils::meta_table()
-                    ),
-                    None,
-                    &args,
-                )?
-                .first()
-                .get_two::<String, String>()
-        })
-        .map_err(|e| TViewError::CatalogError {
-            operation: format!("Read the definition of TVIEW {entity}"),
-            pg_error: e.to_string(),
-        })?;
+                    crate::utils::meta_table()
+                ),
+                None,
+                &args,
+            )?
+            .first()
+            .get_two::<String, String>()
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: format!("Read the definition of TVIEW {entity}"),
+        pg_error: e.to_string(),
+    })?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
         return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),
@@ -584,7 +560,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
             "UPDATE {} SET needs_reregister = false WHERE entity = $1",
             crate::utils::meta_table()
         ),
-        &[unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+        &[crate::utils::spi::text(entity)],
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Clear needs_reregister of TVIEW {entity}"),
@@ -601,9 +577,7 @@ pub(crate) fn stored_group_keys(
             "SELECT group_keys FROM {} WHERE entity = $1",
             crate::utils::meta_table()
         ),
-        &[unsafe {
-            DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }],
+        &[crate::utils::spi::text(entity_name)],
     )
     .map_err(|e| TViewError::CatalogError {
         operation: "Read group_keys".to_string(),
@@ -803,19 +777,13 @@ fn key_table_on_identity(schema_name: &str, tview_name: &str, identity: &str) ->
         pg_error: e.to_string(),
     };
     let pk_unique = index_name(tview_name, "pk_unique");
-    // SAFETY: the datums borrow values that outlive each call.
     let leftover = Spi::get_one_with_args::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
                         JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
                         WHERE i.indrelid = $1 AND c.relname = $2)",
         &[
-            unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-            unsafe {
-                DatumWithOid::new(
-                    pk_unique.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
+            crate::utils::spi::oid(table),
+            crate::utils::spi::text(pk_unique.as_str()),
         ],
     )
     .map_err(catalog)?;
@@ -835,8 +803,7 @@ fn key_table_on_identity(schema_name: &str, tview_name: &str, identity: &str) ->
          FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
          WHERE i.indrelid = $1 AND i.indisprimary",
-        // SAFETY: a plain OID datum.
-        &[unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
+        &[crate::utils::spi::oid(table)],
     )
     .map_err(catalog)?
     .unwrap_or_default();
@@ -894,8 +861,8 @@ fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_sys::Oid>> {
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = $1 AND c.relname = $2)",
         &[
-            unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-            unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            crate::utils::spi::text(schema),
+            crate::utils::spi::text(name),
         ],
     )
     .map_err(|e| TViewError::CatalogError {
@@ -971,8 +938,7 @@ pub fn rebind_cascade_paths(view_oid: Oid, cascade_paths: &[String]) -> TViewRes
         return Ok(Vec::new());
     }
 
-    let args =
-        [unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(view_oid)];
     let (view_name, schema_name) = Spi::get_two_with_args::<String, String>(
         "SELECT c.relname::text, n.nspname::text FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.oid = $1",
@@ -1050,54 +1016,28 @@ fn build_oid_name_map(
     Ok(map)
 }
 
-/// Columns of `source_table` that the backing view `view_oid` depends on,
-/// read from `PostgreSQL`'s own column-level `pg_depend` records. This is the
-/// exact set of source columns whose change can alter a target tview row —
-/// it correctly accounts for expressions, `SELECT *` expansion, and repeated
-/// joins, with none of the fragility of parsing the SELECT text.
+/// Columns of `source_table` that the backing view `view_oid` reads, directly or
+/// through views, from `PostgreSQL`'s own column-level `pg_depend` records: the
+/// exact set of source columns whose change can alter a target TVIEW row.
 ///
-/// Returns an empty vec on any error or when the view has no *direct* column
-/// dependency on `source_table` (e.g. a multi-hop cascade whose backing view
-/// references an intermediate view, not the leaf table). The caller treats an
-/// empty result as "unknown ⇒ always refresh", so a miss is never unsafe.
+/// Empty when they cannot be read; the caller treats an empty result as "unknown
+/// ⇒ always refresh", so a miss is never unsafe.
 pub(crate) fn view_source_columns(view_oid: Oid, source_oid: Oid) -> Vec<String> {
-    // The view and the source table are matched by OID, so a joined table in
-    // another schema is found too.
-    const QUERY: &str = "SELECT a.attname::text AS col \
-         FROM pg_depend d \
-         JOIN pg_rewrite r ON r.oid = d.objid \
-         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
-         WHERE r.ev_class = $1 AND d.refobjid = $2 AND d.refobjsubid > 0";
-    let mut cols = Vec::new();
-    let result = Spi::connect(|client| {
-        let oid = PgOid::BuiltIn(PgBuiltInOids::OIDOID).value();
-        // SAFETY: plain OID datums.
-        let args = vec![unsafe { DatumWithOid::new(view_oid, oid) }, unsafe {
-            DatumWithOid::new(source_oid, oid)
-        }];
-        let rows = client.select(QUERY, None, &args)?;
-        for row in rows {
-            if let Ok(Some(name)) = row["col"].value::<String>() {
-                cols.push(name);
-            }
+    match crate::catalog::reads::view_columns_read(view_oid, source_oid) {
+        Ok(columns) => columns.into_iter().map(|(name, _)| name).collect(),
+        Err(e) => {
+            notice!(
+                "view_source_columns({view_oid:?}, {source_oid:?}): {e} — cascade will always refresh"
+            );
+            Vec::new()
         }
-        Ok::<_, spi::Error>(())
-    });
-    if let Err(e) = result {
-        notice!(
-            "view_source_columns({view_oid:?}, {source_oid:?}): {e} — cascade will always refresh"
-        );
-        return Vec::new();
     }
-    cols
 }
 
 /// Check if a TVIEW already exists
 fn tview_exists(tview_name: &str) -> TViewResult<bool> {
     let entity_name = tview_name.trim_start_matches("tv_");
-    let args = vec![unsafe {
-        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-    }];
+    let args = vec![crate::utils::spi::text(entity_name)];
 
     Spi::get_one_with_args::<bool>(
         &format!(
@@ -1131,18 +1071,8 @@ fn entity_base_table_exists(entity_name: &str, schema_name: &str) -> TViewResult
     Spi::get_one_with_args::<bool>(
         "SELECT COALESCE(to_regclass($1), to_regclass($2)) IS NOT NULL",
         &[
-            unsafe {
-                DatumWithOid::new(
-                    qualified.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
-            unsafe {
-                DatumWithOid::new(
-                    tb_name.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                )
-            },
+            crate::utils::spi::text(qualified.as_str()),
+            crate::utils::spi::text(tb_name.as_str()),
         ],
     )
     .map_err(|e| TViewError::CatalogError {
@@ -1194,8 +1124,8 @@ fn create_backing_view(view_name: &str, select_sql: &str, schema_name: &str) -> 
 
     // Verify the view was created (schema-qualified to avoid false positives across schemas)
     let check_args = vec![
-        unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        crate::utils::spi::text(view_name),
+        crate::utils::spi::text(schema_name),
     ];
     let exists = match Spi::get_one_with_args::<i32>(
         "SELECT 1 FROM pg_class c \
@@ -1669,8 +1599,8 @@ fn register_metadata(
 
     // Get the OID of the table (schema-qualified, parameterized to prevent injection)
     let table_oid_args = vec![
-        unsafe { DatumWithOid::new(tview_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        crate::utils::spi::text(tview_name),
+        crate::utils::spi::text(schema_name),
     ];
     let table_oid_result = Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
@@ -1766,107 +1696,38 @@ fn register_metadata(
     let (function_read_functions, function_read_tables) =
         uncascaded.declarations.function_read_pairs();
     let args = [
-        unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe {
-            DatumWithOid::new(
-                definition_sql,
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                group_keys_json,
-                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                pgrx::JsonB(serde_json::to_value(&aggregate_embeds).unwrap_or_default()),
-                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded.oids(),
-                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded.declarations.policy.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                pgrx::JsonB(key_mappings.clone()),
-                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                identity.kind.name(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                identity.name.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                pg_sys::Oid::from(identity.type_oid),
-                PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded
-                    .declarations
-                    .tables
-                    .iter()
-                    .map(|(oid, _)| *oid)
-                    .collect::<Vec<_>>(),
-                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded
-                    .declarations
-                    .tables
-                    .iter()
-                    .map(|(_, policy)| policy.as_str().to_string())
-                    .collect::<Vec<_>>(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                function_read_functions,
-                PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                function_read_tables,
-                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded.time_refresh(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        },
-        unsafe {
-            DatumWithOid::new(
-                uncascaded.time_dependent,
-                PgOid::BuiltIn(PgBuiltInOids::BOOLOID).value(),
-            )
-        },
+        crate::utils::spi::text(entity_name),
+        crate::utils::spi::text(definition_sql),
+        crate::utils::spi::jsonb(group_keys_json),
+        crate::utils::spi::jsonb(pgrx::JsonB(
+            serde_json::to_value(&aggregate_embeds).unwrap_or_default(),
+        )),
+        crate::utils::spi::oid_array(uncascaded.oids()),
+        crate::utils::spi::text(uncascaded.declarations.policy.as_str()),
+        crate::utils::spi::jsonb(pgrx::JsonB(key_mappings.clone())),
+        crate::utils::spi::text(identity.kind.name()),
+        crate::utils::spi::text(identity.name.as_str()),
+        crate::utils::spi::oid(pg_sys::Oid::from(identity.type_oid)),
+        crate::utils::spi::oid_array(
+            uncascaded
+                .declarations
+                .tables
+                .iter()
+                .map(|(oid, _)| *oid)
+                .collect::<Vec<_>>(),
+        ),
+        crate::utils::spi::text_array(
+            uncascaded
+                .declarations
+                .tables
+                .iter()
+                .map(|(_, policy)| policy.as_str().to_string())
+                .collect::<Vec<_>>(),
+        ),
+        crate::utils::spi::text_array(function_read_functions),
+        crate::utils::spi::oid_array(function_read_tables),
+        crate::utils::spi::text(uncascaded.time_refresh()),
+        crate::utils::spi::boolean(uncascaded.time_dependent),
     ];
     // The catalog is written as the extension's owner; the caller's right to
     // change this TVIEW was checked before (issue #134).
@@ -1941,12 +1802,7 @@ fn transform_raw_select_to_tview(
          WHERE table_name = $1
          ORDER BY ordinal_position";
 
-    let temp_view_args = vec![unsafe {
-        DatumWithOid::new(
-            temp_view_name.as_str(),
-            PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-        )
-    }];
+    let temp_view_args = vec![crate::utils::spi::text(temp_view_name.as_str())];
     let columns: Vec<(String, String)> = Spi::connect(|client| -> crate::TViewResult<_> {
         let rows = client.select(get_columns_sql, None, &temp_view_args)?;
         let mut result = Vec::new();

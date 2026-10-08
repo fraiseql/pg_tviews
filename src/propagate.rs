@@ -1,4 +1,3 @@
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::collections::HashMap;
 
@@ -118,13 +117,7 @@ fn find_affected_keys_batch(
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
     Spi::connect(|client| {
-        // SAFETY: the datums own their arrays.
-        let array = |pks: &[i64]| unsafe {
-            DatumWithOid::new(
-                pks.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        };
+        let array = |pks: &[i64]| crate::utils::spi::int8_array(pks.to_vec());
         let args = if in_view.is_empty() {
             vec![array(child_pks)]
         } else {

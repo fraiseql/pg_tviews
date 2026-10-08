@@ -1,4 +1,3 @@
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::cell::RefCell;
 
@@ -111,9 +110,7 @@ pub fn flush_audit_buffer() -> crate::TViewResult<()> {
             "SELECT {}.pg_tviews_audit_write($1::jsonb)",
             crate::utils::ext_schema()
         ),
-        &[unsafe {
-            DatumWithOid::new(payload_ref, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }],
+        &[crate::utils::spi::text(payload_ref)],
     )?;
 
     Ok(())

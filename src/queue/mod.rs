@@ -7,7 +7,6 @@
 //! - Transaction callback registration
 
 pub mod affected;
-pub mod cache;
 pub mod graph;
 pub mod key;
 mod ops;

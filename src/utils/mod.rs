@@ -3,8 +3,8 @@ use pgrx::datum::DatumWithOid;
 use pgrx::heap_tuple::PgHeapTuple;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+
+pub mod spi;
 
 /// Emit an internal diagnostic. Silent at the default settings: it is a `DEBUG1` message
 /// (visible with `client_min_messages = debug1`), or a `NOTICE` when the session sets
@@ -174,100 +174,47 @@ pub fn tuple_get_i64(tuple: &PgHeapTuple<'_, AllocatedByPostgres>, col: &str) ->
     }
 }
 
-/// Global cache for OID → qualified relname mappings (schema-qualified)
-/// Populated by `qualified_relname_from_oid`; invalidated on DDL.
-static OID_QUALIFIED_RELNAME_CACHE: LazyLock<Mutex<HashMap<Oid, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Invalidate the OID→qualified relname cache.
-/// Called when DDL creates/drops tables.
-pub fn invalidate_oid_relname_cache() {
-    OID_QUALIFIED_RELNAME_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-}
-
-/// Global cache for view column names (`view_name` → column names)
-/// View column lists are stable within a session (only change on DDL)
-pub static VIEW_COLUMNS_CACHE: LazyLock<Mutex<HashMap<String, Vec<String>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Invalidate the view columns cache
-/// Called when DDL creates/drops/alters tables with columns
-pub fn invalidate_view_columns_cache() {
-    let mut cache = VIEW_COLUMNS_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.clear();
-}
-
-/// Bound a per-session memoization cache to `pg_tviews.cache_size` entries.
+/// The schema-qualified, quoted name of relation `oid` (`quote_ident` on each
+/// part), read from the syscache, so it is current after a rename or a move made
+/// in any backend.
 ///
-/// Call immediately before inserting a fresh entry: if the cache is already at the
-/// configured limit it is cleared and repopulated lazily on subsequent misses.
-/// Safe because every cache this is used on is pure catalog-lookup memoization —
-/// clearing it only costs a re-query, never correctness.
-pub fn bound_cache<K, V>(cache: &mut HashMap<K, V>) {
-    if cache.len() >= crate::config::cache_size() {
-        cache.clear();
-    }
-}
-
-/// Look up the schema-qualified, properly-quoted name for a relation OID.
-///
-/// Returns `"schema"."table"` using `quote_ident` on each part so the result is safe
-/// for direct embedding in a FROM clause regardless of `search_path` or special characters.
-/// Results are cached per session.
+/// # Errors
+/// Returns an error if no relation has that OID.
 pub fn qualified_relname_from_oid(oid: Oid) -> crate::TViewResult<String> {
-    // Fast path: check cache
-    {
-        let cache = OID_QUALIFIED_RELNAME_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(name) = cache.get(&oid) {
-            return Ok(name.clone());
+    // SAFETY: syscache lookups by OID; the returned names are palloc'd copies.
+    unsafe {
+        let rel = pg_sys::get_rel_name(oid);
+        if rel.is_null() {
+            return Err(crate::TViewError::CatalogError {
+                operation: format!("Name relation {oid:?}"),
+                pg_error: "relation does not exist".to_string(),
+            });
         }
+        let nsp = pg_sys::get_namespace_name(pg_sys::get_rel_namespace(oid));
+        let name = |ptr: *const std::ffi::c_char| {
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        };
+        Ok(format!(
+            "{}.{}",
+            quote_ident(&name(nsp)),
+            quote_ident(&name(rel))
+        ))
     }
+}
 
-    // Slow path: resolve via pg_class + pg_namespace
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let qname: String = Spi::connect(|client| -> crate::TViewResult<_> {
-        let args =
-            vec![unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
-        let mut rows = client.select(
-            "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS qname \
-             FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE c.oid = $1",
-            None,
-            &args,
-        )?;
-
-        if let Some(row) = rows.next() {
-            row["qname"]
-                .value::<String>()?
-                .ok_or_else(|| crate::TViewError::SpiError {
-                    query: "qualified_relname_from_oid".to_string(),
-                    error: "qname column is NULL".to_string(),
-                })
-        } else {
-            Err(crate::TViewError::SpiError {
-                query: "qualified_relname_from_oid".to_string(),
-                error: format!("No pg_class entry for oid: {oid:?}"),
-            })
-        }
-    })?;
-
-    // Cache the result (bounded by pg_tviews.cache_size)
-    {
-        let mut cache = OID_QUALIFIED_RELNAME_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        bound_cache(&mut cache);
-        cache.insert(oid, qname.clone());
+/// `name` quoted as SQL needs it (`quote_ident`): unchanged when it is a plain
+/// lower-case identifier that is no keyword, double-quoted otherwise.
+#[must_use]
+pub fn quote_ident(name: &str) -> String {
+    let Ok(c) = std::ffi::CString::new(name) else {
+        return quote_identifier(name);
+    };
+    // SAFETY: a NUL-terminated string; the result is copied before `c` drops.
+    unsafe {
+        std::ffi::CStr::from_ptr(pg_sys::quote_identifier(c.as_ptr()))
+            .to_string_lossy()
+            .into_owned()
     }
-    Ok(qname)
 }
 
 /// The SQL name of type `typid` with modifier `typmod` (`numeric(6,2)`, `bit(4)`),
@@ -297,13 +244,7 @@ pub fn qualified_type_name(typid: Oid, typmod: i32) -> String {
 /// Returns an error if the catalog query fails.
 pub fn column_types(relid: Oid) -> crate::TViewResult<Vec<(String, String)>> {
     Spi::connect(|client| {
-        // SAFETY: the datum copies `relid`.
-        let args =
-            [
-                unsafe {
-                    pgrx::datum::DatumWithOid::new(relid, pgrx::PgBuiltInOids::OIDOID.value())
-                },
-            ];
+        let args = [crate::utils::spi::oid(relid)];
         let mut out = Vec::new();
         for row in client.select(
             "SELECT attname::pg_catalog.text, atttypid, atttypmod FROM pg_catalog.pg_attribute \
@@ -367,121 +308,34 @@ pub const fn ext_schema() -> &'static str {
     EXT_SCHEMA
 }
 
-/// Get the list of column names for a view/table by schema-qualified name. Results are cached per session.
-/// Used for UPSERT column lists to avoid repeated `pg_attribute` queries.
+/// The column names of relation `rel_oid`, in order (cached per backend). Used
+/// for the column lists of upserts.
 ///
-/// The cache key includes the schema name to avoid collisions when multiple views
-/// have the same name in different schemas.
-pub fn get_view_columns(schema_name: &str, view_name: &str) -> crate::TViewResult<Vec<String>> {
-    let cache_key = format!("{schema_name}.{view_name}");
-
-    // Fast path: check cache
-    {
-        let cache = VIEW_COLUMNS_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cols) = cache.get(&cache_key) {
-            return Ok(cols.clone());
-        }
-    }
-
-    // Slow path: query and cache
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let cols: Vec<String> = Spi::connect(|client| -> crate::TViewResult<Vec<String>> {
-        let args = vec![
-            unsafe {
-                DatumWithOid::new(schema_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
-            unsafe { DatumWithOid::new(view_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        ];
-        let rows = client.select(
-            "SELECT a.attname::text \
-             FROM pg_attribute a \
-             JOIN pg_class c ON c.oid = a.attrelid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            None,
-            &args,
-        )?;
-        // Pre-allocate with estimated capacity (typical views have 5-20 columns)
-        let mut result = Vec::with_capacity(10);
-        for r in rows {
-            if let Some(name) = r["attname"].value::<String>()? {
-                result.push(name);
-            }
-        }
-        Ok(result)
-    })?;
-
-    // Cache the result (bounded by pg_tviews.cache_size)
-    {
-        let mut cache = VIEW_COLUMNS_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        bound_cache(&mut cache);
-        cache.insert(cache_key, cols.clone());
-    }
-    Ok(cols)
-}
-
-/// Get column names for a relation by OID. Resolves schema and name from the OID,
-/// then delegates to `get_view_columns` for caching.
+/// # Errors
+/// Returns an error if the catalog cannot be read.
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
-    // Fast path: the columns of this relation were resolved before.
-    let oid_key = format!("oid:{}", rel_oid.to_u32());
-    {
-        let cache = VIEW_COLUMNS_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cols) = cache.get(&oid_key) {
-            return Ok(cols.clone());
-        }
-    }
-    crate::metrics::metrics_api::record_catalog_lookup();
-    // Get schema and table name from OID
-    let (schema_name, table_name): (String, String) =
-        Spi::connect(|client| -> crate::TViewResult<_> {
-            let args = vec![unsafe {
-                DatumWithOid::new(rel_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-            }];
-            let mut rows = client.select(
-                "SELECT n.nspname::text, c.relname::text \
-             FROM pg_class c \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE c.oid = $1",
-                None,
-                &args,
-            )?;
-
-            if let Some(row) = rows.next() {
-                let schema = row["nspname"].value::<String>()?.ok_or_else(|| {
-                    crate::TViewError::SpiError {
-                        query: "get_view_columns_by_oid schema lookup".to_string(),
-                        error: "nspname column is NULL".to_string(),
+    crate::cache::COLUMNS.with(|m| {
+        m.get_or_load(rel_oid, || {
+            crate::metrics::metrics_api::record_catalog_lookup();
+            crate::cache::watch(&[rel_oid]);
+            Spi::connect(|client| -> crate::TViewResult<Vec<String>> {
+                let rows = client.select(
+                    "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
+                     WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+                     ORDER BY a.attnum",
+                    None,
+                    &[DatumWithOid::from(rel_oid)],
+                )?;
+                let mut columns = Vec::new();
+                for row in rows {
+                    if let Some(name) = row.get::<String>(1)? {
+                        columns.push(name);
                     }
-                })?;
-                let table = row["relname"].value::<String>()?.ok_or_else(|| {
-                    crate::TViewError::SpiError {
-                        query: "get_view_columns_by_oid table lookup".to_string(),
-                        error: "relname column is NULL".to_string(),
-                    }
-                })?;
-                Ok((schema, table))
-            } else {
-                Err(crate::TViewError::SpiError {
-                    query: "get_view_columns_by_oid".to_string(),
-                    error: format!("No pg_class entry for oid: {rel_oid:?}"),
-                })
-            }
-        })?;
-
-    let cols = get_view_columns(&schema_name, &table_name)?;
-    VIEW_COLUMNS_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(oid_key, cols.clone());
-    Ok(cols)
+                }
+                Ok(columns)
+            })
+        })
+    })
 }
 
 /// Quote a SQL identifier for safe use in queries.
@@ -554,85 +408,5 @@ mod tests {
     #[test]
     fn test_quote_identifier_with_internal_quotes() {
         assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
-    }
-
-    #[test]
-    fn test_oid_relname_cache_invalidation() {
-        use pg_sys::Oid;
-
-        // Clear cache first
-        invalidate_oid_relname_cache();
-
-        // Populate cache with a test entry
-        {
-            let mut cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
-            cache.insert(Oid::from(123), "test_table".to_string());
-        }
-
-        // Verify it's there
-        {
-            let cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
-            assert!(cache.get(&Oid::from(123)).is_some());
-        }
-
-        // Invalidate cache
-        invalidate_oid_relname_cache();
-
-        // Verify it's gone
-        {
-            let cache = OID_QUALIFIED_RELNAME_CACHE.lock().unwrap();
-            assert!(cache.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_view_columns_cache_invalidation() {
-        // Clear cache first
-        invalidate_view_columns_cache();
-
-        // Populate cache with test entries using schema-qualified keys
-        {
-            let mut cache = VIEW_COLUMNS_CACHE.lock().unwrap();
-            cache.insert(
-                "public.v_user".to_string(),
-                vec!["id".to_string(), "name".to_string()],
-            );
-            cache.insert(
-                "public.v_post".to_string(),
-                vec!["id".to_string(), "title".to_string(), "user_id".to_string()],
-            );
-            // Test that same view name in different schema creates separate cache entries
-            cache.insert(
-                "app.v_user".to_string(),
-                vec!["id".to_string(), "name".to_string(), "org_id".to_string()],
-            );
-        }
-
-        // Verify entries are there
-        {
-            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
-            assert_eq!(cache.len(), 3);
-            assert!(cache.contains_key("public.v_user"));
-            assert!(cache.contains_key("public.v_post"));
-            assert!(cache.contains_key("app.v_user"));
-        }
-
-        // Verify different schemas have different column lists
-        {
-            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
-            let public_user = cache.get("public.v_user").unwrap();
-            let app_user = cache.get("app.v_user").unwrap();
-            assert_eq!(public_user.len(), 2);
-            assert_eq!(app_user.len(), 3);
-        }
-
-        // Invalidate cache
-        invalidate_view_columns_cache();
-
-        // Verify it's gone
-        {
-            let cache = VIEW_COLUMNS_CACHE.lock().unwrap();
-            assert!(cache.is_empty());
-        }
     }
 }

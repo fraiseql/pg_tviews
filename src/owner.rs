@@ -14,7 +14,6 @@
 //! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::ffi::CStr;
@@ -198,9 +197,7 @@ unsafe fn pin_settings() {
 /// Returns an error if the catalog query fails.
 pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
     let allowed = Spi::connect(|client| {
-        // SAFETY: the datum copies `table`.
-        let args =
-            [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let args = [crate::utils::spi::oid(table)];
         client
             .select(
                 "SELECT COALESCE((SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') \

@@ -1,7 +1,6 @@
 //! Administrative SQL functions: refresh, migration, cascade path.
 
 use crate::{TViewError, TViewResult, utils::quote_identifier};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
@@ -58,8 +57,7 @@ fn pg_tviews_refresh_time_dependent(
                 crate::utils::meta_table()
             ),
             None,
-            // SAFETY: the datum borrows `tview`, which outlives the select.
-            &[unsafe { DatumWithOid::new(tview, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+            &[crate::utils::spi::text(tview)],
         )? {
             if let (Some(entity), Some(table)) =
                 (row.get::<String>(1)?, row.get::<pgrx::pg_sys::Oid>(2)?)
@@ -262,9 +260,7 @@ fn pg_tviews_ensure_propagation_indexes(
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     crate::revision::check();
     let missing = Spi::connect(|client| -> crate::TViewResult<_> {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+        let args = vec![crate::utils::spi::text(entity)];
         let rows = client.select(
             &format!(
                 "SELECT n.nspname::text, c.relname::text, a.attname::text, 'pk_' || m.entity \
@@ -375,9 +371,7 @@ fn pg_tviews_show_cascade_path(
 > {
     crate::revision::check();
     let results = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+        let args = vec![crate::utils::spi::text(entity)];
         match client.select(
             &format!(
                 "WITH RECURSIVE dep_tree AS (

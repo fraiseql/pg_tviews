@@ -1296,7 +1296,6 @@ pub fn analyze(
     base_tables: &[pgrx::pg_sys::Oid],
     embeds: &[String],
 ) -> crate::TViewResult<Lineage> {
-    use pgrx::prelude::*;
     use std::collections::{HashMap, HashSet};
 
     let catalog = |e: pgrx::spi::Error| crate::TViewError::CatalogError {
@@ -1309,55 +1308,17 @@ pub fn analyze(
     // Per other TVIEW: the tables it maps, and those it refreshes in full.
     let mut mapped_by: HashMap<String, (HashSet<u32>, HashSet<u32>)> = HashMap::new();
     let mut aggregates: Vec<String> = Vec::new();
-    Spi::connect(|client| {
-        for row in client.select(
-            &format!(
-                "SELECT entity::text, table_oid::oid, view_oid::oid, key_mappings, \
-                        ARRAY(SELECT u::pg_catalog.oid FROM pg_catalog.unnest(uncascaded_oids) u \
-                              WHERE COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
-                                        uncascaded_table_oids, u)], uncascaded_policy) \
-                                    = 'full_refresh'), \
-                        group_keys IS NOT NULL \
-                 FROM {} ORDER BY entity",
-                crate::utils::meta_table()
-            ),
-            None,
-            &[],
-        )? {
-            let (Some(other), Some(table), Some(view)) = (
-                row.get::<String>(1)?,
-                row.get::<pgrx::pg_sys::Oid>(2)?,
-                row.get::<pgrx::pg_sys::Oid>(3)?,
-            ) else {
-                continue;
-            };
-            tview_tables.insert(table, other.clone());
-            if other == entity {
-                continue;
-            }
-            if row.get::<bool>(6)?.unwrap_or(false) {
-                aggregates.push(other.clone());
-            }
-            tview_views.insert(view, other.clone());
-            let mapped: HashSet<u32> = row
-                .get::<pgrx::JsonB>(4)?
-                .and_then(|j| j.0.as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .filter(|e| e["kind"] != "all_keys")
-                .filter_map(|e| e["relid"].as_u64().and_then(|r| u32::try_from(r).ok()))
-                .collect();
-            let full: HashSet<u32> = row
-                .get::<Vec<pgrx::pg_sys::Oid>>(5)?
-                .unwrap_or_default()
-                .iter()
-                .map(|oid| oid.to_u32())
-                .collect();
-            mapped_by.insert(other, (mapped, full));
+    for other in crate::catalog::registered::all()? {
+        tview_tables.insert(other.table_oid, other.entity.clone());
+        if other.entity == entity {
+            continue;
         }
-        Ok::<_, pgrx::spi::Error>(())
-    })
-    .map_err(catalog)?;
+        if other.aggregate {
+            aggregates.push(other.entity.clone());
+        }
+        tview_views.insert(other.view_oid, other.entity.clone());
+        mapped_by.insert(other.entity, (other.mapped, other.full_refresh));
+    }
 
     let key_column = format!("pk_{entity}");
     let graph = walk::analyze(
@@ -1470,13 +1431,7 @@ fn function_signatures(oids: &[u32]) -> Result<Vec<(u32, String)>, pgrx::spi::Er
         for row in client.select(
             &format!("SELECT oid, {FUNCTION_SIGNATURE} FROM pg_catalog.pg_proc p WHERE p.oid = ANY ($1) ORDER BY 2"),
             None,
-            // SAFETY: the datum copies the OIDs.
-            &[unsafe {
-                pgrx::datum::DatumWithOid::new(
-                    oids,
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                )
-            }],
+            &[crate::utils::spi::oid_array(oids)],
         )? {
             if let (Some(oid), Some(signature)) =
                 (row.get::<pgrx::pg_sys::Oid>(1)?, row.get::<String>(2)?)
@@ -1541,13 +1496,7 @@ fn identity_of(
         Err(error) => {
             let viewdef = Spi::get_one_with_args::<String>(
                 "SELECT pg_catalog.pg_get_viewdef($1)",
-                // SAFETY: a plain OID datum.
-                &[unsafe {
-                    pgrx::datum::DatumWithOid::new(
-                        view_oid,
-                        PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                    )
-                }],
+                &[crate::utils::spi::oid(view_oid)],
             )
             .map_err(|e| crate::TViewError::CatalogError {
                 operation: format!("Read the definition of the view of tv_{entity}"),
@@ -1578,19 +1527,10 @@ pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
         if names.contains_key(&(relid, attnum)) {
             continue;
         }
-        // SAFETY: plain OID / int2 datums.
-        let args = unsafe {
-            [
-                pgrx::datum::DatumWithOid::new(
-                    pgrx::pg_sys::Oid::from(relid),
-                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    attnum,
-                    PgOid::BuiltIn(PgBuiltInOids::INT2OID).value(),
-                ),
-            ]
-        };
+        let args = [
+            crate::utils::spi::oid(pgrx::pg_sys::Oid::from(relid)),
+            crate::utils::spi::int2(attnum),
+        ];
         let name = Spi::get_one_with_args::<String>(
             "SELECT CASE WHEN $2 = 0 \
                     THEN pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
@@ -1813,13 +1753,7 @@ pub fn virtual_inputs(relid: u32) -> crate::TViewResult<VirtualInputs> {
              WHERE g.attrelid = $1 AND g.attgenerated = 'v' AND NOT i.attisdropped \
              ORDER BY 1, 3",
             None,
-            // SAFETY: a plain OID datum.
-            &[unsafe {
-                pgrx::datum::DatumWithOid::new(
-                    pgrx::pg_sys::Oid::from(relid),
-                    PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                )
-            }],
+            &[crate::utils::spi::oid(pgrx::pg_sys::Oid::from(relid))],
         )? {
             let (Some(column), Some(name), Some(input)) =
                 (row.get::<i16>(1)?, row.get::<String>(2)?, row.get::<i16>(3)?)
@@ -1841,47 +1775,7 @@ fn referenced_columns(
     view_oid: pgrx::pg_sys::Oid,
     relid: u32,
 ) -> crate::TViewResult<Vec<(String, i16)>> {
-    use pgrx::prelude::*;
-    Spi::connect(|client| {
-        let mut columns = Vec::new();
-        for row in client.select(
-            "WITH RECURSIVE views(oid) AS ( \
-                 SELECT $1::pg_catalog.oid \
-               UNION \
-                 SELECT d.refobjid FROM views v \
-                 JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
-                 JOIN pg_catalog.pg_depend d \
-                   ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
-                  AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
-                 JOIN pg_catalog.pg_class c ON c.oid = d.refobjid AND c.relkind = 'v' \
-             ) \
-             SELECT DISTINCT a.attname::pg_catalog.text, a.attnum FROM views v \
-             JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
-             JOIN pg_catalog.pg_depend d \
-               ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
-              AND d.refobjid = $2 AND d.refobjsubid > 0 \
-             JOIN pg_catalog.pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
-             ORDER BY 2",
-            None,
-            // SAFETY: plain OIDs.
-            &[
-                unsafe {
-                    pgrx::datum::DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-                },
-                unsafe {
-                    pgrx::datum::DatumWithOid::new(
-                        pgrx::pg_sys::Oid::from(relid),
-                        PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-                    )
-                },
-            ],
-        )? {
-            if let (Some(name), Some(attnum)) = (row.get::<String>(1)?, row.get::<i16>(2)?) {
-                columns.push((name, attnum));
-            }
-        }
-        Ok(columns)
-    })
+    crate::catalog::reads::view_columns_read(view_oid, pgrx::pg_sys::Oid::from(relid))
 }
 
 #[cfg(test)]

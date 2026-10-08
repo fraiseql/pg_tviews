@@ -1,5 +1,7 @@
+pub mod reads;
+pub mod registered;
+
 use crate::cascade_path::CascadePath;
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 /// Type of dependency relationship for `jsonb_delta` optimization
@@ -187,34 +189,18 @@ pub(crate) fn meta_select() -> String {
     )
 }
 
-thread_local! {
-    /// TVIEW table → the type of its identity column, per backend; cleared with
-    /// [`META_CACHE`].
-    static KEY_TYPES: std::cell::RefCell<std::collections::HashMap<Oid, KeyType>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    /// Per-backend `TviewMeta` cache (issue #91), cleared through
-    /// [`crate::queue::cache::sync_generation`] when the catalog or a TVIEW changes.
-    static META_CACHE: std::cell::RefCell<Vec<TviewMeta>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn cached(matches: impl Fn(&TviewMeta) -> bool) -> Option<TviewMeta> {
-    META_CACHE.with(|c| c.borrow().iter().find(|m| matches(m)).cloned())
+fn cached(entity: &str) -> Option<TviewMeta> {
+    crate::cache::METAS.with(|m| m.get(&entity.to_string()))
 }
 
 /// Count the catalog query just made and cache its result.
 fn remember(loaded: Option<TviewMeta>) -> Option<TviewMeta> {
     crate::metrics::metrics_api::record_catalog_lookup();
     if let Some(meta) = &loaded {
-        crate::queue::cache::watch(&[meta.tview_oid, meta.view_oid]);
-        META_CACHE.with(|c| c.borrow_mut().push(meta.clone()));
+        crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
+        crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
     }
     loaded
-}
-
-/// Forget every cached `TviewMeta`.
-pub fn clear_meta_cache() {
-    META_CACHE.with(|c| c.borrow_mut().clear());
-    KEY_TYPES.with(|c| c.borrow_mut().clear());
 }
 
 impl TviewMeta {
@@ -224,7 +210,7 @@ impl TviewMeta {
     /// # Errors
     /// Returns an error if the catalog cannot be read.
     pub fn key_type(&self) -> crate::TViewResult<KeyType> {
-        if let Some(key_type) = KEY_TYPES.with(|c| c.borrow().get(&self.tview_oid).cloned()) {
+        if let Some(key_type) = crate::cache::KEY_TYPES.with(|m| m.get(&self.tview_oid)) {
             return Ok(key_type);
         }
         let name = Spi::get_one_with_args::<String>(
@@ -236,15 +222,9 @@ impl TviewMeta {
              JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
              JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
              WHERE a.attrelid = $1 AND a.attname = $2 AND NOT a.attisdropped",
-            // SAFETY: the datums copy the OID and borrow the name, which outlive the call.
             &[
-                unsafe { DatumWithOid::new(self.tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-                unsafe {
-                    DatumWithOid::new(
-                        self.identity.column.as_str(),
-                        PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                    )
-                },
+                crate::utils::spi::oid(self.tview_oid),
+                crate::utils::spi::text(self.identity.column.as_str()),
             ],
         )
         .or_else(|e| match e {
@@ -252,7 +232,7 @@ impl TviewMeta {
             e => Err(e),
         })?;
         let key_type = name.map_or(KeyType::Int, KeyType::Text);
-        KEY_TYPES.with(|c| c.borrow_mut().insert(self.tview_oid, key_type.clone()));
+        crate::cache::KEY_TYPES.with(|m| m.insert(self.tview_oid, key_type.clone()));
         Ok(key_type)
     }
 
@@ -304,16 +284,11 @@ impl TviewMeta {
 
     /// Look up metadata by entity name (cached per backend).
     pub fn load_by_entity(entity_name: &str) -> crate::TViewResult<Option<Self>> {
-        crate::queue::cache::sync_generation();
-        if let Some(meta) = cached(|m| m.entity_name == entity_name) {
+        if let Some(meta) = cached(entity_name) {
             return Ok(Some(meta));
         }
-        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-        // The entity name is validated before this call.
         let loaded = Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
-            let args = vec![unsafe {
-                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }];
+            let args = vec![crate::utils::spi::text(entity_name)];
             let mut rows =
                 client.select(&format!("{} WHERE entity = $1", meta_select()), None, &args)?;
 
@@ -364,12 +339,8 @@ impl TviewMeta {
     /// }
     /// ```
     pub fn load_for_tview(tview_oid: Oid) -> crate::TViewResult<Option<Self>> {
-        // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-        // The OID is a validated PostgreSQL object identifier.
         Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
-            let args = vec![unsafe {
-                DatumWithOid::new(tview_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-            }];
+            let args = vec![crate::utils::spi::oid(tview_oid)];
             let mut rows = client.select(
                 &format!("{} WHERE table_oid = $1", meta_select()),
                 None,
@@ -622,9 +593,7 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
     // get_heap_tuple path that properly returns Ok(None) for empty results.
     Spi::connect(|client| {
         // Step 1: resolve OID → table name
-        let args = vec![unsafe {
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-        }];
+        let args = vec![crate::utils::spi::oid(table_oid)];
         let mut rows = client.select(
             "SELECT relname::text FROM pg_class WHERE oid = $1",
             Some(1),
@@ -644,9 +613,7 @@ pub fn entity_for_table_uncached(table_oid: Oid) -> crate::TViewResult<Option<St
         };
 
         // Step 3: verify entity exists in pg_tview_meta
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+        let args = vec![crate::utils::spi::text(entity)];
         let mut meta_rows = client.select(
             &format!(
                 "SELECT entity FROM {} WHERE entity = $1",

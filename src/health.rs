@@ -323,10 +323,9 @@ fn pg_tviews_performance_stats() -> TableIterator<
 /// `count(*)` of `tview` (a regclass text, already quoted), or `None` with a
 /// NOTICE when the caller may not read it.
 fn row_count(tview: &str) -> Option<i64> {
-    // SAFETY: the text datum borrows `tview`, which outlives the select.
     let readable = Spi::get_one_with_args::<bool>(
         "SELECT pg_catalog.has_table_privilege($1::pg_catalog.regclass, 'SELECT')",
-        &[unsafe { pgrx::datum::DatumWithOid::new(tview, pgrx::PgBuiltInOids::TEXTOID.value()) }],
+        &[crate::utils::spi::text(tview)],
     );
     if readable != Ok(Some(true)) {
         notice!("pg_tviews: no row count for {tview}: permission denied");

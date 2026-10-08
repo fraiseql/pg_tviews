@@ -10,7 +10,6 @@
 
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -46,10 +45,7 @@ impl TviewRelation {
             crate::utils::meta_table()
         );
         Spi::connect(|client| {
-            // SAFETY: the text datum borrows `entity`, which outlives the select.
-            let args = [unsafe {
-                DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }];
+            let args = [crate::utils::spi::text(entity)];
             let mut out = Vec::new();
             for row in client.select(&query, None, &args)? {
                 out.push(Self {

@@ -110,7 +110,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // The catalog the caches memoized may be rolled back with the
             // transaction: a TVIEW create that failed leaves no view, but its columns
             // were cached under the view's name (#188). Memory only, no SPI.
-            super::cache::invalidate_all_caches();
+            crate::cache::invalidate_all();
             // Auto-resume suspension on abort (discard changes)
             crate::suspend::force_resume();
             crate::revision::reset();
@@ -129,7 +129,7 @@ fn clear_transaction_state() {
     super::savepoint::clear();
     crate::executor::reset();
     FLUSHING.set(false);
-    super::cache::cascade_cache::clear_cache();
+    crate::cache::end_transaction();
     crate::audit::clear_audit_buffer();
     crate::metrics::metrics_api::reset_metrics();
     super::affected::clear();
@@ -183,8 +183,10 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
             // A CTAS that failed inside this subtransaction never reached the event
             // trigger; its pending SELECT must not leak into a later statement.
             crate::hooks::release_hook_guard_on_abort(false);
-            // DDL rolled back with the subtransaction: forget what was cached of it.
-            super::cache::invalidate_all_caches();
+            // DDL rolled back with the subtransaction: forget what was cached of it,
+            // and any crash-recovery rebuild it undid.
+            crate::cache::invalidate_all();
+            super::ops::clear_crash_recovery_cache();
         }
         _ => {}
     }
@@ -268,7 +270,7 @@ fn flush_pending() -> TViewResult<()> {
     let refresh_timer = crate::metrics::metrics_api::record_refresh_start();
 
     // Load dependency graph once (cached)
-    let graph = super::cache::graph_cache::load_cached()?;
+    let graph = crate::cache::graph()?;
 
     // Track processed keys to avoid duplicates
     // Pre-allocate with capacity based on initial pending size

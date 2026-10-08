@@ -21,7 +21,6 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 /// The statement event a delta trigger fired for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,33 +30,13 @@ pub enum Event {
     Delete,
 }
 
-/// `(relid, event, attnums)`: what a cached query of changed rows depends on.
-type DeltaKey = (u32, Event, Vec<i16>);
-
 thread_local! {
-    /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
-    static MAPPINGS: RefCell<HashMap<(String, u32), Option<String>>> = RefCell::new(HashMap::new());
-    /// `(relid, event, attnums)` → the query of the changed rows.
-    static DELTAS: RefCell<HashMap<DeltaKey, String>> = RefCell::new(HashMap::new());
-    /// Table → the select list that computes its virtual generated columns, `None`
-    /// when it has none (#179).
-    static COMPUTED: RefCell<HashMap<Oid, Option<String>>> = RefCell::new(HashMap::new());
-    /// Table → the root of its partition tree (itself when it is not a partition).
-    static ROOTS: RefCell<HashMap<Oid, Oid>> = RefCell::new(HashMap::new());
     /// Number of the current `TRUNCATE` statement, counted by the `ProcessUtility`
     /// hook; 0 when the hook is not loaded.
     static TRUNCATE_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The entities the `TRUNCATE` statement numbered `.0` already refreshed.
     static TRUNCATE_REFRESHED: RefCell<(u64, std::collections::HashSet<String>)> =
         RefCell::new((0, std::collections::HashSet::new()));
-}
-
-/// Forget the cached queries; part of [`crate::queue::cache::invalidate_all_caches`].
-pub fn clear_caches() {
-    MAPPINGS.with(|m| m.borrow_mut().clear());
-    DELTAS.with(|d| d.borrow_mut().clear());
-    COMPUTED.with(|c| c.borrow_mut().clear());
-    ROOTS.with(|r| r.borrow_mut().clear());
 }
 
 /// The entity a `pg_tviews` trigger serves: its argument (`None` for a trigger an
@@ -243,7 +222,7 @@ fn map_statement(
             let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
             let key_type = &meta
                 .key_type()
-                .map_err(|e| spi_error("the identity's type", &e))?;
+                .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
             let keys = run_with_transition_tables(
                 trigger,
                 entity,
@@ -391,7 +370,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
             };
             let key_type = &meta
                 .key_type()
-                .map_err(|e| spi_error("the identity's type", &e))?;
+                .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
             let sql = format!(
                 "WITH {DELTA} AS ({delta}) \
                  SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
@@ -405,7 +384,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 }
                 Ok::<_, TViewError>(keys)
             })
-            .map_err(|e| spi_error(&sql, &e))?;
+            .map_err(|e| crate::utils::spi::error(&sql, &e))?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
@@ -433,11 +412,12 @@ fn refresh_all(entity: &str, why: &str) -> TViewResult<()> {
 /// (cached until one of them changes).
 fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);
-    if let Some(sql) = MAPPINGS.with(|m| m.borrow().get(&key).cloned()) {
+    if let Some(sql) = crate::cache::MAPPINGS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let template = mapping.sql.clone().unwrap_or_default();
-    let sql = crate::lineage::render_template(&template).map_err(|e| spi_error(&template, &e))?;
+    let sql = crate::lineage::render_template(&template)
+        .map_err(|e| crate::utils::spi::error(&template, &e))?;
     // A rename of any relation it reads invalidates the cache.
     let relids: Vec<Oid> = crate::lineage::template_placeholders(&template)
         .into_iter()
@@ -446,8 +426,8 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
             | crate::lineage::Placeholder::Column(r, _) => Oid::from(r),
         })
         .collect();
-    crate::queue::cache::watch(&relids);
-    MAPPINGS.with(|m| m.borrow_mut().insert(key, sql.clone()));
+    crate::cache::watch(&relids);
+    crate::cache::MAPPINGS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 
@@ -458,7 +438,7 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
 /// (#179).
 fn delta_sql(entity: &str, table_oid: Oid, event: Event, attnums: &[i16]) -> TViewResult<String> {
     let key = (table_oid.to_u32(), event, attnums.to_vec());
-    if let Some(sql) = DELTAS.with(|d| d.borrow().get(&key).cloned()) {
+    if let Some(sql) = crate::cache::DELTAS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let (new, old) = match computed_columns(entity, table_oid)? {
@@ -482,7 +462,7 @@ fn delta_sql(entity: &str, table_oid: Oid, event: Event, attnums: &[i16]) -> TVi
             None => format!("SELECT * FROM {old} UNION ALL SELECT * FROM {new}"),
         },
     };
-    DELTAS.with(|d| d.borrow_mut().insert(key, sql.clone()));
+    crate::cache::DELTAS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 
@@ -491,7 +471,7 @@ fn delta_sql(entity: &str, table_oid: Oid, event: Event, attnums: &[i16]) -> TVi
 /// `None` when it has none (always before PostgreSQL 18). The expressions are
 /// written as `entity`'s owner sees them, so they resolve under its `search_path`.
 fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Option<String>> {
-    if let Some(columns) = COMPUTED.with(|c| c.borrow().get(&table_oid).cloned()) {
+    if let Some(columns) = crate::cache::COMPUTED.with(|m| m.get(&table_oid)) {
         return Ok(columns);
     }
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
@@ -509,18 +489,15 @@ fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Option<String>>
                  LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
                  WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
                 None,
-                // SAFETY: a plain OID datum.
-                &[unsafe {
-                    DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-                }],
+                &[crate::utils::spi::oid(table_oid)],
             )?
             .first()
             .get_two::<String, bool>()
     })
-    .map_err(|e| spi_error("the generated columns of a mapped table", &e))?;
+    .map_err(|e| crate::utils::spi::error("the generated columns of a mapped table", &e))?;
     let columns = columns.filter(|_| any_virtual == Some(true));
-    crate::queue::cache::watch(&[table_oid]);
-    COMPUTED.with(|c| c.borrow_mut().insert(table_oid, columns.clone()));
+    crate::cache::watch(&[table_oid]);
+    crate::cache::COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
     Ok(columns)
 }
 
@@ -556,16 +533,10 @@ fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, V
     if attnums.is_empty() {
         return Ok(None);
     }
-    // SAFETY: plain OID / int2[] datums.
-    let args = unsafe {
-        [
-            DatumWithOid::new(table_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()),
-            DatumWithOid::new(
-                attnums.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT2ARRAYOID).value(),
-            ),
-        ]
-    };
+    let args = [
+        crate::utils::spi::oid(table_oid),
+        crate::utils::spi::int2_array(attnums.to_vec()),
+    ];
     let (keys, columns) = Spi::connect(|client| {
         // Key columns with the equality operator of their type, if it is in pg_catalog.
         let mut keys = Vec::new();
@@ -594,7 +565,7 @@ fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, V
         }
         Ok::<_, spi::Error>((keys, columns))
     })
-    .map_err(|e| spi_error("primary key and columns of a mapped table", &e))?;
+    .map_err(|e| crate::utils::spi::error("primary key and columns of a mapped table", &e))?;
     if keys.is_empty()
         || keys.iter().any(|(_, catalog_eq)| !catalog_eq)
         || columns.len() != attnums.len()
@@ -671,34 +642,21 @@ fn with_transition_tables<T>(
         }
         f(client)
     })
-    .map_err(|e| spi_error("a query over the transition tables", &e))
+    .map_err(|e| crate::utils::spi::error("a query over the transition tables", &e))
 }
 
 /// The root of `table_oid`'s partition tree, `table_oid` itself if it is not a
 /// partition (cached).
 pub fn partition_root(table_oid: Oid) -> TViewResult<Oid> {
-    if let Some(root) = ROOTS.with(|r| r.borrow().get(&table_oid).copied()) {
+    if let Some(root) = crate::cache::PARTITION_ROOTS.with(|m| m.get(&table_oid)) {
         return Ok(root);
     }
     let root = Spi::get_one_with_args::<Oid>(
         "SELECT COALESCE(pg_catalog.pg_partition_root($1)::pg_catalog.oid, $1)",
-        // SAFETY: a plain OID datum.
-        &[unsafe {
-            DatumWithOid::new(
-                table_oid,
-                PgOid::BuiltIn(PgBuiltInOids::REGCLASSOID).value(),
-            )
-        }],
+        &[crate::utils::spi::regclass(table_oid)],
     )
-    .map_err(|e| spi_error("pg_partition_root", &e))?
+    .map_err(|e| crate::utils::spi::error("pg_partition_root", &e))?
     .unwrap_or(table_oid);
-    ROOTS.with(|r| r.borrow_mut().insert(table_oid, root));
+    crate::cache::PARTITION_ROOTS.with(|m| m.insert(table_oid, root));
     Ok(root)
-}
-
-fn spi_error(query: &str, e: &impl std::fmt::Display) -> TViewError {
-    TViewError::SpiError {
-        query: query.to_string(),
-        error: e.to_string(),
-    }
 }

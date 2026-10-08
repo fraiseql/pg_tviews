@@ -25,7 +25,6 @@ pub(crate) mod uncascaded;
 pub use drop::drop_tview;
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
@@ -48,7 +47,7 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
 /// Returns an error if the catalog cannot be read, the name is taken, or the
 /// rename fails.
 pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
-    let args = [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(table)];
     let view = Spi::get_one_with_args::<pg_sys::Oid>(
         &format!(
             "SELECT (SELECT m.view_oid::pg_catalog.oid FROM {} m \
@@ -77,12 +76,7 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
     );
     let taken = Spi::get_one_with_args::<bool>(
         "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
-        &[unsafe {
-            DatumWithOid::new(
-                qualified.as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        }],
+        &[crate::utils::spi::text(qualified.as_str())],
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check {view_schema}.{wanted}"),
@@ -105,11 +99,10 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
     );
     {
         let _owner = crate::owner::AsOwner::of_table(view)?;
-        crate::utils::spi_run_ddl(&sql)
-            .map_err(|error| TViewError::SpiError { query: sql, error })?;
+        crate::utils::spi::run_ddl(&sql)?;
     }
     // Names are cached by OID: here at once, in other backends at commit.
-    crate::queue::cache::invalidate_all_caches();
+    crate::cache::invalidate_all();
     // SAFETY: `table` is the TVIEW's existing table.
     unsafe { pg_sys::CacheInvalidateRelcacheByRelid(table) };
     Ok(())
@@ -142,7 +135,7 @@ pub(crate) fn in_extension_schema_for<T>(
     ddl: impl FnOnce() -> TViewResult<T>,
 ) -> TViewResult<T> {
     let schema = crate::utils::ext_schema();
-    let args = [unsafe { DatumWithOid::new(role, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(role)];
     let (can_create, name) = Spi::get_two_with_args::<bool, String>(
         &format!(
             "SELECT pg_catalog.has_schema_privilege($1, '{schema}', 'CREATE'), \
@@ -165,7 +158,7 @@ pub(crate) fn in_extension_schema_for<T>(
             format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}")
         };
         let _owner = crate::owner::AsOwner::of_extension()?;
-        crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })
+        crate::utils::spi::run_ddl(&sql)
     };
     privilege("GRANT")?;
     let result = ddl()?;
@@ -178,7 +171,7 @@ pub(crate) fn in_extension_schema_for<T>(
 /// # Errors
 /// Returns an error if the relation does not exist.
 pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
-    let args = [unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(oid)];
     let (name, schema) = Spi::get_two_with_args::<String, String>(
         "SELECT c.relname::text, n.nspname::text FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1",
@@ -209,15 +202,9 @@ const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
 pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
     Spi::run_with_args(
         "SELECT pg_catalog.pg_advisory_xact_lock($1, pg_catalog.hashtext($2))",
-        // SAFETY: the datums copy the class and borrow `entity`, which outlives the call.
         &[
-            unsafe {
-                DatumWithOid::new(
-                    REGISTRATION_LOCK_CLASS,
-                    PgOid::BuiltIn(PgBuiltInOids::INT4OID).value(),
-                )
-            },
-            unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            crate::utils::spi::int4(REGISTRATION_LOCK_CLASS),
+            crate::utils::spi::text(entity),
         ],
     )
     .map_err(|e| TViewError::CatalogError {

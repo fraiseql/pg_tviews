@@ -57,10 +57,9 @@ pub(crate) fn key_array(
     key_type: &KeyType,
     keys: &[KeyValue],
 ) -> crate::TViewResult<DatumWithOid<'static>> {
-    // SAFETY: the datums own their arrays.
     Ok(match key_values(key_type, keys)? {
-        KeyValues::Int(v) => unsafe { DatumWithOid::new(v, PgBuiltInOids::INT8ARRAYOID.value()) },
-        KeyValues::Text(v) => unsafe { DatumWithOid::new(v, PgBuiltInOids::TEXTARRAYOID.value()) },
+        KeyValues::Int(v) => crate::utils::spi::int8_array(v),
+        KeyValues::Text(v) => crate::utils::spi::text_array(v),
     })
 }
 
@@ -69,12 +68,9 @@ pub(crate) fn key_scalar(
     key_type: &KeyType,
     key: &KeyValue,
 ) -> crate::TViewResult<DatumWithOid<'static>> {
-    // SAFETY: the datums own their values.
     Ok(match key_values(key_type, std::slice::from_ref(key))? {
-        KeyValues::Int(v) => unsafe { DatumWithOid::new(v[0], PgBuiltInOids::INT8OID.value()) },
-        KeyValues::Text(mut v) => unsafe {
-            DatumWithOid::new(v.swap_remove(0), PgBuiltInOids::TEXTOID.value())
-        },
+        KeyValues::Int(v) => crate::utils::spi::int8(v[0]),
+        KeyValues::Text(mut v) => crate::utils::spi::text(v.swap_remove(0)),
     })
 }
 

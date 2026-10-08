@@ -93,13 +93,7 @@ fn find_dependent_tviews(
         catalog::meta_select()
     );
     Spi::connect(|client| -> crate::TViewResult<_> {
-        // SAFETY: the oid datum is passed by value for the duration of the select.
-        let args = [unsafe {
-            pgrx::datum::DatumWithOid::new(
-                base_table_oid,
-                PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
-            )
-        }];
+        let args = [crate::utils::spi::oid(base_table_oid)];
         let rows = client.select(&query, None, &args)?;
         let mut result = Vec::new();
         for row in rows {

@@ -10,7 +10,6 @@ use crate::error::{TViewError, TViewResult};
 use crate::queue::affected::{self, Change, NetChange};
 use crate::utils::quote_identifier;
 use pgrx::JsonB;
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use serde_json::{Map, Value, json};
@@ -78,8 +77,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), Er
     let _owner = crate::owner::AsOwner::of_extension()?;
     let updated = Spi::connect_mut(|client| {
         let args = [
-            unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-            unsafe { DatumWithOid::new(typename, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(typename),
         ];
         client
             .update(
@@ -128,9 +127,7 @@ struct EntityInfo {
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
     Spi::connect(|client| {
-        let args = [unsafe {
-            DatumWithOid::new(names, PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value())
-        }];
+        let args = [crate::utils::spi::text_array(names)];
         let mut out = HashMap::new();
         for row in client.select(
             &format!(
@@ -176,9 +173,7 @@ fn current_rows(
          WHERE t.{qi_pk}::text = ANY($1)"
     );
     Spi::connect(|client| {
-        let args = [unsafe {
-            DatumWithOid::new(pks, PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value())
-        }];
+        let args = [crate::utils::spi::text_array(pks)];
         let mut out = HashMap::new();
         for row in client.select(&sql, None, &args)? {
             let key: Option<String> = row["k"].value()?;

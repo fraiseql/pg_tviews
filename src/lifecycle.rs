@@ -2,14 +2,9 @@
 
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
-use std::sync::Mutex;
 
 /// [`crate::utils::log_once`] key of "`jsonb_delta` is not installed" (issue #159).
 pub const JSONB_DELTA_MISSING: &str = "jsonb_delta_missing";
-
-/// Cached `jsonb_delta` lookup: whether it ran, and the quoted schema the
-/// extension is installed in (`None` when it is not installed).
-static JSONB_DELTA_SCHEMA: Mutex<(bool, Option<String>)> = Mutex::new((false, None));
 
 /// Get the version of the `pg_tviews` extension
 #[pg_extern]
@@ -42,13 +37,9 @@ pub fn require_jsonb_delta_schema() -> crate::TViewResult<String> {
 /// installed. Patch calls are qualified with it so they do not depend on the
 /// session's `search_path`.
 pub fn jsonb_delta_schema() -> Option<String> {
-    let mut cache = JSONB_DELTA_SCHEMA
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if cache.0 {
-        return cache.1.clone();
+    if let Some(schema) = crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.get(&())) {
+        return schema;
     }
-
     let schema = Spi::connect(|client| {
         client
             .select(
@@ -64,8 +55,7 @@ pub fn jsonb_delta_schema() -> Option<String> {
     })
     .ok()
     .flatten();
-
-    *cache = (true, schema.clone());
+    crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.insert((), schema.clone()));
     schema
 }
 
@@ -115,15 +105,6 @@ fn pg_tviews_check_jsonb_delta() -> bool {
     check_jsonb_delta_available()
 }
 
-/// Reset the `jsonb_delta` availability cache
-/// Called during cache invalidation when the extension is created or dropped
-pub fn invalidate_jsonb_delta_cache() {
-    *JSONB_DELTA_SCHEMA
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = (false, None);
-    crate::utils::forget_logged(JSONB_DELTA_MISSING);
-}
-
 /// Initialize the extension
 /// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
 ///
@@ -132,7 +113,7 @@ pub fn invalidate_jsonb_delta_cache() {
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
-    crate::queue::cache::register_relcache_callback();
+    crate::cache::register_relcache_callback();
     crate::rebuild_worker::register();
 
     // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and

@@ -24,7 +24,6 @@ use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::TViewSchema;
 use crate::utils::quote_identifier;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
 /// Options of `pg_tviews_create_or_replace()`. `None`: not passed, so the default
@@ -257,12 +256,12 @@ fn resolve_table(name: &str, option: &str) -> TViewResult<pg_sys::Oid> {
                  FROM (SELECT pg_catalog.to_regclass($1) AS relation) r \
                  LEFT JOIN pg_catalog.pg_class c ON c.oid = r.relation",
                 None,
-                &[text(name)],
+                &[crate::utils::spi::text(name)],
             )?
             .first()
             .get_two::<pg_sys::Oid, bool>()
     })
-    .map_err(|e| catalog(&format!("Look up a table of {option}"), &e))?;
+    .map_err(|e| crate::utils::spi::catalog_error(&format!("Look up a table of {option}"), &e))?;
     match found {
         (Some(oid), Some(true)) => Ok(oid),
         (Some(_), _) => Err(invalid(
@@ -292,7 +291,7 @@ fn resolve_function_reads(
                         crate::lineage::FUNCTION_SIGNATURE
                     ),
                     None,
-                    &[text(function)],
+                    &[crate::utils::spi::text(function)],
                 )?
                 .first()
                 .get_one::<String>()
@@ -301,7 +300,7 @@ fn resolve_function_reads(
             spi::Error::InvalidPosition => Ok(None),
             e => Err(e),
         })
-        .map_err(|e| catalog("Look up a function of function_reads", &e))?
+        .map_err(|e| crate::utils::spi::catalog_error("Look up a function of function_reads", &e))?
         .ok_or_else(|| {
             invalid(
                 "function_reads",
@@ -413,12 +412,12 @@ pub(crate) fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
                     crate::utils::meta_table()
                 ),
                 None,
-                &[text(entity)],
+                &[crate::utils::spi::text(entity)],
             )?
             .first()
             .get_one::<String>()
     })
-    .map_err(|e| catalog("Find the schema of a TVIEW", &e))
+    .map_err(|e| crate::utils::spi::catalog_error("Find the schema of a TVIEW", &e))
 }
 
 /// Create `name` from `query`, or bring the existing TVIEW to it.
@@ -463,7 +462,7 @@ pub(crate) fn create_or_replace(
 
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    run(&format!(
+    crate::utils::spi::run_ddl(&format!(
         "LOCK TABLE {qualified_tv}, {qualified_view} IN ACCESS SHARE MODE"
     ))?;
 
@@ -575,9 +574,9 @@ fn check_time_declared(entity: &str, declared: bool) -> TViewResult<()> {
             "SELECT time_dependent FROM {} WHERE entity = $1",
             crate::utils::meta_table()
         ),
-        &[text(entity)],
+        &[crate::utils::spi::text(entity)],
     )
-    .map_err(|e| catalog("Read whether a TVIEW reads the time", &e))?;
+    .map_err(|e| crate::utils::spi::catalog_error("Read whether a TVIEW reads the time", &e))?;
     if dependent == Some(true) {
         Ok(())
     } else {
@@ -613,7 +612,7 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
             continue;
         }
         let qi = quote_identifier(&column);
-        run(&format!(
+        crate::utils::spi::run_ddl(&format!(
             "ALTER TABLE {qualified_tv} ALTER COLUMN {qi} TYPE {view_type} USING {qi}::{view_type}"
         ))
         .map_err(|e| {
@@ -722,12 +721,12 @@ fn check_key(entity: &str, normalized: &TViewSchema) -> TViewResult<()> {
 /// Whether the new definition's identity (`key`, ADR 0169) is the column the
 /// table's primary key is on now.
 fn same_table_key(table: pg_sys::Oid, key: Option<&str>) -> TViewResult<bool> {
-    let current = strings(
+    let current = crate::utils::spi::strings(
         "SELECT a.attname::text FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
           AND a.attnum = ANY (i.indkey) \
          WHERE i.indrelid = $1 AND i.indisprimary",
-        &[oid(table)],
+        &[crate::utils::spi::oid(table)],
     )?;
     Ok(key.is_some_and(|key| current == [key]))
 }
@@ -753,7 +752,7 @@ fn compare_definition(
     view_oid: pg_sys::Oid,
     definition: &str,
 ) -> TViewResult<Comparison> {
-    run(&format!(
+    crate::utils::spi::run_ddl(&format!(
         "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
     ))?;
     let (same_view, same_columns) = Spi::connect(|client| {
@@ -771,20 +770,23 @@ fn compare_definition(
                          WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped) \
                  FROM candidate",
                 None,
-                &[oid(view_oid)],
+                &[crate::utils::spi::oid(view_oid)],
             )?
             .first()
             .get_two::<bool, bool>()
     })
-    .map_err(|e| catalog("Compare TVIEW definitions", &e))?;
-    let base_tables = oids(
+    .map_err(|e| crate::utils::spi::catalog_error("Compare TVIEW definitions", &e))?;
+    let base_tables = crate::utils::spi::oids(
         &format!(
-            "{BASE_TABLES} FROM reads r JOIN pg_catalog.pg_class c ON c.oid = r.relid \
-             AND c.relkind IN ('r', 'p')"
+            "{} SELECT DISTINCT r.relid FROM reads r WHERE r.relkind IN ('r', 'p')",
+            crate::catalog::reads::view_reads_cte(
+                "SELECT $1::pg_catalog.regclass::pg_catalog.oid, \
+                        $1::pg_catalog.regclass::pg_catalog.oid, 0"
+            )
         ),
-        &[text("pg_temp.pg_tviews_candidate")],
+        &[crate::utils::spi::text("pg_temp.pg_tviews_candidate")],
     )?;
-    let candidate = oids(
+    let candidate = crate::utils::spi::oids(
         "SELECT 'pg_temp.pg_tviews_candidate'::pg_catalog.regclass::pg_catalog.oid",
         &[],
     )?;
@@ -792,7 +794,7 @@ fn compare_definition(
         .first()
         .and_then(|&oid| crate::lineage::view_identity(entity, oid).ok())
         .map(|identity| identity.name);
-    run("DROP VIEW pg_temp.pg_tviews_candidate")?;
+    crate::utils::spi::run_ddl("DROP VIEW pg_temp.pg_tviews_candidate")?;
     Ok(Comparison {
         same_view: same_view == Some(true),
         same_columns: same_columns == Some(true),
@@ -800,21 +802,6 @@ fn compare_definition(
         identity,
     })
 }
-
-/// The relations a view (`$1`, a regclass name) reads, followed through views, as
-/// `reads(relid)`; the caller completes the `SELECT … FROM reads`.
-const BASE_TABLES: &str = "\
-    WITH RECURSIVE reads(relid) AS ( \
-        SELECT $1::pg_catalog.regclass::oid \
-      UNION \
-        SELECT d.refobjid FROM reads r \
-        JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v' \
-        JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
-        JOIN pg_catalog.pg_depend d \
-          ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
-         AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
-         AND d.refobjid <> v.oid) \
-    SELECT c.oid";
 
 /// Replace the backing view with `definition`, which has its columns, and bring
 /// the TVIEW and the TVIEWs that read its view to it in place: each is
@@ -839,14 +826,14 @@ fn replace_in_place(
     let tv_tables: Vec<pg_sys::Oid> = std::iter::once(meta.tview_oid)
         .chain(dependents.iter().map(|&(_, table)| table))
         .collect();
-    let mut read_tables = oids(
+    let mut read_tables = crate::utils::spi::oids(
         &format!(
             "SELECT DISTINCT r.relid FROM {}.pg_tview_reads r \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
              WHERE r.entity = ANY ($1)",
             crate::utils::ext_schema()
         ),
-        &[texts(&entities)],
+        &[crate::utils::spi::text_array_of(&entities)],
     )?;
     read_tables.extend_from_slice(new_base_tables);
     read_tables.retain(|table| !tv_tables.contains(table));
@@ -860,7 +847,7 @@ fn replace_in_place(
     }
 
     super::in_extension_schema(|| {
-        run(&format!(
+        crate::utils::spi::run_ddl(&format!(
             "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
         ))
     })?;
@@ -907,7 +894,11 @@ fn dependents(
                            WHERE r.entity = m.entity), m.entity"
             ),
             None,
-            &[text(entity), oid(view_oid), oid(table_oid)],
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::oid(view_oid),
+                crate::utils::spi::oid(table_oid),
+            ],
         )? {
             if let (Some(dependent), Some(table)) =
                 (row.get::<String>(1)?, row.get::<pg_sys::Oid>(2)?)
@@ -917,14 +908,14 @@ fn dependents(
         }
         Ok::<_, spi::Error>(dependents)
     })
-    .map_err(|e| catalog("Find the TVIEWs reading a replaced one", &e))
+    .map_err(|e| crate::utils::spi::catalog_error("Find the TVIEWs reading a replaced one", &e))
 }
 
 /// `LOCK TABLE` in `mode`, as the table's owner.
 fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
     let _owner = crate::owner::AsOwner::of_table(table)?;
-    run(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
+    crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
 }
 
 /// Bring the rows of a TVIEW's table to those of its backing view with three
@@ -939,12 +930,12 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
 
     let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-    let keys = strings(
+    let keys = crate::utils::spi::strings(
         "SELECT a.attname::text FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
           AND a.attnum = ANY (i.indkey) \
          WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
-        &[oid(meta.tview_oid)],
+        &[crate::utils::spi::oid(meta.tview_oid)],
     )?;
     let prefixed = |columns: &[&String], prefix: &str| -> Vec<String> {
         columns
@@ -980,7 +971,9 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
         }
         Ok::<_, spi::Error>(rows)
     })
-    .map_err(|e| catalog("Delete the rows the new definition drops", &e))?;
+    .map_err(|e| {
+        crate::utils::spi::catalog_error("Delete the rows the new definition drops", &e)
+    })?;
     let mut changed: Vec<String> = deleted.iter().map(|(key, _)| key.clone()).collect();
     for (key, id) in deleted {
         record(entity, key, Change::Deleted(id));
@@ -1012,7 +1005,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             .map(|c| format!("{0} = v.{0}", quote_identifier(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        for key in strings(
+        for key in crate::utils::spi::strings(
             &format!(
                 "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
                  FROM {qualified_view} v \
@@ -1026,7 +1019,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             record(entity, key, Change::Updated);
         }
     }
-    for key in strings(
+    for key in crate::utils::spi::strings(
         &format!(
             "INSERT INTO {qualified_tv} ({columns}) \
              SELECT {columns} FROM {qualified_view} v \
@@ -1054,12 +1047,12 @@ fn current_storage(entity: &str) -> TViewResult<Storage> {
                     crate::utils::ext_schema()
                 ),
                 None,
-                &[text(entity)],
+                &[crate::utils::spi::text(entity)],
             )?
             .first()
             .get_three::<bool, i32, bool>()
     })
-    .map_err(|e| catalog("Read TVIEW storage", &e))?;
+    .map_err(|e| crate::utils::spi::catalog_error("Read TVIEW storage", &e))?;
     Ok(Storage {
         logged: logged.unwrap_or(true),
         fillfactor: fillfactor.unwrap_or(100),
@@ -1078,20 +1071,20 @@ fn alter_storage(
 ) -> TViewResult<()> {
     if desired.logged != current.logged {
         let persistence = if desired.logged { "LOGGED" } else { "UNLOGGED" };
-        run(&format!("ALTER TABLE {qualified_tv} SET {persistence}"))?;
+        crate::utils::spi::run_ddl(&format!("ALTER TABLE {qualified_tv} SET {persistence}"))?;
     }
     if desired.fillfactor != current.fillfactor {
         if desired.fillfactor == 100 {
-            run(&format!("ALTER TABLE {qualified_tv} RESET (fillfactor)"))?;
+            crate::utils::spi::run_ddl(&format!("ALTER TABLE {qualified_tv} RESET (fillfactor)"))?;
         } else {
-            run(&format!(
+            crate::utils::spi::run_ddl(&format!(
                 "ALTER TABLE {qualified_tv} SET (fillfactor = {})",
                 desired.fillfactor
             ))?;
         }
     }
     if desired.data_gin_index && !current.data_gin_index {
-        run(&create::index_ddl(
+        crate::utils::spi::run_ddl(&create::index_ddl(
             schema,
             tv_name,
             "data_gin",
@@ -1099,16 +1092,16 @@ fn alter_storage(
             &["data"],
         ))?;
     } else if !desired.data_gin_index && current.data_gin_index {
-        for index in strings(
+        for index in crate::utils::spi::strings(
             "SELECT i.indexrelid::pg_catalog.regclass::text FROM pg_catalog.pg_index i \
              JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
              JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin' \
              JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
               AND a.attname = 'data' AND a.attnum = i.indkey[0] \
              WHERE i.indrelid = $1 AND i.indnatts = 1 AND i.indpred IS NULL",
-            &[oid(table)],
+            &[crate::utils::spi::oid(table)],
         )? {
-            run(&format!("DROP INDEX {index}"))?;
+            crate::utils::spi::run_ddl(&format!("DROP INDEX {index}"))?;
         }
     }
     Ok(())
@@ -1126,9 +1119,12 @@ fn rebuild(
     declarations: Declarations,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
-    let objects = [oid(meta.tview_oid), oid(meta.view_oid)];
+    let objects = [
+        crate::utils::spi::oid(meta.tview_oid),
+        crate::utils::spi::oid(meta.view_oid),
+    ];
 
-    let refusals = strings(REBUILD_REFUSALS, &objects)?;
+    let refusals = crate::utils::spi::strings(REBUILD_REFUSALS, &objects)?;
     if !refusals.is_empty() {
         return Err(invalid(
             "query",
@@ -1141,7 +1137,7 @@ fn rebuild(
     }
 
     // What the rebuild must put back, as statements computed before the drop.
-    let restore = strings(RESTORE_STATEMENTS, &objects)?;
+    let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let graphql_typename = Spi::connect(|client| {
         client
             .select(
@@ -1150,12 +1146,12 @@ fn rebuild(
                     crate::utils::meta_table()
                 ),
                 None,
-                &[text(entity)],
+                &[crate::utils::spi::text(entity)],
             )?
             .first()
             .get_one::<String>()
     })
-    .map_err(|e| catalog("Read the GraphQL type name", &e))?;
+    .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))?;
     let user_indexes = user_indexes(entity, &tv_name, meta.tview_oid)?;
 
     super::drop::drop_tview(
@@ -1191,9 +1187,9 @@ fn rebuild(
     let (owners, others): (Vec<&String>, Vec<&String>) =
         restore.iter().partition(|s| s.starts_with("ALTER "));
     for statement in owners {
-        run(statement)?;
+        crate::utils::spi::run_ddl(statement)?;
     }
-    for revoke in strings(
+    for revoke in crate::utils::spi::strings(
         "SELECT pg_catalog.format('REVOKE ALL ON %s FROM %s', c.oid::pg_catalog.regclass, \
              CASE WHEN a.grantee = 0 THEN 'PUBLIC' \
                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END) \
@@ -1201,12 +1197,12 @@ fn rebuild(
          WHERE c.oid IN ($1::pg_catalog.regclass, $2::pg_catalog.regclass) \
            AND a.grantee <> c.relowner \
          GROUP BY c.oid, a.grantee",
-        &[text(&tv), text(&view)],
+        &[crate::utils::spi::text(&tv), crate::utils::spi::text(&view)],
     )? {
-        run(&revoke)?;
+        crate::utils::spi::run_ddl(&revoke)?;
     }
     for statement in others {
-        run(statement)?;
+        crate::utils::spi::run_ddl(statement)?;
     }
     drop(internal);
     super::privileges::follow(Some(rebuilt.tview_oid), true)?;
@@ -1217,9 +1213,12 @@ fn rebuild(
                 "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
                 crate::utils::meta_table()
             ),
-            &[text(entity), text(&typename)],
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::text(&typename),
+            ],
         )
-        .map_err(|e| catalog("Restore the GraphQL type name", &e))?;
+        .map_err(|e| crate::utils::spi::catalog_error("Restore the GraphQL type name", &e))?;
     }
     for (index, definition) in user_indexes {
         // Re-run inside a block that names the index when it no longer applies.
@@ -1231,8 +1230,8 @@ fn rebuild(
                           USING MESSAGE = %L || SQLERRM, ERRCODE = SQLSTATE; END', $1, $2))",
                     None,
                     &[
-                        text(&definition),
-                        text(&format!(
+                        crate::utils::spi::text(&definition),
+                        crate::utils::spi::text(format!(
                             "index {index} on {tv_name} cannot be re-created after the \
                              rebuild: "
                         )),
@@ -1241,9 +1240,9 @@ fn rebuild(
                 .first()
                 .get_one::<String>()
         })
-        .map_err(|e| catalog("Prepare a user index", &e))?
+        .map_err(|e| crate::utils::spi::catalog_error("Prepare a user index", &e))?
         .unwrap_or_default();
-        run(&wrapped)?;
+        crate::utils::spi::run_ddl(&wrapped)?;
     }
     Ok(())
 }
@@ -1328,27 +1327,9 @@ fn user_indexes(
     tv_name: &str,
     table: pg_sys::Oid,
 ) -> TViewResult<Vec<(String, String)>> {
-    let (definition, embeds) = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT definition, aggregate_embeds FROM {} WHERE entity = $1",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &[text(entity)],
-            )?
-            .first()
-            .get_two::<String, pgrx::JsonB>()
-    })
-    .map_err(|e| catalog("Read the TVIEW definition", &e))?;
-    let schema = crate::schema::inference::infer_schema(&definition.unwrap_or_default())?;
-    let embed_columns: Vec<String> = embeds
-        .and_then(|j| {
-            serde_json::from_value::<std::collections::BTreeMap<String, String>>(j.0).ok()
-        })
-        .map(|m| m.into_values().collect())
-        .unwrap_or_default();
+    let (definition, embed_columns) =
+        crate::catalog::registered::definition_and_embed_columns(entity)?;
+    let schema = crate::schema::inference::infer_schema(&definition)?;
     let managed = create::managed_index_names(tv_name, &schema, &embed_columns);
 
     Spi::connect(|client| {
@@ -1361,7 +1342,7 @@ fn user_indexes(
                                WHERE k.conindid = i.indexrelid) \
              ORDER BY 1",
             None,
-            &[oid(table)],
+            &[crate::utils::spi::oid(table)],
         )? {
             if let (Some(name), Some(definition)) = (row.get::<String>(1)?, row.get::<String>(2)?)
                 && !managed.contains(&name)
@@ -1371,68 +1352,7 @@ fn user_indexes(
         }
         Ok::<_, spi::Error>(indexes)
     })
-    .map_err(|e| catalog("List the TVIEW's indexes", &e))
-}
-
-fn run(sql: &str) -> TViewResult<()> {
-    crate::utils::spi_run_ddl(sql).map_err(|e| TViewError::SpiError {
-        query: sql.to_string(),
-        error: e,
-    })
-}
-
-/// The first column of every row of `query`.
-fn strings(query: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<String>> {
-    Spi::connect(|client| {
-        let mut values = Vec::new();
-        for row in client.select(query, None, args)? {
-            if let Some(value) = row.get::<String>(1)? {
-                values.push(value);
-            }
-        }
-        Ok::<_, spi::Error>(values)
-    })
-    .map_err(|e| catalog("Read the TVIEW's catalog entries", &e))
-}
-
-fn oids(query: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<pg_sys::Oid>> {
-    Spi::connect(|client| {
-        let mut oids = Vec::new();
-        for row in client.select(query, None, args)? {
-            if let Some(oid) = row.get::<pg_sys::Oid>(1)? {
-                oids.push(oid);
-            }
-        }
-        Ok::<_, spi::Error>(oids)
-    })
-    .map_err(|e| catalog("Read the tables a TVIEW reads", &e))
-}
-
-fn texts(values: &[String]) -> DatumWithOid<'static> {
-    // SAFETY: the datum copies the strings.
-    unsafe {
-        DatumWithOid::new(
-            values.to_vec(),
-            PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-        )
-    }
-}
-
-fn text(value: &str) -> DatumWithOid<'_> {
-    // SAFETY: the datum borrows `value` for the lifetime of the returned datum.
-    unsafe { DatumWithOid::new(value, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }
-}
-
-fn oid(value: pg_sys::Oid) -> DatumWithOid<'static> {
-    // SAFETY: the datum copies the OID.
-    unsafe { DatumWithOid::new(value, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }
-}
-
-fn catalog(operation: &str, e: &spi::Error) -> TViewError {
-    TViewError::CatalogError {
-        operation: operation.to_string(),
-        pg_error: e.to_string(),
-    }
+    .map_err(|e| crate::utils::spi::catalog_error("List the TVIEW's indexes", &e))
 }
 
 #[cfg(test)]
