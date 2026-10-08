@@ -133,7 +133,7 @@ pub fn invalidate_all() {
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
     JSONB_DELTA_SCHEMA.with(Memo::clear);
-    crate::utils::forget_logged(crate::lifecycle::JSONB_DELTA_MISSING);
+    crate::utils::forget_logged(crate::jsonb_delta::JSONB_DELTA_MISSING);
     // The catalog may have been dropped and created again under another OID.
     CATALOG_WATCHED.with(|w| w.set(false));
 }

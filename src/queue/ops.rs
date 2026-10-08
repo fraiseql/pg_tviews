@@ -31,7 +31,7 @@ pub fn enqueue_refresh_with_limit(
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `max_queue_size` would be exceeded.
 ///
-/// A plain enqueue **poisons** any direct patch for this key (issue #56): the key
+/// A plain enqueue **poisons** any direct patch for this key: the key
 /// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
 pub fn enqueue_refresh(entity: &str, key: KeyValue) {
     if let Err(e) = enqueue_refresh_with_limit(entity, key.clone(), crate::config::max_queue_size())
@@ -41,7 +41,7 @@ pub fn enqueue_refresh(entity: &str, key: KeyValue) {
     super::patch::poison(RefreshKey::new(entity, key));
 }
 
-/// Enqueue a PK-based refresh **and** record a direct patch (issue #56 fast path).
+/// Enqueue a PK-based refresh **and** record a direct patch.
 ///
 /// Inserts `(entity, pk)` into the refresh queue under the same backpressure limit
 /// as [`enqueue_refresh`], then records the captured `fields` as a top-level
@@ -65,7 +65,7 @@ pub fn enqueue_refresh_patched(
     }
 }
 
-/// Enqueue a refresh of every row of `entity`'s TVIEW (issues #157, #158). One
+/// Enqueue a refresh of every row of `entity`'s TVIEW. One
 /// entry however many rows the statement changes; the flush absorbs the entity's
 /// per-key entries into it.
 pub fn enqueue_refresh_all(entity: &str) {
@@ -91,7 +91,7 @@ pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
     for key in &keys {
         state::queue_insert(RefreshKey::new(entity, key.clone()));
     }
-    // Plain (bulk) enqueue poisons any direct patches for these keys (issue #56).
+    // Plain (bulk) enqueue poisons any direct patches for these keys.
     for key in keys {
         super::patch::poison(RefreshKey::new(entity, key));
     }

@@ -30,7 +30,7 @@ fn pg_tviews_refresh(entity: &str) -> Result<(), ErrorReport> {
     Ok(())
 }
 
-/// Bring the TVIEWs whose definitions read the current time up to date (#193):
+/// Bring the TVIEWs whose definitions read the current time up to date:
 /// `tview`, or every such TVIEW the caller owns (or may change as a member of its
 /// owner's role). Each is refreshed in full as a write to a `full_refresh` table
 /// would refresh it, then the TVIEWs reading it are, through the flush. For
@@ -156,8 +156,8 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
     Ok(order)
 }
 
-/// Refresh what rebuilds queued before returning (#202): rewriting a `tv_*` table
-/// that another TVIEW reads queues that reader's rows (#191). No statement-level
+/// Refresh what rebuilds queued before returning: rewriting a `tv_*` table
+/// that another TVIEW reads queues that reader's rows. No statement-level
 /// flush trigger follows a `SELECT` of a refresh function, so the work would
 /// otherwise reach `COMMIT` still queued.
 ///

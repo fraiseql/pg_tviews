@@ -29,7 +29,7 @@ use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 /// Schema and name of the backing view of the TVIEW whose table is
-/// `schema.table`: `tviews.<schema>__<table>`, fitted to 63 bytes (#181). The
+/// `schema.table`: `tviews.<schema>__<table>`, fitted to 63 bytes. The
 /// application's schema holds only its own objects, among them its `v_<entity>`
 /// query view. This is the only place a backing view's name is built; everything
 /// else finds it by OID (`pg_tview_meta.view_oid`).
@@ -41,7 +41,7 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
 }
 
 /// After `ALTER TABLE … RENAME` or `SET SCHEMA` of relation `table`: if it is a
-/// TVIEW's table, give its backing view the name the table now derives (#181).
+/// TVIEW's table, give its backing view the name the table now derives.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read, the name is taken, or the
@@ -194,8 +194,8 @@ pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
 const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
 
 /// Hold the registration lock of `entity` until the transaction ends, so that
-/// calls registering, changing or dropping one entity run one after the other
-/// (issue #134): `pg_advisory_xact_lock(<class>, hashtext(entity))`.
+/// calls registering, changing or dropping one entity run one after the other:
+/// `pg_advisory_xact_lock(<class>, hashtext(entity))`.
 ///
 /// # Errors
 /// Returns an error if the lock cannot be taken.
@@ -223,7 +223,7 @@ fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, ErrorR
     create_reported(tview_name, select_sql, replace::Options::default())
 }
 
-/// SQL function: create an aggregate TVIEW (issue #58).
+/// SQL function: create an aggregate TVIEW.
 ///
 /// Usage:
 /// `SELECT pg_tviews_create_aggregate('tv_user_summary', $$ SELECT o.fk_user AS
@@ -258,11 +258,6 @@ fn create_reported(
     select_sql: &str,
     options: replace::Options,
 ) -> Result<String, ErrorReport> {
-    // A session that loaded the library lazily gets the ProcessUtility hook now.
-    // SAFETY: called from a backend function, where installing the hook is valid.
-    unsafe {
-        crate::hooks::ensure_hook_installed();
-    }
     match replace::create_only(tview_name, select_sql, options, false) {
         Ok(replace::Created::Rows(_) | replace::Created::Skipped) => {
             Ok(format!("TVIEW '{tview_name}' created successfully"))
@@ -281,7 +276,7 @@ fn pg_tviews_handle_dropped(entity: &str) -> Result<(), ErrorReport> {
 }
 
 /// SQL function: create a TVIEW, or bring an existing one to `query` and
-/// `options` with the smallest change (issue #134). Returns `created`,
+/// `options` with the smallest change. Returns `created`,
 /// `unchanged`, `altered` or `rebuilt`.
 ///
 /// Usage: `SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$SELECT …$$,
@@ -321,8 +316,8 @@ fn pg_tviews_drop(
 }
 
 /// SQL function: re-derive a TVIEW's metadata and base-table triggers from its
-/// stored definition with this release's analysis, and clear `needs_reregister`
-/// (issue #137). The TVIEW's rows are not touched. Requires owning the TVIEW or
+/// stored definition with this release's analysis, and clear `needs_reregister`.
+/// The TVIEW's rows are not touched. Requires owning the TVIEW or
 /// the extension.
 ///
 /// Usage: `SELECT tviews.pg_tviews_reregister('post');`

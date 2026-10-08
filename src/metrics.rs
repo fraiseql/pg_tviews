@@ -5,7 +5,7 @@
 //! - **Refresh Statistics**: count and timing of refreshes
 //! - **Cache Performance**: hit rates of the graph and table caches
 //! - **Propagation Metrics**: iterations per flush
-//! - **Direct patches** (issue #56): captured, applied, fallen back
+//! - **Direct patches**: captured, applied, fallen back
 //!
 //! ## Architecture
 //!
@@ -21,7 +21,7 @@ use crate::queue::key::RefreshKey;
 thread_local! {
     static METRICS: std::cell::RefCell<QueueMetrics> = const { std::cell::RefCell::new(QueueMetrics::new_const()) };
 
-    /// Session-cumulative direct-patch counters (issue #56).
+    /// Session-cumulative direct-patch counters.
     ///
     /// Unlike `METRICS`, these are **not** reset at transaction boundaries, so a
     /// counter set by a trigger during an auto-commit statement is still readable
@@ -31,7 +31,7 @@ thread_local! {
         const { std::cell::RefCell::new(DirectPatchMetrics::new_const()) };
 }
 
-/// Session-cumulative counters for the direct-patch fast path (issue #56).
+/// Session-cumulative counters for the direct-patch fast path.
 #[derive(Debug, Default, Clone, Copy)]
 struct DirectPatchMetrics {
     /// Eligible UPDATEs whose patch was captured by the row trigger.
@@ -42,11 +42,11 @@ struct DirectPatchMetrics {
     fallbacks: u64,
     /// Tview rows recomputed from the backing view (the non-fast path).
     view_recomputes: u64,
-    /// Refresh writes skipped because the row already held the result (issue #72).
+    /// Refresh writes skipped because the row already held the result.
     noop_skipped: u64,
-    /// Catalog queries the refresh path made on cache misses (issue #91).
+    /// Catalog queries the refresh path made on cache misses.
     catalog_lookups: u64,
-    /// Parent lookups skipped because the child's row did not change (issue #85).
+    /// Parent lookups skipped because the child's row did not change.
     propagation_pruned: u64,
 }
 
@@ -157,35 +157,35 @@ pub mod metrics_api {
         });
     }
 
-    /// Record an eligible direct-patch capture (issue #56). Session-cumulative.
+    /// Record an eligible direct-patch capture. Session-cumulative.
     pub fn record_direct_patch_captured() {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().captured += 1;
         });
     }
 
-    /// Record `n` tview rows updated directly by a patch (issue #56).
+    /// Record `n` tview rows updated directly by a patch.
     pub fn record_direct_patches_applied(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().applied += n;
         });
     }
 
-    /// Record `n` patched pks that fell back to recompute (issue #56).
+    /// Record `n` patched pks that fell back to recompute.
     pub fn record_direct_patch_fallbacks(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().fallbacks += n;
         });
     }
 
-    /// Record `n` tview rows recomputed from the backing view (issue #56).
+    /// Record `n` tview rows recomputed from the backing view.
     pub fn record_view_recomputes(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().view_recomputes += n;
         });
     }
 
-    /// Record `n` refresh writes skipped because nothing changed (issue #72).
+    /// Record `n` refresh writes skipped because nothing changed.
     pub fn record_noop_skipped(n: u64) {
         if n > 0 {
             DIRECT_PATCH_METRICS.with(|m| {
@@ -194,14 +194,14 @@ pub mod metrics_api {
         }
     }
 
-    /// Record one catalog query made by the refresh path on a cache miss (issue #91).
+    /// Record one catalog query made by the refresh path on a cache miss.
     pub fn record_catalog_lookup() {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().catalog_lookups += 1;
         });
     }
 
-    /// Record one propagation edge skipped at an unchanged child row (issue #85).
+    /// Record one propagation edge skipped at an unchanged child row.
     pub fn record_propagation_pruned() {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().propagation_pruned += 1;
@@ -282,16 +282,16 @@ pub struct QueueStats {
     pub graph_cache_misses: u64,
     pub table_cache_hits: u64,
     pub table_cache_misses: u64,
-    /// Session-cumulative direct-patch counters (issue #56).
+    /// Session-cumulative direct-patch counters.
     pub direct_patch_captured: u64,
     pub direct_patches_applied: u64,
     pub direct_patch_fallbacks: u64,
     pub view_recomputes: u64,
-    /// Session-cumulative refresh writes skipped as no-ops (issue #72).
+    /// Session-cumulative refresh writes skipped as no-ops.
     pub refresh_noop_skipped: u64,
-    /// Session-cumulative catalog queries made on cache misses (issue #91).
+    /// Session-cumulative catalog queries made on cache misses.
     pub catalog_lookups: u64,
-    /// Session-cumulative propagation edges skipped at unchanged rows (issue #85).
+    /// Session-cumulative propagation edges skipped at unchanged rows.
     pub propagation_pruned: u64,
 }
 

@@ -15,7 +15,7 @@ use pgrx::prelude::Spi;
 use pgrx::prelude::notice;
 
 /// Make a TVIEW's table keyed on its identity at re-registration (ADR 0169): drop
-/// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had (#164), and
+/// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had, and
 /// add the primary key a table created without one lacks (a DISTINCT ON key named
 /// `identifier`, `fk_*` or `*_id`). A primary key on another column is refused.
 pub(crate) fn key_table_on_identity(
@@ -393,7 +393,7 @@ pub(crate) fn populate_initial_data(
         "INSERT INTO {qi_schema}.{qi_tview} ({col_list}) \
          SELECT {col_list} FROM {view}"
     );
-    // Rendered as every refresh renders (#200); the definition itself was parsed
+    // Rendered as every refresh renders; the definition itself was parsed
     // under the caller's settings, as CREATE VIEW parses it.
     let _pin = crate::owner::RenderPin::new();
 

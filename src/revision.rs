@@ -1,4 +1,4 @@
-//! Library/catalog revision guard (issue #137).
+//! Library/catalog revision guard.
 //!
 //! The library and the installed extension SQL each carry a catalog revision: the
 //! library as [`CATALOG_REVISION`], the catalog as the SQL function

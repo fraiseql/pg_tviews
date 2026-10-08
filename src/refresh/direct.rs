@@ -1,4 +1,4 @@
-//! Flush-time direct patch application (issue #56).
+//! Flush-time direct patch application.
 //!
 //! Consumes the transaction-local patch chains captured by the row trigger and
 //! applies them straight to `tv_<entity>` via `jsonb_smart_patch_*` — **zero**
@@ -13,7 +13,7 @@ use pgrx::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
-/// Derive a parent's patch chain from a patched child's chain (issue #56).
+/// Derive a parent's patch chain from a patched child's chain.
 ///
 /// When `parent_meta`'s plan embeds `child_entity`'s document at a concrete path
 /// (a nested embed), the child's chain is reproduced at the parent with that path
@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 /// `(["author"], {bio})` for `post`. Multi-level cascades compose by prepending
 /// again. Returns `None` (⇒ the parent must recompute) when the parent is itself
 /// DISTINCT ON or a set operation, or the embed is not nested at a non-empty path
-/// (an array or scalar embed can't take a path patch — interlock with #50).
+/// (an array or scalar embed can't take a path patch).
 pub fn derive_parent_chain(
     parent_meta: &TviewMeta,
     child_entity: &str,
@@ -54,7 +54,7 @@ pub fn derive_parent_chain(
 ///
 /// Generates a grouped `UPDATE tv_<entity> SET data = <nested patch calls>` over
 /// `pk = ANY($n)`, guarded by `data IS DISTINCT FROM <patched>` so a patch that
-/// changes nothing writes nothing (issue #72). Patch values are always bound as
+/// changes nothing writes nothing. Patch values are always bound as
 /// JSONB parameters — never interpolated.
 ///
 /// Returns `(pk, changed)` for every **materialised** row among `pks`: the
@@ -73,7 +73,7 @@ pub fn apply_direct_patch(
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
-    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
+    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, chain);
     let pk_param = chain.len() + 1;
 
@@ -115,7 +115,7 @@ pub fn apply_direct_patch(
     })
 }
 
-/// Write fan-out patches (issue #120) into `tv_<entity>`: for each `(key, fields)`,
+/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`,
 /// merge `fields` into the `data` of every row whose `lookup_col` equals `key`,
 /// in one statement. Rows already holding those values are left alone. Returns
 /// the pks of the rows written, which are journaled and counted as applied.
@@ -127,7 +127,7 @@ pub fn apply_fanout_patch(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
+    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
     let qi_lookup = crate::utils::quote_identifier(lookup_col);
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(paths, vec![vec!["we'ird".to_string()]]);
     }
 
-    // ── derive_parent_chain (issue #56) ─────────────────────────────────────
+    // ── derive_parent_chain ─────────────────────────────────────
 
     use crate::lineage::EmbedKind;
 

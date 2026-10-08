@@ -103,7 +103,7 @@ pub fn flush_audit_buffer() -> crate::TViewResult<()> {
     let payload_ref: &str = &payload;
 
     // The log is writable only by the extension owner, which inserts the entries
-    // and records the session user (issue #136).
+    // and records the session user.
     let _owner = crate::owner::AsOwner::of_extension()?;
     Spi::run_with_args(
         &format!(

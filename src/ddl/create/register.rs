@@ -1,17 +1,79 @@
 //! The TVIEW's catalog row, written in one parameterized statement.
 
 use super::ViewColumns;
+use super::derive::{Derivation, uncascaded_tables};
 use super::indexes::create_embed_lookup_indexes;
+use super::relations::relation_oid;
 use crate::catalog::plan::TviewPlan;
-use crate::ddl::uncascaded::Uncascaded;
+use crate::ddl::uncascaded::{Declarations, Uncascaded};
 use crate::error::TViewError;
 use crate::error::TViewResult;
 use crate::lineage::Identity;
 use pgrx::pg_sys;
 use pgrx::prelude::Spi;
 
+/// What creating and re-registering a TVIEW both write once its relations exist:
+/// the tables no cascade reaches, reported under the policy (`error` aborts),
+/// the indexes its embed lookups need, and its catalog row.
+pub(crate) struct Registration<'a> {
+    pub(crate) entity: &'a str,
+    /// The schema of `tv_<entity>`.
+    pub(crate) schema: &'a str,
+    pub(crate) view_oid: pg_sys::Oid,
+    pub(crate) definition: &'a str,
+    pub(crate) columns: &'a ViewColumns,
+    pub(crate) group_keys: Option<&'a crate::ddl::aggregate::GroupKeys>,
+    pub(crate) derivation: &'a Derivation,
+}
+
+impl Registration<'_> {
+    /// Report, index and write the catalog row (`replace`: over an existing one).
+    ///
+    /// # Errors
+    /// An `error` policy table no cascade reaches, a refused embed, a failed write.
+    pub(crate) fn write(&self, declarations: Declarations, replace: bool) -> TViewResult<()> {
+        let tview = format!("tv_{}", self.entity);
+        let table_oid = relation_oid(self.schema, &tview)?;
+        let qualified = crate::utils::qualified_relname_from_oid(table_oid)?;
+        let lineage = &self.derivation.lineage;
+        crate::ddl::uncascaded::report_functions(
+            &qualified,
+            &self.derivation.undeclared_functions,
+            declarations.policy,
+        )?;
+        crate::ddl::uncascaded::report_time(&qualified, &lineage.time_reads, &declarations)?;
+        crate::ddl::uncascaded::check_declared(&qualified, &declarations, lineage)?;
+        let uncascaded = Uncascaded {
+            tables: uncascaded_tables(lineage),
+            declarations,
+            time_dependent: !lineage.time_reads.is_empty(),
+        };
+        crate::ddl::uncascaded::report(&qualified, &uncascaded)?;
+        let plan = &self.derivation.plan;
+        index_embed_lookups(
+            self.entity,
+            lineage,
+            plan,
+            self.columns,
+            &tview,
+            self.schema,
+        )?;
+        MetaRow {
+            entity: self.entity,
+            view_oid: self.view_oid,
+            table_oid,
+            definition: self.definition,
+            plan,
+            group_keys: self.group_keys,
+            uncascaded: &uncascaded,
+            identity: &lineage.identity,
+        }
+        .write(replace)
+    }
+}
+
 /// A TVIEW's row of `pg_tview_meta`, as registration derives it.
-pub(crate) struct MetaRow<'a> {
+struct MetaRow<'a> {
     pub(crate) entity: &'a str,
     pub(crate) view_oid: pg_sys::Oid,
     pub(crate) table_oid: pg_sys::Oid,
@@ -31,7 +93,7 @@ impl MetaRow<'_> {
     /// # Errors
     /// A failed write, or [`TViewError::DependencyCycle`] when the TVIEW closes a
     /// cycle of TVIEWs reading each other.
-    pub(crate) fn write(&self, replace: bool) -> TViewResult<()> {
+    fn write(&self, replace: bool) -> TViewResult<()> {
         let on_conflict = if replace {
             "ON CONFLICT (entity) DO UPDATE SET \
                 view_oid = EXCLUDED.view_oid, table_oid = EXCLUDED.table_oid, \
@@ -94,7 +156,7 @@ impl MetaRow<'_> {
             crate::utils::spi::boolean(self.uncascaded.time_dependent),
         ];
         // The catalog is written as the extension's owner; the caller's right to
-        // change this TVIEW was checked before (issue #134).
+        // change this TVIEW was checked before.
         let owner = crate::owner::AsOwner::of_extension()?;
         Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
             query: sql,
@@ -110,8 +172,8 @@ impl MetaRow<'_> {
 }
 
 /// Index every column `plan` looks up an embedded TVIEW's rows by. An embedded
-/// aggregate TVIEW with no such column is refused (issue #126).
-pub(crate) fn index_embed_lookups(
+/// aggregate TVIEW with no such column is refused.
+fn index_embed_lookups(
     entity: &str,
     lineage: &crate::lineage::Lineage,
     plan: &TviewPlan,

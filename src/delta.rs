@@ -121,7 +121,7 @@ fn pg_tview_truncate_trigger<'a>(
     }
     crate::queue::enqueue_refresh_all(&entity);
     // A TRUNCATE run inside a writing statement (by one of its triggers) leaves
-    // the flush to that statement, as its other nested statements do (#197).
+    // the flush to that statement, as its other nested statements do.
     if crate::executor::inside_writing_statement() {
         return Ok(None);
     }
@@ -208,7 +208,7 @@ fn map_statement(
             }
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it
-        // that can be traced (#162).
+        // that can be traced.
         "mapped" | "all_keys" if mapping.sql.is_some() => {
             if mapping.kind == "mapped"
                 && event == Event::Update
@@ -242,8 +242,8 @@ fn map_statement(
     Ok(())
 }
 
-/// Write an UPDATE into every TVIEW row it reaches instead of recomputing them
-/// (issue #120), when the mapping has a fan-out patch and every updated row
+/// Write an UPDATE into every TVIEW row it reaches instead of recomputing them,
+/// when the mapping has a fan-out patch and every updated row
 /// qualifies: same key, and only columns the patch copies into `data` changed.
 /// Returns false (map the rows instead) otherwise.
 fn fan_out(
@@ -255,7 +255,8 @@ fn fan_out(
     let (Some(fanout), Some(key_col)) = (&mapping.fanout, &mapping.key_col) else {
         return Ok(false);
     };
-    if !crate::config::direct_patch_enabled() || !crate::lifecycle::check_jsonb_delta_available() {
+    if !crate::config::direct_patch_enabled() || !crate::jsonb_delta::check_jsonb_delta_available()
+    {
         return Ok(false);
     }
     let Some((same_row, columns)) = row_pairing(table_oid, &mapping.attnums)? else {
@@ -336,7 +337,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
             Ok(true)
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it
-        // that can be traced (#162).
+        // that can be traced.
         "mapped" | "all_keys" if mapping.sql.is_some() => {
             let Some(keys_sql) = rendered(entity, mapping)? else {
                 refresh_all(entity, "a relation its mapping reads is gone")?;
@@ -434,8 +435,7 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
 /// The changed rows of a statement: the new rows of an INSERT, the old rows of a
 /// DELETE, both images of an UPDATE. An UPDATE row whose columns the TVIEW reads
 /// (`attnums`) are unchanged, matched to its other image by primary key, is left
-/// out of both. Virtual generated columns, NULL in transition tables, are computed
-/// (#179).
+/// out of both. Virtual generated columns, NULL in transition tables, are computed.
 fn delta_sql(entity: &str, table_oid: Oid, event: Event, attnums: &[i16]) -> TViewResult<String> {
     let key = (table_oid.to_u32(), event, attnums.to_vec());
     if let Some(sql) = crate::cache::DELTAS.with(|m| m.get(&key)) {

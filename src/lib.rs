@@ -39,6 +39,7 @@ mod delta;
 mod executor;
 mod flush;
 mod hooks;
+mod internal_ddl;
 mod lineage;
 mod metrics;
 mod owner;
@@ -63,7 +64,8 @@ mod config;
 mod ddl;
 mod dependency;
 mod error;
-mod metadata;
+mod install_sql;
+mod jsonb_delta;
 mod validation;
 
 // Public re-exports
@@ -185,7 +187,7 @@ mod tests {
 
     #[pg_test]
     fn test_check_jsonb_delta_available_function() {
-        let _result = crate::lifecycle::check_jsonb_delta_available();
+        let _result = crate::jsonb_delta::check_jsonb_delta_available();
     }
 
     #[pg_test]

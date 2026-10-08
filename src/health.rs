@@ -2,14 +2,39 @@
 
 use pgrx::prelude::*;
 
+/// One row of `pg_tviews_health_check()`: status, component, message, severity.
+type Check = (String, String, String, String);
+
+fn ok(component: &str, message: impl Into<String>) -> Check {
+    ("OK".into(), component.into(), message.into(), "info".into())
+}
+
+fn warning(component: &str, message: impl Into<String>) -> Check {
+    (
+        "WARNING".into(),
+        component.into(),
+        message.into(),
+        "warning".into(),
+    )
+}
+
+fn error(component: &str, message: impl Into<String>) -> Check {
+    (
+        "ERROR".into(),
+        component.into(),
+        message.into(),
+        "error".into(),
+    )
+}
+
 /// Health check function for production monitoring
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
 /// - `jsonb_delta` availability
-/// - Metadata consistency
-/// - Orphaned triggers
-/// - Queue status
+/// - Catalog revision and metadata consistency
+/// - Orphaned and missing triggers
+/// - TVIEW count
 #[pg_extern]
 fn pg_tviews_health_check() -> TableIterator<
     'static,
@@ -20,102 +45,101 @@ fn pg_tviews_health_check() -> TableIterator<
         name!(severity, String),
     ),
 > {
-    let mut results = Vec::new();
+    let mut results = vec![
+        ok(
+            "extension",
+            format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
+        ),
+        jsonb_delta_check(),
+    ];
+    let (catalog, unversioned) = catalog_check();
+    results.push(catalog);
+    // A 0.1.0 catalog has none of the tables the other checks read.
+    if !unversioned {
+        results.extend([
+            metadata_check(),
+            reregister_check(),
+            trigger_check(),
+            count_check(),
+        ]);
+    }
+    TableIterator::new(results)
+}
 
-    // Check 1: Extension loaded
-    results.push((
-        "OK".to_string(),
-        "extension".to_string(),
-        format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
-        "info".to_string(),
-    ));
-
-    // Check 2: jsonb_delta availability
-    let has_jsonb_delta =
+fn jsonb_delta_check() -> Check {
+    let installed =
         Spi::get_one::<bool>("SELECT COUNT(*) > 0 FROM pg_extension WHERE extname = 'jsonb_delta'")
             .unwrap_or(Some(false))
             .unwrap_or(false);
-
-    if has_jsonb_delta {
-        results.push((
-            "OK".to_string(),
-            "jsonb_delta".to_string(),
-            "jsonb_delta extension available (optimized mode)".to_string(),
-            "info".to_string(),
-        ));
+    if installed {
+        ok(
+            "jsonb_delta",
+            "jsonb_delta extension available (optimized mode)",
+        )
     } else {
-        results.push((
-            "WARNING".to_string(),
-            "jsonb_delta".to_string(),
-            "jsonb_delta not installed (falling back to standard JSONB)".to_string(),
-            "warning".to_string(),
-        ));
+        warning(
+            "jsonb_delta",
+            "jsonb_delta not installed (falling back to standard JSONB)",
+        )
     }
+}
 
-    // Catalog revision (issue #137): does this library match the installed SQL?
-    let installed = crate::revision::installed();
-    let unversioned = matches!(installed, crate::revision::Installed::Unversioned);
-    results.push(match installed {
+/// Whether this library matches the installed SQL, and whether the
+/// catalog is a 0.1.0 one.
+fn catalog_check() -> (Check, bool) {
+    match crate::revision::installed() {
         crate::revision::Installed::Matches => (
-            "OK".to_string(),
-            "catalog".to_string(),
-            format!(
-                "catalog revision {} matches the library",
-                crate::revision::CATALOG_REVISION
+            ok(
+                "catalog",
+                format!(
+                    "catalog revision {} matches the library",
+                    crate::revision::CATALOG_REVISION
+                ),
             ),
-            "info".to_string(),
+            false,
         ),
         crate::revision::Installed::Differs(revision) => (
-            "ERROR".to_string(),
-            "catalog".to_string(),
-            format!(
-                "library catalog revision {} does not match the installed extension ({revision}): \
-                 {}",
-                crate::revision::CATALOG_REVISION,
-                crate::revision::remedy(revision)
+            error(
+                "catalog",
+                format!(
+                    "library catalog revision {} does not match the installed extension \
+                     ({revision}): {}",
+                    crate::revision::CATALOG_REVISION,
+                    crate::revision::remedy(revision)
+                ),
             ),
-            "error".to_string(),
+            false,
         ),
         crate::revision::Installed::Unversioned => (
-            "ERROR".to_string(),
-            "catalog".to_string(),
-            "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql"
-                .to_string(),
-            "error".to_string(),
+            error(
+                "catalog",
+                "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql",
+            ),
+            true,
         ),
-    });
-
-    // A 0.1.0 catalog has none of the tables the other checks read.
-    if unversioned {
-        return TableIterator::new(results);
     }
+}
 
-    // Check 3: Metadata consistency
-    let orphaned_meta = Spi::get_one::<i64>(&format!(
+fn metadata_check() -> Check {
+    let orphaned = Spi::get_one::<i64>(&format!(
         "SELECT COUNT(*) FROM {} m
          WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
         crate::utils::meta_table()
     ))
     .unwrap_or(Some(0))
     .unwrap_or(0);
-
-    if orphaned_meta > 0 {
-        results.push((
-            "ERROR".to_string(),
-            "metadata".to_string(),
-            format!("{orphaned_meta} orphaned metadata entries found"),
-            "error".to_string(),
-        ));
+    if orphaned > 0 {
+        error(
+            "metadata",
+            format!("{orphaned} orphaned metadata entries found"),
+        )
     } else {
-        results.push((
-            "OK".to_string(),
-            "metadata".to_string(),
-            "All metadata entries valid".to_string(),
-            "info".to_string(),
-        ));
+        ok("metadata", "All metadata entries valid")
     }
+}
 
-    // TVIEWs registered before a release that changed what registration derives.
+/// TVIEWs registered before a release that changed what registration derives.
+fn reregister_check() -> Check {
     let stale = Spi::connect(|client| {
         client
             .select(
@@ -132,35 +156,25 @@ fn pg_tviews_health_check() -> TableIterator<
     .ok()
     .flatten()
     .unwrap_or(0);
-    results.push(if stale == 0 {
-        (
-            "OK".to_string(),
-            "reregister".to_string(),
-            "No TVIEW needs re-registration".to_string(),
-            "info".to_string(),
-        )
+    if stale == 0 {
+        ok("reregister", "No TVIEW needs re-registration")
     } else {
-        (
-            "WARNING".to_string(),
-            "reregister".to_string(),
+        warning(
+            "reregister",
             format!(
                 "{stale} TVIEW{} registered by an older release: run \
                  SELECT * FROM tviews.pg_tviews_reregister_all()",
                 if stale == 1 { "" } else { "s" }
             ),
-            "warning".to_string(),
         )
-    });
+    }
+}
 
-    // Check 4: pg_tviews' triggers against the tables the TVIEWs read (issue #139).
+/// `pg_tviews`' triggers against the tables the TVIEWs read.
+fn trigger_check() -> Check {
     match crate::dependency::triggers::trigger_problems() {
         Ok(p) if p.orphaned.is_empty() && p.missing.is_empty() && p.untagged.is_empty() => {
-            results.push((
-                "OK".to_string(),
-                "triggers".to_string(),
-                "All triggers properly linked".to_string(),
-                "info".to_string(),
-            ));
+            ok("triggers", "All triggers properly linked")
         }
         Ok(p) => {
             let parts: Vec<String> = [
@@ -182,37 +196,20 @@ fn pg_tviews_health_check() -> TableIterator<
                 format!("{} {action}: {}", count(list.len(), what), sample(list))
             })
             .collect();
-            results.push((
-                "WARNING".to_string(),
-                "triggers".to_string(),
-                parts.join("; "),
-                "warning".to_string(),
-            ));
+            warning("triggers", parts.join("; "))
         }
-        Err(e) => results.push((
-            "ERROR".to_string(),
-            "triggers".to_string(),
-            format!("could not check triggers: {e}"),
-            "error".to_string(),
-        )),
+        Err(e) => error("triggers", format!("could not check triggers: {e}")),
     }
+}
 
-    // Check 5: TVIEW count
-    let tview_count = Spi::get_one::<i64>(&format!(
+fn count_check() -> Check {
+    let tviews = Spi::get_one::<i64>(&format!(
         "SELECT COUNT(*) FROM {}",
         crate::utils::meta_table()
     ))
     .unwrap_or(Some(0))
     .unwrap_or(0);
-
-    results.push((
-        "OK".to_string(),
-        "tviews".to_string(),
-        format!("{tview_count} TVIEWs registered"),
-        "info".to_string(),
-    ));
-
-    TableIterator::new(results)
+    ok("tviews", format!("{tviews} TVIEWs registered"))
 }
 
 /// Get current queue statistics

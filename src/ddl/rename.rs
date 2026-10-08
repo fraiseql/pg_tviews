@@ -60,7 +60,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
             viewdef.trim().trim_end_matches(';').to_string()
         };
 
-        // An aggregate TVIEW (issue #58) names its group key columns by name. The
+        // An aggregate TVIEW names its group key columns by name. The
         // rename was authorized by PostgreSQL; the catalog is written as the
         // extension's owner.
         let owner = crate::owner::AsOwner::of_extension()?;

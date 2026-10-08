@@ -37,7 +37,7 @@ pub fn find_base_tables(
             b'r' | b'p' if !tview_tables.contains(&oid) => Some(oid),
             // A materialized view's rows change only by REFRESH MATERIALIZED VIEW,
             // which fires no trigger: the lineage classifies it `all_keys`, and the
-            // TVIEW's uncascaded_policy decides (#189).
+            // TVIEW's uncascaded_policy decides.
             b'm' => Some(oid),
             _ => None,
         })

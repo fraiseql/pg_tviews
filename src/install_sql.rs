@@ -20,7 +20,7 @@
 
 use pgrx::prelude::*;
 
-// The control file fixes the install schema to `tviews` (issue #136). CREATE
+// The control file fixes the install schema to `tviews`. CREATE
 // EXTENSION creates it when missing, owned by the installing role, but adopts an
 // existing one as is: refuse one owned by another role, which could replace the
 // objects created in it. The install script never uses CREATE OR REPLACE or
@@ -56,10 +56,10 @@ BEGIN
 END
 $$;
 
--- Every role reaches the triggers, functions and catalog views (issue #136).
+-- Every role reaches the triggers, functions and catalog views.
 GRANT USAGE ON SCHEMA @extschema@ TO PUBLIC;
 
--- Say once, here, that refreshes run without jsonb_delta (issue #159); the
+-- Say once, here, that refreshes run without jsonb_delta; the
 -- refresh path itself only writes it to the server log. A WARNING, because
 -- CREATE EXTENSION hides an install script's NOTICEs.
 DO $$
@@ -81,7 +81,7 @@ $$;
 extension_sql!(
     r"
     -- view_oid / table_oid are regclass, not oid: pg_dump writes them as qualified
-    -- names, so a restored row names the restored relations (issue #96).
+    -- names, so a restored row names the restored relations.
     CREATE TABLE @extschema@.pg_tview_meta (
         entity TEXT NOT NULL PRIMARY KEY,
         view_oid REGCLASS NOT NULL,
@@ -93,17 +93,17 @@ extension_sql!(
         -- embeds (embeds) and the direct-patch map (direct).
         plan JSONB NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        -- GraphQL type reported by pg_tviews_flush_and_report (issue #76); NULL
+        -- GraphQL type reported by pg_tviews_flush_and_report; NULL
         -- means PascalCase(entity).
         graphql_typename TEXT,
-        -- Aggregate TVIEWs (issue #58): source table name -> group key column.
+        -- Aggregate TVIEWs: source table name -> group key column.
         group_keys JSONB,
         -- A release changed what registration derives since this TVIEW was last
-        -- registered (issue #137): it keeps refreshing with its old metadata until
+        -- registered: it keeps refreshing with its old metadata until
         -- pg_tviews_reregister() re-derives it. Upgrade scripts set it.
         needs_reregister BOOLEAN NOT NULL DEFAULT false,
         -- Base tables the backing view reads whose writes no cascade maps to this
-        -- TVIEW's keys (issues #157, #158). regclass, like view_oid: a dump names
+        -- TVIEW's keys. regclass, like view_oid: a dump names
         -- them, so a restored row names the restored tables.
         uncascaded_oids REGCLASS[] NOT NULL DEFAULT '{}',
         -- pg_tviews.uncascaded_policy when the TVIEW was created: what a write to
@@ -115,24 +115,24 @@ extension_sql!(
         -- backing view's query tree: an object with its kind (pk, distinct_on) and
         -- its columns (name, type). NULL for a row registered before it: pk_<entity>.
         identity JSONB,
-        -- Tables declared with a policy of their own (issue #195), in the
+        -- Tables declared with a policy of their own, in the
         -- uncascaded_tables option: uncascaded_table_policies[i] applies to writes
         -- to uncascaded_table_oids[i] instead of uncascaded_policy.
         uncascaded_table_oids REGCLASS[] NOT NULL DEFAULT '{}',
         uncascaded_table_policies TEXT[] NOT NULL DEFAULT '{}',
-        -- The functions the definition calls that may read tables (issue #193),
+        -- The functions the definition calls that may read tables,
         -- declared in the function_reads option with the tables each reads: one
         -- (function, table) pair per table, NULL for a function reading none.
         -- Functions as text, schema.name(argument types): a regprocedure column
         -- would block pg_upgrade.
         function_read_functions TEXT[] NOT NULL DEFAULT '{}',
         function_read_tables REGCLASS[] NOT NULL DEFAULT '{}',
-        -- How a TVIEW that reads the current time is brought up to date (issue
-        -- #193): 'external', pg_tviews_refresh_time_dependent() called at the
+        -- How a TVIEW that reads the current time is brought up to date:
+        -- 'external', pg_tviews_refresh_time_dependent() called at the
         -- boundary; NULL for a TVIEW that reads no time or declared nothing.
         time_refresh TEXT CHECK (time_refresh IN ('external')),
         -- The definition reads the current time (CURRENT_DATE, now()…), so its
-        -- rows change with no write (issue #193).
+        -- rows change with no write.
         time_dependent BOOLEAN NOT NULL DEFAULT false
     );
 
@@ -158,12 +158,12 @@ extension_sql!(
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
 
-    -- The row trigger reads the catalog as the writing role (issue #136). It holds
+    -- The row trigger reads the catalog as the writing role. It holds
     -- view definitions, which pg_views already shows to everyone. Only the
     -- extension owner writes it.
     GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
 
-    -- Revision of this catalog (issue #137). The library refuses to work against a
+    -- Revision of this catalog. The library refuses to work against a
     -- catalog of another revision; an upgrade script that changes the extension SQL
     -- redefines this function, and the library's revision::CATALOG_REVISION with it.
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
@@ -174,8 +174,8 @@ extension_sql!(
     name = "create_metadata_tables",
 );
 
-// The relations each TVIEW's backing view reads, followed through views (issue
-// #139): the tables its triggers belong on, the dependency order of TVIEWs, and the
+// The relations each TVIEW's backing view reads, followed through views: the
+// tables its triggers belong on, the dependency order of TVIEWs, and the
 // registry's base_tables. Plain SQL over the catalogs.
 extension_sql!(
     r"
@@ -183,7 +183,7 @@ CREATE VIEW @extschema@.pg_tview_reads AS
 WITH RECURSIVE reads(entity, relid) AS (
     SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
   UNION
-    -- Tables read inside the functions it calls, as declared (issue #193).
+    -- Tables read inside the functions it calls, as declared.
     SELECT m.entity, t.relid::oid
     FROM @extschema@.pg_tview_meta m,
          pg_catalog.unnest(m.function_read_tables) AS t(relid)
@@ -210,7 +210,7 @@ GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
     requires = ["create_metadata_tables"],
 );
 
-// The read contract for tools (issue #133, ADR 0136 Decision 4). Plain SQL over
+// The read contract for tools (ADR 0136 Decision 4). Plain SQL over
 // the internal tables and the system catalogs, calling no function of the library,
 // so it can be read without the library, with a mismatched one, and on a standby.
 // contract_version() covers the view's columns, the `options` keys and the
@@ -315,7 +315,7 @@ extension_sql!(
 -- Event trigger handler: the ProcessUtility hook turns CREATE TABLE tv_* AS into a TVIEW
 -- before PostgreSQL creates anything, so a tv_* table created this way means the hook did
 -- not see the statement (pg_tviews is not in shared_preload_libraries): fail loudly
--- rather than leave a table deploy tools would take for a TVIEW (issues #80, #134).
+-- rather than leave a table deploy tools would take for a TVIEW.
 CREATE FUNCTION @extschema@.pg_tviews_handle_ddl_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
@@ -354,7 +354,7 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 'Fails a CREATE TABLE tv_* AS that the pg_tviews hook did not turn into a TVIEW';
 
 -- Event trigger handler: deregister a TVIEW whose backing view or table was dropped as
--- a dependent of something else (issues #53, #57).  The base-table -> tview link is not
+-- a dependent of something else.  The base-table -> tview link is not
 -- a hard PG dependency, so CASCADE from a base table, a helper view or a schema removes
 -- the backing view v_* (and the base-table triggers on that table) but never the
 -- trigger-populated tv_* table, its pg_tview_meta row or its triggers on other tables.
@@ -364,14 +364,14 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 -- Only objects dropped as dependents (original = false) count: pg_tviews' own drops of
 -- v_* / tv_* (pg_tviews_drop, DROP TABLE tv_* via the ProcessUtility hook) name them
 -- directly, so they never re-enter here. DROP OWNED names a role's objects directly
--- too, and pg_tviews never runs it: its drops count whatever their flag (#186).
+-- too, and pg_tviews never runs it: its drops count whatever their flag.
 --
 -- PL/pgSQL (not #[pg_extern]) because pgrx cannot emit RETURNS event_trigger.  It fires for
 -- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
 -- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
 -- work is guarded by a defensive EXCEPTION handler.
 --
--- Runs as the dropping role (issue #136): PostgreSQL authorized that role's drop, and
+-- Runs as the dropping role: PostgreSQL authorized that role's drop, and
 -- pg_tviews_handle_dropped() does the rest without giving it more rights (see there).
 CREATE FUNCTION @extschema@.pg_tviews_handle_drop_event()
 RETURNS event_trigger
@@ -406,9 +406,9 @@ CREATE EVENT TRIGGER pg_tviews_sql_drop
     EXECUTE FUNCTION @extschema@.pg_tviews_handle_drop_event();
 
 COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
-'Deregisters a TVIEW whose backing view or table was dropped as a dependent (issues #53, #57)';
+'Deregisters a TVIEW whose backing view or table was dropped as a dependent';
 
--- Whether candidate SQL defines the same view as view_oid (issue #81): a column
+-- Whether candidate SQL defines the same view as view_oid: a column
 -- rename rewrites a TVIEW's stored definition, and the rewrite is kept only if
 -- PostgreSQL renders it exactly like the renamed backing view. The EXCEPTION
 -- block turns any failure (syntax, unknown column) into false and discards the
@@ -507,7 +507,7 @@ CREATE TRIGGER pg_tview_meta_rebind
     FOR EACH ROW
     EXECUTE FUNCTION @extschema@.pg_tviews_meta_rebind();
 
--- Other backends cache TVIEW metadata (issue #91). Any write to the catalog
+-- Other backends cache TVIEW metadata. Any write to the catalog
 -- invalidates its relcache entry at commit, which every backend watches.
 CREATE FUNCTION @extschema@.pg_tviews_meta_changed()
 RETURNS trigger
@@ -549,7 +549,7 @@ CREATE INDEX idx_audit_log_entity_time ON @extschema@.pg_tview_audit_log(entity,
 
 COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
 
--- Writes buffered audit entries (issue #136). Only the extension owner may call it:
+-- Writes buffered audit entries. Only the extension owner may call it:
 -- the library calls it as that owner, for whichever role triggered the entries, and
 -- performed_by is the session user, whatever role the caller has set.
 CREATE FUNCTION @extschema@.pg_tviews_audit_write(entries JSONB)
@@ -568,7 +568,7 @@ REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
     name = "audit_table",
 );
 
-// Per-TVIEW physical health report (issue #74). Pure SQL over the catalogs and the
+// Per-TVIEW physical health report. Pure SQL over the catalogs and the
 // statistics views, so it is read-only and callable on a hot standby.
 extension_sql!(
     r"
@@ -668,7 +668,7 @@ BEGIN
               AND si.idx_scan = 0 AND a.attname NOT LIKE 'fk\_%'
             ORDER BY 1);
 
-        -- Integer fk_* columns that no index leads with (issue #71).
+        -- Integer fk_* columns that no index leads with: parents are looked up by them.
         missing_propagation_indexes := ARRAY(
             SELECT a.attname::TEXT FROM pg_attribute a
             WHERE a.attrelid = r.rel AND a.attnum > 0 AND NOT a.attisdropped

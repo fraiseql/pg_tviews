@@ -4,9 +4,9 @@ mod register;
 mod relations;
 mod select;
 
-use derive::{Derivation, derive, uncascaded_tables};
+use derive::derive;
 pub(crate) use indexes::{index_ddl, index_name, managed_index_names, propagation_index_ddl};
-use register::{MetaRow, index_embed_lookups};
+use register::Registration;
 pub(crate) use relations::view_source_columns;
 use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
@@ -17,7 +17,7 @@ mod tests;
 
 pub use select::ViewColumns;
 
-use super::uncascaded::{Declarations, Uncascaded};
+use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
 use crate::utils::log_debug;
 use pgrx::prelude::*;
@@ -38,7 +38,7 @@ pub(crate) fn current_schema() -> TViewResult<String> {
         })
 }
 
-/// Storage of a TVIEW's table (issue #134): its persistence, its fillfactor, and
+/// Storage of a TVIEW's table: its persistence, its fillfactor, and
 /// whether `data` has a GIN index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Storage {
@@ -62,7 +62,7 @@ impl Storage {
 
 /// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW
 /// when `group_keys` is given, and return the number of rows it was populated
-/// with (issue #134).
+/// with.
 ///
 /// Steps: normalize and analyze the definition; create the backing view
 /// `v_<entity>` and the table `tv_<entity>`; populate it; register it; install
@@ -104,6 +104,62 @@ pub(crate) fn normalize_definition(
     select::normalize(entity_name, select_sql)
 }
 
+/// The entity a new TVIEW `tview_name` names and its definition, normalized:
+/// refused when the TVIEW exists, the definition has no `pk_<entity>` column, or
+/// an aggregate's definition is no `GROUP BY` of its keys.
+fn checked_definition(
+    tview_name: &str,
+    select_sql: &str,
+    aggregate: bool,
+) -> TViewResult<(String, String, ViewColumns)> {
+    if tview_exists(tview_name)? {
+        return Err(TViewError::RelationExists {
+            name: tview_name.to_string(),
+        });
+    }
+    // `tv_entity` or just `entity`.
+    let named = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
+    // Read the definition's columns with PostgreSQL's parser, expand `SELECT *`
+    // and rewrite a raw SELECT to the `pk_*, id, data` shape.
+    let (final_select_sql, final_schema) = normalize_definition(named, select_sql)?;
+    let entity = final_schema
+        .entity
+        .clone()
+        .ok_or_else(|| TViewError::RequiredColumnMissing {
+            column_name: format!("pk_{named}"),
+            context: "pg_tviews requires a Trinity Pattern primary key column named                       \"pk_<entity>\" (e.g., pk_user, pk_post)"
+                .to_string(),
+        })?;
+    // The entity comes from a column alias of the definition: it names objects.
+    crate::validation::validate_sql_identifier(&entity, "entity_name")?;
+    if aggregate {
+        select::check_aggregate(&final_select_sql, &entity)?;
+    }
+    Ok((entity, final_select_sql, final_schema))
+}
+
+/// Create the backing view `view_schema.view_name` of the TVIEW `tview`, taking
+/// over a view a dropped TVIEW left behind; its OID.
+fn create_backing_view_in(
+    view_schema: &str,
+    view_name: &str,
+    tview: &str,
+    definition: &str,
+) -> TViewResult<pg_sys::Oid> {
+    if relation_exists(view_schema, view_name)?
+        && !super::drop::reclaim_leftover_view(view_schema, view_name)?
+    {
+        return Err(TViewError::DefinitionRefused {
+            reason: format!(
+                "the backing view of {tview}, {view_schema}.{view_name}, is already taken by \
+                 another relation"
+            ),
+        });
+    }
+    super::in_extension_schema(|| create_backing_view(view_name, definition, view_schema))?;
+    relation_oid(view_schema, view_name)
+}
+
 fn create_tview_inner(
     tview_name: &str,
     select_sql: &str,
@@ -121,47 +177,9 @@ fn create_tview_inner(
     // Calls that register, change or drop one entity run one after the other.
     super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
 
-    // Step 1: Check if TVIEW already exists
-    let exists = tview_exists(tview_name)?;
-    if exists {
-        return Err(TViewError::RelationExists {
-            name: tview_name.to_string(),
-        });
-    }
-
-    // Step 1.5: Extract entity name from tview_name
-    // Support both "tv_entity" and just "entity" formats
-    let entity_name = tview_name
-        .strip_prefix("tv_")
-        .map_or(tview_name, |stripped| stripped);
-
-    // Step 2: Read the definition's columns with PostgreSQL's parser, expand
-    // `SELECT *` and rewrite a raw SELECT to the `pk_*, id, data` shape.
-    let (final_select_sql, final_schema) = normalize_definition(entity_name, select_sql)?;
-
-    let entity_name =
-        final_schema
-            .entity
-            .as_ref()
-            .ok_or_else(|| TViewError::RequiredColumnMissing {
-                column_name: format!(
-                    "pk_{}",
-                    tview_name.strip_prefix("tv_").unwrap_or(tview_name)
-                ),
-                context: "pg_tviews requires a Trinity Pattern primary key column named \
-                      \"pk_<entity>\" (e.g., pk_user, pk_post)"
-                    .to_string(),
-            })?;
-
-    // Validate entity_name inferred from the SELECT to prevent SQL injection
-    // (tview_name is validated at the pg_extern boundary, but entity_name comes
-    // from infer_schema and could contain metacharacters if the user crafts a
-    // malicious column alias like pk_evil'injection).
-    crate::validation::validate_sql_identifier(entity_name, "entity_name")?;
-
-    if group_keys.is_some() {
-        select::check_aggregate(&final_select_sql, entity_name)?;
-    }
+    let (entity_name, final_select_sql, final_schema) =
+        checked_definition(tview_name, select_sql, group_keys.is_some())?;
+    let entity_name = entity_name.as_str();
 
     // Derive the canonical materialized-table name: always tv_<entity>.
     // This normalises both calling conventions:
@@ -171,44 +189,32 @@ fn create_tview_inner(
 
     let schema_name = schema_name.to_string();
 
-    // Step 3: Create the backing view
+    // Create the backing view
     let (view_schema, view_name) = super::backing_view_name(&schema_name, &tv_table_name);
-    if relation_exists(&view_schema, &view_name)?
-        && !super::drop::reclaim_leftover_view(&view_schema, &view_name)?
-    {
-        return Err(TViewError::DefinitionRefused {
-            reason: format!(
-                "the backing view of {schema_name}.{tv_table_name}, {view_schema}.{view_name}, \
-                 is already taken by another relation"
-            ),
-        });
-    }
-    super::in_extension_schema(|| {
-        create_backing_view(&view_name, &final_select_sql, &view_schema)
-    })?;
-    let view_oid = relation_oid(&view_schema, &view_name)?;
+    let view_oid = create_backing_view_in(
+        &view_schema,
+        &view_name,
+        &format!("{schema_name}.{tv_table_name}"),
+        &final_select_sql,
+    )?;
 
-    // Step 4: Find base table dependencies, and how a write to each maps to keys,
+    // Find base table dependencies, and how a write to each maps to keys,
     // from the view's query tree (ADR 0157), with the column that names the
-    // TVIEW's rows (ADR 0169); and the cascade paths of its local tables (for an
-    // aggregate TVIEW, one per declared group key, issue #58).
+    // TVIEW's rows (ADR 0169); and the local paths of its local tables (for an
+    // aggregate TVIEW, one per declared group key).
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
     let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
-    let Derivation {
-        lineage,
-        plan,
-        base_tables,
-        undeclared_functions,
-    } = derive(
+    let derivation = derive(
         entity_name,
         group_keys,
         &base_table_oids,
         view_oid,
         &declarations,
     )?;
+    let lineage = &derivation.lineage;
 
-    // Step 5: Create materialized table tv_<entity>, keyed on the identity.
+    // Create materialized table tv_<entity>, keyed on the identity.
     create_materialized_table(
         &tv_table_name,
         &final_schema,
@@ -218,11 +224,11 @@ fn create_tview_inner(
         view_oid,
     )?;
 
-    // Step 6: Populate initial data
+    // Populate initial data
     let rows = populate_initial_data(&tv_table_name, &schema_name, view_oid)?;
 
-    // Step 6.6: Reject a TVIEW no write can ever refresh: its definition reads no
-    // table (issue #49). Any table it reads, whatever it is called, maps its writes
+    // Reject a TVIEW no write can ever refresh: its definition reads no
+    // table. Any table it reads, whatever it is called, maps its writes
     // to the TVIEW's keys or goes through the uncascaded policy below. The objects
     // created above roll back with the ERROR.
     if group_keys.is_none() && lineage.tables.is_empty() {
@@ -233,51 +239,29 @@ fn create_tview_inner(
         });
     }
 
-    // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
-    // reported under the policy; `error` aborts here, and the objects created above
-    // roll back with it.
-    let qualified_tv =
-        crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?;
-    super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
-    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
-    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
-    let uncascaded = Uncascaded {
-        tables: uncascaded_tables(&lineage),
-        declarations,
-        time_dependent: !lineage.time_reads.is_empty(),
-    };
-    super::uncascaded::report(&qualified_tv, &uncascaded)?;
-
-    // Step 7: Register metadata (with its plan)
-    index_embed_lookups(
-        entity_name,
-        &lineage,
-        &plan,
-        &final_schema,
-        &tv_table_name,
-        &schema_name,
-    )?;
-    MetaRow {
+    // Report the base tables no cascade reaches under
+    // the policy (`error` aborts, and the objects created above roll back with it),
+    // and register the TVIEW with its plan.
+    Registration {
         entity: entity_name,
+        schema: &schema_name,
         view_oid,
-        table_oid: relation_oid(&schema_name, &tv_table_name)?,
         definition: &final_select_sql,
-        plan: &plan,
+        columns: &final_schema,
         group_keys,
-        uncascaded: &uncascaded,
-        identity: &lineage.identity,
+        derivation: &derivation,
     }
-    .write(false)?;
+    .write(declarations, false)?;
 
-    // Step 7.5: Whoever reads the TVIEW's table reads its backing view (#181).
+    // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
 
-    // Step 8: Install triggers on base tables, as their lineage needs them.
-    if base_tables.is_empty() {
+    // Install triggers on base tables, as their lineage needs them.
+    if derivation.base_tables.is_empty() {
         warning!("No base table dependencies found for {}", tv_table_name);
     } else {
         crate::dependency::install_triggers(
-            &crate::dependency::trigger_plan(&base_tables, &lineage)?,
+            &crate::dependency::trigger_plan(&derivation.base_tables, lineage)?,
             entity_name,
         )?;
     }
@@ -326,12 +310,7 @@ pub fn reregister_metadata(
     // The stored policies hold; an `error` table no cascade reaches aborts the
     // re-registration (and the ALTER that caused it).
     let declarations = Declarations::of(&meta);
-    let Derivation {
-        lineage,
-        plan,
-        base_tables,
-        undeclared_functions,
-    } = derive(
+    let derivation = derive(
         entity_name,
         group_keys.as_ref(),
         &base_table_oids,
@@ -341,47 +320,24 @@ pub fn reregister_metadata(
     key_table_on_identity(
         schema_name,
         &format!("tv_{entity_name}"),
-        &lineage.identity.name,
+        &derivation.lineage.identity.name,
     )?;
-    let qualified_tv = crate::utils::qualified_relname_from_oid(relation_oid(
-        schema_name,
-        &format!("tv_{entity_name}"),
-    )?)?;
-    super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
-    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
-    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
-    let uncascaded = Uncascaded {
-        tables: uncascaded_tables(&lineage),
-        declarations,
-        time_dependent: !lineage.time_reads.is_empty(),
-    };
-    super::uncascaded::report(&qualified_tv, &uncascaded)?;
-    let tview_name = format!("tv_{entity_name}");
-    index_embed_lookups(
-        entity_name,
-        &lineage,
-        &plan,
-        &schema,
-        &tview_name,
-        schema_name,
-    )?;
-    MetaRow {
+    Registration {
         entity: entity_name,
+        schema: schema_name,
         view_oid,
-        table_oid: relation_oid(schema_name, &tview_name)?,
         definition,
-        plan: &plan,
+        columns: &schema,
         group_keys: group_keys.as_ref(),
-        uncascaded: &uncascaded,
-        identity: &lineage.identity,
+        derivation: &derivation,
     }
-    .write(true)?;
+    .write(declarations, true)?;
     crate::cache::invalidate_all();
-    crate::dependency::trigger_plan(&base_tables, &lineage)
+    crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage)
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
-/// base-table triggers match what that definition reads (issue #137).
+/// base-table triggers match what that definition reads.
 ///
 /// # Errors
 /// Returns an error if the TVIEW is not registered, the caller does not own it,
@@ -437,7 +393,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     })
 }
 
-/// The `group_keys` of an aggregate TVIEW (issue #58), `None` for any other.
+/// The `group_keys` of an aggregate TVIEW, `None` for any other.
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] naming the entity when the catalog cannot be

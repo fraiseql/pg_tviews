@@ -13,12 +13,12 @@ pub struct EntityDepGraph {
     pub parents: HashMap<String, Vec<String>>,
 
     /// Child relationships: entity -> the entities it reads (embeds, and TVIEW
-    /// tables it maps like base tables, #191), refreshed before it.
+    /// tables it maps like base tables), refreshed before it.
     pub children: HashMap<String, Vec<String>>,
 
     /// `(child, parent)` edges where the parent embeds the child's computed document
     /// (a nested or array embed). Along these, a child row whose refresh changed
-    /// nothing cannot change the parent (issue #85).
+    /// nothing cannot change the parent.
     pub document_edges: HashSet<(String, String)>,
 
     /// Topological order (refresh from low to high dependency)
@@ -70,7 +70,7 @@ impl EntityDepGraph {
                     embed.lookups.clone(),
                 );
             }
-            // A TVIEW whose refreshes this one maps like writes (#191) is
+            // A TVIEW whose refreshes this one maps like writes is
             // refreshed first.
             for table in &meta.plan.tables {
                 if let Some(inner) = &table.tview

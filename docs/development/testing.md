@@ -102,7 +102,7 @@ cargo llvm-cov --features pg_test --html
 | `src/ddl/drop.rs` | TBD% | 90% | High |
 | `src/dependency/graph.rs` | TBD% | 80% | Medium |
 | `src/schema/types.rs` | TBD% | 75% | Medium |
-| `src/metadata.rs` | TBD% | 80% | Medium |
+| `src/install_sql.rs` | TBD% | 80% | Medium |
 | `src/hooks.rs` | TBD% | 70% | Low |
 
 ### Coverage Goals

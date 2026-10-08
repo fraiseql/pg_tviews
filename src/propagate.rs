@@ -1,14 +1,9 @@
+//! Parent discovery for the flush: the rows of the TVIEWs that embed a changed
+//! TVIEW's rows, found through the lookup columns of their plans.
+
 use pgrx::prelude::*;
 use std::collections::HashMap;
 
-/// Propagation Engine: Parent Discovery for Dependent Views
-///
-/// This module provides parent discovery for the transaction-level queue:
-/// - **Parent Discovery**: Finds views that depend on changed entities
-/// - **Affected Row Identification**: Locates rows impacted by changes
-///
-/// Used by the flush (`src/queue/`) to iteratively discover and enqueue parent
-/// TVIEWs for refresh.
 use crate::catalog::KeyType;
 use crate::queue::RefreshKey;
 use crate::queue::key::KeyValue;
@@ -23,7 +18,7 @@ use crate::utils::quote_identifier;
 /// (ADR 0169, D4), so the caller passes the `pk_<child>` of the rows its
 /// refresh touched, before and after. For the child rows that `appeared`, the
 /// parents are also looked up in their backing view: a parent row an inner join
-/// dropped with the child is in the view again, not in its table (#177).
+/// dropped with the child is in the view again, not in its table.
 ///
 /// One query per parent lookup column, `lookup = ANY($1)` over all the pks.
 ///
@@ -73,7 +68,7 @@ pub fn find_parents_batch(
 
 /// Whether propagation from `child`'s row `pk` to `parent` can be skipped: the
 /// parent embeds only the child's computed document, and the child's refresh in
-/// this flush changed nothing (issue #85). A scalar embed that follows the child's
+/// this flush changed nothing. A scalar embed that follows the child's
 /// FK to a deeper relationship always propagates.
 fn prune_edge(graph: &crate::flush::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
     let prune = graph

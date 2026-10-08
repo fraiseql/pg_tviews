@@ -1,4 +1,4 @@
-//! One flush per outermost writing statement (#197).
+//! One flush per outermost writing statement.
 //!
 //! The statement-level flush trigger fires at the end of every statement that
 //! writes a TVIEW's base table, nested statements included. A statement run from

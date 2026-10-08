@@ -242,7 +242,7 @@ thread_local! {
 }
 
 /// Write `message` to the server log (`LOG`) the first time this backend sees
-/// the condition `key`; later calls are silent (issue #159). For conditions a
+/// the condition `key`; later calls are silent. For conditions a
 /// normal workload hits on every write, where a client WARNING would be noise.
 pub fn log_once(key: &str, message: &str) {
     if first_time(key) {
@@ -310,13 +310,6 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> 
 ///
 /// # Examples
 ///
-/// ```
-/// # use crate::utils::quote_identifier;
-/// assert_eq!(quote_identifier("post"), "\"post\"");
-/// assert_eq!(quote_identifier("Post"), "\"Post\"");
-/// assert_eq!(quote_identifier("pk_user"), "\"pk_user\"");
-/// assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
-/// ```
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -353,6 +346,13 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_identifier_always_quotes_and_doubles_quotes() {
+        assert_eq!(quote_identifier("post"), "\"post\"");
+        assert_eq!(quote_identifier("Post"), "\"Post\"");
+        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+    }
 
     #[test]
     fn test_quote_identifier_normal() {

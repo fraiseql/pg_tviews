@@ -8,7 +8,7 @@ use crate::queue::state;
 
 pub(super) fn flush_pending() -> TViewResult<()> {
     // Take what the triggers queued. The direct patches come with their queue
-    // entries (issue #56): keys carrying a usable chain are patched straight into
+    // entries: keys carrying a usable chain are patched straight into
     // tv_<entity>; everything else recomputes.
     let state::Pending {
         queue,
@@ -23,7 +23,7 @@ pub(super) fn flush_pending() -> TViewResult<()> {
     let timer = crate::metrics::metrics_api::record_refresh_start();
 
     let mut flush = Flush::new(crate::cache::graph()?, queue, patches);
-    // Issue #120: write each parent change into all its children at once; the
+    // Write each parent change into all its children at once; the
     // parents of every changed child join the queue.
     flush.apply_fanouts(fanout)?;
 

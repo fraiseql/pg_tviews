@@ -1,4 +1,4 @@
-//! Transaction-local patch payloads for the issue #56 direct-patch fast path.
+//! Transaction-local patch payloads for the direct-patch fast path.
 //!
 //! The queue stays the dedup/ordering key set; the JSONB payloads ride alongside
 //! in [`Pending::patches`](super::state::Pending), keyed by the same
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 ///
 /// An empty prefix targets the entity's own `data` object; a non-empty prefix
 /// (e.g. `["author"]`) targets a nested embedded object — used by parent patch
-/// derivation (issue #56).
+/// derivation.
 pub type PatchEntry = (Vec<String>, Map<String, Value>);
 
 /// The patch payload carried for a queued [`RefreshKey`].
@@ -72,7 +72,7 @@ pub fn poison(key: RefreshKey) {
     super::state::update_patch(key, |slot| *slot = Some(PatchState::Poisoned));
 }
 
-// ── Fan-out patches (issue #120) ─────────────────────────────────────
+// ── Fan-out patches ─────────────────────────────────────
 //
 // An UPDATE of a parent row whose changed columns every child copies unchanged
 // is written into all its children in one statement at flush time, instead of
@@ -91,7 +91,7 @@ pub fn record_fanout(key: FanoutKey, fields: Map<String, Value>) {
     super::state::merge_fanout(key, fields);
 }
 
-// ── Flush-local map operations (issue #56) ───────────────────────────
+// ── Flush-local map operations ───────────────────────────
 //
 // Parent patch derivation happens against the flush's *local* snapshot map, not
 // the transaction's pending patches (already drained). These mirror `record`/`poison`

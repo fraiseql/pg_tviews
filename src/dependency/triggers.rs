@@ -83,7 +83,7 @@ pub enum TriggerSet {
     /// see only the rows of statements naming it, and its partitions get no copy
     /// of a trigger with transition tables.
     Delta,
-    /// Another TVIEW's table (#191): its refreshes are mapped by the delta
+    /// Another TVIEW's table: its refreshes are mapped by the delta
     /// triggers alone. They fire inside the flush, which drains what they queue;
     /// a flush or TRUNCATE trigger there would flush again from inside it.
     TviewDelta,
@@ -114,7 +114,7 @@ pub fn trigger_plan(
     lineage: &crate::lineage::Lineage,
 ) -> TViewResult<TriggerPlan> {
     use crate::lineage::TableKind;
-    // Other TVIEWs' tables the lineage maps (#191): they are not base tables.
+    // Other TVIEWs' tables the lineage maps: they are not base tables.
     let tview_tables = lineage.tables.iter().filter(|t| {
         t.tview.is_some() && matches!(t.kind, TableKind::Mapped | TableKind::AllKeys(_))
     });
@@ -124,7 +124,7 @@ pub fn trigger_plan(
             let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
             let set = match table.map(|t| &t.kind) {
                 // REFRESH MATERIALIZED VIEW fires no trigger: the ProcessUtility
-                // hook follows it (#189).
+                // hook follows it.
                 _ if table.is_some_and(|t| t.matview) => TriggerSet::None,
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
@@ -211,7 +211,7 @@ fn entity_triggers(
     })
 }
 
-/// What the health check finds wrong with `pg_tviews`' triggers (issue #139), each
+/// What the health check finds wrong with `pg_tviews`' triggers, each
 /// as `<trigger or entity> on <table>`.
 #[derive(Default)]
 pub struct TriggerProblems {
@@ -569,7 +569,7 @@ pub fn remove_entity_triggers(tview_entity: &str) -> TViewResult<()> {
 /// `DROP TRIGGER IF EXISTS trigger ON table` (`table` quoted and qualified), as
 /// the table's owner: `DROP TRIGGER` needs the owner where `CREATE TRIGGER` needs
 /// only the `TRIGGER` privilege, and these are `pg_tviews`' own triggers, removed
-/// for a TVIEW the caller may drop (issue #136).
+/// for a TVIEW the caller may drop.
 fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_table(table_oid)?;
     let drop_sql = format!(

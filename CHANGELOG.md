@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   and the TVIEW went stale.
 - A restored catalog row whose plan names a table the restore did not create fails
   the insert, naming the TVIEW, instead of mapping nothing.
+- A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or
+  `CREATE TABLE AS` calls is intercepted like any other: the TVIEW was left
+  registered with no table, or its definition kept the old column name.
 
 ### Removed
 

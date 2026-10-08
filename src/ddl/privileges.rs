@@ -1,4 +1,4 @@
-//! A backing view's privileges follow its TVIEW's table (#181).
+//! A backing view's privileges follow its TVIEW's table.
 //!
 //! A backing view lives in the extension's schema, where a grant on the
 //! application's schema (`GRANT SELECT ON ALL TABLES IN SCHEMA app`, default
@@ -53,7 +53,7 @@ const SELECT_GRANT_CHANGES: &str = "\
 /// be changed.
 pub(crate) fn follow(table: Option<pg_sys::Oid>, owners: bool) -> TViewResult<()> {
     // The statements below are pg_tviews' own: the hook must not follow them.
-    let _internal = crate::hooks::InternalDdl::begin();
+    let _internal = crate::internal_ddl::InternalDdl::begin();
     // SAFETY: makes the changes of the statement just run visible to the queries below.
     unsafe { pg_sys::CommandCounterIncrement() };
     if owners {

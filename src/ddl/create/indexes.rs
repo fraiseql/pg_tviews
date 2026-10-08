@@ -71,7 +71,7 @@ pub(crate) fn create_tview_indexes(
 
 /// Names of the indexes `pg_tviews` creates on `tview_name` for `schema` (the
 /// `data` GIN index included) and for the columns joined to the aggregate TVIEWs it
-/// embeds: the indexes a rebuild does not carry over as a user's (issue #134).
+/// embeds: the indexes a rebuild does not carry over as a user's.
 pub(crate) fn managed_index_names(
     tview_name: &str,
     schema: &ViewColumns,

@@ -238,7 +238,7 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalP
         {
             continue;
         }
-        // Issue #56: an UPDATE of the TVIEW's own row that only changes columns
+        // An UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
         if path.root
             && let Some(fields) = try_capture_direct_patch(trigger, path, changed.as_deref())
@@ -281,7 +281,7 @@ fn follow_local_path(
     }
 }
 
-// ── Issue #56: direct-patch capture ──────────────────────────────────────────
+// ── Direct-patch capture ─────────────────────────────────────────────────────
 
 unsafe extern "C" {
     /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
@@ -296,7 +296,7 @@ unsafe extern "C" {
     ) -> bool;
 }
 
-/// Try to capture a direct patch for an eligible row-level UPDATE (issue #56).
+/// Try to capture a direct patch for an eligible row-level UPDATE.
 ///
 /// Returns `Some(fields)` — a `key → value` JSONB map ready to merge into the
 /// entity's own `data` — only when every changed column is in the plan's
@@ -323,7 +323,7 @@ fn try_capture_direct_patch(
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
     if direct.is_empty()
         || !changed.iter().all(|c| data_key(c).is_some())
-        || !crate::lifecycle::check_jsonb_delta_available()
+        || !crate::jsonb_delta::check_jsonb_delta_available()
     {
         return None;
     }
@@ -393,8 +393,8 @@ fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
     }
 }
 
-/// Extract NEW's value for `col` as a `serde_json::Value` using the type whitelist
-/// (issue #56). The whitelist matches `PostgreSQL`'s own `to_jsonb` output
+/// Extract NEW's value for `col` as a `serde_json::Value` using the type whitelist.
+/// The whitelist matches `PostgreSQL`'s own `to_jsonb` output
 /// byte-for-byte; any other type (float, numeric, timestamp, array, …) yields
 /// `None`, forcing a recompute. SQL NULL becomes `Value::Null`.
 fn capture_value(
@@ -458,7 +458,7 @@ fn capture_value(
 /// A refresh error fails the statement. If triggers are suspended, this trigger
 /// skips the flush. Inside an enclosing statement that writes a TVIEW's base
 /// table (a trigger writing its own table), it leaves the queue to that
-/// statement's flush (#197).
+/// statement's flush.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(

@@ -13,15 +13,15 @@ pub(crate) struct Derivation {
     pub(crate) lineage: crate::lineage::Lineage,
     pub(crate) plan: TviewPlan,
     /// The base tables the view reads (`pg_depend`), and those the functions it
-    /// calls read (#193): the tables its triggers go on.
+    /// calls read: the tables its triggers go on.
     pub(crate) base_tables: Vec<pg_sys::Oid>,
-    /// The functions it calls that may read tables and are not declared (#193).
+    /// The functions it calls that may read tables and are not declared.
     pub(crate) undeclared_functions: Vec<String>,
 }
 
-/// The aggregate TVIEWs (issue #58) a definition embeds, each mapped to the output
-/// column that carries the value joined to the aggregate's `pk_<aggregate>`
-/// (issue #126). An aggregate has no `fk_<aggregate>` column to propagate by, so a
+/// The aggregate TVIEWs a definition embeds, each mapped to the output
+/// column that carries the value joined to the aggregate's `pk_<aggregate>`.
+/// An aggregate has no `fk_<aggregate>` column to propagate by, so a
 /// change to group `k` refreshes the rows whose column equals `k`.
 ///
 /// # Errors
@@ -52,8 +52,8 @@ pub(crate) fn aggregate_embeds(
 }
 
 /// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local
-/// paths of its local tables (for an aggregate TVIEW, one per declared group key,
-/// issue #58), the mapping of every base table, its embeds and its direct-patch
+/// paths of its local tables (for an aggregate TVIEW, one per declared group
+/// key), the mapping of every base table, its embeds and its direct-patch
 /// map.
 pub(crate) fn derive(
     entity_name: &str,
@@ -108,10 +108,10 @@ pub(crate) fn derive(
 }
 
 /// A `mapped` table one equality away from a column of the table holding the
-/// identity, which the TVIEW projects, gets the fan-out patch of issue #120: an
+/// identity, which the TVIEW projects, gets a fan-out patch: an
 /// UPDATE of its columns copied into `data` is written into every TVIEW row with
 /// that column's value. Not for a DISTINCT ON TVIEW, whose row shows its group's
-/// winner, nor for the virtual generated columns a trigger sees as NULL (#179).
+/// winner, nor for the virtual generated columns a trigger sees as NULL.
 pub(crate) fn add_fanout_patches(
     key_mappings: &mut serde_json::Value,
     lineage: &crate::lineage::Lineage,

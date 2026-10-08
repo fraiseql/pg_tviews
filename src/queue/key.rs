@@ -48,7 +48,7 @@ pub struct RefreshKey {
     /// The row's identity value.
     pub key: KeyValue,
 
-    /// Every row of the entity's TVIEW (issues #157, #158): a write to a base table
+    /// Every row of the entity's TVIEW: a write to a base table
     /// no cascade maps, under the `full_refresh` policy. `key` is `Int(0)`.
     pub all: bool,
 }

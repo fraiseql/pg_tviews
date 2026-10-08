@@ -21,14 +21,14 @@ const RESET_AT_END: &[fn()] = &[
 ];
 
 /// What an abort resets besides: the catalog the caches memoized may be rolled
-/// back with it (a TVIEW create that failed leaves no view, #188), the
+/// back with it (a TVIEW create that failed leaves no view), the
 /// suspension, the revision check, the hook's pending CTAS and the crash-recovery
 /// checks.
 const RESET_ON_ABORT: &[fn()] = &[
     crate::cache::invalidate_all,
     crate::suspend::force_resume,
     crate::revision::reset,
-    || crate::hooks::release_hook_guard_on_abort(true),
+    || crate::internal_ddl::release_on_abort(true),
     crate::queue::ops::clear_crash_recovery_cache,
 ];
 
@@ -36,7 +36,7 @@ const RESET_ON_ABORT: &[fn()] = &[
 /// pending CTAS (it never reached the event trigger), the cached catalog of DDL it
 /// undid, and the crash-recovery rebuilds it undid.
 const RESET_ON_SUBABORT: &[fn()] = &[
-    || crate::hooks::release_hook_guard_on_abort(false),
+    || crate::internal_ddl::release_on_abort(false),
     crate::cache::invalidate_all,
     crate::queue::ops::clear_crash_recovery_cache,
 ];

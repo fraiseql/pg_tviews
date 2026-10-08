@@ -70,7 +70,7 @@ pub struct LocalPath {
 }
 
 /// How an UPDATE of a mapped table is written into every TVIEW row it reaches
-/// in one statement (issue #120): the rows whose `lookup_col` holds the changed
+/// in one statement: the rows whose `lookup_col` holds the changed
 /// row's key, each changed column in `fields` written to its top-level key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanoutPatch {

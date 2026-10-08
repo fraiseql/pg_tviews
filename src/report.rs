@@ -1,5 +1,5 @@
 //! `pg_tviews_flush_and_report()`: the read-model rows a transaction changed, in
-//! the GraphQL Cascade shape (issue #76).
+//! the GraphQL Cascade shape.
 //!
 //! A mutation function calls it last. It flushes whatever is still queued, then
 //! reports every TVIEW row the transaction's refreshes inserted, updated or deleted

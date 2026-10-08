@@ -4,13 +4,13 @@
 //! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
 //! for 1.5-3× performance improvement on cascade updates.
 
-pub mod main;
+pub mod row;
 
 pub mod bulk;
 pub mod direct;
 
 pub use bulk::refresh_bulk;
-pub use main::refresh_key;
+pub use row::refresh_key;
 
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;
@@ -81,7 +81,7 @@ pub struct Touched {
     /// Every row refreshed, before and after.
     pub pks: Vec<i64>,
     /// The rows that were not in the table before: a parent that embeds them
-    /// through an inner join may be missing from its own table too (#177).
+    /// through an inner join may be missing from its own table too.
     pub appeared: Vec<i64>,
 }
 
@@ -140,7 +140,7 @@ pub(crate) struct Written {
 }
 
 /// Quoted, comma-separated column list of a refresh upsert (`INSERT INTO tv (…)`
-/// and the matching `SELECT …`), so reserved-word and mixed-case columns work (#89).
+/// and the matching `SELECT …`), so reserved-word and mixed-case columns work.
 pub(crate) fn column_list(col_names: &[String]) -> String {
     col_names
         .iter()
@@ -150,13 +150,13 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 }
 
 /// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>,
-/// updated_at = NOW()` guarded by a comparison of the non-key columns (issue #72).
+/// updated_at = NOW()` guarded by a comparison of the non-key columns.
 ///
 /// The guard compares record images ([`rows_differ`]), with the operator and type
 /// qualified. The flush runs under the owner's
-/// `search_path = pg_catalog, pg_temp` (#141), so a per-type `=` installed elsewhere
+/// `search_path = pg_catalog, pg_temp`, so a per-type `=` installed elsewhere
 /// (ltree, citext, hstore) would not be found, and some types (json, point) have no
-/// `=` at all (#156). `*=` needs neither. The `::record` casts stop the parser from
+/// `=` at all. `*=` needs neither. The `::record` casts stop the parser from
 /// expanding `ROW(..) op ROW(..)` into one per-column `*=`. Equality is binary: NULL
 /// equals NULL, but citext `'A'` vs `'a'` or numeric `1.0` vs `1.00` count as changes,
 /// which is what a materialized copy should record.
@@ -169,7 +169,7 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 ///
 /// `data_expr` replaces `EXCLUDED.data` as the new `data` value (the smart-patch
 /// path merges into the stored document). Every other column still tracks the
-/// backing view, so no projected column is left stale (issue #98).
+/// backing view, so no projected column is left stale.
 pub(crate) fn upsert_conflict_action(
     qi_tv: &str,
     col_names: &[String],
@@ -206,7 +206,7 @@ pub(crate) fn upsert_conflict_action(
 /// lists differ, compared as record images (see [`upsert_conflict_action`]).
 ///
 /// Safe under the owner's `search_path = pg_catalog, pg_temp` for any column type,
-/// including types whose `=` lives outside `pg_catalog` or that have none (#156).
+/// including types whose `=` lives outside `pg_catalog` or that have none.
 pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
     format!(
         "NOT (ROW({})::pg_catalog.record OPERATOR(pg_catalog.*=) ROW({})::pg_catalog.record)",
@@ -216,8 +216,8 @@ pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
 }
 
 /// Run `INSERT INTO qi_tv (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
-/// record the rows its no-op guard skipped (issue #72) and journal the
-/// rows it inserted or updated (issue #76).
+/// record the rows its no-op guard skipped and journal the
+/// rows it inserted or updated.
 ///
 /// The source runs once, in a CTE; the statement returns how many rows the source
 /// produced and the `pk_<entity>` of each row written, split into inserted

@@ -1,4 +1,4 @@
-//! Aggregate TVIEWs (issue #58): an entity with no `tb_<entity>` whose rows are the
+//! Aggregate TVIEWs: an entity with no `tb_<entity>` whose rows are the
 //! `GROUP BY` groups of its source tables.
 //!
 //! The caller names, for each source table, the column whose value **is** the group

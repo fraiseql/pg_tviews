@@ -1,7 +1,6 @@
-//! Base tables a TVIEW reads whose writes no cascade maps to its keys (issues
-//! #157, #158): the tables its lineage classifies `all_keys` (ADR 0157). They are
+//! Base tables a TVIEW reads whose writes no cascade maps to its keys: the tables its lineage classifies `all_keys` (ADR 0157). They are
 //! reported when the TVIEW is registered, and its `uncascaded_policy`, or the
-//! policy declared for the table itself in `uncascaded_tables` (#195), decides
+//! policy declared for the table itself in `uncascaded_tables`, decides
 //! what a write to one of them does: refused at create by default.
 
 use crate::config::UncascadedPolicy;
@@ -20,8 +19,8 @@ pub(crate) struct UncascadedTable {
 }
 
 /// What a TVIEW declares about the reads no cascade reaches: its policy, the
-/// tables with a policy of their own (#195), and the tables the functions it
-/// calls read (#193).
+/// tables with a policy of their own, and the tables the functions it
+/// calls read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declarations {
     pub policy: UncascadedPolicy,
@@ -34,7 +33,7 @@ pub(crate) struct Declarations {
     pub time_refresh: TimeRefresh,
 }
 
-/// How a TVIEW that reads the current time is brought up to date (#193).
+/// How a TVIEW that reads the current time is brought up to date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimeRefresh {
     /// Nothing declared: its policy refuses it, or warns.
@@ -188,7 +187,7 @@ impl Declarations {
 pub(crate) struct Uncascaded {
     pub tables: Vec<UncascadedTable>,
     pub declarations: Declarations,
-    /// The definition reads the current time (#193).
+    /// The definition reads the current time.
     pub time_dependent: bool,
 }
 
@@ -302,7 +301,7 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
     Ok(())
 }
 
-/// Add the tables the declared functions read to `lineage` (#193), and return
+/// Add the tables the declared functions read to `lineage`, and return
 /// them with the functions the definition calls that are not declared.
 ///
 /// # Errors
@@ -373,8 +372,8 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
     })
 }
 
-/// Report the functions `tview` calls that may read tables and are not declared
-/// (#193): nothing would refresh it when those tables change, so they are refused
+/// Report the functions `tview` calls that may read tables and are not declared:
+/// nothing would refresh it when those tables change, so they are refused
 /// under `error` and `full_refresh`, and warned about under `warn`.
 ///
 /// # Errors
@@ -422,7 +421,7 @@ pub(crate) fn report_functions(
     Ok(())
 }
 
-/// Report how `tview` reads the current time (#193): its rows change at a
+/// Report how `tview` reads the current time: its rows change at a
 /// boundary no write marks. Refused under `error` and `full_refresh` unless it
 /// declares `time_refresh`, warned about under `warn`; a declared `time_refresh`
 /// for a definition that reads no time is refused.
@@ -476,7 +475,7 @@ pub(crate) fn report_time(
 }
 
 /// Refuse a table declared in `uncascaded_tables` that `lineage` does not read,
-/// or whose writes it traces: the declaration would never apply (#195).
+/// or whose writes it traces: the declaration would never apply.
 ///
 /// # Errors
 /// Returns an error naming the first such table.
@@ -507,7 +506,7 @@ pub(crate) fn check_declared(
 
 /// After `REFRESH MATERIALIZED VIEW matview`: refresh in full every TVIEW that
 /// reads it under the `full_refresh` policy (its own or the TVIEW's), then flush the queue, as the flush
-/// trigger does after a write (#189). Under `warn` the TVIEW was created knowing
+/// trigger does after a write. Under `warn` the TVIEW was created knowing
 /// it would go stale; under `error` it was never created.
 ///
 /// # Errors

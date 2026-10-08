@@ -15,20 +15,19 @@ pub struct TviewMeta {
     /// What registration derived from the backing view's query tree (ADR 0203).
     pub plan: plan::TviewPlan,
 
-    /// What a write to a base table no cascade maps to its keys does (issues
-    /// #157, #158): the policy stored when the TVIEW was created.
+    /// What a write to a base table no cascade maps to its keys does: the policy
+    /// stored when the TVIEW was created.
     pub uncascaded_policy: crate::config::UncascadedPolicy,
 
-    /// The tables declared with a policy of their own (#195), each overriding
+    /// The tables declared with a policy of their own, each overriding
     /// `uncascaded_policy` for writes to it.
     pub table_policies: Vec<(Oid, crate::config::UncascadedPolicy)>,
 
-    /// The functions the definition calls, declared with the tables each reads
-    /// (#193): `schema.name(argument types)`.
+    /// The functions the definition calls, declared with the tables each reads:
+    /// `schema.name(argument types)`.
     pub function_reads: Vec<(String, Vec<Oid>)>,
 
-    /// A TVIEW that reads the current time declared `time_refresh: external`
-    /// (#193).
+    /// A TVIEW that reads the current time declared `time_refresh: external`.
     pub time_refresh_external: bool,
 
     /// The column that names the TVIEW's rows (ADR 0169).
@@ -75,7 +74,7 @@ impl RowIdentity {
 
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
-/// out of sync as catalog columns are added (e.g. issue #56's direct-patch map).
+/// out of sync as catalog columns are added.
 pub(crate) fn meta_select() -> String {
     format!(
         "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, plan, \
@@ -147,7 +146,7 @@ impl TviewMeta {
     }
 
     /// What a write to `table_oid`, a table no cascade reaches, does: its own
-    /// declared policy, else the TVIEW's (#195).
+    /// declared policy, else the TVIEW's.
     #[must_use]
     pub fn policy_for(&self, table_oid: Oid) -> crate::config::UncascadedPolicy {
         self.table_policies
@@ -201,31 +200,10 @@ impl TviewMeta {
         })
     }
 
-    /// Load metadata for a specific TVIEW OID.
+    /// The catalog row of the TVIEW whose table is `tview_oid`.
     ///
-    /// Queries `pg_tview_meta` to retrieve dependency information needed for
-    /// smart JSONB patching. Used by `apply_patch()` to determine how to update
-    /// the JSONB `data` column.
-    ///
-    /// # Arguments
-    ///
-    /// * `tview_oid` - OID of the TVIEW table (e.g., `tv_post`)
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(Some(TviewMeta))` if metadata found
-    /// - `Ok(None)` if no metadata exists (legacy TVIEW)
-    /// - `Err` if query fails
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// let meta = TviewMeta::load_for_tview(tview_oid)?;
-    /// if let Some(m) = meta {
-    ///     let deps = m.parse_dependencies();
-    ///     // Use deps for smart patching
-    /// }
-    /// ```
+    /// # Errors
+    /// The catalog cannot be read, or its plan does not decode.
     pub fn load_for_tview(tview_oid: Oid) -> crate::TViewResult<Option<Self>> {
         Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
             let args = vec![crate::utils::spi::oid(tview_oid)];

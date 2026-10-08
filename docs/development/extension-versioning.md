@@ -32,7 +32,7 @@ of every `#[pg_extern]` / `#[pg_trigger]`. A PR that changes any of it also:
 - **bumps the catalog revision**: `revision::CATALOG_REVISION` in `src/revision.rs`, and
   in the upgrade script
   `CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision() … AS 'SELECT <n>'`
-  (the install script's definition in `src/metadata.rs` says the same number). Bump it
+  (the install script's definition in `src/install_sql.rs` says the same number). Bump it
   once per release: if the pending script already redefines the function, keep that
   number;
 - **ends the script with** `UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;`

@@ -1,4 +1,4 @@
-//! Per-transaction journal of the TVIEW rows refreshes actually changed (issue #76).
+//! Per-transaction journal of the TVIEW rows refreshes actually changed.
 //!
 //! Every refresh write (guarded upsert, delete, direct patch) records the keys it
 //! really inserted, updated or deleted: a refresh that found nothing to change
@@ -46,7 +46,7 @@ struct Journal {
 thread_local! {
     static JOURNAL: RefCell<Journal> = RefCell::new(Journal::default());
     /// Rows changed during the current flush, uncapped: propagation reads it to
-    /// skip parents of rows whose refresh changed nothing (issue #85).
+    /// skip parents of rows whose refresh changed nothing.
     static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, String)>> =
         RefCell::new(std::collections::HashSet::new());
 }

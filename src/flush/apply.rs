@@ -13,7 +13,7 @@ pub(super) struct Flush {
     pub(super) graph: EntityDepGraph,
     /// Keys still to refresh.
     pub(super) pending: HashSet<RefreshKey>,
-    /// The direct-patch chains of the pending keys (issue #56).
+    /// The direct-patch chains of the pending keys.
     pub(super) patches: HashMap<RefreshKey, PatchState>,
     /// Keys refreshed in this flush.
     pub(super) processed: HashSet<RefreshKey>,
@@ -43,8 +43,8 @@ impl Flush {
     /// Bring `entity`'s rows named by `keys` to what its view computes, then queue
     /// the rows of the TVIEWs embedding the rows that changed.
     pub(super) fn apply_entity(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
-        // The entity is read and written as the owner of its tv_* table (issue
-        // #136), whoever wrote to the base table.
+        // The entity is read and written as the owner of its tv_* table, whoever
+        // wrote to the base table.
         let _owner = crate::owner::AsOwner::of_entity(entity)?;
         if !crate::queue::ops::is_crash_recovery_checked(entity) {
             crate::queue::mark_crash_recovery_checked(entity);
@@ -59,7 +59,7 @@ impl Flush {
         }
 
         // Keys carrying a usable direct patch are written straight into
-        // tv_<entity> (issue #56); the others recompute. The setting is read again
+        // tv_<entity>; the others recompute. The setting is read again
         // here, so turning it off before the commit forces a recompute.
         let apply_enabled = crate::config::direct_patch_enabled();
         let mut patched: Vec<(i64, Vec<PatchEntry>)> = Vec::new();
@@ -92,8 +92,7 @@ impl Flush {
         Ok(())
     }
 
-    /// A write to a table no cascade maps (`full_refresh` policy, issues #157,
-    /// #158): bring the whole TVIEW to its view once, which covers every other key
+    /// A write to a table no cascade maps (`full_refresh` policy): bring the whole TVIEW to its view once, which covers every other key
     /// of the entity, and queue the parents of the rows that changed.
     fn refresh_all(&mut self, entity: &str) -> TViewResult<()> {
         let meta = self.meta(entity)?;
@@ -114,7 +113,7 @@ impl Flush {
 
     /// Recompute `keys` from the view, one row with a smart patch or several in
     /// bulk, and queue the parents of the rows touched to recompute too: their
-    /// child's whole document changed (issue #56).
+    /// child's whole document changed.
     fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();
         let touched = if let [key] = keys.as_slice() {
@@ -127,7 +126,7 @@ impl Flush {
 
     /// Queue the parents of `entity`'s rows `pks` (their `pk_<entity>`, ADR 0169),
     /// each to recompute; parents of the rows that `appeared` are looked up in
-    /// their views too (#177).
+    /// their views too.
     fn queue_parents_to_recompute(
         &mut self,
         entity: &str,
@@ -175,7 +174,7 @@ impl Flush {
         Ok(())
     }
 
-    /// Apply fan-out patches (issue #120): one UPDATE per child entity and lookup
+    /// Apply fan-out patches: one UPDATE per child entity and lookup
     /// column, writing each parent's changed fields into all its children. Every
     /// child row that changed is journaled, and its own parents are queued (to
     /// recompute: they embed the child's document).
