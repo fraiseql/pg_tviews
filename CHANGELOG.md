@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+## [0.1.0-beta.26] - 2026-10-09
+
 ### Changed (breaking)
 
 - **Refreshes render values under fixed settings, not the writer's** (#200):
