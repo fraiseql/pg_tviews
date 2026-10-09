@@ -933,6 +933,7 @@ fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
     use crate::queue::affected::{Change, record};
+    let _pin = crate::owner::RenderPin::new();
 
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;

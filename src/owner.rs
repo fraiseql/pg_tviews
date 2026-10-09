@@ -6,6 +6,8 @@
 //! and with `search_path` set to `pg_catalog, pg_temp`. The writer then needs no
 //! privilege on the TVIEW, its backing view or the tables the view reads, and
 //! cannot get the owner to run a function it planted on its `search_path`.
+//! Every refresh also renders values under fixed settings ([`RENDER_SETTINGS`]),
+//! not the writer's (#200).
 //!
 //! The registration catalog is writable only by the extension's owner. A caller
 //! allowed to change a TVIEW (checked with [`require_owner`] beforehand) has its
@@ -15,6 +17,7 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
+use std::ffi::CStr;
 
 /// While alive, the current user is a TVIEW's owner. Dropping it restores the
 /// previous user, security context and `search_path`. On an error, the
@@ -89,16 +92,8 @@ impl AsOwner {
                         .cast_signed(),
             );
             let level = pg_sys::NewGUCNestLevel();
-            pg_sys::set_config_option(
-                c"search_path".as_ptr(),
-                c"pg_catalog, pg_temp".as_ptr(),
-                pg_sys::GucContext::PGC_USERSET,
-                pg_sys::GucSource::PGC_S_SESSION,
-                pg_sys::GucAction::GUC_ACTION_SAVE,
-                true,
-                0,
-                false,
-            );
+            set_local(c"search_path", c"pg_catalog, pg_temp");
+            pin_settings();
             level
         };
         Self {
@@ -119,6 +114,79 @@ impl Drop for AsOwner {
             pg_sys::AtEOXact_GUC(false, self.guc_level);
             pg_sys::SetUserIdAndSecContext(self.saved_user, self.saved_context);
         }
+    }
+}
+
+/// The settings a value's text rendering depends on, and the values every
+/// refresh renders under (#200): a TVIEW's rows then do not depend on the
+/// session that wrote last. `CURRENT_DATE` in a refresh is the UTC day.
+pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
+    (c"TimeZone", c"UTC"),
+    (c"DateStyle", c"ISO, YMD"),
+    (c"IntervalStyle", c"postgres"),
+    (c"extra_float_digits", c"1"),
+    (c"bytea_output", c"hex"),
+];
+
+/// While alive, the [`RENDER_SETTINGS`] are in force; dropping it restores the
+/// session's values (an error's (sub)transaction abort restores them instead).
+/// For the work that computes TVIEW rows as the caller rather than as the
+/// owner ([`AsOwner`] pins them too).
+pub struct RenderPin {
+    guc_level: i32,
+}
+
+impl RenderPin {
+    #[must_use]
+    pub fn new() -> Self {
+        // SAFETY: the GUC nest level opened here is closed by Drop or by the abort.
+        let guc_level = unsafe {
+            let level = pg_sys::NewGUCNestLevel();
+            pin_settings();
+            level
+        };
+        Self { guc_level }
+    }
+}
+
+impl Default for RenderPin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for RenderPin {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        // SAFETY: closes the nest level `new` opened.
+        unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
+    }
+}
+
+/// Set `name` to `value` until the innermost GUC nest level closes.
+///
+/// SAFETY: a GUC nest level must be open.
+unsafe fn set_local(name: &CStr, value: &CStr) {
+    unsafe {
+        pg_sys::set_config_option(
+            name.as_ptr(),
+            value.as_ptr(),
+            pg_sys::GucContext::PGC_USERSET,
+            pg_sys::GucSource::PGC_S_SESSION,
+            pg_sys::GucAction::GUC_ACTION_SAVE,
+            true,
+            0,
+            false,
+        );
+    }
+}
+
+/// SAFETY: a GUC nest level must be open.
+unsafe fn pin_settings() {
+    for (name, value) in RENDER_SETTINGS {
+        unsafe { set_local(name, value) };
     }
 }
 

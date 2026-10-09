@@ -626,24 +626,31 @@ fn capture_value(
 /// finds an empty queue and returns immediately.
 ///
 /// A refresh error fails the statement. If triggers are suspended, this trigger
-/// skips the flush.
+/// skips the flush. Inside an enclosing statement that writes a TVIEW's base
+/// table (a trigger writing its own table), it leaves the queue to that
+/// statement's flush (#197).
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
     _trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
-    // Skip flush if triggers are suspended
-    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
-        return Ok(None);
+    if !crate::executor::flush_deferred() {
+        flush_after_statement();
     }
+    Ok(None)
+}
 
-    // A refresh that fails fails the write, as an error PostgreSQL raises does:
-    // committing it would leave the TVIEWs stale.
+/// Refresh what the statement queued, unless triggers are suspended. A refresh
+/// that fails fails the write, as an error PostgreSQL raises does: committing it
+/// would leave the TVIEWs stale.
+pub fn flush_after_statement() {
+    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+        return;
+    }
     if let Err(e) = crate::queue::flush_refresh_queue() {
         error!("TVIEW refresh failed: {e}");
     }
     if let Err(e) = crate::audit::flush_audit_buffer() {
         warning!("Audit flush failed in statement trigger: {:?}", e);
     }
-    Ok(None)
 }

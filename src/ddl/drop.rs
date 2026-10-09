@@ -192,6 +192,123 @@ fn drop_backing_view(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
+/// The backing views of every registered TVIEW in the extension's schema, read
+/// before `DROP EXTENSION pg_tviews` removes the catalog (#199). A view outside
+/// it (a layout before #181) is the application's and stays.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
+    // An install older than the library (0.1.0 kept its catalog elsewhere, and
+    // its backing views were the application's `v_*` views): nothing to drop.
+    let current = Spi::get_one_with_args::<bool>(
+        "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
+        &[unsafe {
+            DatumWithOid::new(
+                crate::utils::meta_table().as_str(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        }],
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: "the registration catalog".to_string(),
+        error: e.to_string(),
+    })?;
+    if current != Some(true) {
+        return Ok(Vec::new());
+    }
+    Spi::connect(|client| {
+        client
+            .select(
+                &format!(
+                    "SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
+                     WHERE v.relnamespace = '{}'::pg_catalog.regnamespace",
+                    crate::utils::meta_table(),
+                    crate::utils::ext_schema()
+                ),
+                None,
+                &[],
+            )?
+            .map(|row| row.get::<pg_sys::Oid>(1))
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .map_err(|e| TViewError::SpiError {
+        query: "backing views of the registered TVIEWs".to_string(),
+        error: e.to_string(),
+    })
+}
+
+/// Drop the backing views the extension left behind once `DROP EXTENSION
+/// pg_tviews` has run: they are not extension members, so that `pg_dump` keeps
+/// them, and would otherwise outlive it (#199). Their tables stay, as plain
+/// tables holding their rows.
+///
+/// # Errors
+/// Returns an error if a view cannot be dropped.
+pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
+    for &view in views {
+        let args =
+            [unsafe { DatumWithOid::new(view, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let present = Spi::get_one_with_args::<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class WHERE oid = $1)",
+            &args,
+        )
+        .map_err(|e| TViewError::SpiError {
+            query: "backing view left by DROP EXTENSION".to_string(),
+            error: e.to_string(),
+        })?;
+        if present == Some(true) {
+            let _owner = crate::owner::AsOwner::of_table(view)?;
+            drop_by_oid(view, "VIEW", true)?;
+        }
+    }
+    Ok(())
+}
+
+/// Drop the view at `schema.name`, a TVIEW's backing view name, when it is a
+/// leftover: a view no TVIEW is registered with and nothing depends on (#199,
+/// a `DROP EXTENSION` in a session that never loaded the library). Returns
+/// whether the name is free now.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read or the view cannot be dropped.
+pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
+    let args = [
+        unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+    ];
+    let leftover = Spi::get_one_with_args::<pg_sys::Oid>(
+        &format!(
+            "SELECT (SELECT c.oid FROM pg_catalog.pg_class c \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'v' \
+                       AND NOT EXISTS (SELECT 1 FROM {} m WHERE m.view_oid = c.oid) \
+                       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
+                                       WHERE d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+                                         AND d.refobjid = c.oid AND d.deptype = 'n'))",
+            crate::utils::meta_table()
+        ),
+        &args,
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: format!("leftover view {schema}.{name}"),
+        error: e.to_string(),
+    })?;
+    let Some(view) = leftover else {
+        return Ok(false);
+    };
+    {
+        let _owner = crate::owner::AsOwner::of_table(view)?;
+        drop_by_oid(view, "VIEW", false)?;
+    }
+    notice!(
+        "pg_tviews: dropped {schema}.{name}, a backing view no TVIEW is registered with \
+         (left by a dropped extension or TVIEW)"
+    );
+    Ok(true)
+}
+
 /// Resolve a schema-qualified name from an object OID and drop it
 ///
 /// Uses `pg_class JOIN pg_namespace` to find the object's schema at runtime,

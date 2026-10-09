@@ -8,14 +8,19 @@ runs, what it locks, and what each isolation level gives you.
 A write to a base table is refreshed **inside the writer's transaction**:
 
 - at the end of each statement (a statement-level flush trigger), so an autocommit
-  statement is refreshed before it returns;
+  statement is refreshed before it returns. A statement run from a trigger of a write
+  to a TVIEW's base table (a trigger that writes its own table, level by level) leaves
+  its work to that write, which refreshes once at its end: each TVIEW row is computed
+  once, from the final state. A query that only reads defers nothing: in `SELECT f()`,
+  each statement of `f` that writes is refreshed before the next one reads;
 - before `COMMIT` and before `PREPARE TRANSACTION` (the `ProcessUtility` hook), so the
   refresh writes belong to the transaction.
 
 The refresh writes are ordinary row writes to `tv_<entity>`: other sessions see them
 when the writer commits, exactly like its base-table writes, and a rollback discards
 both. The refresh runs as the TVIEW's owner with `search_path = pg_catalog, pg_temp`,
-whoever the writer is.
+whoever the writer is, and renders values under fixed settings (see
+[Rendering](reference/ddl.md#rendering)).
 
 Nothing is queued across transactions: work left queued when a transaction commits is
 dropped with a WARNING naming the TVIEWs (it means a flush trigger is missing; see

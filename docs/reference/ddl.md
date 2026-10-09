@@ -618,6 +618,41 @@ SELECT cron.schedule('tviews-day', '1 0 * * *',
 for one. A literal evaluated at run time (`'now'::timestamptz`) is not detected: pass
 the date as data, or write `now()`.
 
+### Rendering
+
+A value's text depends on session settings: `to_jsonb(timestamptz)` on `TimeZone`,
+`::text` of a date or time on `DateStyle` too, of an interval on `IntervalStyle`, of a
+float on `extra_float_digits`, of a `bytea` on `bytea_output`. Every computation of a
+TVIEW's rows (creation, refreshes on writes, `pg_tviews_refresh()`, the time refresh,
+`create_or_replace`) runs under fixed values, whoever writes and from whatever session:
+
+| Setting | Value |
+|---|---|
+| `TimeZone` | `UTC` |
+| `DateStyle` | `ISO, YMD` |
+| `IntervalStyle` | `postgres` |
+| `extra_float_digits` | `1` |
+| `bytea_output` | `hex` |
+
+so a TVIEW's rows don't depend on who wrote last. The session's own settings are left
+as they were. The definition itself is parsed under the caller's settings, as `CREATE
+VIEW` parses it; a text-to-date conversion inside it runs at refresh time and reads
+`ISO, YMD`.
+
+`CURRENT_DATE` and `now()::date` in a refresh are the **UTC** day. For a local day,
+write it in the definition, `(now() AT TIME ZONE 'Europe/Paris')::date`, and call
+`pg_tviews_refresh_time_dependent()` just after that zone's midnight.
+
+To compare a TVIEW with its definition, run the definition under the same settings:
+
+```sql
+BEGIN;
+SET LOCAL TimeZone = 'UTC'; SET LOCAL DateStyle = 'ISO, YMD'; SET LOCAL IntervalStyle = 'postgres';
+SET LOCAL extra_float_digits = 1; SET LOCAL bytea_output = 'hex';
+SELECT count(*) FROM (TABLE tv_event EXCEPT SELECT … ) d;
+COMMIT;
+```
+
 ### Limitations
 
 - **Dependency Depth**: Performance degrades with >5 cascade levels
@@ -698,6 +733,13 @@ reads (`DROP TABLE tb_post CASCADE`), or its owner's objects (`DROP OWNED BY`), 
 deregistered with it: its triggers are removed and its backing view in `tviews` is
 dropped along with what depends on it, so the TVIEW can be created again under the
 same name.
+
+**`DROP EXTENSION pg_tviews CASCADE`** drops the triggers and every backing view; the
+`tv_*` tables stay as plain tables with their rows. Recreating a TVIEW under the same
+name needs the table out of the way first (drop it, or rename it and copy what you
+need). A backing view left by a drop in a session that never loaded the library (no
+`shared_preload_libraries`) is dropped by the next `pg_tviews_create()` of that
+TVIEW, with a NOTICE, when no TVIEW is registered with it and nothing depends on it.
 
 ## ALTER TVIEW
 

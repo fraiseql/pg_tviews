@@ -269,6 +269,8 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             .unwrap_or(0);
         rebuilt.push((rel.entity, rows));
     }
+    // A TVIEW reading one just filled, but not itself empty, is refreshed here.
+    crate::admin::flush_after_rebuilds()?;
     Ok(rebuilt)
 }
 
