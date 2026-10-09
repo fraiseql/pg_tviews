@@ -59,10 +59,18 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "${{ matrix.from }}" = previous ] && [ ! -f "sql/pg_tviews--${prev}--${cur}.sql" ]; then
-            echo "::error::no upgrade script sql/pg_tviews--${prev}--${cur}.sql"
-            exit 1
-          fi
+          # ALTER EXTENSION UPDATE follows a chain of scripts: the latest release
+          # must reach this version through one.
+          v="$prev"
+          while [ "$v" != "$cur" ]; do
+            next="$(ls sql/pg_tviews--"${v}"--*.sql 2>/dev/null \
+                    | sed "s|^sql/pg_tviews--${v}--\(.*\)\.sql$|\1|" | head -n 1)"
+            if [ -z "$next" ]; then
+              echo "::error::no chain of upgrade scripts from ${prev} to ${cur} (stuck at ${v})"
+              exit 1
+            fi
+            v="$next"
+          done
           echo "Upgrading ${prev} -> ${cur}"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 

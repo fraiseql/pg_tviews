@@ -125,9 +125,8 @@ DROP EXTENSION pg_tviews CASCADE;
 CREATE EXTENSION pg_tviews;
 
 -- 4. Restore the registrations: the columns both catalogs have, cast to the new
---    types. Cascade paths hold OIDs of the old derivation, so they are emptied, and
---    every TVIEW is re-registered, which re-derives its metadata and re-installs its
---    triggers.
+--    types. Each propagation plan starts empty and every TVIEW is re-registered,
+--    which re-derives its plan and re-installs its triggers.
 CREATE FUNCTION pg_temp.pg_tviews_restore(target REGCLASS, source REGCLASS, overrides JSONB)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -150,7 +149,19 @@ BEGIN
                               target, columns, vals, source);
 END $$;
 SELECT pg_temp.pg_tviews_restore('tviews.pg_tview_meta', 'pg_temp.pg_tviews_saved_meta',
-    '{"cascade_paths": "''{}''::text[]", "needs_reregister": "true"}');
+    '{"plan": "''{\"version\": 1}''::jsonb", "needs_reregister": "true"}');
+-- 0.1.0 named a TVIEW's rows by pk_<entity>, which the library no longer assumes:
+-- record it, so each TVIEW re-derived below reads the rows of those not re-derived yet.
+UPDATE tviews.pg_tview_meta m
+   SET identity = pg_catalog.jsonb_build_object('kind', 'pk', 'columns',
+           pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+               'name', a.attname::pg_catalog.text,
+               'type', pg_catalog.format_type(a.atttypid, NULL))))
+  FROM pg_catalog.pg_attribute a
+ WHERE m.identity IS NULL
+   AND a.attrelid = m.table_oid::pg_catalog.oid
+   AND a.attname = 'pk_' || m.entity
+   AND NOT a.attisdropped;
 SELECT pg_temp.pg_tviews_restore('tviews.pg_tview_helpers', 'pg_temp.pg_tviews_saved_helpers',
     '{}');
 

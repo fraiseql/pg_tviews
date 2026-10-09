@@ -98,7 +98,10 @@ jobs:
           sudo -u postgres psql -p "${PGPORT}" \
             -c "ALTER SYSTEM SET shared_preload_libraries = '${PRELOAD}';" \
             -c "ALTER SYSTEM SET max_prepared_transactions = 10;"
-          sudo pg_ctlcluster "${PG_MAJOR}" main restart
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart || {
+            sudo tail -n 50 "/var/log/postgresql/postgresql-${PG_MAJOR}-main.log"
+            exit 1
+          }
 
       # PGHOST/PGPORT/PGUSER come from $GITHUB_ENV (cluster-setup step) so the
       # discovered port is used, not a hard-coded 5432.
