@@ -127,6 +127,18 @@ impl EntityDepGraph {
                     .flatten()
                     .map(|j| crate::lineage::KeyMapping::parse_all(&j.0))
                     .unwrap_or_default();
+                // A TVIEW whose refreshes this one maps like writes (#191) is
+                // refreshed first.
+                for mapping in &key_mappings {
+                    if let Some(inner) = &mapping.tview
+                        && mapping.kind != "propagated"
+                    {
+                        children
+                            .entry(entity.clone())
+                            .or_default()
+                            .push(inner.clone());
+                    }
+                }
                 let mut reads_by_fk = source_columns_by_fk(&cascade_paths);
                 for mapping in key_mappings.iter().filter(|m| m.kind == "mapped") {
                     if let Some((_, root_col)) = &mapping.hop {

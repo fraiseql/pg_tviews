@@ -166,32 +166,44 @@ fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> spi::Result<bool> {
 
         // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
         if meta.is_union && rows.next().is_some() {
-            let policy = crate::config::union_duplicate_policy();
-            if policy == "first" {
-                crate::utils::log_once(
-                    &format!("union_duplicate:{}", meta.entity_name),
-                    &format!(
-                        "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}; \
-                         taking the first row (union_duplicate_policy=first). Reported once \
-                         per backend.",
-                        meta.entity_name, meta.identity.column
-                    ),
-                );
-            } else {
-                return Err(spi::Error::from(crate::TViewError::SpiError {
-                    query: sql.clone(),
-                    error: format!(
-                        "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}. \
-                         Ensure UNION ALL branches are mutually exclusive, or set \
-                         pg_tviews.union_duplicate_policy='first' to suppress this error.",
-                        meta.entity_name, meta.identity.column
-                    ),
-                }));
-            }
+            union_duplicate(meta, &key.to_string());
         }
 
         Ok(true)
     })
+}
+
+/// Apply `pg_tviews.union_duplicate_policy` to a UNION TVIEW whose backing view
+/// returned several rows for the key `key`: an ERROR that aborts the write (#188),
+/// or under `first` a note, once per backend, that the first row is kept.
+pub(super) fn union_duplicate(meta: &TviewMeta, key: &str) {
+    if crate::config::union_duplicate_policy() == "first" {
+        crate::utils::log_once(
+            &format!("union_duplicate:{}", meta.entity_name),
+            &format!(
+                "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}; \
+                 taking the first row (union_duplicate_policy=first). Reported once \
+                 per backend.",
+                meta.entity_name, meta.identity.column
+            ),
+        );
+        return;
+    }
+    // Raised, not returned: the flush trigger turns returned errors into warnings,
+    // and a write that gives two rows one key must fail.
+    pgrx::pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
+        format!(
+            "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}",
+            meta.entity_name, meta.identity.column
+        ),
+        function_name!(),
+    )
+    .set_hint(
+        "Make the UNION branches' keys disjoint (a sign or an offset per branch), or set \
+         pg_tviews.union_duplicate_policy = 'first' to keep the first row.",
+    )
+    .report(PgLogLevel::ERROR);
 }
 
 /// Apply JSON patch to `tv_entity` using smart JSONB patching.

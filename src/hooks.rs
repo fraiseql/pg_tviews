@@ -198,18 +198,22 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // name along (#181); its OID is resolved before the statement renames it.
     // A GRANT or REVOKE on tables, or a change of a table's owner, is followed by
     // the backing views (#181): their privileges are their tables'.
-    let (column_rename, partition_ddl, table_move, privileges_change) = if extension_installed() {
-        unsafe {
-            (
-                column_rename_of(pstmt),
-                partition_ddl_of(pstmt),
-                table_move_of(pstmt),
-                privileges_change_of(pstmt),
-            )
-        }
-    } else {
-        (None, None, None, None)
-    };
+    // A materialized view refreshed rebuilds the TVIEWs that refresh in full on
+    // its changes (#189).
+    let (column_rename, partition_ddl, table_move, privileges_change, matview_refresh) =
+        if extension_installed() {
+            unsafe {
+                (
+                    column_rename_of(pstmt),
+                    partition_ddl_of(pstmt),
+                    table_move_of(pstmt),
+                    privileges_change_of(pstmt),
+                    matview_refresh_of(pstmt),
+                )
+            }
+        } else {
+            (None, None, None, None, None)
+        };
 
     // Wrap FFI callback in catch_unwind to prevent panics crossing FFI boundary.
     // A DROP TABLE is only recognised here and handled after catch_unwind: its SPI
@@ -418,6 +422,14 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             unsafe { HOOK_IN_PROGRESS = false };
             error!("pg_tviews: could not give the backing views their tables' privileges: {e}");
         }
+        if let Some(matview) = matview_refresh
+            && let Err(e) = crate::ddl::uncascaded::refresh_readers_of(matview)
+        {
+            unsafe { HOOK_IN_PROGRESS = false };
+            error!(
+                "pg_tviews: could not refresh the TVIEWs reading a refreshed materialized view: {e}"
+            );
+        }
     }
 
     // Release the reentrancy guard
@@ -608,6 +620,36 @@ unsafe fn table_move_of(pstmt: *const pg_sys::PlannedStmt) -> Option<pg_sys::Oid
         }
         let relid = pg_sys::RangeVarGetRelidExtended(
             relation,
+            pg_sys::NoLock.cast_signed(),
+            pg_sys::RVROption::RVR_MISSING_OK,
+            None,
+            std::ptr::null_mut(),
+        );
+        (relid != pg_sys::InvalidOid).then_some(relid)
+    }
+}
+
+/// The materialized view a `REFRESH MATERIALIZED VIEW` fills (not `WITH NO DATA`,
+/// which leaves nothing to read), resolved before the statement runs.
+///
+/// SAFETY: `pstmt` is null or a valid `PlannedStmt`.
+unsafe fn matview_refresh_of(pstmt: *const pg_sys::PlannedStmt) -> Option<pg_sys::Oid> {
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        if (*node).type_ != pg_sys::NodeTag::T_RefreshMatViewStmt {
+            return None;
+        }
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        let stmt = &*node.cast::<pg_sys::RefreshMatViewStmt>();
+        if stmt.skipData || stmt.relation.is_null() {
+            return None;
+        }
+        let relid = pg_sys::RangeVarGetRelidExtended(
+            stmt.relation,
             pg_sys::NoLock.cast_signed(),
             pg_sys::RVROption::RVR_MISSING_OK,
             None,

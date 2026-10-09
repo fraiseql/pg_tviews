@@ -116,7 +116,8 @@ JOIN tv_post p ON p.pk_post = c.fk_post;
 ```
 
 A definition that reads a table no cascade can trace (an uncorrelated subquery, a
-window function, a recursive CTE) is refused at create unless it declares what a write
+window function without a `PARTITION BY` linked to the key, a recursive CTE, a
+materialized view) is refused at create unless it declares what a write
 to that table does: `pg_tviews_create_or_replace('tv_post', $$ … $$, options =>
 '{"uncascaded_policy": "full_refresh"}')`, or `SET pg_tviews.uncascaded_policy =
 'full_refresh'` before `CREATE TABLE … AS`. The error says which table and why.

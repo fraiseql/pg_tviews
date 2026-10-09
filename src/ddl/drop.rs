@@ -96,7 +96,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
 /// Deregister a TVIEW whose backing view or table the current statement dropped
 /// as a dependent of something else (issues #53, #57, #136). Called from the
 /// `sql_drop` event trigger only: it first checks that the event dropped the
-/// TVIEW's view or table.
+/// TVIEW's view or table (as a dependent, or by `DROP OWNED`).
 ///
 /// `PostgreSQL` has authorized that drop, and no more. The TVIEW's remaining table
 /// is dropped only when the current role owns it; otherwise it is kept as a plain
@@ -113,7 +113,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
         &format!(
             "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger_dropped_objects() d \
              JOIN {} m ON d.objid IN (m.view_oid, m.table_oid) \
-             WHERE m.entity = $1 AND NOT d.original AND d.objsubid = 0 \
+             WHERE m.entity = $1 AND d.objsubid = 0 \
                AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass)",
             crate::utils::meta_table()
         ),
@@ -148,6 +148,12 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
     if table_owned == Some(true) {
         return drop_tview(entity, true, true).map(|_| ());
     }
+    // The table went (with its schema, or its owner's objects): its backing view in
+    // the extension's schema goes too, with what depends on it, as it did when it
+    // sat in the TVIEW's schema (#186).
+    if table_left != Some(true) {
+        drop_backing_view(entity)?;
+    }
 
     crate::dependency::remove_entity_triggers(entity)?;
     drop_metadata(entity)?;
@@ -158,6 +164,30 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
             "pg_tviews: TVIEW {entity} deregistered; its table belongs to another role and \
              was kept as a plain table"
         );
+    }
+    Ok(())
+}
+
+/// Drop the backing view of `entity` with CASCADE, as the view's owner: the role
+/// that dropped the TVIEW's table need not own it.
+fn drop_backing_view(entity: &str) -> TViewResult<()> {
+    let args =
+        [unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
+    let view = Spi::get_one_with_args::<pg_sys::Oid>(
+        &format!(
+            "SELECT (SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
+             WHERE m.entity = $1)",
+            crate::utils::meta_table()
+        ),
+        &args,
+    )
+    .map_err(|e| TViewError::SpiError {
+        query: "backing view of a dropped TVIEW".to_string(),
+        error: e.to_string(),
+    })?;
+    if let Some(view) = view {
+        let _owner = crate::owner::AsOwner::of_table(view)?;
+        drop_by_oid(view, "VIEW", true)?;
     }
     Ok(())
 }

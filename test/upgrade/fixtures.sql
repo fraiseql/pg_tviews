@@ -77,7 +77,7 @@ SELECT pg_tviews_create('tv_post', $$
                    ORDER BY c.pk_comment) FILTER (WHERE c.pk_comment IS NOT NULL),
                    '[]'::jsonb)) AS data
     FROM tb_post p
-    JOIN v_user u ON u.pk_user = p.fk_user
+    JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_comment c ON c.fk_post = p.pk_post
     GROUP BY p.pk_post, p.id, p.fk_user, p.title, u.data $$);
 -- Two hops: tb_user -> tb_post -> tb_comment.
@@ -142,6 +142,17 @@ INSERT INTO tb_holder (pk_holder, fk_badge) VALUES (1, 1), (2, 1);
 SELECT pg_tviews_create('tv_holder', $$
     SELECT h.pk_holder, h.id, jsonb_build_object('badge', b.label) AS data
     FROM tb_holder h JOIN tb_badge b ON b.pk_badge = h.fk_badge $$);
+\endif
+-- A TVIEW dropped with its schema while its base table lives elsewhere: from
+-- 0.1.0-beta.25 its backing view was left in tviews (#186); the upgrade drops it.
+-- Schema-qualified TVIEW names need the tviews schema (0.1.0 has neither).
+SELECT pg_catalog.to_regclass('tviews.registry') IS NOT NULL AS scratch_fixture \gset
+\if :scratch_fixture
+CREATE TABLE tb_scratch (pk_scratch int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), label text);
+CREATE SCHEMA scratch;
+SELECT pg_tviews_create('scratch.tv_scratch', $$
+    SELECT pk_scratch, id, jsonb_build_object('label', label) AS data FROM public.tb_scratch $$);
+DROP SCHEMA scratch CASCADE;
 \endif
 -- Off the search_path.
 SET search_path TO app, public, tviews;

@@ -9,7 +9,7 @@
 
 use super::{
     Column, Conjunct, Graph, IdentityKind, Lookup, Maps, Occurrence, OutputColumn, Piece, Root,
-    Sql, WalkedIdentity,
+    Scope, Sql, WalkedIdentity,
 };
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
@@ -49,6 +49,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<Graph> {
         wanted: None,
         identity_level: false,
         nullable: HashSet::new(),
+        unions: 0,
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -84,7 +85,8 @@ unsafe fn view_query(view_oid: Oid) -> TViewResult<*mut pg_sys::Query> {
 /// How a query level sits inside the occurrence's path from the top.
 #[derive(Debug, Clone, Default)]
 struct Flags {
-    branch: usize,
+    /// The UNION leaves the level sits in, outermost first.
+    unions: Scope,
     via_view: Option<String>,
     via_tview: Option<String>,
     in_sublink: bool,
@@ -97,8 +99,9 @@ struct Flags {
 #[derive(Debug, Clone)]
 enum Resolved {
     Col(Column),
-    /// One column per UNION branch of a subquery.
-    Alt(Vec<Column>),
+    /// What the column stands for in each UNION branch of a subquery (a column
+    /// or a computed output), and the scopes of the branches where it is opaque.
+    Alt(Vec<Resolved>, Vec<Scope>),
     /// An output computed from columns (#182).
     Expr(Computed),
     Opaque,
@@ -123,7 +126,7 @@ impl Resolved {
     fn occs(&self) -> Vec<usize> {
         match self {
             Self::Col(c) => vec![c.occ],
-            Self::Alt(cs) => cs.iter().map(|c| c.occ).collect(),
+            Self::Alt(terms, _) => terms.iter().flat_map(Self::occs).collect(),
             Self::Expr(e) => sql_occs(&e.sql),
             Self::Opaque => vec![],
         }
@@ -148,11 +151,12 @@ enum RteInfo {
     Base(usize),
     Outputs(Vec<Resolved>),
     Join(*mut pg_sys::List),
-    /// The table of another TVIEW: its columns are opaque, but an equality on its
-    /// key says where it is embedded.
+    /// The table of another TVIEW: an occurrence like a base table's (#191), and
+    /// an equality on its key says where it is embedded.
     Tview {
         entity: String,
         relid: Oid,
+        occ: usize,
     },
     Other,
 }
@@ -232,6 +236,8 @@ struct Walker<'c> {
     /// Occurrences on the nullable side of an outer join walked so far: their
     /// columns may be NULL-extended where a predicate above reads them.
     nullable: HashSet<usize>,
+    /// UNIONs entered so far: the next one's number.
+    unions: usize,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -358,12 +364,9 @@ impl Walker<'_> {
                     _ => key_position,
                 };
                 if opaque.is_none()
-                    && let Some(Resolved::Col(key)) = root_position.and_then(|p| outputs.get(p))
+                    && let Some(key) = root_position.and_then(|p| outputs.get(p))
                 {
-                    self.graph.roots.push(Root {
-                        branch: flags.branch,
-                        key: key.clone(),
-                    });
+                    self.add_roots(key, &flags.unions);
                 }
                 return Ok(());
             }
@@ -379,6 +382,7 @@ impl Walker<'_> {
             );
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
+            let union = self.next_union();
             let result: TViewResult<()> = (|| {
                 for (branch, rtindex) in leaves.into_iter().enumerate() {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
@@ -387,19 +391,17 @@ impl Walker<'_> {
                         continue;
                     };
                     let opaque = whole.clone().or_else(|| top_opaque_reason((*rte).subquery));
+                    let mut unions = flags.unions.clone();
+                    unions.push((union, branch));
                     let leaf_flags = Flags {
-                        branch,
+                        unions: unions.clone(),
                         opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
                         ..flags.clone()
                     };
                     let outputs = self.level((*rte).subquery, &leaf_flags, Link::Top)?;
-                    if opaque.is_none()
-                        && let Some(Resolved::Col(key)) = key_position.and_then(|p| outputs.get(p))
-                    {
-                        self.graph.roots.push(Root {
-                            branch,
-                            key: key.clone(),
-                        });
+                    match key_position.and_then(|p| outputs.get(p)) {
+                        Some(key) if opaque.is_none() => self.add_roots(key, &unions),
+                        _ => self.graph.holes.push(unions),
                     }
                 }
                 self.unread_ctes(flags)
@@ -449,9 +451,18 @@ impl Walker<'_> {
             if !(*query).setOperations.is_null() {
                 return self.union_outputs(query, flags);
             }
-            let opaque = (link != Link::Top).then(|| opaque_reason(query)).flatten();
+            // Window functions all partitioned leave the partition columns visible
+            // (#187); their occurrences keep the window as the reason they are not
+            // linked otherwise.
+            let partitioned = link != Link::Top && windows_partitioned(query);
+            let opaque = (link != Link::Top)
+                .then(|| opaque_reason(query, partitioned))
+                .flatten();
             let flags = Flags {
-                opaque_level: opaque.clone().or_else(|| flags.opaque_level.clone()),
+                opaque_level: opaque
+                    .clone()
+                    .or_else(|| partitioned.then(|| WINDOW_REASON.to_string()))
+                    .or_else(|| flags.opaque_level.clone()),
                 ..flags.clone()
             };
             self.push_level(query, Vec::new(), link);
@@ -542,6 +553,13 @@ impl Walker<'_> {
             };
             let group_keys = key_columns((*query).groupClause);
             let distinct_keys = key_columns((*query).distinctClause);
+            // A row's window values come from the rows of its partition: only a
+            // column of every window's PARTITION BY passes through (#187).
+            let partitions: Vec<(*mut pg_sys::List, Vec<Column>)> =
+                elements::<pg_sys::WindowClause>((*query).windowClause)
+                    .iter()
+                    .map(|w| ((**w).partitionClause, key_columns((**w).partitionClause)))
+                    .collect();
             let keyed =
                 |tle: *mut pg_sys::TargetEntry, clause: *mut pg_sys::List, keys: &[Column]| {
                     in_clause((*tle).ressortgroupref, clause)
@@ -557,7 +575,10 @@ impl Walker<'_> {
                             || (!opaque
                                 && (!grouped || keyed(tle, (*query).groupClause, &group_keys))
                                 && (!(*query).hasDistinctOn
-                                    || keyed(tle, (*query).distinctClause, &distinct_keys))))
+                                    || keyed(tle, (*query).distinctClause, &distinct_keys))
+                                && partitions
+                                    .iter()
+                                    .all(|(clause, keys)| keyed(tle, *clause, keys))))
                 })
                 .collect();
             Ok(tles
@@ -660,20 +681,33 @@ impl Walker<'_> {
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
             let width = list_len((*query).targetList);
-            let mut columns: Vec<Vec<Column>> = vec![Vec::new(); width];
+            let union = self.next_union();
+            let mut columns: Vec<(Vec<Resolved>, Vec<Scope>)> =
+                vec![(Vec::new(), Vec::new()); width];
             let result: TViewResult<()> = (|| {
-                for rtindex in leaves {
+                for (leaf, rtindex) in leaves.into_iter().enumerate() {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
                         .get(rtindex.wrapping_sub(1))
                     else {
                         continue;
                     };
-                    let outputs = self.level((*rte).subquery, flags, Link::From)?;
+                    let mut unions = flags.unions.clone();
+                    unions.push((union, leaf));
+                    let leaf_flags = Flags {
+                        unions: unions.clone(),
+                        ..flags.clone()
+                    };
+                    let outputs = self.level((*rte).subquery, &leaf_flags, Link::From)?;
                     for (i, out) in outputs.into_iter().take(width).enumerate() {
+                        let (terms, holes) = &mut columns[i];
                         match out {
-                            Resolved::Col(c) => columns[i].push(c),
-                            Resolved::Alt(cs) => columns[i].extend(cs),
-                            Resolved::Expr(_) | Resolved::Opaque => {}
+                            Resolved::Alt(ts, hs) => {
+                                terms.extend(ts);
+                                holes.extend(hs);
+                            }
+                            Resolved::Expr(e) if e.element => holes.push(unions.clone()),
+                            term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                            Resolved::Opaque => holes.push(unions.clone()),
                         }
                     }
                 }
@@ -683,11 +717,11 @@ impl Walker<'_> {
             result?;
             Ok(columns
                 .into_iter()
-                .map(|cs| {
-                    if cs.is_empty() {
+                .map(|(terms, holes)| {
+                    if terms.is_empty() {
                         Resolved::Opaque
                     } else {
-                        Resolved::Alt(cs)
+                        Resolved::Alt(terms, holes)
                     }
                 })
                 .collect())
@@ -696,6 +730,56 @@ impl Walker<'_> {
 
     fn current(&mut self) -> &mut Level {
         self.levels.last_mut().expect("inside a query level")
+    }
+
+    fn next_union(&mut self) -> usize {
+        self.unions += 1;
+        self.unions
+    }
+
+    /// The key roots an output of the TVIEW's key stands for, in rows of `scope`:
+    /// a column, or an expression of one occurrence's row (a sign, an offset:
+    /// #188), once per UNION branch it comes from. A branch whose key is anything
+    /// else is a hole: its rows cannot be mapped.
+    fn add_roots(&mut self, key: &Resolved, scope: &Scope) {
+        match key {
+            Resolved::Col(c) => self.graph.roots.push(Root {
+                key: c.clone(),
+                expr: None,
+                scope: self.graph.occurrences[c.occ].unions.clone(),
+            }),
+            Resolved::Expr(e) if !e.element && sql_occs(&e.sql).len() == 1 => {
+                let Some(Piece::Column { occ, attnum }) = e
+                    .sql
+                    .0
+                    .iter()
+                    .find(|p| matches!(p, Piece::Column { .. }))
+                    .cloned()
+                else {
+                    self.graph.holes.push(scope.clone());
+                    return;
+                };
+                let relid = Oid::from(self.graph.occurrences[occ].relid);
+                // SAFETY: a catalog lookup by OID and attribute number.
+                let name = cstr(unsafe { pg_sys::get_attname(relid, attnum, true) });
+                self.graph.roots.push(Root {
+                    key: Column { occ, attnum, name },
+                    expr: Some(e.sql.clone()),
+                    scope: self.graph.occurrences[occ].unions.clone(),
+                });
+            }
+            Resolved::Alt(terms, holes) => {
+                for term in terms {
+                    let term_scope = term.occs().first().map_or_else(
+                        || scope.clone(),
+                        |&o| self.graph.occurrences[o].unions.clone(),
+                    );
+                    self.add_roots(term, &term_scope);
+                }
+                self.graph.holes.extend(holes.iter().cloned());
+            }
+            _ => self.graph.holes.push(scope.clone()),
+        }
     }
 
     /// Enter a query level. Its CTE parent is the level a pending CTE lookup
@@ -812,25 +896,40 @@ impl Walker<'_> {
             (relkind, relname, qualified)
         };
         match relkind {
-            b'r' | b'p' if flags.unread => {
+            b'r' | b'p' | b'm' if flags.unread => {
                 self.graph.unread_tables.insert(relid.to_u32());
                 Ok(RteInfo::Other)
             }
             b'r' | b'p' if self.ctx.tview_tables.contains_key(&relid) => {
                 let entity = self.ctx.tview_tables[&relid].clone();
                 self.graph.tview_keys.entry(entity.clone()).or_default();
-                Ok(RteInfo::Tview { entity, relid })
-            }
-            b'r' | b'p' => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
                     relname,
                     qualified,
-                    branch: flags.branch,
+                    unions: flags.unions.clone(),
                     via_view: flags.via_view.clone(),
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
+                    matview: false,
+                    tview_table: Some(entity.clone()),
+                });
+                let occ = self.graph.occurrences.len() - 1;
+                Ok(RteInfo::Tview { entity, relid, occ })
+            }
+            b'r' | b'p' | b'm' => {
+                self.graph.occurrences.push(Occurrence {
+                    relid: relid.to_u32(),
+                    relname,
+                    qualified,
+                    unions: flags.unions.clone(),
+                    via_view: flags.via_view.clone(),
+                    via_tview: flags.via_tview.clone(),
+                    in_sublink: flags.in_sublink,
+                    opaque_level: flags.opaque_level.clone(),
+                    matview: relkind == b'm',
+                    tview_table: None,
                 });
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))
             }
@@ -868,7 +967,13 @@ impl Walker<'_> {
                     let key = unsafe { output_position(query, &format!("pk_{entity}")) };
                     let columns = match key.and_then(|i| outputs.get(i)) {
                         Some(Resolved::Col(c)) => vec![c.clone()],
-                        Some(Resolved::Alt(cs)) => cs.clone(),
+                        Some(Resolved::Alt(terms, _)) => terms
+                            .iter()
+                            .filter_map(|t| match t {
+                                Resolved::Col(c) => Some(c.clone()),
+                                _ => None,
+                            })
+                            .collect(),
                         _ => Vec::new(),
                     };
                     self.graph
@@ -988,7 +1093,7 @@ impl Walker<'_> {
     fn occurrences_of(&self, rtindex: usize) -> HashSet<usize> {
         let level = self.levels.last().expect("inside a query level");
         match level.rtes.get(rtindex.wrapping_sub(1)) {
-            Some(RteInfo::Base(occ)) => HashSet::from([*occ]),
+            Some(RteInfo::Base(occ) | RteInfo::Tview { occ, .. }) => HashSet::from([*occ]),
             Some(RteInfo::Outputs(outputs)) => outputs.iter().flat_map(Resolved::occs).collect(),
             _ => HashSet::new(),
         }
@@ -1116,7 +1221,7 @@ impl Walker<'_> {
                 .len()
                 .checked_sub(1 + (*var).varlevelsup as usize)?;
             let rtindex = usize::try_from((*var).varno).ok()?;
-            let Some(RteInfo::Tview { entity, relid }) =
+            let Some(RteInfo::Tview { entity, relid, .. }) =
                 self.levels[index].rtes.get(rtindex.wrapping_sub(1))
             else {
                 return None;
@@ -1169,7 +1274,7 @@ impl Walker<'_> {
                     return None;
                 }
                 match outputs.get(usize::try_from(p.paramid).ok()?.checked_sub(1)?)? {
-                    Resolved::Alt(cs) => Some(cs.iter().cloned().map(Resolved::Col).collect()),
+                    Resolved::Alt(terms, _) => Some(terms.clone()),
                     Resolved::Opaque => None,
                     term => Some(vec![term.clone()]),
                 }
@@ -1210,7 +1315,7 @@ impl Walker<'_> {
                 let v = &*var;
                 let levelsup = v.varlevelsup as usize;
                 let candidates = match self.resolve_var(var, levelsup) {
-                    Resolved::Alt(cs) => cs.into_iter().map(Resolved::Col).collect(),
+                    Resolved::Alt(terms, _) => terms,
                     Resolved::Opaque => return false,
                     term => vec![term],
                 };
@@ -1394,7 +1499,7 @@ impl Walker<'_> {
                 return Resolved::Opaque;
             }
             match level.rtes.get(rtindex.wrapping_sub(1)) {
-                Some(RteInfo::Base(occ)) => {
+                Some(RteInfo::Base(occ) | RteInfo::Tview { occ, .. }) => {
                     let relid = Oid::from(self.graph.occurrences[*occ].relid);
                     Resolved::Col(Column {
                         occ: *occ,
@@ -1931,20 +2036,25 @@ fn list_len(list: *mut pg_sys::List) -> usize {
     }
 }
 
+/// Why a level's occurrences sit under a window function.
+const WINDOW_REASON: &str = "read under a window function";
+
 /// Why none of a level's columns can be seen through from the level above: a
 /// window function, LIMIT/OFFSET or GROUPING SETS decide which rows exist, or what
-/// they hold, from rows other than their own.
+/// they hold, from rows other than their own. Window functions all partitioned
+/// (`partitioned`, see [`windows_partitioned`]) don't count: the level above sees
+/// their partition columns (#187).
 ///
 /// A set-returning function in the select list only multiplies rows: the other
 /// output columns keep the values of the row they come from, so only the outputs
 /// that return a set are opaque (see `Walker::output`).
 ///
 /// SAFETY: `query` is a valid Query.
-unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
+unsafe fn opaque_reason(query: *mut pg_sys::Query, partitioned: bool) -> Option<String> {
     // SAFETY: fields of a valid Query.
     unsafe {
-        if (*query).hasWindowFuncs {
-            Some("read under a window function".to_string())
+        if (*query).hasWindowFuncs && !partitioned {
+            Some(WINDOW_REASON.to_string())
         } else if !(*query).limitCount.is_null() || !(*query).limitOffset.is_null() {
             Some("read under LIMIT/OFFSET".to_string())
         } else if !(*query).groupingSets.is_null() {
@@ -1955,6 +2065,21 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
     }
 }
 
+/// Whether a level has window functions and every one of its windows has a
+/// PARTITION BY: a row's window values then come from the rows of its partition
+/// only.
+///
+/// SAFETY: `query` is a valid Query.
+unsafe fn windows_partitioned(query: *mut pg_sys::Query) -> bool {
+    // SAFETY: fields of a valid Query and of its window clauses.
+    unsafe {
+        let windows = elements::<pg_sys::WindowClause>((*query).windowClause);
+        (*query).hasWindowFuncs
+            && !windows.is_empty()
+            && windows.iter().all(|w| list_len((**w).partitionClause) > 0)
+    }
+}
+
 /// [`opaque_reason`] for a level whose output is the TVIEW itself, where a
 /// set-returning function is one too: the rows it makes share one key.
 ///
@@ -1962,7 +2087,7 @@ unsafe fn opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
 unsafe fn top_opaque_reason(query: *mut pg_sys::Query) -> Option<String> {
     // SAFETY: fields of a valid Query.
     unsafe {
-        opaque_reason(query)
+        opaque_reason(query, false)
             .or_else(|| {
                 (*query)
                     .hasTargetSRFs

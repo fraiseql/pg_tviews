@@ -84,6 +84,10 @@ pub enum TriggerSet {
     /// see only the rows of statements naming it, and its partitions get no copy
     /// of a trigger with transition tables.
     Delta,
+    /// Another TVIEW's table (#191): its refreshes are mapped by the delta
+    /// triggers alone. They fire inside the flush, which drains what they queue;
+    /// a flush or TRUNCATE trigger there would flush again from inside it.
+    TviewDelta,
     /// Refreshing another TVIEW refreshes this one: nothing.
     None,
 }
@@ -93,6 +97,7 @@ impl TriggerSet {
         match (self, partitioned) {
             (Self::Row, _) | (Self::Delta, true) => &[ROW, FLUSH, TRUNCATE],
             (Self::Delta, false) => &[DELTA_INSERT, DELTA_UPDATE, DELTA_DELETE, FLUSH, TRUNCATE],
+            (Self::TviewDelta, _) => &[DELTA_INSERT, DELTA_UPDATE, DELTA_DELETE],
             (Self::None, _) => &[],
         }
     }
@@ -110,22 +115,25 @@ pub fn trigger_plan(
     lineage: &crate::lineage::Lineage,
 ) -> TViewResult<TriggerPlan> {
     use crate::lineage::TableKind;
-    Ok(base_tables
-        .iter()
-        .map(|&oid| {
-            let set = match lineage
-                .tables
-                .iter()
-                .find(|t| t.relid == oid.to_u32())
-                .map(|t| &t.kind)
-            {
+    // Other TVIEWs' tables the lineage maps (#191): they are not base tables.
+    let tview_tables = lineage.tables.iter().filter(|t| {
+        t.tview.is_some() && matches!(t.kind, TableKind::Mapped | TableKind::AllKeys(_))
+    });
+    Ok(tview_tables
+        .map(|t| (pg_sys::Oid::from(t.relid), TriggerSet::TviewDelta))
+        .chain(base_tables.iter().map(|&oid| {
+            let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
+            let set = match table.map(|t| &t.kind) {
+                // REFRESH MATERIALIZED VIEW fires no trigger: the ProcessUtility
+                // hook follows it (#189).
+                _ if table.is_some_and(|t| t.matview) => TriggerSet::None,
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
                 None if lineage.unread.contains(&oid.to_u32()) => TriggerSet::None,
                 Some(TableKind::Local(_)) | None => TriggerSet::Row,
             };
             (oid, set)
-        })
+        }))
         .collect())
 }
 
@@ -245,13 +253,13 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          ), \
          reads AS ( \
              SELECT DISTINCT r.entity, r.relid, c.relkind, \
+                    r.relid IN (SELECT table_oid::oid FROM {meta}) AS tview, \
                     pg_catalog.jsonb_array_length(m.key_mappings) = 0 AS legacy, \
                     (SELECT e->>'kind' FROM pg_catalog.jsonb_array_elements(m.key_mappings) e \
                      WHERE (e->>'relid')::pg_catalog.oid = r.relid LIMIT 1) AS kind \
              FROM {schema}.pg_tview_reads r \
              JOIN {meta} m ON m.entity = r.entity \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
-             WHERE r.relid NOT IN (SELECT table_oid::oid FROM {meta}) \
          ), \
          planned AS ( \
              SELECT r.entity, r.relid, r.relkind, f.proname \
@@ -259,6 +267,8 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
              CROSS JOIN (VALUES ('{ROW_HANDLER}'), ('{FLUSH_HANDLER}'), ('{DELTA_HANDLER}'), \
                                 ('{TRUNCATE_HANDLER}')) AS f(proname) \
              WHERE CASE \
+                 WHEN r.tview THEN r.kind IN ('mapped', 'all_keys') \
+                                   AND f.proname = '{DELTA_HANDLER}' \
                  WHEN r.legacy THEN f.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}') \
                  WHEN r.kind = 'local' OR (r.kind IN ('mapped', 'all_keys') AND r.relkind = 'p') \
                      THEN f.proname IN ('{ROW_HANDLER}', '{FLUSH_HANDLER}', '{TRUNCATE_HANDLER}') \

@@ -162,6 +162,10 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             clear_transaction_state();
         }
         XactEvent::Abort => {
+            // The catalog the caches memoized may be rolled back with the
+            // transaction: a TVIEW create that failed leaves no view, but its columns
+            // were cached under the view's name (#188). Memory only, no SPI.
+            super::cache::invalidate_all_caches();
             // Auto-resume suspension on abort (discard changes)
             crate::suspend::force_resume();
             crate::revision::reset();
@@ -259,6 +263,9 @@ unsafe extern "C-unwind" fn tview_subxact_callback(
                 // A CTAS that failed inside this subtransaction never reached the event
                 // trigger; its pending SELECT must not leak into a later statement.
                 crate::hooks::release_hook_guard_on_abort(false);
+
+                // DDL rolled back with the subtransaction: forget what was cached of it.
+                super::cache::invalidate_all_caches();
 
                 // Restore queue from snapshot
                 if let Some(snapshot) = QUEUE_SNAPSHOTS.with(|s| s.borrow_mut().pop()) {

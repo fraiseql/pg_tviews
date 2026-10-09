@@ -150,8 +150,8 @@ pub struct Occurrence {
     pub relname: String,
     /// Schema-qualified, quoted.
     pub qualified: String,
-    /// Top-level UNION branch the occurrence belongs to (0 without UNION).
-    pub branch: usize,
+    /// The UNION leaves it sits in, outermost first: `(union, leaf)`.
+    pub unions: Scope,
     /// First plain view (not a TVIEW's backing view) on the way to it.
     pub via_view: Option<String>,
     /// The TVIEW whose backing view it was read through, if any.
@@ -161,6 +161,12 @@ pub struct Occurrence {
     /// Why nothing passes through the query level it sits in, if so (window
     /// function, LIMIT, …): its columns are not visible outside that level.
     pub opaque_level: Option<String>,
+    /// A materialized view: `REFRESH MATERIALIZED VIEW` replaces its rows, and no
+    /// trigger sees them (#189).
+    pub matview: bool,
+    /// The table of another TVIEW, of that entity: its rows change when that
+    /// TVIEW is refreshed (#191).
+    pub tview_table: Option<String>,
 }
 
 /// A predicate linking two occurrences, `a` and `b`.
@@ -214,11 +220,61 @@ pub enum Maps {
     IfMatched,
 }
 
-/// The TVIEW key in one UNION branch: a column of the root occurrence.
+/// Where a read sits among the UNIONs of the view: `(union, leaf)` per UNION it
+/// is inside, outermost first.
+pub type Scope = Vec<(usize, usize)>;
+
+/// Whether two scopes can meet in one TVIEW row: they take the same leaf of every
+/// UNION both sit in.
+#[must_use]
+pub fn compatible(a: &Scope, b: &Scope) -> bool {
+    a.iter()
+        .all(|(union, leaf)| b.iter().all(|(u, l)| u != union || l == leaf))
+}
+
+/// The TVIEW key in one UNION branch: a column of the root occurrence, or an
+/// immutable expression of that occurrence's row (#188).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Root {
-    pub branch: usize,
+    /// The column, or the first column the expression reads.
     pub key: Column,
+    /// The key written over the root occurrence's columns, when not `key` itself.
+    pub expr: Option<Sql>,
+    /// The UNION leaves the key comes from: the rows it names.
+    pub scope: Scope,
+}
+
+impl Root {
+    /// The key written over the root occurrence's columns.
+    #[must_use]
+    pub fn sql(&self) -> Sql {
+        self.expr.clone().unwrap_or_else(|| self.key.sql())
+    }
+
+    /// The key written over `column` instead of the root's key column, when the
+    /// key reads nothing else of the root: an equality `column = key` then
+    /// replaces the root in a mapping query.
+    fn sql_over(&self, column: &Column) -> Option<Sql> {
+        let Some(expr) = &self.expr else {
+            return Some(column.sql());
+        };
+        let mut sql = Sql::default();
+        for piece in &expr.0 {
+            match piece {
+                Piece::Column { occ, attnum }
+                    if *occ == self.key.occ && *attnum == self.key.attnum =>
+                {
+                    sql.0.push(Piece::Column {
+                        occ: column.occ,
+                        attnum: column.attnum,
+                    });
+                }
+                Piece::Column { .. } => return None,
+                Piece::Text(t) => sql.push_text(t),
+            }
+        }
+        Some(sql)
+    }
 }
 
 /// How a TVIEW's rows are named (ADR 0169).
@@ -337,6 +393,8 @@ pub struct Graph {
     pub occurrences: Vec<Occurrence>,
     pub conjuncts: Vec<Conjunct>,
     pub roots: Vec<Root>,
+    /// The UNION leaves whose key no table carries: their rows cannot be mapped.
+    pub holes: Vec<Scope>,
     /// Functions the view calls that may read tables `pg_tviews` does not see.
     pub untracked_functions: Vec<String>,
     /// Tables read only where the output never depends on them (a CTE the view
@@ -378,6 +436,9 @@ pub enum Kind {
     Local(String),
     /// The predicates from the occurrence to the root, in order.
     Mapped(Vec<usize>),
+    /// One chain per UNION branch root the occurrence reaches: a read outside the
+    /// UNION the key comes from (#188).
+    Branches(Vec<Vec<usize>>),
     Propagated(String),
     AllKeys(String),
 }
@@ -410,6 +471,10 @@ pub struct TableLineage {
     /// The virtual generated columns the TVIEW reads and their inputs: never
     /// copied by a fast path, which reads the changed row (#179).
     pub virtual_reads: Vec<String>,
+    /// A materialized view: no trigger can be installed on it (#189).
+    pub matview: bool,
+    /// The table of another TVIEW, of that entity (#191).
+    pub tview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,9 +531,31 @@ impl Graph {
             .map(|(name, _)| name.clone())
     }
 
-    fn root_of(&self, occ: usize) -> Option<&Root> {
-        let branch = self.occurrences[occ].branch;
-        self.roots.iter().find(|r| r.branch == branch)
+    /// The roots whose rows a read of `occ` can reach: those of the UNION leaves
+    /// it can meet.
+    fn roots_of(&self, occ: usize) -> Vec<&Root> {
+        let scope = &self.occurrences[occ].unions;
+        self.roots
+            .iter()
+            .filter(|r| compatible(scope, &r.scope))
+            .collect()
+    }
+
+    /// Whether a read of `occ` reaches rows of a UNION leaf whose key no table
+    /// carries.
+    fn reaches_hole(&self, occ: usize) -> bool {
+        let scope = &self.occurrences[occ].unions;
+        self.holes.iter().any(|h| compatible(scope, h))
+    }
+
+    /// The root a chain from `occ` ends at.
+    fn root_at(&self, occ: usize, path: &[usize]) -> Option<&Root> {
+        let mut at = occ;
+        for &i in path {
+            let c = &self.conjuncts[i];
+            at = if c.a == at { c.b } else { c.a };
+        }
+        self.roots_of(occ).into_iter().find(|r| r.key.occ == at)
     }
 
     /// Classify one occurrence. `propagates(entity, relid)` tells whether entity
@@ -476,19 +563,73 @@ impl Graph {
     /// this TVIEW embeds it, and it maps the table itself.
     #[must_use]
     pub fn classify(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
+        let kind = self.classify_read(occ, propagates);
+        match &self.occurrences[occ].tview_table {
+            Some(inner) => self.tview_kind(occ, inner, kind, propagates),
+            None => kind,
+        }
+    }
+
+    /// The kind of a read of another TVIEW's table (#191): `propagated` when it
+    /// is joined on that TVIEW's `pk_<entity>` by a TVIEW embedding it (refreshing
+    /// the inner TVIEW looks the embedding rows up); otherwise its refreshes are
+    /// mapped like writes to a base table, never by a row trigger.
+    fn tview_kind(
+        &self,
+        occ: usize,
+        inner: &str,
+        kind: Kind,
+        propagates: &dyn Fn(&str, u32) -> bool,
+    ) -> Kind {
+        let path = match &kind {
+            Kind::Local(_) => self.occurrence_paths(occ, &kind).pop().unwrap_or_default(),
+            Kind::Mapped(path) => path.clone(),
+            _ => return kind,
+        };
+        let key = format!("pk_{inner}");
+        let by_key = path
+            .first()
+            .and_then(|&i| self.conjuncts[i].equality.as_ref())
+            .is_some_and(|(x, y)| [x, y].iter().any(|c| c.occ == occ && c.name == key));
+        if by_key && propagates(inner, self.occurrences[occ].relid) {
+            Kind::Propagated(inner.to_string())
+        } else {
+            Kind::Mapped(path)
+        }
+    }
+
+    fn classify_read(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
-        let Some(root) = self.root_of(occ) else {
+        if o.matview {
+            let via = o
+                .via_view
+                .as_ref()
+                .map(|view| format!(", read through view {view}"))
+                .unwrap_or_default();
+            return Kind::AllKeys(format!(
+                "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without \
+                 firing triggers{via}"
+            ));
+        }
+        let roots = self.roots_of(occ);
+        if roots.is_empty() || self.reaches_hole(occ) {
             // A top level whose rows a write changes beyond its own (a window
             // function, LIMIT…) has no root; say why.
-            return Kind::AllKeys(
-                o.opaque_level
-                    .clone()
-                    .unwrap_or_else(|| "the TVIEW key is not a column of a base table".to_string()),
-            );
-        };
-        if root.key.occ == occ {
-            // A virtual key is computed by the mapping query over the changed rows.
-            return if self.is_virtual(&root.key) {
+            return Kind::AllKeys(o.opaque_level.clone().unwrap_or_else(|| {
+                if self.roots.is_empty() {
+                    "the TVIEW key is not a column of a base table".to_string()
+                } else {
+                    "the TVIEW key is not a column of a base table in every UNION branch"
+                        .to_string()
+                }
+            }));
+        }
+        if let [root] = roots[..]
+            && root.key.occ == occ
+        {
+            // A virtual or computed key is computed by the mapping query over the
+            // changed rows.
+            return if self.is_virtual(&root.key) || root.expr.is_some() {
                 Kind::Mapped(Vec::new())
             } else {
                 Kind::Local(root.key.name.clone())
@@ -499,13 +640,27 @@ impl Graph {
         {
             return Kind::Propagated(entity.clone());
         }
-        match self.path(occ, root.key.occ) {
-            Some(path) => match self.local_column(&path, root) {
-                Some(col) => Kind::Local(col),
-                None => Kind::Mapped(path),
-            },
-            None => Kind::AllKeys(self.unlinked_reason(occ)),
+        if let [root] = roots[..] {
+            return match self.path(occ, root.key.occ) {
+                Some(path) => match self.local_column(&path, root) {
+                    Some(col) => Kind::Local(col),
+                    None => Kind::Mapped(path),
+                },
+                None => Kind::AllKeys(self.unlinked_reason(occ)),
+            };
         }
+        // Rows of every branch it can meet: a chain to each branch's root.
+        let paths: Option<Vec<Vec<usize>>> = roots
+            .iter()
+            .map(|root| {
+                if root.key.occ == occ {
+                    Some(Vec::new())
+                } else {
+                    self.path(occ, root.key.occ)
+                }
+            })
+            .collect();
+        paths.map_or_else(|| Kind::AllKeys(self.unlinked_reason(occ)), Kind::Branches)
     }
 
     /// The shortest chain of usable predicates from `from` to `to`.
@@ -560,6 +715,9 @@ impl Graph {
     /// equality: the key is then read off the changed row (unless it is virtual).
     fn local_column(&self, path: &[usize], root: &Root) -> Option<String> {
         let [only] = path else { return None };
+        if root.expr.is_some() {
+            return None;
+        }
         let (x, y) = self.conjuncts[*only].equality.as_ref()?;
         let own = if *y == root.key {
             x
@@ -610,7 +768,10 @@ impl Graph {
     /// `(column of occ, column of the root)` when `path` is one equality from `occ`
     /// onto a column of the root other than the key.
     fn root_hop(&self, occ: usize, path: &[usize]) -> Option<(String, String)> {
-        let root = self.root_of(occ)?;
+        let root = self.root_at(occ, path)?;
+        if root.expr.is_some() {
+            return None;
+        }
         let [only] = path else { return None };
         let (x, y) = self.conjuncts[*only].equality.as_ref()?;
         let (own, other) = if x.occ == occ { (x, y) } else { (y, x) };
@@ -686,23 +847,30 @@ impl Graph {
     /// The conditions of `path` its mapping query keeps: all but a last one that
     /// only copies the key (the root is then left out).
     fn kept_conditions<'p>(&self, occ: usize, path: &'p [usize]) -> &'p [usize] {
-        match (self.root_of(occ), path.split_last()) {
-            (Some(root), Some((&last, rest)))
-                if self.conjuncts[last]
-                    .equality
-                    .as_ref()
-                    .is_some_and(|(x, y)| *x == root.key || *y == root.key) =>
-            {
-                rest
-            }
+        match (self.root_at(occ, path), path.split_last()) {
+            (Some(root), Some((&last, rest))) if self.copied_key(root, last).is_some() => rest,
             _ => path,
         }
+    }
+
+    /// The key written over the other column of `conjunct` when it is an equality
+    /// with the root's key column that can stand for the root.
+    fn copied_key(&self, root: &Root, conjunct: usize) -> Option<Sql> {
+        let (x, y) = self.conjuncts[conjunct].equality.as_ref()?;
+        let other = if *y == root.key {
+            x
+        } else if *x == root.key {
+            y
+        } else {
+            return None;
+        };
+        root.sql_over(other)
     }
 
     /// `SELECT DISTINCT <key> FROM <delta>, <tables on the path> WHERE <conditions>`.
     /// The root is left out when the last condition copies its key verbatim.
     fn path_sql(&self, occ: usize, path: &[usize]) -> Option<String> {
-        let root = self.root_of(occ)?;
+        let root = self.root_at(occ, path)?;
         // The occurrences in path order, starting at the changed table.
         let mut chain = vec![occ];
         for &i in path {
@@ -711,26 +879,14 @@ impl Graph {
             chain.push(if c.a == at { c.b } else { c.a });
         }
         let mut conditions: Vec<&Conjunct> = path.iter().map(|&i| &self.conjuncts[i]).collect();
-        let mut key = root.key.clone();
+        let mut key = root.sql();
         if chain.len() > 1
-            && let Some(last) = conditions.last()
-            && let Some((x, y)) = &last.equality
+            && let Some(&last) = path.last()
+            && let Some(copied) = self.copied_key(root, last)
         {
-            let copied = if *y == root.key {
-                Some(x)
-            } else if *x == root.key {
-                Some(y)
-            } else {
-                None
-            };
-            if let Some(column) = copied {
-                key = column.clone();
-                conditions.pop();
-                chain.pop();
-            }
-        }
-        if chain.len() == 1 && occ == root.key.occ {
-            key = root.key.clone();
+            key = copied;
+            conditions.pop();
+            chain.pop();
         }
         let alias = |o: usize| {
             if o == occ {
@@ -762,7 +918,7 @@ impl Graph {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut sql = format!("SELECT DISTINCT {} FROM {from}", render(&key.sql()));
+        let mut sql = format!("SELECT DISTINCT {} FROM {from}", render(&key));
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(
@@ -778,16 +934,19 @@ impl Graph {
 
     /// The predicate chain from a `Local` or `Mapped` occurrence to its root's key
     /// (empty for the root itself).
-    fn occurrence_path(&self, occ: usize, kind: &Kind) -> Vec<usize> {
+    fn occurrence_paths(&self, occ: usize, kind: &Kind) -> Vec<Vec<usize>> {
         match kind {
-            Kind::Mapped(p) => p.clone(),
+            Kind::Mapped(p) => vec![p.clone()],
+            Kind::Branches(ps) => ps.clone(),
             // A local occurrence other than the root reads the key through its one
             // equality.
-            _ => self
-                .root_of(occ)
-                .filter(|r| r.key.occ != occ)
-                .and_then(|r| self.path(occ, r.key.occ))
-                .unwrap_or_default(),
+            _ => vec![
+                self.roots_of(occ)
+                    .first()
+                    .filter(|r| r.key.occ != occ)
+                    .and_then(|r| self.path(occ, r.key.occ))
+                    .unwrap_or_default(),
+            ],
         }
     }
 
@@ -817,8 +976,10 @@ impl Graph {
                     // The reads that can be traced keep refreshing; only the rest
                     // is left to the TVIEW's uncascaded_policy (#162).
                     for (occ, k) in &kinds {
-                        if matches!(k, Kind::Local(_) | Kind::Mapped(_)) {
-                            paths.push((*occ, self.occurrence_path(*occ, k)));
+                        if matches!(k, Kind::Local(_) | Kind::Mapped(_) | Kind::Branches(_)) {
+                            for path in self.occurrence_paths(*occ, k) {
+                                paths.push((*occ, path));
+                            }
                         }
                     }
                     TableKind::AllKeys(reason)
@@ -845,7 +1006,9 @@ impl Graph {
                         TableKind::Local(columns[0].clone())
                     } else {
                         for (occ, k) in direct {
-                            paths.push((*occ, self.occurrence_path(*occ, k)));
+                            for path in self.occurrence_paths(*occ, k) {
+                                paths.push((*occ, path));
+                            }
                         }
                         TableKind::Mapped
                     }
@@ -873,6 +1036,8 @@ impl Graph {
                     index_hints,
                     hop,
                     virtual_reads: Vec::new(),
+                    matview: o.matview,
+                    tview: o.tview_table.clone(),
                     root: self
                         .roots
                         .iter()
@@ -893,7 +1058,8 @@ pub struct Lineage {
     pub unread: Vec<u32>,
     pub identity: Identity,
     /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
-    /// EXCEPT): its rows are recomputed, never patched.
+    /// EXCEPT), or its key comes from the branches of one: its rows are
+    /// recomputed, never patched.
     pub set_operation: bool,
     /// The aggregate TVIEWs (#58) the view reads, each with the output column
     /// equal to its key, if any (#126): no `fk_<aggregate>` column propagates a
@@ -1032,6 +1198,9 @@ impl Lineage {
                             }
                         }
                     }
+                    if let Some(inner) = &t.tview {
+                        entry["tview"] = inner.clone().into();
+                    }
                     entry["columns"] = t
                         .columns
                         .iter()
@@ -1130,6 +1299,7 @@ pub fn analyze(
     let found: HashSet<u32> = graph
         .occurrences
         .iter()
+        .filter(|o| o.tview_table.is_none())
         .map(|o| o.relid)
         .chain(graph.unread_tables.iter().copied())
         .collect();
@@ -1177,11 +1347,16 @@ pub fn analyze(
         )
         .collect();
     // Propagation from an embedded TVIEW covers a table only if that TVIEW maps it.
+    // Or, for a read of its table, only that it embeds it (#191).
     let propagates = |child: &str, relid: u32| {
         embeds.contains(&child)
-            && mapped_by
-                .get(child)
-                .is_some_and(|(mapped, full)| *full || mapped.contains(&relid))
+            && (tview_tables
+                .get(&pgrx::pg_sys::Oid::from(relid))
+                .map(String::as_str)
+                == Some(child)
+                || mapped_by
+                    .get(child)
+                    .is_some_and(|(mapped, full)| *full || mapped.contains(&relid)))
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
@@ -1205,7 +1380,9 @@ pub fn analyze(
         tables,
         unread,
         identity,
-        set_operation: graph.set_operation,
+        // A UNION read through a view or subquery gives the key one root per
+        // branch too: its rows are recomputed, and two rows for one key refused.
+        set_operation: graph.set_operation || graph.roots.len() > 1,
         aggregate_embeds,
     })
 }
@@ -1355,6 +1532,9 @@ pub struct KeyMapping {
     /// How an UPDATE is written into every TVIEW row it reaches (issue #120).
     #[serde(default)]
     pub fanout: Option<crate::cascade_path::FanoutPatch>,
+    /// The table of another TVIEW, of that entity (#191): refreshed first.
+    #[serde(default)]
+    pub tview: Option<String>,
 }
 
 impl KeyMapping {
@@ -1604,11 +1784,13 @@ mod tests {
             relid,
             relname: relname.to_string(),
             qualified: format!("public.{relname}"),
-            branch: 0,
+            unions: Vec::new(),
             via_view: None,
             via_tview: None,
             in_sublink: false,
             opaque_level: None,
+            matview: false,
+            tview_table: None,
         }
     }
 
@@ -1639,7 +1821,12 @@ mod tests {
         Graph {
             occurrences,
             conjuncts,
-            roots: vec![Root { branch: 0, key }],
+            roots: vec![Root {
+                key,
+                expr: None,
+                scope: Vec::new(),
+            }],
+            holes: vec![],
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
@@ -1770,6 +1957,7 @@ mod tests {
             occurrences: vec![win],
             conjuncts: vec![],
             roots: vec![],
+            holes: vec![],
             untracked_functions: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
@@ -2399,5 +2587,164 @@ mod tests {
         );
         let tables = g.tables(NONE);
         assert!(matches!(tables[1].kind, TableKind::AllKeys(_)));
+    }
+
+    // ── UNION branch keys (#188), materialized views (#189) ─────────────────
+
+    /// `-<column>`, the line branch's key of #188.
+    fn negated(c: &Column) -> Sql {
+        let mut sql = Sql::text("(OPERATOR(pg_catalog.-) ");
+        sql.push_sql(c.sql());
+        sql.push_text(")");
+        sql
+    }
+
+    /// `SELECT p.pk_product … FROM tb_product p UNION ALL SELECT -l.pk_order_line …
+    /// FROM tb_order_line l`, read by a definition that joins `tb_note n` to the
+    /// union's id: occurrence 0 is p (leaf 0), 1 is l (leaf 1), 2 is n (outside).
+    fn two_branches() -> Graph {
+        let mut p = occ(1, "tb_product");
+        p.unions = vec![(1, 0)];
+        let mut l = occ(2, "tb_order_line");
+        l.unions = vec![(1, 1)];
+        let mut g = graph(
+            vec![p, l, occ(3, "tb_note")],
+            vec![
+                eq(col(2, "target"), col(0, "id"), true, true),
+                eq(col(2, "target"), col(1, "id"), true, true),
+            ],
+            col(0, "pk_product"),
+        );
+        g.roots = vec![
+            Root {
+                key: col(0, "pk_product"),
+                expr: None,
+                scope: vec![(1, 0)],
+            },
+            Root {
+                key: col(1, "pk_order_line"),
+                expr: Some(negated(&col(1, "pk_order_line"))),
+                scope: vec![(1, 1)],
+            },
+        ];
+        g
+    }
+
+    #[test]
+    fn scopes_meet_unless_they_take_different_leaves_of_one_union() {
+        assert!(compatible(&vec![], &vec![(1, 0)]));
+        assert!(compatible(&vec![(1, 0)], &vec![(1, 0), (2, 1)]));
+        assert!(compatible(&vec![(1, 0)], &vec![(2, 1)]));
+        assert!(!compatible(&vec![(1, 0)], &vec![(1, 1)]));
+        assert!(!compatible(&vec![(2, 1), (1, 0)], &vec![(1, 1)]));
+    }
+
+    #[test]
+    fn each_branch_root_maps_its_own_rows() {
+        let g = two_branches();
+        assert_eq!(g.classify(0, NONE), Kind::Local("pk_product".into()));
+        // A computed key is computed by the mapping query.
+        assert_eq!(g.classify(1, NONE), Kind::Mapped(vec![]));
+        assert_eq!(
+            g.mapping_sql(&[(1, vec![])]),
+            "SELECT DISTINCT (OPERATOR(pg_catalog.-) d.{c:2:1}) FROM pg_tviews_delta d"
+        );
+    }
+
+    #[test]
+    fn a_read_outside_the_union_maps_to_every_branch() {
+        let g = two_branches();
+        assert_eq!(g.classify(2, NONE), Kind::Branches(vec![vec![0], vec![1]]));
+        let tables = g.tables(NONE);
+        assert_eq!(tables[2].kind, TableKind::Mapped);
+        assert_eq!(
+            tables[2].sql.as_deref(),
+            Some(
+                "SELECT DISTINCT o1.{c:1:1} FROM pg_tviews_delta d, {r:1} o1 \
+                 WHERE d.{c:3:1} OPERATOR(pg_catalog.=) o1.{c:1:1} UNION \
+                 SELECT DISTINCT (OPERATOR(pg_catalog.-) o1.{c:2:1}) FROM pg_tviews_delta d, {r:2} o1 \
+                 WHERE d.{c:3:1} OPERATOR(pg_catalog.=) o1.{c:2:1}"
+            )
+        );
+        // Two roots: rows are recomputed, never patched through a hop.
+        assert_eq!(tables[2].hop, None);
+    }
+
+    #[test]
+    fn an_equality_with_a_computed_key_column_stands_for_the_root() {
+        // tb_line.fk_order_line = l.pk_order_line, in the line branch.
+        let mut g = two_branches();
+        let mut line = occ(4, "tb_line");
+        line.unions = vec![(1, 1)];
+        g.occurrences.push(line);
+        g.conjuncts.push(eq(
+            col(3, "fk_order_line"),
+            col(1, "pk_order_line"),
+            true,
+            true,
+        ));
+        assert_eq!(g.classify(3, NONE), Kind::Mapped(vec![2]));
+        assert_eq!(
+            g.mapping_sql(&[(3, vec![2])]),
+            "SELECT DISTINCT (OPERATOR(pg_catalog.-) d.{c:4:1}) FROM pg_tviews_delta d"
+        );
+    }
+
+    #[test]
+    fn a_branch_without_a_key_leaves_what_reaches_it_all_keys() {
+        let mut g = two_branches();
+        g.roots.pop();
+        g.holes = vec![vec![(1, 1)]];
+        assert_eq!(g.classify(0, NONE), Kind::Local("pk_product".into()));
+        assert!(
+            matches!(g.classify(1, NONE), Kind::AllKeys(r) if r.contains("every UNION branch"))
+        );
+        assert!(matches!(g.classify(2, NONE), Kind::AllKeys(_)));
+    }
+
+    #[test]
+    fn a_materialized_view_is_all_keys_even_when_linked() {
+        let mut g = graph(
+            vec![occ(1, "tb_customer"), occ(2, "mv_order_count")],
+            vec![eq(col(1, "fk_customer"), col(0, "pk_customer"), true, true)],
+            col(0, "pk_customer"),
+        );
+        g.occurrences[1].matview = true;
+        assert!(matches!(g.classify(1, NONE), Kind::AllKeys(r) if r.contains("materialized view")));
+        assert!(g.tables(NONE)[1].matview);
+    }
+
+    // ── reads of another TVIEW's table (#191) ───────────────────────────────
+
+    /// `tb_note n` (root) and `tv_line l`, joined on `cond`.
+    fn note_and_line(cond: Conjunct) -> Graph {
+        let mut line = occ(2, "tv_line");
+        line.tview_table = Some("line".into());
+        graph(vec![occ(1, "tb_note"), line], vec![cond], col(0, "pk_note"))
+    }
+
+    #[test]
+    fn a_tview_table_joined_on_its_key_by_an_embed_is_propagated() {
+        let g = note_and_line(eq(col(1, "pk_line"), col(0, "fk_line"), true, true));
+        let embeds = |child: &str, _relid: u32| child == "line";
+        assert_eq!(g.classify(1, &embeds), Kind::Propagated("line".into()));
+        // Without the embed, its refreshes are mapped.
+        assert_eq!(g.classify(1, NONE), Kind::Mapped(vec![0]));
+    }
+
+    #[test]
+    fn a_tview_table_linked_otherwise_is_mapped_never_local() {
+        // l.order_id = n.pk_note: an equality with the key, which a base table
+        // would read off its row (local).
+        let g = note_and_line(eq(col(1, "order_id"), col(0, "pk_note"), true, true));
+        let embeds = |child: &str, _relid: u32| child == "line";
+        assert_eq!(g.classify(1, &embeds), Kind::Mapped(vec![0]));
+        let tables = g.tables(&embeds);
+        assert_eq!(tables[1].kind, TableKind::Mapped);
+        assert_eq!(tables[1].tview.as_deref(), Some("line"));
+        assert_eq!(
+            g.tables(&embeds)[1].sql.as_deref(),
+            Some("SELECT DISTINCT d.{c:2:1} FROM pg_tviews_delta d")
+        );
     }
 }

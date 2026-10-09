@@ -113,6 +113,52 @@ pub(crate) fn report(
     }
 }
 
+/// After `REFRESH MATERIALIZED VIEW matview`: refresh in full every TVIEW that
+/// reads it under the `full_refresh` policy, then flush the queue, as the flush
+/// trigger does after a write (#189). Under `warn` the TVIEW was created knowing
+/// it would go stale; under `error` it was never created.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read or a refresh fails.
+pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
+    // SAFETY: a plain OID datum.
+    let args = [unsafe {
+        pgrx::datum::DatumWithOid::new(matview, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
+    }];
+    let entities: Vec<String> = Spi::connect(|client| {
+        client
+            .select(
+                &format!(
+                    "SELECT entity::text FROM {} \
+                     WHERE uncascaded_policy = 'full_refresh' \
+                       AND $1::pg_catalog.regclass = ANY (uncascaded_oids) \
+                     ORDER BY entity",
+                    crate::utils::meta_table()
+                ),
+                None,
+                &args,
+            )?
+            .map(|row| row.get::<String>(1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|entities| entities.into_iter().flatten().collect())
+    })
+    .map_err(|e| crate::TViewError::CatalogError {
+        operation: "Find the TVIEWs reading a refreshed materialized view".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    if entities.is_empty() {
+        return Ok(());
+    }
+    for entity in &entities {
+        if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+            crate::suspend::record_change(entity);
+        } else {
+            crate::queue::enqueue_refresh_all(entity);
+        }
+    }
+    crate::queue::flush_refresh_queue()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,7 +2,9 @@
 
 - Status: Accepted; superseded in part by [ADR 0169](0169-tview-row-identity.md) (DISTINCT ON keys);
   amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
-  and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create))
+  and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create)),
+  and for #187, #188 and #189 (see [Amendment](#amendment-187-188-189-window-partitions-union-branch-keys-materialized-views)),
+  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table))
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 
@@ -185,3 +187,60 @@ setting is state a definition file must set first.
 - Reads through another TVIEW's backing view are recognised by the view's OID, whatever
   its name (`Propagated`); a definition now usually reads the other TVIEW's `tv_<entity>`
   table, which is not a base table.
+
+## Amendment (#187, #188, #189): window partitions, UNION branch keys, materialized views
+
+Three shapes of real read models were refused or left stale: "the first row per key"
+written with `ROW_NUMBER() OVER (PARTITION BY <linked key>)` was `all_keys` where the
+`DISTINCT ON` spelling was traced (#187); a UNION of two entities with their own key
+spaces had no root for a branch keyed by an expression, nor for any branch when the
+UNION sat in a view (#188); a materialized view the definition read had no kind at
+all, so no policy saw it and `REFRESH MATERIALIZED VIEW` left the TVIEW stale (#189).
+
+- **Window partitions.** A level whose window functions all have a `PARTITION BY` is
+  not opaque: a row's window values come from the rows of its partition. An output
+  column in every window's partition, or equal to one through an equality (#162),
+  passes through like a `DISTINCT ON` key; every other output, window results
+  included, is opaque. A window without `PARTITION BY` keeps the level opaque, and the
+  top level still has no root: its window values come from other TVIEW rows.
+- **Branch keys.** A root is a column of one occurrence, or an immutable expression
+  of one occurrence's row (`-l.pk_order_line`, `pk + 1000000000`); the root
+  occurrence is then `mapped`, its mapping query computing the key, and an equality
+  with the key column stands for the root in other mapping queries when the
+  expression reads nothing else of the root. A key computed from two occurrences is
+  no root.
+- **UNION scopes.** Occurrences carry the UNION leaves they sit in (`(union, leaf)`,
+  outermost first), for a UNION in the definition or in a view or subquery. A UNION
+  subquery's output stands for each branch's column or computed output (`Alt`), and
+  remembers the branches where it is opaque. When the key comes from such an output,
+  each branch gets its own root: a read inside a branch maps to that branch's root,
+  a read outside every UNION maps to the roots of all branches (one mapping query
+  each, combined), and a read that can meet a branch without a root is `all_keys`.
+  Such a TVIEW is a union like a set-operation definition: rows are recomputed, and
+  a key returned twice is refused by `union_duplicate_policy`, on the bulk refresh
+  path too, as an ERROR that fails the write.
+- **Materialized views.** A matview read is an occurrence (and a base table) that is
+  always `all_keys`: no trigger can see its rows. The policy decides at create;
+  under `full_refresh` the `ProcessUtility` hook refreshes the TVIEWs listing the
+  matview among their uncascaded tables after `REFRESH MATERIALIZED VIEW` (plain or
+  `CONCURRENTLY`, not `WITH NO DATA`) and flushes the queue. Mapping the refreshed
+  rows' keys (a diff of the matview before and after) is not done.
+
+## Amendment (#191): reads of another TVIEW's table
+
+A TVIEW's table read by another TVIEW was opaque: only an equality on its
+`pk_<entity>` was noticed, as an embed. Any other read, a view aggregating it by
+another column for one, had no kind and no policy, and the reader went stale when
+the inner TVIEW was refreshed.
+
+- Such a read is an occurrence like a base table's, its columns resolved, so the
+  walk links it through any predicate. Joined on the inner TVIEW's key by a TVIEW
+  that embeds it (`fk_<entity>`, an aggregate embed), it is `Propagated`: entity
+  propagation already refreshes the embedding rows. Otherwise it is `Mapped`, never
+  `Local`, or `AllKeys` under the policy.
+- The inner TVIEW's refreshes are its writes: the occurrence's table gets the
+  three delta triggers, and no flush or `TRUNCATE` trigger, which would flush from
+  inside the flush. They fire on the flush's own upserts and deletes and queue the
+  outer TVIEW's keys, which the flush drains. `key_mappings` names the inner TVIEW,
+  and the flush's dependency order refreshes it first, so the outer rows are
+  recomputed from fresh inner rows, once.
