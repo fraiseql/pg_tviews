@@ -95,8 +95,10 @@ jobs:
         run: |
           # Required for the pg_tviews GUCs; pg_tviews must already be installed.
           # PGPORT was exported to $GITHUB_ENV by the cluster-setup step.
+          # One quoted name per library: 'a,b' would name a single library "a,b".
+          libraries="$(sed "s/[^,]*/'&'/g; s/,/, /g" <<<"${PRELOAD}")"
           sudo -u postgres psql -p "${PGPORT}" \
-            -c "ALTER SYSTEM SET shared_preload_libraries = '${PRELOAD}';" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = ${libraries};" \
             -c "ALTER SYSTEM SET max_prepared_transactions = 10;"
           sudo pg_ctlcluster "${PG_MAJOR}" main restart || {
             sudo tail -n 50 "/var/log/postgresql/postgresql-${PG_MAJOR}-main.log"
