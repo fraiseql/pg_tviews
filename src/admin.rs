@@ -60,6 +60,92 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
+/// Bring the TVIEWs whose definitions read the current time up to date (#193):
+/// `tview`, or every such TVIEW the caller owns (or may change as a member of its
+/// owner's role). Each is refreshed in full as a write to a `full_refresh` table
+/// would refresh it, then the TVIEWs reading it are, through the flush. For
+/// `pg_cron` or the application to call at the boundary its rows depend on (the
+/// day, for `CURRENT_DATE`). Returns the TVIEWs refreshed, dependencies first.
+///
+/// # Errors
+/// Returns an error if `tview` is not a TVIEW, reads no time or is not the
+/// caller's, or a refresh fails.
+#[pg_extern]
+fn pg_tviews_refresh_time_dependent(
+    tview: default!(Option<&str>, "NULL"),
+) -> Result<SetOfIterator<'static, String>, TViewError> {
+    crate::revision::check();
+    let rows: Vec<(String, pgrx::pg_sys::Oid, bool, bool)> = Spi::connect(|client| {
+        let mut rows = Vec::new();
+        for row in client.select(
+            &format!(
+                "SELECT m.entity::text, m.table_oid::oid, m.time_dependent, \
+                        pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+                 FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                 WHERE $1::text IS NULL \
+                    OR m.table_oid::oid = $1::text::pg_catalog.regclass::pg_catalog.oid",
+                crate::utils::meta_table()
+            ),
+            None,
+            // SAFETY: the datum borrows `tview`, which outlives the select.
+            &[unsafe { DatumWithOid::new(tview, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+        )? {
+            if let (Some(entity), Some(table)) =
+                (row.get::<String>(1)?, row.get::<pgrx::pg_sys::Oid>(2)?)
+            {
+                rows.push((
+                    entity,
+                    table,
+                    row.get::<bool>(3)?.unwrap_or(false),
+                    row.get::<bool>(4)?.unwrap_or(false),
+                ));
+            }
+        }
+        Ok::<_, pgrx::spi::Error>(rows)
+    })
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the time-dependent TVIEWs".to_string(),
+        pg_error: e.to_string(),
+    })?;
+    let chosen: Vec<(String, pgrx::pg_sys::Oid)> = match tview {
+        Some(name) => {
+            let Some((entity, table, dependent, _)) = rows.into_iter().next() else {
+                return Err(TViewError::InvalidInput {
+                    parameter: "tview".to_string(),
+                    reason: format!("{name} is not a TVIEW"),
+                });
+            };
+            if !dependent {
+                return Err(TViewError::InvalidInput {
+                    parameter: "tview".to_string(),
+                    reason: format!("{name} does not read the time: nothing to refresh"),
+                });
+            }
+            crate::owner::require_owner(table, name)?;
+            vec![(entity, table)]
+        }
+        None => rows
+            .into_iter()
+            .filter(|(_, _, dependent, owned)| *dependent && *owned)
+            .map(|(entity, table, _, _)| (entity, table))
+            .collect(),
+    };
+    let order = crate::queue::graph::EntityDepGraph::load()?.topo_order;
+    let mut chosen = chosen;
+    chosen.sort_by_key(|(entity, _)| order.iter().position(|e| e == entity).unwrap_or(usize::MAX));
+    let mut refreshed = Vec::new();
+    for (entity, table) in &chosen {
+        if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+            crate::suspend::record_change(entity);
+        } else {
+            crate::queue::enqueue_refresh_all(entity);
+        }
+        refreshed.push(crate::utils::qualified_relname_from_oid(*table)?);
+    }
+    crate::queue::flush_refresh_queue()?;
+    Ok(SetOfIterator::new(refreshed))
+}
+
 /// Rebuild `entities` and every TVIEW whose view reads one of them, transitively
 /// (the readers of a TVIEW come from the complete dependency relation, not the
 /// pruned one flush-time propagation follows), dependencies first. Readers are

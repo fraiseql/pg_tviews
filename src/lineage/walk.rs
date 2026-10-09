@@ -104,6 +104,12 @@ enum Resolved {
     Alt(Vec<Resolved>, Vec<Scope>),
     /// An output computed from columns (#182).
     Expr(Computed),
+    /// A column of a first-row level (`DISTINCT ON`, or windows all partitioned)
+    /// that is not its key (#194): which row carries it depends on the other rows
+    /// of its partition, so a predicate on it maps a row of another occurrence
+    /// toward the rows carrying it (a superset of the first ones, whose key then
+    /// maps on), never a row of its own occurrence away from it.
+    Inbound(Column),
     Opaque,
 }
 
@@ -125,7 +131,7 @@ impl Resolved {
     /// The occurrences a column or computed output reads.
     fn occs(&self) -> Vec<usize> {
         match self {
-            Self::Col(c) => vec![c.occ],
+            Self::Col(c) | Self::Inbound(c) => vec![c.occ],
             Self::Alt(terms, _) => terms.iter().flat_map(Self::occs).collect(),
             Self::Expr(e) => sql_occs(&e.sql),
             Self::Opaque => vec![],
@@ -531,6 +537,7 @@ impl Walker<'_> {
             }
             self.sublinks((*query).havingQual, flags, false)?;
             self.note_functions(query.cast());
+            self.note_time(query.cast());
             if identity_level {
                 let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
                 self.graph.identity = Some(self.identity(query, &tles));
@@ -568,7 +575,7 @@ impl Walker<'_> {
                 };
             let pass_through: Vec<bool> = tles
                 .iter()
-                .zip(skipped)
+                .zip(skipped.iter().copied())
                 .map(|(&tle, skip)| {
                     !skip
                         && (link == Link::Top
@@ -581,14 +588,24 @@ impl Walker<'_> {
                                     .all(|(clause, keys)| keyed(tle, *clause, keys))))
                 })
                 .collect();
+            // The other columns of a first-row level link inbound only (#194).
+            let first_row = link != Link::Top
+                && !opaque
+                && !grouped
+                && ((*query).hasDistinctOn || !partitions.is_empty());
             Ok(tles
                 .iter()
                 .zip(pass_through)
-                .map(|(&tle, pass)| {
+                .zip(skipped)
+                .map(|((&tle, pass), skip)| {
                     if pass {
-                        self.output((*tle).expr.cast())
-                    } else {
-                        Resolved::Opaque
+                        return self.output((*tle).expr.cast());
+                    }
+                    match self.resolve_expr((*tle).expr.cast()) {
+                        Resolved::Col(c) | Resolved::Inbound(c) if first_row && !skip => {
+                            Resolved::Inbound(c)
+                        }
+                        _ => Resolved::Opaque,
                     }
                 })
                 .collect())
@@ -706,7 +723,10 @@ impl Walker<'_> {
                                 holes.extend(hs);
                             }
                             Resolved::Expr(e) if e.element => holes.push(unions.clone()),
-                            term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                            term
+                            @ (Resolved::Col(_) | Resolved::Expr(_) | Resolved::Inbound(_)) => {
+                                terms.push(term);
+                            }
                             Resolved::Opaque => holes.push(unions.clone()),
                         }
                     }
@@ -1465,6 +1485,14 @@ impl Walker<'_> {
             _ => Maps::No,
         };
         let (a_to_b, b_to_a) = (maps(a_to_b, a, b), maps(b_to_a, b, a));
+        // Never away from an inbound column's occurrence (#194).
+        let inbound = |occ: usize| {
+            chosen
+                .iter()
+                .any(|c| matches!(c, Resolved::Inbound(col) if col.occ == occ))
+        };
+        let a_to_b = if inbound(a) { Maps::No } else { a_to_b };
+        let b_to_a = if inbound(b) { Maps::No } else { b_to_a };
         (a_to_b != Maps::No || b_to_a != Maps::No).then_some((a_to_b, b_to_a))
     }
 
@@ -1550,12 +1578,28 @@ impl Walker<'_> {
         // SAFETY: read-only checks of a valid expression, then forwarded.
         unsafe {
             if tag(strip_relabel(node)) == Some(pg_sys::NodeTag::T_Var) {
-                self.resolve_expr(node)
-            } else if pg_sys::expression_returns_set(node) {
-                unnest_array(node).map_or(Resolved::Opaque, |array| self.computed(array, true))
-            } else {
-                self.computed(node, false)
+                return self.resolve_expr(node);
             }
+            // `unnest(<array>)::T`, or a cast of an element (#196).
+            let (inner, casts) = strip_casts(node);
+            if pg_sys::expression_returns_set(node) {
+                if pg_sys::contain_mutable_functions(node) {
+                    return Resolved::Opaque;
+                }
+                return match unnest_array(inner) {
+                    Some(array) => match self.computed(array, true) {
+                        Resolved::Expr(e) => self.cast_element(e, &casts),
+                        _ => Resolved::Opaque,
+                    },
+                    None => Resolved::Opaque,
+                };
+            }
+            if let Some(e) = self.element_behind(inner, &casts)
+                && !pg_sys::contain_mutable_functions(node)
+            {
+                return self.cast_element(e, &casts);
+            }
+            self.computed(node, false)
         }
     }
 
@@ -1606,6 +1650,46 @@ impl Walker<'_> {
                 }),
                 None => Resolved::Opaque,
             }
+        }
+    }
+
+    /// An element of `unnest(<array>)` cast one cast after the other: an element of
+    /// the array cast to the arrays of those types, `(<array>)::T[]` (#196). Opaque
+    /// when a type has no array type.
+    fn cast_element(&mut self, mut element: Computed, casts: &[Cast]) -> Resolved {
+        for cast in casts {
+            // SAFETY: a catalog lookup by type OID.
+            let array_type = unsafe { pg_sys::get_array_type(cast.type_oid) };
+            if array_type == Oid::INVALID {
+                return Resolved::Opaque;
+            }
+            if array_type == element.type_oid {
+                continue;
+            }
+            let mut sql = Sql::text("(");
+            sql.push_sql(element.sql);
+            sql.push_text(&format!(")::{}", self.type_name(array_type)));
+            element = Computed {
+                sql,
+                element: true,
+                strict: element.strict && cast.strict,
+                type_oid: array_type,
+            };
+        }
+        Resolved::Expr(element)
+    }
+
+    /// The `unnest` element a Var under casts stands for, when there are casts.
+    ///
+    /// SAFETY: `inner` is a valid expression of the innermost level.
+    unsafe fn element_behind(&self, inner: *mut pg_sys::Node, casts: &[Cast]) -> Option<Computed> {
+        if casts.is_empty() {
+            return None;
+        }
+        // SAFETY: forwarded.
+        match unsafe { self.resolve_expr(inner) } {
+            Resolved::Expr(e) if e.element => Some(e),
+            _ => None,
         }
     }
 
@@ -1695,28 +1779,39 @@ impl Walker<'_> {
     ) -> Option<Operand> {
         // SAFETY: checked by tag; `term_of` only reads the node.
         unsafe {
-            let bare = strip_relabel(arg);
-            let term = match tag(bare) {
-                Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(bare),
+            // An element under casts compares as an element of the cast array (#196).
+            let (bare, casts) = strip_casts(arg);
+            let term_at = |node: *mut pg_sys::Node| match tag(node) {
+                Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(node),
                 _ => None,
             };
-            if let Some(Resolved::Expr(e)) = &term
+            if let Some(Resolved::Expr(e)) = term_at(bare)
                 && e.element
             {
+                if pg_sys::contain_mutable_functions(arg) {
+                    return None;
+                }
+                let Resolved::Expr(e) = self.cast_element(e, &casts) else {
+                    return None;
+                };
                 if tag(bare) == Some(pg_sys::NodeTag::T_Var) {
                     next_var();
                 }
                 return Some(Operand {
-                    sql: e.sql.clone(),
+                    sql: e.sql,
                     type_oid: e.type_oid,
                     column: false,
                     element: true,
                 });
             }
+            let column = matches!(
+                term_at(strip_relabel(arg)),
+                Some(Resolved::Col(_) | Resolved::Inbound(_))
+            );
             Some(Operand {
                 sql: self.deparse(arg, term_of, next_var)?,
                 type_oid: pg_sys::exprType(arg),
-                column: matches!(term, Some(Resolved::Col(_))),
+                column,
                 element: false,
             })
         }
@@ -2008,11 +2103,112 @@ impl Walker<'_> {
             let (name, immutable) = self.function(funcid);
             if !immutable
                 && !name.starts_with("pg_catalog.")
-                && !self.graph.untracked_functions.contains(&name)
+                && !self.graph.untracked_functions.contains(&funcid.to_u32())
             {
-                self.graph.untracked_functions.push(name);
+                self.graph.untracked_functions.push(funcid.to_u32());
             }
         }
+    }
+}
+
+impl Walker<'_> {
+    /// Record the time this level reads (#193): `CURRENT_DATE` and the other SQL
+    /// value functions of the time, and the `pg_catalog` functions that return
+    /// the current time. Its rows then change with no write.
+    ///
+    /// SAFETY: `query` is the valid Query of the innermost level.
+    unsafe fn note_time(&mut self, query: *mut pg_sys::Node) {
+        let mut found = Vec::new();
+        // SAFETY: a read-only walk of a valid Query.
+        unsafe { collect_time(query, &mut found) };
+        for node in found {
+            let name = match node {
+                TimeNode::Value(op) => time_value_name(op).map(str::to_string),
+                TimeNode::Function(funcid, args) => {
+                    let (name, _) = self.function(funcid);
+                    match name.strip_prefix("pg_catalog.") {
+                        Some(
+                            f @ ("now"
+                            | "clock_timestamp"
+                            | "statement_timestamp"
+                            | "transaction_timestamp"
+                            | "timeofday"),
+                        ) => Some(format!("{f}()")),
+                        Some("age") if args == 1 => Some("age()".to_string()),
+                        _ => None,
+                    }
+                }
+            };
+            if let Some(name) = name
+                && !self.graph.time_reads.contains(&name)
+            {
+                self.graph.time_reads.push(name);
+            }
+        }
+    }
+}
+
+/// A node of a query level that may read the current time.
+#[derive(Debug, Clone, Copy)]
+enum TimeNode {
+    /// A `SQLValueFunction`, by its op.
+    Value(pg_sys::SQLValueFunctionOp::Type),
+    /// A function call: the function and its argument count.
+    Function(Oid, usize),
+}
+
+/// How a SQL value function of the time is written, `None` for another one
+/// (`CURRENT_USER`…).
+fn time_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str> {
+    use pg_sys::SQLValueFunctionOp as Op;
+    match op {
+        Op::SVFOP_CURRENT_DATE => Some("CURRENT_DATE"),
+        Op::SVFOP_CURRENT_TIME | Op::SVFOP_CURRENT_TIME_N => Some("CURRENT_TIME"),
+        Op::SVFOP_CURRENT_TIMESTAMP | Op::SVFOP_CURRENT_TIMESTAMP_N => Some("CURRENT_TIMESTAMP"),
+        Op::SVFOP_LOCALTIME | Op::SVFOP_LOCALTIME_N => Some("LOCALTIME"),
+        Op::SVFOP_LOCALTIMESTAMP | Op::SVFOP_LOCALTIMESTAMP_N => Some("LOCALTIMESTAMP"),
+        _ => None,
+    }
+}
+
+/// The SQL value functions and function calls of a query level's own
+/// expressions, not those of nested subqueries.
+///
+/// SAFETY: `node` is a valid Query.
+unsafe fn collect_time(node: *mut pg_sys::Node, out: &mut Vec<TimeNode>) {
+    unsafe extern "C-unwind" fn walker(
+        node: *mut pg_sys::Node,
+        ctx: *mut std::ffi::c_void,
+    ) -> bool {
+        // SAFETY: `ctx` is the Vec passed below; `node` is valid.
+        unsafe {
+            let out = &mut *ctx.cast::<Vec<TimeNode>>();
+            match tag(node) {
+                None => false,
+                Some(pg_sys::NodeTag::T_SQLValueFunction) => {
+                    out.push(TimeNode::Value(
+                        (*node.cast::<pg_sys::SQLValueFunction>()).op,
+                    ));
+                    false
+                }
+                Some(pg_sys::NodeTag::T_FuncExpr) => {
+                    let f = node.cast::<pg_sys::FuncExpr>();
+                    out.push(TimeNode::Function((*f).funcid, list_len((*f).args)));
+                    pg_sys::expression_tree_walker(node, Some(walker), ctx)
+                }
+                Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
+                Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
+            }
+        }
+    }
+    // SAFETY: walk the level's expressions; subqueries record their own.
+    unsafe {
+        pg_sys::query_tree_walker(
+            node.cast(),
+            Some(walker),
+            std::ptr::from_mut(out).cast(),
+            (pg_sys::QTW_IGNORE_RT_SUBQUERIES | pg_sys::QTW_IGNORE_CTE_SUBQUERIES).cast_signed(),
+        );
     }
 }
 
@@ -2152,6 +2348,75 @@ unsafe fn strip_relabel(mut node: *mut pg_sys::Node) -> *mut pg_sys::Node {
     node
 }
 
+/// A cast of one value: the type it gives, and whether NULL stays NULL.
+#[derive(Debug, Clone, Copy)]
+struct Cast {
+    type_oid: Oid,
+    strict: bool,
+}
+
+/// `node` seen through the casts around it (binary, I/O, or a one-argument cast
+/// function), and those casts, innermost first.
+///
+/// SAFETY: `node` is null or a valid expression.
+unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::Node, Vec<Cast>) {
+    let mut casts = Vec::new();
+    // SAFETY: checked by tag before each cast.
+    unsafe {
+        loop {
+            let (arg, cast) = match tag(node) {
+                Some(pg_sys::NodeTag::T_RelabelType) => {
+                    let r = node.cast::<pg_sys::RelabelType>();
+                    (
+                        (*r).arg.cast(),
+                        Cast {
+                            type_oid: (*r).resulttype,
+                            strict: true,
+                        },
+                    )
+                }
+                Some(pg_sys::NodeTag::T_CoerceViaIO) => {
+                    let r = node.cast::<pg_sys::CoerceViaIO>();
+                    (
+                        (*r).arg.cast(),
+                        Cast {
+                            type_oid: (*r).resulttype,
+                            strict: true,
+                        },
+                    )
+                }
+                Some(pg_sys::NodeTag::T_FuncExpr) => {
+                    let f = node.cast::<pg_sys::FuncExpr>();
+                    let is_cast = matches!(
+                        (*f).funcformat,
+                        pg_sys::CoercionForm::COERCE_EXPLICIT_CAST
+                            | pg_sys::CoercionForm::COERCE_IMPLICIT_CAST
+                    );
+                    let [arg] = elements::<pg_sys::Node>((*f).args)[..] else {
+                        break;
+                    };
+                    if !is_cast {
+                        break;
+                    }
+                    let strict = pg_sys::func_strict((*f).funcid);
+                    (
+                        arg,
+                        Cast {
+                            type_oid: (*f).funcresulttype,
+                            strict,
+                        },
+                    )
+                }
+                _ => break,
+            };
+            casts.push(cast);
+            node = arg;
+        }
+    }
+    casts.reverse();
+    (node, casts)
+}
+
 /// A positive `EXISTS (…)` or `x IN (…)`.
 ///
 /// SAFETY: `node` is a valid expression.
@@ -2170,7 +2435,7 @@ unsafe fn is_required_sublink(node: *mut pg_sys::Node) -> bool {
 /// parentheses; `None` for an `unnest` element.
 fn term_sql(term: &Resolved) -> Option<Sql> {
     match term {
-        Resolved::Col(c) => Some(c.sql()),
+        Resolved::Col(c) | Resolved::Inbound(c) => Some(c.sql()),
         Resolved::Expr(e) if !e.element => {
             let mut sql = Sql::text("(");
             sql.push_sql(e.sql.clone());
@@ -2476,5 +2741,26 @@ unsafe fn collect_functions(node: *mut pg_sys::Node, out: &mut Vec<Oid>) {
             std::ptr::from_mut(out).cast(),
             (pg_sys::QTW_IGNORE_RT_SUBQUERIES | pg_sys::QTW_IGNORE_CTE_SUBQUERIES).cast_signed(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::time_value_name;
+    use pgrx::pg_sys::SQLValueFunctionOp as Op;
+
+    #[test]
+    fn the_time_value_functions_are_named_as_written() {
+        assert_eq!(
+            time_value_name(Op::SVFOP_CURRENT_DATE),
+            Some("CURRENT_DATE")
+        );
+        assert_eq!(
+            time_value_name(Op::SVFOP_CURRENT_TIMESTAMP_N),
+            Some("CURRENT_TIMESTAMP")
+        );
+        assert_eq!(time_value_name(Op::SVFOP_LOCALTIME_N), Some("LOCALTIME"));
+        assert_eq!(time_value_name(Op::SVFOP_CURRENT_USER), None);
+        assert_eq!(time_value_name(Op::SVFOP_CURRENT_SCHEMA), None);
     }
 }

@@ -32,6 +32,10 @@ them.
 | `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `error`, `full_refresh` or `warn`, declared with the TVIEW (option `uncascaded_policy`, else `pg_tviews.uncascaded_policy`) |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
 | `identity` | `text[]` | the column that names the TVIEW's rows and is its table's primary key: `{pk_<entity>}`, or a `DISTINCT ON` TVIEW's key (below) |
+| `uncascaded_table_policies` | `jsonb` | each table declared with a policy of its own (as `regclass` text) → `error`, `full_refresh` or `warn` (option `uncascaded_tables`); `{}` for most TVIEWs |
+| `function_reads` | `jsonb` | each function the definition calls that may read tables, `schema.name(argument types)` → the tables it reads (as `regclass` text), as declared (option `function_reads`); `{}` for most TVIEWs |
+| `time_dependent` | `boolean` | the definition reads the current time (`CURRENT_DATE`, `now()`…): its rows change with no write (below) |
+| `time_refresh` | `text` | `external` when a time-dependent TVIEW declared it (option `time_refresh`, else `pg_tviews.time_refresh`); NULL otherwise |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
@@ -69,7 +73,18 @@ one leaves the TVIEW's rows stale until something that is mapped changes; under
 `'full_refresh'` it refreshes the whole TVIEW at flush (for a materialized view: after
 each `REFRESH MATERIALIZED VIEW`). The policy is declared with the
 TVIEW (the `uncascaded_policy` option, else `pg_tviews.uncascaded_policy`);
-re-registration recomputes the set and keeps the policy.
+re-registration recomputes the set and keeps the policy. A table named in
+`uncascaded_table_policies` follows its own policy instead; the TVIEW's policy covers
+the rest. The tables a declared function reads (`function_reads`) are in `base_tables`,
+`uncascaded_tables` and `cascade_kinds` (`all_keys`) like any other.
+
+**`time_dependent`** TVIEWs read the time in their definition or in a view, subquery
+or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`,
+`LOCALTIMESTAMP`, `now()`, `clock_timestamp()`, `statement_timestamp()`,
+`transaction_timestamp()`, `timeofday()`, one-argument `age()`. Under the `error` and
+`full_refresh` policies such a TVIEW exists only with `time_refresh = 'external'`;
+`tviews.pg_tviews_refresh_time_dependent()` brings it up to date
+([DDL](ddl.md#time-dependent-tviews)).
 
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
 registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
@@ -124,6 +139,9 @@ when it exists.
 | `data_gin_index` | boolean | `pg_tviews.data_gin_index` |
 | `group_keys` | object or `null` | `null`: a plain TVIEW; an object makes an aggregate TVIEW |
 | `uncascaded_policy` | `"error"`, `"full_refresh"` or `"warn"` | `pg_tviews.uncascaded_policy` (`error`): what a write to a table no cascade reaches does; reported by `registry.uncascaded_policy` |
+| `uncascaded_tables` | object: table → policy | `{}`: tables with a policy of their own, overriding `uncascaded_policy` for writes to them; each must be a table the definition reads that no cascade reaches; reported by `registry.uncascaded_table_policies` |
+| `function_reads` | object: function → array of tables | `{}`: the tables each non-immutable function the definition calls reads (`[]` for none), the function named with its argument types (`"public.price(bigint, date)"`); every such function must be declared under `error` and `full_refresh`, and every declared one called; reported by `registry.function_reads` |
+| `time_refresh` | `"external"` or `null` | `pg_tviews.time_refresh` (`none`): `"external"` accepts a definition that reads the time, brought up to date by `pg_tviews_refresh_time_dependent()`; refused for one that reads none; reported by `registry.time_refresh` |
 
 **What counts as the same.** The definition goes through the creation pipeline, is
 created as a temporary view, and is the same when `pg_get_viewdef` renders it like the
@@ -137,10 +155,10 @@ under the current `search_path` does. An invalid definition raises its error. Pa
 - `unchanged`: definition and options are the same; nothing is touched. The comparison
   creates a temporary view, so the call cannot run on a standby or in a read-only
   transaction.
-- `altered`: only `logged`, `fillfactor`, `data_gin_index` or `uncascaded_policy`
-  differ; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`,
-  the GIN index created or dropped, the policy stored and the TVIEW re-registered), rows
-  kept.
+- `altered`: only `logged`, `fillfactor`, `data_gin_index`, `uncascaded_policy`,
+  `uncascaded_tables`, `function_reads` or `time_refresh` differ; changed in place
+  (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, the GIN index created or
+  dropped, the declarations stored and the TVIEW re-registered), rows kept.
 - `replaced`: the definition differs but produces the same columns (names and types,
   in order), and `group_keys` is the same. The backing view is replaced, the TVIEW
   re-registered (triggers added and removed), and the rows reconciled in place with

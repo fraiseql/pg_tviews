@@ -130,7 +130,26 @@ extension_sql!(
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
         -- backing view's query tree: an object with its kind (pk, distinct_on) and
         -- its columns (name, type). NULL for a row registered before it: pk_<entity>.
-        identity JSONB
+        identity JSONB,
+        -- Tables declared with a policy of their own (issue #195), in the
+        -- uncascaded_tables option: uncascaded_table_policies[i] applies to writes
+        -- to uncascaded_table_oids[i] instead of uncascaded_policy.
+        uncascaded_table_oids REGCLASS[] NOT NULL DEFAULT '{}',
+        uncascaded_table_policies TEXT[] NOT NULL DEFAULT '{}',
+        -- The functions the definition calls that may read tables (issue #193),
+        -- declared in the function_reads option with the tables each reads: one
+        -- (function, table) pair per table, NULL for a function reading none.
+        -- Functions as text, schema.name(argument types): a regprocedure column
+        -- would block pg_upgrade.
+        function_read_functions TEXT[] NOT NULL DEFAULT '{}',
+        function_read_tables REGCLASS[] NOT NULL DEFAULT '{}',
+        -- How a TVIEW that reads the current time is brought up to date (issue
+        -- #193): 'external', pg_tviews_refresh_time_dependent() called at the
+        -- boundary; NULL for a TVIEW that reads no time or declared nothing.
+        time_refresh TEXT CHECK (time_refresh IN ('external')),
+        -- The definition reads the current time (CURRENT_DATE, now()…), so its
+        -- rows change with no write (issue #193).
+        time_dependent BOOLEAN NOT NULL DEFAULT false
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -166,7 +185,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 3';
+    AS 'SELECT 4';
     ",
     name = "create_metadata_tables",
 );
@@ -179,6 +198,12 @@ extension_sql!(
 CREATE VIEW @extschema@.pg_tview_reads AS
 WITH RECURSIVE reads(entity, relid) AS (
     SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
+  UNION
+    -- Tables read inside the functions it calls, as declared (issue #193).
+    SELECT m.entity, t.relid::oid
+    FROM @extschema@.pg_tview_meta m,
+         pg_catalog.unnest(m.function_read_tables) AS t(relid)
+    WHERE t.relid IS NOT NULL
   UNION
     SELECT r.entity, d.refobjid
     FROM reads r
@@ -265,7 +290,25 @@ SELECT
         '{}') AS cascade_kinds,
     CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
          ELSE ARRAY(SELECT c->>'name'
-                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
+         FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
+                         pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
+        '{}') AS uncascaded_table_policies,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
+         FROM (SELECT r.function,
+                      COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
+                                   FILTER (WHERE r.relation IS NOT NULL),
+                               '[]') AS tables
+               FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
+                               pg_catalog.unnest(m.function_read_tables))
+                    WITH ORDINALITY AS r(function, relation, n)
+               GROUP BY r.function) f),
+        '{}') AS function_reads,
+    m.time_dependent,
+    m.time_refresh
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

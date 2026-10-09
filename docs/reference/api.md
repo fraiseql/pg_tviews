@@ -509,6 +509,24 @@ their owners.
 SELECT pg_tviews_refresh('user');   -- tv_user, then tv_post (embeds user), tv_feed (embeds post)
 ```
 
+### pg_tviews_refresh_time_dependent()
+
+```sql
+pg_tviews_refresh_time_dependent(tview TEXT DEFAULT NULL) RETURNS SETOF TEXT
+```
+
+Brings the TVIEWs whose definitions read the current time (`registry.time_dependent`)
+up to date: `tview`, or every such TVIEW the caller owns. Each is refreshed in full
+through the flush, as a write to a `full_refresh` table refreshes it, so the TVIEWs
+reading it follow; returns the TVIEWs refreshed, dependencies first. A named TVIEW
+that reads no time is an error. Call it at the boundary the rows depend on, from
+pg_cron or the application ([Time-dependent
+TVIEWs](ddl.md#time-dependent-tviews)).
+
+```sql
+SELECT * FROM tviews.pg_tviews_refresh_time_dependent();
+```
+
 ### pg_tviews_refresh_all() / pg_tviews_refresh_all_entities()
 
 ```sql

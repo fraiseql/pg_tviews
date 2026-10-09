@@ -12,7 +12,7 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress_adr_0157_classification.sql
 --
--- expect-output: tv_fn calls public.label_of(), which is not immutable
+-- expect-output: tv_fn calls public.label_of(text), not immutable
 -- expect-output: ADR 0157 classification: PASS
 
 \set ON_ERROR_STOP on
@@ -140,7 +140,7 @@ SELECT pg_tviews_create_aggregate('tv_user_orders', $$
 $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
 INSERT INTO expected VALUES ('user_orders', 'tb_order', 'local'), ('user_orders', 'tb_user', 'local');
 
--- a function that may read tables pg_tviews cannot see
+-- a function that may read tables pg_tviews cannot see: warned under warn (#193)
 SET client_min_messages TO NOTICE;
 SELECT pg_tviews_create('tv_fn', $$
     SELECT u.pk_fn, u.id, jsonb_build_object('label', label_of(u.name)) AS data FROM tb_fn u $$);

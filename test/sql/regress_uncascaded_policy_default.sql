@@ -44,7 +44,9 @@ SELECT must(:'r_message' LIKE 'writes to public.tb_flag, public.tb_rate would no
             'the message names the tables: ' || :'r_message');
 SELECT must(:'r_message' LIKE '%public.tb_flag: read in a subquery%public.tb_rate: read in a subquery%',
             'the message gives each table''s reason: ' || :'r_message');
-SELECT must(:'r_hint' LIKE '%options => ''{"uncascaded_policy": "full_refresh"}''%',
+SELECT must(:'r_hint' LIKE '%options => ''{"uncascaded_tables": {"public.tb_flag": "full_refresh", "public.tb_rate": "full_refresh"}}''%',
+            'the hint gives the per-table option: ' || :'r_hint');
+SELECT must(:'r_hint' LIKE '%''{"uncascaded_policy": "full_refresh"}''%',
             'the hint gives the option: ' || :'r_hint');
 SELECT must(:'r_hint' LIKE '%SET pg_tviews.uncascaded_policy = ''full_refresh''%',
             'the hint gives the setting: ' || :'r_hint');

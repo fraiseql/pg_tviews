@@ -4,8 +4,8 @@
 //!
 //! - **created**: the TVIEW did not exist.
 //! - **unchanged**: the definition and the options passed match what exists.
-//! - **altered**: only `logged`, `fillfactor`, `data_gin_index` or
-//!   `uncascaded_policy` differ; changed in place, rows kept.
+//! - **altered**: only `logged`, `fillfactor`, `data_gin_index`,
+//!   `uncascaded_policy` or `uncascaded_tables` differ; changed in place, rows kept.
 //! - **replaced**: the definition differs but produces the same columns, and
 //!   `group_keys` is the same; the backing view is replaced and the rows reconciled
 //!   in place, touching only rows that change.
@@ -18,6 +18,7 @@
 
 use super::aggregate::GroupKeys;
 use super::create::{self, Storage};
+use super::uncascaded::{Declarations, TimeRefresh};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
@@ -37,6 +38,13 @@ pub(crate) struct Options {
     /// What a write to a table no cascade reaches does (#181): declared with the
     /// TVIEW, whatever `pg_tviews.uncascaded_policy` says.
     uncascaded_policy: Option<UncascadedPolicy>,
+    /// Tables with a policy of their own (#195), as named: resolved when used.
+    uncascaded_tables: Option<Vec<(String, UncascadedPolicy)>>,
+    /// Functions the definition calls, each with the tables it reads (#193), as
+    /// named: resolved when used.
+    function_reads: Option<Vec<(String, Vec<String>)>>,
+    /// How the TVIEW is brought up to date when it reads the current time (#193).
+    time_refresh: Option<TimeRefresh>,
 }
 
 /// The `group_keys` option.
@@ -124,14 +132,66 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                 options.fillfactor = i32::try_from(fillfactor).ok();
             }
             "uncascaded_policy" => {
-                options.uncascaded_policy = Some(match value.as_str() {
-                    Some("warn") => UncascadedPolicy::Warn,
-                    Some("error") => UncascadedPolicy::Error,
-                    Some("full_refresh") => UncascadedPolicy::FullRefresh,
+                options.uncascaded_policy = Some(
+                    value
+                        .as_str()
+                        .and_then(UncascadedPolicy::parse)
+                        .ok_or_else(|| invalid(key, POLICIES))?,
+                );
+            }
+            "uncascaded_tables" => {
+                let serde_json::Value::Object(tables) = value else {
+                    return Err(invalid(
+                        key,
+                        "must be an object mapping each table to its policy, e.g. \
+                         {\"public.tb_locale\": \"full_refresh\"}",
+                    ));
+                };
+                let mut declared = Vec::new();
+                for (table, policy) in tables {
+                    let policy = policy
+                        .as_str()
+                        .and_then(UncascadedPolicy::parse)
+                        .ok_or_else(|| invalid(key, format!("the policy of {table} {POLICIES}")))?;
+                    declared.push((table.clone(), policy));
+                }
+                options.uncascaded_tables = Some(declared);
+            }
+            "function_reads" => {
+                let shape = || {
+                    invalid(
+                        key,
+                        "must be an object mapping each function, with its argument types, \
+                         to the tables it reads, e.g. \
+                         {\"public.label_suffix()\": [\"public.tb_setting\"]}",
+                    )
+                };
+                let serde_json::Value::Object(functions) = value else {
+                    return Err(shape());
+                };
+                let mut declared = Vec::new();
+                for (function, tables) in functions {
+                    let tables = tables
+                        .as_array()
+                        .ok_or_else(shape)?
+                        .iter()
+                        .map(|t| t.as_str().map(str::to_string).ok_or_else(shape))
+                        .collect::<TViewResult<Vec<_>>>()?;
+                    declared.push((function.clone(), tables));
+                }
+                options.function_reads = Some(declared);
+            }
+            "time_refresh" => {
+                options.time_refresh = Some(match value {
+                    serde_json::Value::Null => TimeRefresh::None,
+                    serde_json::Value::String(s) if s == "external" => {
+                        TimeRefresh::External { declared: true }
+                    }
                     _ => {
                         return Err(invalid(
                             key,
-                            "must be \"error\", \"full_refresh\" or \"warn\"",
+                            "must be \"external\" (pg_tviews_refresh_time_dependent() is \
+                             called at the boundary) or null",
                         ));
                     }
                 });
@@ -160,13 +220,104 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                     "options",
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
-                         data_gin_index, group_keys, uncascaded_policy)"
+                         data_gin_index, group_keys, uncascaded_policy, uncascaded_tables, \
+                         function_reads, time_refresh)"
                     ),
                 ));
             }
         }
     }
     Ok(options)
+}
+
+const POLICIES: &str = "must be \"error\", \"full_refresh\" or \"warn\"";
+
+/// The tables of the `uncascaded_tables` option, by OID.
+///
+/// # Errors
+/// Returns an error naming a table that does not exist or is not a table.
+fn resolve_tables(
+    declared: &[(String, UncascadedPolicy)],
+) -> TViewResult<Vec<(pg_sys::Oid, UncascadedPolicy)>> {
+    declared
+        .iter()
+        .map(|(name, policy)| Ok((resolve_table(name, "uncascaded_tables")?, *policy)))
+        .collect()
+}
+
+/// The table an option names, by OID.
+///
+/// # Errors
+/// Returns an error if it does not exist or is not a table.
+fn resolve_table(name: &str, option: &str) -> TViewResult<pg_sys::Oid> {
+    let found = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT c.oid, c.relkind IN ('r', 'p', 'm', 'f') \
+                 FROM (SELECT pg_catalog.to_regclass($1) AS relation) r \
+                 LEFT JOIN pg_catalog.pg_class c ON c.oid = r.relation",
+                None,
+                &[text(name)],
+            )?
+            .first()
+            .get_two::<pg_sys::Oid, bool>()
+    })
+    .map_err(|e| catalog(&format!("Look up a table of {option}"), &e))?;
+    match found {
+        (Some(oid), Some(true)) => Ok(oid),
+        (Some(_), _) => Err(invalid(
+            option,
+            format!("{name} is not a table: name the tables a view reads"),
+        )),
+        _ => Err(invalid(option, format!("relation {name} does not exist"))),
+    }
+}
+
+/// The functions of the `function_reads` option, as `schema.name(argument
+/// types)`, with their tables by OID.
+///
+/// # Errors
+/// Returns an error naming a function or table that does not exist.
+fn resolve_function_reads(
+    declared: &[(String, Vec<String>)],
+) -> TViewResult<Vec<(String, Vec<pg_sys::Oid>)>> {
+    let mut reads = Vec::new();
+    for (function, tables) in declared {
+        let signature = Spi::connect(|client| {
+            client
+                .select(
+                    &format!(
+                        "SELECT {} FROM pg_catalog.pg_proc p \
+                         WHERE p.oid = pg_catalog.to_regprocedure($1)",
+                        crate::lineage::FUNCTION_SIGNATURE
+                    ),
+                    None,
+                    &[text(function)],
+                )?
+                .first()
+                .get_one::<String>()
+        })
+        .or_else(|e| match e {
+            spi::Error::InvalidPosition => Ok(None),
+            e => Err(e),
+        })
+        .map_err(|e| catalog("Look up a function of function_reads", &e))?
+        .ok_or_else(|| {
+            invalid(
+                "function_reads",
+                format!(
+                    "function {function} does not exist: name it with its argument types, \
+                     e.g. public.label_suffix() or public.price(bigint, date)"
+                ),
+            )
+        })?;
+        let tables = tables
+            .iter()
+            .map(|t| resolve_table(t, "function_reads"))
+            .collect::<TViewResult<Vec<_>>>()?;
+        reads.push((signature, tables));
+    }
+    Ok(reads)
 }
 
 /// Split a TVIEW name, `tv_<entity>`, `<entity>` or `schema.tv_<entity>`, into
@@ -283,6 +434,7 @@ pub(crate) fn create_or_replace(
 ) -> TViewResult<&'static str> {
     let (schema, entity) = parse_name(name)?;
     let options = parse_options(options)?;
+    let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
     super::lock_entity(&entity)?;
     let schema = match schema {
         Some(schema) => schema,
@@ -327,11 +479,27 @@ pub(crate) fn create_or_replace(
     };
     let current_keys = create::stored_group_keys(&entity)?;
     let desired_keys = options.group_keys.or(current_keys.clone());
-    let policy = options.uncascaded_policy.unwrap_or(meta.uncascaded_policy);
+    let current_declarations = Declarations::of(&meta);
+    let declarations = Declarations::new(
+        options
+            .uncascaded_policy
+            .unwrap_or(current_declarations.policy),
+        match &options.uncascaded_tables {
+            Some(declared) => resolve_tables(declared)?,
+            None => current_declarations.tables.clone(),
+        },
+        match &options.function_reads {
+            Some(declared) => resolve_function_reads(declared)?,
+            None => current_declarations.function_reads.clone(),
+        },
+        options
+            .time_refresh
+            .unwrap_or(current_declarations.time_refresh),
+    );
 
     if comparison.same_view && desired_keys == current_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired == current && policy == meta.uncascaded_policy {
+        if desired == current && declarations.stored() == current_declarations {
             return Ok(if retyped { "altered" } else { "unchanged" });
         }
         if desired != current {
@@ -344,16 +512,17 @@ pub(crate) fn create_or_replace(
                 desired,
             )?;
         }
-        if policy != meta.uncascaded_policy {
-            // The stored policy is re-checked by a re-registration, which also
+        if declarations.stored() != current_declarations {
+            // The stored policies are re-checked by a re-registration, which also
             // brings the triggers in line: `error` still refuses a TVIEW with
             // tables no cascade reaches.
-            store_policy(&entity, policy)?;
+            declarations.store(&entity)?;
             create::reregister_tview(&entity)?;
         }
+        check_time_declared(&entity, declares_time)?;
         return Ok("altered");
     }
-    store_policy(&entity, policy)?;
+    declarations.store(&entity)?;
     if comparison.same_columns
         && desired_keys == current_keys
         && same_table_key(meta.tview_oid, comparison.identity.as_deref())?
@@ -377,6 +546,7 @@ pub(crate) fn create_or_replace(
                 desired,
             )?;
         }
+        check_time_declared(&entity, declares_time)?;
         return Ok("replaced");
     }
 
@@ -387,23 +557,37 @@ pub(crate) fn create_or_replace(
         query,
         desired,
         desired_keys.as_ref(),
-        policy,
+        declarations,
     )?;
+    check_time_declared(&entity, declares_time)?;
     Ok("rebuilt")
 }
 
-/// Store `entity`'s `uncascaded_policy`, as the extension's owner (the caller's
-/// right to change the TVIEW was checked).
-fn store_policy(entity: &str, policy: UncascadedPolicy) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+/// Refuse `time_refresh` passed for a TVIEW whose definition, as registered,
+/// reads no time (#193): the declaration would never apply. A re-registration
+/// keeps a stored one silently.
+fn check_time_declared(entity: &str, declared: bool) -> TViewResult<()> {
+    if !declared {
+        return Ok(());
+    }
+    let dependent = Spi::get_one_with_args::<bool>(
         &format!(
-            "UPDATE {} SET uncascaded_policy = $2 WHERE entity = $1",
+            "SELECT time_dependent FROM {} WHERE entity = $1",
             crate::utils::meta_table()
         ),
-        &[text(entity), text(policy.as_str())],
+        &[text(entity)],
     )
-    .map_err(|e| catalog("Store the uncascaded policy", &e))
+    .map_err(|e| catalog("Read whether a TVIEW reads the time", &e))?;
+    if dependent == Some(true) {
+        Ok(())
+    } else {
+        Err(invalid(
+            "time_refresh",
+            format!(
+                "tv_{entity} declares time_refresh, but its definition reads no time: remove it"
+            ),
+        ))
+    }
 }
 
 /// Give each column of the TVIEW the type of its backing view's column where the
@@ -494,13 +678,27 @@ fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TVie
         fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
         data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
     };
+    // What the options leave out comes from the settings.
+    let settings = Declarations::from_settings();
+    let declarations = Declarations::new(
+        options.uncascaded_policy.unwrap_or(settings.policy),
+        match &options.uncascaded_tables {
+            Some(declared) => resolve_tables(declared)?,
+            None => Vec::new(),
+        },
+        match &options.function_reads {
+            Some(declared) => resolve_function_reads(declared)?,
+            None => Vec::new(),
+        },
+        options.time_refresh.unwrap_or(settings.time_refresh),
+    );
     create::create_tview_in(
         &format!("tv_{entity}"),
         query,
         schema,
         options.group_keys.or(None).as_ref(),
         storage,
-        options.uncascaded_policy,
+        Some(declarations),
     )
 }
 
@@ -924,7 +1122,7 @@ fn rebuild(
     query: &str,
     storage: Storage,
     group_keys: Option<&GroupKeys>,
-    policy: UncascadedPolicy,
+    declarations: Declarations,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
     let objects = [oid(meta.tview_oid), oid(meta.view_oid)];
@@ -964,7 +1162,14 @@ fn rebuild(
         false,
         false,
     )?;
-    create::create_tview_in(&tv_name, query, schema, group_keys, storage, Some(policy))?;
+    create::create_tview_in(
+        &tv_name,
+        query,
+        schema,
+        group_keys,
+        storage,
+        Some(declarations),
+    )?;
 
     let rebuilt =
         TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {

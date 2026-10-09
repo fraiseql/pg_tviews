@@ -395,8 +395,12 @@ pub struct Graph {
     pub roots: Vec<Root>,
     /// The UNION leaves whose key no table carries: their rows cannot be mapped.
     pub holes: Vec<Scope>,
-    /// Functions the view calls that may read tables `pg_tviews` does not see.
-    pub untracked_functions: Vec<String>,
+    /// Functions the view calls that may read tables `pg_tviews` does not see:
+    /// not immutable, outside `pg_catalog` (by OID).
+    pub untracked_functions: Vec<u32>,
+    /// How the view reads the current time, each construct once (#193):
+    /// `CURRENT_DATE`, `now()`…
+    pub time_reads: Vec<String>,
     /// Tables read only where the output never depends on them (a CTE the view
     /// does not use): not tracked.
     pub unread_tables: std::collections::BTreeSet<u32>,
@@ -1065,6 +1069,24 @@ pub struct Lineage {
     /// equal to its key, if any (#126): no `fk_<aggregate>` column propagates a
     /// change of one of its groups, this column does.
     pub aggregate_embeds: Vec<(String, Option<String>)>,
+    /// The functions it calls that may read tables it cannot see (not immutable,
+    /// outside `pg_catalog`), as `(oid, schema.name(argument types))` (#193).
+    pub functions: Vec<(u32, String)>,
+    /// How it reads the current time (#193): its rows change with no write.
+    pub time_reads: Vec<String>,
+}
+
+/// A table a function reads, declared with the TVIEW (#193).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionRead {
+    /// The function, `schema.name(argument types)`.
+    pub function: String,
+    pub relid: u32,
+    pub relname: String,
+    pub qualified: String,
+    pub matview: bool,
+    /// The table of another TVIEW, of that entity.
+    pub tview: Option<String>,
 }
 
 /// The column that names a TVIEW's rows (ADR 0169).
@@ -1137,6 +1159,50 @@ pub fn identity_refusal(entity: &str, error: IdentityError, keys: &[String]) -> 
 }
 
 impl Lineage {
+    /// Add the tables functions read (#193): no cascade reaches them, so each is
+    /// `all_keys`, read inside its function. A table the view also reads keeps
+    /// mapping the reads of it that can be traced.
+    pub fn add_function_reads(&mut self, reads: &[FunctionRead]) {
+        for read in reads {
+            let reason = format!("read inside {}", read.function);
+            match self.tables.iter_mut().find(|t| t.relid == read.relid) {
+                Some(table) => {
+                    let (kind, sql) = match (&table.kind, table.sql.take()) {
+                        (TableKind::AllKeys(r), sql) => (format!("{r}; {reason}"), sql),
+                        (TableKind::Local(column), _) => (
+                            reason,
+                            Some(format!(
+                                "SELECT DISTINCT {} FROM {DELTA}",
+                                escape_template(&crate::utils::quote_identifier(column))
+                            )),
+                        ),
+                        (TableKind::Mapped, sql) => (reason, sql),
+                        (TableKind::Propagated(_), _) => (reason, None),
+                    };
+                    table.kind = TableKind::AllKeys(kind);
+                    table.sql = sql;
+                    table.hop = None;
+                }
+                None => self.tables.push(TableLineage {
+                    relid: read.relid,
+                    relname: read.relname.clone(),
+                    qualified: read.qualified.clone(),
+                    kind: TableKind::AllKeys(reason),
+                    paths: Vec::new(),
+                    sql: None,
+                    columns: Vec::new(),
+                    lookups: Vec::new(),
+                    index_hints: Vec::new(),
+                    hop: None,
+                    root: false,
+                    virtual_reads: Vec::new(),
+                    matview: read.matview,
+                    tview: read.tview.clone(),
+                }),
+            }
+        }
+    }
+
     /// Whether the TVIEW is a UNION whose branches have their own root tables.
     #[must_use]
     pub fn is_union(&self) -> bool {
@@ -1240,13 +1306,18 @@ pub fn analyze(
     // Every other registered TVIEW: its table, its view, what it maps.
     let mut tview_tables: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
     let mut tview_views: HashMap<pgrx::pg_sys::Oid, String> = HashMap::new();
-    let mut mapped_by: HashMap<String, (HashSet<u32>, bool)> = HashMap::new();
+    // Per other TVIEW: the tables it maps, and those it refreshes in full.
+    let mut mapped_by: HashMap<String, (HashSet<u32>, HashSet<u32>)> = HashMap::new();
     let mut aggregates: Vec<String> = Vec::new();
     Spi::connect(|client| {
         for row in client.select(
             &format!(
                 "SELECT entity::text, table_oid::oid, view_oid::oid, key_mappings, \
-                        uncascaded_policy = 'full_refresh', group_keys IS NOT NULL \
+                        ARRAY(SELECT u::pg_catalog.oid FROM pg_catalog.unnest(uncascaded_oids) u \
+                              WHERE COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
+                                        uncascaded_table_oids, u)], uncascaded_policy) \
+                                    = 'full_refresh'), \
+                        group_keys IS NOT NULL \
                  FROM {} ORDER BY entity",
                 crate::utils::meta_table()
             ),
@@ -1276,7 +1347,13 @@ pub fn analyze(
                 .filter(|e| e["kind"] != "all_keys")
                 .filter_map(|e| e["relid"].as_u64().and_then(|r| u32::try_from(r).ok()))
                 .collect();
-            mapped_by.insert(other, (mapped, row.get::<bool>(5)?.unwrap_or(false)));
+            let full: HashSet<u32> = row
+                .get::<Vec<pgrx::pg_sys::Oid>>(5)?
+                .unwrap_or_default()
+                .iter()
+                .map(|oid| oid.to_u32())
+                .collect();
+            mapped_by.insert(other, (mapped, full));
         }
         Ok::<_, pgrx::spi::Error>(())
     })
@@ -1322,12 +1399,7 @@ pub fn analyze(
         });
     }
 
-    for function in &graph.untracked_functions {
-        notice!(
-            "tv_{entity} calls {function}(), which is not immutable: tables read inside \
-             {function}() are not tracked, and writes to them do not refresh tv_{entity}"
-        );
-    }
+    let functions = function_signatures(&graph.untracked_functions).map_err(catalog)?;
 
     // The aggregate TVIEWs the view reads embed through the output equal to their
     // key (#126).
@@ -1356,7 +1428,7 @@ pub fn analyze(
                 == Some(child)
                 || mapped_by
                     .get(child)
-                    .is_some_and(|(mapped, full)| *full || mapped.contains(&relid)))
+                    .is_some_and(|(mapped, full)| full.contains(&relid) || mapped.contains(&relid)))
     };
     let mut tables = graph.tables(&propagates);
     for table in &mut tables {
@@ -1384,8 +1456,49 @@ pub fn analyze(
         // branch too: its rows are recomputed, and two rows for one key refused.
         set_operation: graph.set_operation || graph.roots.len() > 1,
         aggregate_embeds,
+        functions,
+        time_reads: graph.time_reads.clone(),
     })
 }
+
+/// `(oid, schema.name(argument types))` of each function.
+fn function_signatures(oids: &[u32]) -> Result<Vec<(u32, String)>, pgrx::spi::Error> {
+    use pgrx::prelude::*;
+    if oids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let oids: Vec<pgrx::pg_sys::Oid> = oids.iter().map(|&o| o.into()).collect();
+    Spi::connect(|client| {
+        let mut functions = Vec::new();
+        for row in client.select(
+            &format!("SELECT oid, {FUNCTION_SIGNATURE} FROM pg_catalog.pg_proc p WHERE p.oid = ANY ($1) ORDER BY 2"),
+            None,
+            // SAFETY: the datum copies the OIDs.
+            &[unsafe {
+                pgrx::datum::DatumWithOid::new(
+                    oids,
+                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+                )
+            }],
+        )? {
+            if let (Some(oid), Some(signature)) =
+                (row.get::<pgrx::pg_sys::Oid>(1)?, row.get::<String>(2)?)
+            {
+                functions.push((oid.to_u32(), signature));
+            }
+        }
+        Ok(functions)
+    })
+}
+
+/// The signature of function `p` (a `pg_proc` row) as the `function_reads` option
+/// and `tviews.registry` write it: `schema.name(argument types)`, quoted where SQL
+/// needs it.
+pub const FUNCTION_SIGNATURE: &str = "pg_catalog.format('%s.%s(%s)', \
+     (SELECT pg_catalog.quote_ident(n.nspname::pg_catalog.text) FROM pg_catalog.pg_namespace n \
+      WHERE n.oid = p.pronamespace), \
+     pg_catalog.quote_ident(p.proname::pg_catalog.text), \
+     pg_catalog.oidvectortypes(p.proargtypes))";
 
 /// The identity of the view `view_oid` as the TVIEW of `entity` (ADR 0169).
 ///
@@ -1828,6 +1941,7 @@ mod tests {
             }],
             holes: vec![],
             untracked_functions: vec![],
+            time_reads: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
@@ -1959,6 +2073,7 @@ mod tests {
             roots: vec![],
             holes: vec![],
             untracked_functions: vec![],
+            time_reads: vec![],
             unread_tables: std::collections::BTreeSet::new(),
             identity: None,
             set_operation: false,
@@ -2746,5 +2861,104 @@ mod tests {
             g.tables(&embeds)[1].sql.as_deref(),
             Some("SELECT DISTINCT d.{c:2:1} FROM pg_tviews_delta d")
         );
+    }
+
+    /// `p.pk_product = f.fk_product` with `f.fk_product` an inbound column of a
+    /// first-row level (#194): it maps a product toward the orders carrying it,
+    /// never an order away from it.
+    fn inbound(p: usize, f: usize) -> Conjunct {
+        let mut c = eq(col(p, "pk_product"), col(f, "fk_product"), true, false);
+        c.equality = None;
+        c
+    }
+
+    #[test]
+    fn a_table_joined_to_an_inbound_column_maps_through_the_first_row_key() {
+        // tb_customer c LEFT JOIN (first order per customer) f ON f.fk_customer = c.pk_customer
+        // LEFT JOIN tb_product p ON p.pk_product = f.fk_product
+        let g = graph(
+            vec![
+                occ(1, "tb_customer"),
+                occ(2, "tb_order"),
+                occ(3, "tb_product"),
+            ],
+            vec![
+                eq(col(1, "fk_customer"), col(0, "pk_customer"), true, false),
+                inbound(2, 1),
+            ],
+            col(0, "pk_customer"),
+        );
+        assert_eq!(g.classify(2, NONE), Kind::Mapped(vec![1, 0]));
+        assert_eq!(g.classify(1, NONE), Kind::Local("fk_customer".into()));
+    }
+
+    #[test]
+    fn a_first_row_level_does_not_map_away_through_an_inbound_column() {
+        // tb_product p, (SELECT count(*) FROM first orders f WHERE f.fk_product = p.pk_product)
+        let g = graph(
+            vec![occ(3, "tb_product"), occ(2, "tb_order")],
+            vec![inbound(0, 1)],
+            col(0, "pk_product"),
+        );
+        assert!(matches!(g.classify(1, NONE), Kind::AllKeys(_)));
+    }
+
+    fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
+        TableLineage {
+            relid,
+            relname: format!("t{relid}"),
+            qualified: format!("public.t{relid}"),
+            kind,
+            paths: vec![],
+            sql: sql.map(str::to_string),
+            columns: vec![],
+            lookups: vec![],
+            index_hints: vec![],
+            hop: None,
+            root: false,
+            virtual_reads: vec![],
+            matview: false,
+            tview: None,
+        }
+    }
+
+    #[test]
+    fn a_function_read_is_all_keys_and_keeps_the_traced_reads() {
+        let mut lineage = Lineage {
+            tables: vec![
+                table(1, TableKind::Local("pk_a".into()), None),
+                table(2, TableKind::Mapped, Some("SELECT 1")),
+            ],
+            unread: vec![],
+            identity: Identity {
+                name: "pk_a".into(),
+                type_oid: 20,
+                kind: IdentityKind::Pk,
+                columns: vec![],
+            },
+            set_operation: false,
+            aggregate_embeds: vec![],
+            functions: vec![],
+            time_reads: vec![],
+        };
+        let read = |relid: u32| FunctionRead {
+            function: "public.f()".into(),
+            relid,
+            relname: format!("t{relid}"),
+            qualified: format!("public.t{relid}"),
+            matview: false,
+            tview: None,
+        };
+        lineage.add_function_reads(&[read(1), read(2), read(3)]);
+        let reason = TableKind::AllKeys("read inside public.f()".into());
+        assert_eq!(lineage.tables[0].kind, reason);
+        assert_eq!(
+            lineage.tables[0].sql.as_deref(),
+            Some("SELECT DISTINCT \"pk_a\" FROM pg_tviews_delta")
+        );
+        assert_eq!(lineage.tables[1].kind, reason);
+        assert_eq!(lineage.tables[1].sql.as_deref(), Some("SELECT 1"));
+        assert_eq!(lineage.tables[2].kind, reason);
+        assert_eq!(lineage.tables[2].sql, None);
     }
 }

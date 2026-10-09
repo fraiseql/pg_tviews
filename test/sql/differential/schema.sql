@@ -85,12 +85,14 @@ CREATE VIEW v_category_path AS
 SET harness.xfail = :'xfail';
 CREATE TABLE harness_shape (tv regclass PRIMARY KEY, key text NOT NULL);
 CREATE FUNCTION harness_create(tv text, key text, def text, group_keys jsonb DEFAULT NULL,
-                               policy text DEFAULT 'warn')
+                               policy text DEFAULT 'warn', options jsonb DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql AS $f$
 BEGIN
     PERFORM set_config('pg_tviews.uncascaded_policy', policy, true);
     BEGIN
-        IF group_keys IS NULL THEN
+        IF options IS NOT NULL THEN
+            PERFORM pg_tviews_create_or_replace(tv, def, options);
+        ELSIF group_keys IS NULL THEN
             PERFORM pg_tviews_create(tv, def);
         ELSE
             PERFORM pg_tviews_create_aggregate(tv, def, group_keys);
@@ -190,6 +192,14 @@ SELECT harness_create('tv_nany', 'pk_nany', $$
   FROM tb_node n JOIN tb_node a ON a.pk_node = ANY (string_to_array(n.path, '.')::int[])
                                 AND a.deleted_at IS NULL
   WHERE n.deleted_at IS NULL GROUP BY n.pk_node, n.id, n.name $$);
+-- unnest cast outside the call, in a CTE (#196)
+SELECT harness_create('tv_ncast', 'pk_ncast', $$
+  WITH ids AS (SELECT n.pk_node, n.id, n.name, unnest(string_to_array(n.path, '.'))::int AS node_id
+               FROM tb_node n WHERE n.deleted_at IS NULL)
+  SELECT x.pk_node AS pk_ncast, x.id,
+         jsonb_build_object('name', x.name, 'up', array_agg(a.name ORDER BY a.pk_node)) AS data
+  FROM ids x JOIN tb_node a ON a.pk_node = x.node_id AND a.deleted_at IS NULL
+  GROUP BY x.pk_node, x.id, x.name $$, policy => 'error');
 -- a join on a computed output of a subquery (#182)
 SELECT harness_create('tv_nbadge', 'pk_nbadge', $$
   SELECT s.pk_node AS pk_nbadge, s.id,
@@ -213,6 +223,29 @@ SELECT harness_create('tv_custfirst', 'pk_custfirst', $$
   SELECT c.pk_customer AS pk_custfirst, c.id, jsonb_build_object('first', f.ref, 'status', f.status) AS data
   FROM tb_customer c LEFT JOIN v_first_order f ON f.fk_customer = c.pk_customer $$,
   policy => 'error');
+-- a table read inside a STABLE function, declared, refreshed in full, and also
+-- joined (its traced reads keep mapping) (#193)
+CREATE FUNCTION harness_badge_count(k int) RETURNS bigint STABLE LANGUAGE sql
+  AS $$ SELECT count(*) FROM public.tb_badge b WHERE b.code = 'N' || k $$;
+SELECT harness_create('tv_custbadge', 'pk_custbadge', $$
+  SELECT c.pk_customer AS pk_custbadge, c.id,
+         jsonb_build_object('badges', harness_badge_count(c.pk_customer), 'label', min(x.label),
+                            'notes', count(DISTINCT v.pk_vnote)) AS data
+  FROM tb_customer c LEFT JOIN tb_vnote v ON v.fk_customer = c.pk_customer
+  LEFT JOIN tb_badge x ON x.code = 'N' || c.pk_customer
+  GROUP BY c.pk_customer, c.id $$, options => '{"uncascaded_policy": "error",
+    "function_reads": {"public.harness_badge_count(integer)": ["public.tb_badge"]},
+    "uncascaded_tables": {"public.tb_badge": "full_refresh"}}');
+-- the lines of each customer's first order: tb_line joined to a non-key column
+-- of the first-row level, mapped inbound (#194)
+SELECT harness_create('tv_custline', 'pk_custline', $$
+  SELECT c.pk_customer AS pk_custline, c.id,
+         jsonb_build_object('first', f.ref, 'lines', count(l.pk_line), 'qty', sum(l.qty)) AS data
+  FROM tb_customer c
+  LEFT JOIN (SELECT DISTINCT ON (o.fk_customer) o.fk_customer, o.pk_order, o.ref
+             FROM tb_order o ORDER BY o.fk_customer, o.status, o.pk_order) f ON f.fk_customer = c.pk_customer
+  LEFT JOIN tb_line l ON l.fk_order = f.pk_order
+  GROUP BY c.pk_customer, c.id, f.ref $$, policy => 'error');
 -- a materialized view, rebuilt by REFRESH MATERIALIZED VIEW (#189)
 CREATE MATERIALIZED VIEW mv_line_count AS SELECT fk_order, count(*) AS n FROM tb_line GROUP BY fk_order;
 SELECT harness_create('tv_ordcount', 'pk_ordcount', $$

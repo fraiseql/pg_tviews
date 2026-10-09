@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   `uncascaded_tables` and `cascade_kinds` (`all_keys`): under the default `error`
   policy the TVIEW is refused, under `warn` it is created with a WARNING. Before, it
   was created silently and `REFRESH MATERIALIZED VIEW` left it stale for good.
+- **A definition that reads the current time is declared, never silent** (#193):
+  `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `LOCALTIMESTAMP` and the other SQL time values,
+  `now()`, `clock_timestamp()`, `statement_timestamp()`, `transaction_timestamp()`,
+  `timeofday()` and one-argument `age()`, in the definition or in a view, subquery or
+  CTE it reads. Its rows change with no write, so under the `error` and
+  `full_refresh` policies it is refused unless it declares `"time_refresh":
+  "external"`; under `warn` it is created with a WARNING. Before, it was created
+  silently and went stale at the boundary (midnight, for `CURRENT_DATE`).
+- **A call to a function that may read tables goes through the policy** (#193): a
+  non-immutable function outside `pg_catalog` (a `STABLE` lookup reading a settings
+  table) is refused under `error` and `full_refresh` unless the `function_reads`
+  option declares the tables it reads, and warned about under `warn`. Before, it got
+  a NOTICE and writes to those tables left the TVIEW stale.
 
 ### Added
 
@@ -40,6 +53,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   cascade kind, was not listed as uncascaded, and the outer TVIEW went stale even
   under the `error` policy. An embed (`fk_<entity> = pk_<entity>`) is propagated as
   before, with no trigger on the inner table.
+- **A per-table `uncascaded_policy`** (#195): option `uncascaded_tables` of
+  `pg_tviews_create_or_replace()`, `{"public.tb_locale": "full_refresh"}`, gives a
+  table no cascade reaches its own policy, so one reference table no longer moves a
+  whole TVIEW to `full_refresh` and every untraced read added later is still refused.
+  A named table the definition doesn't read, or whose writes are traced, is refused.
+  `tviews.registry.uncascaded_table_policies` reports the map.
+- **`function_reads`** (#193): `{"public.label_suffix()": ["public.tb_setting"]}`
+  declares the tables a function reads (`[]` for none). They become reads of the TVIEW
+  no cascade reaches, with triggers: their policy (`uncascaded_tables` or the TVIEW's)
+  decides what a write does, `full_refresh` rebuilding the TVIEW.
+  `tviews.registry.function_reads` reports them, `base_tables` lists the tables.
+- **`time_refresh` and `tviews.pg_tviews_refresh_time_dependent()`** (#193):
+  `"time_refresh": "external"` (or `SET pg_tviews.time_refresh = 'external'` before
+  `CREATE TABLE … AS` / `pg_tviews_create()`) accepts a time-dependent TVIEW;
+  `tviews.registry.time_dependent` reports it, and
+  `pg_tviews_refresh_time_dependent([tview])` refreshes it, or every one the caller
+  owns, for pg_cron or the application to call at the boundary.
+- **A join through `unnest(<array>)::T` is traced** (#196), in a CTE or a subquery,
+  and a cast of a `LATERAL unnest` element: the element cast one by one is an
+  element of `(<array>)::T[]`, mapped like #182's spellings. Before, the cast made the
+  join opaque and the TVIEW was refused as unlinked.
+- **A table joined to another column of a first-row subquery is traced** (#194):
+  the product of each customer's first order (`ROW_NUMBER() … rn = 1`, or `DISTINCT
+  ON`), joined on `fk_product`, maps a product write to the orders carrying it, then
+  through their partition key to the TVIEW. The subquery's own table still maps only
+  through its partition key.
 
 ### Fixed
 
@@ -75,6 +114,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
   REFRESH does: `SELECT tviews.pg_tviews_create_or_replace('<schema>.tv_<entity>',
   <definition>, options => '{"uncascaded_policy": "full_refresh"}');` (`altered`, and
   re-registered).
+- The same holds for a TVIEW whose definition reads the time or calls a
+  non-immutable function outside `pg_catalog` (#193): under `error` or `full_refresh`
+  `pg_tviews_reregister_all()` lists it with the refusal and it keeps refreshing on
+  writes as before. Declare `"time_refresh": "external"` (then schedule
+  `SELECT tviews.pg_tviews_refresh_time_dependent();`) and/or `function_reads` with
+  `pg_tviews_create_or_replace()`; `uncascaded_tables` gives the declared tables a
+  policy without changing the TVIEW's.
+- Refreshes run with `search_path = pg_catalog, pg_temp`: a function a definition
+  calls must qualify the tables it reads, or `SET search_path` itself.
+- `tviews.registry` gains `uncascaded_table_policies`, `function_reads`,
+  `time_dependent` and `time_refresh` (appended; `contract_version()` stays 1).
 
 ## [0.1.0-beta.25] - 2026-10-06
 

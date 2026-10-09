@@ -1,6 +1,5 @@
-use super::uncascaded::Uncascaded;
+use super::uncascaded::{Declarations, Uncascaded};
 use crate::cascade_path;
-use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
 use crate::schema::{
     TViewSchema, analyzer::analyze_dependencies, direct_map::extract_direct_column_map,
@@ -210,24 +209,23 @@ impl Storage {
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
-/// `policy` is the `uncascaded_policy` to store (a rebuilt TVIEW keeps its own);
-/// `None` reads `pg_tviews.uncascaded_policy`.
+/// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
+/// own); `None` reads `pg_tviews.uncascaded_policy`.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-    policy: Option<UncascadedPolicy>,
+    declarations: Option<Declarations>,
 ) -> TViewResult<u64> {
-    let policy = policy.unwrap_or_else(crate::config::uncascaded_policy);
     create_tview_inner(
         tview_name,
         select_sql,
         schema_name,
         group_keys,
         storage,
-        policy,
+        declarations.unwrap_or_else(Declarations::from_settings),
     )
 }
 
@@ -258,7 +256,7 @@ fn create_tview_inner(
     schema_name: &str,
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
-    policy: UncascadedPolicy,
+    declarations: Declarations,
 ) -> TViewResult<u64> {
     crate::revision::check();
     log_debug!(
@@ -352,6 +350,8 @@ fn create_tview_inner(
         lineage,
         key_mappings,
         cascade_paths,
+        base_tables,
+        undeclared_functions,
     } = derive(
         entity_name,
         &final_select_sql,
@@ -359,6 +359,7 @@ fn create_tview_inner(
         group_keys,
         &dep_graph.base_tables,
         view_oid,
+        &declarations,
     )?;
 
     // Step 5: Create materialized table tv_<entity>, keyed on the identity.
@@ -410,15 +411,17 @@ fn create_tview_inner(
     // Step 6.7: Base tables whose writes no cascade reaches (issues #157, #158),
     // reported under the policy; `error` aborts here, and the objects created above
     // roll back with it.
+    let qualified_tv =
+        crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?;
+    super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
+    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
+    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
-        policy,
+        declarations,
+        time_dependent: !lineage.time_reads.is_empty(),
     };
-    super::uncascaded::report(
-        &crate::utils::qualified_relname_from_oid(relation_oid(&schema_name, &tv_table_name)?)?,
-        &uncascaded.tables,
-        policy,
-    )?;
+    super::uncascaded::report(&qualified_tv, &uncascaded)?;
 
     // Step 7: Register metadata (with cascade paths)
     register_metadata(
@@ -440,11 +443,11 @@ fn create_tview_inner(
     super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
 
     // Step 8: Install triggers on base tables, as their lineage needs them.
-    if dep_graph.base_tables.is_empty() {
+    if base_tables.is_empty() {
         warning!("No base table dependencies found for {}", tv_table_name);
     } else {
         crate::dependency::install_triggers(
-            &crate::dependency::trigger_plan(&dep_graph.base_tables, &lineage)?,
+            &crate::dependency::trigger_plan(&base_tables, &lineage)?,
             entity_name,
         )?;
     }
@@ -487,13 +490,15 @@ pub fn reregister_metadata(
     let (view_schema, view_name) = super::relation_name(view_oid)?;
     let dep_graph = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
     let group_keys = stored_group_keys(entity_name)?;
-    // The stored policy holds; an `error` TVIEW whose set is no longer empty
-    // aborts the re-registration (and the ALTER that caused it).
-    let policy = meta.uncascaded_policy;
+    // The stored policies hold; an `error` table no cascade reaches aborts the
+    // re-registration (and the ALTER that caused it).
+    let declarations = Declarations::of(&meta);
     let Derivation {
         lineage,
         key_mappings,
         cascade_paths,
+        base_tables,
+        undeclared_functions,
     } = derive(
         entity_name,
         definition,
@@ -501,24 +506,26 @@ pub fn reregister_metadata(
         group_keys.as_ref(),
         &dep_graph.base_tables,
         view_oid,
+        &declarations,
     )?;
     key_table_on_identity(
         schema_name,
         &format!("tv_{entity_name}"),
         &lineage.identity.name,
     )?;
+    let qualified_tv = crate::utils::qualified_relname_from_oid(relation_oid(
+        schema_name,
+        &format!("tv_{entity_name}"),
+    )?)?;
+    super::uncascaded::report_functions(&qualified_tv, &undeclared_functions, declarations.policy)?;
+    super::uncascaded::report_time(&qualified_tv, &lineage.time_reads, &declarations)?;
+    super::uncascaded::check_declared(&qualified_tv, &declarations, &lineage)?;
     let uncascaded = Uncascaded {
         tables: uncascaded_tables(&lineage),
-        policy,
+        declarations,
+        time_dependent: !lineage.time_reads.is_empty(),
     };
-    super::uncascaded::report(
-        &crate::utils::qualified_relname_from_oid(relation_oid(
-            schema_name,
-            &format!("tv_{entity_name}"),
-        )?)?,
-        &uncascaded.tables,
-        policy,
-    )?;
+    super::uncascaded::report(&qualified_tv, &uncascaded)?;
     register_metadata(
         entity_name,
         view_oid,
@@ -535,7 +542,7 @@ pub fn reregister_metadata(
     )?;
     crate::queue::cache::invalidate_all_caches();
     crate::queue::cache::invalidate_all_caches();
-    crate::dependency::trigger_plan(&dep_graph.base_tables, &lineage)
+    crate::dependency::trigger_plan(&base_tables, &lineage)
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
@@ -626,6 +633,11 @@ struct Derivation {
     lineage: crate::lineage::Lineage,
     key_mappings: serde_json::Value,
     cascade_paths: Vec<cascade_path::CascadePath>,
+    /// The base tables the view reads (`pg_depend`), and those the functions it
+    /// calls read (#193): the tables its triggers go on.
+    base_tables: Vec<pg_sys::Oid>,
+    /// The functions it calls that may read tables and are not declared (#193).
+    undeclared_functions: Vec<String>,
 }
 
 /// The aggregate TVIEWs (issue #58) a definition embeds, each mapped to the output
@@ -671,14 +683,23 @@ fn derive(
     group_keys: Option<&super::aggregate::GroupKeys>,
     base_tables: &[pg_sys::Oid],
     view_oid: pg_sys::Oid,
+    declarations: &Declarations,
 ) -> TViewResult<Derivation> {
     let embeds: Vec<String> = schema
         .fk_columns
         .iter()
         .filter_map(|c| c.strip_prefix("fk_").map(str::to_string))
         .collect();
-    let lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
+    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &embeds)?;
     aggregate_embeds(&lineage, entity_name)?;
+    let (function_tables, undeclared_functions) =
+        super::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;
+    let mut all_base_tables = base_tables.to_vec();
+    for table in function_tables {
+        if !all_base_tables.contains(&table) {
+            all_base_tables.push(table);
+        }
+    }
     let cascade_paths = match group_keys {
         Some(keys) => super::aggregate::cascade_paths(entity_name, keys, base_tables, view_oid)?,
         None => local_cascade_paths(entity_name, definition, schema, &lineage),
@@ -689,6 +710,8 @@ fn derive(
         lineage,
         key_mappings,
         cascade_paths,
+        base_tables: all_base_tables,
+        undeclared_functions,
     })
 }
 
@@ -1698,7 +1721,8 @@ fn register_metadata(
             direct_map_keys = EXCLUDED.direct_map_keys, is_union = EXCLUDED.is_union, \
             group_keys = EXCLUDED.group_keys, aggregate_embeds = EXCLUDED.aggregate_embeds, \
             uncascaded_oids = EXCLUDED.uncascaded_oids, key_mappings = EXCLUDED.key_mappings, \
-            identity = EXCLUDED.identity"
+            identity = EXCLUDED.identity, time_refresh = EXCLUDED.time_refresh, \
+            time_dependent = EXCLUDED.time_dependent"
     } else {
         "ON CONFLICT (entity) DO NOTHING"
     };
@@ -1725,12 +1749,20 @@ fn register_metadata(
             uncascaded_oids,
             uncascaded_policy,
             key_mappings,
-            identity
+            identity,
+            uncascaded_table_oids,
+            uncascaded_table_policies,
+            function_read_functions,
+            function_read_tables,
+            time_refresh,
+            time_dependent
         ) VALUES ($1, {}, {}, $2, {}, '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', '{{{}}}', {}, $3, $4, $5::pg_catalog.oid[]::pg_catalog.regclass[], $6, $7,
                   pg_catalog.jsonb_build_object('kind', $8::pg_catalog.text, 'columns',
                       pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
                           'name', $9::pg_catalog.text,
-                          'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))))
+                          'type', pg_catalog.format_type($10::pg_catalog.oid, NULL)))),
+                  $11::pg_catalog.oid[]::pg_catalog.regclass[], $12,
+                  $13, $14::pg_catalog.oid[]::pg_catalog.regclass[], $15, $16)
         {on_conflict}",
         view_oid.to_u32(),
         table_oid.to_u32(),
@@ -1747,6 +1779,8 @@ fn register_metadata(
 
     let group_keys_json =
         group_keys.map(|keys| pgrx::JsonB(serde_json::to_value(keys).unwrap_or_default()));
+    let (function_read_functions, function_read_tables) =
+        uncascaded.declarations.function_read_pairs();
     let args = [
         unsafe { DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
         unsafe {
@@ -1775,7 +1809,7 @@ fn register_metadata(
         },
         unsafe {
             DatumWithOid::new(
-                uncascaded.policy.as_str(),
+                uncascaded.declarations.policy.as_str(),
                 PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
             )
         },
@@ -1801,6 +1835,52 @@ fn register_metadata(
             DatumWithOid::new(
                 pg_sys::Oid::from(identity.type_oid),
                 PgOid::BuiltIn(PgBuiltInOids::OIDOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded
+                    .declarations
+                    .tables
+                    .iter()
+                    .map(|(oid, _)| *oid)
+                    .collect::<Vec<_>>(),
+                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded
+                    .declarations
+                    .tables
+                    .iter()
+                    .map(|(_, policy)| policy.as_str().to_string())
+                    .collect::<Vec<_>>(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                function_read_functions,
+                PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                function_read_tables,
+                PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.time_refresh(),
+                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
+            )
+        },
+        unsafe {
+            DatumWithOid::new(
+                uncascaded.time_dependent,
+                PgOid::BuiltIn(PgBuiltInOids::BOOLOID).value(),
             )
         },
     ];

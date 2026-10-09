@@ -572,3 +572,10 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   table no cascade reaches does (ADR 0157, amendment), instead of a file setting the
   session's `pg_tviews.uncascaded_policy` first. A different value is an `altered`
   change.
+- **Options** gain `uncascaded_tables` (#195, a policy per table), `function_reads`
+  (#193, the tables each non-immutable function reads) and `time_refresh` (#193,
+  `external`), and `registry` gains `uncascaded_table_policies`, `function_reads`,
+  `time_dependent` and `time_refresh`, appended: additive, `contract_version()` stays
+  1. A change to any of the three options alone is an `altered` change. Functions are
+  stored as `schema.name(argument types)` text: a `regprocedure` column in a dumped
+  configuration table would block `pg_upgrade`.
