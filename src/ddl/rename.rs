@@ -17,7 +17,7 @@ use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::keywords::Keyword;
-use sqlparser::tokenizer::{Token, TokenWithLocation, Tokenizer};
+use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
 
 /// Re-derive the metadata of every TVIEW whose backing view reads column
 /// `new_name` (formerly `old_name`) of relation `relid`.
@@ -237,15 +237,15 @@ fn rewrite_with(
 }
 
 /// Byte offset of every token in `sql`, plus a final entry for the end of text.
-pub(crate) fn byte_offsets(sql: &str, tokens: &[TokenWithLocation]) -> Vec<usize> {
+pub(crate) fn byte_offsets(sql: &str, tokens: &[TokenWithSpan]) -> Vec<usize> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(sql.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
     let mut offsets: Vec<usize> = tokens
         .iter()
         .map(|t| {
-            let line = usize::try_from(t.location.line).unwrap_or(1).max(1) - 1;
-            let col = usize::try_from(t.location.column).unwrap_or(1).max(1) - 1;
+            let line = usize::try_from(t.span.start.line).unwrap_or(1).max(1) - 1;
+            let col = usize::try_from(t.span.start.column).unwrap_or(1).max(1) - 1;
             let start = line_starts.get(line).copied().unwrap_or(sql.len());
             sql[start..]
                 .char_indices()
@@ -430,6 +430,22 @@ mod tests {
             .as_deref(),
             Some(
                 "SELECT p.pk_post,\n       jsonb_build_object('é', p.\"Head Line\") AS data\nFROM tb_post p"
+            )
+        );
+    }
+
+    #[test]
+    fn comments_and_dollar_quoted_text_are_not_rewritten() {
+        assert_eq!(
+            rw(
+                "SELECT p.title, -- p.title isn't renamed here\n  $$p.title$$ AS lit FROM tb_post p",
+                "tb_post",
+                "title",
+                "headline"
+            )
+            .as_deref(),
+            Some(
+                "SELECT p.headline AS title, -- p.title isn't renamed here\n  $$p.title$$ AS lit FROM tb_post p"
             )
         );
     }
