@@ -115,6 +115,19 @@ pub(super) fn rebuild(
         ));
     }
 
+    // An invalid user index (a failed CREATE INDEX CONCURRENTLY) would be re-created
+    // valid on the empty table, and a UNIQUE one then fail the fill.
+    let invalid_indexes = invalid_user_indexes(meta.tview_oid)?;
+    if !invalid_indexes.is_empty() {
+        return Err(TViewError::WrongState {
+            reason: format!(
+                "TVIEW {tv_name} must be rebuilt for this change, and these indexes on it are \
+                 invalid: {}. Drop or REINDEX them, then retry",
+                invalid_indexes.join(", ")
+            ),
+        });
+    }
+
     // What the rebuild must put back, as statements computed before the drop.
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let graphql_typename = Spi::connect(|client| {
@@ -317,8 +330,35 @@ pub(super) const RESTORE_STATEMENTS: &str = "\
          AND d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objsubid = 0 \
     ) s ORDER BY step, statement";
 
-/// Indexes a user added to the TVIEW's table, as `(name, definition)`: every
-/// index that backs no constraint and that `pg_tviews` did not create.
+/// `WHERE` conditions over `pg_index i` / `pg_class ic` that select the indexes a
+/// user added to the TVIEW's table `$1`: every index that backs no constraint and
+/// that `pg_tviews` did not create.
+fn user_index_filter() -> String {
+    format!(
+        "i.indrelid = $1 \
+         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
+                         WHERE k.conindid = i.indexrelid) \
+         AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
+                                FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
+        crate::utils::meta_table()
+    )
+}
+
+/// The user's indexes on the TVIEW's table that are invalid, by name.
+fn invalid_user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT pg_catalog.quote_ident(ic.relname) FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
+             WHERE {} AND NOT i.indisvalid ORDER BY 1",
+            user_index_filter()
+        ),
+        &[crate::utils::spi::oid(table)],
+    )
+}
+
+/// Indexes a user added to the TVIEW's table (see [`user_index_filter`]), as
+/// `(name, definition)`.
 pub(super) fn user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<(String, String)>> {
     Spi::connect(|client| {
         let mut indexes = Vec::new();
@@ -326,14 +366,8 @@ pub(super) fn user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<(String, Strin
             &format!(
                 "SELECT ic.relname::text, pg_catalog.pg_get_indexdef(i.indexrelid) \
                  FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
-                 WHERE i.indrelid = $1 \
-                   AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
-                                   WHERE k.conindid = i.indexrelid) \
-                   AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
-                                          FROM {} m \
-                                          WHERE m.table_oid = $1::pg_catalog.regclass) \
-                 ORDER BY 1",
-                crate::utils::meta_table()
+                 WHERE {} ORDER BY 1",
+                user_index_filter()
             ),
             None,
             &[crate::utils::spi::oid(table)],
