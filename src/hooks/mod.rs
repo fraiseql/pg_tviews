@@ -25,7 +25,8 @@ use indexes::{IndexFollowUp, index_follow_up_of};
 use statements::{
     ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
     drops_pg_tviews, extension_installed, extension_statement_names, matview_refresh_of,
-    partition_ddl_of, privileges_change_of, resolve_relation_oid, table_move_of,
+    partition_ddl_of, persistence_change_of, privileges_change_of, resolve_relation_oid,
+    table_move_of,
 };
 use tables::handle_drop_table;
 
@@ -150,7 +151,10 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         // SAFETY: the hook's statement.
         let follow_ups = unsafe { FollowUps::of(call.pstmt) };
         let pass_through = handle(decide(call), &mut call);
-        pass_through.then_some(follow_ups)
+        pass_through.then(|| {
+            follow_ups.prepare();
+            follow_ups
+        })
     };
     // The user's statement runs without the guard: DDL nested in it (a function
     // it calls) is intercepted like any other.
@@ -439,6 +443,9 @@ struct FollowUps {
     /// An index of a TVIEW's table created, renamed or dropped: `pg_tviews`'
     /// record of its own follows.
     index_follow_up: Option<IndexFollowUp>,
+    /// A TVIEW's table (its entity and OID) switched to LOGGED (`true`) or
+    /// UNLOGGED: a reset one is filled first, and its validity row follows.
+    persistence_change: Option<(String, pg_sys::Oid, bool)>,
 }
 
 impl FollowUps {
@@ -453,6 +460,7 @@ impl FollowUps {
                 extension_drop: None,
                 matview_refresh: None,
                 index_follow_up: None,
+                persistence_change: None,
             };
         }
         // SAFETY: as above.
@@ -471,7 +479,21 @@ impl FollowUps {
                 extension_drop,
                 matview_refresh: matview_refresh_of(pstmt),
                 index_follow_up: index_follow_up_of(pstmt).unwrap_or_else(|e| e.raise()),
+                persistence_change: persistence_change_of(pstmt).and_then(|(table, logged)| {
+                    crate::catalog::TviewMeta::entity_of_table(table)
+                        .unwrap_or_else(|e| e.raise())
+                        .map(|entity| (entity, table, logged))
+                }),
             }
+        }
+    }
+
+    /// What must happen before `PostgreSQL` runs the statement.
+    fn prepare(&self) {
+        if let Some((entity, _, logged)) = &self.persistence_change
+            && let Err(e) = crate::lifecycle::validity::before_persistence_change(entity, *logged)
+        {
+            e.raise_in("pg_tviews: could not fill a reset TVIEW before changing its persistence");
         }
     }
 
@@ -509,6 +531,11 @@ impl FollowUps {
             && let Err(e) = follow_up.run()
         {
             e.raise_in("pg_tviews: could not record the indexes of a TVIEW's table");
+        }
+        if let Some((_, table, logged)) = self.persistence_change
+            && let Err(e) = crate::lifecycle::validity::after_persistence_change(table, logged)
+        {
+            e.raise_in("pg_tviews: could not record the persistence of a TVIEW's table");
         }
         if let Some(matview) = self.matview_refresh
             && let Err(e) = crate::ddl::uncascaded::refresh_readers_of(matview)

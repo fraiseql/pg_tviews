@@ -49,6 +49,11 @@ pub mod validity {
         /// The TVIEW tables this backend found trusted (or filled).
         static CHECKED: std::cell::RefCell<std::collections::HashSet<u32>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
+
+        /// The TVIEW tables whose refill this transaction claimed, with the
+        /// (sub)transaction nesting level that claimed each.
+        static CLAIMS: std::cell::RefCell<Vec<(Oid, i32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn table() -> String {
@@ -144,6 +149,32 @@ pub mod validity {
         CHECKED.with_borrow_mut(std::collections::HashSet::clear);
     }
 
+    /// The transaction ended: its claims ended with it.
+    pub fn forget_claims() {
+        CLAIMS.with_borrow_mut(Vec::clear);
+    }
+
+    /// A subtransaction rolled back: the claims it made are undone.
+    pub fn forget_subtransaction_claims() {
+        // SAFETY: reads the backend's transaction state.
+        let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+        CLAIMS.with_borrow_mut(|claims| claims.retain(|&(_, at)| at < level));
+    }
+
+    /// Refuse to prepare a transaction that claimed a refill: the claim, a row of
+    /// `pg_tview_valid`, would block every writer of that TVIEW until
+    /// `COMMIT PREPARED`. Runs in the `PRE_PREPARE` callback: no SPI.
+    pub fn refuse_prepare_with_claims() {
+        let Some(table) = CLAIMS.with_borrow(|claims| claims.first().map(|&(t, _)| t)) else {
+            return;
+        };
+        crate::TViewError::PrepareHoldsRefill {
+            table: crate::utils::qualified_relname_from_oid(table)
+                .unwrap_or_else(|_| format!("with OID {}", table.to_u32())),
+        }
+        .raise();
+    }
+
     /// If `entity`'s table is UNLOGGED and was reset, fill the TVIEWs it reads,
     /// then claim and fill it. Returns whether this transaction filled it.
     ///
@@ -165,8 +196,36 @@ pub mod validity {
         if !mark(meta.tview_oid)? {
             return Ok(false);
         }
+        // SAFETY: reads the backend's transaction state.
+        let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+        CLAIMS.with_borrow_mut(|claims| claims.push((meta.tview_oid, level)));
         crate::admin::refill(entity)?;
         Ok(true)
+    }
+
+    /// Before `entity`'s table, `table_oid`, becomes LOGGED (`logged`) or UNLOGGED:
+    /// a reset TVIEW is filled first, since a LOGGED one is never checked again.
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be read or the fill fails.
+    pub fn before_persistence_change(entity: &str, logged: bool) -> TViewResult<()> {
+        if logged {
+            fill_if_reset(entity)?;
+        }
+        Ok(())
+    }
+
+    /// After `table_oid` became LOGGED (`logged`) or UNLOGGED: a LOGGED table has
+    /// no row; the rows of one just made UNLOGGED were trusted until now.
+    ///
+    /// # Errors
+    /// Returns an error if `pg_tview_valid` cannot be written.
+    pub fn after_persistence_change(table_oid: Oid, logged: bool) -> TViewResult<()> {
+        if logged {
+            forget(table_oid)
+        } else {
+            mark(table_oid).map(|_| ())
+        }
     }
 }
 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A transaction that refilled a reset UNLOGGED TVIEW cannot be prepared** (#215):
+  `PREPARE TRANSACTION` fails with `25000`. The claim it held made every writer of
+  that TVIEW wait until `COMMIT PREPARED`.
+- **A reset UNLOGGED TVIEW switched to LOGGED is filled first, however it is
+  switched** (#215): a raw `ALTER TABLE tv_x SET LOGGED` and the `logged` option of
+  `pg_tviews_create_or_replace()` left it empty for good (a LOGGED table is never
+  checked again). Both now do what `pg_tviews_set_logged()` did, and a switch to
+  UNLOGGED records the rows as trusted.
+
 ## [0.1.0-beta.27] - 2026-10-11
 
 ### Changed (breaking)

@@ -282,23 +282,14 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
     if logged != rel.unlogged {
         return Ok(());
     }
-    // A reset TVIEW is filled before it is logged: a LOGGED one is never filled.
-    if logged {
-        crate::lifecycle::validity::fill_if_reset(entity)?;
-    }
+    crate::lifecycle::validity::before_persistence_change(entity, logged)?;
     let persistence = if logged { "LOGGED" } else { "UNLOGGED" };
     let sql = format!(
         "ALTER TABLE {} SET {persistence}",
         rel.qualified(&rel.table)
     );
     crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })?;
-    // Its rows were trusted while it was LOGGED.
-    if logged {
-        crate::lifecycle::validity::forget(rel.table_oid)?;
-    } else {
-        crate::lifecycle::validity::mark(rel.table_oid)?;
-    }
-    Ok(())
+    Ok(crate::lifecycle::validity::after_persistence_change(rel.table_oid, logged)?)
 }
 
 #[cfg(test)]

@@ -136,6 +136,47 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
     }
 }
 
+/// The table an `ALTER TABLE … SET LOGGED` or `SET UNLOGGED` switches, resolved
+/// before the statement runs, and whether it becomes LOGGED (the last of them wins,
+/// as in PostgreSQL).
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+pub(super) unsafe fn persistence_change_of(
+    pstmt: *const pg_sys::PlannedStmt,
+) -> Option<(pg_sys::Oid, bool)> {
+    // SAFETY: every pointer is null-checked before it is dereferenced; the cells
+    // of an AlterTableStmt are AlterTableCmds.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        if (*node).type_ != pg_sys::NodeTag::T_AlterTableStmt {
+            return None;
+        }
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → AlterTableStmt* cast
+        let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+        let mut logged = None;
+        for i in 0..pg_sys::list_length(stmt.cmds) {
+            let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+            if cmd.is_null() {
+                continue;
+            }
+            match (*cmd).subtype {
+                pg_sys::AlterTableType::AT_SetLogged => logged = Some(true),
+                pg_sys::AlterTableType::AT_SetUnLogged => logged = Some(false),
+                _ => {}
+            }
+        }
+        let logged = logged?;
+        if stmt.relation.is_null() {
+            return None;
+        }
+        let relid = resolve_relation_oid(stmt.relation);
+        (relid != pg_sys::InvalidOid).then_some((relid, logged))
+    }
+}
+
 /// The table an `ALTER TABLE … RENAME TO` or `ALTER TABLE … SET SCHEMA` renames or
 /// moves, resolved before the statement runs.
 ///

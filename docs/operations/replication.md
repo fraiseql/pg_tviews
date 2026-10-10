@@ -36,6 +36,9 @@ SELECT pg_tviews_set_logged('post', true);
 SELECT pg_tviews_set_logged('post', false);
 ```
 
+A reset TVIEW switched to LOGGED is filled first, whichever way it is switched
+(`ALTER TABLE tv_post SET LOGGED` included): a LOGGED table is never checked again.
+
 ## Checking what a standby can serve
 
 ```sql
@@ -64,7 +67,10 @@ after a restore, each UNLOGGED TVIEW is refilled once.
 Without further setup, a reset UNLOGGED TVIEW is filled on the first write that
 touches it, after the TVIEWs it reads. Concurrent first writers wait for the one
 that fills it (under `REPEATABLE READ` they fail with `40001` instead, and can be
-retried). Until then, readers see an empty table. Two ways to close that window:
+retried). Until then, readers see an empty table. A transaction that filled one
+cannot be prepared (`PREPARE TRANSACTION` fails with `25000`): its claim would make
+every writer of the TVIEW wait for `COMMIT PREPARED`. Fill it in a transaction of
+its own first. Two ways to close that window:
 
 **Automatically.** List the databases in `postgresql.conf` and restart:
 

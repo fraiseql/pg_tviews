@@ -43,8 +43,11 @@ pub(super) fn alter_storage(
     desired: Storage,
 ) -> TViewResult<()> {
     if desired.logged != current.logged {
+        let entity = crate::catalog::TviewMeta::entity_of_table(table)?.unwrap_or_default();
+        crate::lifecycle::validity::before_persistence_change(&entity, desired.logged)?;
         let persistence = if desired.logged { "LOGGED" } else { "UNLOGGED" };
         crate::utils::spi::run_ddl(&format!("ALTER TABLE {qualified_tv} SET {persistence}"))?;
+        crate::lifecycle::validity::after_persistence_change(table, desired.logged)?;
     }
     if desired.fillfactor != current.fillfactor {
         if desired.fillfactor == 100 {

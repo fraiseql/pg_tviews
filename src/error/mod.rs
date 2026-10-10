@@ -70,6 +70,10 @@ pub enum TViewError {
     /// The session or transaction is not in a state that allows this.
     WrongState { reason: String },
 
+    /// PREPARE TRANSACTION of a transaction that claimed the refill of a reset
+    /// UNLOGGED TVIEW: every writer of it would wait for `COMMIT PREPARED`.
+    PrepareHoldsRefill { table: String },
+
     /// Reading or writing the catalog failed (internal).
     CatalogError { operation: String, pg_error: String },
 
@@ -100,6 +104,7 @@ impl TViewError {
             Self::JsonbDeltaMissing => PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
             Self::QueueFull { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+            Self::PrepareHoldsRefill { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
             Self::CatalogError { .. } | Self::SpiError { .. } | Self::SerializationError { .. } => {
                 PgSqlErrorCode::ERRCODE_INTERNAL_ERROR
             }
@@ -157,6 +162,11 @@ impl TViewError {
             }
             Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
                 "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
+                    .into(),
+            ),
+            Self::PrepareHoldsRefill { .. } => Some(
+                "Refill it in a transaction of its own first (any write to a table it reads), \
+                 then run the work to prepare."
                     .into(),
             ),
             Self::CatalogError { .. } | Self::SerializationError { .. } => {
@@ -271,6 +281,11 @@ impl fmt::Display for TViewError {
             Self::JsonbDeltaMissing => {
                 write!(f, "Required extension 'jsonb_delta' is not installed")
             }
+            Self::PrepareHoldsRefill { table } => write!(
+                f,
+                "cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW {table}, \
+                 and every writer of it would wait for COMMIT PREPARED"
+            ),
             Self::QueueFull { size, max_size } => write!(
                 f,
                 "refresh queue backpressure: queue size ({size}) would exceed \
@@ -358,6 +373,7 @@ mod tests {
                 max_size: 1,
             },
             TViewError::WrongState { reason: s() },
+            TViewError::PrepareHoldsRefill { table: s() },
             TViewError::CatalogError {
                 operation: s(),
                 pg_error: s(),
@@ -386,6 +402,7 @@ mod tests {
                 | TViewError::JsonbDeltaMissing
                 | TViewError::QueueFull { .. }
                 | TViewError::WrongState { .. }
+                | TViewError::PrepareHoldsRefill { .. }
                 | TViewError::CatalogError { .. }
                 | TViewError::SpiError { .. }
                 | TViewError::SerializationError { .. } => {}
@@ -491,6 +508,12 @@ mod tests {
                 reason: String::new()
             }),
             "55000"
+        );
+        assert_eq!(
+            code(TViewError::PrepareHoldsRefill {
+                table: String::new()
+            }),
+            "25000"
         );
         assert_eq!(
             code(TViewError::InvalidSelectStatement {

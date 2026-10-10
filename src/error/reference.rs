@@ -32,6 +32,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::JsonbDeltaMissing => "JsonbDeltaMissing",
         TViewError::QueueFull { .. } => "QueueFull",
         TViewError::WrongState { .. } => "WrongState",
+        TViewError::PrepareHoldsRefill { .. } => "PrepareHoldsRefill",
         TViewError::CatalogError { .. } => "CatalogError",
         TViewError::SpiError { .. } => "SpiError",
         TViewError::SerializationError { .. } => "SerializationError",
@@ -92,6 +93,7 @@ fn examples() -> Vec<TViewError> {
         TViewError::WrongState {
             reason: p("reason"),
         },
+        TViewError::PrepareHoldsRefill { table: p("table") },
         TViewError::CatalogError {
             operation: p("operation"),
             pg_error: p("error"),
@@ -244,7 +246,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 18, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 19, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

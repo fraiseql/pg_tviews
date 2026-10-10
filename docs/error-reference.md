@@ -29,6 +29,7 @@ Placeholders stand for the values each message carries.
 | `42883` | `undefined_function` | `JsonbDeltaMissing` | Required extension 'jsonb_delta' is not installed | CREATE EXTENSION jsonb_delta; |
 | `54000` | `program_limit_exceeded` | `QueueFull` | refresh queue backpressure: queue size (10001) would exceed max_queue_size (10000) | Raise pg_tviews.max_queue_size, or write in smaller transactions. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
+| `25000` | `invalid_transaction_state` | `PrepareHoldsRefill` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
 | `XX000` | `internal_error` | `CatalogError` | Catalog operation '&lt;operation&gt;' failed: &lt;error&gt; | tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata. |
 | `XX000` | `internal_error` | `SpiError` | SPI query failed: &lt;error&gt; |  |
 | `XX000` | `internal_error` | `SerializationError` | Serialization error: &lt;message&gt; | tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata. |

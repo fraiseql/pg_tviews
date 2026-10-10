@@ -8,8 +8,8 @@ use std::os::raw::c_void;
 
 /// What the end of a transaction resets, however it ends: the refresh work, the
 /// savepoints, the value locks held, the running queries, the flush, the
-/// per-transaction caches, the audit buffer, the metrics and the affected-rows
-/// report.
+/// per-transaction caches, the audit buffer, the metrics, the affected-rows
+/// report and the refill claims.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
     super::savepoint::clear,
@@ -20,6 +20,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::audit::clear_audit_buffer,
     crate::metrics::metrics_api::reset_metrics,
     crate::queue::affected::clear,
+    crate::lifecycle::validity::forget_claims,
 ];
 
 /// What an abort resets besides: the catalog the caches memoized may be rolled
@@ -41,6 +42,7 @@ const RESET_ON_SUBABORT: &[fn()] = &[
     || crate::internal_ddl::release_on_abort(false),
     crate::cache::invalidate_all,
     crate::lifecycle::validity::forget_checks,
+    crate::lifecycle::validity::forget_subtransaction_claims,
 ];
 
 fn run(resets: &[fn()]) {
@@ -55,6 +57,7 @@ enum XactEvent {
     Commit,
     Abort,
     PreCommit,
+    PrePrepare,
     Prepare, // XACT_EVENT_PREPARE
 }
 
@@ -106,8 +109,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
         pg_sys::XactEvent::XACT_EVENT_COMMIT => XactEvent::Commit,
         pg_sys::XactEvent::XACT_EVENT_PRE_COMMIT => XactEvent::PreCommit,
         pg_sys::XactEvent::XACT_EVENT_ABORT => XactEvent::Abort,
+        pg_sys::XactEvent::XACT_EVENT_PRE_PREPARE => XactEvent::PrePrepare,
         pg_sys::XactEvent::XACT_EVENT_PREPARE => XactEvent::Prepare,
-        _ => return, // Ignore PARALLEL_*, PRE_PREPARE, etc.
+        _ => return, // Ignore PARALLEL_*
     };
 
     // Handle event.
@@ -144,6 +148,8 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // TVIEW is only reset by a restart, which ends every backend.
             run(RESET_AT_END);
         }
+        // Still able to fail: a claimed refill must not outlive this backend.
+        XactEvent::PrePrepare => crate::lifecycle::validity::refuse_prepare_with_claims(),
         XactEvent::Prepare => {
             // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
             // the refresh writes are part of the prepared transaction. This backend's
