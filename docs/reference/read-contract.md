@@ -107,9 +107,10 @@ pg_tviews never drops a user index, and carries every one over a `rebuilt` repla
 The names pg_tviews uses for its indexes on a TVIEW (those in `managed_indexes`, and
 those it creates or would create for the definition, `idx_<tv>_data_gin` included) are
 reserved: a user's `CREATE INDEX` or `ALTER INDEX … RENAME TO` under one is refused
-with `42939`. The statements `pg_tviews_ensure_propagation_indexes(dry_run => true)`
-reports are the exception: run by hand (`CONCURRENTLY` too), they create pg_tviews'
-index and it is recorded. A TVIEW registered by an earlier release gets its record
+with `42939`, unless the statement creates exactly the index pg_tviews creates under
+that name (same method and columns, nothing else): what
+`pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand
+(`CONCURRENTLY` too), or what a dump restores. That index is pg_tviews', and recorded. A TVIEW registered by an earlier release gets its record
 when the upgrade re-registers it: the indexes that are exactly those pg_tviews
 creates, under their names. The upgrade warns about any other index under such a
 name, which stays the user's: rename it, or a dump will not restore it.

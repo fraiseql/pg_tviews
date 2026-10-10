@@ -2,9 +2,10 @@
 //!
 //! A user's index may not take a name `pg_tviews` keeps for its own (one it
 //! recorded, or one it creates or would create for the definition): its
-//! `CREATE INDEX IF NOT EXISTS` would then find the user's index in its place. The
-//! statements `pg_tviews_ensure_propagation_indexes()` reports, run by hand, are
-//! the exception, and are recorded. A rename or drop of a recorded index is
+//! `CREATE INDEX IF NOT EXISTS` would then find the user's index in its place. A
+//! statement creating exactly `pg_tviews`' index under its name is the exception
+//! (what `pg_tviews_ensure_propagation_indexes()` reports, run by hand, or what a
+//! dump restores), and is recorded. A rename or drop of a recorded index is
 //! followed.
 
 use super::{CStr, pg_sys};
@@ -22,7 +23,7 @@ pub(super) enum IndexFollowUp {
     },
     /// Recorded indexes dropped: each with its table.
     Drop(Vec<(pg_sys::Oid, String)>),
-    /// An index `pg_tviews` would create, created by hand.
+    /// An index `pg_tviews` would create, created by a statement of its own.
     Record { table: pg_sys::Oid, name: String },
 }
 
@@ -188,7 +189,7 @@ unsafe fn create_index(stmt: &pg_sys::IndexStmt) -> TViewResult<Option<IndexFoll
     Err(tview.refuse(&name))
 }
 
-/// Whether `stmt` creates exactly the btree index `index`: its columns in order,
+/// Whether `stmt` creates exactly `index`: its method and columns in order,
 /// nothing else (no expression, operator class, collation, ordering, predicate,
 /// INCLUDE, uniqueness).
 ///

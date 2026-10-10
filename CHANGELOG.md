@@ -52,9 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `ALTER INDEX … RENAME TO` on a TVIEW's table under a name pg_tviews uses there
   (`idx_<tv>_id`, `idx_<tv>_<fk>_<pk>`, `idx_<tv>_data_gin`…) is refused with
   `42939` (`reserved_name`): pg_tviews' `CREATE INDEX IF NOT EXISTS` would otherwise
-  find the user's index in its place. The statements
-  `pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand, are
-  still accepted, and the index is pg_tviews'.
+  find the user's index in its place. A statement creating exactly pg_tviews' index
+  under its name (what `pg_tviews_ensure_propagation_indexes(dry_run => true)`
+  reports, run by hand, or what a dump restores) is accepted, and the index is
+  pg_tviews'.
 - **A `rebuilt` replace refuses while a user index on the TVIEW is invalid** (#219),
   naming it (`55000`), before it drops anything. A UNIQUE index left invalid by a
   failed `CREATE UNIQUE INDEX CONCURRENTLY` was re-created valid on the empty table,
