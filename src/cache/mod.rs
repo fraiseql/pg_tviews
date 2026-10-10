@@ -75,6 +75,14 @@ thread_local! {
     pub static COLUMNS: Memo<Oid, Vec<String>> = Memo::new();
     /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
     pub static MAPPINGS: Memo<(String, u32), Option<String>> = Memo::new();
+    /// `(entity, relid, attnum)` → the rendered read-set query (`None`: a
+    /// relation is gone).
+    pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
+    /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
+    pub static LOCK_VALUES: Memo<(u32, i16), Option<crate::concurrency::LockValue>> = Memo::new();
+    /// SQL → its kept plan, for the queries every refresh runs (PostgreSQL
+    /// revalidates a kept plan when what it reads changes).
+    pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::delta::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -129,6 +137,9 @@ pub fn invalidate_all() {
     KEY_TYPES.with(Memo::clear);
     COLUMNS.with(Memo::clear);
     MAPPINGS.with(Memo::clear);
+    READ_SETS.with(Memo::clear);
+    LOCK_VALUES.with(Memo::clear);
+    PLANS.with(Memo::clear);
     DELTAS.with(Memo::clear);
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);

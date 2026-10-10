@@ -1,0 +1,49 @@
+Parsed test spec with 2 sessions
+
+starting permutation: c_begin c_insert p_begin p_insert c_commit p_commit p_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step c_begin: BEGIN;
+step c_insert: INSERT INTO tb_comment (pk_comment, fk_post, body) VALUES (1, 9, 'hi');
+step p_begin: BEGIN;
+step p_insert: INSERT INTO tb_post (pk_post, title) VALUES (9, 'p9'); <waiting ...>
+step c_commit: COMMIT;
+step p_insert: <... completed>
+step p_commit: COMMIT;
+step p_check: 
+  SELECT t.pk_post, t.data->'comments' AS comments, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|comments|fresh
+-------+--------+-----
+      1|[]      |t    
+      9|["hi"]  |t    
+(2 rows)
+
+
+starting permutation: p_begin p_insert c_begin c_insert p_commit c_commit p_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step p_begin: BEGIN;
+step p_insert: INSERT INTO tb_post (pk_post, title) VALUES (9, 'p9');
+step c_begin: BEGIN;
+step c_insert: INSERT INTO tb_comment (pk_comment, fk_post, body) VALUES (1, 9, 'hi'); <waiting ...>
+step p_commit: COMMIT;
+step c_insert: <... completed>
+step c_commit: COMMIT;
+step p_check: 
+  SELECT t.pk_post, t.data->'comments' AS comments, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|comments|fresh
+-------+--------+-----
+      1|[]      |t    
+      9|["hi"]  |t    
+(2 rows)
+

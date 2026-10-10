@@ -1,5 +1,5 @@
 use super::key::{KeyValue, RefreshKey};
-use super::state::{self, TX_CRASH_RECOVERY_CHECKED};
+use super::state;
 
 /// `QueueFull` when one more entry would take the queue past `limit`.
 fn check_queue_backpressure(limit: usize) -> crate::TViewResult<()> {
@@ -95,25 +95,6 @@ pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
     for key in keys {
         super::patch::poison(RefreshKey::new(entity, key));
     }
-}
-
-/// Check if crash recovery has already been checked for this entity in this transaction
-pub fn is_crash_recovery_checked(entity: &str) -> bool {
-    TX_CRASH_RECOVERY_CHECKED.with(|checked| checked.borrow().contains(entity))
-}
-
-/// Mark that crash recovery has been checked for this entity in this transaction
-pub fn mark_crash_recovery_checked(entity: &str) {
-    TX_CRASH_RECOVERY_CHECKED.with(|checked| {
-        checked.borrow_mut().insert(entity.to_string());
-    });
-}
-
-/// Clear the crash recovery check cache (used on transaction abort)
-pub fn clear_crash_recovery_cache() {
-    TX_CRASH_RECOVERY_CHECKED.with(|checked| {
-        checked.borrow_mut().clear();
-    });
 }
 
 #[cfg(test)]

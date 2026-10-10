@@ -63,19 +63,16 @@ BEGIN
                   HINT = 'Restore the tables the TVIEW reads before its catalog row.';
     END IF;
     FOR e IN SELECT value FROM pg_catalog.jsonb_array_elements(NEW.plan->'tables') LOOP
-        -- A mapping query names relations and columns by relid: {r:<relid>},
-        -- {c:<relid>:<attnum>}. Marked first, so a new relid equal to another
-        -- table's old one is not rebound twice.
-        IF e ? 'sql' THEN
-            q := e->>'sql';
-            FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
-                q := pg_catalog.replace(pg_catalog.replace(q,
-                         '{r:' || olds[i] || '}', '{r:#' || news[i] || '}'),
-                         '{c:' || olds[i] || ':', '{c:#' || news[i] || ':');
-            END LOOP;
-            q := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:');
-            e := pg_catalog.jsonb_set(e, '{sql}', pg_catalog.to_jsonb(q));
-        END IF;
+        -- The mapping query and the read-set queries name relations and columns
+        -- by relid: {r:<relid>}, {c:<relid>:<attnum>}. Marked first, so a new
+        -- relid equal to another table's old one is not rebound twice.
+        q := e::pg_catalog.text;
+        FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
+            q := pg_catalog.replace(pg_catalog.replace(q,
+                     '{r:' || olds[i] || '}', '{r:#' || news[i] || '}'),
+                     '{c:' || olds[i] || ':', '{c:#' || news[i] || ':');
+        END LOOP;
+        e := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:')::pg_catalog.jsonb;
         i := pg_catalog.array_position(olds, e->>'relid');
         e := pg_catalog.jsonb_set(e, '{relid}', pg_catalog.to_jsonb(news[i]::pg_catalog.int8));
         tables := tables || pg_catalog.jsonb_build_array(e);
@@ -191,6 +188,40 @@ BEGIN
                    AND tg.tgnargs = 0))
     LOOP
         EXECUTE pg_catalog.format('DROP TRIGGER %I ON %s', legacy.tgname, legacy.rel);
+    END LOOP;
+END
+$$;
+
+-- The UNLOGGED TVIEW tables whose rows can be trusted. UNLOGGED itself: a crash
+-- restart or a promotion empties it together with them, and a table missing here
+-- is filled from its view by the next write. Not dumped: a restored TVIEW is
+-- filled once.
+CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
+    table_oid OID NOT NULL PRIMARY KEY
+);
+COMMENT ON TABLE @extschema@.pg_tview_valid IS
+    'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
+GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
+-- An UNLOGGED TVIEW holding rows is trusted; an empty one, or one this role may
+-- not read, is filled once by its next write (cheap when its view is empty too).
+-- Only the tables are read.
+DO $$
+DECLARE
+    t pg_catalog.regclass;
+    filled boolean;
+BEGIN
+    FOR t IN SELECT m.table_oid FROM @extschema@.pg_tview_meta m
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid
+             WHERE c.relpersistence = 'u'
+    LOOP
+        BEGIN
+            EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
+        EXCEPTION WHEN insufficient_privilege THEN
+            filled := false;
+        END;
+        IF filled THEN
+            INSERT INTO @extschema@.pg_tview_valid VALUES (t::pg_catalog.oid);
+        END IF;
     END LOOP;
 END
 $$;
@@ -498,3 +529,16 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
+
+-- What a refresh of a TVIEW's rows reads of a mapped table, for value locks
+-- (ADR 0207): the plans re-derived above carry it.
+CREATE  FUNCTION @extschema@."pg_tviews_read_set_queries"(
+	"tview" TEXT, /* &str */
+	"base_table" oid /* pgrx_pg_sys::submodules::oids::Oid */
+) RETURNS TABLE (
+	"column_name" TEXT,  /* core::option::Option<alloc::string::String> */
+	"query" TEXT  /* core::option::Option<alloc::string::String> */
+)
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_read_set_queries_wrapper';

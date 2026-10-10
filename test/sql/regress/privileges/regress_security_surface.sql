@@ -104,6 +104,7 @@ BEGIN
            'tviews.pg_tviews_performance_stats()', 'tviews.pg_tviews_queue_stats()',
            'tviews.pg_tviews_debug_queue()', 'tviews.pg_tviews_replication_status()',
            'tviews.pg_tviews_is_replica_readable(text)', 'tviews.pg_tviews_mapping_query(text,oid)',
+           'tviews.pg_tviews_read_set_queries(text,oid)',
            'tviews.pg_tviews_show_cascade_path(text)', 'tviews.pg_tviews_defines_view(oid,text)',
            -- the caller's session
            'tviews.pg_tviews_flush_and_report(integer,boolean,boolean)',

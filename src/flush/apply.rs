@@ -46,17 +46,15 @@ impl Flush {
         // The entity is read and written as the owner of its tv_* table, whoever
         // wrote to the base table.
         let _owner = crate::owner::AsOwner::of_entity(entity)?;
-        if !crate::queue::ops::is_crash_recovery_checked(entity) {
-            crate::queue::mark_crash_recovery_checked(entity);
-            if crate::lifecycle::detect_post_crash_truncation(entity)? {
-                // The TVIEW is empty but its view is not: fill it. No TRUNCATE, so
-                // no ACCESS EXCLUSIVE lock held until the transaction ends.
-                crate::admin::fill_empty_tview(entity)?;
-            }
-        }
+        // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
+        crate::lifecycle::validity::ensure(entity)?;
         if keys.iter().any(RefreshKey::is_all) {
             return self.refresh_all(entity);
         }
+        // Writers of what these rows read meet them on its values (ADR 0207):
+        // locked before the rows are locked and computed.
+        let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
+        crate::concurrency::reads::lock_read_set(&self.meta(entity)?, &values)?;
 
         // Keys carrying a usable direct patch are written straight into
         // tv_<entity>; the others recompute. The setting is read again
@@ -86,6 +84,8 @@ impl Flush {
         if !recompute.is_empty() {
             self.recompute(entity, recompute)?;
         }
+        // REPEATABLE READ: the rows are what the latest snapshot computes.
+        crate::concurrency::crosscheck::refreshed_rows(&self.meta(entity)?, &values)?;
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
         }
@@ -96,6 +96,11 @@ impl Flush {
     /// of the entity, and queue the parents of the rows that changed.
     fn refresh_all(&mut self, entity: &str) -> TViewResult<()> {
         let meta = self.meta(entity)?;
+        // Every row may change: refreshes of any of them wait, and are waited for.
+        crate::concurrency::lock_relation(
+            meta.tview_oid.to_u32(),
+            crate::concurrency::Side::Writer,
+        );
         // Parents are found by integer keys: a text key has none to find.
         let changed: Vec<i64> = crate::ddl::replace::reconcile(entity, &meta)?
             .into_iter()

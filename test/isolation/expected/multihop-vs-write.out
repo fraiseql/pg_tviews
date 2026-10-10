@@ -1,0 +1,61 @@
+Parsed test spec with 2 sessions
+
+starting permutation: i_begin i_insert r_begin r_rename i_commit r_commit r_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_feed' created successfully
+(1 row)
+
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_org SET name = 'umbrella' WHERE pk_org = 1; <waiting ...>
+step i_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step r_check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->'org'->>'name' AS org, t.data = v.data AS fresh
+    FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'feed', t.pk_feed, t.data->>'org', t.data = v.data
+    FROM tv_feed t JOIN tviews.public__tv_feed v USING (pk_feed)
+  ORDER BY 1, 2;
+
+tv  |pk|org     |fresh
+----+--+--------+-----
+feed| 1|UMBRELLA|t    
+feed| 2|UMBRELLA|t    
+post| 1|umbrella|t    
+post| 2|umbrella|t    
+(4 rows)
+
+
+starting permutation: r_begin r_rename i_begin i_insert r_commit i_commit r_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_feed' created successfully
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_org SET name = 'umbrella' WHERE pk_org = 1;
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2'); <waiting ...>
+step r_commit: COMMIT;
+step i_insert: <... completed>
+step i_commit: COMMIT;
+step r_check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->'org'->>'name' AS org, t.data = v.data AS fresh
+    FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'feed', t.pk_feed, t.data->>'org', t.data = v.data
+    FROM tv_feed t JOIN tviews.public__tv_feed v USING (pk_feed)
+  ORDER BY 1, 2;
+
+tv  |pk|org     |fresh
+----+--+--------+-----
+feed| 1|UMBRELLA|t    
+feed| 2|UMBRELLA|t    
+post| 1|umbrella|t    
+post| 2|umbrella|t    
+(4 rows)
+

@@ -11,6 +11,5 @@ pub(crate) mod state;
 pub use key::RefreshKey;
 pub use ops::{
     enqueue_refresh, enqueue_refresh_all, enqueue_refresh_bulk, enqueue_refresh_patched,
-    mark_crash_recovery_checked,
 };
 pub use state::{get_queue_contents, get_queue_size};

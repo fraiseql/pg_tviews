@@ -29,6 +29,9 @@ pub struct TviewMeta {
 
     /// A TVIEW that reads the current time declared `time_refresh: external`.
     pub time_refresh_external: bool,
+    /// The definition reads the current time: two computations of a row may
+    /// differ with no write between them.
+    pub time_dependent: bool,
 
     /// The column that names the TVIEW's rows (ADR 0169).
     pub identity: RowIdentity,
@@ -100,7 +103,8 @@ pub(crate) fn meta_select() -> String {
          uncascaded_policy, identity, \
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
-         time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external \
+         time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
+         time_dependent \
          FROM {}",
         crate::utils::meta_table()
     )
@@ -373,6 +377,7 @@ impl TviewMeta {
             time_refresh_external: row["time_refresh_external"]
                 .value::<bool>()?
                 .unwrap_or(false),
+            time_dependent: row["time_dependent"].value::<bool>()?.unwrap_or(false),
             identity,
         })
     }
@@ -400,6 +405,7 @@ impl Default for TviewMeta {
             table_policies: Vec::new(),
             function_reads: Vec::new(),
             time_refresh_external: false,
+            time_dependent: false,
             identity: RowIdentity::unknown(),
         }
     }

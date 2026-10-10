@@ -18,6 +18,37 @@ DO $$ BEGIN
         RAISE EXCEPTION 'upgrade check: backing views not named <schema>__tv_<entity>';
     END IF;
 END $$;
+-- Every table a re-derived plan maps by a query has read sets (ADR 0207), and the
+-- UNLOGGED TVIEWs holding rows are trusted (#214).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m,
+                    pg_catalog.jsonb_array_elements(m.plan OPERATOR(pg_catalog.->) 'tables') t
+               WHERE t OPERATOR(pg_catalog.->>) 'kind' = 'mapped'
+                 AND NOT t OPERATOR(pg_catalog.?) 'reads') THEN
+        RAISE EXCEPTION 'upgrade check: a mapped table has no read sets';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta m
+                   WHERE m.plan OPERATOR(pg_catalog.@>) '{"tables": [{"kind": "mapped"}]}') THEN
+        RAISE EXCEPTION 'upgrade check: no fixture maps a table by a query';
+    END IF;
+END $$;
+DO $$
+DECLARE
+    t pg_catalog.regclass;
+    filled boolean;
+BEGIN
+    FOR t IN SELECT c.oid FROM tviews.pg_tview_meta m
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid
+             WHERE c.relpersistence = 'u'
+               AND NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid v WHERE v.table_oid = c.oid)
+    LOOP
+        EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
+        IF filled THEN
+            RAISE EXCEPTION 'upgrade check: % holds rows and is not trusted', t;
+        END IF;
+    END LOOP;
+END $$;
+
 -- The fitted name the upgrade computed is the one pg_tviews derives: a rename of
 -- the table back and forth leaves it as it is.
 SELECT pg_catalog.to_regclass('public.tv_long_entity_name_for_the_upgrade_fitter_check_abcdefghij') IS NOT NULL AS long_fixture \gset

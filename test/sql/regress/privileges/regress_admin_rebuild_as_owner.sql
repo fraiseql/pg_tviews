@@ -50,10 +50,13 @@ SET regress.via = 'refresh_all_entities';
 SELECT pg_tviews_refresh_all_entities();
 SET regress.via = 'refresh';
 SELECT pg_tviews_refresh('thing');
+-- A crash empties tv_thing and its row in pg_tview_valid.
 TRUNCATE public.tv_thing;
+DELETE FROM tviews.pg_tview_valid;
 SET regress.via = 'rebuild_all_only_empty';
 SELECT entity FROM pg_tviews_rebuild_all(true);
 TRUNCATE public.tv_thing;
+DELETE FROM tviews.pg_tview_valid;
 SET regress.via = 'recover_after_crash';
 SELECT pg_tviews_recover_after_crash('thing');
 -- A deploy re-applying the definition: the same columns (rows reconciled in

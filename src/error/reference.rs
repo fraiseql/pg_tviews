@@ -105,6 +105,17 @@ fn examples() -> Vec<TViewError> {
 /// (source file, condition, when). A test checks every such site is listed.
 const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     (
+        "src/concurrency/mod.rs",
+        PgSqlErrorCode::ERRCODE_T_R_SERIALIZATION_FAILURE,
+        "Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a \
+         concurrent transaction holds (`a concurrent transaction changes rows this TVIEW \
+         refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting \
+         could not make the snapshot see the other's change; or the latest snapshot shows \
+         what the transaction's missed (`a TVIEW row this transaction refreshed changed in a \
+         concurrent transaction`, `a concurrent transaction added rows this write must \
+         refresh`). Retry the transaction.",
+    ),
+    (
         "src/flush/xact.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "A transaction commits with refresh work still queued (a missing or disabled flush \

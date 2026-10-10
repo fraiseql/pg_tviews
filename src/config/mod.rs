@@ -22,6 +22,7 @@
 //! | `pg_tviews.data_gin_index` | bool | false | GIN index on `data` for new TVIEWs |
 //! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
 //! | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
+//! | `pg_tviews.lock_escalation_threshold` | int | 64 | Value locks per relation before a transaction locks the relation (ADR 0207) |
 //! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
 //! | `pg_tviews.uncascaded_policy` | enum | `error` | What a new TVIEW does about base tables no cascade reaches |
 //! | `pg_tviews.time_refresh` | enum | `none` | How a new TVIEW that reads the current time is brought up to date |
@@ -110,6 +111,7 @@ static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true
 static DATA_GIN_INDEX_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static FILLFACTOR_GUC: GucSetting<i32> = GucSetting::<i32>::new(85);
 static REPORT_MAX_TRACKED_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+static LOCK_ESCALATION_THRESHOLD_GUC: GucSetting<i32> = GucSetting::<i32>::new(64);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
 static UNCASCADED_POLICY_GUC: GucSetting<UncascadedPolicy> =
@@ -165,6 +167,17 @@ fn register_int_gucs() {
         &FILLFACTOR_GUC,
         10,  // min (PostgreSQL's own lower bound for heap fillfactor)
         100, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.lock_escalation_threshold",
+        c"Value locks a transaction takes on one relation before it locks the relation instead.",
+        c"Counted per relation and per side (writes, refreshes). 0 always locks relations; \
+          -1 never does, which can exhaust the shared lock table on bulk writes.",
+        &LOCK_ESCALATION_THRESHOLD_GUC,
+        -1,
+        1_000_000,
         GucContext::Userset,
         GucFlags::default(),
     );
@@ -374,6 +387,12 @@ pub fn auto_rebuild_databases() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Value locks per relation and side before a transaction locks the relation
+/// (`pg_tviews.lock_escalation_threshold`): 0 always, -1 never.
+pub fn lock_escalation_threshold() -> i32 {
+    LOCK_ESCALATION_THRESHOLD_GUC.get()
 }
 
 /// Changed rows journaled per transaction (`pg_tviews.report_max_tracked`).

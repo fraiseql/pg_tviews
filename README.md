@@ -183,6 +183,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔍 Smart Dependency Detection**: Automatically analyzes SQL to find source tables and relationships
 - **🎯 Surgical Updates**: Updates only affected rows—never full table scans
 - **🔄 Transactional Consistency**: Refresh happens atomically within your transaction
+- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit (`READ COMMITTED`), or one fails with a retryable `40001` (`REPEATABLE READ`, `SERIALIZABLE`). See [Concurrency](docs/concurrency.md)
 - **📊 Cascade Propagation**: Automatically handles multi-level view dependencies
 
 ### High Performance
@@ -338,9 +339,11 @@ the databases in `pg_tviews.auto_rebuild_databases` (needs a restart), or call
 
 ### Crash Recovery
 
-UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** rebuilds a
-TVIEW on the first write that touches it, and the startup worker above rebuilds
-the configured databases without waiting for a write. To check one TVIEW by hand:
+UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** records which
+UNLOGGED TVIEWs it can trust in an UNLOGGED table the crash empties too, and
+refills a reset TVIEW on the first write that touches it; the startup worker above
+refills the configured databases without waiting for a write. A TVIEW that is
+merely empty is never refilled. To check one TVIEW by hand:
 
 ```sql
 -- Check and recover after potential crash
@@ -371,6 +374,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
+| `pg_tviews.lock_escalation_threshold` | int | 64 | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.uncascaded_policy` | enum | error | `error`, `full_refresh` or `warn`: what a new TVIEW does about base tables no cascade reaches, when it declares no `uncascaded_policy` option. Read at create time and stored with the TVIEW; `error` refuses it, `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
 | `pg_tviews.time_refresh` | enum | none | `none` or `external`: whether a new TVIEW whose definition reads the current time (`CURRENT_DATE`, `now()`…) is accepted, when it declares no `time_refresh` option; `external` means `tviews.pg_tviews_refresh_time_dependent()` is called at the boundary ([details](docs/reference/ddl.md#time-dependent-tviews)) |
@@ -403,6 +407,7 @@ reason and how to declare a full refresh instead.
 - **✅ Data Recovery**: All TVIEW data reconstructible from base tables
 - **✅ Transparent**: Applications work unchanged
 - **✅ Configurable**: Can disable UNLOGGED for specific use cases
+- **✅ Only after a reset**: An empty TVIEW is refilled only when PostgreSQL reset it, once, whatever the number of concurrent writers
 - **✅ Tested**: Comprehensive crash simulation and recovery testing
 
 ---

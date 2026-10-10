@@ -177,18 +177,52 @@ pub fn flush_after_rebuilds() -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
+        // Every row changes: refreshes of any of them wait, and are waited for,
+        // and so are writers of anything they read.
+        crate::concurrency::lock_relation(
+            meta.tview_oid.to_u32(),
+            crate::concurrency::Side::Writer,
+        );
+        crate::concurrency::reads::lock_whole_read_set(&meta)?;
+    }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
     Spi::run(&insert)?;
+    drop(owner);
+    // Rebuilt from its view: its rows can be trusted again.
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+        TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }
+    })?;
+    crate::lifecycle::validity::mark(meta.tview_oid)?;
+    Ok(())
+}
+
+/// Replace every row of `tv_<entity>` with its backing view's, without `TRUNCATE`
+/// (readers are never blocked), as its owner: the fill of a TVIEW whose rows
+/// can't be trusted ([`crate::lifecycle::validity`]). Rows a concurrent writer
+/// committed meanwhile are kept.
+///
+/// # Errors
+/// Returns error if the entity is not registered or the delete/insert fails.
+pub fn refill(entity: &str) -> TViewResult<()> {
+    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
+        crate::concurrency::reads::lock_whole_read_set(&meta)?;
+    }
+    let owner = crate::owner::AsOwner::of_entity(entity)?;
+    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
+    Spi::run(&format!("DELETE FROM {qi_tv}"))?;
+    Spi::run(&format!("{insert} ON CONFLICT DO NOTHING"))?;
     Ok(())
 }
 
 /// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,
 /// as its owner.
 ///
-/// Used when a TVIEW is found empty while its view is not (an UNLOGGED table reset
-/// by a crash restart or promotion, or a TVIEW created empty). Unlike
+/// Used to fill a TVIEW created empty (a rebuild by another role). Unlike
 /// [`rebuild_one`] it takes only a ROW EXCLUSIVE lock, so readers are never
 /// blocked, even when the transaction stays prepared (2PC) for a while.
 ///

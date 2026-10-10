@@ -36,6 +36,7 @@ use pgrx::prelude::*;
 mod audit;
 mod cache;
 mod catalog;
+mod concurrency;
 mod delta;
 mod executor;
 mod flush;

@@ -33,6 +33,23 @@ BEGIN
   END IF;
 END $$;
 
+-- pg_tviews.lock_escalation_threshold (ADR 0207): 64 by default, -1 to
+-- 1000000, settable per session.
+DO $$
+BEGIN
+  IF current_setting('pg_tviews.lock_escalation_threshold') <> '64' THEN
+    RAISE EXCEPTION 'gucs FAIL: lock_escalation_threshold default = % (expected 64)',
+      current_setting('pg_tviews.lock_escalation_threshold');
+  END IF;
+  PERFORM set_config('pg_tviews.lock_escalation_threshold', '-1', true);
+  PERFORM set_config('pg_tviews.lock_escalation_threshold', '0', true);
+  BEGIN
+    PERFORM set_config('pg_tviews.lock_escalation_threshold', '-2', true);
+    RAISE EXCEPTION 'gucs FAIL: lock_escalation_threshold accepted -2';
+  EXCEPTION WHEN invalid_parameter_value THEN NULL;
+  END;
+END $$;
+
 -- Each is settable within bounds.
 SET pg_tviews.max_dependency_depth = 5;
 SET pg_tviews.batch_size = 2;

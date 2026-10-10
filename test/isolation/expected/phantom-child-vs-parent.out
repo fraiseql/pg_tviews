@@ -1,0 +1,49 @@
+Parsed test spec with 2 sessions
+
+starting permutation: p_begin p_insert s_begin s_insert p_commit s_commit s_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step p_begin: BEGIN;
+step p_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 9, 'p2');
+step s_begin: BEGIN;
+step s_insert: INSERT INTO tb_user (pk_user, name) VALUES (9, 'ivy'); <waiting ...>
+step p_commit: COMMIT;
+step s_insert: <... completed>
+step s_commit: COMMIT;
+step s_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|ada   |t    
+      2|ivy   |t    
+(2 rows)
+
+
+starting permutation: s_begin s_insert p_begin p_insert s_commit p_commit s_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step s_begin: BEGIN;
+step s_insert: INSERT INTO tb_user (pk_user, name) VALUES (9, 'ivy');
+step p_begin: BEGIN;
+step p_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 9, 'p2'); <waiting ...>
+step s_commit: COMMIT;
+step p_insert: <... completed>
+step p_commit: COMMIT;
+step s_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|ada   |t    
+      2|ivy   |t    
+(2 rows)
+

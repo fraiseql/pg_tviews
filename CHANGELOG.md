@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Writes may wait for concurrent writes to related rows** (ADR 0207). A write
+  locks, exclusively, the join values of the rows it changed before it looks up the
+  TVIEW rows they feed; a refresh locks, shared, the values the rows it computes
+  read, and exclusively the keys of the rows it creates. The locks live in
+  PostgreSQL's lock manager, show in `pg_locks` as advisory locks with `objsubid`
+  21622 (a value or key) or 21623 (a relation), and are held to the end of the
+  transaction. A write refreshing a whole TVIEW (`TRUNCATE`, the `full_refresh`
+  policy, `pg_tviews_refresh()`) locks the TVIEW and the relations it reads. Not
+  under `SERIALIZABLE`. The queries that find and compute TVIEW rows run with a
+  fresh snapshot.
+  Transactions taking these locks in opposite orders can deadlock (`40P01`); under
+  `REPEATABLE READ`, contention on the same values fails transactions with `40001`, and
+  each refreshed row is computed twice (measured: about a fifth fewer transactions per
+  second than `READ COMMITTED`). Retry both errors; prefer `READ COMMITTED` for writes
+  to TVIEW base tables ([Concurrency](docs/concurrency.md)).
 - **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
   text-pattern analysis that registration still used for columns, embeds and the
   direct-patch map is gone, and with it the spelling rules it imposed:
@@ -36,6 +51,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent writes no longer leave TVIEW rows stale under READ COMMITTED**
+  (#207). A transaction creating or re-linking a TVIEW row (a new post, a post
+  pointed at another user) while another changes a row it reads (its author's
+  name) computed the row without that change, and the other's refresh couldn't see
+  the row: once both committed, the row kept the old value. Each now waits for the
+  other on the join values (ADR 0207): embedded TVIEWs, direct joins, fan-out
+  patches, joins several hops away, outer joins to a row inserted concurrently, and
+  tables under the `full_refresh` policy. Two transactions creating the same row
+  (a child carrying the key in its own row with no foreign key, the first rows of a
+  new group of an aggregate TVIEW) wait for each other on that key. Under
+  `REPEATABLE READ`, where such a row was stale in every order (a snapshot can't see
+  what committed after it), one of the transactions now fails with `40001` instead:
+  it never waits for these locks, and checks what it refreshed and what it found
+  against the latest snapshot, as foreign-key checks do.
+- **Concurrent first writes into an UNLOGGED TVIEW no longer fail on a duplicate
+  key** (#214), and a TVIEW that is merely empty is no longer refilled from its
+  view. pg_tviews told a TVIEW reset by a crash restart or a promotion from an
+  empty one only by "empty while its view has rows", so every new backend's first
+  write into an empty TVIEW refilled it, and two of them at once both inserted the
+  view's rows (`duplicate key value violates unique constraint "tv_…_pkey"`). The
+  new UNLOGGED table `tviews.pg_tview_valid` holds a row per UNLOGGED TVIEW whose
+  rows can be trusted; a reset empties it together with the TVIEWs. The first write
+  to a TVIEW missing from it claims the row and fills the TVIEW, the TVIEWs it reads
+  first; concurrent writers wait for the claim (under `REPEATABLE READ` they get a
+  retryable `40001`). `needs_rebuild`, `pg_tviews_rebuild_all()`,
+  `pg_tviews_recover_after_crash()` and the startup worker follow it. Its rows are
+  not dumped: a restored UNLOGGED TVIEW is refilled once.
 - A column copied into `data` that the definition also joins or filters on was
   patched in place, leaving the values that depend on it stale.
 - A TVIEW embedding another one twice (an author and an editor, both `tv_user`) was
@@ -184,6 +226,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
+  on one relation before it locks the relation instead, so a bulk write never
+  exhausts the shared lock table (0 always locks relations, -1 never does).
+- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
+  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
+  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
+- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
+  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
+  TVIEW's keys to the values compared with it), from the plan, which now stores it
+  (ADR 0207).
 - `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
   in the current transaction.
 
@@ -229,6 +281,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   troubleshooting guide no longer recommends `pg_tviews_convert_existing_table`
   (it always fails), and `pg_tviews_health_check()` is documented with its real
   columns `(status, component, message, severity)`.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
+  every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
+  from its view by its next write, once (nothing to do when its view is empty too).
 
 ## [0.1.0-beta.26] - 2026-10-09
 

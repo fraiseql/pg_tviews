@@ -1,8 +1,8 @@
 //! What a subtransaction rolls back, on one stack.
 //!
 //! When a subtransaction starts, [`start`] records where the session state
-//! stands: the pending refresh work, how many queries are running, and the
-//! suspension. Rolling it back ([`abort`]) restores all three; committing it
+//! stands: the pending refresh work, the value locks held, how many queries are
+//! running, and the suspension. Rolling it back ([`abort`]) restores all four; committing it
 //! ([`commit`]) keeps what it did. The subtransaction callback is the only
 //! caller, so the stack depth always equals the number of open subtransactions.
 
@@ -12,6 +12,7 @@ use std::cell::RefCell;
 /// The session state a subtransaction started from.
 struct Savepoint {
     pending: state::Mark,
+    locks: usize,
     frames: usize,
     suspension: crate::suspend::Suspension,
 }
@@ -24,6 +25,7 @@ thread_local! {
 pub fn start() {
     let savepoint = Savepoint {
         pending: state::mark(),
+        locks: crate::concurrency::mark(),
         frames: crate::executor::depth(),
         suspension: crate::suspend::snapshot(),
     };
@@ -38,12 +40,14 @@ pub fn commit() {
     }
 }
 
-/// The innermost subtransaction rolled back: the pending work, the running
-/// queries (an error may have skipped their frames) and the suspension are what
-/// they were when it started.
+/// The innermost subtransaction rolled back: the pending work, the value locks
+/// (the lock manager released those it took), the running queries (an error may
+/// have skipped their frames) and the suspension are what they were when it
+/// started.
 pub fn abort() {
     if let Some(savepoint) = SAVEPOINTS.with_borrow_mut(Vec::pop) {
         state::rollback(savepoint.pending);
+        crate::concurrency::rollback(savepoint.locks);
         crate::executor::truncate_to(savepoint.frames);
         crate::suspend::restore(savepoint.suspension);
     }

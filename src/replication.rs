@@ -19,8 +19,6 @@ pub struct TviewRelation {
     pub entity: String,
     pub schema: String,
     pub table: String,
-    /// The backing view, schema-qualified and quoted.
-    pub view: String,
     pub unlogged: bool,
     /// The `tv_*` table's OID, whose owner reads the backing view.
     pub table_oid: pg_sys::Oid,
@@ -31,15 +29,11 @@ impl TviewRelation {
     pub fn load(entity: Option<&str>) -> TViewResult<Vec<Self>> {
         let query = format!(
             "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
-                    pg_catalog.quote_ident(vn.nspname) || '.' || pg_catalog.quote_ident(v.relname) \
-                        AS view, \
                     t.relpersistence = 'u' AS unlogged, \
                     m.table_oid::oid AS table_oid \
              FROM {} m \
              JOIN pg_class t ON t.oid = m.table_oid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
-             JOIN pg_class v ON v.oid = m.view_oid \
-             JOIN pg_namespace vn ON vn.oid = v.relnamespace \
              WHERE $1::text IS NULL OR m.entity = $1 \
              ORDER BY m.entity",
             crate::utils::meta_table()
@@ -52,7 +46,6 @@ impl TviewRelation {
                     entity: row["entity"].value()?.unwrap_or_default(),
                     schema: row["schema"].value()?.unwrap_or_default(),
                     table: row["tbl"].value()?.unwrap_or_default(),
-                    view: row["view"].value()?.unwrap_or_default(),
                     unlogged: row["unlogged"].value()?.unwrap_or(false),
                     table_oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
                 });
@@ -78,47 +71,11 @@ impl TviewRelation {
         has_no_rows(&self.qualified(&self.table))
     }
 
-    /// Whether the table is an UNLOGGED TVIEW reset to empty while its backing
-    /// view still has rows: the state after promotion or a crash restart. The
-    /// view is read as the TVIEW's owner: it may call the owner's functions.
+    /// Whether the table is an UNLOGGED TVIEW that PostgreSQL reset (after
+    /// promotion or a crash restart) and nothing filled since.
     pub fn needs_rebuild(&self) -> TViewResult<bool> {
-        if !self.unlogged || !self.table_is_empty()? {
-            return Ok(false);
-        }
-        let _owner = crate::owner::AsOwner::of_table(self.table_oid)?;
-        Ok(!has_no_rows(&self.view)?)
+        crate::lifecycle::validity::needs_fill(self.table_oid)
     }
-}
-
-/// The TVIEWs reset to empty after promotion or a crash restart: UNLOGGED, empty,
-/// and their backing view has rows, or reads the table of a TVIEW that needs a
-/// rebuild (its view is empty until that one is filled). Found dependencies
-/// first.
-fn needing_rebuild(relations: &[TviewRelation]) -> TViewResult<HashSet<String>> {
-    let graph = crate::flush::EntityDepGraph::load()?;
-    let order = dependencies_first(&graph.children);
-    let mut sorted: Vec<&TviewRelation> = relations.iter().collect();
-    sorted.sort_by_key(|rel| {
-        order
-            .iter()
-            .position(|e| e == &rel.entity)
-            .unwrap_or(usize::MAX)
-    });
-    let mut needing = HashSet::new();
-    for rel in sorted {
-        // Probed as its owner, as the rebuild reads it: the caller may not read
-        // it, and its backing view's functions must not run with the caller's
-        // privileges.
-        let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
-        let reads_one = graph
-            .children
-            .get(&rel.entity)
-            .is_some_and(|deps| deps.iter().any(|d| needing.contains(d)));
-        if rel.unlogged && ((reads_one && rel.table_is_empty()?) || rel.needs_rebuild()?) {
-            needing.insert(rel.entity.clone());
-        }
-    }
-    Ok(needing)
 }
 
 /// Read-only on purpose (`select`, not `Spi::get_one`, which assigns a
@@ -178,11 +135,6 @@ fn pg_tviews_replication_status() -> Result<
 > {
     let recovering = in_recovery();
     let relations = TviewRelation::load(None)?;
-    let needing = if recovering {
-        HashSet::new()
-    } else {
-        needing_rebuild(&relations)?
-    };
     let mut rows = Vec::new();
     for rel in relations {
         let readable = !rel.unlogged;
@@ -191,7 +143,11 @@ fn pg_tviews_replication_status() -> Result<
         } else {
             Some(rel.table_is_empty()?)
         };
-        let needs_rebuild = (!recovering).then(|| needing.contains(&rel.entity));
+        let needs_rebuild = if recovering {
+            None
+        } else {
+            Some(rel.needs_rebuild()?)
+        };
         let persistence = if rel.unlogged { "unlogged" } else { "logged" };
         rows.push((
             rel.entity,
@@ -207,9 +163,9 @@ fn pg_tviews_replication_status() -> Result<
 /// Rebuild TVIEWs from their backing views, dependencies first, and return
 /// each rebuilt entity with its row count, in rebuild order.
 ///
-/// With `only_empty` (the default) only UNLOGGED TVIEWs that are empty while
-/// their backing view is not are rebuilt: run it after a promotion, a crash
-/// restart or a restore. With `only_empty => false` every TVIEW is rebuilt.
+/// With `only_empty` (the default) only the UNLOGGED TVIEWs PostgreSQL reset
+/// are filled: run it after a promotion, a crash restart or a restore. With
+/// `only_empty => false` every TVIEW is rebuilt.
 ///
 /// # Errors
 /// Returns an error during recovery, or if a catalog query or a refresh fails.
@@ -236,21 +192,8 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
         });
     }
 
-    let relations = TviewRelation::load(None)?;
-    let needing = if only_empty {
-        needing_rebuild(&relations)?
-    } else {
-        HashSet::new()
-    };
-    let mut targets: Vec<TviewRelation> = relations
-        .into_iter()
-        .filter(|rel| !only_empty || needing.contains(&rel.entity))
-        .collect();
-    if targets.is_empty() {
-        return Ok(Vec::new());
-    }
-
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
+    let mut targets = TviewRelation::load(None)?;
     let graph = crate::flush::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
@@ -260,16 +203,18 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             .unwrap_or(usize::MAX)
     });
 
-    let mut rebuilt = Vec::with_capacity(targets.len());
+    let mut rebuilt = Vec::new();
     for rel in targets {
         if only_empty {
-            // Known empty: fill without TRUNCATE, so readers are not blocked.
-            crate::admin::fill_empty_tview(&rel.entity)?;
+            // Filled without TRUNCATE, so readers are not blocked; one another
+            // transaction claimed is left to it.
+            if !crate::lifecycle::validity::fill_if_reset(&rel.entity)? {
+                continue;
+            }
         } else {
             // Every target is rebuilt, dependencies first: no cascade needed.
             crate::admin::rebuild_one(&rel.entity)?;
         }
-        crate::queue::mark_crash_recovery_checked(&rel.entity);
         // Counted as its owner, as it was rebuilt: the caller may not read it.
         let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
         let count_sql = format!("SELECT count(*) FROM {}", rel.qualified(&rel.table));
@@ -281,7 +226,10 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             .unwrap_or(0);
         rebuilt.push((rel.entity, rows));
     }
-    // A TVIEW reading one just filled, but not itself empty, is refreshed here.
+    if rebuilt.is_empty() {
+        return Ok(rebuilt);
+    }
+    // A TVIEW reading one just filled, but not itself reset, is refreshed here.
     crate::admin::flush_after_rebuilds()?;
     Ok(rebuilt)
 }
@@ -331,13 +279,26 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
             entity: entity.to_string(),
         })?;
     crate::owner::require_owner(rel.table_oid, &format!("tv_{entity}"))?;
+    if logged != rel.unlogged {
+        return Ok(());
+    }
+    // A reset TVIEW is filled before it is logged: a LOGGED one is never filled.
+    if logged {
+        crate::lifecycle::validity::fill_if_reset(entity)?;
+    }
     let persistence = if logged { "LOGGED" } else { "UNLOGGED" };
     let sql = format!(
         "ALTER TABLE {} SET {persistence}",
         rel.qualified(&rel.table)
     );
-    crate::utils::spi_run_ddl(&sql)
-        .map_err(|error| TViewError::SpiError { query: sql, error }.into())
+    crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })?;
+    // Its rows were trusted while it was LOGGED.
+    if logged {
+        crate::lifecycle::validity::forget(rel.table_oid)?;
+    } else {
+        crate::lifecycle::validity::mark(rel.table_oid)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

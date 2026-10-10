@@ -9,8 +9,9 @@
 -- Correct behaviour: clients can tell which TVIEWs a standby can serve
 -- (pg_tviews_is_replica_readable / pg_tviews_replication_status), deploy tooling
 -- can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a TVIEW
--- can be switched to LOGGED (pg_tviews_set_logged). TRUNCATE stands in for the
--- init-fork reset here; test/replication/promote_rebuild.sh runs a real standby.
+-- can be switched to LOGGED (pg_tviews_set_logged). TRUNCATE plus deleting the
+-- rows of tviews.pg_tview_valid stands in for the init-fork reset here (it
+-- empties both); test/replication/promote_rebuild.sh runs a real standby.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/operations/regress_replication_status.sql
 -- expect-output: replication_status: PASS
@@ -79,9 +80,10 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
--- Cycle 2: rebuild_all repopulates emptied TVIEWs, dependencies first
+-- Cycle 2: rebuild_all repopulates reset TVIEWs, dependencies first
 -- ========================================================================
 TRUNCATE tv_user, tv_post;
+DELETE FROM tviews.pg_tview_valid;
 
 DO $$ BEGIN
   IF (SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_replication_status()

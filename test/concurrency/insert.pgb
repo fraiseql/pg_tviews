@@ -1,0 +1,6 @@
+-- A post by a random user among the first :hot.
+\set u random(1, :hot)
+BEGIN;
+INSERT INTO tb_post (fk_user, title) VALUES (:u, 't');
+SELECT pg_sleep(0.002);
+COMMIT;

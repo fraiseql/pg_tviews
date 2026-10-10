@@ -1,0 +1,61 @@
+Parsed test spec with 2 sessions
+
+starting permutation: i_begin i_repoint r_begin r_rename i_commit r_commit r_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_note' created successfully
+(1 row)
+
+step i_begin: BEGIN;
+step i_repoint: UPDATE tb_post SET fk_user = 1 WHERE pk_post = 3;
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1; <waiting ...>
+step i_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step r_check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
+    FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'note', t.pk_note, t.data->>'author', t.data = v.data
+    FROM tv_note t JOIN tviews.public__tv_note v USING (pk_note)
+  ORDER BY 1, 2;
+
+tv  |pk|author|fresh
+----+--+------+-----
+note| 1|GRACE |t    
+note| 3|GRACE |t    
+post| 1|grace |t    
+post| 3|grace |t    
+(4 rows)
+
+
+starting permutation: r_begin r_rename i_begin i_repoint r_commit i_commit r_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_note' created successfully
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step i_begin: BEGIN;
+step i_repoint: UPDATE tb_post SET fk_user = 1 WHERE pk_post = 3; <waiting ...>
+step r_commit: COMMIT;
+step i_repoint: <... completed>
+step i_commit: COMMIT;
+step r_check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
+    FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'note', t.pk_note, t.data->>'author', t.data = v.data
+    FROM tv_note t JOIN tviews.public__tv_note v USING (pk_note)
+  ORDER BY 1, 2;
+
+tv  |pk|author|fresh
+----+--+------+-----
+note| 1|GRACE |t    
+note| 3|GRACE |t    
+post| 1|grace |t    
+post| 3|grace |t    
+(4 rows)
+

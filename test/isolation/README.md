@@ -11,8 +11,8 @@ PGHOST=localhost PGPORT=28818 PGUSER=postgres PG_CONFIG=/path/to/pg_config ./tes
 
 `isolation_schedule` lists the specs that run by default. A spec reproducing an
 open defect is kept with the output the fixed behaviour gives and left out of the
-schedule; run it by name:
+schedule, listed here, and run by name. None is open.
 
-| Spec | Defect |
-|---|---|
-| `new-parent-vs-write` | A parent row inserted while the child it embeds is renamed, both under READ COMMITTED: the new parent keeps the old name. The inserter computes its row from a snapshot without the rename, and the rename's propagation cannot see the uncommitted parent. |
+Writers wait on each other's value locks (see `docs/concurrency.md`), so a spec
+under `READ COMMITTED` runs only the orders where the session that writes first
+also commits first: the other orders would wait forever in the tester.

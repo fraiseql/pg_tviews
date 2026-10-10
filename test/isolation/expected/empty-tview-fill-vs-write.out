@@ -1,0 +1,48 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_insert b_begin b_insert a_commit b_commit b_check
+step a_begin: BEGIN;
+step a_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'p3');
+step b_begin: BEGIN;
+step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4'); <waiting ...>
+step a_commit: COMMIT;
+step b_insert: <... completed>
+step b_commit: COMMIT;
+step b_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|fresh
+-------+-----+-----
+      1|p1   |t    
+      2|p2   |t    
+      3|p3   |t    
+      4|p4   |t    
+(4 rows)
+
+
+starting permutation: a_begin a_insert b_rr b_insert a_commit b_commit b_check
+step a_begin: BEGIN;
+step a_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'p3');
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4'); <waiting ...>
+step a_commit: COMMIT;
+step b_insert: <... completed>
+ERROR:  could not serialize access due to concurrent update
+step b_commit: COMMIT;
+step b_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|fresh
+-------+-----+-----
+      1|p1   |t    
+      2|p2   |t    
+      3|p3   |t    
+(3 rows)
+

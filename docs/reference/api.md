@@ -44,6 +44,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_refresh_all_entities()`](#pg_tviews_refresh_all-and-pg_tviews_refresh_all_entities) | `void` | operator |
 | [`pg_tviews_show_cascade_path(entity text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity_name text, depends_on text)` | anyone |
 | [`pg_tviews_mapping_query(tview text, base_table oid)`](#pg_tviews_mapping_query) | `text` | anyone |
+| [`pg_tviews_read_set_queries(tview text, base_table oid)`](#pg_tviews_read_set_queries) | `TABLE(column_name text, query text)` | anyone |
 | [`pg_tviews_ensure_propagation_indexes(entity text DEFAULT NULL, dry_run boolean DEFAULT false)`](#pg_tviews_ensure_propagation_indexes) | `SETOF text` | operator, and owner of each TVIEW |
 | [`pg_tviews_suspend_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
 | [`pg_tviews_resume_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
@@ -325,6 +326,29 @@ SELECT tviews.pg_tviews_mapping_query('tv_user_summary', 'tb_post'::regclass);
 -- SELECT DISTINCT "fk_user" FROM pg_tviews_delta
 ```
 
+### pg_tviews_read_set_queries
+
+```text
+tviews.pg_tviews_read_set_queries(tview text, base_table oid)
+    RETURNS TABLE(column_name text, query text)
+```
+
+What a refresh of `tview`'s rows reads of `base_table`, from the TVIEW's stored plan:
+for each column of the table its mapping joins on, the query from the TVIEW's keys
+(`$1`, an array of its identity's type) to the values that column is compared with.
+A refresh takes a shared lock on each value before it computes the rows; a write to
+the table takes an exclusive lock on its rows' values of the column
+([Concurrency](../concurrency.md)). `column_name` and `query` are NULL when the table
+is joined by no equality: the table is locked as a whole. No rows when writes to the
+table map through no query of their own; an unknown `tview` is `42704`.
+
+```sql
+SELECT * FROM tviews.pg_tviews_read_set_queries('tv_post', 'tb_user'::regclass);
+--  column_name | query
+--  pk_user     | SELECT DISTINCT (o1.fk_user)::pg_catalog.text FROM public.tb_post o1
+--              |   WHERE o1.pk_post OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.int8[])
+```
+
 ### pg_tviews_ensure_propagation_indexes
 
 ```text
@@ -423,12 +447,15 @@ tviews.pg_tviews_recover_after_crash(entity_name text) RETURNS boolean
   one, NULL for an unknown entity. `pg_tviews_replication_status` reports every TVIEW
   and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
-  restore left empty (every TVIEW with `only_empty => false`), dependencies first,
-  each as its owner, which also finds the empty ones and counts their rows; it refuses
-  to run during recovery. Operator function: the caller needs no privilege on the
-  `tv_*` tables.
+  restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
+  dependencies first, each as its owner, and counts their rows; it refuses to run
+  during recovery. A TVIEW that is merely empty is not a reset one. Operator
+  function: the caller needs no privilege on the `tv_*` tables.
 - `pg_tviews_recover_after_crash` does the same for one entity, returning whether it
   had to. Requires owning the TVIEW.
+- `needs_rebuild` is true for an UNLOGGED TVIEW missing from `tviews.pg_tview_valid`,
+  the UNLOGGED table that a reset empties together with the TVIEWs
+  ([Replication](../operations/replication.md#rebuilding-after-promotion-a-crash-or-a-restore)).
 
 ```sql
 SELECT tviews.pg_tviews_set_logged('post', true);
@@ -483,6 +510,8 @@ it from the session doing the writes: another session sees its own, usually zero
 | `refresh_noop_skipped` | recomputed rows not rewritten because their content was unchanged |
 | `catalog_lookups` | catalog reads by the row triggers |
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
+| `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
+| `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
 
 ```sql
 BEGIN;

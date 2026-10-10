@@ -1,5 +1,9 @@
-# A parent row inserted while the child it embeds is renamed: whichever commits
-# first, the new parent's document holds the child's committed name.
+# A parent row inserted while the child it embeds is renamed, under READ
+# COMMITTED: once both have committed, the new parent's document holds the
+# child's committed name.
+#
+# The session that writes first holds value locks the other one waits for, so
+# only the orders where the first one also commits first can run.
 
 setup
 {
@@ -40,7 +44,5 @@ step r_check
   FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
 }
 
-permutation i_begin i_insert r_begin r_rename r_commit i_commit r_check
 permutation i_begin i_insert r_begin r_rename i_commit r_commit r_check
 permutation r_begin r_rename i_begin i_insert r_commit i_commit r_check
-permutation r_begin r_rename i_begin i_insert i_commit r_commit r_check

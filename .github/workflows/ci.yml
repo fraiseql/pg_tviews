@@ -146,7 +146,7 @@ jobs:
       - name: Documentation SQL (test/docs/run_doc_sql.sh)
         if: ${{ !cancelled() }}
         run: |
-          ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md \
+          ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md docs/concurrency.md \
             docs/reference/api.md docs/user-guides/*.md
 
       # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,

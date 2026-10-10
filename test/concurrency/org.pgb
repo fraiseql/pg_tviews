@@ -1,0 +1,6 @@
+-- A rename of a random org.
+\set o random(1, 50)
+BEGIN;
+UPDATE tb_org SET name = md5(random()::text) WHERE pk_org = :o;
+SELECT pg_sleep(0.002);
+COMMIT;

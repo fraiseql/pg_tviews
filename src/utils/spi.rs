@@ -178,3 +178,182 @@ pub fn rows<T>(
 pub fn run_ddl(sql: &str) -> TViewResult<()> {
     super::spi_run_ddl(sql).map_err(|e| error(sql, &e))
 }
+
+/// A row of a query, its columns as text (`None` for NULL).
+pub type TextRow = Vec<Option<String>>;
+
+/// The rows of the read-only query `sql` as text, under the latest snapshot
+/// instead of the transaction's: what a REPEATABLE READ transaction can't see
+/// yet, as PostgreSQL's foreign-key checks read it. From its kept plan when
+/// `keep` (never for a query over a trigger's transition tables, which are the
+/// statement's own). The caller is inside an SPI connection (one that sees the
+/// transition tables, if the query reads them).
+///
+/// # Errors
+/// Returns an error if the query can't be prepared or doesn't return rows.
+pub fn latest_rows_connected(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    keep: bool,
+) -> TViewResult<Vec<TextRow>> {
+    let (mut types, mut values, nulls) = bind(args);
+    let kept = if keep {
+        Some(kept_plan(sql, &mut types)?)
+    } else {
+        None
+    };
+    // SAFETY: inside an SPI connection; the plan (kept, or prepared here and
+    // freed below) and the arguments, of the types it was prepared for, live
+    // until the call returns.
+    unsafe {
+        let plan = if let Some(plan) = &kept {
+            plan.0.as_ptr()
+        } else {
+            let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
+            let nargs = i32::try_from(types.len()).map_err(|e| error(sql, &e))?;
+            let plan = pg_sys::SPI_prepare(src.as_ptr(), nargs, types.as_mut_ptr());
+            if plan.is_null() {
+                return Err(error(
+                    sql,
+                    &format!("SPI_prepare failed ({})", { pg_sys::SPI_result }),
+                ));
+            }
+            plan
+        };
+        let rc = pg_sys::SPI_execute_snapshot(
+            plan,
+            values.as_mut_ptr(),
+            nulls.as_ptr(),
+            pg_sys::GetLatestSnapshot(),
+            std::ptr::null_mut(),
+            true,
+            false,
+            0,
+        );
+        let rows = tuptable_rows(sql, rc);
+        if kept.is_none() {
+            pg_sys::SPI_freeplan(plan);
+        }
+        rows
+    }
+}
+
+/// A plan prepared once per backend and kept across transactions, always run
+/// as a generic plan: no planning per execution. PostgreSQL revalidates it when
+/// what it reads changes.
+pub struct KeptPlan(std::ptr::NonNull<pg_sys::_SPI_plan>);
+
+impl Drop for KeptPlan {
+    fn drop(&mut self) {
+        // SAFETY: the plan was kept by SPI_keepplan and is freed once, here.
+        unsafe {
+            pg_sys::SPI_freeplan(self.0.as_ptr());
+        }
+    }
+}
+
+/// The rows of `sql` as text, run read-write (a fresh snapshot under READ
+/// COMMITTED) from its kept plan, prepared on first use.
+///
+/// # Errors
+/// Returns an error if the query can't be prepared or doesn't return rows.
+pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<TextRow>> {
+    let (mut types, mut values, nulls) = bind(args);
+    Spi::connect(|_| {
+        let plan = kept_plan(sql, &mut types)?;
+        // SAFETY: inside an SPI connection, with a valid kept plan and arguments
+        // of the types it was prepared for, living until the call returns.
+        unsafe {
+            let rc = pg_sys::SPI_execute_plan(
+                plan.0.as_ptr(),
+                values.as_mut_ptr(),
+                nulls.as_ptr(),
+                false,
+                0,
+            );
+            tuptable_rows(sql, rc)
+        }
+    })
+}
+
+/// The kept generic plan of `sql` for arguments of `types`, prepared on first
+/// use. Inside an SPI connection.
+fn kept_plan(sql: &str, types: &mut [Oid]) -> TViewResult<std::rc::Rc<KeptPlan>> {
+    if let Some(plan) = crate::cache::PLANS.with(|m| m.get(&sql.to_string())) {
+        return Ok(plan);
+    }
+    let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
+    let nargs = i32::try_from(types.len()).map_err(|e| error(sql, &e))?;
+    // SAFETY: inside an SPI connection; the plan is kept before the connection
+    // ends, and owned by the cache from then on.
+    let plan = unsafe {
+        let plan = pg_sys::SPI_prepare_cursor(
+            src.as_ptr(),
+            nargs,
+            types.as_mut_ptr(),
+            pg_sys::CURSOR_OPT_GENERIC_PLAN.cast_signed(),
+        );
+        let plan = std::ptr::NonNull::new(plan).ok_or_else(|| {
+            error(
+                sql,
+                &format!("SPI_prepare failed ({})", { pg_sys::SPI_result }),
+            )
+        })?;
+        pg_sys::SPI_keepplan(plan.as_ptr());
+        std::rc::Rc::new(KeptPlan(plan))
+    };
+    crate::cache::PLANS.with(|m| m.insert(sql.to_string(), plan.clone()));
+    Ok(plan)
+}
+
+/// The types, values and null flags of `args`, as SPI takes them.
+fn bind(args: &[DatumWithOid<'_>]) -> (Vec<Oid>, Vec<pg_sys::Datum>, Vec<std::ffi::c_char>) {
+    let types = args.iter().map(DatumWithOid::oid).collect();
+    let values = args
+        .iter()
+        .map(|a| {
+            a.datum()
+                .map_or_else(|| pg_sys::Datum::from(0), pgrx::datum::Datum::sans_lifetime)
+        })
+        .collect();
+    let nulls = args
+        .iter()
+        .map(|a| if a.datum().is_some() { b' ' } else { b'n' }.cast_signed())
+        .collect();
+    (types, values, nulls)
+}
+
+/// The rows of the result an SPI call returned with `rc`, as text.
+///
+/// # Safety
+/// The SPI call that returned `rc` was the last one, in the current connection.
+unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
+    if rc != pg_sys::SPI_OK_SELECT.cast_signed() {
+        return Err(error(sql, &format!("SPI returned {rc}")));
+    }
+    // SAFETY: per the contract, SPI_tuptable holds the last result.
+    unsafe {
+        let table = pg_sys::SPI_tuptable;
+        let tupdesc = (*table).tupdesc;
+        let mut rows = Vec::new();
+        for i in 0..usize::try_from(pg_sys::SPI_processed).unwrap_or(0) {
+            let tuple = *(*table).vals.add(i);
+            let mut row = Vec::new();
+            for column in 1..=(*tupdesc).natts {
+                let value = pg_sys::SPI_getvalue(tuple, tupdesc, column);
+                row.push(if value.is_null() {
+                    None
+                } else {
+                    let text = std::ffi::CStr::from_ptr(value)
+                        .to_string_lossy()
+                        .into_owned();
+                    pg_sys::pfree(value.cast());
+                    Some(text)
+                });
+            }
+            rows.push(row);
+        }
+        pg_sys::SPI_freetuptable(table);
+        Ok(rows)
+    }
+}
