@@ -1,0 +1,8 @@
+-- A random user among the first :hot moved to another org: every post of the
+-- user is re-linked, two hops from the org.
+\set u random(1, :hot)
+\set o random(1, 50)
+BEGIN;
+UPDATE tb_user SET fk_org = :o WHERE pk_user = :u;
+SELECT pg_sleep(0.002);
+COMMIT;

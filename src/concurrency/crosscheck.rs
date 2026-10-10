@@ -62,9 +62,12 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     let tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let args = [crate::refresh::key_array(&key_type, keys)?];
-    let written = sorted(rows(&select(&tv, "t", false), &args)?);
+    let written = sorted(crate::utils::spi::kept_rows(
+        &select(&tv, "t", false),
+        &args,
+    )?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(&select(&view, "v", true), &args)
+        crate::utils::spi::latest_rows_connected(&select(&view, "v", true), &args, true)
     })?);
     if written != latest {
         super::serialization_failure(
@@ -74,8 +77,7 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     Ok(())
 }
 
-/// A row of a query, its columns as text (`None` for NULL).
-pub type TextRow = Vec<Option<String>>;
+pub use crate::utils::spi::TextRow;
 
 /// Writer side: `found`, the rows a discovery query returned under the
 /// transaction's snapshot, hold every row `latest` returned under the latest
@@ -95,7 +97,7 @@ pub fn discovered_by(sql: &str, args: &[DatumWithOid<'_>], found: &[TextRow]) ->
     if !enabled() {
         return Ok(());
     }
-    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args))?;
+    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args, true))?;
     discovered(found, &latest);
     Ok(())
 }
@@ -107,17 +109,6 @@ fn missed(found: &[TextRow], latest: &[TextRow]) -> bool {
         .iter()
         .filter(|row| row.first().is_some_and(Option::is_some))
         .any(|row| !found.contains(row))
-}
-
-fn rows(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<Vec<Option<String>>>> {
-    Spi::connect(|client| {
-        let mut out = Vec::new();
-        for row in client.select(sql, None, args)? {
-            out.push(vec![row.get::<String>(1)?, row.get::<String>(2)?]);
-        }
-        Ok::<_, pgrx::spi::Error>(out)
-    })
-    .map_err(|e| crate::utils::spi::error(sql, &e))
 }
 
 fn sorted(mut rows: Vec<Vec<Option<String>>>) -> Vec<Vec<Option<String>>> {

@@ -9,7 +9,7 @@
 | Integration | `test/sql/[0-9]*.sql` | Longer scenarios, each TVIEW checked against its backing view (`test/sql/lib/assert_fresh.sql`). |
 | Differential | `test/sql/differential/` | Seeded random writes (MERGE, `ON CONFLICT`, COPY, transactions with savepoints) over every TVIEW shape; each TVIEW equals its view after every statement. |
 | Isolation | `test/isolation/` | Concurrent writers, DDL and snapshot isolation levels, run by `pg_isolation_regress`. |
-| Concurrency | `test/concurrency/run.sh` | pgbench workloads (uniform, hot keys, a bulk transaction, a single client): throughput, failed transactions, and rows that differ from the backing view afterwards. Run by hand, not in CI. |
+| Concurrency | `test/concurrency/run.sh` | pgbench workloads (uniform, hot keys, a bulk transaction, a single client, a mixed stress run with orgs two hops away): throughput, failed and retried transactions, and rows that differ from the backing view afterwards. Run by hand, not in CI. |
 | Upgrade | `test/upgrade/` | An older release upgraded to this tree: the catalog equals a fresh install's. |
 | Documentation | `test/docs/run_doc_sql.sh` | The SQL of the user docs, run as written. |
 | Benchmark | `test/sql/real_benchmark/` | Write latency and fan-out throughput against the real extension (not run in CI: see its README). |

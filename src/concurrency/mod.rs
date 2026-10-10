@@ -302,11 +302,16 @@ pub fn lock_changed_rows(
 /// table: a writer before it looks up the parents holding them, a refresh before
 /// it computes parents from them.
 pub fn lock_embedded_keys(child_table: pg_sys::Oid, side: Side, keys: &[String]) {
-    let target = LockTarget {
+    lock_values(&embedded_keys_target(child_table), side, keys);
+}
+
+/// Where the keys of an embedded TVIEW's rows are locked: its table, no column.
+#[must_use]
+pub const fn embedded_keys_target(child_table: pg_sys::Oid) -> LockTarget {
+    LockTarget {
         relid: child_table.to_u32(),
         attnums: Vec::new(),
-    };
-    lock_values(&target, side, keys);
+    }
 }
 
 /// The quoted name of column `attnum` of `relid` (cached); `None` when it is gone.

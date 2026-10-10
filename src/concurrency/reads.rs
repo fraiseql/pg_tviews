@@ -60,6 +60,8 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
     let key_type = meta.key_type()?;
     let entity = meta.entity_name.as_str();
+    // Each read set's query, run as one statement: (target, query).
+    let mut sets: Vec<(LockTarget, String)> = Vec::new();
     for mapping in &meta.plan.tables {
         for set in &mapping.reads {
             let Some(sql) = rendered(entity, mapping, set, &key_type)? else {
@@ -71,21 +73,38 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
                 relid: mapping.relid,
                 attnums: vec![set.attnum],
             };
-            super::lock_values(&target, Side::Refresh, &values(&sql, &key_type, keys)?);
+            sets.push((target, sql));
         }
     }
     for embed in &meta.plan.embeds {
         let Some(child) = crate::catalog::TviewMeta::load_by_entity(&embed.entity)? else {
             continue;
         };
-        let Some(sql) = embed_keys_sql(meta, &embed.lookups)? else {
-            continue;
-        };
-        super::lock_embedded_keys(
-            child.tview_oid,
-            Side::Refresh,
-            &values(&sql, &key_type, keys)?,
-        );
+        if let Some(sql) = embed_keys_sql(meta, &embed.lookups)? {
+            sets.push((super::embedded_keys_target(child.tview_oid), sql));
+        }
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    let sql = sets
+        .iter()
+        .enumerate()
+        .map(|(i, (_, query))| format!("SELECT {i}, v FROM ({query}) s{i}(v)"))
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let args = [crate::refresh::key_array(&key_type, keys)?];
+    let mut values: Vec<Vec<String>> = vec![Vec::new(); sets.len()];
+    for row in crate::utils::spi::kept_rows(&sql, &args)? {
+        if let [Some(i), Some(value)] = row.as_slice()
+            && let Ok(i) = i.parse::<usize>()
+            && let Some(set) = values.get_mut(i)
+        {
+            set.push(value.clone());
+        }
+    }
+    for ((target, _), values) in sets.iter().zip(values) {
+        super::lock_values(target, Side::Refresh, &values);
     }
     Ok(())
 }
@@ -138,18 +157,4 @@ fn embed_keys_sql(
             .collect::<Vec<_>>()
             .join(" UNION "),
     ))
-}
-
-/// The text values `sql` returns for `keys` bound as `$1`. Read-write: a fresh
-/// snapshot, so the links read are the latest committed ones.
-fn values(sql: &str, key_type: &KeyType, keys: &[KeyValue]) -> TViewResult<Vec<String>> {
-    let args = [crate::refresh::key_array(key_type, keys)?];
-    pgrx::prelude::Spi::connect_mut(|client| {
-        let mut out = Vec::new();
-        for row in client.update(sql, None, &args)? {
-            out.extend(row.get::<String>(1)?);
-        }
-        Ok::<_, pgrx::spi::Error>(out)
-    })
-    .map_err(|e| crate::utils::spi::error(sql, &e))
 }
