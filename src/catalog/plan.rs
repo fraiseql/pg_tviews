@@ -206,6 +206,39 @@ mod tests {
     }
 
     #[test]
+    fn read_sets_decode_and_default_to_none() {
+        let plan = TviewPlan::decode(
+            "post",
+            with_table(&serde_json::json!({
+                "relid": 1, "table": "public.tb_user", "kind": "mapped", "sql": "",
+                "reads": [{"attnum": 1, "sql": "SELECT 1"}, {"attnum": 0}]
+            })),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.tables[0].reads,
+            [
+                crate::lineage::ReadSet {
+                    attnum: 1,
+                    sql: Some("SELECT 1".into())
+                },
+                crate::lineage::ReadSet {
+                    attnum: 0,
+                    sql: None
+                }
+            ]
+        );
+        let older = TviewPlan::decode(
+            "post",
+            with_table(&serde_json::json!({
+                "relid": 1, "table": "public.tb_user", "kind": "mapped", "sql": ""
+            })),
+        )
+        .unwrap();
+        assert!(older.tables[0].reads.is_empty());
+    }
+
+    #[test]
     fn an_unknown_mapping_kind_is_refused() {
         let err = TviewPlan::decode(
             "post",

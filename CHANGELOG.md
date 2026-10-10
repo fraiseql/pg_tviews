@@ -226,6 +226,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
+  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
+  TVIEW's keys to the values compared with it), from the plan, which now stores it
+  (ADR 0207).
 - `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
   in the current transaction.
 

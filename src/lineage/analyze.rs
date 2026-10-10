@@ -172,6 +172,9 @@ impl Lineage {
                         (TableKind::Mapped, sql) => (reason, sql),
                         (TableKind::Propagated(_), _) => (reason, None),
                     };
+                    if !matches!(table.kind, TableKind::Mapped | TableKind::AllKeys(_)) {
+                        table.reads.clear();
+                    }
                     table.kind = TableKind::AllKeys(kind);
                     table.sql = sql;
                     table.hop = None;
@@ -184,6 +187,7 @@ impl Lineage {
                     kind: TableKind::AllKeys(reason),
                     paths: Vec::new(),
                     sql: None,
+                    reads: Vec::new(),
                     columns: Vec::new(),
                     lookups: Vec::new(),
                     index_hints: Vec::new(),
@@ -249,6 +253,9 @@ impl Lineage {
                     }
                     if let Some(inner) = &t.tview {
                         entry["tview"] = inner.clone().into();
+                    }
+                    if !t.reads.is_empty() {
+                        entry["reads"] = serde_json::to_value(&t.reads).unwrap_or_default();
                     }
                     entry["columns"] = t
                         .columns
@@ -505,6 +512,9 @@ pub struct KeyMapping {
     /// The table of another TVIEW, of that entity: refreshed first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tview: Option<String>,
+    /// What a refresh reads of the table, for value locks (ADR 0207).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<super::ReadSet>,
 }
 
 /// Rows above which a sequential scan in a mapping query is worth an index.

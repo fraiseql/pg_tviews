@@ -267,6 +267,8 @@ pub struct TableLineage {
     /// `mapped`, and `all_keys` when some reads can be traced: the query over
     /// [`DELTA`] returning the keys its rows can affect.
     pub sql: Option<String>,
+    /// With `sql`: what a refresh reads of the table, for value locks.
+    pub reads: Vec<ReadSet>,
     /// Columns of the table the TVIEW reads (name, attnum); empty when unknown.
     pub columns: Vec<(String, i16)>,
     /// Tables the mapping query joins, with the columns it looks up in each.
@@ -312,6 +314,20 @@ impl TableKind {
             Self::AllKeys(_) => "all_keys",
         }
     }
+}
+
+/// What a refresh of a TVIEW's rows reads of a mapped table, for value locks
+/// (ADR 0207): the column of the table the mapping joins on, and the query from
+/// the TVIEW's keys (`$1`) to the values that column is compared with. A writer
+/// of the table locks its rows' values of `attnum`; a refresh locks the values
+/// this query returns, which exist even when no row of the table matches them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReadSet {
+    /// 0 when the table is joined by no equality: the table itself is locked.
+    pub attnum: i16,
+    /// A template (see [`render_template`]); `None` with `attnum` 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
 }
 
 impl QueryGraph {
@@ -589,6 +605,87 @@ impl QueryGraph {
             .collect();
         queries.dedup();
         queries.join(" UNION ")
+    }
+
+    /// The read sets of a table mapped by `paths`: one per column of the table
+    /// its first step joins on, the queries of its paths combined with `UNION`.
+    #[must_use]
+    pub fn read_sets(&self, paths: &[(usize, Vec<usize>)]) -> Vec<ReadSet> {
+        let mut sets: Vec<(i16, Vec<String>)> = Vec::new();
+        for (occ, path) in paths {
+            let Some((attnum, sql)) = self.read_set_sql(*occ, path) else {
+                continue;
+            };
+            match sets.iter_mut().find(|(a, _)| *a == attnum) {
+                Some((_, queries)) => queries.extend(sql.filter(|q| !queries.contains(q))),
+                None => sets.push((attnum, sql.into_iter().collect())),
+            }
+        }
+        sets.into_iter()
+            .map(|(attnum, queries)| ReadSet {
+                attnum,
+                sql: (!queries.is_empty()).then(|| queries.join(" UNION ")),
+            })
+            .collect()
+    }
+
+    /// The read set of one path from `occ` to its root: the column of `occ` its
+    /// first step compares by equality, and
+    /// `SELECT DISTINCT (<other side>)::text FROM <root> … <step's other occurrence>
+    /// WHERE <root key> = ANY ($1) AND <the other steps>`; `(0, None)` when the
+    /// first step is no equality; `None` for the root occurrence itself.
+    fn read_set_sql(&self, occ: usize, path: &[usize]) -> Option<(i16, Option<String>)> {
+        let root = self.root_at(occ, path)?;
+        let (&first, rest) = path.split_first()?;
+        // The occurrences in path order, starting at the changed table.
+        let mut chain = vec![occ];
+        for &i in path {
+            let c = &self.conjuncts[i];
+            let at = *chain.last()?;
+            chain.push(if c.a == at { c.b } else { c.a });
+        }
+        let next = chain[1];
+        let value = match &self.conjuncts[first].equality {
+            Some((x, y)) if x.occ == occ && y.occ == next => Some((x.attnum, y)),
+            Some((x, y)) if y.occ == occ && x.occ == next => Some((y.attnum, x)),
+            _ => None,
+        };
+        let Some((attnum, value)) = value.filter(|_| chain.last() == Some(&root.key.occ)) else {
+            return Some((0, None));
+        };
+        let alias = |o: usize| format!("o{}", chain.iter().position(|c| *c == o).unwrap_or(o));
+        let render = |sql: &Sql| {
+            sql.0
+                .iter()
+                .map(|p| match p {
+                    Piece::Text(t) => escape_template(t),
+                    Piece::Column { occ, attnum } => format!(
+                        "{}.{{c:{}:{attnum}}}",
+                        alias(*occ),
+                        self.occurrences[*occ].relid
+                    ),
+                })
+                .collect::<String>()
+        };
+        let from = chain[1..]
+            .iter()
+            .rev()
+            .map(|&o| format!("{{r:{}}} {}", self.occurrences[o].relid, alias(o)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut conditions = vec![format!(
+            "{} OPERATOR(pg_catalog.=) ANY ($1)",
+            render(&root.sql())
+        )];
+        conditions.extend(rest.iter().map(|&i| render(&self.conjuncts[i].sql)));
+        Some((
+            attnum,
+            Some(format!(
+                "SELECT DISTINCT ({})::pg_catalog.text FROM {from} WHERE {}",
+                render(&value.sql()),
+                conditions.join(" AND ")
+            )),
+        ))
     }
 
     /// `(column of occ, column of the root)` when `path` is one equality from `occ`
@@ -872,6 +969,11 @@ impl QueryGraph {
                     TableKind::AllKeys(_) if !paths.is_empty() => Some(self.mapping_sql(&paths)),
                     _ => None,
                 };
+                let reads = if sql.is_some() {
+                    self.read_sets(&paths)
+                } else {
+                    Vec::new()
+                };
                 let lookups = self.lookups(&paths);
                 let index_hints = self.index_hints(&paths);
                 let hop = match paths.as_slice() {
@@ -889,6 +991,7 @@ impl QueryGraph {
                     kind,
                     paths,
                     sql,
+                    reads,
                     columns: Vec::new(),
                     lookups,
                     index_hints,

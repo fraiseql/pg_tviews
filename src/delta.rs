@@ -198,6 +198,63 @@ fn pg_tviews_mapping_query(
     }
 }
 
+/// What a refresh of `tview`'s rows reads of `base_table`, for value locks (ADR
+/// 0207): for each column of the table its mapping joins on (NULL when the table
+/// is locked as a whole), the query from the TVIEW's keys (`$1`) to the values a
+/// refresh locks. No rows when writes to the table map through no query of their
+/// own; an error when no such TVIEW is registered.
+#[pg_extern]
+#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
+fn pg_tviews_read_set_queries(
+    tview: &str,
+    base_table: pg_sys::Oid,
+) -> Result<
+    TableIterator<
+        'static,
+        (
+            name!(column_name, Option<String>),
+            name!(query, Option<String>),
+        ),
+    >,
+    pgrx::pg_sys::panic::ErrorReport,
+> {
+    crate::revision::check();
+    let entity = tview.strip_prefix("tv_").unwrap_or(tview);
+    let report = |e: TViewError| e.report_in(&format!("pg_tviews: the read sets of {tview}"));
+    let Some(meta) = TviewMeta::load_by_entity(entity).map_err(report)? else {
+        return Err(report(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }));
+    };
+    let Some(mapping) = meta.key_mapping(base_table, None) else {
+        return Ok(TableIterator::new(Vec::new()));
+    };
+    let key_type = meta
+        .key_type()
+        .map_err(|e| report(crate::utils::spi::error("the identity's type", &e)))?;
+    let mut rows = Vec::new();
+    for set in &mapping.reads {
+        let column = (set.attnum != 0)
+            .then(|| {
+                Spi::get_one_with_args::<String>(
+                    "SELECT attname::pg_catalog.text FROM pg_catalog.pg_attribute \
+                     WHERE attrelid = $1 AND attnum = $2",
+                    &[
+                        crate::utils::spi::oid(base_table),
+                        crate::utils::spi::int2(set.attnum),
+                    ],
+                )
+            })
+            .transpose()
+            .map_err(|e| report(crate::utils::spi::error("the column's name", &e)))?
+            .flatten();
+        let query =
+            crate::concurrency::reads::rendered(entity, mapping, set, &key_type).map_err(report)?;
+        rows.push((column, query));
+    }
+    Ok(TableIterator::new(rows))
+}
+
 /// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
 /// them.
 fn map_statement(

@@ -527,3 +527,16 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
+
+-- What a refresh of a TVIEW's rows reads of a mapped table, for value locks
+-- (ADR 0207): the plans re-derived above carry it.
+CREATE  FUNCTION @extschema@."pg_tviews_read_set_queries"(
+	"tview" TEXT, /* &str */
+	"base_table" oid /* pgrx_pg_sys::submodules::oids::Oid */
+) RETURNS TABLE (
+	"column_name" TEXT,  /* core::option::Option<alloc::string::String> */
+	"query" TEXT  /* core::option::Option<alloc::string::String> */
+)
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_read_set_queries_wrapper';
