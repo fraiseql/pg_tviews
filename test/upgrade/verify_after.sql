@@ -141,3 +141,30 @@ DO $$ BEGIN
                 OR pg_catalog.jsonb_array_length(plan->'tables') = 0);
     END IF;
 END $$;
+
+-- Every index pg_tviews created is recorded; a user's index is not, even under a
+-- managed name, unless it is exactly the index pg_tviews creates there (#219).
+DO $$
+DECLARE
+    unmanaged TEXT;
+BEGIN
+    SELECT pg_catalog.string_agg(i.indexrelid::pg_catalog.regclass::pg_catalog.text, ', '
+                                 ORDER BY 1)
+      INTO unmanaged
+      FROM tviews.registry r
+      JOIN pg_catalog.pg_index i
+        ON i.indrelid = pg_catalog.to_regclass(pg_catalog.quote_ident(r.schema) OPERATOR(pg_catalog.||) '.'
+                                               OPERATOR(pg_catalog.||) pg_catalog.quote_ident(r.name))
+     WHERE i.indexrelid OPERATOR(pg_catalog.<>) ALL (r.managed_indexes::pg_catalog.oid[])
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                       WHERE k.conindid OPERATOR(pg_catalog.=) i.indexrelid);
+    IF unmanaged IS DISTINCT FROM 'idx_tv_user_data_gin, user_by_id' THEN
+        RAISE EXCEPTION 'upgrade check: unmanaged indexes are %', unmanaged;
+    END IF;
+    IF NOT (SELECT (options OPERATOR(pg_catalog.->>) 'data_gin_index')::boolean
+            FROM tviews.registry WHERE entity OPERATOR(pg_catalog.=) 'note')
+       OR (SELECT (options OPERATOR(pg_catalog.->>) 'data_gin_index')::boolean
+           FROM tviews.registry WHERE entity OPERATOR(pg_catalog.=) 'user') THEN
+        RAISE EXCEPTION 'upgrade check: data_gin_index does not follow the managed GIN';
+    END IF;
+END $$;
