@@ -65,18 +65,26 @@ store a document computed from that snapshot.
 ### Known defects
 
 A row that does not exist yet has nothing to lock, so a TVIEW row being **created**
-while a row it reads is changed can be written stale, under `READ COMMITTED`:
+or **re-linked** while a row it reads is changed can be written stale, under
+`READ COMMITTED` and `REPEATABLE READ` (#207):
 
 - **A new parent while its embedded child changes.** One transaction inserts a parent
   row (a post) while another renames the child it embeds (its author), and both
   commit: the new `tv_post` row keeps the author's old name. The inserter computes the
   row from a snapshot without the rename, and the rename's propagation cannot see the
-  parent row that is not committed yet. This is an open defect, reproduced by
-  `test/isolation/specs/new-parent-vs-write.spec` (not in the default schedule; see
-  `test/isolation/README.md`).
+  parent row that is not committed yet.
+- The same happens with a direct join of the child's base table, a fan-out patch, a
+  parent re-pointed to the child (`UPDATE tb_post SET fk_user`), a child two hops away,
+  an outer join to a child inserted concurrently, and a table under the `full_refresh`
+  policy.
 - **Two transactions creating the same TVIEW row.** Both insert rows that feed one key
   no transaction has materialized yet; the second waits on the unique index, then
   writes the row it computed.
+
+Each case is reproduced by a spec in `test/isolation/specs/`, out of the default
+schedule (see `test/isolation/README.md`). The fix is designed in
+[ADR 0207](adr/0207-concurrent-maintenance.md). `SERIALIZABLE` is not affected: one of
+the two transactions fails with `40001`.
 
 In both cases the next write to that row, or `SELECT tviews.pg_tviews_refresh('…')`,
 repairs it.

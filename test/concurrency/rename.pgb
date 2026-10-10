@@ -1,0 +1,6 @@
+-- A rename of a random user among the first :hot.
+\set u random(1, :hot)
+BEGIN;
+UPDATE tb_user SET name = md5(random()::text) WHERE pk_user = :u;
+SELECT pg_sleep(0.002);
+COMMIT;
