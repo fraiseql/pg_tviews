@@ -428,7 +428,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for each TVIEW, the indexes that are exactly those pg_tviews creates, under their
   names, as pg_tviews' (`tviews.registry.managed_indexes`). Any other index on a
   TVIEW's table is the user's, including one under such a name with another
-  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say).
+  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say). The update
+  warns about each of those: rename it, since its name is now reserved and a dump of
+  the database would not restore it.
 - `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
   every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
   from its view by its next write, once (nothing to do when its view is empty too).

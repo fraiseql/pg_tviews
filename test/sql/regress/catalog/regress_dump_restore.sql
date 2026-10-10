@@ -80,6 +80,11 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- A user's index, and the indexes pg_tviews created (#219), as names.
+CREATE INDEX post_title ON app.tv_post ((data->>'title'));
+SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname) AS managed_before
+FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i \gset
+
 -- ========================================================================
 -- Round trip: pg_dump -Fc | pg_restore --exit-on-error into a fresh database
 -- ========================================================================
@@ -93,6 +98,19 @@ END $$;
 \set restored :DBNAME '_restored'
 \c :restored
 SET client_min_messages TO WARNING;
+
+-- pg_tviews' indexes come back as its own, the user's index as the user's (#219).
+SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname)
+       IS NOT DISTINCT FROM :'managed_before'
+   AND :'managed_before' LIKE '%post:idx_tv_post_id%'
+   AND to_regclass('app.post_title') IS NOT NULL
+   AND 'app.post_title'::regclass <> ALL ((SELECT managed_indexes FROM tviews.registry
+                                          WHERE entity = 'post')::regclass[]) AS indexes_ok
+FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i \gset
+\if :indexes_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION '#219 FAIL: managed or user indexes differ after restore'; END $$;
+\endif
 
 -- ========================================================================
 -- Cycle 1: the catalog comes back and names the restored relations

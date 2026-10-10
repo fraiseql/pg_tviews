@@ -187,7 +187,9 @@ fn embed_lookups(plan: &TviewPlan) -> Vec<String> {
 
 /// The indexes on `table` that are exactly those `pg_tviews` creates for the
 /// TVIEW under their names: what a TVIEW registered before its indexes were
-/// recorded takes as `pg_tviews`' when the upgrade re-registers it.
+/// recorded takes as `pg_tviews`' when the upgrade re-registers it. Another index
+/// under one of these names stays the user's, with a warning: the name is
+/// reserved, so a dump of the database would not restore it.
 fn adopted_indexes(
     table: pg_sys::Oid,
     tview_name: &str,
@@ -198,6 +200,22 @@ fn adopted_indexes(
     for index in super::managed_indexes(tview_name, schema, lookups) {
         if index.exists_on(table)? {
             adopted.push(index.name);
+        } else if crate::utils::spi::one::<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+             WHERE i.indrelid = $1 AND c.relname = $2)",
+            &[
+                crate::utils::spi::oid(table),
+                crate::utils::spi::text(index.name.as_str()),
+            ],
+        )? == Some(true)
+        {
+            pgrx::warning!(
+                "index {} on {tview_name} is not the index pg_tviews creates under that name, \
+                 which is reserved: rename it (ALTER INDEX … RENAME TO), or a dump of this \
+                 database will not restore it",
+                index.name
+            );
         }
     }
     Ok(adopted)

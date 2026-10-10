@@ -111,7 +111,8 @@ with `42939`. The statements `pg_tviews_ensure_propagation_indexes(dry_run => tr
 reports are the exception: run by hand (`CONCURRENTLY` too), they create pg_tviews'
 index and it is recorded. A TVIEW registered by an earlier release gets its record
 when the upgrade re-registers it: the indexes that are exactly those pg_tviews
-creates, under their names.
+creates, under their names. The upgrade warns about any other index under such a
+name, which stays the user's: rename it, or a dump will not restore it.
 
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
 registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
