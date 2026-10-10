@@ -90,6 +90,11 @@ impl Flush {
     /// of the entity, and queue the parents of the rows that changed.
     fn refresh_all(&mut self, entity: &str) -> TViewResult<()> {
         let meta = self.meta(entity)?;
+        // Every row may change: refreshes of any of them wait, and are waited for.
+        crate::concurrency::lock_relation(
+            meta.tview_oid.to_u32(),
+            crate::concurrency::Side::Writer,
+        );
         // Parents are found by integer keys: a text key has none to find.
         let changed: Vec<i64> = crate::ddl::replace::reconcile(entity, &meta)?
             .into_iter()

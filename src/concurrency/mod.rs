@@ -226,6 +226,63 @@ pub fn lock_intent(relid: u32, side: Side) {
     REGISTRY.with_borrow_mut(|r| r.record(Held::Intent { relid, side }));
 }
 
+/// Writer side: before a query finds TVIEW rows by the values a statement wrote
+/// to `mapping`'s table, lock those values in each read-set column. `values`
+/// returns the distinct text values of a column (its quoted name) among the
+/// changed rows, both images of an update. A read set with no column (the
+/// table is locked as a whole by refreshes) takes the intent lock alone.
+///
+/// # Errors
+/// What `values` returns.
+pub fn lock_changed_rows(
+    mapping: &crate::lineage::KeyMapping,
+    mut values: impl FnMut(&str) -> crate::TViewResult<Vec<String>>,
+) -> crate::TViewResult<()> {
+    if Policy::current() == Policy::Skip {
+        return Ok(());
+    }
+    for set in &mapping.reads {
+        if set.attnum == 0 {
+            lock_intent(mapping.relid, Side::Writer);
+            continue;
+        }
+        let Some(column) = column_name(mapping.relid, set.attnum)? else {
+            continue;
+        };
+        let target = LockTarget {
+            relid: mapping.relid,
+            attnums: vec![set.attnum],
+        };
+        lock_values(&target, Side::Writer, &values(&column)?);
+    }
+    Ok(())
+}
+
+/// The keys of an embedded TVIEW's rows (`pk_<child>`), locked by `side` on its
+/// table: a writer before it looks up the parents holding them, a refresh before
+/// it computes parents from them.
+pub fn lock_embedded_keys(child_table: pg_sys::Oid, side: Side, keys: &[String]) {
+    let target = LockTarget {
+        relid: child_table.to_u32(),
+        attnums: Vec::new(),
+    };
+    lock_values(&target, side, keys);
+}
+
+/// The quoted name of column `attnum` of `relid` (cached); `None` when it is gone.
+fn column_name(relid: u32, attnum: i16) -> crate::TViewResult<Option<String>> {
+    let key = (relid, attnum);
+    if let Some(name) = crate::cache::LOCK_COLUMNS.with(|m| m.get(&key)) {
+        return Ok(name);
+    }
+    let template = format!("{{c:{relid}:{attnum}}}");
+    let name = crate::lineage::render_template(&template)
+        .map_err(|e| crate::utils::spi::error(&template, &e))?;
+    crate::cache::watch(&[pg_sys::Oid::from(relid)]);
+    crate::cache::LOCK_COLUMNS.with(|m| m.insert(key, name.clone()));
+    Ok(name)
+}
+
 /// Acquire `tag` in `mode`: at once, or as `policy` says when another
 /// transaction holds a conflicting lock.
 fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Policy) {

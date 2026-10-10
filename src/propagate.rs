@@ -34,7 +34,16 @@ pub fn find_parents_batch(
     if pks.is_empty() {
         return Ok(result);
     }
-    for parent in graph.parents.get(child).cloned().unwrap_or_default() {
+    let parents = graph.parents.get(child).cloned().unwrap_or_default();
+    if parents.is_empty() {
+        return Ok(result);
+    }
+    let child_table = crate::catalog::TviewMeta::load_by_entity(child)?
+        .ok_or_else(|| crate::TViewError::MetadataNotFound {
+            entity: child.to_string(),
+        })?
+        .tview_oid;
+    for parent in parents {
         let unpruned: Vec<i64> = pks
             .iter()
             .copied()
@@ -48,6 +57,14 @@ pub fn find_parents_batch(
             .copied()
             .filter(|pk| unpruned.contains(pk))
             .collect();
+        // A parent being computed from these child rows meets this lookup on
+        // their keys (ADR 0207): locked before the lookup runs.
+        let keys: Vec<String> = unpruned.iter().map(ToString::to_string).collect();
+        crate::concurrency::lock_embedded_keys(
+            child_table,
+            crate::concurrency::Side::Writer,
+            &keys,
+        );
         for lookup_col in graph.lookup_columns(child, &parent) {
             for (child_pk, keys) in
                 find_affected_keys_batch(&parent, lookup_col, &unpruned, &appeared)?
@@ -116,7 +133,8 @@ fn find_affected_keys_batch(
         query = format!("{query} UNION {}", select(&qi_view, "$2"));
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
-    Spi::connect(|client| {
+    // Read-write: a fresh snapshot, which sees what the locks waited for.
+    Spi::connect_mut(|client| {
         let array = |pks: &[i64]| crate::utils::spi::int8_array(pks.to_vec());
         let args = if in_view.is_empty() {
             vec![array(child_pks)]
@@ -124,7 +142,7 @@ fn find_affected_keys_batch(
             vec![array(child_pks), array(in_view)]
         };
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
-        for row in client.select(&query, None, &args)? {
+        for row in client.update(&query, None, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
             };

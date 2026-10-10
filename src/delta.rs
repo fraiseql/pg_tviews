@@ -291,6 +291,14 @@ fn map_statement(
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
         MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
+            // Refreshes of the TVIEW rows these rows feed meet this write on the
+            // values (ADR 0207): locked before any query finds rows by them.
+            crate::concurrency::lock_changed_rows(mapping, |column| {
+                with_transition_tables(trigger, entity, |client| {
+                    texts(client, &changed_values(&delta, column), &[])
+                })
+            })?;
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
@@ -301,7 +309,6 @@ fn map_statement(
                 refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(());
             };
-            let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
             let key_type = &meta
                 .key_type()
                 .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
@@ -352,7 +359,7 @@ fn fan_out(
     );
     let pairs = with_transition_tables(trigger, entity, |client| {
         let mut pairs = Vec::new();
-        for row in client.select(&sql, None, &[])? {
+        for row in client.update(&sql, None, &[])? {
             if row.get::<bool>(3)? != Some(true) {
                 return Ok(None);
             }
@@ -460,9 +467,15 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 key_sql_type(key_type)
             );
             let _owner = crate::owner::AsOwner::of_entity(entity)?;
-            let keys = Spi::connect(|client| {
+            // As for a statement's rows (map_statement), on the partition tree's root.
+            crate::concurrency::lock_changed_rows(mapping, |column| {
+                Spi::connect_mut(|client| texts(client, &changed_values(&delta, column), &images))
+                    .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
+            })?;
+            // Read-write: a fresh snapshot, which sees what the locks waited for.
+            let keys = Spi::connect_mut(|client| {
                 let mut keys = Vec::new();
-                for row in client.select(&sql, None, &images)? {
+                for row in client.update(&sql, None, &images)? {
                     keys.extend(key_of(&row, key_type)?);
                 }
                 Ok::<_, TViewError>(keys)
@@ -694,22 +707,44 @@ fn run_with_transition_tables(
 ) -> TViewResult<Vec<KeyValue>> {
     with_transition_tables(trigger, entity, |client| {
         let mut keys = Vec::new();
-        for row in client.select(sql, None, &[])? {
+        for row in client.update(sql, None, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
         Ok(keys)
     })
 }
 
+/// `SELECT DISTINCT (<column>)::text` of the changed rows `delta`, NULLs left out.
+fn changed_values(delta: &str, column: &str) -> String {
+    format!(
+        "WITH {DELTA} AS ({delta}) \
+         SELECT DISTINCT ({column})::pg_catalog.text FROM {DELTA} WHERE {column} IS NOT NULL"
+    )
+}
+
+/// The text in the first column of each row of `sql`.
+fn texts(
+    client: &mut spi::SpiClient<'_>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> TViewResult<Vec<String>> {
+    let mut out = Vec::new();
+    for row in client.update(sql, None, args)? {
+        out.extend(row.get::<String>(1)?);
+    }
+    Ok(out)
+}
+
 /// Run `f` on an SPI connection that sees the statement's transition tables, as
-/// `entity`'s owner.
+/// `entity`'s owner. Read-write: each query takes a fresh snapshot (READ
+/// COMMITTED), so one run after a lock wait sees what it waited for.
 fn with_transition_tables<T>(
     trigger: &PgTrigger<'_>,
     entity: &str,
-    f: impl FnOnce(&spi::SpiClient<'_>) -> crate::TViewResult<T>,
+    f: impl FnOnce(&mut spi::SpiClient<'_>) -> crate::TViewResult<T>,
 ) -> TViewResult<T> {
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    Spi::connect(|client| {
+    Spi::connect_mut(|client| {
         // SAFETY: inside an AFTER statement trigger the TriggerData is valid; this
         // registers its transition tables with the SPI connection just opened.
         let registered = unsafe {

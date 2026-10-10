@@ -177,6 +177,13 @@ pub fn flush_after_rebuilds() -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
+        // Every row changes: refreshes of any of them wait, and are waited for.
+        crate::concurrency::lock_relation(
+            meta.tview_oid.to_u32(),
+            crate::concurrency::Side::Writer,
+        );
+    }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;

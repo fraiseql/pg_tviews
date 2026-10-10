@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A write locks the join values of the rows it changed** before it looks up the
+  TVIEW rows they feed (ADR 0207): exclusive locks in PostgreSQL's lock manager, shown
+  in `pg_locks` as advisory locks with `objsubid` 21622 (a value) or 21623 (a
+  relation), held to the end of the transaction. A write refreshing a whole TVIEW
+  (`TRUNCATE`, the `full_refresh` policy, `pg_tviews_refresh()`) locks the TVIEW. Not
+  under `SERIALIZABLE`. The queries that find TVIEW rows by those values run with a
+  fresh snapshot.
 - **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
   text-pattern analysis that registration still used for columns, embeds and the
   direct-patch map is gone, and with it the spelling rules it imposed:

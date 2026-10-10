@@ -78,6 +78,8 @@ thread_local! {
     /// `(entity, relid, attnum)` → the rendered read-set query (`None`: a
     /// relation is gone).
     pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
+    /// `(relid, attnum)` → the quoted name of a column writers lock values of.
+    pub static LOCK_COLUMNS: Memo<(u32, i16), Option<String>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::delta::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -133,6 +135,7 @@ pub fn invalidate_all() {
     COLUMNS.with(Memo::clear);
     MAPPINGS.with(Memo::clear);
     READ_SETS.with(Memo::clear);
+    LOCK_COLUMNS.with(Memo::clear);
     DELTAS.with(Memo::clear);
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
