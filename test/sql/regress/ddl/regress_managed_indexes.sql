@@ -29,7 +29,7 @@ CREATE FUNCTION managed(tv regclass) RETURNS text[] LANGUAGE sql AS $$
     SELECT managed_indexes::text[] FROM tviews.registry
     WHERE format('%I.%I', schema, name)::regclass = tv $$;
 CREATE FUNCTION unmanaged(tv regclass) RETURNS text[] LANGUAGE sql AS $$
-    SELECT COALESCE(array_agg(i.indexrelid::regclass::text ORDER BY 1), '{}')
+    SELECT COALESCE(array_agg(i.indexrelid::regclass::text ORDER BY i.indexrelid::regclass::text), '{}')
     FROM pg_index i
     WHERE i.indrelid = tv
       AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)
