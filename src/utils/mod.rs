@@ -315,6 +315,22 @@ pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:
+/// quotes doubled, and an `E''` literal with backslashes doubled when it holds a
+/// backslash, so it reads the same whatever `standard_conforming_strings` is.
+/// For code that cannot call the server (pure Rust, unit-tested); the query-tree
+/// walker uses the server's `quote_literal_cstr`. Values passed to a query are bind
+/// parameters.
+#[must_use]
+pub fn quote_literal(text: &str) -> String {
+    let quoted = text.replace('\'', "''");
+    if text.contains('\\') {
+        format!("E'{}'", quoted.replace('\\', "\\\\"))
+    } else {
+        format!("'{quoted}'")
+    }
+}
+
 /// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
 pub const MAX_IDENTIFIER_BYTES: usize = 63;
 
@@ -346,6 +362,13 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_literal_reads_the_same_under_any_string_setting() {
+        assert_eq!(quote_literal("post"), "'post'");
+        assert_eq!(quote_literal("it's"), "'it''s'");
+        assert_eq!(quote_literal(r"a\b'c"), r"E'a\\b''c'");
+    }
 
     #[test]
     fn quote_identifier_always_quotes_and_doubles_quotes() {

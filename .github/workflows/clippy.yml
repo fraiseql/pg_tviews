@@ -72,8 +72,9 @@ jobs:
           cargo clippy --all-targets --no-default-features --features "pg${{ matrix.pg }}" -- -D warnings
       - name: Check for SQL quote-doubling anti-pattern
         run: |
-          # Exclude ddl/convert.rs:370 — justified: DDL VALUES clause, data from DB, ::jsonb cast
-          if grep -rn "replace.*'\\\\''.*''" src/ | grep -v 'ddl/convert.rs.*escaped_data'; then
+          # utils::quote_literal is the one literal built by hand (PostgreSQL's
+          # quote_literal rules); everything else binds parameters.
+          if grep -rn "replace.*'\\\\''.*''" src/ | grep -v '^src/utils/mod.rs:.*let quoted = text.replace'; then
             echo "::error::Found quote-doubling pattern. Use parameterized queries instead."
             exit 1
           fi
