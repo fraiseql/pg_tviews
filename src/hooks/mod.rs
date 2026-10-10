@@ -21,9 +21,9 @@ use ctas::{
     tview_ctas_target, utility_of,
 };
 use statements::{
-    ColumnRename, PartitionDdl, PrivilegesChange, column_rename_of, drops_pg_tviews,
-    extension_installed, extension_statement_names, matview_refresh_of, partition_ddl_of,
-    privileges_change_of, resolve_relation_oid, table_move_of,
+    ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
+    drops_pg_tviews, extension_installed, extension_statement_names, matview_refresh_of,
+    partition_ddl_of, privileges_change_of, resolve_relation_oid, table_move_of,
 };
 use tables::handle_drop_table;
 
@@ -103,7 +103,7 @@ impl UtilityCall {
 }
 
 /// `ProcessUtility` hook: intercepts `CREATE TABLE tv_* AS`, `DROP TABLE tv_*` and
-/// `ALTER TABLE tv_*`, flushes the refresh queue before `COMMIT` and `PREPARE
+/// `ALTER TABLE tv_*` (column changes its refreshes can't write through are refused), flushes the refresh queue before `COMMIT` and `PREPARE
 /// TRANSACTION`, and follows the DDL that changes what TVIEWs read (column
 /// renames, partitions, table moves, privileges, `DROP EXTENSION`, materialized
 /// view refreshes).
@@ -259,7 +259,9 @@ fn decide(call: UtilityCall) -> Intercept {
             pg_sys::NodeTag::T_DropStmt => Ok(Intercept::DropTable(
                 utility_stmt.cast::<pg_sys::DropStmt>(),
             )),
-            _ => Ok(Intercept::PassThrough),
+            // SAFETY: the statement's utility node, non-null.
+            _ => Ok(unsafe { column_change_of(utility_stmt) }
+                .map_or(Intercept::PassThrough, Intercept::ColumnChange)),
         }
     });
     match result {
@@ -317,6 +319,10 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
             unsafe { create_tview_from_ctas(&ctas, call.qc) };
             false
         }
+        Intercept::ColumnChange(change) => match refuse_column_change(&change) {
+            Ok(()) => true,
+            Err(e) => e.raise(),
+        },
         Intercept::DropTable(drop_stmt) => {
             // The TVIEWs are dropped here and taken out of the statement's list. A
             // read-only tree (a cached plan, run again by the next call) is copied
@@ -340,6 +346,75 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
             }
         }
     }
+}
+
+/// Refuse a column change to a TVIEW's table that its refreshes could not write
+/// through: they write every column the definition outputs, by name, with the
+/// type the backing view gives it. Renaming or dropping one is refused, and so is
+/// retyping `pk_<entity>`, `id` or `data`, whose types are fixed. Another column's
+/// new type is refused unless the view's type converts to it on assignment (a
+/// TVIEW can keep such a type until `pg_tviews_create_or_replace` retypes it).
+fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
+    // SAFETY: a RangeVar of the statement's parse tree.
+    let relid = unsafe { resolve_relation_oid(change.relation) };
+    if relid == pg_sys::InvalidOid || crate::catalog::TviewMeta::entity_of_table(relid)?.is_none() {
+        return Ok(());
+    }
+    let refused = |what: String| -> TViewResult<()> {
+        Err(TViewError::ColumnDdlRefused {
+            table: crate::utils::qualified_relname_from_oid(relid)?,
+            change: what,
+        })
+    };
+    if let Some(what) = change.removes {
+        return refused(what.to_string());
+    }
+    for (column, type_name) in &change.retypes {
+        let mut to = pg_sys::InvalidOid;
+        let mut typmod = -1;
+        // SAFETY: a TypeName of the statement's parse tree; an unknown type raises
+        // the error PostgreSQL would.
+        unsafe {
+            pg_sys::typenameTypeIdAndMod(
+                std::ptr::null_mut(),
+                *type_name,
+                &raw mut to,
+                &raw mut typmod,
+            );
+        }
+        let from = crate::utils::spi::one::<pg_sys::Oid>(
+            &format!(
+                "SELECT a.atttypid FROM {} m JOIN pg_catalog.pg_attribute a \
+                 ON a.attrelid = m.view_oid::pg_catalog.oid \
+                 WHERE m.table_oid::pg_catalog.oid = $1 AND a.attname = $2 AND NOT a.attisdropped",
+                crate::utils::meta_table()
+            ),
+            &[
+                crate::utils::spi::oid(relid),
+                crate::utils::spi::text(column.as_str()),
+            ],
+        )?;
+        let fixed = column == "id" || column == "data" || column.starts_with("pk_");
+        // SAFETY: catalog lookups on two type OIDs.
+        let writable = !fixed
+            && from.is_some_and(|from| unsafe {
+                pg_sys::can_coerce_type(
+                    1,
+                    &raw const from,
+                    &raw const to,
+                    pg_sys::CoercionContext::COERCION_ASSIGNMENT,
+                )
+            });
+        if !writable {
+            let new_type = crate::utils::qualified_type_name(to, typmod);
+            return refused(format!(
+                "ALTER COLUMN {} TYPE {}",
+                crate::utils::quote_identifier(column),
+                new_type.strip_prefix("pg_catalog.").unwrap_or(&new_type)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What the statement changes that TVIEWs follow once `PostgreSQL` has run it,
@@ -439,6 +514,9 @@ enum Intercept {
     PassThrough,
     /// A `DROP` statement, to handle outside `catch_unwind`.
     DropTable(*mut pg_sys::DropStmt),
+    /// An `ALTER TABLE` renaming, dropping or retyping columns: checked against
+    /// a TVIEW's table outside `catch_unwind`.
+    ColumnChange(ColumnChange),
     /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation, outside `catch_unwind`.
     CreateTview(Ctas),
     /// A statement that would create a TVIEW in a way `pg_tviews` cannot honour,

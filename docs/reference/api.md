@@ -382,7 +382,7 @@ cascade response: each entry carries its type name, `id` and (with `include_data
 row's `data`; a deleted entry is `{"__typename", "id"}`. Past `max_entities` entries,
 or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
 `invalidated_types` lists the types left out. With `reset`, the next call reports only
-later changes. See [GraphQL cascade](../user-guides/graphql-cascade.md).
+later changes; a reset made in a subtransaction that rolls back is undone. See [GraphQL cascade](../user-guides/graphql-cascade.md).
 
 ```sql
 BEGIN;

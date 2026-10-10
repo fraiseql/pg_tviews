@@ -69,6 +69,73 @@ pub(super) unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
     }
 }
 
+/// An `ALTER TABLE` that renames, drops or retypes columns, captured before it
+/// runs.
+pub(super) struct ColumnChange {
+    pub(super) relation: *const pg_sys::RangeVar,
+    /// `RENAME COLUMN` or `DROP COLUMN`, when the statement does either.
+    pub(super) removes: Option<&'static str>,
+    /// Each `ALTER COLUMN … TYPE`: the column and its new type.
+    pub(super) retypes: Vec<(String, *const pg_sys::TypeName)>,
+}
+
+/// The column change carried by the utility statement `node`, if it is one.
+///
+/// SAFETY: `node` must be a valid, non-null `Node*`.
+pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnChange> {
+    // SAFETY: each cast follows the node's tag; the cells of an AlterTableStmt
+    // are AlterTableCmds, an AT_AlterColumnType's def a ColumnDef, null-checked.
+    unsafe {
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        let change = match (*node).type_ {
+            pg_sys::NodeTag::T_RenameStmt => {
+                let stmt = &*node.cast::<pg_sys::RenameStmt>();
+                if stmt.renameType != pg_sys::ObjectType::OBJECT_COLUMN {
+                    return None;
+                }
+                ColumnChange {
+                    relation: stmt.relation,
+                    removes: Some("RENAME COLUMN"),
+                    retypes: Vec::new(),
+                }
+            }
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                let mut change = ColumnChange {
+                    relation: stmt.relation,
+                    removes: None,
+                    retypes: Vec::new(),
+                };
+                for i in 0..pg_sys::list_length(stmt.cmds) {
+                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    if cmd.is_null() {
+                        continue;
+                    }
+                    match (*cmd).subtype {
+                        pg_sys::AlterTableType::AT_DropColumn => {
+                            change.removes = Some("DROP COLUMN");
+                        }
+                        pg_sys::AlterTableType::AT_AlterColumnType
+                            if !(*cmd).name.is_null() && !(*cmd).def.is_null() =>
+                        {
+                            let def = (*cmd).def.cast::<pg_sys::ColumnDef>();
+                            change.retypes.push((
+                                CStr::from_ptr((*cmd).name).to_string_lossy().into_owned(),
+                                (*def).typeName,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                change
+            }
+            _ => return None,
+        };
+        (!change.relation.is_null() && (change.removes.is_some() || !change.retypes.is_empty()))
+            .then_some(change)
+    }
+}
+
 /// The table an `ALTER TABLE … RENAME TO` or `ALTER TABLE … SET SCHEMA` renames or
 /// moves, resolved before the statement runs.
 ///

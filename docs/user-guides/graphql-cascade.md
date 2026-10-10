@@ -89,11 +89,14 @@ tviews.pg_tviews_flush_and_report(
 - **Order** is by entity, then primary key, so truncation is deterministic. With more
   than `max_entities` entries, the rest are left out, `truncated` is true and
   `invalidated_types` lists their types, so a client can invalidate those types instead.
-- **Savepoints**: changes made in a savepoint that was rolled back are not reported.
+- **Savepoints**: changes made in a savepoint that was rolled back are not reported,
+  and a `reset` made in one is undone with it: after `ROLLBACK TO SAVEPOINT`, or a
+  plpgsql `EXCEPTION` handler, the next call reports again what that call had.
 - **`__typename`** is the entity in PascalCase (`blog_post` → `BlogPost`). Override it
   with `tviews.pg_tviews_set_typename()`; NULL resets it.
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
-  kept per transaction. Beyond it only their types are, and the report is truncated.
+  kept per transaction, not counting reported ones (kept only until the
+  subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
   `SET pg_tviews.report_max_tracked = 0` turns the journal off.
 
 ```sql

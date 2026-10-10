@@ -49,10 +49,10 @@ enum Undo {
 
 /// Where a subtransaction started, in the pending work and the affected-rows
 /// journal.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Mark {
     undo: usize,
-    journal: usize,
+    journal: super::affected::Mark,
 }
 
 #[derive(Default)]
@@ -183,7 +183,7 @@ pub fn clear() {
 
 /// A subtransaction started: where to roll back to.
 pub fn mark() -> Mark {
-    let journal = super::affected::position();
+    let journal = super::affected::mark();
     TXN.with(|t| {
         let mut t = t.borrow_mut();
         t.open += 1;
@@ -196,7 +196,8 @@ pub fn mark() -> Mark {
 
 /// The subtransaction of `mark` committed: what it did now belongs to its
 /// parent.
-pub fn release(_mark: Mark) {
+pub fn release(mark: Mark) {
+    super::affected::release(mark.journal);
     TXN.with(|t| {
         let mut t = t.borrow_mut();
         t.open = t.open.saturating_sub(1);
@@ -221,7 +222,7 @@ pub fn rollback(mark: Mark) {
             t.undo.clear();
         }
     });
-    super::affected::rollback_to(mark.journal);
+    super::affected::rollback(mark.journal);
 }
 
 #[cfg(test)]
