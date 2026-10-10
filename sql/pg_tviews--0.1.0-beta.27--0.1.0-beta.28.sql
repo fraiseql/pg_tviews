@@ -1,0 +1,5 @@
+-- pg_tviews 0.1.0-beta.27 → 0.1.0-beta.28
+--
+-- Pending upgrade script: a pull request that changes the extension SQL adds its
+-- statements here (docs/development/extension-versioning.md). Released scripts are
+-- never edited.
