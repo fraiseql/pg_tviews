@@ -129,9 +129,11 @@ pub(super) unsafe fn index_follow_up_of(
     pstmt: *const pg_sys::PlannedStmt,
 ) -> TViewResult<Option<IndexFollowUp>> {
     // SAFETY: every pointer is null-checked before it is dereferenced; each cast
-    // follows the node's tag.
+    // follows the node's tag. `creating_extension` is backend state.
     unsafe {
-        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+        // An extension script's indexes (pg_tviews' own catalog among them) are no
+        // TVIEW's, and the catalog may not exist yet.
+        if pg_sys::creating_extension || pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
             return Ok(None);
         }
         let node = (*pstmt).utilityStmt;
