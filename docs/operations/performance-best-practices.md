@@ -150,15 +150,10 @@ CREATE INDEX idx_tv_notification_fk_user ON tv_notification(fk_user);
 
 ### ✅ DO: Index UUID Columns for API Queries
 
-```sql
--- Trinity pattern: id is UUID, pk_* is integer
-CREATE INDEX idx_tv_post_id ON tv_post(id);
-CREATE INDEX idx_tv_user_id ON tv_user(id);
-```
+pg_tviews creates `idx_<tv>_id` on `id`, and one on each UUID FK column, with every
+TVIEW: nothing to do.
 
 **Impact**: 50-500× faster GraphQL/API lookups
-
-**When**: Always for API-exposed entities
 
 ### ✅ DO: Use GIN Indexes for JSONB Queries (only where queries use them)
 
@@ -167,10 +162,12 @@ CREATE INDEX idx_tv_user_id ON tv_user(id);
 > keeping one. See [HOT Updates and TVIEW Storage](hot-updates.md).
 
 ```sql
--- For containment queries (@>, ?, ?&, ?|)
-CREATE INDEX idx_tv_post_data_gin ON tv_post USING GIN(data);
+-- For containment queries (@>, ?, ?&, ?|): pg_tviews' own GIN, through the option
+SELECT tviews.pg_tviews_create_or_replace('public.tv_post',
+    (SELECT query FROM tviews.registry WHERE entity = 'post'),
+    options => '{"data_gin_index": true}');
 
--- For specific path queries (more selective)
+-- For specific path queries (more selective): your own, under a name of yours
 CREATE INDEX idx_tv_post_status ON tv_post USING GIN((data -> 'status'));
 ```
 
@@ -181,16 +178,11 @@ CREATE INDEX idx_tv_post_status ON tv_post USING GIN((data -> 'status'));
 ### ❌ DON'T: Over-Index Small Tables
 
 ```sql
--- ❌ BAD: 5 indexes on 1000-row table
-CREATE INDEX idx_tv_tag_fk_category ON tv_tag(fk_category);
-CREATE INDEX idx_tv_tag_id ON tv_tag(id);
-CREATE INDEX idx_tv_tag_data_gin ON tv_tag USING GIN(data);
-CREATE INDEX idx_tv_tag_name ON tv_tag((data->>'name'));
-CREATE INDEX idx_tv_tag_created ON tv_tag((data->>'created_at'));
+-- ❌ BAD: path indexes on a 1000-row table, over the ones pg_tviews creates
+CREATE INDEX tv_tag_name ON tv_tag((data->>'name'));
+CREATE INDEX tv_tag_created ON tv_tag((data->>'created_at'));
 
--- ✅ GOOD: Minimal indexes for small table
-CREATE INDEX idx_tv_tag_fk_category ON tv_tag(fk_category);  -- For cascades
-CREATE INDEX idx_tv_tag_id ON tv_tag(id);  -- For API lookups
+-- ✅ GOOD: only the indexes pg_tviews creates (fk_* propagation, id)
 -- That's it! Table scan is fast for 1000 rows
 ```
 

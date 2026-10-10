@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Maintenance functions that act on every TVIEW are no longer executable by
+  `PUBLIC`**: `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()`,
+  `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`, `pg_tviews_set_logged()`,
+  `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_invalidate_caches()`. A role
+  that is neither a superuser nor the extension's owner needs `GRANT EXECUTE`
+  (`docs/user-guides/operators.md`), or gets 42501. A deploy or restore tool calling
+  `pg_tviews_rebuild_all()` as such a role must be granted it before upgrading.
+- **Every function acting on one TVIEW requires owning it** (or the extension), checked
+  before any lock: `pg_tviews_set_logged()`, `pg_tviews_recover_after_crash()` and
+  `pg_tviews_ensure_propagation_indexes(entity)` join `pg_tviews_refresh()`,
+  `pg_tviews_reregister()` (which took the TVIEW's registration lock before checking)
+  and the rest.
+- **A commit with refresh work still queued fails** (55000), every time. It
+  committed with a WARNING, shown once per backend, and the TVIEWs named stayed
+  stale. Only a missing or disabled flush trigger leaves work queued.
+- **A write fails when its row trigger cannot tell what to refresh**: a stored plan,
+  identity or uncascaded policy of any TVIEW that does not decode (a catalog edited
+  by hand, a restore out of step), a mapping stored without its query, a
+  `pg_tviews` trigger that names no TVIEW. The error names the TVIEW, with the
+  `pg_tviews_reregister` hint. The write committed with nothing queued, behind a
+  WARNING, or the value was read as a default (`warn`, `pk_<entity>`).
+- **Errors carry their SQLSTATE.** Every pg_tviews function reported its errors as
+  22000 (`data_exception`) or XX000, whatever went wrong, so `WHEN undefined_object`
+  or `WHEN sqlstate '42P07'` never matched. Now: no such TVIEW 42704, TVIEW already
+  exists 42P07 (`pg_tviews_create` and `CREATE TABLE tv_* AS` alike), unreadable
+  definition 42601, definition pg_tviews cannot maintain 0A000, not allowed 42501,
+  TVIEWs reading each other in a cycle 42P17, nesting too deep 54001, refresh queue
+  full 54000, resume without suspend or refresh while suspended 55000, `jsonb_delta`
+  missing 42883, invalid argument 22023; internal failures stay XX000. Messages are
+  one line, with the query or definition in DETAIL and the fix in HINT. Internal
+  errors no longer reach the client as `SPI error: OpUnknown`.
+- **A backend's caches follow DDL made in another backend.** A TVIEW replaced, or
+  the extension dropped and created again, in one session left another session
+  patching with the old column map: the row trigger's cache never checked for
+  invalidations. Every cache now checks on every read, relation names come from the
+  syscache, and the catalog is re-watched after the extension is created again.
+- **A definition that makes TVIEWs read each other in a cycle is refused** (42P17)
+  when it is created or replaced. Before, it was accepted and every later write to
+  the tables involved failed.
+- **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as
+  the TVIEW's owner**, like `REFRESH MATERIALIZED VIEW`. A backing view runs the
+  functions it calls as the querying role, so a rebuild run as the caller let a TVIEW
+  owner's code run with the caller's privileges: a superuser's after the documented
+  post-migration `pg_tviews_refresh_all()`. `pg_tviews_refresh_all()`,
+  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()` and
+  `pg_tviews_recover_after_crash()` now read each backing view as its owner (the
+  emptiness checks of `pg_tviews_rebuild_all(true)` too); `pg_tviews_refresh(entity)`
+  by a role that neither owns `tv_<entity>` nor the extension fails with 42501 (it
+  rebuilt the requested TVIEW with the caller's privileges before).
+
 ### Changed
 
 - **Writes may wait for concurrent writes to related rows** (ADR 0207). A write
@@ -48,9 +100,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A definition is exactly one SELECT** (42601). A second statement after the
   SELECT was accepted and run.
 - `CREATE TABLE tv_* AS` accepts a comment before the statement.
+- **pg_tviews' index names on a TVIEW are its own** (#219). A user's `CREATE INDEX`
+  or `ALTER INDEX … RENAME TO` on a TVIEW's table under a name pg_tviews uses there
+  (`idx_<tv>_id`, `idx_<tv>_<fk>_<pk>`, `idx_<tv>_data_gin`…) is refused with
+  `42939` (`reserved_name`): pg_tviews' `CREATE INDEX IF NOT EXISTS` would otherwise
+  find the user's index in its place. A statement creating exactly pg_tviews' index
+  under its name (what `pg_tviews_ensure_propagation_indexes(dry_run => true)`
+  reports, run by hand, or what a dump restores) is accepted, and the index is
+  pg_tviews'.
+- **A `rebuilt` replace refuses while a user index on the TVIEW is invalid** (#219),
+  naming it (`55000`), before it drops anything. A UNIQUE index left invalid by a
+  failed `CREATE UNIQUE INDEX CONCURRENTLY` was re-created valid on the empty table,
+  and the fill then failed on the duplicates, naming only the constraint.
+
+### Added
+
+- **`tviews.registry.managed_indexes regclass[]`** (#219, appended; `contract_version()`
+  stays 1): the indexes pg_tviews created on the TVIEW's table and still owns,
+  sorted by name, without the primary key; NULL when the table is gone. A TVIEW's
+  user indexes are every other index on its table that backs no constraint. Renames
+  and drops of these indexes are followed, and
+  `pg_tviews_ensure_propagation_indexes()` records the indexes it creates.
+- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
+  on one relation before it locks the relation instead, so a bulk write never
+  exhausts the shared lock table (0 always locks relations, -1 never does).
+- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
+  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
+  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
+- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
+  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
+  TVIEW's keys to the values compared with it), from the plan, which now stores it
+  (ADR 0207).
+- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
+  in the current transaction.
+
+### Removed
+
+- `pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()`: they found
+  a TVIEW's rows by table-name conventions; a write to the base table already
+  refreshes them, and `pg_tviews_refresh(entity)` repairs changes the triggers did
+  not see.
+- `pg_tviews_analyze_select(text)` and `pg_tviews_infer_types(text, text[])`. They ran
+  the text-pattern analysis that registration is moving away from, and
+  `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The
+  upgrade script drops both; `docs/DEPRECATION_WARNINGS.md` lists what replaces them
+  and states the oldest release `ALTER EXTENSION pg_tviews UPDATE` starts from
+  (0.1.0-beta.20).
+- `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`,
+  `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`,
+  `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`,
+  `aggregate_embeds` and `key_mappings`: replaced by `plan`.
+- `pg_tviews_rebind_cascade_paths()`, `pg_tviews_migrate_triggers()` and the
+  migration of triggers installed by releases before 0.1.0-beta.20: the update drops
+  those triggers and re-installs one per TVIEW.
+- `pg_tviews_convert_existing_table()` and `pg_tviews_convert_table()`, which only
+  raised errors; the event trigger reports a `CREATE TABLE tv_* AS` the hook did not
+  intercept itself.
+- The `pg_tviews.metrics_enabled` setting, which had no effect.
+- `scripts/auto-convert/`: it turned existing `tv_*` tables into TVIEWs through the
+  conversion functions removed above, and no longer ran.
 
 ### Fixed
 
+- **`pg_tviews_create_or_replace()` no longer drops a user's index** (#218). A
+  `rebuilt` replace left out a user index named `idx_<tv>_data_gin` on a TVIEW without
+  pg_tviews' GIN, and turning `data_gin_index` off dropped every GIN index on `data`.
+  pg_tviews now records the indexes it creates and removes or leaves out only those.
+  `options.data_gin_index` in `tviews.registry` reports pg_tviews' GIN index, so a
+  user's GIN index on `data` no longer reads as the option being on (the key's
+  documented meaning was the option; `contract_version()` stays 1).
 - **Concurrent writes no longer leave TVIEW rows stale under READ COMMITTED**
   (#207). A transaction creating or re-linking a TVIEW row (a new post, a post
   pointed at another user) while another changes a row it reads (its author's
@@ -145,102 +263,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pg_tviews_flush_and_report(reset => true)` in a subtransaction that rolls back
   (`ROLLBACK TO SAVEPOINT`, a plpgsql `EXCEPTION` handler) no longer loses what it
   reported: the next call reports those rows again (#210).
-
-### Removed
-
-- `pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()`: they found
-  a TVIEW's rows by table-name conventions; a write to the base table already
-  refreshes them, and `pg_tviews_refresh(entity)` repairs changes the triggers did
-  not see.
-- `pg_tviews_analyze_select(text)` and `pg_tviews_infer_types(text, text[])`. They ran
-  the text-pattern analysis that registration is moving away from, and
-  `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The
-  upgrade script drops both; `docs/DEPRECATION_WARNINGS.md` lists what replaces them
-  and states the oldest release `ALTER EXTENSION pg_tviews UPDATE` starts from
-  (0.1.0-beta.20).
-- `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`,
-  `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`,
-  `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`,
-  `aggregate_embeds` and `key_mappings`: replaced by `plan`.
-- `pg_tviews_rebind_cascade_paths()`, `pg_tviews_migrate_triggers()` and the
-  migration of triggers installed by releases before 0.1.0-beta.20: the update drops
-  those triggers and re-installs one per TVIEW.
-- `pg_tviews_convert_existing_table()` and `pg_tviews_convert_table()`, which only
-  raised errors; the event trigger reports a `CREATE TABLE tv_* AS` the hook did not
-  intercept itself.
-- The `pg_tviews.metrics_enabled` setting, which had no effect.
-- `scripts/auto-convert/`: it turned existing `tv_*` tables into TVIEWs through the
-  conversion functions removed above, and no longer ran.
-
-### Changed (breaking)
-
-- **Maintenance functions that act on every TVIEW are no longer executable by
-  `PUBLIC`**: `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()`,
-  `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`, `pg_tviews_set_logged()`,
-  `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_invalidate_caches()`. A role
-  that is neither a superuser nor the extension's owner needs `GRANT EXECUTE`
-  (`docs/user-guides/operators.md`), or gets 42501. A deploy or restore tool calling
-  `pg_tviews_rebuild_all()` as such a role must be granted it before upgrading.
-- **Every function acting on one TVIEW requires owning it** (or the extension), checked
-  before any lock: `pg_tviews_set_logged()`, `pg_tviews_recover_after_crash()` and
-  `pg_tviews_ensure_propagation_indexes(entity)` join `pg_tviews_refresh()`,
-  `pg_tviews_reregister()` (which took the TVIEW's registration lock before checking)
-  and the rest.
-- **A commit with refresh work still queued fails** (55000), every time. It
-  committed with a WARNING, shown once per backend, and the TVIEWs named stayed
-  stale. Only a missing or disabled flush trigger leaves work queued.
-- **A write fails when its row trigger cannot tell what to refresh**: a stored plan,
-  identity or uncascaded policy of any TVIEW that does not decode (a catalog edited
-  by hand, a restore out of step), a mapping stored without its query, a
-  `pg_tviews` trigger that names no TVIEW. The error names the TVIEW, with the
-  `pg_tviews_reregister` hint. The write committed with nothing queued, behind a
-  WARNING, or the value was read as a default (`warn`, `pk_<entity>`).
-- **Errors carry their SQLSTATE.** Every pg_tviews function reported its errors as
-  22000 (`data_exception`) or XX000, whatever went wrong, so `WHEN undefined_object`
-  or `WHEN sqlstate '42P07'` never matched. Now: no such TVIEW 42704, TVIEW already
-  exists 42P07 (`pg_tviews_create` and `CREATE TABLE tv_* AS` alike), unreadable
-  definition 42601, definition pg_tviews cannot maintain 0A000, not allowed 42501,
-  TVIEWs reading each other in a cycle 42P17, nesting too deep 54001, refresh queue
-  full 54000, resume without suspend or refresh while suspended 55000, `jsonb_delta`
-  missing 42883, invalid argument 22023; internal failures stay XX000. Messages are
-  one line, with the query or definition in DETAIL and the fix in HINT. Internal
-  errors no longer reach the client as `SPI error: OpUnknown`.
-- **A backend's caches follow DDL made in another backend.** A TVIEW replaced, or
-  the extension dropped and created again, in one session left another session
-  patching with the old column map: the row trigger's cache never checked for
-  invalidations. Every cache now checks on every read, relation names come from the
-  syscache, and the catalog is re-watched after the extension is created again.
-- **A definition that makes TVIEWs read each other in a cycle is refused** (42P17)
-  when it is created or replaced. Before, it was accepted and every later write to
-  the tables involved failed.
-- **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as
-  the TVIEW's owner**, like `REFRESH MATERIALIZED VIEW`. A backing view runs the
-  functions it calls as the querying role, so a rebuild run as the caller let a TVIEW
-  owner's code run with the caller's privileges: a superuser's after the documented
-  post-migration `pg_tviews_refresh_all()`. `pg_tviews_refresh_all()`,
-  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()` and
-  `pg_tviews_recover_after_crash()` now read each backing view as its owner (the
-  emptiness checks of `pg_tviews_rebuild_all(true)` too); `pg_tviews_refresh(entity)` by a role that neither owns
-  `tv_<entity>` nor the extension fails with 42501 (it rebuilt the requested TVIEW
-  with the caller's privileges before).
-
-### Added
-
-- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
-  on one relation before it locks the relation instead, so a bulk write never
-  exhausts the shared lock table (0 always locks relations, -1 never does).
-- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
-  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
-  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
-- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
-  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
-  TVIEW's keys to the values compared with it), from the plan, which now stores it
-  (ADR 0207).
-- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
-  in the current transaction.
-
-### Fixed
-
 - **A subtransaction that commits inside a writing statement no longer drops the
   refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
   trigger on a base table, a function in the `SET` list) took the whole pending queue
@@ -284,6 +306,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
+- `ALTER EXTENSION pg_tviews UPDATE` (from 0.1.0-beta.20 or later) re-derives every
+  TVIEW from its query tree, dependencies first, into `pg_tview_meta.plan`, drops the
+  thirteen columns the plan replaces and re-installs one trigger per TVIEW (the
+  per-table triggers of earlier releases are dropped). Nothing needs to run
+  afterwards. A TVIEW that no longer analyses fails the update, naming it: fix or drop
+  it on beta.26, then update again. Older installs move with
+  `scripts/migrate-from-0.1.0.sql`.
+- The update drops `pg_tviews_analyze_select()`, `pg_tviews_infer_types()`,
+  `pg_tviews_cascade()`, `pg_tviews_insert()`, `pg_tviews_delete()`,
+  `pg_tviews_rebind_cascade_paths()`, `pg_tviews_migrate_triggers()`,
+  `pg_tviews_convert_existing_table()` and `pg_tviews_convert_table()`, and the type
+  `tviews.tviewschema` with `CASCADE`: a user function or column using that type is
+  dropped with it.
+- The update revokes `EXECUTE` from `PUBLIC` on `pg_tviews_refresh_all()`,
+  `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()`,
+  `pg_tviews_reregister_all()`, `pg_tviews_set_logged()`,
+  `pg_tviews_ensure_propagation_indexes()` and `pg_tviews_invalidate_caches()`.
+  Grant them to the role a deploy or restore tool runs as, if it is neither a
+  superuser nor the extension's owner (`docs/user-guides/operators.md`).
+- Writers to TVIEW base tables may now get `40P01` (deadlock) and, under
+  `REPEATABLE READ`, `40001`: retry both. A commit that still has refresh work queued
+  fails with `55000`.
+- `ALTER EXTENSION pg_tviews UPDATE` (and `scripts/migrate-from-0.1.0.sql`) records,
+  for each TVIEW, the indexes that are exactly those pg_tviews creates, under their
+  names, as pg_tviews' (`tviews.registry.managed_indexes`). Any other index on a
+  TVIEW's table is the user's, including one under such a name with another
+  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say). The update
+  warns about each of those: rename it, since its name is now reserved and a dump of
+  the database would not restore it.
 - `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
   every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
   from its view by its next write, once (nothing to do when its view is empty too).

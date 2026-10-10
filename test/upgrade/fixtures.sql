@@ -173,3 +173,10 @@ DO $$ BEGIN
 END $$;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO upgrade_schema_reader;
 GRANT SELECT ON tv_user TO upgrade_table_reader;
+
+-- Indexes a user added (#219): one under the managed GIN's name with another
+-- operator class, which stays the user's; one exactly as pg_tviews creates its GIN,
+-- which the upgrade takes as pg_tviews'.
+CREATE INDEX idx_tv_user_data_gin ON public.tv_user USING gin (data jsonb_path_ops);
+CREATE INDEX user_by_id ON public.tv_user (id, pk_user);
+CREATE INDEX idx_tv_note_data_gin ON app.tv_note USING gin (data);

@@ -78,9 +78,8 @@ fn test_index_name_truncates_on_char_boundary() {
 #[test]
 fn test_propagation_index_ddl() {
     assert_eq!(
-        crate::ddl::create::indexes::propagation_index_ddl(
-            "public", "tv_post", "fk_user", "pk_post"
-        ),
+        crate::ddl::create::ManagedIndex::propagation("tv_post", "fk_user", "pk_post")
+            .ddl("public", "tv_post"),
         "CREATE INDEX IF NOT EXISTS \"idx_tv_post_fk_user_pk_post\" \
          ON \"public\".\"tv_post\" (\"fk_user\", \"pk_post\")"
     );

@@ -13,6 +13,7 @@ use pgrx::prelude::*;
 use std::ffi::CStr;
 
 mod ctas;
+mod indexes;
 mod statements;
 mod tables;
 
@@ -20,6 +21,7 @@ use ctas::{
     CTAS_HINT, Ctas, CtasTarget, create_tview_from_ctas, inspect_create_table_as, skipped_or_raise,
     tview_ctas_target, utility_of,
 };
+use indexes::{IndexFollowUp, index_follow_up_of};
 use statements::{
     ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
     drops_pg_tviews, extension_installed, extension_statement_names, matview_refresh_of,
@@ -434,6 +436,9 @@ struct FollowUps {
     /// A materialized view refreshed: the TVIEWs refreshing in full on its
     /// changes are rebuilt.
     matview_refresh: Option<pg_sys::Oid>,
+    /// An index of a TVIEW's table created, renamed or dropped: `pg_tviews`'
+    /// record of its own follows.
+    index_follow_up: Option<IndexFollowUp>,
 }
 
 impl FollowUps {
@@ -447,6 +452,7 @@ impl FollowUps {
                 privileges_change: None,
                 extension_drop: None,
                 matview_refresh: None,
+                index_follow_up: None,
             };
         }
         // SAFETY: as above.
@@ -464,6 +470,7 @@ impl FollowUps {
                 privileges_change: privileges_change_of(pstmt),
                 extension_drop,
                 matview_refresh: matview_refresh_of(pstmt),
+                index_follow_up: index_follow_up_of(pstmt).unwrap_or_else(|e| e.raise()),
             }
         }
     }
@@ -497,6 +504,11 @@ impl FollowUps {
             && let Err(e) = crate::ddl::drop::drop_left_backing_views(&views)
         {
             e.raise_in("pg_tviews: could not drop the backing views of the dropped extension");
+        }
+        if let Some(follow_up) = self.index_follow_up
+            && let Err(e) = follow_up.run()
+        {
+            e.raise_in("pg_tviews: could not record the indexes of a TVIEW's table");
         }
         if let Some(matview) = self.matview_refresh
             && let Err(e) = crate::ddl::uncascaded::refresh_readers_of(matview)

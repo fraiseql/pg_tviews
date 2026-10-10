@@ -150,6 +150,10 @@ BEGIN
 END $$;
 SELECT pg_temp.pg_tviews_restore('tviews.pg_tview_meta', 'pg_temp.pg_tviews_saved_meta',
     '{"plan": "''{\"version\": 1}''::jsonb", "needs_reregister": "true"}');
+-- 0.1.0 recorded no index as its own: the re-registration below takes the indexes
+-- that are exactly the ones pg_tviews creates, under their names (#219).
+ALTER TABLE tviews.pg_tview_meta ALTER COLUMN managed_index_names DROP NOT NULL;
+UPDATE tviews.pg_tview_meta SET managed_index_names = NULL;
 -- 0.1.0 named a TVIEW's rows by pk_<entity>, which the library no longer assumes:
 -- record it, so each TVIEW re-derived below reads the rows of those not re-derived yet.
 UPDATE tviews.pg_tview_meta m
@@ -244,6 +248,8 @@ BEGIN
 END $$;
 
 SELECT entity, status FROM tviews.pg_tviews_reregister_all(strict => true);
+UPDATE tviews.pg_tview_meta SET managed_index_names = '{}' WHERE managed_index_names IS NULL;
+ALTER TABLE tviews.pg_tview_meta ALTER COLUMN managed_index_names SET NOT NULL;
 
 COMMIT;
 

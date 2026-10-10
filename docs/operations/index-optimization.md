@@ -17,8 +17,15 @@ pg_tviews automatically creates, on every new TVIEW:
   older TVIEWs with `pg_tviews_ensure_propagation_indexes()`)
 
 None of them is on a column that refreshes rewrite, so refreshes stay HOT. There is
-**no** index on `data` unless `pg_tviews.data_gin_index` is on. See
+**no** index on `data` unless the `data_gin_index` option is on (or
+`pg_tviews.data_gin_index` when the TVIEW is created). See
 [HOT Updates and TVIEW Storage](hot-updates.md) before adding any index on `data`.
+
+These indexes are pg_tviews': `tviews.registry.managed_indexes` lists them, and their
+names (`idx_<tv>_id`, `idx_<tv>_<fk>_<pk>`, `idx_<tv>_data_gin`…) are reserved, so a
+`CREATE INDEX` of your own under one of them is refused (`42939`). Any other index you
+add is yours: `pg_tviews_create_or_replace()` carries it over when it rebuilds the
+TVIEW, and never drops it.
 
 ---
 
@@ -42,10 +49,12 @@ SELECT * FROM pg_tviews_ensure_propagation_indexes();
 **Why**: Enable fast JSONB queries (`WHERE data @> '{}'`)
 
 ```sql
--- GIN index for JSONB containment queries
-CREATE INDEX idx_tv_post_data_gin ON tv_post USING GIN(data);
+-- GIN index for JSONB containment queries: pg_tviews' own, through the option
+SELECT tviews.pg_tviews_create_or_replace('public.tv_post',
+    (SELECT query FROM tviews.registry WHERE entity = 'post'),
+    options => '{"data_gin_index": true}');
 
--- Specific JSONB path index (PostgreSQL 14+)
+-- Specific JSONB path index (PostgreSQL 14+): your own, under a name of yours
 -- Trinity pattern: JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
 CREATE INDEX idx_tv_post_data_title
 ON tv_post USING GIN((data -> 'title'));
@@ -80,15 +89,8 @@ WHERE data->>'status' = 'published';
 
 **Why**: Speed up GraphQL queries by UUID
 
-```sql
--- Index on id (UUID) column for GraphQL queries
--- Trinity pattern: id is UUID, pk_post is integer
-CREATE INDEX idx_tv_post_id ON tv_post(id);
-CREATE INDEX idx_tv_user_id ON tv_user(id);
-CREATE INDEX idx_tv_comment_id ON tv_comment(id);
-```
-
-**When to Create**: Always for GraphQL/API integration
+Created with every TVIEW: `idx_<tv>_id` on `id`, and one on each UUID FK column
+(see [Automatic Indexes](#automatic-indexes)). Nothing to do.
 
 **Performance Impact**:
 - UUID lookup speedup: 50-500×
@@ -146,13 +148,8 @@ ON tv_order(fk_customer, (data->>'created_at'));
 - GIN index on data column
 - UUID id column
 
-**Creation Script**:
-```sql
--- Trinity pattern: tb_post -> tv_post (pk_post INT, id UUID, data JSONB)
-CREATE INDEX idx_tv_post_fk_user ON tv_post(fk_user);
-CREATE INDEX idx_tv_post_id ON tv_post(id);
-CREATE INDEX idx_tv_post_data_gin ON tv_post USING GIN(data);
-```
+The PRIMARY KEY, `fk_*` and `id` indexes are created with the TVIEW; the GIN index
+on `data` is the `data_gin_index` option (above).
 
 ### Large TVIEWs (>1M rows)
 
@@ -164,13 +161,9 @@ CREATE INDEX idx_tv_post_data_gin ON tv_post USING GIN(data);
 - Specific JSONB path indexes for frequent queries
 - Consider partitioning (see [limits.md](../reference/limits.md))
 
-**Creation Script**:
+**Creation Script** (the PRIMARY KEY, `fk_*`, `id` and, with `data_gin_index`, GIN
+indexes come with the TVIEW):
 ```sql
--- Trinity pattern: All entities use singular names
-CREATE INDEX idx_tv_order_fk_customer ON tv_order(fk_customer);
-CREATE INDEX idx_tv_order_id ON tv_order(id);
-CREATE INDEX idx_tv_order_data_gin ON tv_order USING GIN(data);
-
 -- Specific path indexes for hot queries
 -- Trinity pattern: JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
 CREATE INDEX idx_tv_order_data_status
@@ -319,7 +312,7 @@ BEGIN
     -- Suggest GIN index for large TVIEWs
     RETURN QUERY
     SELECT
-        'CREATE INDEX idx_tv_' || entity_name || '_data_gin ON tv_' ||
+        'CREATE INDEX tv_' || entity_name || '_data_containment ON tv_' ||
         entity_name || ' USING GIN(data)' as index_suggestion,
         'Large TVIEW without JSONB index (JSONB queries)' as reason,
         '10-100× speedup for JSONB containment queries' as estimated_benefit
@@ -372,10 +365,8 @@ INSERT INTO tb_post SELECT * FROM external_data;
 -- 2. Create TVIEW (without indexes)
 CREATE TABLE tv_post AS SELECT ...;
 
--- 3. Create indexes on tv_post
-CREATE INDEX CONCURRENTLY idx_tv_post_fk_user ON tv_post(fk_user);
-CREATE INDEX CONCURRENTLY idx_tv_post_id ON tv_post(id);
-CREATE INDEX CONCURRENTLY idx_tv_post_data_gin ON tv_post USING GIN(data);
+-- 3. Create your own indexes on tv_post
+CREATE INDEX CONCURRENTLY tv_post_data_title ON tv_post USING GIN((data -> 'title'));
 ```
 
 **Benefit**: 2-3× faster than creating indexes first

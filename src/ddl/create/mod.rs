@@ -5,7 +5,7 @@ mod relations;
 mod select;
 
 use derive::derive;
-pub(crate) use indexes::{index_ddl, index_name, managed_index_names, propagation_index_ddl};
+pub(crate) use indexes::{ManagedIndex, index_name, managed_indexes};
 use register::Registration;
 pub(crate) use relations::view_source_columns;
 use relations::{
@@ -232,8 +232,8 @@ fn create_tview_inner(
     )?;
     let lineage = &derivation.lineage;
 
-    // Create materialized table tv_<entity>, keyed on the identity.
-    create_materialized_table(
+    // Create materialized table tv_<entity>, keyed on the identity, and its indexes.
+    let indexes = create_materialized_table(
         &tv_table_name,
         &final_schema,
         &schema_name,
@@ -278,6 +278,7 @@ fn create_tview_inner(
 
     // Whoever reads the TVIEW's table reads its backing view.
     let table_oid = relation_oid(&schema_name, &tv_table_name)?;
+    crate::catalog::indexes::record(table_oid, &indexes)?;
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
     // UNLOGGED table's rows can be trusted until a reset.

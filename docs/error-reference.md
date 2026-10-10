@@ -20,6 +20,7 @@ Placeholders stand for the values each message carries.
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
 | `42804` | `datatype_mismatch` | `KeyTypeRefused` | &lt;column&gt; is &lt;type&gt;: a TVIEW's pk_&lt;entity&gt; must be an integer key (smallint, integer or bigint) | Key the rows on an integer column, and keep a uuid key in the id column. |
 | `42809` | `wrong_object_type` | `ColumnDdlRefused` | &lt;statement&gt; on TVIEW &lt;table&gt; is refused: a TVIEW's columns are its definition's | Change the definition with tviews.pg_tviews_create_or_replace(): the table follows it. |
+| `42939` | `reserved_name` | `IndexNameReserved` | index name &lt;index&gt; on TVIEW &lt;table&gt; is reserved for pg_tviews' own index | Give the index another name. pg_tviews creates its own indexes on a TVIEW (tviews.registry.managed_indexes lists them). |
 | `42501` | `insufficient_privilege` | `PermissionDenied` | &lt;reason&gt; |  |
 | `42P17` | `invalid_object_definition` | `DependencyCycle` | relations would read each other in a cycle: &lt;relation&gt;, &lt;relation&gt; |  |
 | `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads. |

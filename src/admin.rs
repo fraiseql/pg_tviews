@@ -278,7 +278,9 @@ fn rebuild_statements(
 /// Returns the DDL for each missing index: executed, or only reported when
 /// `dry_run` is true. Idempotent: a second call returns no rows. On large
 /// TVIEWs run the reported statements by hand with `CREATE INDEX CONCURRENTLY`
-/// (which cannot run inside a function). Requires owning each TVIEW (or the
+/// (which cannot run inside a function). The indexes it creates, and those its
+/// statements created when run by hand, are `pg_tviews`' (listed in
+/// `tviews.registry.managed_indexes`). Requires owning each TVIEW (or the
 /// extension).
 ///
 /// Usage:
@@ -316,7 +318,9 @@ fn pg_tviews_ensure_propagation_indexes(
             continue;
         }
         let (schema, table) = crate::ddl::relation_name(meta.tview_oid)?;
+        let mut recorded = Vec::new();
         for column in lookups {
+            let index = crate::ddl::create::ManagedIndex::propagation(&table, column, key);
             let indexed = crate::utils::spi::one::<bool>(
                 "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
                  JOIN pg_catalog.pg_attribute a \
@@ -328,18 +332,20 @@ fn pg_tviews_ensure_propagation_indexes(
                 ],
             )?;
             if indexed != Some(true) {
-                missing.push(crate::ddl::create::propagation_index_ddl(
-                    &schema, &table, column, key,
-                ));
+                missing.push(index.ddl(&schema, &table));
+                if !dry_run {
+                    recorded.extend(index.create(&schema, &table)?);
+                }
+            } else if !dry_run && index.exists_on(meta.tview_oid)? {
+                // Its reported statement, run by hand: pg_tviews' own.
+                recorded.push(index.name);
             }
+        }
+        if !recorded.is_empty() {
+            crate::catalog::indexes::record(meta.tview_oid, &recorded)?;
         }
     }
 
-    if !dry_run {
-        for ddl in &missing {
-            Spi::run(ddl).map_err(TViewError::from)?;
-        }
-    }
     Ok(SetOfIterator::new(missing))
 }
 

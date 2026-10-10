@@ -57,25 +57,31 @@ pub(super) fn alter_storage(
         }
     }
     if desired.data_gin_index && !current.data_gin_index {
-        crate::utils::spi::run_ddl(&create::index_ddl(
-            schema,
-            tv_name,
-            "data_gin",
-            "USING GIN ",
-            &["data"],
-        ))?;
+        let created = create::ManagedIndex::data_gin(tv_name, "data").create(schema, tv_name)?;
+        crate::catalog::indexes::record(table, &created.into_iter().collect::<Vec<_>>())?;
     } else if !desired.data_gin_index && current.data_gin_index {
-        for index in crate::utils::spi::strings(
-            "SELECT i.indexrelid::pg_catalog.regclass::text FROM pg_catalog.pg_index i \
+        // pg_tviews' GIN index on data, under whatever name it was renamed to.
+        let gin = crate::utils::spi::strings(
+            "SELECT ic.relname::pg_catalog.text FROM pg_catalog.pg_index i \
              JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
              JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin' \
              JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
               AND a.attname = 'data' AND a.attnum = i.indkey[0] \
-             WHERE i.indrelid = $1 AND i.indnatts = 1 AND i.indpred IS NULL",
-            &[crate::utils::spi::oid(table)],
-        )? {
-            crate::utils::spi::run_ddl(&format!("DROP INDEX {index}"))?;
+             WHERE i.indrelid = $1 AND i.indnatts = 1 AND i.indpred IS NULL \
+               AND ic.relname = ANY ($2)",
+            &[
+                crate::utils::spi::oid(table),
+                crate::utils::spi::text_array_of(&crate::catalog::indexes::recorded(table)?),
+            ],
+        )?;
+        for index in &gin {
+            crate::utils::spi::run_ddl(&format!(
+                "DROP INDEX {}.{}",
+                quote_identifier(schema),
+                quote_identifier(index)
+            ))?;
         }
+        crate::catalog::indexes::forget(table, &gin)?;
     }
     Ok(())
 }
@@ -109,6 +115,19 @@ pub(super) fn rebuild(
         ));
     }
 
+    // An invalid user index (a failed CREATE INDEX CONCURRENTLY) would be re-created
+    // valid on the empty table, and a UNIQUE one then fail the fill.
+    let invalid_indexes = invalid_user_indexes(meta.tview_oid)?;
+    if !invalid_indexes.is_empty() {
+        return Err(TViewError::WrongState {
+            reason: format!(
+                "TVIEW {tv_name} must be rebuilt for this change, and these indexes on it are \
+                 invalid: {}. Drop or REINDEX them, then retry",
+                invalid_indexes.join(", ")
+            ),
+        });
+    }
+
     // What the rebuild must put back, as statements computed before the drop.
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let graphql_typename = Spi::connect(|client| {
@@ -125,7 +144,7 @@ pub(super) fn rebuild(
             .get_one::<String>()
     })
     .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))?;
-    let user_indexes = user_indexes(entity, &tv_name, meta.tview_oid)?;
+    let user_indexes = user_indexes(meta.tview_oid)?;
 
     crate::ddl::drop::drop_tview(
         &format!("{}.{tv_name}", quote_identifier(schema)),
@@ -311,38 +330,49 @@ pub(super) const RESTORE_STATEMENTS: &str = "\
          AND d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objsubid = 0 \
     ) s ORDER BY step, statement";
 
-/// Indexes a user added to the TVIEW's table, as `(name, definition)`: every
-/// index that backs no constraint and is not one `pg_tviews` creates for the
-/// current definition.
-pub(super) fn user_indexes(
-    entity: &str,
-    tv_name: &str,
-    table: pg_sys::Oid,
-) -> TViewResult<Vec<(String, String)>> {
-    let embed_columns = crate::catalog::registered::embed_columns(entity)?;
-    let view_oid = TviewMeta::load_by_entity(entity)?
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?
-        .view_oid;
-    let schema = create::ViewColumns::classify(crate::utils::column_types(view_oid)?);
-    let managed = create::managed_index_names(tv_name, &schema, &embed_columns);
+/// `WHERE` conditions over `pg_index i` / `pg_class ic` that select the indexes a
+/// user added to the TVIEW's table `$1`: every index that backs no constraint and
+/// that `pg_tviews` did not create.
+fn user_index_filter() -> String {
+    format!(
+        "i.indrelid = $1 \
+         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
+                         WHERE k.conindid = i.indexrelid) \
+         AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
+                                FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
+        crate::utils::meta_table()
+    )
+}
 
+/// The user's indexes on the TVIEW's table that are invalid, by name.
+fn invalid_user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT pg_catalog.quote_ident(ic.relname) FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
+             WHERE {} AND NOT i.indisvalid ORDER BY 1",
+            user_index_filter()
+        ),
+        &[crate::utils::spi::oid(table)],
+    )
+}
+
+/// Indexes a user added to the TVIEW's table (see [`user_index_filter`]), as
+/// `(name, definition)`.
+pub(super) fn user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<(String, String)>> {
     Spi::connect(|client| {
         let mut indexes = Vec::new();
         for row in client.select(
-            "SELECT ic.relname::text, pg_catalog.pg_get_indexdef(i.indexrelid) \
-             FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
-             WHERE i.indrelid = $1 \
-               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
-                               WHERE k.conindid = i.indexrelid) \
-             ORDER BY 1",
+            &format!(
+                "SELECT ic.relname::text, pg_catalog.pg_get_indexdef(i.indexrelid) \
+                 FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid \
+                 WHERE {} ORDER BY 1",
+                user_index_filter()
+            ),
             None,
             &[crate::utils::spi::oid(table)],
         )? {
-            if let (Some(name), Some(definition)) = (row.get::<String>(1)?, row.get::<String>(2)?)
-                && !managed.contains(&name)
-            {
+            if let (Some(name), Some(definition)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
                 indexes.push((name, definition));
             }
         }

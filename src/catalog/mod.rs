@@ -1,3 +1,4 @@
+pub(crate) mod indexes;
 pub mod plan;
 pub mod reads;
 pub mod registered;

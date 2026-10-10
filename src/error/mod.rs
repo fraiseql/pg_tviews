@@ -35,6 +35,10 @@ pub enum TViewError {
     /// sets.
     ColumnDdlRefused { table: String, change: String },
 
+    /// A user's index would take a name `pg_tviews` keeps for its own indexes on a
+    /// TVIEW's table.
+    IndexNameReserved { table: String, index: String },
+
     /// The current role may not do this.
     PermissionDenied { reason: String },
 
@@ -87,6 +91,7 @@ impl TViewError {
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
             Self::KeyTypeRefused { .. } => PgSqlErrorCode::ERRCODE_DATATYPE_MISMATCH,
             Self::ColumnDdlRefused { .. } => PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE,
+            Self::IndexNameReserved { .. } => PgSqlErrorCode::ERRCODE_RESERVED_NAME,
             Self::PermissionDenied { .. } => PgSqlErrorCode::ERRCODE_INSUFFICIENT_PRIVILEGE,
             Self::DependencyCycle { .. } => PgSqlErrorCode::ERRCODE_INVALID_OBJECT_DEFINITION,
             Self::DepthExceeded { .. } => PgSqlErrorCode::ERRCODE_STATEMENT_TOO_COMPLEX,
@@ -140,6 +145,11 @@ impl TViewError {
             Self::ColumnDdlRefused { .. } => Some(
                 "Change the definition with tviews.pg_tviews_create_or_replace(): the table \
                  follows it."
+                    .into(),
+            ),
+            Self::IndexNameReserved { .. } => Some(
+                "Give the index another name. pg_tviews creates its own indexes on a TVIEW \
+                 (tviews.registry.managed_indexes lists them)."
                     .into(),
             ),
             Self::QueueFull { .. } => {
@@ -237,6 +247,10 @@ impl fmt::Display for TViewError {
                 f,
                 "{change} on TVIEW {table} is refused: a TVIEW's columns are its definition's"
             ),
+            Self::IndexNameReserved { table, index } => write!(
+                f,
+                "index name {index} on TVIEW {table} is reserved for pg_tviews' own index"
+            ),
             Self::DependencyCycle { entities } => write!(
                 f,
                 "relations would read each other in a cycle: {}",
@@ -319,6 +333,10 @@ mod tests {
                 table: s(),
                 change: s(),
             },
+            TViewError::IndexNameReserved {
+                table: s(),
+                index: s(),
+            },
             TViewError::PermissionDenied { reason: s() },
             TViewError::DependencyCycle { entities: vec![] },
             TViewError::DepthExceeded {
@@ -359,6 +377,7 @@ mod tests {
                 | TViewError::DefinitionRefused { .. }
                 | TViewError::KeyTypeRefused { .. }
                 | TViewError::ColumnDdlRefused { .. }
+                | TViewError::IndexNameReserved { .. }
                 | TViewError::PermissionDenied { .. }
                 | TViewError::DependencyCycle { .. }
                 | TViewError::DepthExceeded { .. }

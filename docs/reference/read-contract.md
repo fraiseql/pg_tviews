@@ -36,6 +36,7 @@ them.
 | `function_reads` | `jsonb` | each function the definition calls that may read tables, `schema.name(argument types)` → the tables it reads (as `regclass` text), as declared (option `function_reads`); `{}` for most TVIEWs |
 | `time_dependent` | `boolean` | the definition reads the current time (`CURRENT_DATE`, `now()`…): its rows change with no write (below) |
 | `time_refresh` | `text` | `external` when a time-dependent TVIEW declared it (option `time_refresh`, else `pg_tviews.time_refresh`); NULL otherwise |
+| `managed_indexes` | `regclass[]` | the indexes pg_tviews created on the table and still owns, sorted by name, not counting one that backs a constraint (the primary key); NULL when the table is gone (below) |
 
 **`query`** is the definition as pg_tviews stores it: the author's text after the
 creation pipeline, with `SELECT *` expanded, a raw SELECT rewritten to the
@@ -86,6 +87,34 @@ or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME
 `tviews.pg_tviews_refresh_time_dependent()` brings it up to date
 ([DDL](ddl.md#time-dependent-tviews)).
 
+**`managed_indexes`** are the indexes pg_tviews created on the TVIEW's table: on `id`
+and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, and the GIN index
+on `data` of the `data_gin_index` option. pg_tviews records each when it creates it
+(nothing when a relation already holds the name) and follows `ALTER INDEX … RENAME`
+and `DROP INDEX` of one. A TVIEW's **user indexes** are every index on its table,
+minus `managed_indexes`, minus those backing a constraint:
+
+```sql
+SELECT i.indexrelid::regclass
+FROM tviews.registry r
+JOIN pg_index i ON i.indrelid = format('%I.%I', r.schema, r.name)::regclass
+WHERE r.entity = 'post'
+  AND i.indexrelid <> ALL (r.managed_indexes)
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid);
+```
+
+pg_tviews never drops a user index, and carries every one over a `rebuilt` replace.
+The names pg_tviews uses for its indexes on a TVIEW (those in `managed_indexes`, and
+those it creates or would create for the definition, `idx_<tv>_data_gin` included) are
+reserved: a user's `CREATE INDEX` or `ALTER INDEX … RENAME TO` under one is refused
+with `42939`, unless the statement creates exactly the index pg_tviews creates under
+that name (same method and columns, nothing else): what
+`pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand
+(`CONCURRENTLY` too), or what a dump restores. That index is pg_tviews', and recorded. A TVIEW registered by an earlier release gets its record
+when the upgrade re-registers it: the indexes that are exactly those pg_tviews
+creates, under their names. The upgrade warns about any other index under such a
+name, which stays the user's: rename it, or a dump will not restore it.
+
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
 registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
 `tv_*` table it reads has a kind too: `propagated` when embedded, otherwise
@@ -104,7 +133,7 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
 |---|---|---|
 | `logged` | `boolean` | `pg_class.relpersistence` |
 | `fillfactor` | `integer` | the table's `fillfactor` reloption, 100 when unset |
-| `data_gin_index` | `boolean` | whether a valid GIN index on `data` with the default `jsonb_ops` operator class exists |
+| `data_gin_index` | `boolean` | whether pg_tviews' GIN index on `data` (one of `managed_indexes`) exists and is valid; a user's GIN index on `data` does not count |
 | `group_keys` | `object` or `null` | the source table → group key column map of an aggregate TVIEW; `null` for a plain one |
 
 Values come from the system catalogs where they can, so the view reports the truth
@@ -157,8 +186,9 @@ under the current `search_path` does. An invalid definition raises its error. Pa
   transaction.
 - `altered`: only `logged`, `fillfactor`, `data_gin_index`, `uncascaded_policy`,
   `uncascaded_tables`, `function_reads` or `time_refresh` differ; changed in place
-  (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, the GIN index created or
-  dropped, the declarations stored and the TVIEW re-registered), rows kept.
+  (`ALTER TABLE … SET LOGGED/UNLOGGED`, `SET (fillfactor = n)`, pg_tviews' GIN index
+  created or dropped, never a user's, the declarations stored and the TVIEW
+  re-registered), rows kept.
 - `replaced`: the definition differs but produces the same columns (names and types,
   in order), and `group_keys` is the same. The backing view is replaced, the TVIEW
   re-registered (triggers added and removed), and the rows reconciled in place with
@@ -171,9 +201,12 @@ under the current `search_path` does. An invalid definition raises its error. Pa
   requires the table's key to stay: the first `DISTINCT ON` key, or `pk_<entity>`.
 - `rebuilt`: the columns or `group_keys` differ. The backing view, table and
   registration are dropped and created again, and the rows computed. The table's and
-  view's owner, privileges and comment, the GraphQL type name and the indexes a user
-  added to the table are carried over; an added index that no longer applies fails the
-  call, naming it. A rebuild is refused, naming the reason, when an object depends on the
+  view's owner, privileges and comment, the GraphQL type name and the user's indexes
+  (every index not in `managed_indexes` nor backing a constraint) are carried over; an
+  added index that no longer applies fails the call, naming it. A rebuild is refused
+  before anything is dropped, naming the indexes, while a user index is invalid (a
+  failed `CREATE INDEX CONCURRENTLY`; `55000`): drop or `REINDEX` it first. A rebuild
+  is also refused, naming the reason, when an object depends on the
   table or view, or the table has row level security or policies, triggers, rules,
   publication membership, a non-default replica identity, constraints other than the
   primary key, per-column statistics targets, privileges or comments, extended

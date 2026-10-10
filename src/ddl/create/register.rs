@@ -50,14 +50,19 @@ impl Registration<'_> {
         };
         crate::ddl::uncascaded::report(&qualified, &uncascaded);
         let plan = &self.derivation.plan;
-        index_embed_lookups(
-            self.entity,
-            lineage,
-            plan,
+        super::derive::aggregate_embeds(lineage, self.entity)?;
+        let lookups = embed_lookups(plan);
+        let mut indexes = if replace && crate::catalog::indexes::unrecorded(table_oid)? {
+            adopted_indexes(table_oid, &tview, self.columns, &lookups)?
+        } else {
+            Vec::new()
+        };
+        indexes.extend(create_embed_lookup_indexes(
+            &lookups,
             self.columns,
             &tview,
             self.schema,
-        )?;
+        )?);
         MetaRow {
             entity: self.entity,
             view_oid: self.view_oid,
@@ -68,7 +73,8 @@ impl Registration<'_> {
             uncascaded: &uncascaded,
             identity: &lineage.identity,
         }
-        .write(replace)
+        .write(replace)?;
+        crate::catalog::indexes::record(table_oid, &indexes)
     }
 }
 
@@ -171,21 +177,46 @@ impl MetaRow<'_> {
     }
 }
 
-/// Index every column `plan` looks up an embedded TVIEW's rows by. An embedded
-/// aggregate TVIEW with no such column is refused.
-fn index_embed_lookups(
-    entity: &str,
-    lineage: &crate::lineage::Lineage,
-    plan: &TviewPlan,
-    schema: &ViewColumns,
-    tview_name: &str,
-    schema_name: &str,
-) -> TViewResult<()> {
-    super::derive::aggregate_embeds(lineage, entity)?;
-    let lookups: Vec<String> = plan
-        .embeds
+/// Every column `plan` looks up an embedded TVIEW's rows by.
+fn embed_lookups(plan: &TviewPlan) -> Vec<String> {
+    plan.embeds
         .iter()
         .flat_map(|e| e.lookups.iter().cloned())
-        .collect();
-    create_embed_lookup_indexes(&lookups, schema, tview_name, schema_name)
+        .collect()
+}
+
+/// The indexes on `table` that are exactly those `pg_tviews` creates for the
+/// TVIEW under their names: what a TVIEW registered before its indexes were
+/// recorded takes as `pg_tviews`' when the upgrade re-registers it. Another index
+/// under one of these names stays the user's, with a warning: the name is
+/// reserved, so a dump of the database would not restore it.
+fn adopted_indexes(
+    table: pg_sys::Oid,
+    tview_name: &str,
+    schema: &ViewColumns,
+    lookups: &[String],
+) -> TViewResult<Vec<String>> {
+    let mut adopted = Vec::new();
+    for index in super::managed_indexes(tview_name, schema, lookups) {
+        if index.exists_on(table)? {
+            adopted.push(index.name);
+        } else if crate::utils::spi::one::<bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+             WHERE i.indrelid = $1 AND c.relname = $2)",
+            &[
+                crate::utils::spi::oid(table),
+                crate::utils::spi::text(index.name.as_str()),
+            ],
+        )? == Some(true)
+        {
+            pgrx::warning!(
+                "index {} on {tview_name} is not the index pg_tviews creates under that name, \
+                 which is reserved: rename it (ALTER INDEX … RENAME TO), or a dump of this \
+                 database will not restore it",
+                index.name
+            );
+        }
+    }
+    Ok(adopted)
 }

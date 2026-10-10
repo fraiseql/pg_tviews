@@ -133,7 +133,11 @@ extension_sql!(
         time_refresh TEXT CHECK (time_refresh IN ('external')),
         -- The definition reads the current time (CURRENT_DATE, now()…), so its
         -- rows change with no write.
-        time_dependent BOOLEAN NOT NULL DEFAULT false
+        time_dependent BOOLEAN NOT NULL DEFAULT false,
+        -- The indexes pg_tviews created on the table and still owns, by name
+        -- (resolved among the table's indexes: a dump restores indexes after
+        -- this table's rows, so they cannot be regclass).
+        managed_index_names TEXT[] NOT NULL DEFAULT '{}'
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -238,8 +242,9 @@ COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
 
 -- A registration whose table is gone stays visible, with NULL for what the table
--- would tell; `view` is NULL once the view is gone. data_gin_index is a valid,
--- default (jsonb_ops) GIN index on data.
+-- would tell; `view` is NULL once the view is gone. managed_indexes are the
+-- recorded indexes still on the table, but not one backing a constraint;
+-- data_gin_index is the managed GIN index on data, when valid.
 CREATE VIEW @extschema@.registry AS
 SELECT
     n.nspname::text AS schema,
@@ -266,12 +271,10 @@ SELECT
             FROM pg_catalog.pg_index i
             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
             JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin'
-            JOIN pg_catalog.pg_opclass oc ON oc.oid = i.indclass[0]
-             AND oc.opcname = 'jsonb_ops'
             JOIN pg_catalog.pg_attribute a
               ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
-              AND i.indisvalid),
+              AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
         'group_keys', m.group_keys) END AS options,
     m.needs_reregister,
     v.oid::pg_catalog.regclass AS view,
@@ -303,7 +306,15 @@ SELECT
                GROUP BY r.function) f),
         '{}') AS function_reads,
     m.time_dependent,
-    m.time_refresh
+    m.time_refresh,
+    CASE WHEN c.oid IS NOT NULL THEN ARRAY(
+        SELECT i.indexrelid::pg_catalog.regclass
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+        WHERE i.indrelid = c.oid AND ic.relname = ANY (m.managed_index_names)
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                          WHERE k.conindid = i.indexrelid)
+        ORDER BY ic.relname) END AS managed_indexes
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
