@@ -498,4 +498,22 @@ mod ctas_extraction_tests {
             Some("SELECT 1")
         );
     }
+
+    #[test]
+    fn skips_a_comment_with_an_apostrophe_after_as() {
+        let sql = "CREATE TABLE tv_post AS -- don't\nSELECT 1;";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_post").as_deref(),
+            Some("SELECT 1")
+        );
+    }
+
+    #[test]
+    fn non_ascii_names_keep_offsets_on_char_boundaries() {
+        let sql = "CREATE TABLE tv_café AS SELECT 'é' AS \"ü\"";
+        assert_eq!(
+            extract_ctas_select(sql, "tv_café").as_deref(),
+            Some("SELECT 'é' AS \"ü\"")
+        );
+    }
 }
