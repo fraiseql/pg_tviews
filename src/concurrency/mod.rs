@@ -29,6 +29,25 @@ pub enum Side {
     Writer,
 }
 
+/// Where in a relation a lock lives: the values of its columns, or (a TVIEW's
+/// table) the keys of rows being created. Each has its own intent and
+/// escalated locks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Space {
+    Values,
+    Keys,
+}
+
+impl Space {
+    /// `field3` of the space's relation tag.
+    const fn field3(self) -> u32 {
+        match self {
+            Self::Values => 0,
+            Self::Keys => 1,
+        }
+    }
+}
+
 /// The columns of a relation whose values are locked: one value per row, the
 /// columns' text forms combined when there are several.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -124,10 +143,10 @@ pub const fn value_tag(database: u32, relid: u32, hash: u32) -> pg_sys::LOCKTAG 
     tag(database, relid, hash, VALUE_TAG)
 }
 
-/// The tag of a relation's intent and escalated locks.
+/// The tag of a relation's intent and escalated locks in `space`.
 #[must_use]
-pub const fn relation_tag(database: u32, relid: u32) -> pg_sys::LOCKTAG {
-    tag(database, relid, 0, RELATION_TAG)
+pub const fn relation_tag(database: u32, relid: u32, space: Space) -> pg_sys::LOCKTAG {
+    tag(database, relid, space.field3(), RELATION_TAG)
 }
 
 fn database() -> u32 {
@@ -140,6 +159,23 @@ fn database() -> u32 {
 /// one, and past `pg_tviews.lock_escalation_threshold` values the relation is
 /// locked instead.
 pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
+    lock_in(Space::Values, target, side, values);
+}
+
+/// A refresh about to create TVIEW rows (`keys`, rows of `tview` it found
+/// missing) locks them exclusively, in the TVIEW's key space: two transactions
+/// creating the same row, which no join value links (a child carrying the key
+/// in its row, a new group of an aggregate), wait for each other. Escalation
+/// locks the key space alone, so it only stops other creations of rows.
+pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
+    let target = LockTarget {
+        relid: tview.to_u32(),
+        attnums: vec![-1],
+    };
+    lock_in(Space::Keys, &target, Side::Writer, keys);
+}
+
+fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
     let policy = Policy::current();
     if policy == Policy::Skip || values.is_empty() {
         return;
@@ -151,35 +187,40 @@ pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
         .collect();
     hashes.sort_unstable();
     hashes.dedup();
+    let held = |hash| Held::Value {
+        relid,
+        space,
+        side,
+        hash,
+    };
     let (escalate, intent, new) = REGISTRY.with_borrow(|r| {
-        if r.escalated(relid, side) {
+        if r.escalated(relid, space, side) {
             return (false, false, Vec::new());
         }
         let new: Vec<u32> = hashes
             .into_iter()
-            .filter(|&hash| !r.holds(&Held::Value { relid, side, hash }))
+            .filter(|&hash| !r.holds(&held(hash)))
             .collect();
         let threshold = crate::config::lock_escalation_threshold();
-        let escalate = !new.is_empty() && r.should_escalate(relid, side, new.len(), threshold);
-        (escalate, !r.holds(&Held::Intent { relid, side }), new)
+        let escalate =
+            !new.is_empty() && r.should_escalate(relid, space, side, new.len(), threshold);
+        (
+            escalate,
+            !r.holds(&Held::Intent { relid, space, side }),
+            new,
+        )
     });
     if escalate {
-        lock_relation(relid, side);
+        relation_lock(relid, space, side, escalated_mode(side));
         return;
     }
     if new.is_empty() {
         return;
     }
-    let database = database();
     if intent {
-        acquire(
-            &relation_tag(database, relid),
-            intent_mode(side),
-            side,
-            policy,
-        );
-        REGISTRY.with_borrow_mut(|r| r.record(Held::Intent { relid, side }));
+        relation_lock(relid, space, side, intent_mode(side));
     }
+    let database = database();
     for hash in new {
         acquire(
             &value_tag(database, relid, hash),
@@ -187,7 +228,7 @@ pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
             side,
             policy,
         );
-        REGISTRY.with_borrow_mut(|r| r.record(Held::Value { relid, side, hash }));
+        REGISTRY.with_borrow_mut(|r| r.record(held(hash)));
     }
 }
 
@@ -195,35 +236,31 @@ pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
 /// a writer that changes every value (a full refresh), or a transaction past the
 /// escalation threshold.
 pub fn lock_relation(relid: u32, side: Side) {
-    let policy = Policy::current();
-    if policy == Policy::Skip || REGISTRY.with_borrow(|r| r.escalated(relid, side)) {
-        return;
-    }
-    acquire(
-        &relation_tag(database(), relid),
-        escalated_mode(side),
-        side,
-        policy,
-    );
-    REGISTRY.with_borrow_mut(|r| r.record(Held::Escalated { relid, side }));
+    relation_lock(relid, Space::Values, side, escalated_mode(side));
 }
 
 /// Take the intent lock of relation `relid` for `side` alone: a refresh of a
 /// TVIEW's rows conflicts with a writer that locked the whole TVIEW.
 pub fn lock_intent(relid: u32, side: Side) {
+    relation_lock(relid, Space::Values, side, intent_mode(side));
+}
+
+/// Take `relid`'s relation lock in `space` in `mode`, the intent or the
+/// escalated mode of `side`, unless held (an escalated lock covers the intent).
+fn relation_lock(relid: u32, space: Space, side: Side, mode: pg_sys::LOCKMODE) {
     let policy = Policy::current();
-    let held = REGISTRY
-        .with_borrow(|r| r.holds(&Held::Intent { relid, side }) || r.escalated(relid, side));
+    let escalated = mode == escalated_mode(side);
+    let lock = if escalated {
+        Held::Escalated { relid, space, side }
+    } else {
+        Held::Intent { relid, space, side }
+    };
+    let held = REGISTRY.with_borrow(|r| r.holds(&lock) || r.escalated(relid, space, side));
     if policy == Policy::Skip || held {
         return;
     }
-    acquire(
-        &relation_tag(database(), relid),
-        intent_mode(side),
-        side,
-        policy,
-    );
-    REGISTRY.with_borrow_mut(|r| r.record(Held::Intent { relid, side }));
+    acquire(&relation_tag(database(), relid, space), mode, side, policy);
+    REGISTRY.with_borrow_mut(|r| r.record(lock));
 }
 
 /// Writer side: before a query finds TVIEW rows by the values a statement wrote
@@ -374,9 +411,10 @@ mod tests {
             ),
             (5, 16_384, 7)
         );
-        let relation = relation_tag(5, 16_384);
+        let relation = relation_tag(5, 16_384, Space::Values);
         assert_eq!(relation.locktag_field4, 0x5477);
         assert_eq!(relation.locktag_field3, 0);
+        assert_eq!(relation_tag(5, 16_384, Space::Keys).locktag_field3, 1);
     }
 
     #[test]

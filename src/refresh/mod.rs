@@ -249,22 +249,26 @@ pub(crate) fn run_counted_upsert(
 }
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before
-/// recomputing them, and return their `pk_<entity>` when `with_pks`. Under READ
-/// COMMITTED a concurrent writer recomputing one of these rows is then waited for
-/// here, and the recompute that follows, a new statement, sees what it committed;
-/// without the lock it waited inside its own upsert and wrote a document computed
-/// before that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already
-/// fails on such a row (SQLSTATE 40001): the rows are only read.
+/// recomputing them, and the keys of those it doesn't hold yet, and return the
+/// existing rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
+/// recomputing one of these rows, or creating it, is then waited for here, and
+/// the recompute that follows, a new statement, sees what it committed; without
+/// the lock it waited inside its own upsert and wrote a document computed before
+/// that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already fails
+/// on an existing row (SQLSTATE 40001): those rows are only read; a key another
+/// transaction is creating fails at once (REPEATABLE READ, ADR 0207).
 pub(crate) fn lock_rows(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
     with_pks: bool,
 ) -> crate::TViewResult<Vec<i64>> {
+    use crate::concurrency::Policy;
     // SAFETY: reads the backend's isolation level.
     let transaction_snapshot =
         unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
-    if keys.is_empty() || (transaction_snapshot && !with_pks) {
+    let key_locks = Policy::current() != Policy::Skip;
+    if keys.is_empty() || (transaction_snapshot && !with_pks && !key_locks) {
         return Ok(Vec::new());
     }
     let key_type = meta.key_type()?;
@@ -276,21 +280,32 @@ pub(crate) fn lock_rows(
         " FOR UPDATE"
     };
     let sql = format!(
-        "SELECT {qi_pk}::pg_catalog.int8 FROM {qi_tv} \
-         WHERE {qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY {qi_key}{lock}",
+        "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key \
+         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
         key_cast(&key_type, "$1", true)
     );
     let args = [key_array(&key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    Spi::connect_mut(|client| {
+    let (pks, held) = Spi::connect_mut(|client| {
         let mut pks = Vec::new();
+        let mut held = std::collections::HashSet::new();
         for row in client.update(&sql, None, &args)? {
             if let Some(pk) = row.get::<i64>(1)? {
                 pks.push(pk);
             }
+            held.extend(row.get::<String>(2)?);
         }
-        Ok(pks)
-    })
+        Ok::<_, spi::Error>((pks, held))
+    })?;
+    if key_locks {
+        let missing: Vec<String> = keys
+            .iter()
+            .map(ToString::to_string)
+            .filter(|k| !held.contains(k))
+            .collect();
+        crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
+    }
+    Ok(pks)
 }
 
 /// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed,

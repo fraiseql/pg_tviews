@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A write locks the join values of the rows it changed** before it looks up the
-  TVIEW rows they feed (ADR 0207): exclusive locks in PostgreSQL's lock manager, shown
-  in `pg_locks` as advisory locks with `objsubid` 21622 (a value) or 21623 (a
-  relation), held to the end of the transaction. A write refreshing a whole TVIEW
-  (`TRUNCATE`, the `full_refresh` policy, `pg_tviews_refresh()`) locks the TVIEW. Not
-  under `SERIALIZABLE`. The queries that find TVIEW rows by those values run with a
+- **Writes may wait for concurrent writes to related rows** (ADR 0207). A write
+  locks, exclusively, the join values of the rows it changed before it looks up the
+  TVIEW rows they feed; a refresh locks, shared, the values the rows it computes
+  read, and exclusively the keys of the rows it creates. The locks live in
+  PostgreSQL's lock manager, show in `pg_locks` as advisory locks with `objsubid`
+  21622 (a value or key) or 21623 (a relation), and are held to the end of the
+  transaction. A write refreshing a whole TVIEW (`TRUNCATE`, the `full_refresh`
+  policy, `pg_tviews_refresh()`) locks the TVIEW and the relations it reads. Not
+  under `SERIALIZABLE`. The queries that find and compute TVIEW rows run with a
   fresh snapshot.
 - **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
   text-pattern analysis that registration still used for columns, embeds and the
@@ -43,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent writes no longer leave TVIEW rows stale under READ COMMITTED**
+  (#207). A transaction creating or re-linking a TVIEW row (a new post, a post
+  pointed at another user) while another changes a row it reads (its author's
+  name) computed the row without that change, and the other's refresh couldn't see
+  the row: once both committed, the row kept the old value. Each now waits for the
+  other on the join values (ADR 0207): embedded TVIEWs, direct joins, fan-out
+  patches, joins several hops away, outer joins to a row inserted concurrently, and
+  tables under the `full_refresh` policy. Two transactions creating the same row
+  (a child carrying the key in its own row with no foreign key, the first rows of a
+  new group of an aggregate TVIEW) wait for each other on that key.
 - **Concurrent first writes into an UNLOGGED TVIEW no longer fail on a duplicate
   key** (#214), and a TVIEW that is merely empty is no longer refilled from its
   view. pg_tviews told a TVIEW reset by a crash restart or a promotion from an

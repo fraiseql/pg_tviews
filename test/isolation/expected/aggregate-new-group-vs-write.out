@@ -1,0 +1,26 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_insert b_begin b_insert a_commit b_commit b_check
+pg_tviews_create_aggregate                  
+--------------------------------------------
+TVIEW 'tv_user_summary' created successfully
+(1 row)
+
+step a_begin: BEGIN;
+step a_insert: INSERT INTO tb_order (pk_order, fk_user, total) VALUES (2, 7, 10);
+step b_begin: BEGIN;
+step b_insert: INSERT INTO tb_order (pk_order, fk_user, total) VALUES (3, 7, 20); <waiting ...>
+step a_commit: COMMIT;
+step b_insert: <... completed>
+step b_commit: COMMIT;
+step b_check: 
+  SELECT t.pk_user_summary, t.data, t.data = v.data AS fresh
+  FROM tv_user_summary t FULL JOIN tviews.public__tv_user_summary v USING (pk_user_summary)
+  ORDER BY 1;
+
+pk_user_summary|data                      |fresh
+---------------+--------------------------+-----
+              1|{"total": 5, "orders": 1} |t    
+              7|{"total": 30, "orders": 2}|t    
+(2 rows)
+

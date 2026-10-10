@@ -95,13 +95,28 @@ keys to the values of the columns its mapping query joins on, the same columns t
 locks. For an embedded TVIEW, the value is the parent's lookup column, read from the backing
 view before computing.
 
+### Rows being created
+
+A refresh that creates a TVIEW row (its key has no row yet) can race another
+refresh creating the same row with no join value between them: a child that
+carries the key in its own row (a comment naming post 9, with no foreign key)
+written while post 9 is inserted, or two first rows of one group of an aggregate
+TVIEW. A refresh therefore also locks, exclusively, each key it is about to
+create, in the TVIEW's *key space*: a hash space and a relation lock of its own
+(`field3` 1 on the relation tag), so that escalating these locks only stops other
+transactions creating rows of that TVIEW. Existing rows keep their row locks
+(`SELECT … FOR UPDATE`). Specs: `local-child-vs-new-parent`,
+`aggregate-new-group-vs-write`.
+
 ### Lock tags and modes
 
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:
 
 - `field1` = database, `field2` = relation OID, `field3` = a 32-bit FNV-1a hash of
   (attnum, value text);
-- `field4` = `0x5476` for value locks, `0x5477` for relation (intent and escalated) locks.
+- `field4` = `0x5476` for value locks, `0x5477` for relation (intent and escalated) locks,
+  whose `field3` is 0 for the values of the relation and 1 for the keys of a TVIEW's rows
+  being created.
 
 `pg_advisory_lock()` uses `field4` 1 and 2, so a user can neither take nor block these locks. A
 hash collision gives an extra wait, never a missed conflict.

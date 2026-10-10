@@ -2,7 +2,7 @@
 //! took, so a lock is requested once, escalation is decided per relation, and a
 //! rolled-back subtransaction forgets what the lock manager released.
 
-use super::Side;
+use super::{Side, Space};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -10,11 +10,24 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Held {
     /// A value of a relation: the tag's hash.
-    Value { relid: u32, side: Side, hash: u32 },
+    Value {
+        relid: u32,
+        space: Space,
+        side: Side,
+        hash: u32,
+    },
     /// The intent lock on a relation that its value locks need.
-    Intent { relid: u32, side: Side },
+    Intent {
+        relid: u32,
+        space: Space,
+        side: Side,
+    },
     /// The relation itself, in place of its values.
-    Escalated { relid: u32, side: Side },
+    Escalated {
+        relid: u32,
+        space: Space,
+        side: Side,
+    },
 }
 
 /// The locks of one transaction, in the order they were taken.
@@ -38,18 +51,19 @@ impl Registry {
         new
     }
 
-    /// The values of `relid` locked by `side`.
-    pub(super) fn values(&self, relid: u32, side: Side) -> usize {
+    /// The values of `relid` in `space` locked by `side`.
+    pub(super) fn values(&self, relid: u32, space: Space, side: Side) -> usize {
         self.log
             .iter()
-            .filter(
-                |h| matches!(h, Held::Value { relid: r, side: s, .. } if *r == relid && *s == side),
-            )
+            .filter(|h| {
+                matches!(h, Held::Value { relid: r, space: p, side: s, .. }
+                         if *r == relid && *p == space && *s == side)
+            })
             .count()
     }
 
-    pub(super) fn escalated(&self, relid: u32, side: Side) -> bool {
-        self.holds(&Held::Escalated { relid, side })
+    pub(super) fn escalated(&self, relid: u32, space: Space, side: Side) -> bool {
+        self.holds(&Held::Escalated { relid, space, side })
     }
 
     /// Whether locking `new` more values of `relid` must lock the relation
@@ -58,6 +72,7 @@ impl Registry {
     pub(super) fn should_escalate(
         &self,
         relid: u32,
+        space: Space,
         side: Side,
         new: usize,
         threshold: i32,
@@ -65,7 +80,7 @@ impl Registry {
         match usize::try_from(threshold) {
             Err(_) => false,
             Ok(0) => true,
-            Ok(limit) => self.values(relid, side) + new > limit,
+            Ok(limit) => self.values(relid, space, side) + new > limit,
         }
     }
 
@@ -97,9 +112,12 @@ mod tests {
 
     const USERS: u32 = 16_384;
 
+    const V: Space = Space::Values;
+
     fn value(hash: u32) -> Held {
         Held::Value {
             relid: USERS,
+            space: V,
             side: Side::Writer,
             hash,
         }
@@ -110,7 +128,7 @@ mod tests {
         let mut r = Registry::default();
         assert!(r.record(value(1)));
         assert!(!r.record(value(1)));
-        assert_eq!(r.values(USERS, Side::Writer), 1);
+        assert_eq!(r.values(USERS, V, Side::Writer), 1);
     }
 
     #[test]
@@ -120,16 +138,25 @@ mod tests {
         r.record(value(2));
         r.record(Held::Value {
             relid: USERS,
+            space: V,
             side: Side::Refresh,
             hash: 3,
         });
         r.record(Held::Value {
             relid: USERS + 1,
+            space: V,
             side: Side::Writer,
             hash: 4,
         });
-        assert_eq!(r.values(USERS, Side::Writer), 2);
-        assert_eq!(r.values(USERS, Side::Refresh), 1);
+        r.record(Held::Value {
+            relid: USERS,
+            space: Space::Keys,
+            side: Side::Writer,
+            hash: 5,
+        });
+        assert_eq!(r.values(USERS, V, Side::Writer), 2);
+        assert_eq!(r.values(USERS, V, Side::Refresh), 1);
+        assert_eq!(r.values(USERS, Space::Keys, Side::Writer), 1);
     }
 
     #[test]
@@ -138,11 +165,12 @@ mod tests {
         for hash in 0..3 {
             r.record(value(hash));
         }
-        assert!(!r.should_escalate(USERS, Side::Writer, 1, 4));
-        assert!(r.should_escalate(USERS, Side::Writer, 2, 4));
-        assert!(r.should_escalate(USERS, Side::Writer, 1, 0));
-        assert!(!r.should_escalate(USERS, Side::Writer, 1_000_000, -1));
-        assert!(!r.should_escalate(USERS, Side::Refresh, 4, 4));
+        assert!(!r.should_escalate(USERS, V, Side::Writer, 1, 4));
+        assert!(r.should_escalate(USERS, V, Side::Writer, 2, 4));
+        assert!(r.should_escalate(USERS, V, Side::Writer, 1, 0));
+        assert!(!r.should_escalate(USERS, V, Side::Writer, 1_000_000, -1));
+        assert!(!r.should_escalate(USERS, V, Side::Refresh, 4, 4));
+        assert!(!r.should_escalate(USERS, Space::Keys, Side::Writer, 4, 4));
     }
 
     #[test]
@@ -153,12 +181,13 @@ mod tests {
         r.record(value(2));
         r.record(Held::Escalated {
             relid: USERS,
+            space: V,
             side: Side::Writer,
         });
         r.rollback(mark);
         assert!(r.holds(&value(1)));
         assert!(!r.holds(&value(2)));
-        assert!(!r.escalated(USERS, Side::Writer));
+        assert!(!r.escalated(USERS, V, Side::Writer));
         // Taken again after the rollback: recorded again.
         assert!(r.record(value(2)));
     }

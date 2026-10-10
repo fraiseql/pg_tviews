@@ -63,19 +63,16 @@ BEGIN
                   HINT = 'Restore the tables the TVIEW reads before its catalog row.';
     END IF;
     FOR e IN SELECT value FROM pg_catalog.jsonb_array_elements(NEW.plan->'tables') LOOP
-        -- A mapping query names relations and columns by relid: {r:<relid>},
-        -- {c:<relid>:<attnum>}. Marked first, so a new relid equal to another
-        -- table's old one is not rebound twice.
-        IF e ? 'sql' THEN
-            q := e->>'sql';
-            FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
-                q := pg_catalog.replace(pg_catalog.replace(q,
-                         '{r:' || olds[i] || '}', '{r:#' || news[i] || '}'),
-                         '{c:' || olds[i] || ':', '{c:#' || news[i] || ':');
-            END LOOP;
-            q := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:');
-            e := pg_catalog.jsonb_set(e, '{sql}', pg_catalog.to_jsonb(q));
-        END IF;
+        -- The mapping query and the read-set queries name relations and columns
+        -- by relid: {r:<relid>}, {c:<relid>:<attnum>}. Marked first, so a new
+        -- relid equal to another table's old one is not rebound twice.
+        q := e::pg_catalog.text;
+        FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
+            q := pg_catalog.replace(pg_catalog.replace(q,
+                     '{r:' || olds[i] || '}', '{r:#' || news[i] || '}'),
+                     '{c:' || olds[i] || ':', '{c:#' || news[i] || ':');
+        END LOOP;
+        e := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:')::pg_catalog.jsonb;
         i := pg_catalog.array_position(olds, e->>'relid');
         e := pg_catalog.jsonb_set(e, '{relid}', pg_catalog.to_jsonb(news[i]::pg_catalog.int8));
         tables := tables || pg_catalog.jsonb_build_array(e);

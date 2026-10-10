@@ -51,6 +51,10 @@ impl Flush {
         if keys.iter().any(RefreshKey::is_all) {
             return self.refresh_all(entity);
         }
+        // Writers of what these rows read meet them on its values (ADR 0207):
+        // locked before the rows are locked and computed.
+        let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
+        crate::concurrency::reads::lock_read_set(&self.meta(entity)?, &values)?;
 
         // Keys carrying a usable direct patch are written straight into
         // tv_<entity>; the others recompute. The setting is read again

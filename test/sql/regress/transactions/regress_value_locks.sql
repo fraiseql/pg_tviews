@@ -1,13 +1,14 @@
 -- A write locks the join values of the rows it changed before it looks TVIEW
--- rows up by them (ADR 0207): exclusive value locks, with a RowExclusive intent
--- lock on the relation, in PostgreSQL's lock manager as advisory locks whose
--- objsubid is 21622 (value) or 21623 (relation). They last until the end of the
+-- rows up by them, and a refresh the values its rows read before it computes
+-- them (ADR 0207): exclusive and shared value locks, with RowExclusive and
+-- RowShare intent locks on the relation, in PostgreSQL's lock manager as
+-- advisory locks whose objsubid is 21622 (value) or 21623 (relation). They last until the end of the
 -- transaction, go with a rolled-back savepoint, are kept by a prepared
 -- transaction, can't be taken or blocked through pg_advisory_lock(), and aren't
 -- taken under SERIALIZABLE.
 --
---   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_value_locks_writer.sql
--- expect-output: value_locks_writer: PASS
+--   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_value_locks.sql
+-- expect-output: value_locks: PASS
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -18,17 +19,19 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'value_locks_writer FAIL: %', what; END IF; END $$;
+BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'value_locks FAIL: %', what; END IF; END $$;
 
 -- This backend's (or a prepared transaction's) pg_tviews locks on relation rel:
--- 'value:<mode>' or 'relation:<mode>', counted.
-CREATE FUNCTION held(rel regclass, prepared boolean DEFAULT false) RETURNS text[]
-LANGUAGE sql AS $$
+-- 'value:<mode>' or 'relation:<mode>', counted. Only a writer's modes, unless
+-- refresh: then only a refresh's.
+CREATE FUNCTION held(rel regclass, prepared boolean DEFAULT false, refresh boolean DEFAULT false)
+RETURNS text[] LANGUAGE sql AS $$
     SELECT coalesce(array_agg(k || ':' || n ORDER BY k), '{}') FROM (
         SELECT CASE objsubid WHEN 21622 THEN 'value' ELSE 'relation' END || ':' || mode AS k,
                count(*) AS n
         FROM pg_locks
         WHERE locktype = 'advisory' AND objsubid IN (21622, 21623) AND classid = rel::oid
+          AND (mode IN ('ShareLock', 'RowShareLock')) = refresh
           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
           AND CASE WHEN prepared THEN pid IS NULL ELSE pid = pg_backend_pid() END
         GROUP BY 1) s $$;
@@ -93,13 +96,13 @@ COMMIT;
 --    pg_advisory_lock() on the same numbers neither waits nor conflicts.
 BEGIN;
 UPDATE tb_user SET name = 'bob' WHERE pk_user = 2;
-PREPARE TRANSACTION 'value_locks_writer';
+PREPARE TRANSACTION 'value_locks';
 SELECT must(held('tb_user', true) = '{relation:RowExclusiveLock:1,value:ExclusiveLock:1}',
             'the prepared transaction holds ' || held('tb_user', true)::text);
 SELECT must(bool_and(pg_try_advisory_xact_lock(classid::int, objid::int)),
             'pg_advisory_lock() conflicts with a value lock')
 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 21622 AND pid IS NULL;
-COMMIT PREPARED 'value_locks_writer';
+COMMIT PREPARED 'value_locks';
 SELECT must(held('tb_user', true) = '{}', 'COMMIT PREPARED left locks');
 
 -- 5. A fan-out patch (tv_tag projects the join column and copies the name).
@@ -149,4 +152,26 @@ SELECT must(held('tb_user') = '{}' AND held('tv_user') = '{}',
             'SERIALIZABLE took value locks: ' || held('tb_user')::text);
 COMMIT;
 
-\echo 'value_locks_writer: PASS'
+-- 9. A refresh locks, shared, what the rows it computes read: the post's user
+--    (a value no user row may hold yet), the embedded user's key, and an intent
+--    lock on each TVIEW it writes.
+BEGIN;
+INSERT INTO tb_post (pk_post, fk_user, title) VALUES (9, 2, 'p9');
+SELECT must(held('tb_user', refresh => true) = '{relation:RowShareLock:1,value:ShareLock:1}',
+            'a refresh holds on tb_user ' || held('tb_user', refresh => true)::text);
+SELECT must(held('tv_user', refresh => true) = '{relation:RowShareLock:1,value:ShareLock:1}',
+            'a refresh holds on the embedded tv_user ' || held('tv_user', refresh => true)::text);
+SELECT must(held('tv_post', refresh => true) = '{relation:RowShareLock:1}',
+            'a refresh holds on tv_post ' || held('tv_post', refresh => true)::text);
+SELECT must(held('tb_user') = '{}', 'a refresh took writer locks on tb_user');
+-- ... and the key of the row it creates, exclusively, in the TVIEW's key space
+-- (objid 1 for its relation lock).
+SELECT must(held('tv_post') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:1}',
+            'creating a row holds on tv_post ' || held('tv_post')::text);
+SELECT must(EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 21623
+                    AND classid = 'tv_post'::regclass::oid AND objid = 1
+                    AND pid = pg_backend_pid()),
+            'the key space''s intent lock is not on objid 1');
+COMMIT;
+
+\echo 'value_locks: PASS'

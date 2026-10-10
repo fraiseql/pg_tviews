@@ -178,11 +178,13 @@ pub fn flush_after_rebuilds() -> TViewResult<()> {
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
-        // Every row changes: refreshes of any of them wait, and are waited for.
+        // Every row changes: refreshes of any of them wait, and are waited for,
+        // and so are writers of anything they read.
         crate::concurrency::lock_relation(
             meta.tview_oid.to_u32(),
             crate::concurrency::Side::Writer,
         );
+        crate::concurrency::reads::lock_whole_read_set(&meta)?;
     }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
@@ -207,6 +209,9 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the delete/insert fails.
 pub fn refill(entity: &str) -> TViewResult<()> {
+    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
+        crate::concurrency::reads::lock_whole_read_set(&meta)?;
+    }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("DELETE FROM {qi_tv}"))?;
