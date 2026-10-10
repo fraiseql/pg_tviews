@@ -7,11 +7,13 @@ use pgrx::prelude::*;
 use std::os::raw::c_void;
 
 /// What the end of a transaction resets, however it ends: the refresh work, the
-/// savepoints, the running queries, the flush, the per-transaction caches, the
-/// audit buffer, the metrics and the affected-rows report.
+/// savepoints, the value locks held, the running queries, the flush, the
+/// per-transaction caches, the audit buffer, the metrics and the affected-rows
+/// report.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
     super::savepoint::clear,
+    crate::concurrency::clear,
     crate::executor::reset,
     super::Flushing::reset,
     crate::cache::end_transaction,

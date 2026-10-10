@@ -36,6 +36,8 @@ use pgrx::prelude::*;
 mod audit;
 mod cache;
 mod catalog;
+#[allow(dead_code)] // Reason: the writer and refresh paths start calling it in the next commits
+mod concurrency;
 mod delta;
 mod executor;
 mod flush;

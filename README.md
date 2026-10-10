@@ -371,6 +371,7 @@ All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
 | `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
 | `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
 | `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
+| `pg_tviews.lock_escalation_threshold` | int | 64 | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.uncascaded_policy` | enum | error | `error`, `full_refresh` or `warn`: what a new TVIEW does about base tables no cascade reaches, when it declares no `uncascaded_policy` option. Read at create time and stored with the TVIEW; `error` refuses it, `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
 | `pg_tviews.time_refresh` | enum | none | `none` or `external`: whether a new TVIEW whose definition reads the current time (`CURRENT_DATE`, `now()`…) is accepted, when it declares no `time_refresh` option; `external` means `tviews.pg_tviews_refresh_time_dependent()` is called at the boundary ([details](docs/reference/ddl.md#time-dependent-tviews)) |
