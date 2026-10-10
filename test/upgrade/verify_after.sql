@@ -148,13 +148,13 @@ DO $$
 DECLARE
     unmanaged TEXT;
 BEGIN
-    SELECT pg_catalog.string_agg(i.indexrelid::pg_catalog.regclass::pg_catalog.text, ', '
-                                 ORDER BY 1)
+    SELECT pg_catalog.string_agg(ic.relname::pg_catalog.text, ', ' ORDER BY ic.relname)
       INTO unmanaged
       FROM tviews.registry r
       JOIN pg_catalog.pg_index i
         ON i.indrelid = pg_catalog.to_regclass(pg_catalog.quote_ident(r.schema) OPERATOR(pg_catalog.||) '.'
                                                OPERATOR(pg_catalog.||) pg_catalog.quote_ident(r.name))
+      JOIN pg_catalog.pg_class ic ON ic.oid OPERATOR(pg_catalog.=) i.indexrelid
      WHERE i.indexrelid OPERATOR(pg_catalog.<>) ALL (r.managed_indexes::pg_catalog.oid[])
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                        WHERE k.conindid OPERATOR(pg_catalog.=) i.indexrelid);
