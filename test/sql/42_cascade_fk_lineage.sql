@@ -225,11 +225,11 @@ SELECT COUNT(*) FROM tv_user WHERE pk_user = 1;
 
 SELECT
     entity,
-    array_length(cascade_paths, 1) AS cascade_count,
-    array_length(fk_columns, 1) AS fk_count
+    jsonb_array_length(plan->'paths') AS local_paths,
+    jsonb_array_length(plan->'embeds') AS embeds
 FROM pg_tview_meta
 ORDER BY entity;
--- Expected: user (0 cascades, 0 fks), post (1 cascade, 1 fk)
+-- Expected: user (1 local path, 0 embeds), post (1 local path, 0 embeds: it reads tb_user)
 
 \echo '✓ Test 8 passed: Metadata correct'
 

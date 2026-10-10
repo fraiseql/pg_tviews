@@ -73,10 +73,11 @@ SELECT pg_tviews_create('tv_post', $TV$
            jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
     FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
 $TV$);
+-- A scalar dependency: it reads tv_user, not for its document but for one value.
 SELECT pg_tviews_create('tv_article', $TV$
     SELECT a.pk_article, a.id, a.fk_user,
-           jsonb_build_object('title', a.title, 'author_name', u.name) AS data
-    FROM tb_article a JOIN tb_user u ON u.pk_user = a.fk_user
+           jsonb_build_object('title', a.title, 'author_name', u.data->>'name') AS data
+    FROM tb_article a JOIN tv_user u ON u.pk_user = a.fk_user
 $TV$);
 SELECT pg_tviews_create('tv_item', $TV$
     SELECT pk_item, id, jsonb_build_object('meta', meta, 'label', label) AS data FROM tb_item
@@ -84,10 +85,10 @@ $TV$);
 
 -- Preconditions: the classifications that route refreshes to the intended paths.
 DO $$ BEGIN
-    IF (SELECT dependency_types FROM pg_tview_meta WHERE entity = 'article') <> ARRAY['scalar'] THEN
+    IF (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'article') <> ARRAY['scalar'] THEN
         RAISE EXCEPTION 'setup: tv_article is not a scalar-dependency tview';
     END IF;
-    IF (SELECT dependency_types FROM pg_tview_meta WHERE entity = 'item') <> '{}' THEN
+    IF (SELECT ARRAY(SELECT e->>'kind' FROM jsonb_array_elements(plan->'embeds') e) FROM pg_tview_meta WHERE entity = 'item') <> '{}' THEN
         RAISE EXCEPTION 'setup: tv_item has dependencies';
     END IF;
 END $$;

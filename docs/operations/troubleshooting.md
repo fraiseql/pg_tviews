@@ -103,7 +103,8 @@ $$);
 
 ### TVIEW Already Exists
 
-**Error**: `TVIEW tv_post already exists; pg_tviews_create_or_replace() changes an existing TVIEW`
+**Error** (SQLSTATE 42P07): `TVIEW tv_post already exists`, with the hint
+`pg_tviews_create_or_replace() changes an existing TVIEW.`
 
 ```sql
 SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ ... $$);

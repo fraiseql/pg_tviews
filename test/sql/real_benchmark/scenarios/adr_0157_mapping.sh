@@ -68,9 +68,9 @@ run_case sku_update_1       30 "UPDATE tb_sku SET name = name || '+' WHERE pk_sk
 run_case line_update_100k    3 "UPDATE tb_line SET pos = pos + 1 WHERE pk_line %% 2 = %d %% 2;"
 run_case sku_update_1000     3 "UPDATE tb_sku SET name = name || '+' WHERE pk_sku %% 2 = %d %% 2;"
 
-diverging="$(psql -X -At -d "$db" -c "SELECT count(*) FROM tv_order t FULL JOIN v_order v USING (pk_order)
+diverging="$(psql -X -At -d "$db" -c "SELECT count(*) FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
                                       WHERE t.data IS DISTINCT FROM v.data")"
 if [[ "$diverging" != 0 ]]; then
-    echo "FAIL: tv_order diverges from v_order ($diverging rows)" >&2
+    echo "FAIL: tv_order diverges from its backing view ($diverging rows)" >&2
     exit 1
 fi

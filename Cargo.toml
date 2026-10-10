@@ -1,6 +1,6 @@
 [package]
 name = "pg_tviews"
-version = "0.1.0-beta.26"
+version = "0.1.0-beta.27"
 edition = "2024"
 authors = ["Lionel Hamayon <lionel.hamayon@evolution-digitale.fr>"]
 description = "Transactional materialized views with incremental refresh for PostgreSQL"
@@ -24,12 +24,7 @@ path = "./src/bin/pgrx_embed.rs"
 pgrx = "=0.17.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-regex = "1.0"
-bincode = "1.3"
-flate2 = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
 sqlparser = "0.50"
-lazy_static = "1.4"
 
 [dev-dependencies]
 pgrx-tests = "=0.17.0"
@@ -65,5 +60,5 @@ panic = "unwind"
  manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
  match_same_arms = "allow"  # XactEvent / NodeTag arms kept explicit for clarity
  cast_sign_loss = "allow"  # PostgreSQL OID/SPI integer casts are intentional and bounded
- non_std_lazy_statics = "allow"  # lazy_static! is used deliberately for session-local state
+ result_large_err = "allow"  # pgrx keeps an extern's SQLSTATE only for Result<_, ErrorReport>, a large type
 

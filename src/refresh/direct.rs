@@ -1,4 +1,4 @@
-//! Flush-time direct patch application (issue #56).
+//! Flush-time direct patch application.
 //!
 //! Consumes the transaction-local patch chains captured by the row trigger and
 //! applies them straight to `tv_<entity>` via `jsonb_smart_patch_*` — **zero**
@@ -6,64 +6,37 @@
 //! back so the caller recomputes it (a patch can only update an existing row).
 
 use crate::TViewResult;
-use crate::catalog::{DependencyType, TviewMeta};
+use crate::catalog::TviewMeta;
 use crate::queue::patch::PatchEntry;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
-/// Derive a parent's patch chain from a patched child's chain (issue #56).
+/// Derive a parent's patch chain from a patched child's chain.
 ///
-/// When `parent_meta` embeds `child_entity` via a `nested_object` dependency at a
-/// concrete path, the child's chain is reproduced at the parent with that path
+/// When `parent_meta`'s plan embeds `child_entity`'s document at a concrete path
+/// (a nested embed), the child's chain is reproduced at the parent with that path
 /// prepended to every entry's prefix — `([], {bio})` for `user` becomes
 /// `(["author"], {bio})` for `post`. Multi-level cascades compose by prepending
-/// again. Returns `None` (⇒ the parent must recompute) when:
-/// - the parent is itself DISTINCT ON or a UNION,
-/// - the linkage is UUID-fk based (different plumbing, out of scope),
-/// - there is no `fk_<child>` dependency, or it appears more than once (ambiguous),
-/// - the dependency is not `nested_object`, or has no/empty path (array/scalar can't
-///   take a path patch — interlock with #50).
+/// again. Returns `None` (⇒ the parent must recompute) when the parent is itself
+/// DISTINCT ON or a set operation, or the embed is not nested at a non-empty path
+/// (an array or scalar embed can't take a path patch).
 pub fn derive_parent_chain(
     parent_meta: &TviewMeta,
     child_entity: &str,
     child_chain: &[PatchEntry],
 ) -> Option<Vec<PatchEntry>> {
-    // Parent must itself clear the entity-level gates.
-    if parent_meta.identity.kind == crate::lineage::IdentityKind::DistinctOn || parent_meta.is_union
+    if parent_meta.identity.kind == crate::lineage::IdentityKind::DistinctOn
+        || parent_meta.plan.set_operation
     {
         return None;
     }
-
-    let fk_name = format!("fk_{child_entity}");
-
-    // UUID-fk linkage uses different plumbing — decline in this cut.
-    if parent_meta.uuid_fk_columns.contains(&fk_name) {
+    let embed = parent_meta.plan.embed(child_entity)?;
+    if embed.kind != crate::lineage::EmbedKind::Nested || embed.path.is_empty() {
         return None;
     }
-
-    // Locate the dependency by fk column; ambiguous (embedded under multiple keys)
-    // or absent ⇒ decline.
-    let mut idx = None;
-    for (i, col) in parent_meta.fk_columns.iter().enumerate() {
-        if *col == fk_name {
-            if idx.is_some() {
-                return None; // more than one — ambiguous
-            }
-            idx = Some(i);
-        }
-    }
-    let idx = idx?;
-
-    // Must be a NestedObject dependency with a concrete, non-empty path.
-    if parent_meta.dependency_types.get(idx)? != &DependencyType::NestedObject {
-        return None;
-    }
-    let path = parent_meta.dependency_paths.get(idx)?.as_ref()?;
-    if path.is_empty() {
-        return None;
-    }
+    let path = &embed.path;
 
     // Prepend the dependency path to every chain entry's prefix.
     let derived = child_chain
@@ -81,7 +54,7 @@ pub fn derive_parent_chain(
 ///
 /// Generates a grouped `UPDATE tv_<entity> SET data = <nested patch calls>` over
 /// `pk = ANY($n)`, guarded by `data IS DISTINCT FROM <patched>` so a patch that
-/// changes nothing writes nothing (issue #72). Patch values are always bound as
+/// changes nothing writes nothing. Patch values are always bound as
 /// JSONB parameters — never interpolated.
 ///
 /// Returns `(pk, changed)` for every **materialised** row among `pks`: the
@@ -100,7 +73,7 @@ pub fn apply_direct_patch(
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
-    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
+    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, chain);
     let pk_param = chain.len() + 1;
 
@@ -115,8 +88,6 @@ pub fn apply_direct_patch(
 
     // Params (all bound, nothing interpolated): one JSONB per chain entry, then the
     // pk array, then one text[] per nested-entry path.
-    // SAFETY: DatumWithOid wraps validated structured data (JSONB documents, a
-    // BIGINT[], and TEXT[] paths from catalog-parsed dependency metadata) for SPI.
     let json_args: Vec<pgrx::JsonB> = chain
         .iter()
         .map(|(_, fields)| pgrx::JsonB(Value::Object(fields.clone())))
@@ -126,26 +97,11 @@ pub fn apply_direct_patch(
     Spi::connect(|client| {
         let mut args: Vec<DatumWithOid> = Vec::with_capacity(chain.len() + 1 + path_args.len());
         for j in &json_args {
-            args.push(unsafe {
-                DatumWithOid::new(
-                    pgrx::JsonB(j.0.clone()),
-                    PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-                )
-            });
+            args.push(crate::utils::spi::jsonb(pgrx::JsonB(j.0.clone())));
         }
-        args.push(unsafe {
-            DatumWithOid::new(
-                pk_vec.clone(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        });
+        args.push(crate::utils::spi::int8_array(pk_vec.clone()));
         for path in &path_args {
-            args.push(unsafe {
-                DatumWithOid::new(
-                    path.clone(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                )
-            });
+            args.push(crate::utils::spi::text_array(path.clone()));
         }
 
         let rows = client.select(&sql, None, &args)?;
@@ -159,7 +115,7 @@ pub fn apply_direct_patch(
     })
 }
 
-/// Write fan-out patches (issue #120) into `tv_<entity>`: for each `(key, fields)`,
+/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`,
 /// merge `fields` into the `data` of every row whose `lookup_col` equals `key`,
 /// in one statement. Rows already holding those values are left alone. Returns
 /// the pks of the rows written, which are journaled and counted as applied.
@@ -171,7 +127,7 @@ pub fn apply_fanout_patch(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
+    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
     let qi_lookup = crate::utils::quote_identifier(lookup_col);
@@ -189,18 +145,12 @@ pub fn apply_fanout_patch(
         .collect();
 
     let changed: Vec<i64> = Spi::connect_mut(|client| {
-        // SAFETY: DatumWithOid wraps a JSONB document built above for SPI.
-        let args = [unsafe {
-            DatumWithOid::new(
-                pgrx::JsonB(Value::Object(by_key)),
-                PgOid::BuiltIn(PgBuiltInOids::JSONBOID).value(),
-            )
-        }];
+        let args = [crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
         client
             .update(&sql, None, &args)?
             .map(|row| row[1].value::<i64>())
             .filter_map(Result::transpose)
-            .collect::<spi::Result<_>>()
+            .collect::<pgrx::spi::Result<_>>()
     })?;
 
     crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);
@@ -361,25 +311,25 @@ mod tests {
         assert_eq!(paths, vec![vec!["we'ird".to_string()]]);
     }
 
-    // ── derive_parent_chain (issue #56) ─────────────────────────────────────
+    // ── derive_parent_chain ─────────────────────────────────────
 
-    /// A parent `TviewMeta` with a single dependency on `fk_<child>`.
-    fn parent_meta(fk: &str, dep: DependencyType, path: Option<Vec<String>>) -> TviewMeta {
-        TviewMeta {
-            fk_columns: vec![fk.to_string()],
-            dependency_types: vec![dep],
-            dependency_paths: vec![path],
-            ..TviewMeta::default()
-        }
+    use crate::lineage::EmbedKind;
+
+    /// A parent `TviewMeta` whose plan embeds `child` once.
+    fn parent_meta(child: &str, kind: EmbedKind, path: &[&str]) -> TviewMeta {
+        let mut meta = TviewMeta::default();
+        meta.plan.embeds.push(crate::catalog::plan::PlanEmbed {
+            entity: child.to_string(),
+            lookups: vec![format!("{child}_pk")],
+            kind,
+            path: path.iter().map(|s| (*s).to_string()).collect(),
+        });
+        meta
     }
 
     #[test]
-    fn nested_object_dep_prepends_path() {
-        let meta = parent_meta(
-            "fk_user",
-            DependencyType::NestedObject,
-            Some(vec!["author".to_string()]),
-        );
+    fn nested_embed_prepends_path() {
+        let meta = parent_meta("user", EmbedKind::Nested, &["author"]);
         let child = vec![entry(&[], "bio", "x")];
         let derived = derive_parent_chain(&meta, "user", &child).unwrap();
         assert_eq!(derived.len(), 1);
@@ -388,78 +338,38 @@ mod tests {
     }
 
     #[test]
-    fn array_dep_declines() {
-        let meta = parent_meta(
-            "fk_comment",
-            DependencyType::Array,
-            Some(vec!["comments".to_string()]),
-        );
+    fn array_embed_declines() {
+        let meta = parent_meta("comment", EmbedKind::Array, &["comments"]);
         assert!(derive_parent_chain(&meta, "comment", &[entry(&[], "b", "x")]).is_none());
     }
 
     #[test]
-    fn scalar_dep_declines() {
-        let meta = parent_meta("fk_user", DependencyType::Scalar, None);
+    fn scalar_embed_declines() {
+        let meta = parent_meta("user", EmbedKind::Scalar, &[]);
         assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
     }
 
     #[test]
     fn nested_without_path_declines() {
-        let meta = parent_meta("fk_user", DependencyType::NestedObject, None);
+        // Also what a document placed at two paths gets: no single path to patch.
+        let meta = parent_meta("user", EmbedKind::Nested, &[]);
         assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
     }
 
     #[test]
-    fn uuid_fk_linkage_declines() {
-        let mut meta = parent_meta(
-            "fk_user",
-            DependencyType::NestedObject,
-            Some(vec!["author".to_string()]),
-        );
-        meta.uuid_fk_columns = vec!["fk_user".to_string()];
+    fn missing_embed_declines() {
+        let meta = parent_meta("other", EmbedKind::Nested, &["x"]);
         assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
     }
 
     #[test]
-    fn duplicate_embedding_declines() {
-        let mut meta = parent_meta(
-            "fk_user",
-            DependencyType::NestedObject,
-            Some(vec!["author".to_string()]),
-        );
-        // Same fk appears twice → ambiguous which key to patch.
-        meta.fk_columns.push("fk_user".to_string());
-        meta.dependency_types.push(DependencyType::NestedObject);
-        meta.dependency_paths.push(Some(vec!["editor".to_string()]));
-        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
-    }
-
-    #[test]
-    fn missing_dependency_declines() {
-        let meta = parent_meta(
-            "fk_other",
-            DependencyType::NestedObject,
-            Some(vec!["x".to_string()]),
-        );
-        assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
-    }
-
-    #[test]
-    fn distinct_on_or_union_parent_declines() {
-        let mut meta = parent_meta(
-            "fk_user",
-            DependencyType::NestedObject,
-            Some(vec!["author".to_string()]),
-        );
+    fn distinct_on_or_set_operation_parent_declines() {
+        let mut meta = parent_meta("user", EmbedKind::Nested, &["author"]);
         meta.identity.kind = crate::lineage::IdentityKind::DistinctOn;
         assert!(derive_parent_chain(&meta, "user", &[entry(&[], "b", "x")]).is_none());
 
-        let mut meta2 = parent_meta(
-            "fk_user",
-            DependencyType::NestedObject,
-            Some(vec!["author".to_string()]),
-        );
-        meta2.is_union = true;
+        let mut meta2 = parent_meta("user", EmbedKind::Nested, &["author"]);
+        meta2.plan.set_operation = true;
         assert!(derive_parent_chain(&meta2, "user", &[entry(&[], "b", "x")]).is_none());
     }
 
@@ -468,11 +378,7 @@ mod tests {
         // Child `user` already embedded at ["author"] within `post`; now `feed`
         // embeds `post` at ["post"]. A user patch derived for post as
         // (["author"], …) composes at feed as (["post","author"], …).
-        let feed_meta = parent_meta(
-            "fk_post",
-            DependencyType::NestedObject,
-            Some(vec!["post".to_string()]),
-        );
+        let feed_meta = parent_meta("post", EmbedKind::Nested, &["post"]);
         let post_chain = vec![entry(&["author"], "bio", "x")];
         let derived = derive_parent_chain(&feed_meta, "post", &post_chain).unwrap();
         assert_eq!(derived[0].0, vec!["post".to_string(), "author".to_string()]);

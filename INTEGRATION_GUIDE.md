@@ -117,22 +117,13 @@ psql -d mydb -f schema/03_seed_data.sql
 ./scripts/auto-convert/convert_tviews.sh -d mydb -s public
 ```
 
-## Define your TVIEW Metadata
+## Relationships Between TVIEWs
 
-After conversion, you can define TVIEW-specific metadata (foreign keys, dependencies) by updating `pg_tview_meta`:
-
-```sql
--- schema/03_tview_metadata.sql
-
--- Add foreign key relationships (if needed)
-UPDATE pg_tview_meta
-SET fk_columns = '{fk_user}'::TEXT[]
-WHERE entity_name = 'post';
-
-UPDATE pg_tview_meta
-SET fk_columns = '{fk_user,fk_post}'::TEXT[]
-WHERE entity_name = 'comment';
-```
+There is no metadata to write by hand: `pg_tviews` reads every relationship from the
+definition's query tree when the TVIEW is created. A TVIEW that joins another TVIEW
+(`JOIN tv_user u ON u.pk_user = p.fk_user`) and projects the joined column is refreshed
+when that TVIEW's rows change, whatever the column is called. `tviews.registry` shows
+how each base table's writes reach a TVIEW.
 
 ## Define your Backing Views
 
@@ -257,7 +248,7 @@ SELECT tablename FROM pg_tables WHERE tablename LIKE 'tb_%' ORDER BY tablename;
 After conversion:
 
 1. **Monitor refresh operations**: run `docs/operations/runbooks/scripts/health-check.sql` and check `tviews.pg_tviews_health_check()`
-2. **Define foreign keys**: Update `fk_columns` in `pg_tview_meta` if needed
+2. **Check how writes reach each TVIEW**: `SELECT name, cascade_kinds FROM tviews.registry`
 3. **Customize backing views**: Create custom `v_*` views with complex logic
 4. **Set up alerting**: Monitor for stale TVIEWs or refresh lag
 

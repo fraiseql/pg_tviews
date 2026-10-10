@@ -183,6 +183,8 @@ run_arm() {  # $1=scale $2=arm(a|b|c) $3=mode $4=scriptfile
   local scenario; scenario="product_${scale}_$(arm_label "$arm")"
   db "DROP DATABASE IF EXISTS $dbn"
   db "CREATE DATABASE $dbn TEMPLATE bench_rb_data"
+  # The extension lives in schema tviews; the ops script calls it unqualified.
+  db "ALTER DATABASE $dbn SET search_path = \"\$user\", public, tviews"
   case "$arm" in
     a) bench_install "$dbn" "jsonb_delta pg_tviews" ;;
     b) bench_install "$dbn" "pg_tviews" ;;

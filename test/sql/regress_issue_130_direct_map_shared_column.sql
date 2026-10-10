@@ -66,9 +66,9 @@ SELECT assert_fresh('name update');
 
 -- Only "name" is mapped: bio feeds bio_upper, city feeds the nested object.
 DO $$ BEGIN
-    IF (SELECT direct_map_columns FROM pg_tview_meta WHERE entity = 'user') <> '{name}' THEN
+    IF (SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d) FROM pg_tview_meta WHERE entity = 'user') <> '{name}' THEN
         RAISE EXCEPTION '#130 FAIL: direct map is %',
-            (SELECT direct_map_columns FROM pg_tview_meta WHERE entity = 'user');
+            (SELECT ARRAY(SELECT d->>0 FROM jsonb_array_elements(plan->'direct') d) FROM pg_tview_meta WHERE entity = 'user');
     END IF;
 END $$;
 

@@ -299,17 +299,22 @@ info!("Query result: {:?}", result);
 
 ```
 src/
-├── lib.rs              # Extension entry point and exports
-├── error/              # Error types and testing utilities
-├── metadata.rs         # Metadata table management
-├── catalog.rs          # PostgreSQL catalog queries
-├── trigger.rs          # Trigger installation logic
-├── refresh.rs          # Incremental refresh implementation
-├── propagate.rs        # Cascade propagation logic
-└── utils.rs            # Shared utility functions
+├── lib.rs              # Extension entry point
+├── install_sql.rs      # Install SQL: catalog tables, views, triggers
+├── catalog/            # pg_tview_meta rows and their propagation plan (plan.rs)
+├── lineage/            # Analysis of a backing view's query tree (walk/ reads the nodes)
+├── ddl/                # pg_tviews_create / create_or_replace / drop / rename
+├── trigger.rs, delta.rs  # Row and statement triggers: writes to TVIEW keys
+├── queue/              # The transaction's pending refresh work
+├── flush/              # Applies it: dependency order, patches, propagation
+├── refresh/            # Row and bulk refreshes, direct and fan-out patches
+├── hooks/              # ProcessUtility hook: tv_* DDL, COMMIT flush, follow-ups
+├── cache/              # Per-backend caches and their invalidation
+└── utils/              # SPI helpers and shared utilities
 
 test/
-└── sql/                # SQL integration tests
+├── sql/                # Regression and integration suites
+└── upgrade/            # Upgrade-path check
 
 .github/
 └── workflows/          # CI/CD configuration

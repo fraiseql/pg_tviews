@@ -32,7 +32,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         return Ok(super::Touched::default());
     }
 
-    // Count the backing-view recompute of these rows (issue #56).
+    // Count the backing-view recompute of these rows.
     crate::metrics::metrics_api::record_view_recomputes(keys.len() as u64);
 
     // Load metadata once
@@ -56,16 +56,16 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
 
     // UPSERT every requested row that still resolves in the backing view. Rows not
     // yet materialized are inserted rather than silently skipped — the old
-    // `UPDATE … FROM unnest()` path dropped every not-yet-present row (issue #48).
-    // Rows whose recomputed columns equal the stored ones are left alone (#72).
+    // `UPDATE … FROM unnest()` path dropped every not-yet-present row.
+    // Rows whose recomputed columns equal the stored ones are left alone.
     // The filter is on the identity, bound with its type, so it reaches the base
-    // tables' indexes through the view (#174).
+    // tables' indexes through the view.
     let qi_key = crate::utils::quote_identifier(key_col);
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{entity}"));
     let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
     // A UNION view can return several rows for one key: union_duplicate_policy
     // decides (an error, or the first row), as for a single key.
-    let source_sql = if meta.is_union {
+    let source_sql = if meta.plan.set_operation {
         format!(
             "SELECT DISTINCT ON ({qi_key}) {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}"
         )
@@ -82,7 +82,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
-    // The old UPDATE-only path left these stale (issue #48).
+    // The old UPDATE-only path left these stale.
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_key} = {any_key} \
@@ -99,13 +99,13 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let before = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
-        if meta.is_union
+        if meta.plan.set_operation
             && let Some(key) = pgrx::Spi::get_one_with_args::<String>(
                 &duplicate_sql,
                 &[super::key_array(&key_type, chunk)?],
             )?
         {
-            super::main::union_duplicate(&meta, &key);
+            super::row::union_duplicate(&meta, &key);
         }
         let (_, written) = super::run_counted_upsert(
             entity,

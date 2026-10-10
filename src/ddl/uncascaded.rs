@@ -1,7 +1,6 @@
-//! Base tables a TVIEW reads whose writes no cascade maps to its keys (issues
-//! #157, #158): the tables its lineage classifies `all_keys` (ADR 0157). They are
+//! Base tables a TVIEW reads whose writes no cascade maps to its keys: the tables its lineage classifies `all_keys` (ADR 0157). They are
 //! reported when the TVIEW is registered, and its `uncascaded_policy`, or the
-//! policy declared for the table itself in `uncascaded_tables` (#195), decides
+//! policy declared for the table itself in `uncascaded_tables`, decides
 //! what a write to one of them does: refused at create by default.
 
 use crate::config::UncascadedPolicy;
@@ -20,8 +19,8 @@ pub(crate) struct UncascadedTable {
 }
 
 /// What a TVIEW declares about the reads no cascade reaches: its policy, the
-/// tables with a policy of their own (#195), and the tables the functions it
-/// calls read (#193).
+/// tables with a policy of their own, and the tables the functions it
+/// calls read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declarations {
     pub policy: UncascadedPolicy,
@@ -34,7 +33,7 @@ pub(crate) struct Declarations {
     pub time_refresh: TimeRefresh,
 }
 
-/// How a TVIEW that reads the current time is brought up to date (#193).
+/// How a TVIEW that reads the current time is brought up to date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimeRefresh {
     /// Nothing declared: its policy refuses it, or warns.
@@ -154,39 +153,15 @@ impl Declarations {
             .map(|(_, policy)| policy.as_str().to_string())
             .collect();
         let (functions, function_tables) = self.function_read_pairs();
-        // SAFETY: each datum copies or borrows a value that outlives the call.
-        let args = unsafe {
-            [
-                pgrx::datum::DatumWithOid::new(
-                    entity,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    self.policy.as_str(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    oids,
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    policies,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    functions,
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    function_tables,
-                    PgOid::BuiltIn(PgBuiltInOids::OIDARRAYOID).value(),
-                ),
-                pgrx::datum::DatumWithOid::new(
-                    self.time_refresh.stored(),
-                    PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-                ),
-            ]
-        };
+        let args = [
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(self.policy.as_str()),
+            crate::utils::spi::oid_array(oids),
+            crate::utils::spi::text_array(policies),
+            crate::utils::spi::text_array(functions),
+            crate::utils::spi::oid_array(function_tables),
+            crate::utils::spi::text(self.time_refresh.stored()),
+        ];
         Spi::run_with_args(
             &format!(
                 "UPDATE {} SET uncascaded_policy = $2, \
@@ -212,7 +187,7 @@ impl Declarations {
 pub(crate) struct Uncascaded {
     pub tables: Vec<UncascadedTable>,
     pub declarations: Declarations,
-    /// The definition reads the current time (#193).
+    /// The definition reads the current time.
     pub time_dependent: bool,
 }
 
@@ -256,14 +231,17 @@ fn describe(tview: &str, tables: &[&UncascadedTable], verb: &str) -> String {
 /// `pg_tviews_create_or_replace()`, for those tables or the whole TVIEW, or the
 /// setting `CREATE TABLE … AS` and `pg_tviews_create()` read.
 fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> String {
+    let json = |text: &str| serde_json::Value::from(text).to_string();
     let named = tables
         .iter()
-        .map(|t| format!("\"{}\": \"{policy}\"", t.name.replace('"', "\\\"")))
+        .map(|t| format!("{}: {}", json(&t.name), json(policy)))
         .collect::<Vec<_>>()
         .join(", ");
+    // The option as JSON, written as an SQL literal.
+    let option = crate::utils::quote_literal(&format!("{{\"uncascaded_tables\": {{{named}}}}}"));
     format!(
         "pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"uncascaded_tables\": {{{named}}}}}'), or for the whole TVIEW \
+         {option}), or for the whole TVIEW \
          '{{\"uncascaded_policy\": \"{policy}\"}}'; before CREATE TABLE … AS or \
          pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
     )
@@ -323,7 +301,7 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
     Ok(())
 }
 
-/// Add the tables the declared functions read to `lineage` (#193), and return
+/// Add the tables the declared functions read to `lineage`, and return
 /// them with the functions the definition calls that are not declared.
 ///
 /// # Errors
@@ -375,10 +353,7 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
                     crate::utils::meta_table()
                 ),
                 None,
-                // SAFETY: the datum copies the OID.
-                &[unsafe {
-                    pgrx::datum::DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-                }],
+                &[crate::utils::spi::oid(table)],
             )?
             .first()
             .get_three::<String, String, String>()
@@ -397,8 +372,8 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
     })
 }
 
-/// Report the functions `tview` calls that may read tables and are not declared
-/// (#193): nothing would refresh it when those tables change, so they are refused
+/// Report the functions `tview` calls that may read tables and are not declared:
+/// nothing would refresh it when those tables change, so they are refused
 /// under `error` and `full_refresh`, and warned about under `warn`.
 ///
 /// # Errors
@@ -423,10 +398,12 @@ pub(crate) fn report_functions(
     );
     let hint = format!(
         "Declare them: pg_tviews_create_or_replace('{tview}', <definition>, options => \
-         '{{\"function_reads\": {{\"{}\": [\"<schema.table>\", …]}}}}'), [] for a function \
-         that reads no table; then give those tables a policy in uncascaded_tables. Or make \
-         the function IMMUTABLE if it reads nothing that changes.",
-        first.replace('"', "\\\"")
+         {}), [] for a function that reads no table; then give those tables a policy in \
+         uncascaded_tables. Or make the function IMMUTABLE if it reads nothing that changes.",
+        crate::utils::quote_literal(&format!(
+            "{{\"function_reads\": {{{}: [\"<schema.table>\", …]}}}}",
+            serde_json::Value::from(first.as_str())
+        ))
     );
     let level = if policy == UncascadedPolicy::Warn {
         PgLogLevel::WARNING
@@ -444,7 +421,7 @@ pub(crate) fn report_functions(
     Ok(())
 }
 
-/// Report how `tview` reads the current time (#193): its rows change at a
+/// Report how `tview` reads the current time: its rows change at a
 /// boundary no write marks. Refused under `error` and `full_refresh` unless it
 /// declares `time_refresh`, warned about under `warn`; a declared `time_refresh`
 /// for a definition that reads no time is refused.
@@ -498,7 +475,7 @@ pub(crate) fn report_time(
 }
 
 /// Refuse a table declared in `uncascaded_tables` that `lineage` does not read,
-/// or whose writes it traces: the declaration would never apply (#195).
+/// or whose writes it traces: the declaration would never apply.
 ///
 /// # Errors
 /// Returns an error naming the first such table.
@@ -529,16 +506,13 @@ pub(crate) fn check_declared(
 
 /// After `REFRESH MATERIALIZED VIEW matview`: refresh in full every TVIEW that
 /// reads it under the `full_refresh` policy (its own or the TVIEW's), then flush the queue, as the flush
-/// trigger does after a write (#189). Under `warn` the TVIEW was created knowing
+/// trigger does after a write. Under `warn` the TVIEW was created knowing
 /// it would go stale; under `error` it was never created.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read or a refresh fails.
 pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
-    // SAFETY: a plain OID datum.
-    let args = [unsafe {
-        pgrx::datum::DatumWithOid::new(matview, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-    }];
+    let args = [crate::utils::spi::oid(matview)];
     let entities: Vec<String> = Spi::connect(|client| {
         client
             .select(
@@ -572,7 +546,7 @@ pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
             crate::queue::enqueue_refresh_all(entity);
         }
     }
-    crate::queue::flush_refresh_queue()
+    crate::flush::flush_refresh_queue()
 }
 
 #[cfg(test)]

@@ -2,7 +2,6 @@
 //!
 //! This module analyzes `PostgreSQL's` system catalogs to understand view dependencies:
 //! - **Base Table Discovery**: Finds all tables a view depends on
-//! - **Dependency Graph**: Builds hierarchical relationship maps
 //! - **Trigger Management**: Installs/removes change-tracking triggers
 //!
 //! ## Architecture
@@ -17,13 +16,11 @@
 //!
 //! - `find_base_tables()`: Core dependency resolution
 //! - `install_triggers()`: Set up change tracking
-//! - `DependencyGraph`: Caches analysis results
 
-pub mod graph;
+pub mod base_tables;
 pub mod triggers;
 
-pub use graph::{DependencyGraph, find_base_tables};
+pub use base_tables::find_base_tables;
 pub use triggers::{
-    TriggerPlan, TriggerSet, install_triggers, remove_entity_triggers, sync_entity_triggers,
-    trigger_plan,
+    TriggerPlan, install_triggers, remove_entity_triggers, sync_entity_triggers, trigger_plan,
 };

@@ -10,7 +10,7 @@
 
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
-use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -45,10 +45,7 @@ impl TviewRelation {
             crate::utils::meta_table()
         );
         Spi::connect(|client| {
-            // SAFETY: the text datum borrows `entity`, which outlives the select.
-            let args = [unsafe {
-                DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            }];
+            let args = [crate::utils::spi::text(entity)];
             let mut out = Vec::new();
             for row in client.select(&query, None, &args)? {
                 out.push(Self {
@@ -98,7 +95,7 @@ impl TviewRelation {
 /// rebuild (its view is empty until that one is filled). Found dependencies
 /// first.
 fn needing_rebuild(relations: &[TviewRelation]) -> TViewResult<HashSet<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     let mut sorted: Vec<&TviewRelation> = relations.iter().collect();
     sorted.sort_by_key(|rel| {
@@ -146,7 +143,7 @@ fn in_recovery() -> bool {
 /// # Errors
 /// Returns an error if the catalog query fails.
 #[pg_extern]
-fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, TViewError> {
+fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorReport> {
     Ok(TviewRelation::load(Some(entity))?
         .first()
         .map(|r| !r.unlogged))
@@ -173,7 +170,7 @@ fn pg_tviews_replication_status() -> Result<
             name!(needs_rebuild, Option<bool>),
         ),
     >,
-    TViewError,
+    ErrorReport,
 > {
     let recovering = in_recovery();
     let relations = TviewRelation::load(None)?;
@@ -216,7 +213,7 @@ fn pg_tviews_replication_status() -> Result<
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_rebuild_all(
     only_empty: default!(bool, true),
-) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, TViewError> {
+) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, ErrorReport> {
     crate::revision::check();
     Ok(TableIterator::new(rebuild_all(only_empty)?))
 }
@@ -250,7 +247,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
     }
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order
@@ -319,7 +316,7 @@ fn dependencies_first(depends_on: &HashMap<String, Vec<String>>) -> Vec<String> 
 /// # Errors
 /// Returns an error if the entity is unknown or the `ALTER TABLE` fails.
 #[pg_extern]
-fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), TViewError> {
+fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
     crate::revision::check();
     let rel = TviewRelation::load(Some(entity))?
         .into_iter()
@@ -332,7 +329,8 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), TViewError> {
         "ALTER TABLE {} SET {persistence}",
         rel.qualified(&rel.table)
     );
-    crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })
+    crate::utils::spi_run_ddl(&sql)
+        .map_err(|error| TViewError::SpiError { query: sql, error }.into())
 }
 
 #[cfg(test)]

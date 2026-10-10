@@ -101,11 +101,11 @@ COMMIT;
 
 -- The stored mapping lists the columns of the table the TVIEW reads.
 DO $$ BEGIN
-    IF (SELECT x->'columns' FROM tviews.pg_tview_meta, jsonb_array_elements(key_mappings) x
+    IF (SELECT x->'columns' FROM tviews.pg_tview_meta, jsonb_array_elements(plan->'tables') x
         WHERE entity = 'order' AND (x->>'relid')::oid = 'tb_line'::regclass::oid)
        IS DISTINCT FROM '["fk_order", "fk_sku"]'::jsonb THEN
         RAISE EXCEPTION 'FAIL ADR 0157 key mapping: tb_line columns of tv_order are %',
-            (SELECT x->'columns' FROM tviews.pg_tview_meta, jsonb_array_elements(key_mappings) x
+            (SELECT x->'columns' FROM tviews.pg_tview_meta, jsonb_array_elements(plan->'tables') x
              WHERE entity = 'order' AND (x->>'relid')::oid = 'tb_line'::regclass::oid);
     END IF;
 END $$;

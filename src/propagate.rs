@@ -1,32 +1,26 @@
-use pgrx::datum::DatumWithOid;
+//! Parent discovery for the flush: the rows of the TVIEWs that embed a changed
+//! TVIEW's rows, found through the lookup columns of their plans.
+
 use pgrx::prelude::*;
 use std::collections::HashMap;
 
-/// Propagation Engine: Parent Discovery for Dependent Views
-///
-/// This module provides parent discovery for the transaction-level queue:
-/// - **Parent Discovery**: Finds views that depend on changed entities
-/// - **Affected Row Identification**: Locates rows impacted by changes
-///
-/// Used by the flush (`src/queue/`) to iteratively discover and enqueue parent
-/// TVIEWs for refresh.
 use crate::catalog::KeyType;
 use crate::queue::RefreshKey;
 use crate::queue::key::KeyValue;
 use crate::utils::quote_identifier;
 
 /// The parent rows to refresh when rows of `child` changed: for each TVIEW that
-/// embeds `child`, its rows whose lookup column (`fk_<child>`, or the column an
-/// aggregate embed records) holds one of `pks`, the children's `pk_<child>`
+/// embeds `child`, its rows whose lookup columns (the output columns its plan
+/// equates to the child's key) hold one of `pks`, the children's `pk_<child>`
 /// values. Keyed by child pk; each parent key is the parent's identity value.
 ///
-/// Parents reference a child by `fk_<child> = pk_<child>` whatever the child's
-/// identity (ADR 0169, D4), so the caller passes the `pk_<child>` of the rows its
+/// Parents reference a child by its `pk_<child>` whatever the child's identity
+/// (ADR 0169, D4), so the caller passes the `pk_<child>` of the rows its
 /// refresh touched, before and after. For the child rows that `appeared`, the
 /// parents are also looked up in their backing view: a parent row an inner join
-/// dropped with the child is in the view again, not in its table (#177).
+/// dropped with the child is in the view again, not in its table.
 ///
-/// One query per parent entity, `lookup = ANY($1)` over all the pks.
+/// One query per parent lookup column, `lookup = ANY($1)` over all the pks.
 ///
 /// # Errors
 /// Returns an error if a parent's catalog row or table cannot be read.
@@ -34,7 +28,7 @@ pub fn find_parents_batch(
     child: &str,
     pks: &[i64],
     appeared: &[i64],
-    graph: &crate::queue::EntityDepGraph,
+    graph: &crate::flush::EntityDepGraph,
 ) -> crate::TViewResult<HashMap<i64, Vec<RefreshKey>>> {
     let mut result: HashMap<i64, Vec<RefreshKey>> = HashMap::with_capacity(pks.len());
     if pks.is_empty() {
@@ -49,19 +43,24 @@ pub fn find_parents_batch(
         if unpruned.is_empty() {
             continue;
         }
-        let lookup_col = graph.lookup_column(child, &parent);
         let appeared: Vec<i64> = appeared
             .iter()
             .copied()
             .filter(|pk| unpruned.contains(pk))
             .collect();
-        for (child_pk, keys) in
-            find_affected_keys_batch(&parent, &lookup_col, &unpruned, &appeared)?
-        {
-            result
-                .entry(child_pk)
-                .or_insert_with(|| Vec::with_capacity(keys.len()))
-                .extend(keys.into_iter().map(|k| RefreshKey::new(&parent, k)));
+        for lookup_col in graph.lookup_columns(child, &parent) {
+            for (child_pk, keys) in
+                find_affected_keys_batch(&parent, lookup_col, &unpruned, &appeared)?
+            {
+                let found = result
+                    .entry(child_pk)
+                    .or_insert_with(|| Vec::with_capacity(keys.len()));
+                for key in keys.into_iter().map(|k| RefreshKey::new(&parent, k)) {
+                    if !found.contains(&key) {
+                        found.push(key);
+                    }
+                }
+            }
         }
     }
     Ok(result)
@@ -69,9 +68,9 @@ pub fn find_parents_batch(
 
 /// Whether propagation from `child`'s row `pk` to `parent` can be skipped: the
 /// parent embeds only the child's computed document, and the child's refresh in
-/// this flush changed nothing (issue #85). A scalar embed that follows the child's
+/// this flush changed nothing. A scalar embed that follows the child's
 /// FK to a deeper relationship always propagates.
-fn prune_edge(graph: &crate::queue::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
+fn prune_edge(graph: &crate::flush::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
     let prune = graph
         .document_edges
         .contains(&(child.to_string(), parent.to_string()))
@@ -89,7 +88,7 @@ fn find_affected_keys_batch(
     lookup_col: &str,
     child_pks: &[i64],
     in_view: &[i64],
-) -> spi::Result<HashMap<i64, Vec<KeyValue>>> {
+) -> crate::TViewResult<HashMap<i64, Vec<KeyValue>>> {
     let meta = crate::catalog::TviewMeta::load_by_entity(parent)?.ok_or_else(|| {
         crate::TViewError::MetadataNotFound {
             entity: parent.to_string(),
@@ -118,13 +117,7 @@ fn find_affected_keys_batch(
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
     Spi::connect(|client| {
-        // SAFETY: the datums own their arrays.
-        let array = |pks: &[i64]| unsafe {
-            DatumWithOid::new(
-                pks.to_vec(),
-                PgOid::BuiltIn(PgBuiltInOids::INT8ARRAYOID).value(),
-            )
-        };
+        let array = |pks: &[i64]| crate::utils::spi::int8_array(pks.to_vec());
         let args = if in_view.is_empty() {
             vec![array(child_pks)]
         } else {
@@ -227,7 +220,7 @@ mod tests {
         .unwrap();
 
         // Test: Find parents for multiple user PKs using batched discovery
-        let graph = crate::queue::EntityDepGraph::load().unwrap();
+        let graph = crate::flush::EntityDepGraph::load().unwrap();
 
         // Batched discovery
         let batched_result = find_parents_batch("user", &[1, 2], &[], &graph).unwrap();
@@ -270,7 +263,7 @@ mod tests {
         )
         .unwrap();
 
-        let graph = crate::queue::EntityDepGraph::load().unwrap();
+        let graph = crate::flush::EntityDepGraph::load().unwrap();
 
         let result = find_parents_batch("tag", &[1, 2], &[], &graph).unwrap();
 

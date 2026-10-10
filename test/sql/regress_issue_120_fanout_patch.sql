@@ -162,7 +162,7 @@ DECLARE fanout jsonb;
 BEGIN
     -- Recorded with the table's key mapping (ADR 0157).
     SELECT e->'fanout' INTO fanout
-    FROM pg_tview_meta, jsonb_array_elements(key_mappings) e
+    FROM pg_tview_meta, jsonb_array_elements(plan->'tables') e
     WHERE entity = 'post' AND (e->>'relid')::oid = 'tb_user'::regclass::oid;
     IF fanout IS DISTINCT FROM
        '{"lookup_col": "fk_user", "fields": [["name", "author_name"], ["score", "author_score"]]}' THEN

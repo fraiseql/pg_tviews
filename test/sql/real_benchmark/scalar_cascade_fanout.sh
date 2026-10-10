@@ -4,7 +4,7 @@
 # 1 author, N posts, and `UPDATE tb_user SET bio = 'bio-'||i` (each its own
 # statement) timed with the direct-patch fast path OFF (recompute every post) vs ON.
 # SHAPE selects how the posts read the author:
-#   document  the author's whole document, nested (`'author', v_user.data`; #56
+#   document  the author's whole document, nested (`'author', tv_user.data`; #56
 #             derives a nested patch per post)
 #   scalar    one copied column (`'author_bio', u.bio` over a join on tb_user;
 #             #120 writes it into all posts in one statement)
@@ -32,6 +32,8 @@ trap cleanup EXIT
 
 psql -X -q -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
 psql -X -q -d postgres -c "CREATE DATABASE $DB" >/dev/null 2>&1
+# The extension lives in schema tviews; the script calls it unqualified.
+psql -X -q -d postgres -c "ALTER DATABASE $DB SET search_path = \"\$user\", public, tviews" >/dev/null
 
 psql -X -q -v ON_ERROR_STOP=1 -d "$DB" >/dev/null <<SQL
 SET client_min_messages TO ERROR;
@@ -62,8 +64,8 @@ SELECT pg_tviews_create('tv_user', \$t\$
     SELECT pk_user, id, jsonb_build_object('name', name, 'bio', bio) AS data FROM tb_user \$t\$);
 SELECT pg_tviews_create('tv_post', \$t\$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
-           jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user \$t\$);
+           jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
+    FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user \$t\$);
 SQL
 fi
 

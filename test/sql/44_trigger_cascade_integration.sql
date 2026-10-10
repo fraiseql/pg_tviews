@@ -347,15 +347,12 @@ WHERE data->'author'->'company'->>'industry' = 'Tech & Innovation';
 
 SELECT
     entity,
-    array_length(cascade_paths, 1) AS cascade_count,
-    array_length(fk_columns, 1) AS fk_count,
-    array_length(uuid_fk_columns, 1) AS uuid_fk_count
+    jsonb_array_length(plan->'paths') AS local_paths,
+    jsonb_array_length(plan->'embeds') AS embeds
 FROM pg_tview_meta
 ORDER BY entity;
--- Expected:
---   company: 0 cascades, 0 fks, 0 uuid_fks
---   user: 1 cascade, 1 fk, 1 uuid_fk
---   post: 2 cascades, 1 fk, 1 uuid_fk
+-- Expected: one local path per table holding a key, no embeds (the
+-- definitions read base tables, not other TVIEWs).
 
 \echo '✓ Test 9 passed: Metadata integrity correct'
 

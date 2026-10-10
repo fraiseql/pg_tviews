@@ -10,8 +10,7 @@
 //! |-----------|------|---------|-------------|
 //! | `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | Cache dependency graphs |
-//! | `pg_tviews.table_cache_enabled` | bool | true | Cache table→entity mappings |
-//! | `pg_tviews.metrics_enabled` | bool | false | Deprecated, no effect (metrics are always collected) |
+//! | `pg_tviews.table_cache_enabled` | bool | true | Cache TVIEW catalog rows and plans |
 //! | `pg_tviews.audit_enabled` | bool | false | Audit logging (opt-in) |
 //! | `pg_tviews.log_level` | string | "info" | `debug` shows internal diagnostics as NOTICE |
 //! | `pg_tviews.suspend_triggers` | bool | false | Suspend trigger-based refresh |
@@ -19,13 +18,13 @@
 //! | `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
 //! | `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement |
 //! | `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory cache |
-//! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path (issue #56) |
+//! | `pg_tviews.direct_patch_enabled` | bool | true | Direct-patch fast path |
 //! | `pg_tviews.data_gin_index` | bool | false | GIN index on `data` for new TVIEWs |
 //! | `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEWs |
 //! | `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
 //! | `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose UNLOGGED TVIEWs are rebuilt after recovery (postmaster) |
-//! | `pg_tviews.uncascaded_policy` | enum | `error` | What a new TVIEW does about base tables no cascade reaches (issues #157, #158) |
-//! | `pg_tviews.time_refresh` | enum | `none` | How a new TVIEW that reads the current time is brought up to date (issue #193) |
+//! | `pg_tviews.uncascaded_policy` | enum | `error` | What a new TVIEW does about base tables no cascade reaches |
+//! | `pg_tviews.time_refresh` | enum | `none` | How a new TVIEW that reads the current time is brought up to date |
 //!
 //! `pg_tviews.uncascaded_policy` is read once, when a TVIEW is created without an
 //! `uncascaded_policy` option, and stored with it: a tracked base table whose
@@ -34,24 +33,12 @@
 //! whole TVIEW at flush (`full_refresh`, which recomputes every row of the TVIEW
 //! once per flush that wrote to such a table). The row trigger always uses the
 //! stored value, never the writing session's.
-//!
-//! ## Compile-time Constants
-//!
-//! - `MAX_DEPENDENCY_DEPTH`: default for `pg_tviews.max_dependency_depth`
-//! - `DEBUG_DEPENDENCIES`: Enable verbose dependency logging
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 use pgrx::prelude::PostgresGucEnum;
 
-/// Maximum depth for `pg_depend` traversal
-/// Prevents infinite recursion and overly complex view hierarchies
-pub const MAX_DEPENDENCY_DEPTH: usize = 10;
-
-/// Enable verbose dependency logging (for debugging)
-pub const DEBUG_DEPENDENCIES: bool = false;
-
 /// What a TVIEW does about a base table it reads whose writes no cascade maps to
-/// its keys (issues #157, #158). Fixed per TVIEW when it is created.
+/// its keys. Fixed per TVIEW when it is created.
 #[derive(PostgresGucEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UncascadedPolicy {
     /// WARNING at create time; such writes leave rows stale until a mapped table changes.
@@ -98,8 +85,8 @@ impl UncascadedPolicy {
     }
 }
 
-/// How a TVIEW whose definition reads the current time is brought up to date
-/// (#193): its rows change with no write.
+/// How a TVIEW whose definition reads the current time is brought up to date:
+/// its rows change with no write.
 #[derive(PostgresGucEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeRefreshSetting {
     /// Nothing declared: the TVIEW's `uncascaded_policy` refuses (`error`,
@@ -117,7 +104,6 @@ pub enum TimeRefreshSetting {
 static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
-static METRICS_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static LOG_LEVEL_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"info"));
 static UNION_DUPLICATE_POLICY_GUC: GucSetting<Option<std::ffi::CString>> =
@@ -127,7 +113,6 @@ static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static UNLOGGED_BY_DEFAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static SUSPEND_TRIGGERS_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
-// Default must equal MAX_DEPENDENCY_DEPTH (10); GucSetting::new needs an i32 literal.
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
 static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
@@ -149,6 +134,19 @@ static TIME_REFRESH_GUC: GucSetting<TimeRefreshSetting> =
 /// Must be called exactly once from `_PG_init()`, before any code reads
 /// the GUC values.
 pub fn register_gucs() {
+    register_int_gucs();
+    register_bool_gucs();
+    register_string_gucs();
+    register_enum_gucs();
+    register_postmaster_gucs();
+
+    // Every pg_tviews.* setting is defined above: refuse any other name, so a
+    // typo or a setting that never existed raises instead of doing nothing.
+    // SAFETY: called from _PG_init with a static, NUL-terminated prefix.
+    unsafe { pgrx::pg_sys::MarkGUCPrefixReserved(c"pg_tviews".as_ptr()) };
+}
+
+fn register_int_gucs() {
     GucRegistry::define_int_guc(
         c"pg_tviews.max_propagation_depth",
         c"Maximum cascade propagation iterations before aborting.",
@@ -159,75 +157,6 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.graph_cache_enabled",
-        c"Enable in-memory caching of entity dependency graphs.",
-        c"When false, graphs are loaded from pg_tview_meta on every refresh.",
-        &GRAPH_CACHE_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.table_cache_enabled",
-        c"Enable in-memory caching of table OID to entity name mappings.",
-        c"When false, entity lookups query pg_tview_meta on every trigger.",
-        &TABLE_CACHE_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.metrics_enabled",
-        c"Deprecated: has no effect; will be removed.",
-        c"Refresh metrics are always collected (pg_tviews_queue_stats()).",
-        &METRICS_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_string_guc(
-        c"pg_tviews.log_level",
-        c"Logging verbosity for pg_tviews operations.",
-        c"Set to 'debug' to show internal diagnostics (event trigger, DDL tracing) as NOTICE; otherwise they are DEBUG1 messages.",
-        &LOG_LEVEL_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_enum_guc(
-        c"pg_tviews.uncascaded_policy",
-        c"What a new TVIEW does about base tables whose writes no cascade reaches.",
-        c"error (default): refuse the TVIEW; full_refresh: such writes refresh the whole \
-          TVIEW; warn: WARNING, rows stay stale on such writes. Read once at create time \
-          when the TVIEW declares no uncascaded_policy option, and stored with it.",
-        &UNCASCADED_POLICY_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_enum_guc(
-        c"pg_tviews.time_refresh",
-        c"How a new TVIEW that reads the current time is brought up to date.",
-        c"none (default): its uncascaded_policy refuses it (error, full_refresh) or warns \
-          (warn); external: pg_tviews_refresh_time_dependent() is called at the boundary. \
-          Read at create time when the TVIEW declares no time_refresh option, and stored \
-          with a TVIEW that reads the time.",
-        &TIME_REFRESH_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_string_guc(
-        c"pg_tviews.union_duplicate_policy",
-        c"Policy when a UNION ALL backing view returns multiple rows for the same key.",
-        c"Allowed values: 'first' (silently take first row), 'error' (abort transaction).",
-        &UNION_DUPLICATE_POLICY_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
     GucRegistry::define_int_guc(
         c"pg_tviews.max_queue_size",
         c"Maximum number of refresh items allowed in the transaction queue.",
@@ -238,48 +167,6 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.test_skip_ctas_intercept",
-        c"TEST ONLY: make the ProcessUtility hook skip CREATE TABLE tv_* AS interception.",
-        c"Simulates a session where the hook did not see the statement, to test the \
-          missed-interception error. Never enable in production.",
-        &TEST_SKIP_CTAS_INTERCEPT_GUC,
-        GucContext::Userset,
-        GucFlags::NO_SHOW_ALL,
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.audit_enabled",
-        c"Enable audit logging of TVIEW operations to pg_tview_audit_log.",
-        c"When false, refresh/create/drop operations are not logged.",
-        &AUDIT_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.unlogged_by_default",
-        c"Create TVIEW tables as UNLOGGED by default.",
-        c"When true, new TVIEWs are created as UNLOGGED tables for better write performance. \
-          A hot standby cannot read an UNLOGGED table, and promotion or a crash restart \
-          empties it: turn this off for TVIEWs served from replicas.",
-        &UNLOGGED_BY_DEFAULT_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.data_gin_index",
-        c"Create a GIN index on the data column of new TVIEWs.",
-        c"Off by default: nearly every refresh rewrites data, so an index on it makes \
-          every refresh a non-HOT update. Enable per TVIEW (SET LOCAL) only when \
-          top-level containment queries (data @> ...) need it.",
-        &DATA_GIN_INDEX_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
     GucRegistry::define_int_guc(
         c"pg_tviews.fillfactor",
         c"Heap fillfactor for new TVIEW tables.",
@@ -291,7 +178,171 @@ pub fn register_gucs() {
         GucContext::Userset,
         GucFlags::default(),
     );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.report_max_tracked",
+        c"Changed TVIEW rows journaled per transaction for pg_tviews_flush_and_report().",
+        c"Beyond it only the entity types are kept and the report is marked truncated. \
+          0 turns the journal off.",
+        &REPORT_MAX_TRACKED_GUC,
+        0,
+        10_000_000,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_dependency_depth",
+        c"Maximum pg_depend traversal depth when building the dependency graph.",
+        c"Bounds how deep view-on-view hierarchies may nest before an error is raised.",
+        &MAX_DEPENDENCY_DEPTH_GUC,
+        1,   // min
+        100, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.batch_size",
+        c"Maximum primary keys processed per statement during bulk refresh.",
+        c"Large multi-row changes are chunked into batches of this size to bound \
+          statement size and memory on very large bulk operations.",
+        &BATCH_SIZE_GUC,
+        1,         // min
+        1_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.cache_size",
+        c"Maximum entries kept in each in-memory metadata cache.",
+        c"When a cache exceeds this many entries it is cleared and repopulated \
+          lazily, bounding per-backend memory on high-cardinality workloads.",
+        &CACHE_SIZE_GUC,
+        1,          // min
+        10_000_000, // max
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+}
 
+fn register_bool_gucs() {
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.graph_cache_enabled",
+        c"Enable in-memory caching of entity dependency graphs.",
+        c"When false, graphs are loaded from pg_tview_meta on every refresh.",
+        &GRAPH_CACHE_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.table_cache_enabled",
+        c"Enable in-memory caching of TVIEW catalog rows and their plans.",
+        c"When false, every lookup reads pg_tview_meta.",
+        &TABLE_CACHE_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.test_skip_ctas_intercept",
+        c"TEST ONLY: make the ProcessUtility hook skip CREATE TABLE tv_* AS interception.",
+        c"Simulates a session where the hook did not see the statement, to test the \
+          missed-interception error. Never enable in production.",
+        &TEST_SKIP_CTAS_INTERCEPT_GUC,
+        GucContext::Userset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.audit_enabled",
+        c"Enable audit logging of TVIEW operations to pg_tview_audit_log.",
+        c"When false, refresh/create/drop operations are not logged.",
+        &AUDIT_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.unlogged_by_default",
+        c"Create TVIEW tables as UNLOGGED by default.",
+        c"When true, new TVIEWs are created as UNLOGGED tables for better write performance. \
+          A hot standby cannot read an UNLOGGED table, and promotion or a crash restart \
+          empties it: turn this off for TVIEWs served from replicas.",
+        &UNLOGGED_BY_DEFAULT_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.data_gin_index",
+        c"Create a GIN index on the data column of new TVIEWs.",
+        c"Off by default: nearly every refresh rewrites data, so an index on it makes \
+          every refresh a non-HOT update. Enable per TVIEW (SET LOCAL) only when \
+          top-level containment queries (data @> ...) need it.",
+        &DATA_GIN_INDEX_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.suspend_triggers",
+        c"Suspend trigger-based refresh during bulk operations.",
+        c"When true, row-level triggers will not enqueue refresh tasks.",
+        &SUSPEND_TRIGGERS_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.direct_patch_enabled",
+        c"Enable the direct-patch fast path for eligible single-row UPDATEs.",
+        c"When true (default), an UPDATE whose changed columns all map identity-style \
+          to JSONB keys patches tv_<entity> directly, skipping the backing-view \
+          recompute. When false, every change takes the recompute path. Purely a \
+          performance switch — results are identical either way.",
+        &DIRECT_PATCH_ENABLED_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+}
+
+fn register_string_gucs() {
+    GucRegistry::define_string_guc(
+        c"pg_tviews.log_level",
+        c"Logging verbosity for pg_tviews operations.",
+        c"Set to 'debug' to show internal diagnostics (event trigger, DDL tracing) as NOTICE; otherwise they are DEBUG1 messages.",
+        &LOG_LEVEL_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"pg_tviews.union_duplicate_policy",
+        c"Policy when a UNION ALL backing view returns multiple rows for the same key.",
+        c"Allowed values: 'first' (silently take first row), 'error' (abort transaction).",
+        &UNION_DUPLICATE_POLICY_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+}
+
+fn register_enum_gucs() {
+    GucRegistry::define_enum_guc(
+        c"pg_tviews.uncascaded_policy",
+        c"What a new TVIEW does about base tables whose writes no cascade reaches.",
+        c"error (default): refuse the TVIEW; full_refresh: such writes refresh the whole \
+          TVIEW; warn: WARNING, rows stay stale on such writes. Read once at create time \
+          when the TVIEW declares no uncascaded_policy option, and stored with it.",
+        &UNCASCADED_POLICY_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_enum_guc(
+        c"pg_tviews.time_refresh",
+        c"How a new TVIEW that reads the current time is brought up to date.",
+        c"none (default): its uncascaded_policy refuses it (error, full_refresh) or warns \
+          (warn); external: pg_tviews_refresh_time_dependent() is called at the boundary. \
+          Read at create time when the TVIEW declares no time_refresh option, and stored \
+          with a TVIEW that reads the time.",
+        &TIME_REFRESH_GUC,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+}
+
+/// Settings read by the postmaster: defined only while the library is preloaded.
+fn register_postmaster_gucs() {
     // A postmaster-level setting can only be defined while the library is preloaded;
     // a session that loads it lazily would fail with FATAL. The rebuild worker it
     // configures needs the preload anyway.
@@ -308,79 +359,6 @@ pub fn register_gucs() {
             GucFlags::default(),
         );
     }
-
-    GucRegistry::define_int_guc(
-        c"pg_tviews.report_max_tracked",
-        c"Changed TVIEW rows journaled per transaction for pg_tviews_flush_and_report().",
-        c"Beyond it only the entity types are kept and the report is marked truncated. \
-          0 turns the journal off.",
-        &REPORT_MAX_TRACKED_GUC,
-        0,
-        10_000_000,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.suspend_triggers",
-        c"Suspend trigger-based refresh during bulk operations.",
-        c"When true, row-level triggers will not enqueue refresh tasks.",
-        &SUSPEND_TRIGGERS_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_int_guc(
-        c"pg_tviews.max_dependency_depth",
-        c"Maximum pg_depend traversal depth when building the dependency graph.",
-        c"Bounds how deep view-on-view hierarchies may nest before an error is raised.",
-        &MAX_DEPENDENCY_DEPTH_GUC,
-        1,   // min
-        100, // max
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_int_guc(
-        c"pg_tviews.batch_size",
-        c"Maximum primary keys processed per statement during bulk refresh.",
-        c"Large multi-row changes are chunked into batches of this size to bound \
-          statement size and memory on very large bulk operations.",
-        &BATCH_SIZE_GUC,
-        1,         // min
-        1_000_000, // max
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_int_guc(
-        c"pg_tviews.cache_size",
-        c"Maximum entries kept in each in-memory metadata cache.",
-        c"When a cache exceeds this many entries it is cleared and repopulated \
-          lazily, bounding per-backend memory on high-cardinality workloads.",
-        &CACHE_SIZE_GUC,
-        1,          // min
-        10_000_000, // max
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    GucRegistry::define_bool_guc(
-        c"pg_tviews.direct_patch_enabled",
-        c"Enable the direct-patch fast path for eligible single-row UPDATEs.",
-        c"When true (default), an UPDATE whose changed columns all map identity-style \
-          to JSONB keys patches tv_<entity> directly, skipping the backing-view \
-          recompute. When false, every change takes the recompute path. Purely a \
-          performance switch — results are identical either way (issue #56).",
-        &DIRECT_PATCH_ENABLED_GUC,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-
-    // Every pg_tviews.* setting is defined above: refuse any other name, so a
-    // typo or a setting that never existed raises instead of doing nothing.
-    // SAFETY: called from _PG_init with a static, NUL-terminated prefix.
-    unsafe { pgrx::pg_sys::MarkGUCPrefixReserved(c"pg_tviews".as_ptr()) };
 }
 
 // ── Public accessors (same signatures as the old const fns) ──────────────
@@ -433,18 +411,6 @@ pub fn log_level() -> String {
         || "info".to_owned(),
         |cstr| cstr.to_str().unwrap_or("info").to_owned(),
     )
-}
-
-/// Log once per backend that the deprecated `pg_tviews.metrics_enabled` is set:
-/// it has no effect.
-pub fn warn_deprecated_settings() {
-    if METRICS_ENABLED_GUC.get() {
-        crate::utils::log_once(
-            "metrics_enabled deprecated",
-            "pg_tviews.metrics_enabled is deprecated and has no effect (metrics are always \
-             collected); it will be removed",
-        );
-    }
 }
 
 /// Policy for UNION ALL backing views that return duplicate rows for the same key.
@@ -523,7 +489,7 @@ pub fn cache_size() -> usize {
     CACHE_SIZE_GUC.get().unsigned_abs().max(1) as usize
 }
 
-/// Check if the direct-patch fast path is enabled (default: true, issue #56).
+/// Check if the direct-patch fast path is enabled (default: true).
 ///
 /// Checked at capture time (trigger) and apply time (flush); when false the
 /// recompute path is used exclusively. A pure performance switch — the resulting
@@ -540,7 +506,7 @@ pub fn uncascaded_policy() -> UncascadedPolicy {
 }
 
 /// `pg_tviews.time_refresh` (default `none`): read when a TVIEW is created without
-/// a `time_refresh` option (#193).
+/// a `time_refresh` option.
 pub fn time_refresh() -> TimeRefreshSetting {
     TIME_REFRESH_GUC.get()
 }

@@ -3,15 +3,6 @@
   "last_updated": "2025-12-13",
   "api_items": [
     {
-      "name": "pg_tviews_convert_existing_table",
-      "type": "sql_function",
-      "stability": "STABLE",
-      "since_version": "0.1.0-beta.1",
-      "breaking_changes": [],
-      "deprecated": false,
-      "notes": "Core functionality, long-term commitment"
-    },
-    {
       "name": "pg_tviews_version",
       "type": "sql_function",
       "stability": "STABLE",

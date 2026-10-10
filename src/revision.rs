@@ -1,4 +1,4 @@
-//! Library/catalog revision guard (issue #137).
+//! Library/catalog revision guard.
 //!
 //! The library and the installed extension SQL each carry a catalog revision: the
 //! library as [`CATALOG_REVISION`], the catalog as the SQL function
@@ -15,7 +15,7 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 4;
+pub const CATALOG_REVISION: i32 = 5;
 
 thread_local! {
     /// Whether this backend already found a matching catalog. A mismatch is not

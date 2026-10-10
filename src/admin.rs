@@ -1,44 +1,8 @@
-//! Administrative SQL functions: refresh, migration, schema analysis, cascade path.
+//! Administrative SQL functions: refresh, migration, cascade path.
 
 use crate::{TViewError, TViewResult, utils::quote_identifier};
-use pgrx::JsonB;
-use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
-
-/// Analyze a SELECT statement and return inferred TVIEW schema as JSONB
-///
-/// Returns a JSON object with schema details on success, or `{"error": "..."}` on
-/// failure. Never raises a `PostgreSQL` error so callers can use the result in
-/// expressions (e.g., `IS NOT NULL`, `->>'error'`).
-#[pg_extern]
-fn pg_tviews_analyze_select(sql: &str) -> JsonB {
-    match crate::schema::inference::infer_schema(sql) {
-        Ok(schema) => match schema.to_jsonb() {
-            Ok(jsonb) => jsonb,
-            Err(e) => {
-                JsonB(serde_json::json!({"error": format!("Failed to serialize schema: {e}")}))
-            }
-        },
-        Err(e) => JsonB(serde_json::json!({"error": e.to_string()})),
-    }
-}
-
-/// Infer column types from `PostgreSQL` catalog
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires Vec by value
-fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
-    match crate::schema::types::infer_column_types(table_name, &columns) {
-        Ok(types) => match serde_json::to_value(&types) {
-            Ok(json_value) => JsonB(json_value),
-            Err(e) => {
-                error!("Failed to serialize types to JSONB: {}", e);
-            }
-        },
-        Err(e) => {
-            error!("Type inference failed: {}", e);
-        }
-    }
-}
 
 /// Rebuild a TVIEW from its backing view, then every TVIEW whose view reads it,
 /// directly or through others, in dependency order: a manual repair leaves
@@ -54,7 +18,7 @@ fn pg_tviews_infer_types(table_name: &str, columns: Vec<String>) -> JsonB {
 /// Returns error if the caller does not own the TVIEW, the entity is not
 /// registered, the dependency graph cannot be loaded, or a rebuild fails.
 #[pg_extern]
-fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
+fn pg_tviews_refresh(entity: &str) -> Result<(), ErrorReport> {
     crate::revision::check();
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
@@ -66,7 +30,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
     Ok(())
 }
 
-/// Bring the TVIEWs whose definitions read the current time up to date (#193):
+/// Bring the TVIEWs whose definitions read the current time up to date:
 /// `tview`, or every such TVIEW the caller owns (or may change as a member of its
 /// owner's role). Each is refreshed in full as a write to a `full_refresh` table
 /// would refresh it, then the TVIEWs reading it are, through the flush. For
@@ -79,7 +43,7 @@ fn pg_tviews_refresh(entity: &str) -> TViewResult<()> {
 #[pg_extern]
 fn pg_tviews_refresh_time_dependent(
     tview: default!(Option<&str>, "NULL"),
-) -> Result<SetOfIterator<'static, String>, TViewError> {
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     crate::revision::check();
     let rows: Vec<(String, pgrx::pg_sys::Oid, bool, bool)> = Spi::connect(|client| {
         let mut rows = Vec::new();
@@ -93,8 +57,7 @@ fn pg_tviews_refresh_time_dependent(
                 crate::utils::meta_table()
             ),
             None,
-            // SAFETY: the datum borrows `tview`, which outlives the select.
-            &[unsafe { DatumWithOid::new(tview, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }],
+            &[crate::utils::spi::text(tview)],
         )? {
             if let (Some(entity), Some(table)) =
                 (row.get::<String>(1)?, row.get::<pgrx::pg_sys::Oid>(2)?)
@@ -119,13 +82,15 @@ fn pg_tviews_refresh_time_dependent(
                 return Err(TViewError::InvalidInput {
                     parameter: "tview".to_string(),
                     reason: format!("{name} is not a TVIEW"),
-                });
+                }
+                .into());
             };
             if !dependent {
                 return Err(TViewError::InvalidInput {
                     parameter: "tview".to_string(),
                     reason: format!("{name} does not read the time: nothing to refresh"),
-                });
+                }
+                .into());
             }
             crate::owner::require_owner(table, name)?;
             vec![(entity, table)]
@@ -136,7 +101,7 @@ fn pg_tviews_refresh_time_dependent(
             .map(|(entity, table, _, _)| (entity, table))
             .collect(),
     };
-    let order = crate::queue::graph::EntityDepGraph::load()?.topo_order;
+    let order = crate::flush::EntityDepGraph::load()?.topo_order;
     let mut chosen = chosen;
     chosen.sort_by_key(|(entity, _)| order.iter().position(|e| e == entity).unwrap_or(usize::MAX));
     let mut refreshed = Vec::new();
@@ -148,7 +113,7 @@ fn pg_tviews_refresh_time_dependent(
         }
         refreshed.push(crate::utils::qualified_relname_from_oid(*table)?);
     }
-    crate::queue::flush_refresh_queue()?;
+    crate::flush::flush_refresh_queue()?;
     Ok(SetOfIterator::new(refreshed))
 }
 
@@ -160,7 +125,7 @@ fn pg_tviews_refresh_time_dependent(
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
         for entity in read {
@@ -191,15 +156,15 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
     Ok(order)
 }
 
-/// Refresh what rebuilds queued before returning (#202): rewriting a `tv_*` table
-/// that another TVIEW reads queues that reader's rows (#191). No statement-level
+/// Refresh what rebuilds queued before returning: rewriting a `tv_*` table
+/// that another TVIEW reads queues that reader's rows. No statement-level
 /// flush trigger follows a `SELECT` of a refresh function, so the work would
 /// otherwise reach `COMMIT` still queued.
 ///
 /// # Errors
 /// Returns an error if the refresh fails.
 pub fn flush_after_rebuilds() -> TViewResult<()> {
-    crate::queue::flush_refresh_queue()
+    crate::flush::flush_refresh_queue()
 }
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
@@ -292,12 +257,10 @@ fn rebuild_statements(
 fn pg_tviews_ensure_propagation_indexes(
     entity: default!(Option<&str>, "NULL"),
     dry_run: default!(bool, false),
-) -> Result<SetOfIterator<'static, String>, TViewError> {
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     crate::revision::check();
-    let missing = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+    let missing = Spi::connect(|client| -> crate::TViewResult<_> {
+        let args = vec![crate::utils::spi::text(entity)];
         let rows = client.select(
             &format!(
                 "SELECT n.nspname::text, c.relname::text, a.attname::text, 'pk_' || m.entity \
@@ -333,12 +296,12 @@ fn pg_tviews_ensure_propagation_indexes(
                 ));
             }
         }
-        Ok::<_, spi::Error>(ddl)
+        Ok(ddl)
     })?;
 
     if !dry_run {
         for ddl in &missing {
-            Spi::run(ddl)?;
+            Spi::run(ddl).map_err(TViewError::from)?;
         }
     }
     Ok(SetOfIterator::new(missing))
@@ -351,7 +314,7 @@ fn pg_tviews_ensure_propagation_indexes(
 /// # Errors
 /// Returns error if any TVIEW cannot be refreshed
 #[pg_extern]
-fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
+fn pg_tviews_refresh_all_entities() -> Result<(), ErrorReport> {
     crate::revision::check();
     let order = refresh_all_in_dependency_order()?;
     if order.is_empty() {
@@ -369,27 +332,12 @@ fn pg_tviews_refresh_all_entities() -> TViewResult<()> {
 /// # Errors
 /// Returns error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
-    let graph = crate::queue::graph::EntityDepGraph::load()?;
+    let graph = crate::flush::EntityDepGraph::load()?;
     for entity in &graph.topo_order {
         rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
     Ok(graph.topo_order)
-}
-
-/// Migrate all existing TVIEW triggers from the old PL/pgSQL handler to the
-/// Rust `pg_tview_trigger_handler()`.
-///
-/// Call this once after upgrading `pg_tviews` to convert triggers installed by
-/// prior versions. The operation is idempotent and safe to re-run.
-///
-/// Raises a `PostgreSQL` ERROR if any trigger cannot be migrated.
-#[pg_extern]
-fn pg_tviews_migrate_triggers() {
-    crate::revision::check();
-    if let Err(e) = crate::dependency::triggers::migrate_all_triggers_to_rust_handler() {
-        error!("Failed to migrate triggers: {:?}", e);
-    }
 }
 
 /// Show cascade dependency path for a given entity
@@ -408,9 +356,7 @@ fn pg_tviews_show_cascade_path(
 > {
     crate::revision::check();
     let results = Spi::connect(|client| {
-        let args = vec![unsafe {
-            DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-        }];
+        let args = vec![crate::utils::spi::text(entity)];
         match client.select(
             &format!(
                 "WITH RECURSIVE dep_tree AS (
@@ -430,7 +376,8 @@ fn pg_tviews_show_cascade_path(
                     dt.path || m.entity,
                     dt.entity as depends_on
                 FROM dep_tree dt
-                JOIN {meta} m ON ('fk_' || dt.entity) = ANY(m.fk_columns)
+                JOIN {meta} m ON m.plan->'embeds'
+                    @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('entity', dt.entity))
                 WHERE NOT (m.entity = ANY(dt.path))
                   AND dt.depth < 10
             )

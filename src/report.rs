@@ -1,5 +1,5 @@
 //! `pg_tviews_flush_and_report()`: the read-model rows a transaction changed, in
-//! the GraphQL Cascade shape (issue #76).
+//! the GraphQL Cascade shape.
 //!
 //! A mutation function calls it last. It flushes whatever is still queued, then
 //! reports every TVIEW row the transaction's refreshes inserted, updated or deleted
@@ -10,7 +10,7 @@ use crate::error::{TViewError, TViewResult};
 use crate::queue::affected::{self, Change, NetChange};
 use crate::utils::quote_identifier;
 use pgrx::JsonB;
-use pgrx::datum::DatumWithOid;
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
@@ -33,9 +33,9 @@ fn pg_tviews_flush_and_report(
     max_entities: default!(i32, 500),
     include_data: default!(bool, true),
     reset: default!(bool, true),
-) -> Result<JsonB, TViewError> {
+) -> Result<JsonB, ErrorReport> {
     crate::revision::check();
-    crate::queue::flush_refresh_queue()?;
+    crate::flush::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
     Ok(JsonB(build_report(
@@ -52,7 +52,7 @@ fn pg_tviews_flush_and_report(
 /// # Errors
 /// Returns an error if the entity is unknown or the name is not a GraphQL name.
 #[pg_extern]
-fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TViewError> {
+fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), ErrorReport> {
     crate::revision::check();
     if let Some(name) = typename {
         let valid = name
@@ -64,7 +64,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
             return Err(TViewError::InvalidInput {
                 parameter: "typename".to_string(),
                 reason: format!("'{name}' is not a GraphQL name ([_A-Za-z][_0-9A-Za-z]*)"),
-            });
+            }
+            .into());
         }
     }
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
@@ -76,8 +77,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
     let _owner = crate::owner::AsOwner::of_extension()?;
     let updated = Spi::connect_mut(|client| {
         let args = [
-            unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-            unsafe { DatumWithOid::new(typename, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(typename),
         ];
         client
             .update(
@@ -97,7 +98,8 @@ fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), TV
     if updated == 0 {
         return Err(TViewError::MetadataNotFound {
             entity: entity.to_string(),
-        });
+        }
+        .into());
     }
     Ok(())
 }
@@ -125,9 +127,7 @@ struct EntityInfo {
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
     Spi::connect(|client| {
-        let args = [unsafe {
-            DatumWithOid::new(names, PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value())
-        }];
+        let args = [crate::utils::spi::text_array(names)];
         let mut out = HashMap::new();
         for row in client.select(
             &format!(
@@ -173,9 +173,7 @@ fn current_rows(
          WHERE t.{qi_pk}::text = ANY($1)"
     );
     Spi::connect(|client| {
-        let args = [unsafe {
-            DatumWithOid::new(pks, PgOid::BuiltIn(PgBuiltInOids::TEXTARRAYOID).value())
-        }];
+        let args = [crate::utils::spi::text_array(pks)];
         let mut out = HashMap::new();
         for row in client.select(&sql, None, &args)? {
             let key: Option<String> = row["k"].value()?;

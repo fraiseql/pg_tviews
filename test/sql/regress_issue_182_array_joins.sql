@@ -150,10 +150,10 @@ DO $$ BEGIN
         RAISE EXCEPTION '#182 FAIL: a volatile computed join classifies %',
             (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'nvol');
     END IF;
-    IF (SELECT key_mappings->0->>'reason' FROM tviews.pg_tview_meta WHERE entity = 'ntop')
+    IF (SELECT plan->'tables'->0->>'reason' FROM tviews.pg_tview_meta WHERE entity = 'ntop')
        <> 'read under a set-returning function in the top-level SELECT' THEN
         RAISE EXCEPTION '#182 FAIL: the top-level SRF control classifies %',
-            (SELECT key_mappings FROM tviews.pg_tview_meta WHERE entity = 'ntop');
+            (SELECT plan->'tables' FROM tviews.pg_tview_meta WHERE entity = 'ntop');
     END IF;
 END $$;
 

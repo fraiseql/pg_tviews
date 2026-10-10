@@ -13,7 +13,6 @@
 //! renamed backing view; otherwise the definition falls back to `pg_get_viewdef`.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use sqlparser::dialect::PostgreSqlDialect;
@@ -37,9 +36,9 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
                 "SELECT definition FROM {} WHERE entity = $1",
                 crate::utils::meta_table()
             ),
-            &[text_arg(&entity)],
+            &[crate::utils::spi::text(&entity)],
         )
-        .map_err(|e| catalog_error("Read TVIEW definition", &e))?
+        .map_err(|e| crate::utils::spi::catalog_error("Read TVIEW definition", &e))?
         .unwrap_or_default();
 
         let relname = relation_name(relid)?;
@@ -50,11 +49,9 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         } else {
             let viewdef: String = Spi::get_one_with_args(
                 "SELECT pg_get_viewdef($1)",
-                &[unsafe {
-                    DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value())
-                }],
+                &[crate::utils::spi::oid(view_oid)],
             )
-            .map_err(|e| catalog_error("Read backing view definition", &e))?
+            .map_err(|e| crate::utils::spi::catalog_error("Read backing view definition", &e))?
             .unwrap_or_default();
             notice!(
                 "pg_tviews: definition of tv_{entity} re-rendered by PostgreSQL after renaming \
@@ -63,7 +60,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
             viewdef.trim().trim_end_matches(';').to_string()
         };
 
-        // An aggregate TVIEW (issue #58) names its group key columns by name. The
+        // An aggregate TVIEW names its group key columns by name. The
         // rename was authorized by PostgreSQL; the catalog is written as the
         // extension's owner.
         let owner = crate::owner::AsOwner::of_extension()?;
@@ -74,13 +71,13 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
                 crate::utils::meta_table()
             ),
             &[
-                text_arg(&entity),
-                text_arg(&relname),
-                text_arg(old_name),
-                text_arg(new_name),
+                crate::utils::spi::text(&entity),
+                crate::utils::spi::text(&relname),
+                crate::utils::spi::text(old_name),
+                crate::utils::spi::text(new_name),
             ],
         )
-        .map_err(|e| catalog_error("Rename a group key column", &e))?;
+        .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))?;
         drop(owner);
 
         crate::ddl::create::reregister_metadata(&entity, &schema_name, &new_definition)?;
@@ -88,26 +85,29 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
     Ok(())
 }
 
-/// TVIEWs whose backing view depends on column `column` of `relid`, from the
-/// column-level `pg_depend` entries of the view's rewrite rule.
+/// TVIEWs whose backing view's own rule depends on column `column` of `relid`
+/// (the column-level `pg_depend` entries of its rewrite rule): the definitions
+/// that name the column. A view the TVIEW reads follows the rename by itself.
 fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String, Oid)>> {
     let query = format!(
-        "SELECT DISTINCT m.entity, n.nspname::text AS schema, v.oid AS view_oid \
-         FROM {} m \
-         JOIN pg_class v ON v.oid = m.view_oid \
-         JOIN pg_class t ON t.oid = m.table_oid \
-         JOIN pg_namespace n ON n.oid = t.relnamespace \
-         JOIN pg_rewrite r ON r.ev_class = v.oid \
-         JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid \
-         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
-         WHERE d.refobjid = $1 AND a.attname = $2 \
+        "{} SELECT DISTINCT m.entity, n.nspname::text AS schema, m.view_oid::oid AS view_oid \
+         FROM reads r \
+         JOIN {} m ON m.view_oid::oid = r.root \
+         JOIN pg_catalog.pg_class t ON t.oid = m.table_oid \
+         JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = r.relid AND a.attnum = r.attnum \
+         WHERE r.depth = 0 AND r.relid = $1 AND a.attname = $2 \
          ORDER BY m.entity",
+        crate::catalog::reads::view_reads_cte(&format!(
+            "SELECT m.view_oid::pg_catalog.oid, m.view_oid::pg_catalog.oid, 0 FROM {} m",
+            crate::utils::meta_table()
+        )),
         crate::utils::meta_table()
     );
     Spi::connect(|client| {
         let args = [
-            unsafe { DatumWithOid::new(relid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-            text_arg(column),
+            crate::utils::spi::oid(relid),
+            crate::utils::spi::text(column),
         ];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -120,15 +120,15 @@ fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String,
         }
         Ok::<_, spi::Error>(out)
     })
-    .map_err(|e| catalog_error("Find TVIEWs reading the renamed column", &e))
+    .map_err(|e| crate::utils::spi::catalog_error("Find TVIEWs reading the renamed column", &e))
 }
 
 fn relation_name(relid: Oid) -> TViewResult<String> {
     Spi::get_one_with_args::<String>(
         "SELECT relname::text FROM pg_class WHERE oid = $1",
-        &[unsafe { DatumWithOid::new(relid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }],
+        &[crate::utils::spi::oid(relid)],
     )
-    .map_err(|e| catalog_error("Resolve renamed relation", &e))?
+    .map_err(|e| crate::utils::spi::catalog_error("Resolve renamed relation", &e))?
     .ok_or_else(|| TViewError::CatalogError {
         operation: "Resolve renamed relation".to_string(),
         pg_error: format!("relation {relid:?} not found"),
@@ -144,25 +144,13 @@ fn defines_view(candidate: &str, view_oid: Oid) -> bool {
             crate::utils::ext_schema()
         ),
         &[
-            unsafe { DatumWithOid::new(view_oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) },
-            text_arg(candidate),
+            crate::utils::spi::oid(view_oid),
+            crate::utils::spi::text(candidate),
         ],
     )
     .ok()
     .flatten()
     .unwrap_or(false)
-}
-
-fn text_arg(value: &str) -> DatumWithOid<'_> {
-    // SAFETY: the text datum borrows `value`, which outlives the SPI call it is passed to.
-    unsafe { DatumWithOid::new(value, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }
-}
-
-fn catalog_error(operation: &str, e: &impl std::fmt::Display) -> TViewError {
-    TViewError::CatalogError {
-        operation: operation.to_string(),
-        pg_error: e.to_string(),
-    }
 }
 
 /// Rewrite the references to column `old` of table `table` in `sql` to `new`,
@@ -175,6 +163,17 @@ fn catalog_error(operation: &str, e: &impl std::fmt::Display) -> TViewError {
 /// nothing matched. The result is a candidate: the caller must verify it.
 #[must_use]
 pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
+    rewrite_with(sql, table, old, new, crate::utils::quote_ident)
+}
+
+/// [`rewrite_column_references`] with `quote` writing an identifier.
+fn rewrite_with(
+    sql: &str,
+    table: &str,
+    old: &str,
+    new: &str,
+    quote: impl Fn(&str) -> String,
+) -> Option<String> {
     let tokens = Tokenizer::new(&PostgreSqlDialect {}, sql)
         .tokenize_with_location()
         .ok()?;
@@ -217,10 +216,10 @@ pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -
             k
         };
         let (from, to) = (offsets[sig[k]], offsets[sig[k] + 1]);
-        let mut replacement = quote_ident(new);
+        let mut replacement = quote(new);
         if select_items.contains(&(start, k)) {
             replacement.push_str(" AS ");
-            replacement.push_str(&quote_ident(old));
+            replacement.push_str(&quote(old));
         }
         edits.push((from, to, replacement));
     }
@@ -235,7 +234,7 @@ pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -
 }
 
 /// Byte offset of every token in `sql`, plus a final entry for the end of text.
-fn byte_offsets(sql: &str, tokens: &[TokenWithLocation]) -> Vec<usize> {
+pub(crate) fn byte_offsets(sql: &str, tokens: &[TokenWithLocation]) -> Vec<usize> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(sql.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
@@ -335,25 +334,27 @@ fn ident_eq(word: &sqlparser::tokenizer::Word, name: &str) -> bool {
     }
 }
 
-/// Quote an identifier only when `PostgreSQL` would need it.
-fn quote_ident(name: &str) -> String {
-    let plain = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if plain {
-        name.to_string()
-    } else {
-        crate::utils::quote_identifier(name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::rewrite_column_references as rw;
+    /// What `quote_ident()` writes for the identifiers of these tests (no keyword).
+    fn quote_plain(name: &str) -> String {
+        let plain = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if plain {
+            name.to_string()
+        } else {
+            crate::utils::quote_identifier(name)
+        }
+    }
+
+    fn rw(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
+        super::rewrite_with(sql, table, old, new, quote_plain)
+    }
 
     #[test]
     fn qualified_reference_inside_function_keeps_string_key() {

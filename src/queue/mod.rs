@@ -1,26 +1,16 @@
-//! Transaction-level refresh queue for coalesced TVIEW updates
-//!
-//! This module implements the transaction queue architecture from `PRD_multiupdate.md`:
-//! - `RefreshKey`: Identifies unique (entity, pk) pairs
-//! - `TX_REFRESH_QUEUE`: Thread-local `HashSet` for deduplication
-//! - Enqueue/dequeue operations
-//! - Transaction callback registration
+//! The transaction's pending refresh work: the keys the triggers queued, the
+//! patches they captured, the rows the flush touched, and the undo log a
+//! rolled-back subtransaction restores. [`crate::flush`] applies it.
 
 pub mod affected;
-pub mod cache;
-pub mod graph;
 pub mod key;
-mod ops;
+pub(crate) mod ops;
 pub mod patch;
-mod savepoint;
-mod state;
-pub mod xact;
+pub(crate) mod state;
 
-pub use graph::EntityDepGraph;
 pub use key::RefreshKey;
 pub use ops::{
     enqueue_refresh, enqueue_refresh_all, enqueue_refresh_bulk, enqueue_refresh_patched,
     mark_crash_recovery_checked,
 };
 pub use state::{get_queue_contents, get_queue_size};
-pub use xact::flush_refresh_queue;

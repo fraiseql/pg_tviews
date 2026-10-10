@@ -13,7 +13,6 @@ pg_tviews provides a comprehensive set of functions for managing transactional m
 - [Extension Management](#extension-management) - Version info, feature detection
 - [DDL Operations](#ddl-operations) - TVIEW creation and management
 - [Queue Management](#queue-management) - Monitor refresh queues
-- [Debugging & Introspection](#debugging--introspection) - Analyze queries, debug issues
 - [Two-Phase Commit (2PC)](#two-phase-commit-2pc) - Distributed transaction support
 - [Manual Operations](#manual-operations) - Force refresh operations
 
@@ -272,69 +271,6 @@ Returns JSONB like:
 - Thread-local state (safe for concurrent connections)
 - Useful for debugging refresh cascades
 
-## Debugging & Introspection
-
-### pg_tviews_analyze_select()
-
-**Signature**:
-```sql
-pg_tviews_analyze_select(sql TEXT) RETURNS JSONB
-```
-
-**Description**:
-Analyzes a SELECT statement and returns inferred TVIEW schema information including column types and dependencies.
-
-**Parameters**:
-- `sql` (TEXT): SELECT statement to analyze
-
-**Returns**:
-- `JSONB`: Schema analysis results
-
-**Example**:
-```sql
-SELECT pg_tviews_analyze_select('
-    SELECT u.pk_user, u.id, u.name, p.title as post_title
-    FROM tb_user u
-    JOIN tb_post p ON u.pk_user = p.fk_user
-');
-```
-
-Returns JSONB with schema information including column types and table dependencies.
-
-**Notes**:
-- Validates SQL syntax and table existence
-- Infers column types from PostgreSQL catalog
-- Identifies base table dependencies for trigger setup
-
-### pg_tviews_infer_types()
-
-**Signature**:
-```sql
-pg_tviews_infer_types(table_name TEXT, columns TEXT[]) RETURNS JSONB
-```
-
-**Description**:
-Infers column types for specified columns in a table using PostgreSQL's type system.
-
-**Parameters**:
-- `table_name` (TEXT): Name of the table
-- `columns` (TEXT[]): Array of column names to analyze
-
-**Returns**:
-- `JSONB`: Type information for each column
-
-**Example**:
-```sql
-SELECT pg_tviews_infer_types('tb_user', ARRAY['id', 'name', 'created_at']);
-```
-
-Returns JSONB with type information for each requested column.
-
-**Notes**:
-- Uses PostgreSQL's pg_catalog for accurate type inference
-- Handles user-defined types and domains
-- Useful for TVIEW schema validation
-
 ## Two-Phase Commit (2PC)
 
 pg_tviews refreshes the TVIEWs before `PREPARE TRANSACTION`, so the refresh writes
@@ -344,79 +280,8 @@ is needed. Prepared transactions require `max_prepared_transactions > 0`.
 
 ## Manual Operations
 
-### pg_tviews_cascade()
-
-Low-level. The triggers already do this on every write; use it to repair a TVIEW
-after a change the triggers did not see (`session_replication_role = replica`,
-triggers disabled), or prefer `pg_tviews_refresh(entity)`, which rebuilds it.
-
-**Signature**:
-```sql
-pg_tviews_cascade(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-**Description**:
-Queues a refresh of the TVIEW rows that read the row `pk_value` of
-`base_table_oid`. Outside a transaction block it then refreshes them before
-returning. Inside one, the refresh stays queued and runs with the transaction's
-next flush: the next statement that writes a TVIEW's table, `COMMIT`, or
-`PREPARE TRANSACTION`.
-
-**Parameters**:
-- `base_table_oid` (OID): PostgreSQL OID of the base table
-- `pk_value` (BIGINT): primary key value of the changed row
-
-**Returns**:
-- `VOID`
-
-**Example**:
-```sql
--- The row pk_user = 123 changed while the triggers were off
-SELECT pg_tviews_cascade('tb_user'::regclass::oid, 123);
-```
-
-**Notes**:
-- The rows are found by the naming convention: `pk_<entity>` for the TVIEW's own
-  table, `fk_<entity>` columns for the tables it reads. A table whose rows map to
-  keys any other way is not covered; use `pg_tviews_refresh(entity)`.
-- Refresh work still queued when a transaction commits is dropped with a WARNING.
-
-### pg_tviews_insert()
-
-**Signature**:
-```sql
-pg_tviews_insert(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-Same as `pg_tviews_cascade()`, for an inserted row. Low-level.
-
-**Example**:
-```sql
-SELECT pg_tviews_insert('tb_user'::regclass::oid, 456);
-```
-
-### pg_tviews_delete()
-
-**Signature**:
-```sql
-pg_tviews_delete(base_table_oid OID, pk_value BIGINT) RETURNS VOID
-```
-
-Same as `pg_tviews_cascade()`, for a deleted row. Low-level.
-
-**Example**:
-```sql
-SELECT pg_tviews_delete('tb_user'::regclass::oid, 789);
-```
-
-### pg_tviews_convert_table()
-
-Internal: called by the `pg_tviews_ddl_end` event trigger. A `CREATE TABLE tv_* AS`
-is turned into a TVIEW by the ProcessUtility hook before PostgreSQL creates any table;
-if a plain `tv_*` table reaches the event trigger anyway (pg_tviews not in
-`shared_preload_libraries`), this function raises an error instead of leaving a table
-that looks like a TVIEW. Create TVIEWs with `pg_tviews_create_or_replace()` or
-`CREATE TABLE tv_<entity> AS SELECT …`.
+A change the triggers did not see (`session_replication_role = replica`, triggers
+disabled) is repaired with `pg_tviews_refresh(entity)`, which rebuilds the TVIEW.
 
 ### pg_tviews_health_check()
 
@@ -670,11 +535,8 @@ See [Replication](../operations/replication.md).
 Called by triggers, event triggers and restore; don't call them directly:
 `pg_tviews_audit_write`, `pg_tviews_defines_view`, `pg_tviews_handle_dropped`,
 `pg_tviews_invalidate_caches`, `pg_tviews_meta_changed`, `pg_tviews_meta_rebind`,
-`pg_tviews_migrate_triggers`, `pg_tviews_rebind_cascade_paths`, and the trigger
-functions `pg_tview_trigger_handler`, `pg_tview_flush_trigger`,
-`pg_tview_delta_trigger`, `pg_tview_truncate_trigger`.
-`pg_tviews_convert_existing_table` is deprecated and always raises an error: use
-`pg_tviews_create()` or `CREATE TABLE tv_x AS SELECT …`.
+`pg_tviews_handle_ddl_event`, and the trigger functions `pg_tview_trigger_handler`,
+`pg_tview_flush_trigger`, `pg_tview_delta_trigger`, `pg_tview_truncate_trigger`.
 
 ## Views
 
@@ -708,18 +570,6 @@ SELECT pg_tviews_queue_stats();
 SELECT pg_tviews_debug_queue();
 ```
 
-### Debug View Definitions
-```sql
--- Analyze SELECT for TVIEW compatibility
-SELECT pg_tviews_analyze_select('
-    SELECT p.pk_post, p.id, p.title, u.name as author
-    FROM tb_post p JOIN tb_user u ON p.fk_user = u.pk_user
-');
-
--- Check inferred column types
-SELECT pg_tviews_infer_types('tb_user', ARRAY['id', 'name']);
-```
-
 ### Two-Phase Commit Workflow
 ```sql
 BEGIN;
@@ -731,11 +581,8 @@ COMMIT PREPARED 'txn-123';       -- or ROLLBACK PREPARED 'txn-123'
 
 ### Manual Refresh Operations
 ```sql
--- Refresh the TVIEW rows that read one row of tb_user
-SELECT pg_tviews_cascade('tb_user'::regclass::oid, 123);
-
--- Process after manual data correction
-SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
+-- Rebuild a TVIEW after changes the triggers did not see
+SELECT pg_tviews_refresh('post');
 ```
 
 ## Important Notes
@@ -743,11 +590,9 @@ SELECT pg_tviews_insert('tb_post'::regclass::oid, 456);
 ### Performance Considerations
 - `pg_tviews_debug_queue()` reads thread-local state, no performance impact
 - `pg_tviews_queue_stats()` is fast, safe for frequent monitoring
-- Manual operations (`pg_tviews_cascade`, etc.) use the transaction queue; in autocommit they flush it before returning
 
 ### Common Pitfalls
 - Don't use manual operations in triggers (causes recursion)
-- `pg_tviews_analyze_select()` doesn't validate table existence
 - DDL operations require appropriate permissions
 
 ### Thread Safety

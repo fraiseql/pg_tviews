@@ -88,6 +88,11 @@ SELECT must(rejects($$ SELECT o.fk_user + 0 AS pk_bad_summary, u.id,
                      FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
                      GROUP BY o.fk_user, u.id $$,
                     '{"tb_order": "fk_user"}', '%plain column%'), 'expression key');
+SELECT must(rejects($$ SELECT o.fk_user AS pk_bad_summary, max(u.id::text) AS id,
+                     jsonb_build_object('n', count(*)) AS data
+                     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
+                     GROUP BY o.fk_user + 0 $$,
+                    '{"tb_order": "fk_user"}', '%GROUP BY%'), 'key missing from GROUP BY');
 SELECT must(rejects($$ SELECT o.fk_user AS pk_bad_summary, u.id,
                      jsonb_build_object('n', count(*)) AS data
                      FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user

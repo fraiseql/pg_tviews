@@ -1,6 +1,7 @@
 name: Upgrade
 
-# An install of the previous release, upgraded to the commit under test, must have
+# An install of the previous release, and of the oldest release ALTER EXTENSION
+# UPDATE supports (0.1.0-beta.20), upgraded to the commit under test, must have
 # exactly the catalog of a fresh install and keep its TVIEWs working
 # (docs/development/extension-versioning.md, ADR 0136).
 
@@ -19,16 +20,26 @@ env:
 
 jobs:
   upgrade-path:
-    name: upgrade-path
+    name: upgrade-path (${{ matrix.from }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `previous`: the latest release. A fixed tag: upgraded through the chain of
+        # scripts from it.
+        from: [ previous, v0.1.0-beta.20 ]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Find the previous release
+      - name: Find the release to upgrade from
         id: previous
         run: |
-          tag="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 \
-                 --json tagName -q '.[0].tagName')"
+          if [ "${{ matrix.from }}" = previous ]; then
+            tag="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 \
+                   --json tagName -q '.[0].tagName')"
+          else
+            tag="${{ matrix.from }}"
+          fi
           mkdir -p /tmp/previous
           gh release download "$tag" -R "$GITHUB_REPOSITORY" \
             -p "pg_tviews-${tag}.tar.gz" -D /tmp/previous
@@ -45,10 +56,18 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ ! -f "sql/pg_tviews--${prev}--${cur}.sql" ]; then
-            echo "::error::no upgrade script sql/pg_tviews--${prev}--${cur}.sql"
-            exit 1
-          fi
+          # ALTER EXTENSION UPDATE follows a chain of scripts: the latest release
+          # must reach this version through one.
+          v="$prev"
+          while [ "$v" != "$cur" ]; do
+            next="$(ls sql/pg_tviews--"${v}"--*.sql 2>/dev/null \
+                    | sed "s|^sql/pg_tviews--${v}--\(.*\)\.sql$|\1|" | head -n 1)"
+            if [ -z "$next" ]; then
+              echo "::error::no chain of upgrade scripts from ${prev} to ${cur} (stuck at ${v})"
+              exit 1
+            fi
+            v="$next"
+          done
           echo "Upgrading ${prev} -> ${cur}"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 

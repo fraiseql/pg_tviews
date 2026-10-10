@@ -1,4 +1,4 @@
-//! Run the work of `pg_tviews` as the role that owns it (issues #136, #134).
+//! Run the work of `pg_tviews` as the role that owns it.
 //!
 //! The flush refreshes TVIEWs on behalf of whichever role wrote to a base table.
 //! As `REFRESH MATERIALIZED VIEW` does, every read and write of a `tv_*` table in
@@ -7,14 +7,13 @@
 //! privilege on the TVIEW, its backing view or the tables the view reads, and
 //! cannot get the owner to run a function it planted on its `search_path`.
 //! Every refresh also renders values under fixed settings ([`RENDER_SETTINGS`]),
-//! not the writer's (#200).
+//! not the writer's.
 //!
 //! The registration catalog is writable only by the extension's owner. A caller
 //! allowed to change a TVIEW (checked with [`require_owner`] beforehand) has its
 //! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::ffi::CStr;
@@ -118,7 +117,7 @@ impl Drop for AsOwner {
 }
 
 /// The settings a value's text rendering depends on, and the values every
-/// refresh renders under (#200): a TVIEW's rows then do not depend on the
+/// refresh renders under: a TVIEW's rows then do not depend on the
 /// session that wrote last. `CURRENT_DATE` in a refresh is the UTC day.
 pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
     (c"TimeZone", c"UTC"),
@@ -198,9 +197,7 @@ unsafe fn pin_settings() {
 /// Returns an error if the catalog query fails.
 pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
     let allowed = Spi::connect(|client| {
-        // SAFETY: the datum copies `table`.
-        let args =
-            [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+        let args = [crate::utils::spi::oid(table)];
         client
             .select(
                 "SELECT COALESCE((SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') \

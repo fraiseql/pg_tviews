@@ -28,16 +28,18 @@ between base tables and derived views through trigger-based change tracking.
 - Memory safety through Rust's ownership system
 */
 
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 // Core modules
 mod audit;
-mod cascade_path;
+mod cache;
 mod catalog;
 mod delta;
-mod event_trigger;
 mod executor;
+mod flush;
 mod hooks;
+mod internal_ddl;
 mod lineage;
 mod metrics;
 mod owner;
@@ -48,35 +50,26 @@ mod refresh;
 mod replication;
 mod report;
 mod revision;
-mod sql_parser;
 mod trigger;
 mod utils;
 
 // Feature modules
 mod admin;
-mod cascade;
 mod health;
 mod lifecycle;
 mod suspend;
 
 // Public API modules
-pub mod config;
-pub mod ddl;
-pub mod dependency;
-pub mod error;
-pub mod metadata;
-pub mod parser;
-pub mod schema;
-pub mod validation;
+mod config;
+mod ddl;
+mod dependency;
+mod error;
+mod install_sql;
+mod jsonb_delta;
+mod validation;
 
 // Public re-exports
-pub use catalog::entity_for_table;
-pub use error::{TViewError, TViewResult};
-pub use lifecycle::check_jsonb_delta_available;
-pub use queue::RefreshKey;
-pub use suspend::{
-    clear_changed_entities, get_changed_entities, is_suspended, record_change, resume, suspend,
-};
+use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
@@ -88,37 +81,35 @@ pub fn pg_tviews_is_suspended() -> bool {
 
 #[pg_extern]
 pub fn pg_tviews_suspend_triggers() {
-    if let Err(e) = crate::suspend::suspend() {
-        error!("{}", e);
-    }
+    crate::suspend::suspend();
 }
 
 /// Resume trigger-based refresh. When the outermost suspension ends, every TVIEW
 /// changed while suspended (and every TVIEW embedding one of them) is rebuilt.
 #[pg_extern]
-pub fn pg_tviews_resume_triggers() {
+pub fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
     crate::revision::check();
-    if let Err(e) = crate::suspend::resume() {
-        error!("{}", e);
+    crate::suspend::resume()?;
+    if !crate::suspend::is_suspended() {
+        crate::suspend::catch_up()?;
     }
-    if !crate::suspend::is_suspended()
-        && let Err(e) = crate::suspend::catch_up()
-    {
-        error!("{}", e);
-    }
+    Ok(())
 }
 
 /// Rebuild every TVIEW, dependencies first, and report how many were rebuilt,
 /// in which order, and how long it took.
 #[pg_extern]
-pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, String> {
+pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     crate::revision::check();
     if crate::suspend::is_suspended() {
-        return Err("Cannot refresh: triggers are suspended".to_string());
+        return Err(TViewError::WrongState {
+            reason: "Cannot refresh: triggers are suspended".to_string(),
+        }
+        .into());
     }
 
     let start = std::time::Instant::now();
-    let order = crate::admin::refresh_all_in_dependency_order().map_err(|e| e.to_string())?;
+    let order = crate::admin::refresh_all_in_dependency_order()?;
 
     Ok(pgrx::datum::JsonB(serde_json::json!({
         "refreshed_count": order.len(),
@@ -138,7 +129,7 @@ pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {}
 
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Vec allocation is not const-stable
+    #[allow(clippy::missing_const_for_fn)] // Reason: Vec allocation is not const-stable
     pub fn postgresql_conf_options() -> Vec<&'static str> {
         // The extension lives in schema tviews; tests call it unqualified.
         vec!["search_path = '\"$user\", public, tviews'"]
@@ -196,7 +187,7 @@ mod tests {
 
     #[pg_test]
     fn test_check_jsonb_delta_available_function() {
-        let _result = crate::check_jsonb_delta_available();
+        let _result = crate::jsonb_delta::check_jsonb_delta_available();
     }
 
     #[pg_test]

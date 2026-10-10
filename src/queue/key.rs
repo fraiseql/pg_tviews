@@ -18,6 +18,15 @@ impl KeyValue {
             Self::Text(_) => None,
         }
     }
+
+    /// The key as an integer: an `Int` key, or a `Text` key that spells one.
+    #[must_use]
+    pub fn to_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(v) => Some(*v),
+            Self::Text(t) => t.parse().ok(),
+        }
+    }
 }
 
 impl std::fmt::Display for KeyValue {
@@ -39,7 +48,7 @@ pub struct RefreshKey {
     /// The row's identity value.
     pub key: KeyValue,
 
-    /// Every row of the entity's TVIEW (issues #157, #158): a write to a base table
+    /// Every row of the entity's TVIEW: a write to a base table
     /// no cascade maps, under the `full_refresh` policy. `key` is `Int(0)`.
     pub all: bool,
 }

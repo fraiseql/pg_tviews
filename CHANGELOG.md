@@ -7,8 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/SemVer
 
 ## [Unreleased]
 
+### Changed
+
+- **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
+  text-pattern analysis that registration still used for columns, embeds and the
+  direct-patch map is gone, and with it the spelling rules it imposed:
+  - a parent may hold a child TVIEW's key in a column of any name (`author_pk`), and
+    a TVIEW whose rows are another table's (`pk_order_summary` over `tb_order`) is
+    accepted and refreshed (it was refused, #49);
+  - a child's document embedded under an alias (`'author', u.data`) is patched into
+    its parents instead of recomputing them;
+  - a column whose name holds an apostrophe, `SELECT *` over such a view, and a
+    JSON key holding a quote work; `SELECT * FROM t` lists the columns of the `t`
+    the `search_path` resolves, not those of every same-named table;
+  - a `fk_<entity>` column no longer makes a TVIEW depend on a TVIEW it does not read.
+- **One stored propagation plan per TVIEW** (ADR 0203). `pg_tview_meta` keeps what
+  registration derives from the query tree in one versioned `plan` document (how a
+  write to each base table maps to keys, the tables whose rows carry a key, the TVIEWs
+  it embeds, the direct-patch map) instead of thirteen columns. The triggers and the
+  flush read only the plan: no table or column name is matched to find a
+  relationship. `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW, and fails
+  naming any TVIEW that no longer analyses (`docs/development/extension-versioning.md`).
+  A TVIEW whose rows are another table's (`tv_purchase` over `tb_order`) now gets the
+  direct patch (#56) like any other.
+- **A definition is exactly one SELECT** (42601). A second statement after the
+  SELECT was accepted and run.
+- `CREATE TABLE tv_* AS` accepts a comment before the statement.
+
+### Fixed
+
+- A column copied into `data` that the definition also joins or filters on was
+  patched in place, leaving the values that depend on it stale.
+- A TVIEW embedding another one twice (an author and an editor, both `tv_user`) was
+  refreshed only through the first column: renaming the editor left it stale. Every
+  output column equal to the child's key is followed.
+- A write to a table whose key column the plan no longer finds raises an ERROR naming
+  the TVIEW, with the `pg_tviews_reregister` hint; it was a log line once per backend,
+  and the TVIEW went stale.
+- A restored catalog row whose plan names a table the restore did not create fails
+  the insert, naming the TVIEW, instead of mapping nothing.
+- A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or
+  `CREATE TABLE AS` calls is intercepted like any other: the TVIEW was left
+  registered with no table, or its definition kept the old column name.
+
+### Removed
+
+- `pg_tviews_cascade()`, `pg_tviews_insert()` and `pg_tviews_delete()`: they found
+  a TVIEW's rows by table-name conventions; a write to the base table already
+  refreshes them, and `pg_tviews_refresh(entity)` repairs changes the triggers did
+  not see.
+- `pg_tviews_analyze_select(text)` and `pg_tviews_infer_types(text, text[])`. They ran
+  the text-pattern analysis that registration is moving away from, and
+  `pg_tviews_infer_types` built its catalog query from its arguments unquoted. The
+  upgrade script drops both; `docs/DEPRECATION_WARNINGS.md` lists what replaces them
+  and states the oldest release `ALTER EXTENSION pg_tviews UPDATE` starts from
+  (0.1.0-beta.20).
+- `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`,
+  `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`,
+  `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`,
+  `aggregate_embeds` and `key_mappings`: replaced by `plan`.
+- `pg_tviews_rebind_cascade_paths()`, `pg_tviews_migrate_triggers()` and the
+  migration of triggers installed by releases before 0.1.0-beta.20: the update drops
+  those triggers and re-installs one per TVIEW.
+- `pg_tviews_convert_existing_table()` and `pg_tviews_convert_table()`, which only
+  raised errors; the event trigger reports a `CREATE TABLE tv_* AS` the hook did not
+  intercept itself.
+- The `pg_tviews.metrics_enabled` setting, which had no effect.
+
 ### Changed (breaking)
 
+- **Errors carry their SQLSTATE.** Every pg_tviews function reported its errors as
+  22000 (`data_exception`) or XX000, whatever went wrong, so `WHEN undefined_object`
+  or `WHEN sqlstate '42P07'` never matched. Now: no such TVIEW 42704, TVIEW already
+  exists 42P07 (`pg_tviews_create` and `CREATE TABLE tv_* AS` alike), unreadable
+  definition 42601, definition pg_tviews cannot maintain 0A000, not allowed 42501,
+  TVIEWs reading each other in a cycle 42P17, nesting too deep 54001, refresh queue
+  full 54000, resume without suspend or refresh while suspended 55000, `jsonb_delta`
+  missing 42883, invalid argument 22023; internal failures stay XX000. Messages are
+  one line, with the query or definition in DETAIL and the fix in HINT. Internal
+  errors no longer reach the client as `SPI error: OpUnknown`.
+- **A backend's caches follow DDL made in another backend.** A TVIEW replaced, or
+  the extension dropped and created again, in one session left another session
+  patching with the old column map: the row trigger's cache never checked for
+  invalidations. Every cache now checks on every read, relation names come from the
+  syscache, and the catalog is re-watched after the extension is created again.
+- **A definition that makes TVIEWs read each other in a cycle is refused** (42P17)
+  when it is created or replaced. Before, it was accepted and every later write to
+  the tables involved failed.
 - **`pg_tviews_refresh(entity)` requires owning the TVIEW, and every rebuild runs as
   the TVIEW's owner**, like `REFRESH MATERIALIZED VIEW`. A backing view runs the
   functions it calls as the querying role, so a rebuild run as the caller let a TVIEW

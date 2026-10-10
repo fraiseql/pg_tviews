@@ -1,120 +1,22 @@
-# Deprecation Warning System
+# Deprecations and removals
 
-## For SQL Users
+pg_tviews is in beta: a function, setting or catalog column can be removed in the next
+release. This page lists each one, the release that removes it, and what replaces it.
 
-### Example: Deprecated Function
+## Upgrading
 
-```sql
--- Function deprecated in 0.2.0
--- Will be removed in 1.0.0 (Apr 2026)
-SELECT pg_tviews_<old>();
+`ALTER EXTENSION pg_tviews UPDATE` is supported from **0.1.0-beta.20** on. An older
+install has no upgrade path: drop the TVIEWs, drop and re-create the extension, and
+re-create the TVIEWs.
 
--- Output includes warning:
--- WARNING: pg_tviews_<old>() is deprecated
--- Use: pg_tviews_<new>() instead
--- See: docs/migration/0.2-upgrade-guide.md
-```
+## Removed
 
-### Checking for Deprecations
-
-```sql
--- Query deprecation status of all functions
-SELECT pg_describe_object(classid, objid, objsubid) as function,
-       obj_description(objid, 'pg_proc') as description
-FROM pg_depend
-WHERE deptype = 'n'  -- Dependency on normal object
-  AND classid = 'pg_proc'::regclass
-ORDER BY function;
-```
-
-## For Rust Users
-
-### Example: Deprecated Struct
-
-```rust
-#[deprecated(
-    since = "0.2.0",
-    note = "Use `ViewRow` instead. See docs/migration/0.2-upgrade-guide.md"
-)]
-pub struct LegacyViewRow { /* ... */ }
-
-// When used:
-// warning: use of deprecated struct `LegacyViewRow`
-//   --> src/main.rs:10:5
-//    |
-// 10 |     let row = LegacyViewRow::new();
-//    |         ^^^
-//    |
-//    = note: Use `ViewRow` instead...
-```
-
-### Suppressing Deprecation Warnings (Temporary)
-
-```rust
-#[allow(deprecated)]
-fn legacy_code() {
-    let row = LegacyViewRow::new();  // No warning
-}
-```
-
-## Timeline for Deprecation
-
-### Phase 1: Announce (Released)
-- Deprecation noted in release notes
-- Documentation updated with alternative
-- Migration guide published (if complex)
-
-### Phase 2: Warn (Next version)
-- Deprecation warning added to code
-- Warning appears when function/type used
-- Still fully functional
-
-### Phase 3: Remove (Major version only)
-- Function/type removed completely
-- Listed in breaking changes
-- Migration guide required
-
-### Example Timeline
-
-```
-v0.2.0 (Released Aug 2025)
-  ├─ ANNOUNCE: Deprecate pg_tviews_<old>()
-  ├─ New alternative: pg_tviews_<new>()
-  └─ Guide: docs/migration/0.2-upgrade.md
-
-v0.3.0 (Released Oct 2025)
-  ├─ WARN: legacy_func() shows deprecation warning
-  └─ Still works, but warns users
-
-v1.0.0 (Released Apr 2026) [NEW MAJOR VERSION]
-  ├─ REMOVED: legacy_func() no longer exists
-  └─ Users MUST migrate by this date
-```
-
-Timeline: Aug 2025 → Apr 2026 = 8 months notice
-Policy minimum: 6 months
-
-## How to Report Deprecations
-
-When deprecating a feature:
-
-1. **Add to code**:
-```rust
-#[deprecated(
-    since = "0.2.0",
-    note = "Use alternative. See [migration guide](docs/url)"
-)]
-```
-
-2. **Update CHANGELOG.md**:
-```
-## [0.2.0]
-### Deprecated
-- `legacy_function()` in favor of `new_function()`
-```
-
-3. **Create migration guide**:
-- File: `docs/migration/0.2-upgrade-guide.md`
-- Include before/after examples
-- Common gotchas
-- Troubleshooting
+| Removed | In | Replacement |
+|---|---|---|
+| `pg_tviews_analyze_select(text)` | 0.1.0-beta.27 | None. `pg_tviews_create` analyses the definition and reports what it refuses; `tviews.pg_tview_reads` and `pg_tviews_mapping_query()` show what a TVIEW reads and how writes map to its rows. |
+| `pg_tviews_infer_types(text, text[])` | 0.1.0-beta.27 | `format_type(atttypid, atttypmod)` from `pg_attribute`. |
+| `pg_tviews_cascade(oid, bigint)`, `pg_tviews_insert(oid, bigint)`, `pg_tviews_delete(oid, bigint)` | 0.1.0-beta.27 | None needed: a write to a base table refreshes every TVIEW that reads it. `pg_tviews_refresh(entity)` rebuilds one TVIEW after changes the triggers did not see. |
+| `pg_tviews_convert_existing_table(text)`, `pg_tviews_convert_table(text, text)` | 0.1.0-beta.27 | `pg_tviews_create_or_replace(name, select)`, or `CREATE TABLE tv_<entity> AS SELECT …` with the extension preloaded. Both raised an error since 0.1.0-beta.18. |
+| `pg_tviews_migrate_triggers()`, `pg_tviews_rebind_cascade_paths(…)` | 0.1.0-beta.27 | None needed: the update to 0.1.0-beta.27 re-derives every TVIEW and its triggers, and the catalog trigger rebinds a restored TVIEW's plan. |
+| `pg_tviews.metrics_enabled` | 0.1.0-beta.27 | None: metrics are always collected. Remove the setting from `postgresql.conf`. |
+| `pg_tview_meta` columns `cascade_paths`, `fk_columns`, `uuid_fk_columns`, `dependency_types`, `dependency_paths`, `array_match_keys`, `direct_map_columns`, `direct_map_keys`, `distinct_on_keys`, `distinct_on_output_keys`, `is_union`, `aggregate_embeds`, `key_mappings` | 0.1.0-beta.27 | `pg_tview_meta.plan`: one versioned document per TVIEW, derived from its query tree (ADR 0203). `tviews.registry` and `pg_tviews_mapping_query()` stay the stable way to read it. |

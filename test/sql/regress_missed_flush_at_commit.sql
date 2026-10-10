@@ -39,13 +39,6 @@ BEGIN
     END IF;
 END $$;
 
--- ── N3: pg_tviews_cascade() in autocommit refreshes before it returns ──────
-SET session_replication_role = replica;      -- a change the triggers do not see
-UPDATE tb_author SET name = 'ann (renamed)' WHERE pk_author = 1;
-RESET session_replication_role;
-SELECT pg_tviews_cascade('tb_author'::regclass, 1);
-SELECT check_fresh('N3 FAIL [pg_tviews_cascade in autocommit]');
-
 -- ── N2: the next transaction starts with an empty queue ─────────────────────
 DO $$ BEGIN
     IF jsonb_array_length(tviews.pg_tviews_debug_queue()) <> 0 THEN

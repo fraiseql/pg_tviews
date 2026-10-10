@@ -37,22 +37,23 @@ BEGIN;
     SELECT COUNT(*) = 1 AS meta_exists FROM pg_tview_meta WHERE entity = 'post';
     -- Expected: t
 
-    -- Verify new columns exist (they should have defaults, not NULL)
+    -- Verify the plan is stored, versioned
     SELECT
-        dependency_types IS NOT NULL AS has_dep_types_col,
-        dependency_paths IS NOT NULL AS has_dep_paths_col,
-        array_match_keys IS NOT NULL AS has_array_keys_col
+        (plan->>'version')::int = 1 AS plan_v1,
+        jsonb_typeof(plan->'tables') = 'array' AS has_tables,
+        jsonb_typeof(plan->'paths') = 'array' AS has_paths
     FROM pg_tview_meta
     WHERE entity = 'post';
     -- Expected: t, t, t
 
-    -- Test Case 2: Verify columns can be queried
+    -- Test Case 2: tb_user is mapped through tb_post, not embedded
 
     SELECT
-        array_length(dependency_types, 1) AS dep_types_len,
-        array_length(fk_columns, 1) AS fk_cols_len
+        jsonb_array_length(plan->'embeds') AS embeds,
+        (SELECT e->>'kind' FROM jsonb_array_elements(plan->'tables') e
+         WHERE e->>'table' LIKE '%tb_user') AS tb_user_kind
     FROM pg_tview_meta
     WHERE entity = 'post';
-    -- Expected: NULL or 0 (empty), >= 1 (has FK to user)
+    -- Expected: 0, mapped
 
 ROLLBACK;

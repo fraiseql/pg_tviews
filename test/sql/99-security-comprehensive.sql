@@ -36,10 +36,6 @@ SELECT assert_rejects_injection(
     'pg_tviews_drop: tview_name injection',
     $$SELECT pg_tviews_drop('tv_x''; DROP TABLE y; --')$$
 );
-SELECT assert_rejects_injection(
-    'pg_tviews_convert_existing_table: name injection',
-    $$SELECT pg_tviews_convert_existing_table('tv_x; DROP TABLE y; --')$$
-);
 
 -- Entity lookups are parameterized, so a malicious entity is treated as a
 -- (non-existent) literal rather than executed.

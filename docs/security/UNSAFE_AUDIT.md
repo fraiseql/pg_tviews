@@ -157,7 +157,7 @@ unsafe {
 
 ---
 
-### src/metadata.rs (8 unsafe blocks)
+### src/install_sql.rs (8 unsafe blocks)
 
 #### Block 1: SPI query execution
 ```rust

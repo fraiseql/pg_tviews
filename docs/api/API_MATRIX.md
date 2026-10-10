@@ -4,7 +4,6 @@
 
 | Function | Type | Stability | Since | Maturity | Recommendation |
 |----------|------|-----------|-------|----------|-----------------|
-| pg_tviews_convert_existing_table | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_version | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_health_check | SQL | STABLE | 0.1.0-beta.1 | Production | ✅ Safe |
 | pg_tviews_debug_queue | SQL | EVOLVING | 0.1.0-beta.1 | Debug only | ⚠️ May change |

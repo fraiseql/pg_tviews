@@ -1,4 +1,4 @@
-//! A backing view's privileges follow its TVIEW's table (#181).
+//! A backing view's privileges follow its TVIEW's table.
 //!
 //! A backing view lives in the extension's schema, where a grant on the
 //! application's schema (`GRANT SELECT ON ALL TABLES IN SCHEMA app`, default
@@ -10,7 +10,6 @@
 //! tables with its owner's privileges, and a write through it would too.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
 /// For each TVIEW (the one whose table is `$1`, every one when `$1` is NULL), the
@@ -54,7 +53,7 @@ const SELECT_GRANT_CHANGES: &str = "\
 /// be changed.
 pub(crate) fn follow(table: Option<pg_sys::Oid>, owners: bool) -> TViewResult<()> {
     // The statements below are pg_tviews' own: the hook must not follow them.
-    let _internal = crate::hooks::InternalDdl::begin();
+    let _internal = crate::internal_ddl::InternalDdl::begin();
     // SAFETY: makes the changes of the statement just run visible to the queries below.
     unsafe { pg_sys::CommandCounterIncrement() };
     if owners {
@@ -66,7 +65,7 @@ pub(crate) fn follow(table: Option<pg_sys::Oid>, owners: bool) -> TViewResult<()
 /// Each statement runs as the view's owner, who may always grant on it: the
 /// caller needs no privilege on the view.
 fn follow_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
-    let args = [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(table)];
     // Read-write: a fresh snapshot, which sees the statement just run.
     let changes = Spi::connect_mut(|client| {
         client
@@ -87,10 +86,7 @@ fn follow_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
             continue;
         };
         let _owner = crate::owner::AsOwner::of_table(view)?;
-        crate::utils::spi_run_ddl(&statement).map_err(|error| TViewError::SpiError {
-            query: statement.clone(),
-            error,
-        })?;
+        crate::utils::spi::run_ddl(&statement)?;
     }
     Ok(())
 }
@@ -99,7 +95,7 @@ fn follow_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
 /// current role (who just changed the table's owner, so may change the view's).
 /// The new owner is granted CREATE on the extension's schema for the statement.
 fn follow_owners(table: Option<pg_sys::Oid>) -> TViewResult<()> {
-    let args = [unsafe { DatumWithOid::new(table, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
+    let args = [crate::utils::spi::oid(table)];
     let moves = Spi::connect_mut(|client| {
         client
             .update(
@@ -128,12 +124,7 @@ fn follow_owners(table: Option<pg_sys::Oid>) -> TViewResult<()> {
         let (Some(owner), Some(statement)) = (owner, statement) else {
             continue;
         };
-        super::in_extension_schema_for(owner, || {
-            crate::utils::spi_run_ddl(&statement).map_err(|error| TViewError::SpiError {
-                query: statement.clone(),
-                error,
-            })
-        })?;
+        super::in_extension_schema_for(owner, || crate::utils::spi::run_ddl(&statement))?;
     }
     Ok(())
 }

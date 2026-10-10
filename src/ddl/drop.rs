@@ -1,5 +1,4 @@
 use crate::error::{TViewError, TViewResult};
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
 /// Drop a TVIEW and all its associated objects
@@ -10,7 +9,7 @@ use pgrx::prelude::*;
 /// - The metadata record in `pg_tview_meta`
 ///
 /// `tview_name` is `tv_<entity>`, `<entity>` or `schema.tv_<entity>`; a qualified
-/// name must name the schema the TVIEW is in. The caller must own it (issue #134).
+/// name must name the schema the TVIEW is in. The caller must own it.
 ///
 /// If `if_exists` is true and the TVIEW doesn't exist, a NOTICE is raised instead
 /// of an error, like `DROP TABLE IF EXISTS`. Returns whether a TVIEW was dropped.
@@ -27,7 +26,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     let entity_name = entity.as_str();
     super::lock_entity(entity_name)?;
 
-    // Step 1: Check if TVIEW exists (in the named schema, if one is named)
+    // Check if TVIEW exists (in the named schema, if one is named)
     let exists = tview_exists_in_metadata(entity_name)?
         && match &schema {
             Some(schema) => {
@@ -60,29 +59,29 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         crate::owner::require_owner(owned, &format!("tv_{entity_name}"))?;
     }
 
-    // Step 2: Remove the TVIEW's triggers from its base tables. They are found by
+    // Remove the TVIEW's triggers from its base tables. They are found by
     // their function and the entity they carry, not through the backing view, which
     // may already be gone when the drop follows a base table or helper view dropped
-    // with CASCADE (issue #57).
+    // with CASCADE.
     crate::dependency::remove_entity_triggers(entity_name)?;
 
-    // Step 3: Drop the materialized table (schema-resolved via OID).
+    // Drop the materialized table (schema-resolved via OID).
     // Honor the caller's CASCADE/RESTRICT behavior so an explicit
     // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
     if let Some(ref m) = meta {
         drop_by_oid(m.tview_oid, "TABLE", cascade)?;
     }
 
-    // Step 4: Drop the backing view (schema-resolved via OID)
+    // Drop the backing view (schema-resolved via OID)
     if let Some(ref m) = meta {
         drop_by_oid(m.view_oid, "VIEW", cascade)?;
     }
 
-    // Step 5: Drop metadata record
+    // Drop metadata record
     drop_metadata(entity_name)?;
 
     // Invalidate caches since TVIEW was dropped
-    crate::queue::cache::invalidate_all_caches();
+    crate::cache::invalidate_all();
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_drop(entity_name);
@@ -94,7 +93,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
 }
 
 /// Deregister a TVIEW whose backing view or table the current statement dropped
-/// as a dependent of something else (issues #53, #57, #136). Called from the
+/// as a dependent of something else. Called from the
 /// `sql_drop` event trigger only: it first checks that the event dropped the
 /// TVIEW's view or table (as a dependent, or by `DROP OWNED`).
 ///
@@ -107,9 +106,8 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
 /// Returns an error outside a `sql_drop` event trigger, or if the event did not
 /// drop the TVIEW's view or table.
 pub fn handle_dropped(entity: &str) -> TViewResult<()> {
-    let args =
-        [unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    let dropped = Spi::get_one_with_args::<bool>(
+    let args = [crate::utils::spi::text(entity)];
+    let dropped = crate::utils::spi::one::<bool>(
         &format!(
             "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger_dropped_objects() d \
              JOIN {} m ON d.objid IN (m.view_oid, m.table_oid) \
@@ -118,11 +116,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
             crate::utils::meta_table()
         ),
         &args,
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: "pg_event_trigger_dropped_objects()".to_string(),
-        error: e.to_string(),
-    })?;
+    )?;
     if dropped != Some(true) {
         return Err(TViewError::InvalidInput {
             parameter: "entity".to_string(),
@@ -150,14 +144,14 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
     }
     // The table went (with its schema, or its owner's objects): its backing view in
     // the extension's schema goes too, with what depends on it, as it did when it
-    // sat in the TVIEW's schema (#186).
+    // sat in the TVIEW's schema.
     if table_left != Some(true) {
         drop_backing_view(entity)?;
     }
 
     crate::dependency::remove_entity_triggers(entity)?;
     drop_metadata(entity)?;
-    crate::queue::cache::invalidate_all_caches();
+    crate::cache::invalidate_all();
     crate::audit::log_drop(entity);
     if table_left == Some(true) {
         notice!(
@@ -171,20 +165,15 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
 /// Drop the backing view of `entity` with CASCADE, as the view's owner: the role
 /// that dropped the TVIEW's table need not own it.
 fn drop_backing_view(entity: &str) -> TViewResult<()> {
-    let args =
-        [unsafe { DatumWithOid::new(entity, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) }];
-    let view = Spi::get_one_with_args::<pg_sys::Oid>(
+    let args = [crate::utils::spi::text(entity)];
+    let view = crate::utils::spi::one::<pg_sys::Oid>(
         &format!(
             "SELECT (SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
              WHERE m.entity = $1)",
             crate::utils::meta_table()
         ),
         &args,
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: "backing view of a dropped TVIEW".to_string(),
-        error: e.to_string(),
-    })?;
+    )?;
     if let Some(view) = view {
         let _owner = crate::owner::AsOwner::of_table(view)?;
         drop_by_oid(view, "VIEW", true)?;
@@ -193,27 +182,18 @@ fn drop_backing_view(entity: &str) -> TViewResult<()> {
 }
 
 /// The backing views of every registered TVIEW in the extension's schema, read
-/// before `DROP EXTENSION pg_tviews` removes the catalog (#199). A view outside
-/// it (a layout before #181) is the application's and stays.
+/// before `DROP EXTENSION pg_tviews` removes the catalog. A view outside
+/// it (the layout of releases before 0.1.0-beta.25) is the application's and stays.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
     // An install older than the library (0.1.0 kept its catalog elsewhere, and
     // its backing views were the application's `v_*` views): nothing to drop.
-    let current = Spi::get_one_with_args::<bool>(
+    let current = crate::utils::spi::one::<bool>(
         "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
-        &[unsafe {
-            DatumWithOid::new(
-                crate::utils::meta_table().as_str(),
-                PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value(),
-            )
-        }],
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: "the registration catalog".to_string(),
-        error: e.to_string(),
-    })?;
+        &[crate::utils::spi::text(crate::utils::meta_table().as_str())],
+    )?;
     if current != Some(true) {
         return Ok(Vec::new());
     }
@@ -241,23 +221,18 @@ pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
 
 /// Drop the backing views the extension left behind once `DROP EXTENSION
 /// pg_tviews` has run: they are not extension members, so that `pg_dump` keeps
-/// them, and would otherwise outlive it (#199). Their tables stay, as plain
+/// them, and would otherwise outlive it. Their tables stay, as plain
 /// tables holding their rows.
 ///
 /// # Errors
 /// Returns an error if a view cannot be dropped.
 pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
     for &view in views {
-        let args =
-            [unsafe { DatumWithOid::new(view, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }];
-        let present = Spi::get_one_with_args::<bool>(
+        let args = [crate::utils::spi::oid(view)];
+        let present = crate::utils::spi::one::<bool>(
             "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class WHERE oid = $1)",
             &args,
-        )
-        .map_err(|e| TViewError::SpiError {
-            query: "backing view left by DROP EXTENSION".to_string(),
-            error: e.to_string(),
-        })?;
+        )?;
         if present == Some(true) {
             let _owner = crate::owner::AsOwner::of_table(view)?;
             drop_by_oid(view, "VIEW", true)?;
@@ -267,18 +242,18 @@ pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
 }
 
 /// Drop the view at `schema.name`, a TVIEW's backing view name, when it is a
-/// leftover: a view no TVIEW is registered with and nothing depends on (#199,
-/// a `DROP EXTENSION` in a session that never loaded the library). Returns
+/// leftover: a view no TVIEW is registered with and nothing depends on
+/// (a `DROP EXTENSION` in a session that never loaded the library). Returns
 /// whether the name is free now.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read or the view cannot be dropped.
 pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
     let args = [
-        unsafe { DatumWithOid::new(schema, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
-        unsafe { DatumWithOid::new(name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value()) },
+        crate::utils::spi::text(schema),
+        crate::utils::spi::text(name),
     ];
-    let leftover = Spi::get_one_with_args::<pg_sys::Oid>(
+    let leftover = crate::utils::spi::one::<pg_sys::Oid>(
         &format!(
             "SELECT (SELECT c.oid FROM pg_catalog.pg_class c \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
@@ -290,11 +265,7 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
             crate::utils::meta_table()
         ),
         &args,
-    )
-    .map_err(|e| TViewError::SpiError {
-        query: format!("leftover view {schema}.{name}"),
-        error: e.to_string(),
-    })?;
+    )?;
     let Some(view) = leftover else {
         return Ok(false);
     };
@@ -332,10 +303,7 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
     if let Some(qname) = qualified {
         let cascade_kw = if cascade { " CASCADE" } else { "" };
         let sql = format!("DROP {kind} IF EXISTS {qname}{cascade_kw}");
-        crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
-            query: sql,
-            error: e,
-        })?;
+        crate::utils::spi::run_ddl(&sql)?;
     }
 
     Ok(())
@@ -343,9 +311,7 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
 
 /// Check if a TVIEW exists in metadata
 fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
-    let args = vec![unsafe {
-        DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-    }];
+    let args = vec![crate::utils::spi::text(entity_name)];
     Spi::get_one_with_args::<bool>(
         &format!(
             "SELECT COUNT(*) > 0 FROM {} WHERE entity = $1",
@@ -355,7 +321,7 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
     )
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check TVIEW metadata: {entity_name}"),
-        pg_error: format!("{e:?}"),
+        pg_error: e.to_string(),
     })
     .map(|opt| opt.unwrap_or(false))
 }
@@ -364,10 +330,7 @@ fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
 /// table is gone (dropped where the hook did not run). `None` when both are gone:
 /// the registration is all that is left, and any role may remove it.
 fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys::Oid>> {
-    let args = [meta.tview_oid, meta.view_oid].map(|oid| {
-        // SAFETY: the datum copies the OID.
-        unsafe { DatumWithOid::new(oid, PgOid::BuiltIn(PgBuiltInOids::OIDOID).value()) }
-    });
+    let args = [meta.tview_oid, meta.view_oid].map(crate::utils::spi::oid);
     Spi::connect(|client| {
         client
             .select(
@@ -387,24 +350,14 @@ fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
-    // SAFETY: DatumWithOid::new wraps PostgreSQL datum pointers for SPI parameter passing.
-    // The entity name is validated before this call.
-    let args =
-        [
-            unsafe {
-                DatumWithOid::new(entity_name, PgOid::BuiltIn(PgBuiltInOids::TEXTOID).value())
-            },
-        ];
+    let args = [crate::utils::spi::text(entity_name)];
     let sql = format!(
         "DELETE FROM {} WHERE entity = $1",
         crate::utils::meta_table()
     );
-    // The catalog is written as the extension's owner (issue #136).
+    // The catalog is written as the extension's owner.
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
-        query: sql.clone(),
-        error: e.to_string(),
-    })?;
+    crate::utils::spi::run(&sql, &args)?;
 
     Ok(())
 }
