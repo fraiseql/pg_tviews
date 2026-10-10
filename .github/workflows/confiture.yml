@@ -9,8 +9,8 @@ name: confiture
 on:
   push:
     branches: [ main ]
+  # Every pull request, stacked ones included (their base is not main).
   pull_request:
-    branches: [ main ]
   workflow_call:
 
 env:

@@ -22,6 +22,8 @@ pub struct TviewRelation {
     /// The backing view, schema-qualified and quoted.
     pub view: String,
     pub unlogged: bool,
+    /// The `tv_*` table's OID, whose owner reads the backing view.
+    pub table_oid: pg_sys::Oid,
 }
 
 impl TviewRelation {
@@ -31,7 +33,8 @@ impl TviewRelation {
             "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
                     pg_catalog.quote_ident(vn.nspname) || '.' || pg_catalog.quote_ident(v.relname) \
                         AS view, \
-                    t.relpersistence = 'u' AS unlogged \
+                    t.relpersistence = 'u' AS unlogged, \
+                    m.table_oid::oid AS table_oid \
              FROM {} m \
              JOIN pg_class t ON t.oid = m.table_oid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
@@ -54,6 +57,7 @@ impl TviewRelation {
                     table: row["tbl"].value()?.unwrap_or_default(),
                     view: row["view"].value()?.unwrap_or_default(),
                     unlogged: row["unlogged"].value()?.unwrap_or(false),
+                    table_oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
                 });
             }
             Ok::<_, spi::Error>(out)
@@ -78,9 +82,14 @@ impl TviewRelation {
     }
 
     /// Whether the table is an UNLOGGED TVIEW reset to empty while its backing
-    /// view still has rows: the state after promotion or a crash restart.
+    /// view still has rows: the state after promotion or a crash restart. The
+    /// view is read as the TVIEW's owner: it may call the owner's functions.
     pub fn needs_rebuild(&self) -> TViewResult<bool> {
-        Ok(self.unlogged && self.table_is_empty()? && !has_no_rows(&self.view)?)
+        if !self.unlogged || !self.table_is_empty()? {
+            return Ok(false);
+        }
+        let _owner = crate::owner::AsOwner::of_table(self.table_oid)?;
+        Ok(!has_no_rows(&self.view)?)
     }
 }
 

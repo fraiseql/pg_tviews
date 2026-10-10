@@ -223,6 +223,7 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
 
     let json_value = serde_json::json!({
         "queue_size": stats.queue_size,
+        "flushes": stats.flushes,
         "total_refreshes": stats.total_refreshes,
         "total_iterations": stats.total_iterations,
         "max_iterations": stats.max_iterations,

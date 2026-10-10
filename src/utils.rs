@@ -58,10 +58,17 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
     // functions are valid. SPI_connect_ext/SPI_execute_extended/SPI_finish
     // are thread-local PostgreSQL operations.
     unsafe {
-        // SPI_OPT_NONATOMIC allows DDL in SPI context without triggering the
-        // "attempted to execute DDL in atomic SPI context" assertion in PG18.
-        #[allow(clippy::cast_possible_wrap)] // PostgreSQL SPI constants are u32, API takes i32
-        let connect_result = pg_sys::SPI_connect_ext(pg_sys::SPI_OPT_NONATOMIC as i32);
+        // Atomic, as the caller is (a trigger, a hook, a function called from a
+        // query): only a caller that may itself commit (a procedure) gets a
+        // non-atomic connection, so the DDL can never end its transaction.
+        let nonatomic = pg_sys::SPI_inside_nonatomic_context();
+        #[allow(clippy::cast_possible_wrap)]
+        // Reason: PostgreSQL SPI constants are u32, API takes i32
+        let connect_result = pg_sys::SPI_connect_ext(if nonatomic {
+            pg_sys::SPI_OPT_NONATOMIC as i32
+        } else {
+            0
+        });
         #[allow(clippy::cast_possible_wrap)]
         // Reason: PostgreSQL SPI constants are u32, API takes i32
         if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
@@ -75,12 +82,9 @@ pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
             ));
         }
 
-        // Use SPI_execute_extended with allow_nonatomic=true so PostgreSQL 18's
-        // assertion (IsTransactionOrTransactionBlock assertion for DDL in atomic
-        // context) is suppressed.
         let opts = pg_sys::SPIExecuteOptions {
             read_only: false,
-            allow_nonatomic: true,
+            allow_nonatomic: nonatomic,
             tcount: 0,
             ..pg_sys::SPIExecuteOptions::default()
         };

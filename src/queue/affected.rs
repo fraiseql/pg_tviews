@@ -7,7 +7,7 @@
 //! mutation function which read-model rows the transaction changed.
 //! [`crate::report::pg_tviews_flush_and_report`] reads it.
 //!
-//! Entries are appended in write order. A savepoint records the journal length and
+//! Entries are appended in write order. A savepoint records the journal position and
 //! a rollback to it truncates back, so rolled-back writes are never reported. The
 //! journal is cleared when the transaction ends. Past `pg_tviews.report_max_tracked`
 //! entries only the entity names are kept and the report says it was truncated.
@@ -35,8 +35,10 @@ pub struct NetChange {
 #[derive(Default)]
 struct Journal {
     entries: Vec<(String, String, Change)>,
-    /// Journal length at each open savepoint.
-    marks: Vec<usize>,
+    /// Entries summarized and dropped before `entries[0]`: positions count from
+    /// the start of the transaction, so a savepoint taken before a summary still
+    /// rolls back exactly what came after it.
+    base: usize,
     /// Entities with changes that were not journaled because the cap was reached.
     overflow: BTreeSet<String>,
 }
@@ -76,29 +78,20 @@ pub fn record(entity: &str, pk: String, change: Change) {
     });
 }
 
-/// A savepoint was opened.
-pub fn savepoint_start() {
+/// The journal position now: what a savepoint records.
+pub fn position() -> usize {
     JOURNAL.with(|j| {
-        let mut j = j.borrow_mut();
-        let len = j.entries.len();
-        j.marks.push(len);
-    });
+        let j = j.borrow();
+        j.base + j.entries.len()
+    })
 }
 
-/// The innermost savepoint was rolled back: forget what it journaled.
-pub fn savepoint_abort() {
+/// A savepoint taken at `position` rolled back: forget what was journaled since.
+pub fn rollback_to(position: usize) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        if let Some(len) = j.marks.pop() {
-            j.entries.truncate(len);
-        }
-    });
-}
-
-/// The innermost savepoint was released: its entries now belong to the parent.
-pub fn savepoint_commit() {
-    JOURNAL.with(|j| {
-        j.borrow_mut().marks.pop();
+        let keep = position.saturating_sub(j.base);
+        j.entries.truncate(keep);
     });
 }
 
@@ -108,17 +101,16 @@ pub fn clear() {
 }
 
 /// The net change per row, in order of each row's first entry, and the entities
-/// whose changes overflowed the cap. With `reset` the journal is emptied (open
-/// savepoint marks are kept at zero so a later rollback stays consistent).
+/// whose changes overflowed the cap. With `reset` the journal is emptied.
 pub fn summarize(reset: bool) -> (Vec<NetChange>, BTreeSet<String>) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
         let net = net_changes(&j.entries);
         let overflow = j.overflow.clone();
         if reset {
+            j.base += j.entries.len();
             j.entries.clear();
             j.overflow.clear();
-            j.marks.fill(0);
         }
         (net, overflow)
     })

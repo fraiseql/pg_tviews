@@ -27,6 +27,16 @@ pub fn check_jsonb_delta_available() -> bool {
     jsonb_delta_schema().is_some()
 }
 
+/// Quoted schema of the `jsonb_delta` extension, for a patch about to be applied.
+///
+/// # Errors
+/// [`crate::TViewError::JsonbIvmNotInstalled`] when it is not installed (dropped
+/// since the patch was captured): an unqualified or `public` fallback would call
+/// whatever function of that name a role with CREATE there planted.
+pub fn require_jsonb_delta_schema() -> crate::TViewResult<String> {
+    jsonb_delta_schema().ok_or(crate::TViewError::JsonbIvmNotInstalled)
+}
+
 /// Quoted schema of the `jsonb_delta` extension (cached), `None` when it is not
 /// installed. Patch calls are qualified with it so they do not depend on the
 /// session's `search_path`.

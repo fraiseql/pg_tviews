@@ -85,6 +85,8 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     // Safety: This entire function is an extern "C-unwind" callback invoked by
     // PostgreSQL internals — all pointer dereferences and static accesses are
     // inherently unsafe FFI operations.
+    // Replaced by a copy when the statement is edited in a read-only tree.
+    let mut pstmt = pstmt;
 
     // Number every TRUNCATE, nested ones included, so its truncate triggers
     // refresh each TVIEW once (one fires per truncated partition).
@@ -170,7 +172,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
                 } else {
                     None
                 };
-                if let Some(stmt) = ending {
+                // A failed transaction block ends in ROLLBACK whatever the client
+                // says: nothing to refresh, and no SQL may run in it.
+                let usable = unsafe {
+                    pg_sys::IsTransactionState() && !pg_sys::IsAbortedTransactionBlockState()
+                };
+                if let Some(stmt) = ending.filter(|_| usable) {
                     // Still suspended at the end of the transaction: resume and rebuild
                     // the TVIEWs the suspended writes touched.
                     if crate::suspend::is_suspended() {
@@ -340,6 +347,20 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
             false
         }
         Ok(Ok(Intercept::DropTable(drop_stmt))) => {
+            // The TVIEWs are dropped here and taken out of the statement's list. A
+            // read-only tree (a cached plan, run again by the next call) is copied
+            // first, and the copy goes on to the standard handler.
+            let drop_stmt = if read_only_tree {
+                // SAFETY: a deep copy in the current memory context, which lives
+                // for the statement.
+                pstmt = unsafe { pg_sys::copyObjectImpl(pstmt.cast()).cast() };
+                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
+                unsafe {
+                    (*pstmt).utilityStmt.cast::<pg_sys::DropStmt>()
+                }
+            } else {
+                drop_stmt
+            };
             match unsafe { handle_drop_table(drop_stmt, query_string) } {
                 Ok(handled) => !handled,
                 Err(e) => {
@@ -1026,6 +1047,7 @@ unsafe fn is_execute(query: *mut pg_sys::Node) -> bool {
 /// Whether an analyzed query or expression contains a `Param` node.
 ///
 /// SAFETY: a `tree_walker` callback over a valid parse tree.
+#[pg_guard]
 unsafe extern "C-unwind" fn contains_param(
     node: *mut pg_sys::Node,
     context: *mut std::ffi::c_void,
@@ -1442,9 +1464,11 @@ unsafe fn call_prev_hook_or_standard(
     qc: *mut pg_sys::QueryCompletion,
 ) {
     // SAFETY: Delegates to PostgreSQL internal hook or standard utility handler.
+    // An error raised in the previous hook comes back as a Rust panic, so the
+    // caller's Rust frames unwind instead of being skipped by a longjmp.
     unsafe {
         match PREV_PROCESS_UTILITY_HOOK {
-            Some(prev_hook) => {
+            Some(prev_hook) => pg_sys::ffi::pg_guard_ffi_boundary(|| {
                 prev_hook(
                     pstmt,
                     query_string,
@@ -1455,7 +1479,7 @@ unsafe fn call_prev_hook_or_standard(
                     dest,
                     qc,
                 );
-            }
+            }),
             None => {
                 pg_sys::standard_ProcessUtility(
                     pstmt,

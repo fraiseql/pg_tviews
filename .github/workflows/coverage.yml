@@ -3,8 +3,8 @@ name: Coverage
 on:
   push:
     branches: [ main ]
+  # Every pull request, stacked ones included (their base is not main).
   pull_request:
-    branches: [ main ]
 
 # Line and function coverage of the pure-Rust unit tests, built for PostgreSQL 18
 # (the release target). The SQL suites (ci.yml) exercise the installed extension

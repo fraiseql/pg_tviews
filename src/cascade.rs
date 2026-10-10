@@ -123,6 +123,8 @@ fn find_affected_tview_rows(
     let qi_view = utils::qualified_relname_from_oid(tview_meta.view_oid)?;
     let tview_pk_col = format!("pk_{}", tview_meta.entity_name);
 
+    // The backing view may call its owner's functions: read it as the owner.
+    let _owner = crate::owner::AsOwner::of_table(tview_meta.tview_oid)?;
     let collect_pks = |query: &str| -> spi::Result<Vec<i64>> {
         let col = tview_pk_col.clone();
         Spi::connect(|client| {

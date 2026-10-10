@@ -1,80 +1,82 @@
-use std::collections::HashSet;
-use std::sync::Mutex;
+//! Suspension of trigger-based refresh for bulk work.
+//!
+//! `pg_tviews_suspend_triggers()` makes the triggers record which TVIEWs a
+//! write touched instead of refreshing them; resuming rebuilds those TVIEWs.
+//! Suspension lasts until the transaction ends, and follows subtransactions: a
+//! savepoint records it, and rolling the savepoint back restores it.
 
-/// Global runtime state for trigger suspension
-pub struct SuspensionState {
-    /// Is suspension active in this session?
-    pub is_suspended: bool,
-    /// Which entities changed while suspended (entity names)
-    pub changed_entities: HashSet<String>,
-    /// Nesting depth for nested suspend/resume calls
-    pub suspension_depth: i32,
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+
+/// Whether refresh is suspended, and what changed meanwhile.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Suspension {
+    /// Nesting of suspend calls not yet resumed; suspended while above 0.
+    depth: u32,
+    /// The entities written while suspended.
+    changed: BTreeSet<String>,
 }
 
-lazy_static::lazy_static! {
-    static ref SUSPENSION_STATE: Mutex<SuspensionState> = Mutex::new(SuspensionState {
-        is_suspended: false,
-        changed_entities: HashSet::new(),
-        suspension_depth: 0,
+thread_local! {
+    static SUSPENSION: RefCell<Suspension> = RefCell::default();
+}
+
+/// Suspend trigger-based refresh.
+pub fn suspend() -> Result<(), String> {
+    SUSPENSION.with_borrow_mut(|s| {
+        s.depth += 1;
+        if s.depth == 1 {
+            s.changed.clear();
+        }
+    });
+    Ok(())
+}
+
+/// Resume trigger-based refresh (one level of nesting).
+pub fn resume() -> Result<(), String> {
+    SUSPENSION.with_borrow_mut(|s| {
+        if s.depth == 0 {
+            return Err("Cannot resume: not suspended".to_string());
+        }
+        s.depth -= 1;
+        Ok(())
+    })
+}
+
+/// Whether trigger-based refresh is currently suspended.
+#[must_use]
+pub fn is_suspended() -> bool {
+    SUSPENSION.with_borrow(|s| s.depth > 0)
+}
+
+/// Record that an entity changed while triggers are suspended.
+pub fn record_change(entity_name: &str) {
+    SUSPENSION.with_borrow_mut(|s| {
+        if s.depth > 0 {
+            s.changed.insert(entity_name.to_string());
+        }
     });
 }
 
-/// Suspend trigger-based refresh
-pub fn suspend() -> Result<(), String> {
-    let mut state = SUSPENSION_STATE.lock().unwrap();
-    state.suspension_depth += 1;
-    if state.suspension_depth == 1 {
-        state.is_suspended = true;
-        state.changed_entities.clear();
-    }
-    Ok(())
-}
-
-/// Resume trigger-based refresh
-pub fn resume() -> Result<(), String> {
-    let mut state = SUSPENSION_STATE.lock().unwrap();
-    if state.suspension_depth == 0 {
-        return Err("Cannot resume: not suspended".to_string());
-    }
-    state.suspension_depth -= 1;
-    if state.suspension_depth == 0 {
-        state.is_suspended = false;
-    }
-    Ok(())
-}
-
-/// Check if trigger-based refresh is currently suspended
-#[must_use]
-pub fn is_suspended() -> bool {
-    SUSPENSION_STATE.lock().unwrap().is_suspended
-}
-
-/// Record that an entity changed while triggers are suspended
-pub fn record_change(entity_name: &str) {
-    if is_suspended() {
-        SUSPENSION_STATE
-            .lock()
-            .unwrap()
-            .changed_entities
-            .insert(entity_name.to_string());
-    }
-}
-
-/// Get list of entities that changed while suspended
+/// The entities that changed while suspended.
 #[must_use]
 pub fn get_changed_entities() -> Vec<String> {
-    SUSPENSION_STATE
-        .lock()
-        .unwrap()
-        .changed_entities
-        .iter()
-        .cloned()
-        .collect()
+    SUSPENSION.with_borrow(|s| s.changed.iter().cloned().collect())
 }
 
-/// Clear the list of changed entities
+/// Forget the entities that changed while suspended.
 pub fn clear_changed_entities() {
-    SUSPENSION_STATE.lock().unwrap().changed_entities.clear();
+    SUSPENSION.with_borrow_mut(|s| s.changed.clear());
+}
+
+/// The suspension now, for a savepoint to restore.
+pub fn snapshot() -> Suspension {
+    SUSPENSION.with_borrow(Clone::clone)
+}
+
+/// A savepoint rolled back: the suspension is what it was when it started.
+pub fn restore(saved: Suspension) {
+    SUSPENSION.with_borrow_mut(|s| *s = saved);
 }
 
 /// Rebuild every TVIEW changed while refresh was suspended, and every TVIEW that
@@ -91,12 +93,42 @@ pub fn catch_up() -> crate::TViewResult<Vec<String>> {
         return Ok(Vec::new());
     }
     // A TVIEW whose view reads a rebuilt one is stale too.
-    crate::admin::rebuild_with_dependents(&changed, false)
+    crate::admin::rebuild_with_dependents(&changed)
 }
 
-/// Force resume (used by transaction callback)
+/// Resume however deeply suspended: the transaction ended.
 pub fn force_resume() {
-    let mut state = SUSPENSION_STATE.lock().unwrap();
-    state.suspension_depth = 0;
-    state.is_suspended = false;
+    SUSPENSION.with_borrow_mut(|s| s.depth = 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_restored_snapshot_undoes_suspend_and_resume() {
+        force_resume();
+        clear_changed_entities();
+        let before = snapshot();
+        suspend().unwrap();
+        record_change("post");
+        assert!(is_suspended());
+        restore(before.clone());
+        assert!(!is_suspended());
+        assert!(get_changed_entities().is_empty());
+
+        suspend().unwrap();
+        let suspended = snapshot();
+        resume().unwrap();
+        assert!(!is_suspended());
+        restore(suspended);
+        assert!(is_suspended());
+        force_resume();
+    }
+
+    #[test]
+    fn resume_without_suspend_is_refused() {
+        force_resume();
+        assert!(resume().is_err());
+    }
 }

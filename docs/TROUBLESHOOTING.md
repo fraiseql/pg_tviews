@@ -44,33 +44,21 @@ END $$;
 
 **Why This Happens**: Psql variable interpolation doesn't work inside DO blocks (string literals to PostgreSQL).
 
-### 2. "SPI error: Transaction"
+### 2. `CREATE TABLE tv_x AS SELECT …` does not create a TVIEW
 
-**Symptom**:
-```
-ERROR: Failed to convert table to TVIEW: SPI query failed: SPI error: Transaction
-Query: Unknown
-```
+**Symptom**: the statement creates a plain table, or is refused, instead of a TVIEW.
 
-**Cause**: Event triggers cannot use SPI during DDL events (PostgreSQL limitation)
+**Cause**: `CREATE TABLE tv_<entity> AS SELECT …` is turned into a TVIEW by a hook
+installed when the library is loaded. Without `pg_tviews` in
+`shared_preload_libraries`, a session that has not loaded the library yet does not
+see it.
 
-**Solution**: Use manual conversion workflow
+**Solution**: add `pg_tviews` to `shared_preload_libraries` and restart, or create
+the TVIEW with the function, which works in any session:
 
-**Steps**:
 ```sql
--- 1. Create table (event trigger validates structure only)
-CREATE TABLE tv_test AS SELECT id, data FROM v_test;
-
--- 2. Manually convert to TVIEW
-SELECT tviews.pg_tviews_convert_existing_table('tv_test');
-
--- 3. Verify
-SELECT schema, name, entity, base_tables FROM tviews.registry WHERE name = 'tv_test';
+SELECT tviews.pg_tviews_create_or_replace('tv_test', 'SELECT pk_test, id, data FROM tb_test');
 ```
-
-**Why This Happens**: PostgreSQL prevents nested transactions during DDL events. SPI calls create sub-transactions, causing conflicts.
-
-Creating the TVIEW with `SELECT tviews.pg_tviews_create('tv_test', 'SELECT ...');` avoids the problem.
 
 ### 3. "relation does not exist"
 
@@ -169,16 +157,18 @@ FROM v_entity;
 psql -d pg_tviews_benchmark -c "\d benchmark.tv_product"
 ```
 
-### 6. Manual Conversion Function Doesn't Exist
+### 6. A pg_tviews function does not exist
 
 **Symptom**:
 ```
-ERROR: function pg_tviews_convert_existing_table(text) does not exist
+ERROR: function pg_tviews_create_or_replace(unknown, unknown) does not exist
 ```
 
-**Cause**: Extension not loaded in current database
+**Cause**: the extension is not created in this database, or its schema `tviews` is
+not on the `search_path`.
 
-**Solution**: Load the extension
+**Solution**: qualify the call (`tviews.pg_tviews_create_or_replace(…)`), add
+`tviews` to the database's `search_path`, or create the extension
 ```sql
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 ```
@@ -230,16 +220,11 @@ FROM tviews.pg_tviews_health_check();
 EOF
 ```
 
-### Test Manual Conversion
+### Re-create a TVIEW from its definition
 ```bash
 psql -d pg_tviews_benchmark <<EOF
--- Attempt conversion
-SELECT tviews.pg_tviews_convert_existing_table('benchmark.tv_product');
-
--- Check result
-SELECT schema, name, entity, base_tables
-FROM tviews.registry
-WHERE schema = 'benchmark' AND name = 'tv_product';
+SELECT tviews.pg_tviews_create_or_replace('benchmark.tv_product',
+    (SELECT query FROM tviews.registry WHERE schema = 'benchmark' AND name = 'tv_product'));
 EOF
 ```
 

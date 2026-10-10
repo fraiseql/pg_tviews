@@ -5,6 +5,7 @@
 //! backing-view queries. Any pk whose tview row does not yet exist is reported
 //! back so the caller recomputes it (a patch can only update an existing row).
 
+use crate::TViewResult;
 use crate::catalog::{DependencyType, TviewMeta};
 use crate::queue::patch::PatchEntry;
 use pgrx::datum::DatumWithOid;
@@ -92,14 +93,14 @@ pub fn apply_direct_patch(
     meta: &TviewMeta,
     pks: &[i64],
     chain: &[PatchEntry],
-) -> spi::Result<Vec<(i64, bool)>> {
+) -> TViewResult<Vec<(i64, bool)>> {
     if pks.is_empty() || chain.is_empty() {
         return Ok(Vec::new());
     }
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
-    let schema = crate::lifecycle::jsonb_delta_schema().unwrap_or_else(|| "public".to_string());
+    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, chain);
     let pk_param = chain.len() + 1;
 
@@ -166,11 +167,11 @@ pub fn apply_fanout_patch(
     meta: &TviewMeta,
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
-) -> spi::Result<Vec<i64>> {
+) -> TViewResult<Vec<i64>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let schema = crate::lifecycle::jsonb_delta_schema().unwrap_or_else(|| "public".to_string());
+    let schema = crate::lifecycle::require_jsonb_delta_schema()?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
     let qi_lookup = crate::utils::quote_identifier(lookup_col);
@@ -220,7 +221,7 @@ pub fn apply_fanout_patch(
 pub fn apply_entity_patches(
     meta: &TviewMeta,
     keyed_chains: Vec<(i64, Vec<PatchEntry>)>,
-) -> spi::Result<Vec<i64>> {
+) -> TViewResult<Vec<i64>> {
     // Group pks by identical chain (canonical JSON form).
     let mut groups: HashMap<String, (Vec<PatchEntry>, Vec<i64>)> = HashMap::new();
     for (pk, chain) in keyed_chains {

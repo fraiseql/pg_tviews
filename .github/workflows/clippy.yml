@@ -11,6 +11,8 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check formatting
         run: cargo fmt --check
+      - name: Check every PostgreSQL callback carries #[pg_guard]
+        run: scripts/check-ffi-guards.sh
 
   unit:
     runs-on: ubuntu-latest

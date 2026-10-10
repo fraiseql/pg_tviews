@@ -423,9 +423,10 @@ that looks like a TVIEW. Create TVIEWs with `pg_tviews_create_or_replace()` or
 **Signature**:
 ```sql
 pg_tviews_health_check() RETURNS TABLE (
-    check_name TEXT,
     status TEXT,
-    details TEXT
+    component TEXT,
+    message TEXT,
+    severity TEXT
 )
 ```
 
@@ -435,10 +436,12 @@ Performs comprehensive health checks on the pg_tviews installation and all TVIEW
 **Parameters**:
 - None
 
-**Returns**:
-- `check_name TEXT`: Name of the health check
-- `status TEXT`: 'OK', 'WARNING', or 'ERROR'
-- `details TEXT`: Detailed information about the check
+**Returns** one row per check:
+- `status TEXT`: `OK`, `WARNING` or `ERROR`
+- `component TEXT`: what was checked: `extension`, `jsonb_delta`, `catalog`,
+  `metadata`, `reregister`, `triggers`, `tviews`
+- `message TEXT`: what the check found
+- `severity TEXT`: `info`, `warning` or `error`
 
 **Example**:
 ```sql
@@ -446,7 +449,7 @@ Performs comprehensive health checks on the pg_tviews installation and all TVIEW
 SELECT * FROM pg_tviews_health_check();
 
 -- Check only critical issues
-SELECT * FROM pg_tviews_health_check()
+SELECT component, message FROM pg_tviews_health_check()
 WHERE status IN ('WARNING', 'ERROR');
 ```
 
@@ -501,9 +504,10 @@ pg_tviews_refresh(entity TEXT) RETURNS VOID
 Rebuilds `tv_<entity>` from its view, then every TVIEW whose view reads it, directly
 or through others, dependencies first: the repair for a TVIEW left stale by a change
 its triggers did not see. Each rebuild is a `TRUNCATE` and an `INSERT … SELECT`,
-holding an `ACCESS EXCLUSIVE` lock on that TVIEW until the transaction ends. The
-requested TVIEW is rebuilt with the caller's privileges, the ones that embed it as
-their owners.
+holding an `ACCESS EXCLUSIVE` lock on that TVIEW until the transaction ends. Like
+`REFRESH MATERIALIZED VIEW`, it requires owning `tv_<entity>` (being a member of its
+owner's role) or the extension, and every TVIEW is rebuilt as its owner: a function
+the backing view calls never runs with the caller's privileges.
 
 ```sql
 SELECT pg_tviews_refresh('user');   -- tv_user, then tv_post (embeds user), tv_feed (embeds post)
@@ -534,9 +538,9 @@ pg_tviews_refresh_all() RETURNS JSONB
 pg_tviews_refresh_all_entities() RETURNS VOID
 ```
 
-Rebuild every TVIEW once, dependencies first. `pg_tviews_refresh_all()` returns
-`{"refreshed_count", "order", "duration_ms"}` and refuses to run while refresh is
-suspended; `pg_tviews_refresh_all_entities()` reports the count as an INFO message.
+Rebuild every TVIEW once, dependencies first, each as its owner. `pg_tviews_refresh_all()`
+returns `{"refreshed_count", "order", "duration_ms"}` and refuses to run while refresh
+is suspended; `pg_tviews_refresh_all_entities()` reports the count as an INFO message.
 
 ### pg_tviews_show_cascade_path()
 
@@ -653,7 +657,7 @@ pg_tviews_catalog_revision() RETURNS INTEGER
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore left empty (every TVIEW with `only_empty => false`), dependencies first.
   `pg_tviews_recover_after_crash` does it for one entity and returns whether it had
-  to.
+  to. Both read each backing view and fill each TVIEW as the TVIEW's owner.
 - `pg_tviews_profile` is the per-TVIEW physical health report:
   see [profile.md](profile.md).
 - `pg_tviews_catalog_revision` is the revision of the extension's catalog the
