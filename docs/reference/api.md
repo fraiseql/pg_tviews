@@ -510,6 +510,8 @@ it from the session doing the writes: another session sees its own, usually zero
 | `refresh_noop_skipped` | recomputed rows not rewritten because their content was unchanged |
 | `catalog_lookups` | catalog reads by the row triggers |
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
+| `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
+| `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
 
 ```sql
 BEGIN;

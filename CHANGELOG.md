@@ -250,6 +250,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
+  on one relation before it locks the relation instead, so a bulk write never
+  exhausts the shared lock table (0 always locks relations, -1 never does).
+- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
+  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
+  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
 - `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
   TVIEW's rows reads of a table its mapping joins (the column, and the query from the
   TVIEW's keys to the values compared with it), from the plan, which now stores it

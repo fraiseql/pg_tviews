@@ -85,6 +85,14 @@ struct QueueMetrics {
     table_cache_hits: u64,
     /// Table cache misses
     table_cache_misses: u64,
+    /// Value and key locks taken (ADR 0207)
+    value_locks: u64,
+    /// Relations locked in place of their values
+    value_lock_escalations: u64,
+    /// Locks that were not granted at once and were waited for
+    value_lock_waits: u64,
+    /// Time spent waiting for them (nanoseconds)
+    value_lock_wait_ns: u128,
 }
 
 impl QueueMetrics {
@@ -99,6 +107,10 @@ impl QueueMetrics {
             graph_cache_misses: 0,
             table_cache_hits: 0,
             table_cache_misses: 0,
+            value_locks: 0,
+            value_lock_escalations: 0,
+            value_lock_waits: 0,
+            value_lock_wait_ns: 0,
         }
     }
 }
@@ -208,6 +220,25 @@ pub mod metrics_api {
         });
     }
 
+    /// A value or key lock taken (ADR 0207).
+    pub fn record_value_lock() {
+        METRICS.with(|m| m.borrow_mut().value_locks += 1);
+    }
+
+    /// A relation locked in place of its values.
+    pub fn record_value_lock_escalation() {
+        METRICS.with(|m| m.borrow_mut().value_lock_escalations += 1);
+    }
+
+    /// A lock waited for, `ns` long.
+    pub fn record_value_lock_wait(ns: u128) {
+        METRICS.with(|m| {
+            let mut m = m.borrow_mut();
+            m.value_lock_waits += 1;
+            m.value_lock_wait_ns += ns;
+        });
+    }
+
     /// Get current queue statistics
     pub fn get_queue_stats() -> QueueStats {
         // Get current queue size from state
@@ -228,6 +259,10 @@ pub mod metrics_api {
                 graph_cache_misses: metrics.graph_cache_misses,
                 table_cache_hits: metrics.table_cache_hits,
                 table_cache_misses: metrics.table_cache_misses,
+                value_locks: metrics.value_locks,
+                value_lock_escalations: metrics.value_lock_escalations,
+                value_lock_waits: metrics.value_lock_waits,
+                value_lock_wait_ns: metrics.value_lock_wait_ns,
                 direct_patch_captured: dp.captured,
                 direct_patches_applied: dp.applied,
                 direct_patch_fallbacks: dp.fallbacks,
@@ -282,6 +317,11 @@ pub struct QueueStats {
     pub graph_cache_misses: u64,
     pub table_cache_hits: u64,
     pub table_cache_misses: u64,
+    /// Value and key locks taken, escalations, and lock waits (ADR 0207).
+    pub value_locks: u64,
+    pub value_lock_escalations: u64,
+    pub value_lock_waits: u64,
+    pub value_lock_wait_ns: u128,
     /// Session-cumulative direct-patch counters.
     pub direct_patch_captured: u64,
     pub direct_patches_applied: u64,
@@ -300,6 +340,12 @@ impl QueueStats {
     #[allow(clippy::cast_precision_loss)] // Reason: a session's flush time stays far below 2^53 ns
     pub fn total_timing_ms(&self) -> f64 {
         self.total_timing_ns as f64 / 1_000_000.0
+    }
+
+    /// Time spent waiting for value locks, in milliseconds.
+    #[allow(clippy::cast_precision_loss)] // Reason: a transaction's wait time stays far below 2^53 ns
+    pub fn value_lock_wait_ms(&self) -> f64 {
+        self.value_lock_wait_ns as f64 / 1_000_000.0
     }
 
     /// Calculate cache hit rates

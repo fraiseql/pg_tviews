@@ -213,6 +213,7 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
     });
     if escalate {
         relation_lock(relid, space, side, escalated_mode(side));
+        crate::metrics::metrics_api::record_value_lock_escalation();
         return;
     }
     if new.is_empty() {
@@ -230,6 +231,7 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
             policy,
         );
         REGISTRY.with_borrow_mut(|r| r.record(held(hash)));
+        crate::metrics::metrics_api::record_value_lock();
     }
 }
 
@@ -322,7 +324,7 @@ fn column_name(relid: u32, attnum: i16) -> crate::TViewResult<Option<String>> {
 }
 
 /// Acquire `tag` in `mode`: at once, or as `policy` says when another
-/// transaction holds a conflicting lock.
+/// transaction holds a conflicting lock. A wait is counted and timed.
 fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Policy) {
     // SAFETY: a transaction is in progress (a trigger or a flush runs inside one)
     // and the tag is a well-formed advisory tag; the lock belongs to the current
@@ -338,11 +340,15 @@ fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Po
                 "a concurrent transaction refreshes TVIEW rows from rows this write changes"
             }
         }),
-        // SAFETY: as above; waiting honours lock_timeout and deadlock detection,
-        // which raise an ERROR.
-        Policy::Wait | Policy::Skip => unsafe {
-            pg_sys::LockAcquire(tag, mode, false, false);
-        },
+        Policy::Wait | Policy::Skip => {
+            let start = std::time::Instant::now();
+            // SAFETY: as above; waiting honours lock_timeout and deadlock
+            // detection, which raise an ERROR.
+            unsafe {
+                pg_sys::LockAcquire(tag, mode, false, false);
+            }
+            crate::metrics::metrics_api::record_value_lock_wait(start.elapsed().as_nanos());
+        }
     }
 }
 

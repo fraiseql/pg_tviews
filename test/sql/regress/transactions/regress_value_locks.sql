@@ -174,4 +174,33 @@ SELECT must(EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsu
             'the key space''s intent lock is not on objid 1');
 COMMIT;
 
+-- 10. Escalation: past pg_tviews.lock_escalation_threshold values of one relation
+--     a transaction locks the relation instead (0: always, -1: never), and
+--     pg_tviews_queue_stats() counts the locks and escalations of the transaction.
+INSERT INTO tb_user (pk_user, name) SELECT g, 'u' || g FROM generate_series(10, 19) g;
+BEGIN;
+SET LOCAL pg_tviews.lock_escalation_threshold = 4;
+UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
+SELECT must(held('tb_user') = '{relation:ExclusiveLock:1}',
+            'past the threshold, a writer holds ' || held('tb_user')::text);
+SELECT must((pg_tviews_queue_stats()->>'value_lock_escalations')::int >= 1,
+            'no escalation counted: ' || pg_tviews_queue_stats()::text);
+COMMIT;
+BEGIN;
+SET LOCAL pg_tviews.lock_escalation_threshold = 0;
+UPDATE tb_user SET name = name || '.' WHERE pk_user = 10;
+SELECT must(held('tb_user') = '{relation:ExclusiveLock:1}',
+            'at threshold 0, a writer holds ' || held('tb_user')::text);
+COMMIT;
+BEGIN;
+SET LOCAL pg_tviews.lock_escalation_threshold = -1;
+UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
+SELECT must(held('tb_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:10}',
+            'at threshold -1, a writer holds ' || held('tb_user')::text);
+SELECT must((pg_tviews_queue_stats()->>'value_locks')::int >= 10
+            AND (pg_tviews_queue_stats()->>'value_lock_escalations')::int = 0
+            AND (pg_tviews_queue_stats()->>'value_lock_waits')::int = 0,
+            'lock counters: ' || pg_tviews_queue_stats()::text);
+COMMIT;
+
 \echo 'value_locks: PASS'

@@ -94,6 +94,29 @@ they are not server-wide, so do not poll them from a monitoring connection.
 SELECT tviews.pg_tviews_queue_stats();
 ```
 
+### Lock waits between writers
+
+A write waits for a concurrent transaction that writes related rows: the locks are
+in `pg_locks` as advisory locks with `objsubid` 21622 (a join value, or the key of a
+row being created) and 21623 (a relation: its intent and escalated locks), `classid`
+naming the relation ([Concurrency](../concurrency.md)). Who waits for whom:
+
+```sql
+SELECT l.pid, c.relname AS relation,
+       CASE l.objsubid WHEN 21622 THEN 'value' ELSE 'relation' END AS lock,
+       l.mode, l.granted, pg_blocking_pids(l.pid) AS blocked_by
+FROM pg_locks l
+JOIN pg_class c ON c.oid = l.classid
+WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+ORDER BY l.granted, l.pid;
+```
+
+In a session, `pg_tviews_queue_stats()` counts the transaction's `value_locks`,
+`value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`. Many waits on a
+hot value are expected; deadlocks (`40P01`) and, under `REPEATABLE READ`,
+serialization failures (`40001`) are retried by the application.
+
 ## Availability
 
 ```sql
