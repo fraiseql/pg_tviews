@@ -153,6 +153,23 @@ pub fn apply_fanout_patch(
             .collect::<pgrx::spi::Result<_>>()
     })?;
 
+    // REPEATABLE READ: the patch reached every row the latest snapshot holds
+    // with these values (a row it couldn't see would keep the old value).
+    if crate::concurrency::crosscheck::enabled() {
+        let keys: Vec<i64> = rows.iter().map(|(key, _)| *key).collect();
+        let lookup = format!(
+            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t \
+             WHERE t.{qi_lookup} = ANY ($1::pg_catalog.int8[])"
+        );
+        let args = [crate::utils::spi::int8_array(keys)];
+        let found = Spi::connect(|client| {
+            client
+                .select(&lookup, None, &args)?
+                .map(|row| row.get::<String>(1).map(|pk| vec![pk]))
+                .collect::<pgrx::spi::Result<Vec<_>>>()
+        })?;
+        crate::concurrency::crosscheck::discovered_by(&lookup, &args, &found)?;
+    }
     crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);
     for &pk in &changed {
         crate::queue::affected::record(

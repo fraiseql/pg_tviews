@@ -11,12 +11,8 @@ PGHOST=localhost PGPORT=28818 PGUSER=postgres PG_CONFIG=/path/to/pg_config ./tes
 
 `isolation_schedule` lists the specs that run by default. A spec reproducing an
 open defect is kept with the output the fixed behaviour gives and left out of the
-schedule; run it by name:
+schedule, listed here, and run by name. None is open.
 
 Writers wait on each other's value locks (see `docs/concurrency.md`), so a spec
 under `READ COMMITTED` runs only the orders where the session that writes first
 also commits first: the other orders would wait forever in the tester.
-
-| Spec | Defect |
-|---|---|
-| `rr-new-parent-vs-write` | (#207) Under `REPEATABLE READ` a new parent is stale in every order, even when the rename committed before the insert ran: a snapshot can't see what committed after it, however long it waits. |

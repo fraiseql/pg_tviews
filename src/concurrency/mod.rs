@@ -8,6 +8,7 @@
 //! private advisory tag and are held to the end of the transaction. REPEATABLE
 //! READ fails instead of waiting; SERIALIZABLE takes none.
 
+pub mod crosscheck;
 pub mod reads;
 mod registry;
 

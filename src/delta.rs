@@ -478,6 +478,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 for row in client.update(&sql, None, &images)? {
                     keys.extend(key_of(&row, key_type)?);
                 }
+                crosscheck_keys(&sql, &images, &keys)?;
                 Ok::<_, TViewError>(keys)
             })
             .map_err(|e| crate::utils::spi::error(&sql, &e))?;
@@ -710,8 +711,23 @@ fn run_with_transition_tables(
         for row in client.update(sql, None, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
+        crosscheck_keys(sql, &[], &keys)?;
         Ok(keys)
     })
+}
+
+/// REPEATABLE READ: the keys `sql` finds under the latest snapshot are among
+/// `keys`, which it found under the transaction's. Inside the connection that ran
+/// it (it may read transition tables).
+fn crosscheck_keys(sql: &str, args: &[DatumWithOid<'_>], keys: &[KeyValue]) -> TViewResult<()> {
+    if !crate::concurrency::crosscheck::enabled() {
+        return Ok(());
+    }
+    let latest = crate::utils::spi::latest_rows_connected(sql, args)?;
+    let found: Vec<crate::concurrency::crosscheck::TextRow> =
+        keys.iter().map(|k| vec![Some(k.to_string())]).collect();
+    crate::concurrency::crosscheck::discovered(&found, &latest);
+    Ok(())
 }
 
 /// `SELECT DISTINCT (<column>)::text` of the changed rows `delta`, NULLs left out.

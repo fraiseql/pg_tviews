@@ -84,6 +84,8 @@ impl Flush {
         if !recompute.is_empty() {
             self.recompute(entity, recompute)?;
         }
+        // REPEATABLE READ: the rows are what the latest snapshot computes.
+        crate::concurrency::crosscheck::refreshed_rows(&self.meta(entity)?, &values)?;
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
         }

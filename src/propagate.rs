@@ -142,6 +142,7 @@ fn find_affected_keys_batch(
             vec![array(child_pks), array(in_view)]
         };
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
+        let mut found = Vec::new();
         for row in client.update(&query, None, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
@@ -151,9 +152,15 @@ fn find_affected_keys_batch(
                 KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
             };
             if let Some(key) = key {
+                found.push(vec![Some(child_pk.to_string()), Some(key.to_string())]);
                 result.entry(child_pk).or_default().push(key);
             }
         }
-        Ok(result)
+        // REPEATABLE READ: no parent row the latest snapshot holds is missed.
+        if crate::concurrency::crosscheck::enabled() {
+            let latest = crate::utils::spi::latest_rows_connected(&query, &args)?;
+            crate::concurrency::crosscheck::discovered(&found, &latest);
+        }
+        Ok::<_, crate::TViewError>(result)
     })
 }

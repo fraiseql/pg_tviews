@@ -178,3 +178,79 @@ pub fn rows<T>(
 pub fn run_ddl(sql: &str) -> TViewResult<()> {
     super::spi_run_ddl(sql).map_err(|e| error(sql, &e))
 }
+
+/// The rows of the read-only query `sql` as text (`None` for NULL), under the
+/// latest snapshot instead of the transaction's: what a REPEATABLE READ
+/// transaction can't see yet, as PostgreSQL's foreign-key checks read it. The
+/// caller is inside an SPI connection (one that sees a trigger's transition
+/// tables, if the query reads them).
+///
+/// # Errors
+/// Returns an error if the query can't be prepared or doesn't return rows.
+pub fn latest_rows_connected(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> TViewResult<Vec<Vec<Option<String>>>> {
+    let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
+    let mut types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
+    let mut values: Vec<pg_sys::Datum> = args
+        .iter()
+        .map(|a| {
+            a.datum()
+                .map_or_else(|| pg_sys::Datum::from(0), pgrx::datum::Datum::sans_lifetime)
+        })
+        .collect();
+    let nulls: Vec<std::ffi::c_char> = args
+        .iter()
+        .map(|a| if a.datum().is_some() { b' ' } else { b'n' }.cast_signed())
+        .collect();
+    let nargs = i32::try_from(args.len()).map_err(|e| error(sql, &e))?;
+    // SAFETY: the caller holds an SPI connection; every pointer passed lives
+    // until the call returns, and the result is read before the next SPI call.
+    unsafe {
+        let plan = pg_sys::SPI_prepare(src.as_ptr(), nargs, types.as_mut_ptr());
+        if plan.is_null() {
+            return Err(error(
+                sql,
+                &format!("SPI_prepare failed ({})", { pg_sys::SPI_result }),
+            ));
+        }
+        let rc = pg_sys::SPI_execute_snapshot(
+            plan,
+            values.as_mut_ptr(),
+            nulls.as_ptr(),
+            pg_sys::GetLatestSnapshot(),
+            std::ptr::null_mut(),
+            true,
+            false,
+            0,
+        );
+        if rc != pg_sys::SPI_OK_SELECT.cast_signed() {
+            pg_sys::SPI_freeplan(plan);
+            return Err(error(sql, &format!("SPI_execute_snapshot returned {rc}")));
+        }
+        let table = pg_sys::SPI_tuptable;
+        let tupdesc = (*table).tupdesc;
+        let mut rows = Vec::new();
+        for i in 0..usize::try_from(pg_sys::SPI_processed).unwrap_or(0) {
+            let tuple = *(*table).vals.add(i);
+            let mut row = Vec::new();
+            for column in 1..=(*tupdesc).natts {
+                let value = pg_sys::SPI_getvalue(tuple, tupdesc, column);
+                row.push(if value.is_null() {
+                    None
+                } else {
+                    let text = std::ffi::CStr::from_ptr(value)
+                        .to_string_lossy()
+                        .into_owned();
+                    pg_sys::pfree(value.cast());
+                    Some(text)
+                });
+            }
+            rows.push(row);
+        }
+        pg_sys::SPI_freetuptable(table);
+        pg_sys::SPI_freeplan(plan);
+        Ok(rows)
+    }
+}

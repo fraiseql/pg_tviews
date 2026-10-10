@@ -63,15 +63,6 @@ Under `REPEATABLE READ` and `SERIALIZABLE` the rows are not locked first: the wr
 a row another transaction changed since the snapshot fails with `40001` rather than
 store a document computed from that snapshot.
 
-### Known defects
-
-Under `REPEATABLE READ`, a TVIEW row being **created** or **re-linked** while a
-row it reads is changed can be written stale (#207): the transaction's snapshot
-can't see a change committed after it, however long it waits. Reproduced by
-`test/isolation/specs/rr-new-parent-vs-write.spec` (not in the default schedule).
-`READ COMMITTED` and `SERIALIZABLE` are not affected: see
-[ADR 0207](adr/0207-concurrent-maintenance.md).
-
 ## Suspended refresh
 
 `pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`

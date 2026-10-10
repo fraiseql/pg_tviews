@@ -55,7 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   patches, joins several hops away, outer joins to a row inserted concurrently, and
   tables under the `full_refresh` policy. Two transactions creating the same row
   (a child carrying the key in its own row with no foreign key, the first rows of a
-  new group of an aggregate TVIEW) wait for each other on that key.
+  new group of an aggregate TVIEW) wait for each other on that key. Under
+  `REPEATABLE READ`, where such a row was stale in every order (a snapshot can't see
+  what committed after it), one of the transactions now fails with `40001` instead:
+  it never waits for these locks, and checks what it refreshed and what it found
+  against the latest snapshot, as foreign-key checks do.
 - **Concurrent first writes into an UNLOGGED TVIEW no longer fail on a duplicate
   key** (#214), and a TVIEW that is merely empty is no longer refilled from its
   view. pg_tviews told a TVIEW reset by a crash restart or a promotion from an

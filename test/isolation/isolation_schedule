@@ -13,3 +13,4 @@ test: phantom-child-vs-parent
 test: full-refresh-vs-new-parent
 test: local-child-vs-new-parent
 test: aggregate-new-group-vs-write
+test: rr-new-parent-vs-write

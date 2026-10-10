@@ -36,7 +36,7 @@ Placeholders stand for the values each message carries.
 
 | SQLSTATE | Condition | When |
 |---|---|---|
-| `40001` | `t_r_serialization_failure` | Under `REPEATABLE READ`, a write or a refresh needs a value lock a concurrent transaction holds (`a concurrent transaction changes rows this TVIEW refresh reads`, `… refreshes TVIEW rows from rows this write changes`): waiting could not make the transaction's snapshot see the other's change. Retry the transaction. |
+| `40001` | `t_r_serialization_failure` | Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a concurrent transaction holds (`a concurrent transaction changes rows this TVIEW refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting could not make the snapshot see the other's change; or the latest snapshot shows what the transaction's missed (`a TVIEW row this transaction refreshed changed in a concurrent transaction`, `a concurrent transaction added rows this write must refresh`). Retry the transaction. |
 | `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger): the commit fails. |
 | `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). |
 | `42501` | `insufficient_privilege` | The caller neither owns the TVIEW (or is a member of its owner) nor owns the extension. |
