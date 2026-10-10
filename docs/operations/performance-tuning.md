@@ -182,9 +182,8 @@ Bulk statements are handled by the statement-level trigger every TVIEW has:
 Strategic indexing for TVIEW query patterns:
 
 ```sql
--- Primary lookup indexes
-CREATE UNIQUE INDEX CONCURRENTLY idx_tv_post_id ON tv_post(id);
-CREATE INDEX CONCURRENTLY idx_tv_post_user_id ON tv_post(user_id);
+-- Primary lookup indexes (id, UUID FKs such as user_id) come with the TVIEW:
+-- tviews.registry.managed_indexes lists them, and their names are pg_tviews'.
 
 -- JSONB field indexes for common queries
 CREATE INDEX CONCURRENTLY idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));

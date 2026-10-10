@@ -48,9 +48,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A definition is exactly one SELECT** (42601). A second statement after the
   SELECT was accepted and run.
 - `CREATE TABLE tv_* AS` accepts a comment before the statement.
+- **pg_tviews' index names on a TVIEW are its own** (#219). A user's `CREATE INDEX`
+  or `ALTER INDEX … RENAME TO` on a TVIEW's table under a name pg_tviews uses there
+  (`idx_<tv>_id`, `idx_<tv>_<fk>_<pk>`, `idx_<tv>_data_gin`…) is refused with
+  `42939` (`reserved_name`): pg_tviews' `CREATE INDEX IF NOT EXISTS` would otherwise
+  find the user's index in its place. The statements
+  `pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand, are
+  still accepted, and the index is pg_tviews'.
+- **A `rebuilt` replace refuses while a user index on the TVIEW is invalid** (#219),
+  naming it (`55000`), before it drops anything. A UNIQUE index left invalid by a
+  failed `CREATE UNIQUE INDEX CONCURRENTLY` was re-created valid on the empty table,
+  and the fill then failed on the duplicates, naming only the constraint.
 
 ### Fixed
 
+- **`pg_tviews_create_or_replace()` no longer drops a user's index** (#218). A
+  `rebuilt` replace left out a user index named `idx_<tv>_data_gin` on a TVIEW without
+  pg_tviews' GIN, and turning `data_gin_index` off dropped every GIN index on `data`.
+  pg_tviews now records the indexes it creates and removes or leaves out only those.
+  `options.data_gin_index` in `tviews.registry` reports pg_tviews' GIN index, so a
+  user's GIN index on `data` no longer reads as the option being on (the key's
+  documented meaning was the option; `contract_version()` stays 1).
 - **Concurrent writes no longer leave TVIEW rows stale under READ COMMITTED**
   (#207). A transaction creating or re-linking a TVIEW row (a new post, a post
   pointed at another user) while another changes a row it reads (its author's
@@ -255,6 +273,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tviews.registry.managed_indexes regclass[]`** (#219, appended; `contract_version()`
+  stays 1): the indexes pg_tviews created on the TVIEW's table and still owns,
+  sorted by name, without the primary key; NULL when the table is gone. A TVIEW's
+  user indexes are every other index on its table that backs no constraint. Renames
+  and drops of these indexes are followed, and
+  `pg_tviews_ensure_propagation_indexes()` records the indexes it creates.
 - `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
   on one relation before it locks the relation instead, so a bulk write never
   exhausts the shared lock table (0 always locks relations, -1 never does).
@@ -400,6 +424,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
+- `ALTER EXTENSION pg_tviews UPDATE` (and `scripts/migrate-from-0.1.0.sql`) records,
+  for each TVIEW, the indexes that are exactly those pg_tviews creates, under their
+  names, as pg_tviews' (`tviews.registry.managed_indexes`). Any other index on a
+  TVIEW's table is the user's, including one under such a name with another
+  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say).
 - `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
   every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
   from its view by its next write, once (nothing to do when its view is empty too).
