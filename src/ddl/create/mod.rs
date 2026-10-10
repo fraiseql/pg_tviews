@@ -12,10 +12,26 @@ use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,
 };
-#[cfg(any(test, feature = "pg_test"))]
+#[cfg(test)]
 mod tests;
 
+thread_local! {
+    /// Set by [`without_rows`]: the TVIEW is created empty.
+    static WITHOUT_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `create` with the new TVIEW's table left empty: a rebuild by a role that
+/// is not the TVIEW's owner fills it as the owner once the owner is restored,
+/// so the owner's view functions never run with the caller's privileges.
+pub(crate) fn without_rows<T>(create: impl FnOnce() -> T) -> T {
+    WITHOUT_ROWS.with(|w| w.set(true));
+    let result = create();
+    WITHOUT_ROWS.with(|w| w.set(false));
+    result
+}
+
 pub use select::ViewColumns;
+pub(crate) use select::check_one_select;
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
@@ -127,8 +143,10 @@ fn checked_definition(
         .clone()
         .ok_or_else(|| TViewError::RequiredColumnMissing {
             column_name: format!("pk_{named}"),
-            context: "pg_tviews requires a Trinity Pattern primary key column named                       \"pk_<entity>\" (e.g., pk_user, pk_post)"
-                .to_string(),
+            context: format!(
+                "the definition of tv_{named}: a TVIEW's definition outputs a pk_<entity> \
+                 column, the first of which names the entity"
+            ),
         })?;
     // The entity comes from a column alias of the definition: it names objects.
     crate::validation::validate_sql_identifier(&entity, "entity_name")?;
@@ -224,8 +242,13 @@ fn create_tview_inner(
         view_oid,
     )?;
 
-    // Populate initial data
-    let rows = populate_initial_data(&tv_table_name, &schema_name, view_oid)?;
+    // Populate initial data, unless the caller fills the table itself as its
+    // owner (a rebuild by another role).
+    let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
+        0
+    } else {
+        populate_initial_data(&tv_table_name, &schema_name, view_oid)?
+    };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
     // table. Any table it reads, whatever it is called, maps its writes
@@ -256,24 +279,19 @@ fn create_tview_inner(
     // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(relation_oid(&schema_name, &tv_table_name)?), false)?;
 
-    // Install triggers on base tables, as their lineage needs them.
-    if derivation.base_tables.is_empty() {
-        warning!("No base table dependencies found for {}", tv_table_name);
-    } else {
-        crate::dependency::install_triggers(
-            &crate::dependency::trigger_plan(&derivation.base_tables, lineage)?,
-            entity_name,
-        )?;
-    }
+    // Install triggers on the tables it reads, as their lineage needs them: base
+    // tables, and other TVIEWs' tables it maps like them.
+    crate::dependency::install_triggers(
+        &crate::dependency::trigger_plan(&derivation.base_tables, lineage),
+        entity_name,
+    )?;
 
     // Invalidate caches since new TVIEW was created
     crate::cache::invalidate_all();
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_create(entity_name, &final_select_sql);
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        warning!("Failed to flush audit after CREATE: {}", e);
-    }
+    crate::audit::flush_audit_buffer()?;
 
     Ok(rows)
 }
@@ -291,7 +309,7 @@ pub fn reregister_metadata(
     schema_name: &str,
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name)
         .map_err(|e| TViewError::CatalogError {
             operation: format!("Read the metadata of tv_{entity_name}"),
             pg_error: e.to_string(),
@@ -333,7 +351,10 @@ pub fn reregister_metadata(
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();
-    crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage)
+    Ok(crate::dependency::trigger_plan(
+        &derivation.base_tables,
+        &derivation.lineage,
+    ))
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
@@ -343,13 +364,14 @@ pub fn reregister_metadata(
 /// Returns an error if the TVIEW is not registered, the caller does not own it,
 /// or the definition cannot be analyzed.
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
-    super::lock_entity(entity)?;
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+    // Ownership first: a role that may not re-register the TVIEW takes no lock.
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity)?.ok_or_else(|| {
         TViewError::MetadataNotFound {
             entity: entity.to_string(),
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    super::lock_entity(entity)?;
     let (definition, schema_name) = Spi::connect(|client| {
         let args = [crate::utils::spi::text(entity)];
         client

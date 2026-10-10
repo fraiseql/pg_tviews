@@ -307,9 +307,14 @@ pub(crate) fn create_materialized_table(
         columns.push(format!("{} JSONB", quote_identifier(data)));
     }
 
-    // Foreign key columns (for lineage tracking)
+    // fk_* columns: the type the definition gives them.
     for fk in &schema.fk {
-        columns.push(format!("{} BIGINT{}", quote_identifier(fk), key(fk)));
+        columns.push(format!(
+            "{} {}{}",
+            quote_identifier(fk),
+            view_type(fk, "BIGINT"),
+            key(fk)
+        ));
     }
 
     // UUID foreign key columns (for filtering): a column named `*_id` may be TEXT.

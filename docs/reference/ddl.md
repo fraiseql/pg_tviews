@@ -1,257 +1,181 @@
 # DDL Reference
 
-Complete reference for TVIEW creation and management with FraiseQL patterns.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
+Creating, changing and dropping TVIEWs, and what a definition may contain.
 
 ## Overview
 
-pg_tviews provides transactional materialized views through DDL and SQL functions. TVIEWs follow FraiseQL's trinity identifier pattern and CQRS architecture.
+A TVIEW is a table `tv_<entity>` kept equal to its definition, a single `SELECT`, by
+triggers on the tables the definition reads. pg_tviews reads the definition from
+PostgreSQL's query tree ([ADR 0157](../adr/0157-cascade-key-mapping.md), [ADR
+0203](../adr/0203-propagation-plan.md)): what each base table's writes refresh is
+derived from the joins and conditions as PostgreSQL analyzed them, not from table or
+column names.
 
 ## Creating TVIEWs
 
-### DDL Method: CREATE TABLE tv_* AS SELECT
+### `CREATE TABLE tv_<entity> AS SELECT`
 
-**Syntax**:
 ```sql
 CREATE TABLE tv_<entity> AS
 SELECT
-    <pk_column> as pk_<entity>,  -- Required: lineage root
-    <uuid_column> as id,         -- Optional: GraphQL ID
-    <other_columns>,             -- Optional: cascade FKs, filtering FKs
-    <jsonb_data> as data         -- Required: JSONB read model
-FROM tb_<entity> t
-[LEFT JOIN tb_<related> r ON ...]
-[WHERE ...]
-[GROUP BY ...];
+    <key>       AS pk_<entity>,  -- required: names the TVIEW's rows
+    <columns>,                   -- optional: any other columns
+    <jsonb>     AS data          -- optional: the JSONB read model
+FROM <tables> …;
 ```
 
-**Note**: The ProcessUtility hook automatically intercepts `CREATE TABLE tv_* AS SELECT` statements and converts them to TVIEW creation. This provides DDL-like syntax for TVIEW creation.
+The `ProcessUtility` hook turns the statement into a TVIEW, also inside a `DO` block,
+a function or a multi-statement batch. It needs the library loaded in the session
+(`shared_preload_libraries`); a `tv_*` CTAS that reaches the server without being
+intercepted fails, naming the table, instead of leaving a plain table behind. Forms
+pg_tviews cannot turn into a TVIEW (`WITH NO DATA`, a temporary table, a column list,
+`TABLESPACE`, …) fail with SQLSTATE `0A000` ([error reference](../error-reference.md)).
 
-### Function Method: pg_tviews_create()
-
-**Syntax**:
-```sql
-SELECT pg_tviews_create('tv_<entity>', '
-SELECT
-    <pk_column> as pk_<entity>,  -- Required: lineage root
-    <uuid_column> as id,         -- Optional: GraphQL ID
-    <other_columns>,             -- Optional: cascade FKs, filtering FKs
-    <jsonb_data> as data         -- Required: JSONB read model
-FROM tb_<entity> t
-[LEFT JOIN tb_<related> r ON ...]
-[WHERE ...]
-[GROUP BY ...]
-');
-```
-
-**Note**: This is the programmatic approach that can be used in scripts and applications.
-
-### FraiseQL Naming Conventions
-
-Following FraiseQL patterns:
-
-- **TVIEW name**: `tv_<entity>` (e.g., `tv_post`, `tv_user`)
-- **Source tables**: `tb_<entity>` (e.g., `tb_post`, `tb_user`)
-- **Backing view**: `tviews.<schema>__tv_<entity>` (automatically created in
-  pg_tviews' own schema, named after the TVIEW's table and fitted to 63 bytes;
-  `tviews.registry.view` reports it). The application's own `v_<entity>` view is
-  left alone: a TVIEW can materialize it (`pg_tviews_create('tv_order', 'SELECT * FROM
-  v_order')`) or read views that read it. Its privileges follow the TVIEW's table:
-  whoever can `SELECT` from `tv_<entity>` can `SELECT` from it (see
-  [Privileges](#privileges))
-- **Embedding another TVIEW**: read its table `tv_<entity>` (`JOIN tv_user u ON
-  u.pk_user = p.fk_user`). Any other read of another TVIEW's table, directly or
-  through views, is traced like a read of a base table: a view aggregating
-  `tv_line` by `order_id`, joined on `order_id = o.id`, or a correlated subquery on
-  a column other than its key. A refresh of the inner TVIEW then refreshes the rows
-  of this one it reaches, in the same flush; a read nothing links to the key goes
-  through the `uncascaded_policy`
-- **Entity name**: Derived from TVIEW name by removing `tv_` prefix
-
-### Required Columns
-
-#### Primary Key Column (`pk_<entity>`)
-
-Every TVIEW must have exactly one primary key column named `pk_<entity>`:
+### `pg_tviews_create()` and `pg_tviews_create_or_replace()`
 
 ```sql
--- Correct: Follows trinity pattern
-SELECT p.pk_post as pk_post, ... FROM tb_post p
-
--- Incorrect: Wrong name
-SELECT tb_post.id as pk_post, ... FROM tb_post  -- ERROR: not lineage root
-
--- Incorrect: Wrong type
-SELECT tb_post.id::bigint as pk_post, ... FROM tb_post  -- ERROR: not original PK
+SELECT tviews.pg_tviews_create('tv_<entity>', $$ SELECT … $$);            -- returns text
+SELECT tviews.pg_tviews_create_or_replace('tv_<entity>', $$ SELECT … $$,
+                                          options => '{}');               -- created | unchanged | altered | replaced | rebuilt
 ```
 
-**Requirements**:
-- Must be named `pk_<entity>` where `<entity>` matches TVIEW name
-- Must be the actual primary key from source table (no casting)
-- Used for lineage tracking and cascade propagation
+`pg_tviews_create_or_replace()` is the one tools should call: it creates the TVIEW, or
+makes the smallest change to an existing one, and takes the options below
+(`logged`, `fillfactor`, `data_gin_index`, `group_keys`, `uncascaded_policy`,
+`uncascaded_tables`, `function_reads`, `time_refresh`). Its contract is in
+[Contract for tools](read-contract.md#tviewspg_tviews_create_or_replace).
+`CREATE TABLE … AS` and `pg_tviews_create()` take no options: they read the settings
+`pg_tviews.uncascaded_policy`, `pg_tviews.time_refresh`,
+`pg_tviews.unlogged_by_default`, `pg_tviews.fillfactor` and
+`pg_tviews.data_gin_index`.
 
-#### JSONB Data Column (`data`)
+A name that already exists fails with `42P07`; a definition that is not exactly one
+`SELECT` with `42601`.
 
-Every TVIEW must have exactly one JSONB column named `data`:
+### Naming
 
-```sql
--- Correct: JSONB read model
-jsonb_build_object(
-    'id', p.id,
-    'title', p.title,
-    'author', jsonb_build_object('id', u.id, 'name', u.name)
-) as data
+The only naming rule is the key column. The definition outputs a column
+`pk_<entity>`; the first `pk_*` column names the entity, and the TVIEW's table is
+`tv_<entity>`. `pg_tviews_create('tv_post', …)` and `pg_tviews_create('post', …)` name
+the same TVIEW; a name that does not match the key fails (`TVIEW tv_foo does not match
+its definition, which is keyed on pk_post`, SQLSTATE `22023`).
 
--- Incorrect: Wrong type
-jsonb_build_object(...)::text as data  -- ERROR: not JSONB
+Nothing else is matched by name:
 
--- Incorrect: Wrong name
-jsonb_build_object(...) as json_data  -- ERROR: not named 'data'
-```
+- base tables may have any name (`orders`, not only `tb_order`);
+- the columns that link tables may have any name: a write is mapped through the join
+  conditions themselves;
+- a TVIEW whose rows are another table's is accepted (`pk_order_summary` over
+  `tb_order`);
+- the column holding an embedded TVIEW's key may have any name (`author_pk`, below).
 
-**Best Practices**:
-- Include all GraphQL-required fields
-- Use nested objects for relationships
-- Include UUIDs for GraphQL filtering
-- Add computed fields as needed
+FraiseQL's trinity identifiers (`id` UUID, `pk_<entity>`, `identifier`, and
+`<parent>_id`) are a convention that fits pg_tviews, not a requirement.
 
-### Optional Columns
+A TVIEW's rows are named by `pk_<entity>`, which is its table's primary key. A
+`DISTINCT ON` TVIEW's rows are named by its `DISTINCT ON` key instead ([ADR
+0169](../adr/0169-tview-row-identity.md)); `tviews.registry.identity` reports the
+column.
 
-#### Trinity Identifiers
+**Backing view.** The definition is stored as a view `tviews.<schema>__tv_<entity>`
+(in pg_tviews' own schema, named after the TVIEW's table and fitted to 63 bytes;
+`tviews.registry.view` reports it). The application's own views are left alone: a
+TVIEW can materialize one (`pg_tviews_create('tv_order', 'SELECT * FROM v_order')`) or
+read views that read it. Whoever can `SELECT` from `tv_<entity>` can `SELECT` from the
+backing view (see [Privileges](#privileges)).
 
-Following FraiseQL's trinity pattern:
-
-```sql
-SELECT
-    p.pk_post as pk_post,        -- Required: lineage root
-    p.id as id,                  -- Optional: GraphQL ID (UUID)
-    p.identifier as identifier,  -- Optional: SEO slug (text)
-    p.fk_user as fk_user,        -- Optional: cascade FK (integer)
-    u.id as user_id,             -- Optional: filtering FK (UUID)
-    jsonb_build_object(...) as data
-FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
-```
-
-#### Cascade Foreign Keys
-
-Include all foreign keys used for cascade propagation:
-
-```sql
--- Include FKs for automatic cascade updates
-SELECT
-    p.pk_post,
-    p.fk_user,        -- Enables user → post cascades
-    p.fk_category,    -- Enables category → post cascades
-    jsonb_build_object(...) as data
-FROM tb_post p;
-```
-
-#### Filtering Foreign Keys
-
-Include UUID FKs for efficient GraphQL filtering:
-
-```sql
--- Include UUID FKs for WHERE clauses
-SELECT
-    p.pk_post,
-    u.id as user_id,        -- Filter posts by user UUID
-    c.id as category_id,    -- Filter posts by category UUID
-    jsonb_build_object(...) as data
-FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user
-JOIN tb_category c ON p.fk_category = c.pk_category;
-```
-
-### Complete Examples
-
-#### Simple TVIEW
-
-```sql
-CREATE TABLE tv_user AS
-SELECT
-    u.pk_user as pk_user,
-    u.id,
-    u.identifier,
-    u.name,
-    jsonb_build_object(
-        'id', u.id,
-        'identifier', u.identifier,
-        'name', u.name,
-        'email', u.email,
-        'created_at', u.created_at
-    ) as data
-FROM tb_user u;
-```
-
-#### Complex TVIEW with Relationships
+**Embedding another TVIEW.** Read its table and join it on its key; the column that
+holds the key may have any name:
 
 ```sql
 CREATE TABLE tv_post AS
-SELECT
-    p.pk_post as pk_post,
-    p.id,
-    p.identifier,
-    p.fk_user,
-    u.id as user_id,
-    jsonb_build_object(
-        'id', p.id,
-        'identifier', p.identifier,
-        'title', p.title,
-        'content', p.content,
-        'created_at', p.created_at,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'identifier', u.identifier,
-            'name', u.name
-        ),
-        'comments', COALESCE(
-            jsonb_agg(
-                jsonb_build_object(
-                    'id', c.id,
-                    'text', c.text,
-                    'author', jsonb_build_object('id', cu.id, 'name', cu.name)
-                )
-            ) FILTER (WHERE c.id IS NOT NULL),
-            '[]'::jsonb
-        )
-    ) as data
+SELECT p.pk_post, p.id, p.author AS author_pk,
+       jsonb_build_object('title', p.title, 'author', u.data) AS data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user
-LEFT JOIN tb_comment c ON c.fk_post = p.pk_post
-LEFT JOIN tb_user cu ON c.fk_user = cu.pk_user
-GROUP BY p.pk_post, p.id, p.identifier, p.title, p.content,
-         p.created_at, p.fk_user, u.id, u.identifier, u.name;
+JOIN tv_user u ON u.pk_user = p.author;
 ```
 
-### What Happens During TVIEW Creation
+`tv_user` is then `propagated` in `tviews.registry.cascade_kinds`: a refresh of
+`tv_user` refreshes the posts that embed it, in the same flush. Any other read of
+another TVIEW's table, directly or through views (a view aggregating `tv_line` by
+`order_id`, a correlated subquery on a column other than its key), is traced like a
+read of a base table; a read nothing links to the key goes through the
+`uncascaded_policy`.
 
-1. **SQL Analysis**: Parses SELECT statement to identify dependencies
-2. **Schema Inference**: Determines column types and relationships
-3. **Backing View Creation**: Creates `tviews.<schema>__tv_<entity>` with your SELECT,
-   owned by you
-4. **Materialized Table Creation**: Creates `tv_<entity>` table
-5. **Trigger Installation**: Sets up triggers on all source tables
-6. **Initial Population**: Fills TVIEW with current data
-7. **Metadata Registration**: Records TVIEW in system catalogs
+### Columns
 
-**Column types.** Every column of `tv_<entity>` has the type of the backing view's
-column, typmod included: an enum, a domain, a composite, an array of them, a type in
-another schema, `varchar(5)`, `numeric(6,2)`, `bit(4)`. Only the convention columns
-have fixed types: `pk_<entity>` and `fk_*` are `BIGINT`, `id` is `UUID`, `data` is
-`JSONB`. A TVIEW created before 0.1.0-beta.21 stored enums, domains and composites as
-`text` and dropped typmods; it keeps those types until
-`pg_tviews_create_or_replace()` is run with its definition, which converts each such
-column in place and returns `altered`.
+Every column of `tv_<entity>` has the type of the backing view's column, typmod
+included (an enum, a domain, a composite, an array, `varchar(5)`, `numeric(6,2)`),
+except columns whose names give them a fixed type:
+
+| Column | Type | Notes |
+|---|---|---|
+| `pk_<entity>` (the first `pk_*`) | `bigint` | the primary key, unless the TVIEW is `DISTINCT ON`; its values must be integers |
+| `id` | `uuid` | `NOT NULL`, indexed |
+| `data` | `jsonb` | optional |
+| `fk_*` | `bigint` | indexed with `pk_<entity>` |
+| `*_id` | the view's type | indexed |
+
+The table's columns come in this order: `pk_<entity>`, `id`, `identifier`, `data`,
+`fk_*`, `*_id`, then the others in definition order; pg_tviews adds `created_at` and
+`updated_at` (`timestamptz`). Name columns in queries rather than relying on
+`SELECT *` order.
+
+A definition with no `pk_*` column is rewritten to the shape `pk_<entity>, id, data`:
+its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, `id`
+is generated, and every column goes into `data` under its own name. With none of
+these, it fails (`no column to key the rows on`, `42601`). `tviews.registry.query`
+shows the definition as stored.
+
+The table is `UNLOGGED` unless `pg_tviews.unlogged_by_default` is off or the
+`logged` option is set; its fillfactor is `pg_tviews.fillfactor` (85) unless the
+`fillfactor` option is set.
 
 Because the backing view's columns depend on their types, `DROP TYPE … CASCADE` of a
 type the view returns drops the view, and pg_tviews then drops the whole TVIEW (its
 table, triggers and registration), as when a base table is dropped with `CASCADE`.
 
-### Supported SQL Features
+### Example
 
-#### ✅ Supported
+```sql
+CREATE TABLE tv_post AS
+SELECT
+    p.pk_post,
+    p.id,
+    p.fk_user,
+    u.id AS user_id,
+    jsonb_build_object(
+        'id', p.id,
+        'title', p.title,
+        'author', jsonb_build_object('id', u.id, 'name', u.name),
+        'comments', COALESCE(
+            (SELECT jsonb_agg(jsonb_build_object('id', c.id, 'text', c.text)
+                              ORDER BY c.pk_comment)
+             FROM tb_comment c WHERE c.fk_post = p.pk_post),
+            '[]'::jsonb)
+    ) AS data
+FROM tb_post p
+JOIN tb_user u ON u.pk_user = p.fk_user;
+```
+
+### What happens during creation
+
+1. PostgreSQL parses and analyzes the definition (exactly one `SELECT`), under the
+   caller's `search_path`; `SELECT *` is written out with its columns.
+2. The backing view `tviews.<schema>__tv_<entity>` is created, owned by the caller.
+3. pg_tviews reads the view's query tree: the column that names the rows, and how a
+   write to each table it reads maps to those rows. Definitions it cannot maintain
+   are refused here, before anything else is created.
+4. The table `tv_<entity>` is created and filled from the view.
+5. The TVIEW is registered in `tviews.pg_tview_meta`, with what step 3 derived stored
+   as one propagation plan (`plan`); tools read it through `tviews.registry`
+   ([Contract for tools](read-contract.md)).
+6. Triggers are installed on the tables the definition reads (see
+   [Triggers](#triggers)).
+
+All of it happens in the caller's transaction: a rollback leaves nothing behind.
+
+### Supported SQL features
 
 - **JOINs**: INNER, LEFT, RIGHT, FULL OUTER
 - **Aggregations**: GROUP BY, HAVING, jsonb_agg(), array_agg()
@@ -364,8 +288,9 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
     leaves its old group and joins the new one, and a statement writing several
     groups refreshes each of them. The refresh filters on the key with its type, so
     PostgreSQL reaches the base table's index through the `DISTINCT ON`.
-  - `pk_<entity>` is still required: parents embed the TVIEW through
-    `fk_<entity> = pk_<entity>`, and they follow the winning row when it changes.
+  - `pk_<entity>` is still required: it names the entity. It is an ordinary column
+    here and may repeat; parents that embed the TVIEW join its table on it and follow
+    the winning row when it changes.
   - Refused at create: a composite key (`DISTINCT ON (a, b)`: a TVIEW row is one
     entity with one key; model "one row per (a, b)" as an entity of its own), and a
     key that is an expression, or a column not projected that no projected column
@@ -378,9 +303,21 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
   computing the column from its expression over the changed rows, and the direct
   and fan-out patches never copy a virtual column or one of its inputs.
 
-#### ❌ Not Supported
+### Refused definitions
 
-- **Self-Joins**: May cause dependency cycles
+A definition is refused, nothing created, when:
+
+- it is not exactly one `SELECT` (`42601`);
+- it has no column to key the rows on, or its key does not match the TVIEW's name
+  (above);
+- its `DISTINCT ON` key is composite, an expression, or not projected (`0A000`);
+- it would make TVIEWs read each other in a cycle (`42P17`), or nests views deeper
+  than `pg_tviews.max_dependency_depth` (10; `54001`);
+- it reads a table no cascade reaches, calls a function that may read tables, or reads
+  the current time, without declaring what to do about it (`22023`; see the next
+  sections).
+
+The [error reference](../error-reference.md) lists every SQLSTATE.
 
 ### How a write finds the TVIEW rows to refresh
 
@@ -408,7 +345,7 @@ NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of 
          make them cheaper
 ```
 
-`tviews.pg_tviews_mapping_query('tv_order', 'tb_sku')` returns the query.
+`tviews.pg_tviews_mapping_query('tv_order', 'tb_sku'::regclass)` returns the query.
 
 The triggers follow the kind of each table:
 
@@ -490,10 +427,11 @@ ERROR:  writes to public.tb_flag would not refresh public.tv_report (read in a s
         condition linking it to the TVIEW key): declare what such a write does with the TVIEW's
         uncascaded_policy
 HINT:  To refresh public.tv_report in full on such writes: pg_tviews_create_or_replace(
-       'public.tv_report', <definition>, options => '{"uncascaded_policy": "full_refresh"}');
-       before CREATE TABLE … AS or pg_tviews_create(): SET pg_tviews.uncascaded_policy =
-       'full_refresh'. "warn" accepts stale rows instead. Or join the tables on a column
-       pg_tviews can trace.
+       'public.tv_report', <definition>, options => '{"uncascaded_tables":
+       {"public.tb_flag": "full_refresh"}}'), or for the whole TVIEW '{"uncascaded_policy":
+       "full_refresh"}'; before CREATE TABLE … AS or pg_tviews_create(): SET
+       pg_tviews.uncascaded_policy = 'full_refresh'. "warn" accepts stale rows instead. Or
+       join the tables on a column pg_tviews can trace.
 ```
 
 Declare it with the TVIEW:
@@ -515,9 +453,10 @@ RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
 Changing the option of an existing TVIEW with `pg_tviews_create_or_replace()` is an
 `altered` change: the policy is stored and the TVIEW re-registered, with no rebuild.
 
-`full_refresh` recomputes every row of the TVIEW: on a 100 000-row TVIEW that is about
-a second per flush that wrote to such a table. Use it for small TVIEWs, or rewrite the
-definition so that the table is joined on a column pg_tviews can trace.
+`full_refresh` recomputes every row of the TVIEW on each flush that wrote to such a
+table, so its cost grows with the TVIEW. Use it for small TVIEWs or small reference
+tables ([a policy per table](#a-policy-per-table)), or rewrite the definition so that
+the table is joined on a column pg_tviews can trace.
 
 #### A policy per table
 
@@ -653,12 +592,6 @@ SELECT count(*) FROM (TABLE tv_event EXCEPT SELECT … ) d;
 COMMIT;
 ```
 
-### Limitations
-
-- **Dependency Depth**: Performance degrades with >5 cascade levels
-- **Circular Dependencies**: Automatically detected and rejected
-- **Column Name Conflicts**: Must resolve ambiguous column names
-
 ## Privileges
 
 A TVIEW's table is an ordinary table: grant on it as on any other. Its backing view,
@@ -677,54 +610,31 @@ in `tviews`, follows it:
 
 `USAGE` on `tviews` is granted to `PUBLIC` by the extension.
 
-## DROP TABLE tv_*
+Creating a TVIEW needs `CREATE` on its schema, `SELECT` on what the definition reads
+and `TRIGGER` on each base table. Replacing, dropping, refreshing or re-registering a
+TVIEW requires owning it (or being a member of its owner, or of the extension's
+owner), otherwise `42501`. The maintenance functions that act on every TVIEW are not
+executable by `PUBLIC` ([Operator role](../user-guides/operators.md#operator-role)).
 
-### Syntax
+## DROP TABLE tv_*
 
 ```sql
 DROP TABLE [IF EXISTS] tv_<entity> [CASCADE];
+-- or
+SELECT tviews.pg_tviews_drop('tv_<entity>', if_exists => true, cascade => false);
 ```
 
-### Examples
+Dropping a TVIEW's table removes its triggers, its backing view and its registration
+with it.
+
+A TVIEW that another TVIEW reads cannot be dropped alone: the other TVIEW's backing
+view depends on its table, and PostgreSQL refuses (`cannot drop table tv_user because
+other objects depend on it`). Drop the readers first, or use `CASCADE`, which drops
+every TVIEW that reads it too. To list them:
 
 ```sql
--- Drop a TVIEW
-DROP TABLE tv_post;
-
--- Safe drop (no error if doesn't exist)
-DROP TABLE IF EXISTS tv_missing;
-
--- Drop with CASCADE (drops dependent objects)
-DROP TABLE tv_post CASCADE;
-```
-
-### What Happens During DROP TABLE tv_*
-
-1. **Trigger Removal**: Uninstalls all triggers for this TVIEW
-2. **Backing View Drop**: Removes its backing view in `tviews`
-3. **Materialized Table Drop**: Removes `tv_<entity>` table
-4. **Metadata Cleanup**: Removes entry from system catalogs
-5. **Dependency Check**: Fails if other TVIEWs depend on this one
-
-### Cascade Behavior
-
-**CASCADE behavior**: PostgreSQL's standard CASCADE option is supported.
-
-**Drop dependent TVIEWs first** (without CASCADE):
-
-```sql
--- Find dependent TVIEWs (manual inspection for now)
--- Look for TVIEWs that reference this entity in their SELECT
-
--- Drop in reverse dependency order
-DROP TABLE tv_post_comments;  -- Depends on tv_post
-DROP TABLE tv_post;           -- Can now be dropped
-```
-
-**Or use CASCADE** (drops all dependents automatically):
-
-```sql
-DROP TABLE tv_post CASCADE;  -- Drops tv_post and all dependent TVIEWs
+SELECT schema, name FROM tviews.registry
+WHERE 'public.tv_user'::regclass = ANY (base_tables);
 ```
 
 **Dropped with something else.** A TVIEW whose table goes as a dependent of another
@@ -741,102 +651,63 @@ need). A backing view left by a drop in a session that never loaded the library 
 `shared_preload_libraries`) is dropped by the next `pg_tviews_create()` of that
 TVIEW, with a NOTICE, when no TVIEW is registered with it and nothing depends on it.
 
-## ALTER TVIEW
+## Changing a TVIEW
 
 Change a TVIEW's definition or storage with `pg_tviews_create_or_replace()`, which makes
-the smallest change (`altered`, `replaced` in place, or `rebuilt`):
+the smallest change (`unchanged`, `altered`, `replaced` in place, or `rebuilt`):
 
 ```sql
-SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT ... -- new definition $$);
+SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT … $$);
 ```
+
+A column rename on a table or view the definition reads (`ALTER TABLE tb_post RENAME
+COLUMN title TO headline`) is followed: the stored definition and plan are rewritten
+with the new name. Do not rename the columns of `tv_<entity>` itself: the definition
+still outputs the old name, and the next write to a base table fails. Rename the
+column in the definition with `pg_tviews_create_or_replace()` instead.
 
 ## Triggers
 
-Creating a TVIEW installs, on each table its definition reads, a row-level trigger
-(`tviews.pg_tview_trigger_handler`) that queues the affected keys, and a
-statement-level trigger (`tviews.pg_tview_flush_trigger`) that refreshes them once per
-statement. Nothing needs installing by hand. `tviews.pg_tviews_health_check()`
-reports missing or orphaned triggers; `SELECT * FROM tviews.pg_tviews_reregister_all()`
-re-installs any that are missing.
+Creating a TVIEW installs triggers on each table its definition reads, by the table's
+kind in `tviews.registry.cascade_kinds` (see [How a write finds the TVIEW rows to
+refresh](#how-a-write-finds-the-tview-rows-to-refresh)):
+
+| Kind | Triggers |
+|---|---|
+| `local` | a row trigger (`tviews.pg_tview_trigger_handler`) that queues the keys of each changed row |
+| `mapped`, `all_keys` | three statement triggers with transition tables (`tviews.pg_tview_delta_trigger`, one per `INSERT`, `UPDATE`, `DELETE`) |
+| `propagated` | none |
+
+Every table but a `propagated` one also gets a statement-level flush trigger
+(`tviews.pg_tview_flush_trigger`), which refreshes the queued keys at the end of each
+statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`). They
+are named `trg_tview_<role>_<entity>_on_<schema>_<table>`, one set per TVIEW. Nothing
+needs installing by hand: `tviews.pg_tviews_health_check()` reports missing or orphaned
+triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs them.
+
+A commit with refresh work still queued (a flush trigger dropped or disabled) fails
+with `55000`; a write whose row trigger cannot tell what to refresh (a plan that does
+not decode) fails naming the TVIEW, with the `pg_tviews_reregister` hint.
 
 ## Troubleshooting
 
-### TVIEW Creation Errors
+| Error | SQLSTATE | Fix |
+|---|---|---|
+| `TVIEW tv_foo does not match its definition, which is keyed on pk_post` | `22023` | name the TVIEW after the key, or alias the key `pk_foo` |
+| `Invalid SELECT statement: no column to key the rows on …` | `42601` | output a `pk_<entity>` column |
+| `Invalid SELECT statement: a TVIEW is defined by exactly one SELECT` | `42601` | remove the other statements |
+| `TVIEW tv_post already exists` | `42P07` | use `pg_tviews_create_or_replace()` |
+| `writes to … would not refresh …` | `22023` | declare an `uncascaded_policy` or `uncascaded_tables` ([Tables no cascade reaches](#tables-no-cascade-reaches)), or join on a traceable column |
+| `relations would read each other in a cycle: …` | `42P17` | restructure the definitions so no TVIEW reads itself through others |
+| `column "pk_x" is of type bigint but expression is of type uuid` | `42804` | `pk_<entity>` is stored as `bigint`: key on an integer column |
+| `cannot drop table tv_user because other objects depend on it` | `2BP01` | drop the TVIEWs that read it first, or `DROP TABLE … CASCADE` |
 
-**"TVIEW name must follow tv_* convention"**
-```sql
--- Fix: Use correct naming
-SELECT pg_tviews_create('tv_post', '...');  -- ✅ Correct
-SELECT pg_tviews_create('post_view', '...'); -- ❌ Wrong
-```
+See [Troubleshooting](../operations/troubleshooting.md) for refresh problems and the
+[error reference](../error-reference.md) for every SQLSTATE.
 
-**"Missing required column: pk_post"**
-```sql
--- Fix: Include primary key column in SELECT
-SELECT p.pk_post as pk_post, ...  -- ✅ Correct
-SELECT p.id as pk_post, ...       -- ❌ Wrong column
-```
+## See also
 
-**"Missing required column: data"**
-```sql
--- Fix: Include JSONB data column
-jsonb_build_object(...) as data  -- ✅ Correct
-jsonb_build_object(...) as json  -- ❌ Wrong name
-```
-
-**"Dependency cycle detected"**
-```sql
--- Fix: Restructure to avoid circular dependencies
--- TVIEW A references TVIEW B which references TVIEW A
-```
-
-### DROP TABLE tv_* Errors
-
-**"Cannot drop tv_post: other TVIEWs depend on it"**
-```sql
--- Fix: Drop dependent TVIEWs first
-DROP TABLE tv_post_comments;  -- Remove dependency
-DROP TABLE tv_post;           -- Now works
-
--- Or use CASCADE
-DROP TABLE tv_post CASCADE;   -- Drops all dependents
-```
-
-### Performance Issues
-
-**Slow initial creation**:
-- Complex SELECT with many JOINs
-- Large tables (consider WHERE clauses for initial subset)
-
-**Slow refreshes**:
-- Deep cascade chains (>3 levels)
-- Large JSONB objects (consider jsonb_delta extension)
-
-## Best Practices
-
-### Schema Design
-
-1. **Follow Trinity Pattern**: Use id/pk_/fk_ consistently
-2. **Include All FKs**: Both integer (cascade) and UUID (filtering)
-3. **Use Meaningful Identifiers**: SEO-friendly slugs where appropriate
-4. **Plan Cascade Depth**: Keep dependency chains shallow (<3 levels)
-
-### TVIEW Design
-
-1. **One Entity Per TVIEW**: Focus each TVIEW on a single primary entity
-2. **Include GraphQL Fields**: All fields needed for API responses
-3. **Use Efficient JOINs**: Prefer INNER JOINs where possible
-4. **Test with Real Data**: Verify performance with production-scale data
-
-### Maintenance
-
-1. **Monitor Dependencies**: Track which TVIEWs depend on others
-2. **Plan Drop Order**: Know dependency chains for maintenance
-3. **Test Changes**: Use staging environment for DDL changes
-4. **Backup First**: Always backup before major DDL operations
-
-## See Also
-
-- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md)
+- [Contract for tools](read-contract.md): `tviews.registry` and
+  `pg_tviews_create_or_replace()`
 - [API Reference](api.md)
-- [Troubleshooting Guide](../operations/troubleshooting.md)
+- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md)

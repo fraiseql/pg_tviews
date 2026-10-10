@@ -2,10 +2,13 @@
 
 This harness measures pg_tviews against a traditional materialized view using
 the **real extension API** — `pg_tviews_create('tv_product', <select>)` — not a
-simulation. It replaces the older `../comprehensive_benchmarks/` suite, whose
-`04_way_comparison.sql` targets a `pg_tviews.enable_tview(...)` function that the
-shipped extension never exported (its numbers were never produced against the
-real extension).
+simulation.
+
+It is not a CI gate. On one host, the same build measures some metrics in two
+modes (the fan-out writes/s fall around 55 or 70 from one run to the next), so a
+fixed threshold would fail at random on shared runners. A change that could cost
+time is compared on one machine against a build of the base commit, runs
+alternated, before it is called a regression.
 
 ## What it compares
 

@@ -10,6 +10,9 @@ use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::{PgLogLevel, PgSqlErrorCode};
 use std::fmt;
 
+#[cfg(test)]
+mod reference;
+
 /// An error `pg_tviews` raises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {

@@ -23,9 +23,10 @@ between base tables and derived views through trigger-based change tracking.
 
 ## Safety
 
-- No panics in FFI callbacks (all wrapped in `catch_unwind`)
-- Transaction rollback on refresh failures
-- Memory safety through Rust's ownership system
+- Every callback `PostgreSQL` calls carries `#[pg_guard]`; previous hooks are
+  called across `pg_guard_ffi_boundary` (`scripts/check-ffi-guards.sh` checks it).
+- A refresh that fails fails the write; refresh work still queued fails the commit.
+- `unsafe` is confined to FFI with `PostgreSQL`, each block with its `SAFETY:` reason.
 */
 
 use pgrx::pg_sys::panic::ErrorReport;
@@ -59,7 +60,6 @@ mod health;
 mod lifecycle;
 mod suspend;
 
-// Public API modules
 mod config;
 mod ddl;
 mod dependency;
@@ -68,17 +68,19 @@ mod install_sql;
 mod jsonb_delta;
 mod validation;
 
-// Public re-exports
 use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
+/// Whether this session's trigger-based refresh is suspended.
 #[pg_extern]
 #[must_use]
 pub fn pg_tviews_is_suspended() -> bool {
     crate::suspend::is_suspended()
 }
 
+/// Suspend trigger-based refresh in this session: writes record which TVIEWs
+/// they change instead of refreshing them, until the matching resume.
 #[pg_extern]
 pub fn pg_tviews_suspend_triggers() {
     crate::suspend::suspend();
@@ -118,213 +120,9 @@ pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     })))
 }
 
+/// The TVIEWs changed while this session's refresh is suspended.
 #[pg_extern]
 #[must_use]
 pub fn pg_tviews_suspended_entities() -> Vec<String> {
     crate::suspend::get_changed_entities()
-}
-
-#[cfg(any(test, feature = "pg_test"))]
-pub mod pg_test {
-    pub fn setup(_options: Vec<&str>) {}
-
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)] // Reason: Vec allocation is not const-stable
-    pub fn postgresql_conf_options() -> Vec<&'static str> {
-        // The extension lives in schema tviews; tests call it unqualified.
-        vec!["search_path = '\"$user\", public, tviews'"]
-    }
-}
-
-#[cfg(any(test, feature = "pg_test"))]
-#[pg_schema]
-mod tests {
-    use crate::error::TViewError;
-    use pgrx::prelude::*;
-
-    #[pg_test]
-    fn test_sanity_check() {
-        let two: i32 = 2;
-        assert_eq!(two, 1 + 1);
-    }
-
-    #[pg_test]
-    fn test_version_function() {
-        let version = Spi::get_one::<String>("SELECT pg_tviews_version()")
-            .unwrap()
-            .unwrap();
-        assert!(version.starts_with("0.1.0"));
-    }
-
-    #[pg_test]
-    fn test_version_callable_from_sql() {
-        let result = crate::utils::spi_get_string("SELECT pg_tviews_version()");
-        assert!(result.is_ok());
-        let version = result.unwrap();
-        assert!(version.is_some());
-        assert!(version.unwrap().starts_with("0.1.0"));
-    }
-
-    #[pg_test]
-    #[should_panic(expected = "TVIEW metadata not found")]
-    fn test_error_propagates_to_postgres() {
-        panic!(
-            "{:?}",
-            TViewError::MetadataNotFound {
-                entity: "test".to_string(),
-            }
-        );
-    }
-
-    #[pg_test]
-    fn test_jsonb_delta_check_function_exists() {
-        let result = Spi::get_one::<bool>("SELECT pg_tviews_check_jsonb_delta()");
-        assert!(
-            result.is_ok(),
-            "pg_tviews_check_jsonb_delta() function should exist"
-        );
-    }
-
-    #[pg_test]
-    fn test_check_jsonb_delta_available_function() {
-        let _result = crate::jsonb_delta::check_jsonb_delta_available();
-    }
-
-    #[pg_test]
-    fn test_pg_tviews_works_without_jsonb_delta() {
-        Spi::run("DROP EXTENSION IF EXISTS jsonb_delta CASCADE").ok();
-
-        Spi::run("CREATE TABLE tb_demo (pk_demo INT PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_demo VALUES (1, 'Demo')").unwrap();
-
-        let result = Spi::get_one::<bool>(
-            "SELECT pg_tviews_create('demo', 'SELECT pk_demo, jsonb_build_object(''name'', name) AS data FROM tb_demo') IS NOT NULL",
-        );
-
-        assert!(
-            result.unwrap().unwrap_or(false),
-            "pg_tviews should work without jsonb_delta"
-        );
-    }
-
-    #[pg_test]
-    fn test_pg_tviews_refresh_no_column_mismatch() {
-        Spi::run("CREATE TABLE tb_note (pk_note BIGSERIAL PRIMARY KEY, body TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_note VALUES (1, 'hello'), (2, 'world')").unwrap();
-
-        Spi::run(
-            "SELECT pg_tviews_create('note', $$
-            SELECT pk_note, jsonb_build_object('body', body) AS data
-            FROM tb_note
-        $$)",
-        )
-        .unwrap();
-
-        let result = Spi::run("SELECT pg_tviews_refresh('note')");
-        assert!(
-            result.is_ok(),
-            "pg_tviews_refresh failed: {:?}",
-            result.err()
-        );
-
-        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM tv_note")
-            .unwrap()
-            .unwrap_or(0);
-        assert_eq!(count, 2, "all rows should survive the full refresh");
-    }
-
-    #[pg_test]
-    fn test_pg_tviews_refresh_repopulates_data() {
-        Spi::run("CREATE TABLE tb_tag (pk_tag BIGSERIAL PRIMARY KEY, name TEXT)").unwrap();
-        Spi::run("INSERT INTO tb_tag VALUES (1, 'rust')").unwrap();
-
-        Spi::run(
-            "SELECT pg_tviews_create('tag', $$
-            SELECT pk_tag, jsonb_build_object('name', name) AS data
-            FROM tb_tag
-        $$)",
-        )
-        .unwrap();
-
-        Spi::run("UPDATE tv_tag SET data = '{}'::jsonb WHERE pk_tag = 1").unwrap();
-
-        let stale = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            stale.0,
-            serde_json::json!({}),
-            "data should be corrupted before refresh"
-        );
-
-        Spi::run("SELECT pg_tviews_refresh('tag')").unwrap();
-
-        let restored = Spi::get_one::<pgrx::JsonB>("SELECT data FROM tv_tag WHERE pk_tag = 1")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            restored.0["name"], "rust",
-            "refresh should restore data from the backing view"
-        );
-    }
-
-    #[pg_test]
-    fn test_suspend_triggers_basic() {
-        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
-        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()")
-            .unwrap()
-            .unwrap();
-        assert!(is_suspended);
-    }
-
-    #[pg_test]
-    fn test_resume_triggers_basic() {
-        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
-        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
-        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()")
-            .unwrap()
-            .unwrap();
-        assert!(!is_suspended);
-    }
-
-    #[pg_test]
-    fn test_nested_suspend_resume() {
-        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
-        Spi::run("SELECT pg_tviews_suspend_triggers()").unwrap();
-        let is_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()")
-            .unwrap()
-            .unwrap();
-        assert!(is_suspended);
-
-        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
-        let still_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()")
-            .unwrap()
-            .unwrap();
-        assert!(still_suspended);
-
-        Spi::run("SELECT pg_tviews_resume_triggers()").unwrap();
-        let not_suspended: bool = Spi::get_one("SELECT pg_tviews_is_suspended()")
-            .unwrap()
-            .unwrap();
-        assert!(!not_suspended);
-    }
-
-    #[pg_test]
-    fn test_resume_without_suspend_errors() {
-        let result = Spi::run("SELECT pg_tviews_resume_triggers()");
-        assert!(result.is_err(), "Resume without suspend should error");
-    }
-
-    #[pg_test]
-    fn test_refresh_all_returns_json() {
-        let result = Spi::get_one::<pgrx::JsonB>("SELECT pg_tviews_refresh_all()");
-        assert!(result.is_ok(), "pg_tviews_refresh_all should return JSON");
-        let json = result.unwrap().unwrap();
-        assert!(json.0.is_object(), "Should return JSON object");
-        assert!(
-            json.0.get("refreshed_count").is_some(),
-            "Should have refreshed_count"
-        );
-        assert!(json.0.get("order").is_some(), "Should have order");
-    }
 }

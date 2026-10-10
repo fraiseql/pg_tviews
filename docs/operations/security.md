@@ -1,8 +1,5 @@
 # Security Guide
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
-
 ## Overview
 
 pg_tviews provides powerful SQL generation capabilities that require careful security considerations. This guide covers SQL injection prevention, access control, and secure usage patterns.

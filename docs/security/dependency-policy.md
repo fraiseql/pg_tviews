@@ -1,7 +1,5 @@
 # Dependency Management Policy
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
 **Classification:** Public
 **Applicable Standards:** ISO 27001, SLSA, PCI-DSS 4.0
 
@@ -40,10 +38,8 @@ Dependencies will NOT be added if they have ANY of the following issues:
 Security-critical and tightly-coupled dependencies are pinned to exact versions:
 
 ```toml
-# Security-critical: exact version pinning
-pgrx = "=0.12.8"
-pgrx-macros = "=0.12.8"
-pgrx-tests = "=0.12.8"
+# Tightly coupled to PostgreSQL internals: exact version
+pgrx = "=0.17.0"
 ```
 
 **Rationale**: pgrx is tightly coupled to PostgreSQL internals and ABI compatibility is critical.
@@ -53,14 +49,9 @@ pgrx-tests = "=0.12.8"
 Regular dependencies allow compatible updates within major versions:
 
 ```toml
-# Regular dependencies: compatible updates allowed
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-regex = "1.0"
-once_cell = "1.0"
-chrono = "0.4"
-flate2 = "1.0"
-bincode = "1.3"
+sqlparser = "0.50"
 ```
 
 **Rationale**: Allows security patches and bug fixes while maintaining API compatibility.
@@ -130,39 +121,17 @@ Development-only dependencies are more flexible:
 
 ## Supply Chain Monitoring
 
-### Cargo Vet Integration
+### cargo-deny and cargo-audit
 
-pg_tviews uses `cargo-vet` for supply chain security audits:
+`.github/workflows/security-audit.yml` runs on every pull request, on `main` and
+daily:
 
-```toml
-# supply-chain/config.toml
-[cargo-vet]
-version = "0.9"
-
-[imports.mozilla]
-url = "https://hg.mozilla.org/mozilla-central/raw-file/tip/supply-chain/audits.toml"
-
-[policy.pgrx]
-criteria = "safe-to-deploy"
-notes = "Core dependency, manually audited"
-
-[policy]
-audit-as-crates-io = true
-```
-
-### Audit Criteria
-
-- **safe-to-deploy**: Reviewed for security and correctness
-- **safe-to-run**: Basic functionality verified
-- **safe-to-use**: API stability confirmed
-
-### Critical Dependencies Audit
-
-| Dependency | Audit Status | Last Reviewed | Notes |
-|------------|--------------|---------------|-------|
-| **pgrx** | ✅ Audited | 2025-12-11 | Core PostgreSQL extension framework |
-| **serde** | ✅ Mozilla | 2025-12-11 | Standard serialization library |
-| **regex** | ✅ Mozilla | 2025-12-11 | Regular expression engine |
+- `cargo deny check` with `deny.toml`: licenses (an allow-list matching the
+  dependency tree), sources (crates.io only), banned wildcard versions, duplicate
+  crates (reported), and every RustSec advisory, including unmaintained crates.
+  An advisory is ignored only with its reason in `deny.toml`.
+- `cargo audit`: fails on any known vulnerability.
+- Trivy scans the repository for vulnerable files.
 
 ## Automated Dependency Management
 
@@ -317,7 +286,7 @@ Quarterly dependency health reports include:
 
 ## References
 
-- [Cargo Vet Documentation](https://mozilla.github.io/cargo-vet/)
+- [cargo-deny Documentation](https://embarkstudios.github.io/cargo-deny/)
 - [Dependabot Configuration](https://docs.github.com/en/code-security/dependabot)
 - [Rust Security Advisory Database](https://github.com/RustSec/advisory-db)
 - [ISO 27001 Controls](https://www.iso.org/standard/54534.html)

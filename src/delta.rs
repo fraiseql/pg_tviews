@@ -15,7 +15,7 @@ use crate::catalog::{KeyType, TviewMeta};
 use crate::config::UncascadedPolicy;
 use crate::dependency::triggers::{NEW_TABLE, OLD_TABLE};
 use crate::error::{TViewError, TViewResult};
-use crate::lineage::{DELTA, KeyMapping};
+use crate::lineage::{DELTA, KeyMapping, MappingKind};
 use crate::queue::key::KeyValue;
 use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
@@ -39,10 +39,20 @@ thread_local! {
         RefCell::new((0, std::collections::HashSet::new()));
 }
 
-/// The entity a `pg_tviews` trigger serves: its argument (`None` for a trigger an
-/// older release installed without one).
-pub fn trigger_entity(trigger: &PgTrigger<'_>) -> Option<String> {
-    trigger.extra_args().ok()?.into_iter().next()
+/// The entity a `pg_tviews` trigger serves: its argument. A trigger without one
+/// (an older release installed them; the upgrade drops them) fails the write.
+pub fn trigger_entity(trigger: &PgTrigger<'_>) -> String {
+    trigger
+        .extra_args()
+        .ok()
+        .and_then(|args| args.into_iter().next())
+        .unwrap_or_else(|| {
+            let name = trigger.name().unwrap_or("?");
+            error!(
+                "pg_tviews: trigger {name} names no TVIEW; run \
+                 SELECT * FROM tviews.pg_tviews_reregister_all() and drop it"
+            )
+        })
 }
 
 fn suspended() -> bool {
@@ -52,13 +62,12 @@ fn suspended() -> bool {
 /// Statement-level trigger over the transition tables of a `mapped` or
 /// `all_keys` table.
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_delta_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
-    let Some(entity) = trigger_entity(trigger) else {
-        return Ok(None);
-    };
+    let entity = trigger_entity(trigger);
     if suspended() {
         crate::suspend::record_change(&entity);
         return Ok(None);
@@ -105,13 +114,12 @@ fn first_truncate_refresh(entity: &str) -> bool {
 /// follows a `TRUNCATE`). `TRUNCATE` of a partitioned table fires this on each
 /// truncated partition too, after all of them are empty: the first one refreshes.
 #[pg_trigger]
+#[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_truncate_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
-    let Some(entity) = trigger_entity(trigger) else {
-        return Ok(None);
-    };
+    let entity = trigger_entity(trigger);
     if suspended() {
         crate::suspend::record_change(&entity);
         return Ok(None);
@@ -158,20 +166,35 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of TVIEW `tview` (ADR 0157), with the current names
 /// of what it reads. NULL when writes to the table do not map through a query of
-/// their own (`propagated`, `all_keys`) or the TVIEW does not read it.
+/// their own (`propagated`, `all_keys`) or the TVIEW does not read it; an error
+/// when no such TVIEW is registered.
 #[pg_extern]
-fn pg_tviews_mapping_query(tview: &str, base_table: pg_sys::Oid) -> Option<String> {
+fn pg_tviews_mapping_query(
+    tview: &str,
+    base_table: pg_sys::Oid,
+) -> Result<Option<String>, pgrx::pg_sys::panic::ErrorReport> {
     crate::revision::check();
     let entity = tview.strip_prefix("tv_").unwrap_or(tview);
-    let meta = TviewMeta::load_by_entity(entity).ok()??;
-    let mapping = meta.key_mapping(base_table, None)?;
-    match mapping.kind.as_str() {
-        "local" => Some(format!(
-            "SELECT DISTINCT {} FROM {DELTA}",
-            crate::utils::quote_identifier(mapping.column.as_deref()?)
-        )),
-        "mapped" | "all_keys" if mapping.sql.is_some() => rendered(entity, mapping).ok()?,
-        _ => None,
+    let report = |e: TViewError| e.report_in(&format!("pg_tviews: the mapping query of {tview}"));
+    let Some(meta) = TviewMeta::load_by_entity(entity).map_err(report)? else {
+        return Err(report(TViewError::MetadataNotFound {
+            entity: entity.to_string(),
+        }));
+    };
+    let Some(mapping) = meta.key_mapping(base_table, None) else {
+        return Ok(None);
+    };
+    match mapping.kind {
+        MappingKind::Local => Ok(mapping.column.as_deref().map(|column| {
+            format!(
+                "SELECT DISTINCT {} FROM {DELTA}",
+                crate::utils::quote_identifier(column)
+            )
+        })),
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            rendered(entity, mapping).map_err(report)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -187,11 +210,12 @@ fn map_statement(
         entity: entity.to_string(),
     })?;
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
-        return refresh_all(entity, "its mapping of a written table is unknown");
+        refresh_all(entity, "its mapping of a written table is unknown");
+        return Ok(());
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
-    match mapping.kind.as_str() {
-        "all_keys" if full_refresh => {
+    match mapping.kind {
+        MappingKind::AllKeys if full_refresh => {
             let table = if event == Event::Delete {
                 OLD_TABLE
             } else {
@@ -209,15 +233,16 @@ fn map_statement(
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
-        "mapped" | "all_keys" if mapping.sql.is_some() => {
-            if mapping.kind == "mapped"
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
             {
                 return Ok(());
             }
             let Some(keys_sql) = rendered(entity, mapping)? else {
-                return refresh_all(entity, "a relation its mapping reads is gone");
+                refresh_all(entity, "a relation its mapping reads is gone");
+                return Ok(());
             };
             let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
             let key_type = &meta
@@ -331,16 +356,16 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
         return Ok(false);
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
-    match mapping.kind.as_str() {
-        "all_keys" if full_refresh => {
+    match mapping.kind {
+        MappingKind::AllKeys if full_refresh => {
             crate::queue::enqueue_refresh_all(entity);
             Ok(true)
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
-        "mapped" | "all_keys" if mapping.sql.is_some() => {
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
             let Some(keys_sql) = rendered(entity, mapping)? else {
-                refresh_all(entity, "a relation its mapping reads is gone")?;
+                refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(true);
             };
             // SAFETY: inside a row trigger the TriggerData, its relation and the
@@ -391,13 +416,13 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
             }
             Ok(true)
         }
-        "all_keys" => Ok(true),
+        MappingKind::AllKeys => Ok(true),
         _ => Ok(false),
     }
 }
 
 /// Refresh `entity` in full because its mapping cannot run, and say once why.
-fn refresh_all(entity: &str, why: &str) -> TViewResult<()> {
+fn refresh_all(entity: &str, why: &str) {
     crate::utils::log_once(
         &format!("unmapped:{entity}"),
         &format!(
@@ -406,7 +431,6 @@ fn refresh_all(entity: &str, why: &str) -> TViewResult<()> {
         ),
     );
     crate::queue::enqueue_refresh_all(entity);
-    Ok(())
 }
 
 /// The mapping query of `mapping`, with the current names of what it reads

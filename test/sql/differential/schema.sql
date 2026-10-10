@@ -282,7 +282,7 @@ CREATE FUNCTION harness_i(hi int) RETURNS int LANGUAGE sql AS $$
 
 -- One random statement.
 CREATE FUNCTION harness_statement(i int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r int := floor(random() * 43)::int;
+DECLARE r int := floor(random() * 48)::int;
 BEGIN
     RETURN CASE r
     WHEN 0 THEN format('INSERT INTO tb_customer (name) SELECT ''c%s_'' || g FROM generate_series(1, %s) g', i, harness_n())
@@ -327,6 +327,25 @@ BEGIN
     WHEN 39 THEN format('INSERT INTO tb_category (pk_category, fk_parent, name) SELECT max(pk_category) + 1, %s, ''k%s'' FROM tb_category', harness_i(6), i)
     WHEN 40 THEN format('UPDATE tb_item SET fk_category = %s, name = name || ''.%s'' WHERE pk_item IN %s', harness_i(7), i, harness_pick('tb_item', 'pk_item', harness_n()))
     WHEN 41 THEN 'REFRESH MATERIALIZED VIEW mv_line_count'
+    -- MERGE: matched rows updated or deleted, unmatched ones inserted
+    WHEN 42 THEN format('MERGE INTO tb_order o USING (SELECT g AS pk FROM generate_series(%s, %s) g) s ON o.pk_order = s.pk '
+                        'WHEN MATCHED AND s.pk %% 3 = 0 THEN DELETE '
+                        'WHEN MATCHED THEN UPDATE SET status = ''m%s'', fk_customer = %s '
+                        'WHEN NOT MATCHED THEN INSERT (fk_customer, ref, status) VALUES (%s, ''m%s'', ''new'')',
+                        harness_i(14), 14 + harness_i(6), i, harness_i(8), harness_i(8), i)
+    WHEN 43 THEN format('MERGE INTO tb_line l USING (SELECT pk_line FROM tb_line ORDER BY pk_line OFFSET %s LIMIT %s) s ON l.pk_line = s.pk_line '
+                        'WHEN MATCHED THEN UPDATE SET qty = l.qty * 2, fk_order = %s',
+                        floor(random() * 12)::int, harness_n(), harness_i(14))
+    -- INSERT … ON CONFLICT: an upsert that updates existing rows
+    WHEN 44 THEN format('INSERT INTO tb_order (id, fk_customer, ref, status) SELECT id, %s, ref, ''x%s'' FROM tb_order WHERE pk_order IN %s '
+                        'ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, fk_customer = EXCLUDED.fk_customer',
+                        harness_i(8), i, harness_pick('tb_order', 'pk_order', harness_n()))
+    WHEN 45 THEN format('INSERT INTO tb_node (pk_node, path, name) SELECT pk_node, path, name || ''.u%s'' FROM tb_node WHERE pk_node IN %s '
+                        'ON CONFLICT (pk_node) DO UPDATE SET name = EXCLUDED.name',
+                        i, harness_pick('tb_node', 'pk_node', harness_n()))
+    -- COPY: rows loaded without an INSERT statement
+    WHEN 46 THEN format('COPY tb_line (fk_order, sku, qty) FROM PROGRAM %L',
+                        format('printf ''%s\tc%s\t3\n%s\tc%s\t4\n''', harness_i(14), i, harness_i(14), i))
     ELSE format('UPDATE tb_vnote SET tag = chr(97 + %s), fk_customer = %s WHERE pk_vnote IN %s', floor(random() * 6)::int, harness_i(8), harness_pick('tb_vnote', 'pk_vnote', harness_n()))
     END;
 END $$;
@@ -358,13 +377,49 @@ BEGIN
     END IF;
 END $$;
 
--- The statements of one run, each followed by its check.
+-- The statements of one run, each followed by its check. About one statement in
+-- four opens a transaction of a few statements, some under a savepoint that is
+-- rolled back or released, and the transaction commits or rolls back: every
+-- TVIEW must equal its view after each statement, inside the transaction too.
 CREATE FUNCTION harness_script(n int) RETURNS SETOF text LANGUAGE plpgsql AS $$
-DECLARE stmt text;
+DECLARE
+    stmt text;
+    i int := 1;
+    rollback_all boolean;
+    sp boolean;
 BEGIN
-    FOR i IN 1..n LOOP
-        stmt := harness_statement(i);
-        RETURN NEXT stmt;
-        RETURN NEXT format('SELECT harness_check(%L)', format('#%s %s', i, stmt));
+    WHILE i <= n LOOP
+        IF random() < 0.25 THEN
+            RETURN NEXT 'BEGIN';
+            FOR j IN 1..2 + floor(random() * 3)::int LOOP
+                EXIT WHEN i > n;
+                sp := random() < 0.4;
+                IF sp THEN
+                    RETURN NEXT 'SAVEPOINT harness_sp';
+                END IF;
+                stmt := harness_statement(i);
+                RETURN NEXT stmt;
+                RETURN NEXT format('SELECT harness_check(%L)', format('#%s %s (in a transaction)', i, stmt));
+                IF sp THEN
+                    IF random() < 0.5 THEN
+                        RETURN NEXT 'ROLLBACK TO SAVEPOINT harness_sp';
+                        RETURN NEXT format('SELECT harness_check(%L)', format('#%s rolled back to a savepoint', i));
+                    ELSE
+                        RETURN NEXT 'RELEASE SAVEPOINT harness_sp';
+                    END IF;
+                END IF;
+                i := i + 1;
+            END LOOP;
+            rollback_all := random() < 0.33;
+            RETURN NEXT CASE WHEN rollback_all THEN 'ROLLBACK' ELSE 'COMMIT' END;
+            RETURN NEXT format('SELECT harness_check(%L)',
+                               format('the transaction ending at #%s %s', i - 1,
+                                      CASE WHEN rollback_all THEN 'rolled back' ELSE 'committed' END));
+        ELSE
+            stmt := harness_statement(i);
+            RETURN NEXT stmt;
+            RETURN NEXT format('SELECT harness_check(%L)', format('#%s %s', i, stmt));
+            i := i + 1;
+        END IF;
     END LOOP;
 END $$;

@@ -4,7 +4,10 @@
   amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
   and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create)),
   and for #187, #188 and #189 (see [Amendment](#amendment-187-188-189-window-partitions-union-branch-keys-materialized-views)),
-  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table))
+  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table));
+  amended by [ADR 0203](0203-propagation-plan.md): this analysis derives the TVIEW's stored plan
+  (`pg_tview_meta.plan` replaced `key_mappings` and `cascade_paths` in 0.1.0-beta.27), and
+  `sqlparser` no longer takes part in analysis
 - Issues: #157 (scalar subquery), #158 (view with an aggregate)
 - Supersedes: cascade-path extraction from the view's SQL text (`sql_parser::extract_join_paths`)
 

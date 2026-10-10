@@ -81,6 +81,7 @@ pub unsafe fn register_subxact_callback() {
 
     // Loaded inside a DO block: subtransactions may already be open. Mark them,
     // so their end events pair with a savepoint.
+    // SAFETY: reads the backend's transaction state.
     let nest_level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
     for _ in 0..usize::try_from(nest_level).unwrap_or(0).saturating_sub(1) {
         super::savepoint::start();
@@ -114,6 +115,13 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     // handled by the ProcessUtility hook intercepting COMMIT instead.
     match xact_event {
         XactEvent::PreCommit | XactEvent::Commit => {
+            // Every path that enqueues flushes before the commit (statement
+            // trigger, ProcessUtility hook). Work still queued fails the commit
+            // while it can still fail: it must never run under another
+            // transaction's snapshot, and dropping it would leave TVIEWs stale.
+            if xact_event == XactEvent::PreCommit {
+                fail_unflushed();
+            }
             // Suspended without resuming: the hook caught up before an explicit
             // COMMIT; an implicit commit ends here, where no SPI is allowed.
             if crate::suspend::is_suspended() {
@@ -130,11 +138,6 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 
             crate::suspend::force_resume();
 
-            // Every path that enqueues flushes before the commit (statement
-            // trigger, ProcessUtility hook). Work still queued here is dropped: it
-            // must never run under another transaction's snapshot, and a patch
-            // carries values read in this one.
-            warn_unflushed();
             // The crash-recovery check stays done for this backend: an UNLOGGED
             // TVIEW is only reset by a restart, which ends every backend.
             run(RESET_AT_END);
@@ -154,20 +157,21 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
     }
 }
 
-/// The WARNING for refresh work still queued when a transaction commits, once
-/// per backend (no SPI: this runs in the transaction callback).
-fn warn_unflushed() {
+/// Fail the commit of a transaction that still has refresh work queued (no SPI:
+/// this runs in the transaction callback, at `PRE_COMMIT`, before the point of no
+/// return).
+fn fail_unflushed() {
     let queued = crate::queue::state::get_queue_contents();
-    if queued.is_empty() || !crate::utils::first_time("commit with queued refreshes") {
+    if queued.is_empty() {
         return;
     }
     let entities: std::collections::BTreeSet<&str> =
         queued.iter().map(|k| k.entity.as_str()).collect();
     pg_sys::panic::ErrorReport::new(
-        PgSqlErrorCode::ERRCODE_WARNING,
+        PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         format!(
-            "pg_tviews: transaction committed with {} queued refreshes for {:?}; they were \
-             not applied (missing flush trigger?)",
+            "pg_tviews: cannot commit with {} queued refreshes for {:?}: they were never \
+             applied (missing flush trigger?)",
             queued.len(),
             entities
         ),
@@ -177,7 +181,7 @@ fn warn_unflushed() {
         "Run tviews.pg_tviews_health_check() to find missing triggers, and \
          tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",
     )
-    .report(PgLogLevel::WARNING);
+    .report(PgLogLevel::ERROR);
 }
 
 /// Subtransaction callback handler (invoked by `PostgreSQL` for savepoints)

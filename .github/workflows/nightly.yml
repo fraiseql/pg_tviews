@@ -1,0 +1,81 @@
+name: Nightly (assertions)
+
+# The regression, differential and isolation suites on a PostgreSQL 18 built
+# with --enable-cassert --enable-debug (what `cargo pgrx init ... download`
+# builds): an assertion in the server catches what a release build lets pass
+# silently (a lock or memory context misused by the extension).
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+env:
+  PGRX_VERSION: "0.17.0"
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.3.0"
+
+jobs:
+  cassert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install PostgreSQL build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config bison flex libreadline-dev \
+            zlib1g-dev libssl-dev libxml2-dev libxslt1-dev libicu-dev clang libclang-dev
+
+      - name: Build PostgreSQL 18 with assertions (pgrx)
+        run: |
+          cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+          cargo pgrx init --pg18 download
+          pgdir="$(ls -d "$HOME"/.pgrx/18.*/ | head -1)"
+          # dblink and pg_stat_statements are used by the regression suite.
+          make -C "${pgdir}contrib" -j"$(nproc)" install >/dev/null
+          {
+            echo "PG_CONFIG=${pgdir}pgrx-install/bin/pg_config"
+            echo "PGHOST=localhost"
+            echo "PGPORT=28818"
+          } >> "$GITHUB_ENV"
+          echo "${pgdir}pgrx-install/bin" >> "$GITHUB_PATH"
+
+      - name: Build and install pg_tviews and jsonb_delta
+        run: |
+          cargo pgrx install --release --no-default-features --features pg18 --pg-config "$PG_CONFIG"
+          git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+          (cd /tmp/jsonb_delta && cargo pgrx install --release --no-default-features \
+             --features pg18 --pg-config "$PG_CONFIG")
+
+      - name: Start the cluster with pg_tviews preloaded
+        run: |
+          cargo pgrx start pg18
+          conf="$HOME/.pgrx/data-18/postgresql.conf"
+          echo "shared_preload_libraries = 'pg_tviews'" >> "$conf"
+          echo "max_prepared_transactions = 10" >> "$conf"
+          cargo pgrx stop pg18 && cargo pgrx start pg18
+          # initdb's superuser is the runner's OS user; the suites run as postgres,
+          # as in ci.yml.
+          psql -d postgres -U "$USER" -qc "DO \$\$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+              CREATE ROLE postgres SUPERUSER LOGIN;
+            END IF; END \$\$"
+          echo "PGUSER=postgres" >> "$GITHUB_ENV"
+
+      - name: Regression suite
+        run: ./test/run_regression_tests.sh
+
+      - name: Differential suite
+        run: ./test/sql/differential/run.sh 120 "1 2 3 4 5 6 7 8"
+
+      - name: Isolation suite
+        run: ./test/isolation/run.sh
+
+      - name: Server log
+        if: failure()
+        run: tail -200 "$HOME/.pgrx/18.log"

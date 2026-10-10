@@ -11,8 +11,9 @@
 //!   joined on `col = <key>`); the row trigger reads it;
 //! - `Mapped`: a chain of predicates links the table to the key; a query over the
 //!   changed rows returns the keys;
-//! - `Propagated(entity)`: read through the backing view of a TVIEW this one embeds
-//!   (`fk_<entity>`): entity propagation refreshes the rows that embed it;
+//! - `Propagated(entity)`: read through a TVIEW this one embeds, joined on that
+//!   TVIEW's key: refreshing it refreshes the rows holding its key (the plan's
+//!   embed lookups);
 //! - `AllKeys`: nothing selective links it to the key; `pg_tviews.uncascaded_policy`
 //!   decides.
 //!

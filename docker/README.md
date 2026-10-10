@@ -11,7 +11,7 @@ via `cargo pgrx package`:
 ```bash
 # from the repository root
 docker build -f docker/dockerfile-build -t pg_tviews_build .
-docker run --rm -v "$PWD/out:/build/target" pg_tviews_build
+docker run --rm -v "$PWD/out:/out" pg_tviews_build
 ```
 
 Use this when you need a byte-reproducible build artifact independent of the host

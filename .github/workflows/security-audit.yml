@@ -17,39 +17,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Install cargo-audit and jq
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      # Fails on any vulnerability in the dependency tree; the JSON report is kept.
+      - name: Audit Cargo dependencies
         run: |
-          cargo install cargo-audit
-          sudo apt-get update && sudo apt-get install -y jq
-
-
-      - name: Audit Cargo dependencies (without extension build)
-        run: cargo audit --json > audit-report.json
-        continue-on-error: true
-
-      - name: Check for vulnerabilities
-        run: |
-          # Check for actual vulnerabilities (not warnings)
-          if jq -e '.vulnerabilities.found > 0' audit-report.json > /dev/null; then
-            echo "❌ Critical vulnerabilities found!"
-            cargo audit
-            exit 1
-          else
-            echo "✅ No critical vulnerabilities detected (warnings may exist)"
-            cargo audit
-          fi
+          cargo audit --json > audit-report.json || { cargo audit; exit 1; }
 
       - name: Upload audit report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-audit
           path: audit-report.json
 
       - name: Scan filesystem for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -62,3 +49,12 @@ jobs:
         if: always()
         with:
           sarif_file: 'filesystem-trivy-results.sarif'
+
+  # Licenses, sources, duplicate crates and RustSec advisories, by deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

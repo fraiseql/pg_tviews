@@ -132,14 +132,16 @@ pub(super) fn rebuild(
         false,
         false,
     )?;
-    create::create_tview_in(
-        &tv_name,
-        query,
-        schema,
-        group_keys,
-        storage,
-        Some(declarations),
-    )?;
+    create::without_rows(|| {
+        create::create_tview_in(
+            &tv_name,
+            query,
+            schema,
+            group_keys,
+            storage,
+            Some(declarations),
+        )
+    })?;
 
     let rebuilt =
         TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
@@ -159,7 +161,8 @@ pub(super) fn rebuild(
         restore_typename(entity, &typename)?;
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
-    Ok(())
+    // Filled as its owner, now that the owner is back.
+    crate::admin::fill_empty_tview(entity)
 }
 
 /// Run the saved `restore` statements over the rebuilt table `tv` and view `view`:
@@ -316,7 +319,7 @@ pub(super) fn user_indexes(
     tv_name: &str,
     table: pg_sys::Oid,
 ) -> TViewResult<Vec<(String, String)>> {
-    let (_, embed_columns) = crate::catalog::registered::definition_and_embed_columns(entity)?;
+    let embed_columns = crate::catalog::registered::embed_columns(entity)?;
     let view_oid = TviewMeta::load_by_entity(entity)?
         .ok_or_else(|| TViewError::MetadataNotFound {
             entity: entity.to_string(),

@@ -2,7 +2,9 @@
 
 ## Status
 
-**Accepted**
+**Superseded** by [ADR 0136](0136-tool-facing-surface.md), Decision 3 (one SQL version
+per release with upgrade scripts; breaking changes ship in betas and are listed in
+`CHANGELOG.md` and `docs/DEPRECATION_WARNINGS.md`). Never implemented; kept as history.
 
 ## Context
 
@@ -153,23 +155,23 @@ pg_tviews v1.0 (planned April 2026) will commit to long-term API stability. Any 
 
 ## Implementation Plan
 
-### Phase 1: Planning & Communication (December 2025)
+### Stage 1: Planning & Communication (December 2025)
 - [x] Create this ADR
 - [x] Create breaking changes catalog
 - [x] Create migration guide template
 - [x] Announce plan to community
 
-### Phase 2: Deprecation Warnings (v1.5, October 2026)
+### Stage 2: Deprecation Warnings (v1.5, October 2026)
 - Add deprecation warnings to affected functions
 - Update documentation
 - Provide migration tooling
 
-### Phase 3: Migration Support (2027)
+### Stage 3: Migration Support (2027)
 - Enhanced migration guides
 - Community support
 - Enterprise migration assistance
 
-### Phase 4: v2.0 Release (April 2028)
+### Stage 4: v2.0 Release (April 2028)
 - Implement breaking changes
 - Comprehensive testing
 - Release with migration support

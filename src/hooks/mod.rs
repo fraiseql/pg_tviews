@@ -1,24 +1,12 @@
-//! `ProcessUtility` Hooks: DDL Interception and Transaction Management
+//! The `ProcessUtility` hook: `CREATE TABLE tv_* AS` becomes a TVIEW, `DROP TABLE
+//! tv_*` drops one, renames and partition DDL are followed, `COMMIT` and `PREPARE
+//! TRANSACTION` flush the refresh queue first, `DISCARD ALL` clears the caches.
 //!
-//! This module implements `PostgreSQL` hooks for DDL statement interception:
-//! - **`ProcessUtility` Hook**: Intercepts CREATE TABLE `tv_*` and DROP TABLE `tv_*` statements
-//! - **Transaction Callbacks**: Handles PREPARE/COMMIT/ABORT events
-//! - **COMMIT / PREPARE TRANSACTION**: Flushes the refresh queue before the transaction ends
-//! - **DISCARD ALL**: Clears caches on connection pooling reset
-//!
-//! ## Hook Architecture
-//!
-//! `PostgreSQL` calls hooks at strategic points:
-//! 1. **`ProcessUtility`**: Before executing utility statements (DDL)
-//! 2. **Transaction Events**: At commit, abort, and prepare phases
-//! 3. **Subtransaction Events**: For savepoint handling
-//!
-//! ## Safety Considerations
-//!
-//! - Hooks run in `PostgreSQL`'s execution context
-//! - Must not panic (all wrapped in `catch_unwind`)
-//! - Proper error handling to avoid corrupting transactions
-//! - Thread-safe global state management
+//! What to do is decided without SPI inside `catch_unwind` ([`decide`]); the work
+//! itself, which may raise PostgreSQL errors, runs outside it, holding an
+//! [`InternalDdl`](crate::internal_ddl::InternalDdl) so the DDL `pg_tviews` issues
+//! passes through unhandled. The previous hook is called across
+//! `pg_guard_ffi_boundary`.
 
 use pgrx::pg_sys;
 use pgrx::prelude::*;
@@ -37,7 +25,7 @@ use statements::{
     extension_installed, extension_statement_names, matview_refresh_of, partition_ddl_of,
     privileges_change_of, resolve_relation_oid, table_move_of,
 };
-use tables::{handle_alter_table, handle_drop_table};
+use tables::handle_drop_table;
 
 use crate::TViewError;
 use crate::ddl::drop_tview;
@@ -185,8 +173,8 @@ fn flush_before_transaction_end(call: UtilityCall) {
     {
         return;
     }
-    // SAFETY: a TransactionStmt, by its tag.
     #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → TransactionStmt* cast
+    // SAFETY: a TransactionStmt, by its tag.
     let kind = unsafe { (*(*call.pstmt).utilityStmt.cast::<pg_sys::TransactionStmt>()).kind };
     let stmt = match kind {
         pg_sys::TransactionStmtKind::TRANS_STMT_COMMIT => "COMMIT",
@@ -227,6 +215,7 @@ fn decide(call: UtilityCall) -> Intercept {
 
         // CREATE / DROP EXTENSION is decided from the node, not the query text: in
         // a multi-statement batch the text is the whole batch.
+        // SAFETY: the statement's utility node, non-null for a utility statement.
         if let Some(extensions) = unsafe { extension_statement_names(utility_stmt) } {
             // Forget the cached jsonb_delta schema, so this backend re-checks it on
             // its next refresh after CREATE/DROP EXTENSION jsonb_delta.
@@ -248,13 +237,16 @@ fn decide(call: UtilityCall) -> Intercept {
                 #[allow(clippy::cast_ptr_alignment)]
                 // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
                 let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
+                // SAFETY: a CreateTableAsStmt, by its tag, of this planned statement.
                 unsafe { inspect_create_table_as(ctas, call.pstmt, call.query_string) }
             }
             // EXPLAIN [ANALYZE] CREATE TABLE tv_* AS … would run the CTAS without
             // this hook seeing it as one, nor the event trigger firing: refuse it.
             pg_sys::NodeTag::T_ExplainStmt => {
                 #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → ExplainStmt* cast
+                // SAFETY: an ExplainStmt, by its tag.
                 let query = unsafe { (*utility_stmt.cast::<pg_sys::ExplainStmt>()).query };
+                // SAFETY: the explained statement's node, or null.
                 Ok(match unsafe { tview_ctas_target(utility_of(query)) } {
                     Some(table) => Intercept::Refuse(
                         format!("EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"),
@@ -267,18 +259,6 @@ fn decide(call: UtilityCall) -> Intercept {
             pg_sys::NodeTag::T_DropStmt => Ok(Intercept::DropTable(
                 utility_stmt.cast::<pg_sys::DropStmt>(),
             )),
-            pg_sys::NodeTag::T_AlterTableStmt => {
-                #[allow(clippy::cast_ptr_alignment)]
-                // Reason: PostgreSQL Node* → AlterTableStmt* cast
-                let alter_stmt = utility_stmt.cast::<pg_sys::AlterTableStmt>();
-                Ok(
-                    if unsafe { handle_alter_table(alter_stmt, call.query_string) }? {
-                        Intercept::Handled
-                    } else {
-                        Intercept::PassThrough
-                    },
-                )
-            }
             _ => Ok(Intercept::PassThrough),
         }
     });
@@ -317,7 +297,6 @@ fn rethrow(panic_info: Box<dyn std::any::Any + Send>) -> ! {
 fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
     match intercept {
         Intercept::PassThrough => true,
-        Intercept::Handled => false,
         Intercept::Refuse(_, Some(target)) | Intercept::CreateTview(Ctas { target, .. })
             if skipped_or_raise(&target) =>
         {
@@ -354,6 +333,7 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
             } else {
                 drop_stmt
             };
+            // SAFETY: a DropStmt of this planned statement (or the copy above).
             match unsafe { handle_drop_table(drop_stmt, call.query_string) } {
                 Ok(handled) => !handled,
                 Err(e) => e.raise(),
@@ -423,6 +403,7 @@ impl FollowUps {
             e.raise_in("pg_tviews: could not follow the column rename");
         }
         if let Some(ddl) = self.partition_ddl
+            // SAFETY: the RangeVars come from the parse tree, which outlives the statement.
             && let Err(e) = unsafe { ddl.apply() }
         {
             e.raise_in("pg_tviews: could not update the triggers of a partition");
@@ -456,8 +437,6 @@ impl FollowUps {
 enum Intercept {
     /// Run it unchanged.
     PassThrough,
-    /// Already handled.
-    Handled,
     /// A `DROP` statement, to handle outside `catch_unwind`.
     DropTable(*mut pg_sys::DropStmt),
     /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation, outside `catch_unwind`.

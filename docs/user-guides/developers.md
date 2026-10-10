@@ -1,542 +1,360 @@
 # Developer Guide
 
-Complete guide for integrating pg_tviews into FraiseQL applications and GraphQL APIs.
-
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
+How to build a GraphQL read model on pg_tviews: design the tables, define TVIEWs that
+match the GraphQL types, read them from resolvers, and handle the errors pg_tviews raises.
 
 ## Overview
 
-This guide helps backend developers integrate pg_tviews into FraiseQL applications. You'll learn how to create TVIEWs, handle GraphQL Cascade queries, and optimize performance for API workloads.
+pg_tviews maintains `tv_*` tables (the read models) from the tables an application writes
+(the write models). A write refreshes the TVIEW rows it affects at the end of the statement,
+in the same transaction:
 
-## FraiseQL Integration Patterns
-
-### CQRS Architecture with pg_tviews
-
-pg_tviews powers FraiseQL's CQRS pattern by maintaining automatically refreshed read models:
-
-```
-GraphQL Mutation (Command)    GraphQL Query (Read)
-        ↓                              ↓
-    tb_* tables  ── pg_tviews ──→  tv_* tables
-   (write models)   (automatic)    (read models)
-        ↑                              ↑
-   FraiseQL Commands            GraphQL Cascade
+```text
+GraphQL mutation (command)        GraphQL query (read)
+        |                                  |
+   write tables  --- pg_tviews --->   tv_* tables
+  (tb_user, ...)    (triggers)      (tv_post, ...)
 ```
 
-### Basic Integration Workflow
+The workflow:
 
-1. **Design Schema**: Define tb_* tables following trinity pattern
-2. **Create TVIEWs**: Define tv_* views for GraphQL queries
-3. **GraphQL Integration**: Use TVIEWs in GraphQL resolvers
-4. **Monitor Performance**: Track refresh metrics and optimize
+1. Design the write tables.
+2. Create one TVIEW per GraphQL type that needs a read model.
+3. Read `tv_*` tables from resolvers; write only to the write tables.
+4. Watch refresh cost with `tviews.pg_tviews_queue_stats()` and `tviews.pg_tviews_profile()`.
 
-## Schema Design
+## Setup
 
-### Trinity Pattern Implementation
-
-Follow FraiseQL's trinity identifier pattern for optimal GraphQL performance:
+The examples on this page run in order in one database. pg_tviews must be in
+`shared_preload_libraries` ([Installation](../getting-started/installation.md)).
 
 ```sql
--- User entity
-CREATE TABLE tb_user (
-    pk_user BIGSERIAL PRIMARY KEY,    -- Lineage root
-    id UUID NOT NULL DEFAULT gen_random_uuid(),  -- GraphQL ID
-    identifier TEXT UNIQUE,           -- SEO slug (optional)
-    name TEXT NOT NULL,
-    email TEXT UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Post entity
-CREATE TABLE tb_post (
-    pk_post BIGSERIAL PRIMARY KEY,    -- Lineage root
-    id UUID NOT NULL DEFAULT gen_random_uuid(),  -- GraphQL ID
-    identifier TEXT UNIQUE,           -- SEO slug (optional)
-    title TEXT NOT NULL,
-    content TEXT,
-    fk_user BIGINT NOT NULL REFERENCES tb_user(pk_user),  -- Cascade FK
-    user_id UUID,                     -- Filtering FK (computed)
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Maintain user_id for filtering
-CREATE OR REPLACE FUNCTION maintain_user_id()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP IN ('INSERT', 'UPDATE') THEN
-        SELECT id INTO NEW.user_id
-        FROM tb_user WHERE pk_user = NEW.fk_user;
-        RETURN NEW;
-    END IF;
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trig_maintain_user_id
-    BEFORE INSERT OR UPDATE ON tb_post
-    FOR EACH ROW EXECUTE FUNCTION maintain_user_id();
+CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
 ```
 
-### TVIEW Design for GraphQL
+The functions live in the `tviews` schema. This page qualifies them (`tviews.pg_tviews_*`);
+`SET search_path TO public, tviews` lets you drop the prefix.
 
-Design TVIEWs to match your GraphQL schema exactly:
+## Schema design
+
+### Write tables
+
+FraiseQL's trinity pattern gives each entity an integer key (`pk_*`), a public UUID (`id`)
+and an optional slug (`identifier`), with integer foreign keys (`fk_*`):
+
+```sql
+CREATE TABLE tb_user (
+    pk_user BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    identifier TEXT UNIQUE,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE tb_post (
+    pk_post BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    identifier TEXT UNIQUE,
+    title TEXT NOT NULL,
+    content TEXT,
+    fk_user BIGINT NOT NULL REFERENCES tb_user (pk_user),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE tb_comment (
+    pk_comment BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    text TEXT NOT NULL,
+    fk_post BIGINT NOT NULL REFERENCES tb_post (pk_post),
+    fk_user BIGINT NOT NULL REFERENCES tb_user (pk_user),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO tb_user (identifier, name, email) VALUES
+    ('alice', 'Alice', 'alice@example.com'),
+    ('bob', 'Bob', 'bob@example.com');
+INSERT INTO tb_post (identifier, title, content, fk_user) VALUES
+    ('hello-world', 'Hello World', 'First post', 1);
+INSERT INTO tb_comment (text, fk_post, fk_user) VALUES ('Nice post', 1, 2);
+```
+
+These names are a convention, not a requirement. pg_tviews reads the TVIEW's definition
+from PostgreSQL's query tree: a write table may have any name, and a foreign key column
+may be called `author_pk` or `user_ref`. What it follows is the joins and filters in the
+definition.
+
+### TVIEW design
+
+A TVIEW named `tv_<entity>` needs one column naming its rows, `pk_<entity>`, and usually a
+`data` JSONB document shaped like the GraphQL type. Add plain columns for the filters
+resolvers use (`id`, `user_id`):
 
 ```sql
 CREATE TABLE tv_post AS
 SELECT
-    p.pk_post as pk_post,  -- Required: lineage root
+    p.pk_post,             -- row identity of tv_post
     p.id,                  -- GraphQL ID
-    p.identifier,          -- SEO-friendly slug
-    p.fk_user,             -- Cascade FK
-    u.id as user_id,       -- Filtering FK
+    p.identifier,          -- slug
+    u.id AS user_id,       -- filter column
     jsonb_build_object(
         'id', p.id,
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'created_at', p.created_at,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'identifier', u.identifier,
-            'name', u.name,
-            'email', u.email
-        ),
+        'createdAt', p.created_at,
+        'author', jsonb_build_object('id', u.id, 'name', u.name),
         'comments', COALESCE((
             SELECT jsonb_agg(
-                jsonb_build_object(
-                    'id', c.id,
-                    'text', c.text,
-                    'author', jsonb_build_object('id', cu.id, 'name', cu.name)
-                ) ORDER BY c.created_at
-            )
+                       jsonb_build_object(
+                           'id', c.id,
+                           'text', c.text,
+                           'author', jsonb_build_object('id', cu.id, 'name', cu.name))
+                       ORDER BY c.created_at, c.pk_comment)
             FROM tb_comment c
-            JOIN tb_user cu ON c.fk_user = cu.pk_user
+            JOIN tb_user cu ON cu.pk_user = c.fk_user
             WHERE c.fk_post = p.pk_post
         ), '[]'::jsonb)
-    ) as data
+    ) AS data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+JOIN tb_user u ON u.pk_user = p.fk_user;
 ```
 
-## GraphQL Integration
+Every table the definition reads gets a trigger: a write to `tb_post`, `tb_user` or
+`tb_comment` refreshes the posts it reaches. Renaming Bob refreshes the post he commented
+on:
 
-### GraphQL Cascade Queries
+```sql
+UPDATE tb_user SET name = 'Robert' WHERE identifier = 'bob';
 
-Use TVIEWs directly in GraphQL resolvers for instant fresh data:
+SELECT data->'comments'->0->'author'->>'name' AS commenter FROM tv_post;
+```
+
+A definition pg_tviews cannot keep up to date (a read it cannot trace back to rows of
+the TVIEW, a call to the current time) is refused when it is created. See
+[`uncascaded_policy`](../reference/api.md) for the alternatives.
+
+## GraphQL integration
+
+### Resolvers
+
+Resolvers read `data`; mutations write the write tables and read the TVIEW back in the same
+transaction, where it is already fresh:
 
 ```javascript
-// GraphQL Resolvers (Node.js/TypeScript example)
 const resolvers = {
   Query: {
     post: async (_, { id }) => {
-      const result = await db.query(`
-        SELECT data FROM tv_post WHERE id = $1
-      `, [id]);
-      return result.rows[0]?.data;
+      const r = await db.query('SELECT data FROM tv_post WHERE id = $1', [id]);
+      return r.rows[0]?.data;
     },
-
     posts: async (_, { authorId, limit = 10 }) => {
-      const result = await db.query(`
-        SELECT data FROM tv_post
-        WHERE user_id = $1
-        ORDER BY data->>'created_at' DESC
-        LIMIT $2
-      `, [authorId, limit]);
-      return result.rows.map(row => row.data);
-    }
-  },
-
-  Mutation: {
-    createPost: async (_, { input }) => {
-      // FraiseQL handles the tb_* write
-      const postId = await fraiseql.create('Post', input);
-
-      // TVIEW automatically updated - return fresh data immediately
-      const result = await db.query(`
-        SELECT data FROM tv_post WHERE id = $1
-      `, [postId]);
-      return result.rows[0]?.data;
+      const r = await db.query(
+        `SELECT data FROM tv_post WHERE user_id = $1
+         ORDER BY data->>'createdAt' DESC LIMIT $2`,
+        [authorId, limit]);
+      return r.rows.map((row) => row.data);
     },
-
+  },
+  Mutation: {
     updatePost: async (_, { id, input }) => {
-      // FraiseQL handles the tb_* update
-      await fraiseql.update('Post', id, input);
-
-      // TVIEW automatically updated - return fresh data immediately
-      const result = await db.query(`
-        SELECT data FROM tv_post WHERE id = $1
-      `, [id]);
-      return result.rows[0]?.data;
-    }
-  }
+      await db.query('UPDATE tb_post SET title = $1 WHERE id = $2', [input.title, id]);
+      // The UPDATE refreshed tv_post before it returned.
+      const r = await db.query('SELECT data FROM tv_post WHERE id = $1', [id]);
+      return r.rows[0]?.data;
+    },
+  },
 };
 ```
 
-### UUID-Based Filtering
+To return every entity a mutation changed (GraphQL Cascade), call
+`tviews.pg_tviews_flush_and_report()`: see [GraphQL Cascade](graphql-cascade.md).
 
-Leverage UUID FKs for efficient GraphQL filtering:
+### Filtering and pagination
 
-```sql
--- Efficient UUID filtering (no JOINs needed)
-SELECT data FROM tv_post WHERE user_id = 'uuid-here';
-SELECT data FROM tv_post WHERE id = 'post-uuid';
-
--- SEO-friendly slug queries
-SELECT data FROM tv_post WHERE data->>'identifier' = 'my-blog-post';
-```
-
-### Connection Pattern
-
-Implement GraphQL connections with efficient pagination:
+Filter on the plain columns, page on a value from `data`:
 
 ```sql
--- Forward pagination
 SELECT data FROM tv_post
-WHERE user_id = $1
-  AND data->>'created_at' > $2  -- cursor
-ORDER BY data->>'created_at' ASC
-LIMIT $3;
+WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice');
 
--- Backward pagination
+SELECT data FROM tv_post WHERE identifier = 'hello-world';
+
+-- Keyset pagination: the cursor is the last createdAt seen
 SELECT data FROM tv_post
-WHERE user_id = $1
-  AND data->>'created_at' < $2  -- cursor
-ORDER BY data->>'created_at' DESC
-LIMIT $3;
+WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice')
+  AND data->>'createdAt' < '9999-12-31'
+ORDER BY data->>'createdAt' DESC
+LIMIT 10;
 ```
 
-## Performance Optimization
+Refreshes render values under fixed settings (`TimeZone` UTC, `DateStyle` ISO), so a
+timestamp in `data` has one text form whatever the writer's session, and sorts as text.
 
-### Statement-Level Triggers
+## Performance
 
-Bulk operations need nothing special: each statement refreshes the affected rows once.
+### Indexes
+
+A TVIEW is a table: index it for the resolvers' filters.
 
 ```sql
--- Your application code remains unchanged
--- Bulk inserts/updates automatically optimized
+CREATE INDEX idx_tv_post_user_created ON tv_post (user_id, (data->>'createdAt'));
+CREATE INDEX idx_tv_post_identifier ON tv_post (identifier);
 ```
 
-### JSONB Indexing
+Add a GIN index on `data` only for containment queries (`data @> '{...}'`): nearly every
+refresh rewrites `data`, so an index on it makes every refresh a non-HOT update.
+`SET pg_tviews.data_gin_index = on` before creating a TVIEW creates one.
+`tviews.pg_tviews_ensure_propagation_indexes('post')` adds the indexes pg_tviews' own
+lookups need (not executable by `PUBLIC`; it also requires owning the TVIEW).
 
-Create indexes for common GraphQL query patterns:
+A filter on a nested value with no index (`data->'author'->>'name' ILIKE '%ali%'`) scans the
+table: project such a value as a column, or index the expression.
+
+### Bulk writes
+
+Each statement refreshes the rows it affected once, at its end: an `UPDATE` of 10,000
+rows refreshes each affected TVIEW row once, not 10,000 times. For a large load, see
+`tviews.pg_tviews_suspend_triggers()` in the [API reference](../reference/api.md).
+
+### Refresh cost
 
 ```sql
--- Index for UUID lookups
-CREATE INDEX idx_tv_post_id ON tv_post(id);
-CREATE INDEX idx_tv_post_user_id ON tv_post(user_id);
+BEGIN;
+UPDATE tb_user SET name = 'Alice Liddell' WHERE identifier = 'alice';
+SELECT tviews.pg_tviews_queue_stats();  -- this transaction's refreshes
+COMMIT;
 
--- Index for JSONB field queries
-CREATE INDEX idx_tv_post_title ON tv_post USING gin((data->'title'));
-CREATE INDEX idx_tv_post_created_at ON tv_post USING gin((data->'created_at'));
-
--- Index for nested author queries
-CREATE INDEX idx_tv_post_author_name ON tv_post USING gin((data->'author'->'name'));
-
--- Composite indexes for common filters
-CREATE INDEX idx_tv_post_user_created ON tv_post(user_id, (data->>'created_at'));
+SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile('post');
 ```
 
-### Query Optimization
+`pg_tviews_queue_stats()` reports the current transaction's queued refreshes
+(`total_refreshes`, `total_timing_ms`) and, cumulated over the session, how many rows were
+patched in place (`direct_patches_applied`) or recomputed from the definition
+(`view_recomputes`).
+`pg_tviews_profile()` reports sizes, dead tuples and the fan-out of each lookup column,
+with warnings. TVIEWs are created UNLOGGED by default (`pg_tviews.unlogged_by_default`):
+fast to write, but empty after a crash and unreadable on a standby
+([Architect Guide](architects.md#read-replicas)).
 
-Structure queries for optimal performance:
+## Errors and transactions
+
+A write and the refresh it causes are one transaction: a rollback undoes both.
 
 ```sql
--- ✅ Efficient: Direct UUID lookup
-SELECT data FROM tv_post WHERE id = $1;
+BEGIN;
+UPDATE tb_post SET title = 'Draft title' WHERE pk_post = 1;
+SELECT data->>'title' AS title FROM tv_post WHERE pk_post = 1;  -- Draft title
+ROLLBACK;
 
--- ✅ Efficient: Indexed filtering
-SELECT data FROM tv_post WHERE user_id = $1 AND data->>'created_at' > $2;
-
--- ❌ Inefficient: Non-indexed JSONB queries
-SELECT data FROM tv_post WHERE data->'author'->>'name' ILIKE '%john%';
-
--- ✅ Better: Pre-compute searchable fields or use separate indexes
+SELECT data->>'title' AS title FROM tv_post WHERE pk_post = 1;  -- Hello World
 ```
 
-## Error Handling
+pg_tviews errors carry a SQLSTATE, so application code and PL/pgSQL can tell them apart:
 
-### Transactional Consistency
-
-pg_tviews maintains ACID compliance with your application transactions:
-
-```javascript
-// Successful transaction
-await db.transaction(async (tx) => {
-  // Update tb_* tables via FraiseQL
-  await tx.query('UPDATE tb_post SET title = $1 WHERE id = $2', [title, id]);
-
-  // TVIEW automatically updated within same transaction
-  // GraphQL query sees fresh data immediately
-});
-
-// Failed transaction
-try {
-  await db.transaction(async (tx) => {
-    await tx.query('UPDATE tb_post SET title = $1 WHERE id = $2', [title, id]);
-    throw new Error('Something went wrong');
-  });
-} catch (error) {
-  // Both tb_* changes and TVIEW updates rolled back
-  // Data remains consistent
-}
-```
-
-### Monitoring Refresh Performance
-
-Track TVIEW refresh performance in your application:
-
-```javascript
-// Monitor refresh queue in development
-const queueStats = await db.query('SELECT pg_tviews_queue_stats()');
-console.log('Refresh queue:', queueStats.rows[0].pg_tviews_queue_stats);
-
-// Check for refresh errors
-const health = await db.query('SELECT * FROM pg_tviews_health_check()');
-if (!health.rows[0].healthy) {
-  console.error('TVIEW refresh issues detected');
-}
-```
-
-## Migration Strategies
-
-### From Manual Refresh
-
-**Before**: Manual materialized view maintenance
-```sql
--- Manual refresh (slow, error-prone)
-REFRESH MATERIALIZED VIEW mv_posts;
-
--- Application code handles consistency
-app.post('/posts', async (req, res) => {
-  await db.query('INSERT INTO posts ...');
-  await db.query('REFRESH MATERIALIZED VIEW mv_posts'); // Manual!
-  res.json(await getPostData());
-});
-```
-
-**After**: Automatic with pg_tviews
-```sql
--- One-time setup
-CREATE TABLE tv_post AS SELECT ...;
-
--- Application code unchanged, automatic refresh
-app.post('/posts', async (req, res) => {
-  await db.query('INSERT INTO tb_post ...'); // Via FraiseQL
-  // TVIEW automatically updated!
-  res.json(await db.query('SELECT data FROM tv_post WHERE id = $1', [id]));
-});
-```
-
-### From Application-Level Caching
-
-**Before**: Application-managed cache
-```javascript
-// Complex caching logic
-const post = await db.query('SELECT * FROM posts WHERE id = $1');
-const author = await db.query('SELECT * FROM users WHERE id = $1');
-const comments = await db.query('SELECT * FROM comments WHERE post_id = $1');
-
-// Manual JSON composition
-const result = {
-  id: post.id,
-  title: post.title,
-  author: { id: author.id, name: author.name },
-  comments: comments.map(c => ({ id: c.id, text: c.text }))
-};
-```
-
-**After**: Pre-computed with pg_tviews
-```javascript
-// Single query, always fresh
-const result = await db.query('SELECT data FROM tv_post WHERE id = $1');
-// Data automatically includes nested relationships
-```
-
-## Testing Strategies
-
-### Unit Testing TVIEWs
-
-Test TVIEW definitions and refresh behavior:
+| SQLSTATE | Condition | Meaning |
+|----------|-----------|---------|
+| 42704 | `undefined_object` | No such TVIEW |
+| 42P07 | `duplicate_table` | The TVIEW already exists |
+| 42601 | `syntax_error` | The definition cannot be read |
+| 0A000 | `feature_not_supported` | A definition pg_tviews cannot maintain |
+| 42501 | `insufficient_privilege` | Not the TVIEW's owner, or a maintenance function not granted |
+| 42P17 | `invalid_object_definition` | TVIEWs that would read each other in a cycle |
+| 55000 | `object_not_in_prerequisite_state` | A commit with refresh work still queued, or a refresh while suspended |
 
 ```sql
--- Test TVIEW creation
-CREATE TABLE tv_test AS
-SELECT p.pk_post, p.id, jsonb_build_object('id', p.id, 'title', p.title) as data
-FROM tb_post p WHERE p.pk_post < 100; -- Limited test data
-
--- Verify structure
-SELECT pk_post, id, jsonb_object_keys(data) as fields FROM tv_test;
-
--- Test refresh behavior
-INSERT INTO tb_post (id, title) VALUES ('test-uuid', 'Test Post');
-SELECT COUNT(*) FROM tv_test WHERE id = 'test-uuid'; -- Should be 1
-
--- Cleanup
-DROP TABLE tv_test;
+DO $$
+BEGIN
+    PERFORM tviews.pg_tviews_refresh('no_such_entity');
+EXCEPTION WHEN undefined_object THEN
+    RAISE NOTICE 'not a TVIEW: %', SQLERRM;
+END $$;
 ```
 
-### Integration Testing
+Messages are one line; the definition or query is in the DETAIL and the fix in the HINT.
+The [error reference](../error-reference.md) lists them all.
 
-Test end-to-end GraphQL workflows:
+## Migrating from materialized views
 
-```javascript
-// Test GraphQL mutation + immediate query
-describe('Post Creation', () => {
-  test('creates post and returns fresh data', async () => {
-    const mutation = `
-      mutation CreatePost($input: CreatePostInput!) {
-        createPost(input: $input) {
-          id
-          title
-          author { name }
-        }
-      }
-    `;
+A materialized view needs a `REFRESH MATERIALIZED VIEW` after writes, which recomputes it
+in full outside the writing transaction. A TVIEW over the same query refreshes the affected
+rows in the writing transaction:
 
-    const result = await graphql(mutation, {
-      input: { title: 'Test Post', authorId: 'user-uuid' }
-    });
+```text
+-- Before
+CREATE MATERIALIZED VIEW mv_post AS SELECT ...;
+-- after every write:
+REFRESH MATERIALIZED VIEW mv_post;
 
-    expect(result.data.createPost).toBeDefined();
-
-    // Immediate query should return fresh data
-    const query = `
-      query GetPost($id: ID!) {
-        post(id: $id) {
-          id
-          title
-          author { name }
-        }
-      }
-    `;
-
-    const freshResult = await graphql(query, {
-      id: result.data.createPost.id
-    });
-
-    expect(freshResult.data.post.title).toBe('Test Post');
-  });
-});
+-- After
+CREATE TABLE tv_post AS SELECT p.pk_post, ..., jsonb_build_object(...) AS data FROM ...;
+-- writes refresh it; nothing to call
 ```
 
-### Performance Testing
+## Testing
 
-Test TVIEW performance under load:
+Test a TVIEW in a transaction that rolls back:
 
-```javascript
-// Load testing TVIEW refreshes
-async function loadTest() {
-  const promises = [];
-  for (let i = 0; i < 100; i++) {
-    promises.push(
-      db.query('INSERT INTO tb_post (id, title, fk_user) VALUES ($1, $2, $3)', [
-        `post-${i}`, `Post ${i}`, 1
-      ])
-    );
-  }
+```sql
+BEGIN;
+INSERT INTO tb_post (identifier, title, fk_user) VALUES ('test-post', 'Test Post', 1);
+SELECT count(*) = 1 AS created FROM tv_post WHERE identifier = 'test-post';
 
-  const start = Date.now();
-  await Promise.all(promises);
-  const duration = Date.now() - start;
-
-  console.log(`100 inserts took ${duration}ms`);
-  console.log(`Average: ${duration/100}ms per insert`);
-
-  // Verify all TVIEWs updated
-  const count = await db.query('SELECT COUNT(*) FROM tv_post');
-  expect(count.rows[0].count).toBeGreaterThanOrEqual(100);
-}
+DELETE FROM tb_post WHERE identifier = 'test-post';
+SELECT count(*) = 0 AS deleted FROM tv_post WHERE identifier = 'test-post';
+ROLLBACK;
 ```
+
+`tviews.pg_tviews_refresh('post')` recomputes a TVIEW from its definition. Comparing the
+table before and after is a way to check that writes kept it exact.
 
 ## Troubleshooting
 
-### TVIEW Not Updating
+### A TVIEW is not updating
 
-**Check triggers are installed:**
 ```sql
-SELECT tgname FROM pg_trigger WHERE tgname LIKE 'tview%';
--- Should see triggers for your TVIEWs
+-- Errors and warnings only (an empty result is healthy)
+SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+
+-- The TVIEW's registration: the tables it reads and how each refreshes it
+SELECT name, base_tables, cascade_kinds, uncascaded_tables, needs_reregister
+FROM tviews.registry WHERE entity = 'post';
+
+-- The triggers on the tables it reads
+SELECT tgrelid::regclass AS on_table, tgname
+FROM pg_trigger WHERE tgname LIKE 'trg_tview_%' ORDER BY 1, 2;
 ```
 
-**Check for errors:**
+A TVIEW with `needs_reregister` set, or one whose stored plan no longer matches the tables,
+is fixed with `tviews.pg_tviews_reregister('post')`. Changes made while triggers were
+suspended are repaired with `tviews.pg_tviews_refresh('post')`.
+
+### Slow reads or writes
+
 ```sql
-SELECT * FROM pg_tviews_health_check();
--- Look for any error messages
+EXPLAIN SELECT data FROM tv_post WHERE identifier = 'hello-world';
+
+SELECT tviews.pg_tviews_debug_queue();  -- keys queued in this transaction
+SELECT * FROM tviews.pg_tviews_performance_stats();
 ```
 
-**Verify TVIEW definition:**
-```sql
-SELECT * FROM pg_tview_meta WHERE entity = 'post';
--- Check if TVIEW is properly registered
-```
+A write that is slow usually reaches many TVIEW rows (a user embedded in every post):
+`pg_tviews_profile()` names the lookup columns with a large fan-out.
 
-### Slow Queries
+## Best practices
 
-**Check indexes:**
-```sql
-SELECT * FROM pg_indexes WHERE tablename = 'tv_post';
--- Ensure proper indexes on id, user_id, and JSONB fields
-```
+- Shape each TVIEW's `data` like its GraphQL type, and project the filter columns the
+  resolvers use.
+- Index for the queries you run, not for every field.
+- Write only to the write tables; do not refresh TVIEWs by hand after writes.
+- Keep chains of TVIEWs embedding TVIEWs short: each level adds a refresh on writes.
 
-**Analyze query performance:**
-```sql
-EXPLAIN ANALYZE SELECT data FROM tv_post WHERE id = 'uuid-here';
--- Look for sequential scans or slow operations
-```
+## See also
 
-**Check cascade depth:**
-```sql
-SELECT pg_tviews_queue_stats();
--- High cascade depths may indicate performance issues
-```
-
-### Memory Issues
-
-**Monitor queue size:**
-```sql
-SELECT pg_tviews_debug_queue();
--- Large queues may indicate refresh backlog
-```
-
-**Check the size of each TVIEW:**
-```sql
-SELECT * FROM pg_tviews_performance_stats();
--- A TVIEW growing faster than its base tables is worth a look
-```
-
-## Best Practices
-
-### Schema Design
-
-1. **Follow Trinity Pattern**: Always use id/pk_/fk_ consistently
-2. **Include All Relationships**: Pre-compute JOINs in TVIEWs for fast queries
-3. **Use Appropriate Data Types**: UUID for IDs, integer for FKs and PKs
-4. **Plan Cascade Depth**: Keep dependency chains shallow (<3 levels)
-
-### TVIEW Design
-
-1. **Match GraphQL Schema**: Design TVIEW JSONB to match your GraphQL types exactly
-2. **Include Filtering Fields**: Add UUID FKs for common query patterns
-3. **Pre-compute Aggregations**: Include counts, averages in JSONB for fast access
-4. **Use Efficient JOINs**: Prefer INNER JOINs, avoid complex subqueries
-
-### Application Integration
-
-1. **Trust Automatic Updates**: Don't manually refresh TVIEWs
-2. **Use UUIDs for Filtering**: Leverage user_id, category_id etc. for fast queries
-3. **Monitor Performance**: Track refresh metrics in production
-4. **Test Thoroughly**: Verify TVIEW updates work in your specific schema
-
-### Performance
-
-1. **Enable Statement Triggers**: For bulk operations and high-throughput scenarios
-2. **Index Strategically**: Create indexes for your actual query patterns
-3. **Monitor Queue Stats**: Watch for cascade performance issues
-4. **Profile Regularly**: Use EXPLAIN ANALYZE to optimize slow queries
-
-## See Also
-
-- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md) - Framework patterns
-- [API Reference](../reference/api.md) - Complete function reference
-- [Performance Tuning](../operations/performance-tuning.md) - Optimization strategies
-- [Troubleshooting Guide](../operations/troubleshooting.md) - Common issues and solutions
+- [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md)
+- [API Reference](../reference/api.md)
+- [GraphQL Cascade](graphql-cascade.md)
+- [Aggregate TVIEWs](aggregate-tviews.md)
+- [Performance Tuning](../operations/performance-tuning.md)
+- [Troubleshooting Guide](../operations/troubleshooting.md)

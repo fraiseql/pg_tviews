@@ -5,9 +5,9 @@
 **Transactional Materialized Views with Incremental Refresh for PostgreSQL**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
-[![Rust](https://img.shields.io/badge/Rust-1.81%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.11-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%E2%80%9318-blue.svg)](https://www.postgresql.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.98-orange.svg)](https://www.rust-lang.org/)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.25-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:
@@ -76,7 +76,7 @@ class Post: ...
 
 ## 📋 Version Status
 
-**Current Version**: `0.1.0-beta.18` (September 2026)
+**Current Version**: `0.1.0-beta.25` (October 2026)
 - **Status**: Public Beta - Feature-complete, API may change
 - **Production Use**: Suitable for evaluation, not mission-critical systems
 - **Support**: Community support via GitHub issues
@@ -135,24 +135,29 @@ once in the server log, and `pg_tviews_health_check()` reports it. Writes send n
 
 ---
 
-## 🔑 Trinity Identifier Pattern
+## 🔑 Identifiers
 
-pg_tviews follows FraiseQL's trinity identifier conventions for optimal GraphQL Cascade performance:
+A TVIEW's definition outputs `pk_<entity>` (the first such column names the
+entity; with `DISTINCT ON`, its key names the rows), and usually `id` and `data`.
+Nothing else is a naming rule: base tables, join columns and the column holding an
+embedded TVIEW's key may have any names, because pg_tviews reads the definition's
+query tree, not its spelling.
 
-- `id` (UUID): Public identifier for GraphQL/REST APIs
-- `pk_entity` (integer): Primary key for efficient joins and lineage tracking
-- `fk_*` (integer): Foreign keys for cascade propagation
-- `identifier` (text): Optional unique slugs for SEO-friendly URLs
-- `{parent}_id` (UUID): Optional UUID FKs for FraiseQL filtering
+FraiseQL's trinity identifiers fit this naturally:
 
-Example TVIEW with full trinity support:
+- `id` (UUID): public identifier for GraphQL/REST APIs
+- `pk_<entity>` (integer): the row key, for joins and refreshes
+- `identifier` (text): optional unique slug
+- `{parent}_id` (UUID): optional UUID of a parent, for filtering
+
+Example:
 ```sql
 CREATE TABLE tv_post AS
 SELECT
     p.pk_post,           -- lineage root
     p.id,                -- GraphQL ID
     p.identifier,        -- SEO slug
-    p.fk_user,           -- cascade FK
+    p.fk_user,           -- the author's key
     u.id as user_id,     -- FraiseQL filtering FK
     jsonb_build_object(
         'id', p.id,
@@ -198,7 +203,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 
 - **📋 SBOM Generation**: Automated Software Bill of Materials in SPDX 2.3 and CycloneDX 1.5 formats
 - **🔐 Cryptographic Signing**: Sigstore keyless + GPG maintainer signatures for all releases
-- **🛡️ Dependency Security**: Automated vulnerability scanning with cargo-audit + cargo-vet audits
+- **🛡️ Dependency Security**: Automated vulnerability and license checks with cargo-audit and cargo-deny
 - **🔄 Automated Updates**: Dependabot integration for security patches and updates
 - **🏗️ Reproducible Builds**: Docker-based build environment with locked dependencies
 - **🌍 International Compliance**: EU Cyber Resilience Act, US EO 14028, PCI-DSS 4.0, ISO 27001
@@ -385,12 +390,13 @@ SELECT pg_tviews_set_logged('my_view', true);   -- LOGGED, readable on standbys
 > GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
 > extension) so they are registered at backend start.
 
-### TVIEW naming convention
+### What a definition needs
 
-A TVIEW's derived entity must be refreshable: either a `tb_<entity>` base table
-exists (its primary key is `pk_<entity>`), or the definition joins the base tables
-it derives from so cascade paths can route changes to it. `pg_tviews_create`
-rejects a definition that satisfies neither, since it could never refresh.
+A TVIEW's definition is one `SELECT` that outputs `pk_<entity>` and reads at least
+one table. Every table it reads either maps its writes to the TVIEW's keys or
+follows the TVIEW's `uncascaded_policy`: under the default, `error`, a definition
+reading a table whose writes cannot be traced is refused at creation, with the
+reason and how to declare a full refresh instead.
 
 ### Safety Guarantees
 

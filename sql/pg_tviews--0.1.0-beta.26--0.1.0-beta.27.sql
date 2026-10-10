@@ -196,6 +196,19 @@ END
 $$;
 
 -- Re-derive every TVIEW, dependencies first. Until then a row's plan is empty.
+-- A row registered before the row identity (ADR 0169) names its rows by
+-- pk_<entity>, which the library no longer assumes: record it, so each TVIEW
+-- re-derived below reads the rows of those not re-derived yet.
+UPDATE @extschema@.pg_tview_meta m
+   SET identity = pg_catalog.jsonb_build_object('kind', 'pk', 'columns',
+           pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+               'name', a.attname::pg_catalog.text,
+               'type', pg_catalog.format_type(a.atttypid, NULL))))
+  FROM pg_catalog.pg_attribute a
+ WHERE m.identity IS NULL
+   AND a.attrelid = m.table_oid::pg_catalog.oid
+   AND a.attname = 'pk_' || m.entity
+   AND NOT a.attisdropped;
 UPDATE @extschema@.pg_tview_meta SET plan = '{"version": 1}';
 DO $$
 DECLARE
@@ -314,7 +327,15 @@ BEGIN
     FOR r IN
         SELECT m.entity AS ent, c.oid AS rel, n.nspname AS nsp, c.relname AS tbl,
                c.relpersistence AS pers, c.reltuples, c.relpages, c.reltoastrelid,
-               c.reloptions
+               c.reloptions,
+               -- The columns its rows are looked up by: those holding an
+               -- embedded TVIEW's key, and those a fan-out patch writes through.
+               ARRAY(SELECT jsonb_array_elements_text(e->'lookups')
+                     FROM jsonb_array_elements(m.plan->'embeds') e
+                     UNION
+                     SELECT t->'fanout'->>'lookup_col'
+                     FROM jsonb_array_elements(m.plan->'tables') t
+                     WHERE t ? 'fanout') AS lookups
         FROM @extschema@.pg_tview_meta m
         JOIN pg_class c ON c.oid = m.table_oid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -353,26 +374,25 @@ BEGIN
         END IF;
 
         -- Never-scanned indexes, except the primary key, unique indexes and the
-        -- propagation indexes cascades need (leading fk_* column).
+        -- propagation indexes cascades need (leading with a lookup column).
         unused_indexes := ARRAY(
             SELECT quote_ident(si.indexrelname) FROM pg_index i
             JOIN pg_stat_all_indexes si ON si.indexrelid = i.indexrelid
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
             WHERE i.indrelid = r.rel AND NOT i.indisprimary AND NOT i.indisunique
-              AND si.idx_scan = 0 AND a.attname NOT LIKE 'fk\_%'
+              AND si.idx_scan = 0 AND a.attname <> ALL (r.lookups)
             ORDER BY 1);
 
-        -- Integer fk_* columns that no index leads with: parents are looked up by them.
+        -- Lookup columns that no index leads with.
         missing_propagation_indexes := ARRAY(
             SELECT a.attname::TEXT FROM pg_attribute a
             WHERE a.attrelid = r.rel AND a.attnum > 0 AND NOT a.attisdropped
-              AND a.attname LIKE 'fk\_%'
-              AND a.atttypid IN ('int2'::REGTYPE, 'int4'::REGTYPE, 'int8'::REGTYPE)
+              AND a.attname = ANY (r.lookups)
               AND NOT EXISTS (SELECT 1 FROM pg_index i
                               WHERE i.indrelid = r.rel AND i.indkey[0] = a.attnum)
             ORDER BY 1);
 
-        -- Estimated rows per key of each fk_* column, from the planner statistics:
+        -- Estimated rows per key of each of those columns, from the planner statistics:
         -- p50 = rows / distinct keys, max = top MCV, p99 = the MCV at the 1% rank
         -- (or the average of the non-MCV keys when the MCV list is shorter).
         fanout := (
@@ -395,7 +415,7 @@ BEGIN
                                                       ELSE s.n_distinct END, 1) * 0.01)::INTEGER, 1) AS k
                   FROM pg_stats s
                   WHERE s.schemaname = r.nsp AND s.tablename = r.tbl
-                    AND s.attname LIKE 'fk\_%' AND r.reltuples > 0) x);
+                    AND s.attname = ANY (r.lookups) AND r.reltuples > 0) x);
 
         warnings := ARRAY[]::TEXT[];
         FOREACH col IN ARRAY missing_propagation_indexes LOOP
@@ -461,3 +481,20 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- The column default matches pg_tviews.uncascaded_policy's default; every
+-- registration writes the column, so no row changes.
+ALTER TABLE @extschema@.pg_tview_meta ALTER COLUMN uncascaded_policy SET DEFAULT 'error';
+
+-- Maintenance acting on every TVIEW is not for PUBLIC: an operator role is
+-- granted it (docs/user-guides/operators.md). Each function acting on one TVIEW
+-- checks that the caller owns it.
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.pg_tviews_refresh_all(),
+    @extschema@.pg_tviews_refresh_all_entities(),
+    @extschema@.pg_tviews_rebuild_all(BOOLEAN),
+    @extschema@.pg_tviews_reregister_all(BOOLEAN),
+    @extschema@.pg_tviews_set_logged(TEXT, BOOLEAN),
+    @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
+    @extschema@.pg_tviews_invalidate_caches(OID)
+FROM PUBLIC;

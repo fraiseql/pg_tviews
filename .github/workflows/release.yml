@@ -5,24 +5,35 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default: the called workflows build third-party code (jsonb_delta,
+# confiture's dependencies). Only build-and-sign may write.
 permissions:
-  contents: write
-  id-token: write       # Required for Sigstore keyless signing
-  attestations: write   # Required for actions/attest-build-provenance to persist the attestation
+  contents: read
 
 jobs:
-  # confiture's TVIEW suites must pass at the pinned confiture ref (#135).
+  # Nothing is built or published unless the tagged commit passes every suite,
+  # the lints, and confiture's TVIEW suites at the pinned confiture ref.
+  ci:
+    uses: ./.github/workflows/ci.yml
+  lint:
+    uses: ./.github/workflows/clippy.yml
   confiture:
     uses: ./.github/workflows/confiture.yml
+  upgrade:
+    uses: ./.github/workflows/upgrade.yml
 
   build-and-sign:
-    needs: confiture
+    needs: [ci, lint, confiture, upgrade]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release
+      id-token: write       # Sigstore keyless signing
+      attestations: write   # actions/attest-build-provenance
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Install PostgreSQL 18 (PGDG)
         run: |
@@ -69,16 +80,19 @@ jobs:
           mkdir -p dist/lib dist/extension
           cp "${pkg}$("$PG_CONFIG" --pkglibdir)/pg_tviews.so" dist/lib/
           cp "${pkg}$("$PG_CONFIG" --sharedir)"/extension/pg_tviews* dist/extension/
-          tar czf pg_tviews-${{ github.ref_name }}.tar.gz -C dist lib extension
+          # Deterministic archive (as scripts/reproducible-build.sh writes it).
+          tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
+            -cf - -C dist lib extension | gzip -n > pg_tviews-${{ github.ref_name }}.tar.gz
           tar tzf pg_tviews-${{ github.ref_name }}.tar.gz
+          sha256sum pg_tviews-${{ github.ref_name }}.tar.gz > SHA256SUMS
 
       - name: Install SBOM tools
         # scripts/generate-sbom.sh calls `cargo sbom` and `cargo cyclonedx`; the
         # release job (unlike sbom.yml) did not install them, so the SBOM step
         # failed with "no such command: sbom" before "Create release" ran.
         run: |
-          cargo install cargo-sbom
-          cargo install cargo-cyclonedx
+          cargo install --locked cargo-sbom
+          cargo install --locked cargo-cyclonedx
 
       - name: Generate SBOM
         run: ./scripts/generate-sbom.sh ${{ github.ref_name }}
@@ -99,16 +113,18 @@ jobs:
             --bundle sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json.sigstore \
             sbom/pg_tviews-${{ github.ref_name }}.cyclonedx.json
 
+      # Provenance of the tarball users download, attested where it is built.
       - name: Generate provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: pg_tviews-${{ github.ref_name }}.tar.gz
 
       - name: Create release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             pg_tviews-${{ github.ref_name }}.tar.gz
+            SHA256SUMS
             pg_tviews-${{ github.ref_name }}.tar.gz.sigstore
             sbom/pg_tviews-${{ github.ref_name }}.spdx.json
             sbom/pg_tviews-${{ github.ref_name }}.spdx.json.sigstore
@@ -117,3 +133,33 @@ jobs:
             sbom/pg_tviews-${{ github.ref_name }}.sbom.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # crates.io gets the release once it is built and signed. `cargo publish`
+  # verifies the packaged crate builds, which needs PostgreSQL's headers.
+  publish:
+    needs: build-and-sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install PostgreSQL 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18
+
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx --version 0.17.0
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+
+      - name: Publish to crates.io
+        run: cargo publish --no-default-features --features pg18
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

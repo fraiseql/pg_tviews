@@ -486,6 +486,7 @@ fn several_occurrences_union_their_queries() {
 }
 
 #[test]
+#[allow(clippy::literal_string_with_formatting_args)] // Reason: `{r:7}` and `{c:7:2}` are template placeholders, not format arguments
 fn templates_round_trip_braces_and_placeholders() {
     let template = format!(
         "SELECT d.{{c:7:2}} FROM {{r:7}} d WHERE d.{{c:7:3}} = {}",

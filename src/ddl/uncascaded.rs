@@ -194,7 +194,7 @@ pub(crate) struct Uncascaded {
 impl Uncascaded {
     /// The `time_refresh` the catalog stores: only for a TVIEW that reads the
     /// time.
-    pub(crate) fn time_refresh(&self) -> Option<&'static str> {
+    pub(crate) const fn time_refresh(&self) -> Option<&'static str> {
         if self.time_dependent {
             self.declarations.time_refresh.stored()
         } else {
@@ -251,9 +251,8 @@ fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> Str
 /// policy: an ERROR that aborts the create and says what to declare instead, a
 /// WARNING, or a NOTICE.
 ///
-/// # Errors
-/// Never returns one: under the `error` policy the ERROR is raised here.
-pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
+/// Under the `error` policy the ERROR is raised here.
+pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) {
     let under = |policy: UncascadedPolicy| -> Vec<&UncascadedTable> {
         uncascaded
             .tables
@@ -298,7 +297,6 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) -> TViewResult<()> {
             describe(tview, &refreshed, "will refresh all rows of")
         );
     }
-    Ok(())
 }
 
 /// Add the tables the declared functions read to `lineage`, and return
@@ -376,15 +374,10 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
 /// nothing would refresh it when those tables change, so they are refused
 /// under `error` and `full_refresh`, and warned about under `warn`.
 ///
-/// # Errors
-/// Never returns one: a refusal is raised here.
-pub(crate) fn report_functions(
-    tview: &str,
-    functions: &[String],
-    policy: UncascadedPolicy,
-) -> TViewResult<()> {
+/// A refusal is raised here.
+pub(crate) fn report_functions(tview: &str, functions: &[String], policy: UncascadedPolicy) {
     let Some(first) = functions.first() else {
-        return Ok(());
+        return;
     };
     let names = functions.join(", ");
     let (calls, it) = if functions.len() == 1 {
@@ -418,7 +411,6 @@ pub(crate) fn report_functions(
     pg_sys::panic::ErrorReport::new(code, message, function_name!())
         .set_hint(hint)
         .report(level);
-    Ok(())
 }
 
 /// Report how `tview` reads the current time: its rows change at a

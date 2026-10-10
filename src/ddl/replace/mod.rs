@@ -251,7 +251,6 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
         if column == pk
             || column == "id"
             || column == "data"
-            || column.starts_with("fk_")
             || stored.get(&column).is_none_or(|t| *t == view_type)
         {
             continue;
@@ -498,7 +497,11 @@ fn replace_in_place(
     })?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
     crate::dependency::sync_entity_triggers(&reads, entity)?;
-    reconcile(entity, meta)?;
+    {
+        // The rows are recomputed as the TVIEW's owner, as every refresh is.
+        let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
+        reconcile(entity, meta)?;
+    }
 
     for (dependent, table) in &dependents {
         let _owner = crate::owner::AsOwner::of_table(*table)?;

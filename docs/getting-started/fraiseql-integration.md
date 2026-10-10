@@ -1,351 +1,224 @@
 # FraiseQL Integration Guide
 
-Learn how pg_tviews fits into the FraiseQL ecosystem and powers GraphQL Cascade with automatic incremental refresh.
+How pg_tviews fits FraiseQL's CQRS layout, and which FraiseQL conventions it uses.
 
 ## FraiseQL CQRS Overview
 
-FraiseQL implements Command Query Responsibility Segregation (CQRS) using three layers:
+FraiseQL separates write models from read models:
 
 ```
-tb_* tables  →  v_* views  →  tv_* tables  →  GraphQL Cascade
-(normalized)    (declarative)  (materialized)    (real-time)
+tb_* tables  →  v_* views  →  tv_* tables  →  GraphQL
+(normalized)    (declarative)  (materialized)
 ```
 
-- **tb_* tables**: Normalized write models (commands)
-- **v_* views**: Declarative read model definitions
-- **tv_* tables**: Incrementally refreshed materialized views
-- **GraphQL Cascade**: Always-fresh nested data for queries
+- **`tb_*` tables**: normalized write models, written by mutations
+- **`v_*` views**: declarative read model definitions
+- **`tv_*` tables**: the read models materialized by pg_tviews, kept up to date inside
+  each writing transaction
+- **GraphQL**: queries read `tv_*.data`
 
-pg_tviews automates the `v_*` → `tv_*` transformation with surgical updates.
+pg_tviews maintains `tv_*` from its definition, which may be the `v_*` view itself
+(`CREATE TABLE tv_post AS SELECT * FROM v_post`).
 
-## Trinity Identifier Pattern
+## FraiseQL's identifiers, and what pg_tviews requires
 
-pg_tviews follows FraiseQL's trinity identifier pattern for optimal GraphQL performance:
+FraiseQL names its columns by role (the "trinity" identifiers):
 
-### Core Identifiers
+| Column | Type | Role in FraiseQL |
+|---|---|---|
+| `pk_<entity>` | `bigint` | internal primary key, used in joins |
+| `id` | `uuid` | public GraphQL identifier |
+| `identifier` | `text` | human-readable unique slug (optional) |
+| `fk_<parent>` | `bigint` | foreign key to the parent's `pk_<parent>` |
+| `<parent>_id` | `uuid` | the parent's public id, for filtering (optional) |
 
-- **`id` (UUID)**: Public GraphQL identifier
-- **`pk_entity` (integer)**: Primary key for efficient joins and lineage
-- **`fk_*` (integer)`**: Foreign keys for cascade propagation
+These names fit pg_tviews, but only one is required: the definition outputs a
+`pk_<entity>` column named after the TVIEW. pg_tviews reads the definition from
+PostgreSQL's query tree, so it follows joins whatever the tables and columns are
+called. In a TVIEW's table, some names fix the column type: `pk_<entity>` and `fk_*`
+are `bigint`, `id` is `uuid`, `data` is `jsonb`; `id` and `*_id` columns are indexed
+([DDL Reference](../reference/ddl.md#columns)).
 
-### Optional Identifiers
-
-- **`identifier` (text)**: SEO-friendly unique slugs
-- **`{parent}_id` (UUID)`**: Parent UUID FKs for filtering
-
-### Example Schema
+## Example
 
 ```sql
--- User entity
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+SET search_path = "$user", public, tviews;
+
 CREATE TABLE tb_user (
-    pk_user BIGSERIAL PRIMARY KEY,    -- lineage root
-    id UUID NOT NULL DEFAULT gen_random_uuid(),  -- GraphQL ID
-    identifier TEXT UNIQUE,           -- SEO slug (optional)
-    name TEXT NOT NULL,
-    email TEXT UNIQUE
+    pk_user BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    identifier TEXT UNIQUE,
+    name TEXT NOT NULL
 );
 
--- Post entity
 CREATE TABLE tb_post (
-    pk_post BIGSERIAL PRIMARY KEY,    -- lineage root
-    id UUID NOT NULL DEFAULT gen_random_uuid(),  -- GraphQL ID
-    identifier TEXT UNIQUE,           -- SEO slug (optional)
+    pk_post BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    identifier TEXT UNIQUE,
     title TEXT NOT NULL,
     content TEXT,
-    fk_user BIGINT REFERENCES tb_user(pk_user),  -- cascade FK
-    user_id UUID REFERENCES tb_user(id)         -- filtering FK (optional)
+    fk_user BIGINT NOT NULL REFERENCES tb_user (pk_user)
 );
+
+CREATE TABLE tb_comment (
+    pk_comment BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    body TEXT NOT NULL,
+    fk_post BIGINT NOT NULL REFERENCES tb_post (pk_post)
+);
+
+INSERT INTO tb_user (identifier, name) VALUES ('alice', 'Alice');
+INSERT INTO tb_post (identifier, title, content, fk_user)
+VALUES ('hello', 'Hello', 'First post', 1);
 ```
 
-## TVIEW Creation Patterns
-
-### Basic TVIEW
+### A TVIEW per entity
 
 ```sql
+CREATE TABLE tv_user AS
+SELECT u.pk_user, u.id, u.identifier,
+       jsonb_build_object('id', u.id, 'identifier', u.identifier, 'name', u.name) AS data
+FROM tb_user u;
+
 CREATE TABLE tv_post AS
 SELECT
-    p.pk_post as pk_post,  -- Required: lineage root
-    p.id,                  -- GraphQL ID
-    p.fk_user,             -- Cascade propagation
-    jsonb_build_object(
-        'id', p.id,
-        'title', p.title,
-        'content', p.content
-    ) as data              -- Required: JSONB read model
-FROM tb_post p;
-```
-
-### Full Trinity TVIEW
-
-```sql
-CREATE TABLE tv_post AS
-SELECT
-    p.pk_post as pk_post,  -- lineage root
-    p.id,                  -- GraphQL ID
-    p.identifier,          -- SEO slug
-    p.fk_user,             -- cascade FK
-    u.id as user_id,       -- filtering FK
+    p.pk_post,
+    p.id,
+    p.identifier,
+    p.fk_user,
+    u.id AS user_id,
     jsonb_build_object(
         'id', p.id,
         'identifier', p.identifier,
         'title', p.title,
         'content', p.content,
-        'author', jsonb_build_object(
-            'id', u.id,
-            'identifier', u.identifier,
-            'name', u.name
-        )
-    ) as data
+        'author', u.data
+    ) AS data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+JOIN tv_user u ON u.pk_user = p.fk_user;
 ```
 
-### Your `v_<entity>` views, and other TVIEWs
+`tv_post` embeds `tv_user`'s document by joining its table on its key. A rename
+refreshes `tv_user`, and that refresh refreshes the posts embedding the user, in the
+same flush.
 
-The schema keeps only what the templates generate. A TVIEW's backing view lives in
-pg_tviews' own schema, `tviews.<schema>__tv_<entity>`, so the application's `v_post`
-query view and `tv_post` coexist: `CREATE TABLE tv_post AS SELECT * FROM v_post`
-materializes it. A TVIEW that embeds another reads its table:
+### Embedding a list
 
 ```sql
 CREATE TABLE tv_comment AS
 SELECT c.pk_comment, c.id, c.fk_post,
-       jsonb_build_object('body', c.body, 'post', p.data) AS data
-FROM tb_comment c
-JOIN tv_post p ON p.pk_post = c.fk_post;
-```
+       jsonb_build_object('id', c.id, 'body', c.body) AS data
+FROM tb_comment c;
 
-A definition that reads a table no cascade can trace (an uncorrelated subquery, a
-window function without a `PARTITION BY` linked to the key, a recursive CTE, a
-materialized view) is refused at create unless it declares what a write
-to that table does: `pg_tviews_create_or_replace('tv_post', $$ … $$, options =>
-'{"uncascaded_policy": "full_refresh"}')`, or `SET pg_tviews.uncascaded_policy =
-'full_refresh'` before `CREATE TABLE … AS`. The error says which table and why.
-
-## GraphQL Cascade Integration
-
-### Automatic Updates
-
-pg_tviews automatically refreshes TVIEWs during transactions:
-
-```sql
--- FraiseQL mutation creates/updates tb_* tables
-INSERT INTO tb_post (id, title, content, fk_user)
-VALUES ('uuid-here', 'New Post', 'Content', 1);
-
--- pg_tviews automatically updates tv_post within the same transaction
--- GraphQL Cascade immediately sees fresh data
-COMMIT;
-```
-
-### Query Patterns
-
-```sql
--- UUID-based single post query
-SELECT data FROM tv_post WHERE id = 'uuid-here';
-SELECT data FROM tv_post WHERE data->>'identifier' = 'my-post-slug';
-SELECT data FROM tv_post WHERE user_id = 'author-uuid';
-```
-
-## Cascade Propagation
-
-### Multi-Level Dependencies
-
-pg_tviews automatically handles cascading updates:
-
-```sql
--- When a user changes their name:
-UPDATE tb_user SET name = 'New Name' WHERE pk_user = 1;
-
--- pg_tviews cascades to update all their posts:
--- tv_post: Updates author.name in all related posts
--- Automatic dependency resolution ensures correct order
-```
-
-### Dependency Graph
-
-```
-tb_user ──┬─cascade──▶ tv_user
-          │
-          └─cascade──▶ tv_post (via fk_user)
-                      │
-                      └─cascade──▶ tv_comment (via fk_post)
-```
-
-## Performance Optimization
-
-### Statement-Level Triggers
-
-Nothing to enable: every TVIEW gets a statement-level trigger that refreshes the
-affected rows once per statement.
-
-### Bulk Operations
-
-pg_tviews optimizes multiple updates:
-
-```sql
--- Single transaction with multiple updates
-BEGIN;
-INSERT INTO tb_post (title, fk_user) VALUES ('Post 1', 1);
-INSERT INTO tb_post (title, fk_user) VALUES ('Post 2', 1);
-INSERT INTO tb_post (title, fk_user) VALUES ('Post 3', 1);
-COMMIT;
-
--- pg_tviews: 2 queries total (1 SELECT, 1 UPDATE) instead of 6
-```
-
-### JSONB Optimization
-
-Use `jsonb_delta` extension for 2× performance boost:
-
-```sql
--- Surgical JSONB updates instead of full replacement
--- Especially beneficial for large nested objects
-```
-
-## Migration from Manual Refresh
-
-### Before: Manual Maintenance
-
-```sql
--- Manual refresh (error-prone, slow)
-REFRESH MATERIALIZED VIEW mv_posts;
-
--- Or custom triggers (complex, buggy)
-CREATE OR REPLACE FUNCTION refresh_posts()...
-```
-
-### After: Automatic with pg_tviews
-
-```sql
--- One-time setup
-CREATE TABLE tv_post AS SELECT...;
-
--- Automatic forever
--- Just use your database normally!
-```
-
-## Best Practices
-
-### Schema Design
-
-1. **Always use pk_ prefix** for integer primary keys
-2. **Always use fk_ prefix** for integer foreign keys
-3. **Include id (UUID) columns** for GraphQL exposure
-4. **Add identifier columns** for SEO-friendly URLs
-5. **Include parent UUID FKs** for efficient filtering
-
-### TVIEW Design
-
-1. **Include all cascade FKs** in SELECT list
-2. **Use descriptive JSONB structure** matching GraphQL schema
-3. **Include relevant parent UUIDs** for filtering
-4. **Keep TVIEWs focused** on specific use cases
-
-### Performance
-
-1. **Enable statement triggers** for bulk operations
-2. **Consider jsonb_delta** for large JSONB objects
-3. **Monitor cascade depth** to avoid performance issues
-4. **Use appropriate indexing** on TVIEW tables
-
-## Advanced Patterns
-
-### Computed Fields
-
-```sql
-CREATE TABLE tv_post AS
+SELECT pg_tviews_create_or_replace('tv_post', $$
 SELECT
-    p.pk_post,
-    p.id,
-    p.fk_user,
+    p.pk_post, p.id, p.identifier, p.fk_user, u.id AS user_id,
     jsonb_build_object(
         'id', p.id,
+        'identifier', p.identifier,
         'title', p.title,
-        'word_count', array_length(string_to_array(p.content, ' '), 1),
-        'author', jsonb_build_object('id', u.id, 'name', u.name)
-    ) as data
+        'author', u.data,
+        'comments', COALESCE(
+            (SELECT jsonb_agg(c.data ORDER BY c.pk_comment)
+             FROM tv_comment c WHERE c.fk_post = p.pk_post),
+            '[]'::jsonb)
+    ) AS data
 FROM tb_post p
-JOIN tb_user u ON p.fk_user = u.pk_user;
+JOIN tv_user u ON u.pk_user = p.fk_user
+$$);
 ```
 
-### Array Relationships
+`pg_tviews_create_or_replace()` changed the definition in place (`replaced`: same
+columns). A comment written, changed or deleted refreshes its post.
+
+## Writes and reads
+
+A mutation writes the `tb_*` tables; the TVIEW rows it affects are refreshed inside the
+same transaction, at the end of each statement, so the mutation can return them:
 
 ```sql
-CREATE TABLE tv_post AS
-SELECT
-    p.pk_post,
-    p.id,
-    p.fk_user,
-    jsonb_build_object(
-        'id', p.id,
-        'title', p.title,
-        'tags', (
-            SELECT jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name))
-            FROM tb_tag t
-            JOIN tb_post_tag pt ON t.pk_tag = pt.fk_tag
-            WHERE pt.fk_post = p.pk_post
-        )
-    ) as data
-FROM tb_post p;
+BEGIN;
+INSERT INTO tb_comment (body, fk_post) VALUES ('Nice post', 1);
+UPDATE tb_user SET name = 'Alice Martin' WHERE identifier = 'alice';
+SELECT data FROM tv_post WHERE identifier = 'hello';   -- both changes, already
+COMMIT;
 ```
 
-## Monitoring Integration
+Queries read `data`, filtered on the indexed columns:
 
-### Health Checks
+```sql
+SELECT data FROM tv_post WHERE id = (SELECT id FROM tb_post WHERE identifier = 'hello');
+SELECT data FROM tv_post WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice');
+```
+
+## What a write refreshes
+
+```sql
+SELECT name, cascade_kinds FROM tviews.registry ORDER BY name;
+```
+
+| TVIEW | Table | Kind | Meaning |
+|---|---|---|---|
+| `tv_user` | `tb_user` | `local` | each changed row's key is read off the row |
+| `tv_post` | `tb_post` | `local` | |
+| `tv_post` | `tv_user` | `propagated` | a refreshed user refreshes the posts embedding it |
+| `tv_post` | `tv_comment` | `mapped` | a refreshed comment refreshes its post, through `fk_post`, in the same flush |
+| `tv_comment` | `tb_comment` | `local` | |
+
+A definition that reads a table no condition links to the key (an uncorrelated
+subquery, a window function without a `PARTITION BY` linked to the key, a recursive CTE,
+a materialized view) is refused unless it declares what a write to that table does
+(`uncascaded_policy`, `uncascaded_tables`): see
+[Tables no cascade reaches](../reference/ddl.md#tables-no-cascade-reaches).
+
+## Performance notes
+
+- Every TVIEW gets a statement-level trigger: a bulk statement refreshes the rows it
+  affected once, at its end.
+- With the `jsonb_delta` extension installed, eligible single-row updates patch the
+  stored documents instead of recomputing them
+  ([Installation](installation.md#jsonb_delta)).
+- `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes()` find the
+  indexes a TVIEW's lookups need ([Profile](../reference/profile.md)).
+
+## Monitoring
 
 ```sql
 SELECT * FROM pg_tviews_health_check();
-```
-
-### Size and Row Counts
-
-```sql
 SELECT * FROM pg_tviews_performance_stats();
-```
-
-### Queue Statistics (this session's transaction)
-
-```sql
-SELECT pg_tviews_queue_stats();
+SELECT pg_tviews_queue_stats();   -- this session's current transaction
 ```
 
 ## Troubleshooting
 
-### Common Issues
+**A TVIEW is not updating:**
 
-**TVIEW not updating:**
 ```sql
--- Check triggers are installed
-SELECT * FROM pg_trigger WHERE tgname LIKE 'tview%';
+-- the triggers on the base tables
+SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
--- Check for errors
-SELECT * FROM pg_tviews_health_check();
+-- missing triggers, unreadable plans
+SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
 ```
 
-**Performance degradation:**
+`SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs missing triggers (it is
+not executable by `PUBLIC`: [Operator role](../user-guides/operators.md#operator-role)),
+and `SELECT pg_tviews_refresh('post')` recomputes a TVIEW in full.
+
+**What depends on what:**
+
 ```sql
--- Check what a write to tb_user refreshes
 SELECT * FROM pg_tviews_show_cascade_path('user');
-
--- Size and indexes of each TVIEW
-SELECT * FROM pg_tviews_performance_stats();
-```
-
-**JSONB too large:**
-```sql
--- Consider breaking into multiple TVIEWs
--- Or use jsonb_delta for surgical updates
 ```
 
 ## Next Steps
 
 - **[Developer Guide](../user-guides/developers.md)** - Application integration patterns
 - **[Architect Guide](../user-guides/architects.md)** - CQRS design decisions
+- **[DDL Reference](../reference/ddl.md)** - What a definition may contain
 - **[API Reference](../reference/api.md)** - Complete function reference
 
 ## Related Resources
 
 - **FraiseQL Framework**: [github.com/fraiseql/fraiseql](https://github.com/fraiseql/fraiseql)
-- **GraphQL Cascade**: Learn about FraiseQL's real-time query capabilities
-- **CQRS Patterns**: Best practices for command-query separation

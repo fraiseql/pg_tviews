@@ -302,14 +302,8 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> 
     })
 }
 
-/// Quote a SQL identifier for safe use in queries.
-///
-/// Doubles any internal double-quotes and wraps the identifier in double-quotes.
-/// This is safe for identifiers that are already constrained by `PostgreSQL`
-/// (entity names, column names, etc. which match `\w+`).
-///
-/// # Examples
-///
+/// Quote a SQL identifier for safe use in queries: always double-quoted, with
+/// internal double quotes doubled, as `quote_ident` does for any name.
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))

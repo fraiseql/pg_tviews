@@ -78,7 +78,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     );
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
-        super::upsert_conflict_action(&qi_tv, &col_names, key_col, None)
+        super::upsert_conflict_action(&qi_tv, &col_names, key_col)
     );
 
     // DELETE tview rows whose backing-view row has disappeared (deleted base rows).

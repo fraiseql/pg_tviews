@@ -1,6 +1,7 @@
 # ADR 0094: Large-document refresh (TOAST/WAL cost of one-field changes)
 
-- Status: Accepted (no code change; guidance only)
+- Status: Accepted (no code change; guidance only). The `pg_tviews_profile()` follow-up shipped: it
+  warns when TOAST holds over 30% of a TVIEW and points here.
 - Issue: #94
 - Harness: `test/sql/real_benchmark/scenarios/toast_knobs.sh` (built on #83)
 - Data: `test/sql/real_benchmark/results/toast/{random,text,unlogged}/physical.csv`

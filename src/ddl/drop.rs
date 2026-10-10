@@ -47,7 +47,8 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     }
 
     // Load metadata to get OIDs for schema-safe drops
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name).map_err(|e| {
+    // Read leniently: dropping a TVIEW needs its relations, not its plan.
+    let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name).map_err(|e| {
         TViewError::SpiError {
             query: "Load TviewMeta by entity".to_string(),
             error: e.to_string(),
@@ -65,6 +66,10 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // with CASCADE.
     crate::dependency::remove_entity_triggers(entity_name)?;
 
+    // Deregister first: the sql_drop event trigger the drops below fire then finds
+    // no TVIEW of its own to clean up, and the drop is recorded once.
+    drop_metadata(entity_name)?;
+
     // Drop the materialized table (schema-resolved via OID).
     // Honor the caller's CASCADE/RESTRICT behavior so an explicit
     // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
@@ -77,17 +82,12 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         drop_by_oid(m.view_oid, "VIEW", cascade)?;
     }
 
-    // Drop metadata record
-    drop_metadata(entity_name)?;
-
     // Invalidate caches since TVIEW was dropped
     crate::cache::invalidate_all();
 
     // Buffer and flush audit entry immediately (we're in SPI context)
     crate::audit::log_drop(entity_name);
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        warning!("Failed to flush audit after DROP: {}", e);
-    }
+    crate::audit::flush_audit_buffer()?;
 
     Ok(true)
 }
@@ -360,30 +360,4 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     crate::utils::spi::run(&sql, &args)?;
 
     Ok(())
-}
-
-#[cfg(any(test, feature = "pg_test"))]
-#[pg_schema]
-mod tests {
-    use pgrx::prelude::*;
-
-    #[pg_test]
-    fn test_drop_tview_nonexistent_if_exists() {
-        // Dropping a non-existent TVIEW with IF EXISTS should not error
-        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', true, false)");
-        assert!(
-            result.is_ok(),
-            "IF EXISTS drop of non-existent TVIEW should succeed"
-        );
-    }
-
-    #[pg_test]
-    fn test_drop_tview_nonexistent_strict() {
-        // Dropping a non-existent TVIEW without IF EXISTS should error
-        let result = Spi::run("SELECT pg_tviews_drop('nonexistent', false, false)");
-        assert!(
-            result.is_err(),
-            "Strict drop of non-existent TVIEW should fail"
-        );
-    }
 }

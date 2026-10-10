@@ -1,5 +1,7 @@
 -- test/sql/00_extension_loading.sql
 -- Test: Extension can be created
+\set ON_ERROR_STOP on
+
 BEGIN;
     CREATE EXTENSION pg_tviews;
 
@@ -8,5 +10,9 @@ BEGIN;
     FROM pg_extension
     WHERE extname = 'pg_tviews';
 
-    -- Expected: t (true)
+    DO $$ BEGIN
+        IF (SELECT COUNT(*) FROM pg_extension WHERE extname = 'pg_tviews') <> 1 THEN
+            RAISE EXCEPTION 'FAIL: pg_tviews not in pg_extension after CREATE EXTENSION';
+        END IF;
+    END $$;
 ROLLBACK;

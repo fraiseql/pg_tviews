@@ -114,7 +114,7 @@ mod tests {
         suspend();
         record_change("post");
         assert!(is_suspended());
-        restore(before.clone());
+        restore(before);
         assert!(!is_suspended());
         assert!(get_changed_entities().is_empty());
 

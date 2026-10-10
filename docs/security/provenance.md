@@ -1,7 +1,5 @@
 # Build Provenance
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
 **Classification:** Public
 **Applicable Standards:** SLSA Level 3, ISO 27001
 

@@ -1,317 +1,66 @@
-# Testing Guide
+# Testing
 
-**Version**: 0.1.0
-**Last Updated**: 2026-07-22
+## Suites
 
-## Overview
+| Suite | Where | What it checks |
+|---|---|---|
+| Unit | `#[test]` in `src/` | Pure Rust: plan decoding, SQL builders, graphs. No server. |
+| Regression | `test/sql/regress/<feature>/regress_*.sql` | One behaviour per file, asserted with `RAISE EXCEPTION` and an `-- expect-output:` sentinel. |
+| Integration | `test/sql/[0-9]*.sql` | Longer scenarios, each TVIEW checked against its backing view (`test/sql/lib/assert_fresh.sql`). |
+| Differential | `test/sql/differential/` | Seeded random writes (MERGE, `ON CONFLICT`, COPY, transactions with savepoints) over every TVIEW shape; each TVIEW equals its view after every statement. |
+| Isolation | `test/isolation/` | Concurrent writers, DDL and snapshot isolation levels, run by `pg_isolation_regress`. |
+| Upgrade | `test/upgrade/` | An older release upgraded to this tree: the catalog equals a fresh install's. |
+| Documentation | `test/docs/run_doc_sql.sh` | The SQL of the user docs, run as written. |
+| Benchmark | `test/sql/real_benchmark/` | Write latency and fan-out throughput against the real extension (not run in CI: see its README). |
 
-This guide covers running tests, measuring code coverage, and contributing test improvements to pg_tviews.
+Behaviour that needs a server is tested in SQL, not with `#[pg_test]`: a SQL test
+runs against the installed extension exactly as users call it. CI
+(`.github/workflows/ci.yml`) runs every SQL suite on PostgreSQL 16, 17 and 18, and
+once more on 18 with another library's hooks loaded first (`pg_stat_statements`).
 
-## Test Types
-
-### 1. Rust Unit Tests (`cargo test --lib`)
-
-- **Location**: `src/**/*.rs` (inline `#[test]` functions)
-- **Purpose**: Test individual functions and modules
-- **Coverage**: Core business logic, data structures, algorithms
-- **Runtime**: Fast (< 1 second)
-
-### 2. pgrx Integration Tests (`cargo pgrx test pg17`)
-
-- **Location**: `src/**/*.rs` (inline `#[pg_test]` functions)
-- **Purpose**: Test PostgreSQL extension functionality
-- **Coverage**: SQL interactions, extension loading, triggers
-- **Runtime**: Medium (10-30 seconds)
-
-### 3. SQL Integration Tests (`psql -f test/sql/*.sql`)
-
-- **Location**: `test/sql/*.sql`
-- **Purpose**: End-to-end testing with real PostgreSQL
-- **Coverage**: Complete workflows, performance, edge cases
-- **Runtime**: Slow (1-5 minutes)
-
-## Running Tests
-
-### Quick Test Commands
+## Running the suites
 
 ```bash
-# Run all Rust unit tests (fast)
-cargo test --lib
+# Unit tests. PostgreSQL symbols only resolve inside a server, so let the linker
+# ignore them; a separate target dir keeps the main build cache valid.
+CARGO_TARGET_DIR=target-unit RUSTFLAGS="-C link-arg=-Wl,--unresolved-symbols=ignore-all" \
+  cargo test --lib --no-default-features --features pg18
 
-# Run pgrx integration tests (requires PostgreSQL)
-cargo pgrx test pg17
+# Lint and format (both enforced in CI)
+cargo clippy --no-default-features --features pg18 --all-targets -- -D warnings
+cargo fmt --check
 
-# Run specific test
-cargo pgrx test pg17 -- --test test_refresh_single_row
-
-# Run SQL integration tests
-psql -d test_db -f test/sql/40_refresh_trigger_dynamic_pk.sql
-
-# Run all SQL tests
-for file in test/sql/*.sql; do
-    echo "Running $file..."
-    psql -d test_db -f "$file"
-done
+# SQL suites, against a cluster with pg_tviews and jsonb_delta installed and
+# pg_tviews in shared_preload_libraries
+export PGHOST=localhost PGPORT=28818 PGUSER=postgres
+./test/run_regression_tests.sh                        # every regress file
+./test/run_regression_tests.sh regress_copy_from.sql  # one, by file name
+./test/run_integration_tests.sh
+./test/sql/differential/run.sh 60 "1 2 3"
+PG_CONFIG=$(which pg_config) ./test/isolation/run.sh
 ```
 
-### Test Database Setup
-
-```bash
-# Create test database
-createdb pg_tviews_test
-
-# Enable extensions
-psql -d pg_tviews_test -c "CREATE EXTENSION jsonb_delta;"
-psql -d pg_tviews_test -c "CREATE EXTENSION pg_tviews;"
-
-# Run tests
-psql -d pg_tviews_test -f test/sql/40_refresh_trigger_dynamic_pk.sql
-```
-
-## Code Coverage
-
-### Setup Coverage Tools
-
-```bash
-# Install LLVM coverage tools
-cargo install cargo-llvm-cov
-
-# Verify installation
-cargo llvm-cov --version
-```
-
-### Generate Coverage Reports
-
-```bash
-# Generate HTML report
-cargo llvm-cov --html --open
-
-# Generate LCOV for CI/CD
-cargo llvm-cov --lcov --output-path coverage.lcov
-
-# Include integration tests
-cargo llvm-cov --features pg_test --html
-```
-
-### Coverage Targets by Module
-
-| Module | Current Coverage | Target | Priority |
-|--------|------------------|--------|----------|
-| `src/refresh/main.rs` | TBD% | 85% | High |
-| `src/ddl/create.rs` | TBD% | 90% | High |
-| `src/ddl/drop.rs` | TBD% | 90% | High |
-| `src/dependency/graph.rs` | TBD% | 80% | Medium |
-| `src/schema/types.rs` | TBD% | 75% | Medium |
-| `src/install_sql.rs` | TBD% | 80% | Medium |
-| `src/hooks.rs` | TBD% | 70% | Low |
-
-### Coverage Goals
-
-- **Overall Target**: 85% line coverage
-- **Critical Path**: 90%+ coverage for DDL and refresh operations
-- **Integration Tests**: Cover all SQL test scenarios
-- **Edge Cases**: Cover error conditions and boundary cases
-
-## CI/CD Integration
-
-### GitHub Actions Workflow
-
-```yaml
-# .github/workflows/coverage.yml
-name: Code Coverage
-
-on: [push, pull_request]
-
-jobs:
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      - name: Install pgrx
-        run: cargo install cargo-pgrx
-      - name: Install coverage tool
-        run: cargo install cargo-llvm-cov
-      - name: Run tests with coverage
-        run: cargo llvm-cov --lcov --output-path coverage.lcov
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./coverage.lcov
-```
-
-### Coverage Badge
-
-Add to README.md:
-```markdown
-[![codecov](https://codecov.io/gh/fraiseql/pg_tviews/branch/main/graph/badge.svg)](https://codecov.io/gh/fraiseql/pg_tviews)
-```
-
-## Test Organization
-
-### File Naming Convention
-
-```
-test/sql/
-├── 00_extension_loading.sql      # Basic extension tests
-├── 40_refresh_trigger_*.sql      # Trigger and refresh tests
-├── 42_cascade_fk_*.sql           # Cascade functionality
-├── 50_array_columns.sql          # Array column handling
-├── 70_concurrent_ddl.sql         # Concurrent operations
-└── 80_edge_cases.sql             # Edge cases and error handling
-```
-
-### Test Structure Pattern
-
-```sql
--- Test header
--- Test [NUMBER]: [DESCRIPTION]
--- Purpose: [WHAT IT TESTS]
--- Expected: [EXPECTED BEHAVIOR]
-
--- Setup
-BEGIN;
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
--- ... setup code ...
-
--- Test execution
--- ... test code ...
-
--- Assertions (return boolean values)
-SELECT COUNT(*) = expected_value as test_condition;
-
--- Cleanup
-ROLLBACK;
-```
-
-## Debugging Test Failures
-
-### Common Issues
-
-#### Extension Not Loaded
-```sql
--- Check extension status
-SELECT * FROM pg_extension WHERE extname = 'pg_tviews';
-
--- Reload if needed
-DROP EXTENSION pg_tviews;
-CREATE EXTENSION pg_tviews;
-```
-
-#### Permission Issues
-```sql
--- Grant test permissions
-GRANT ALL ON ALL TABLES IN SCHEMA public TO pg_tviews_test_user;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO pg_tviews_test_user;
-```
-
-#### Trigger Issues
-```sql
--- Check trigger status
-SELECT tgname, tgenabled FROM pg_trigger WHERE tgname LIKE '%tview%';
-
--- Re-install triggers
-SELECT * FROM tviews.pg_tviews_reregister_all();
-```
-
-### Test Debugging Tools
-
-```sql
--- Enable detailed logging
-ALTER SYSTEM SET log_statement = 'all';
-ALTER SYSTEM SET log_min_messages = 'debug1';
-
--- Check PostgreSQL logs
-tail -f /var/log/postgresql/postgresql-*.log
-
--- Debug specific test
-cargo pgrx test pg17 -- --nocapture --test test_name
-```
-
-## Performance Testing
-
-### Benchmark Tests
-
-```bash
-# Run performance benchmarks (the old comprehensive_benchmarks harness was removed —
-# it never ran against the real extension; see test/sql/real_benchmark/README.md)
-cd test/sql/real_benchmark
-PGHOST=localhost PGPORT=28818 PGUSER=postgres ./run.sh --scales "small medium large"
-```
-
-See [Running Benchmarks](../benchmarks/running-benchmarks.md) for prerequisites,
-options, and how to read the output.
-
-### Profiling Tests
-
-```sql
--- Enable query profiling
-SET track_functions = 'all';
-SET track_io_timing = 'on';
-
--- Run test with profiling
--- Check pg_stat_statements for slow queries
-SELECT query, calls, total_time, mean_time
-FROM pg_stat_statements
-WHERE query LIKE '%tv_%'
-ORDER BY total_time DESC;
-```
-
-## Contributing Tests
-
-### Adding New Tests
-
-1. **Choose appropriate location**:
-   - Rust unit tests: Add `#[test]` to existing modules
-   - pgrx tests: Add `#[cfg(any(test, feature = "pg_test"))] #[pg_test]`
-   - SQL tests: Add to `test/sql/` with numbered filename
-
-2. **Follow naming conventions**:
-   - Functions: `test_descriptive_name`
-   - Files: `NN_descriptive_name.sql`
-
-3. **Include assertions**:
-   - Return boolean values for pass/fail
-   - Test both success and error cases
-   - Verify data correctness, not just absence of errors
-
-4. **Add documentation**:
-   - Comment test purpose and expectations
-   - Update this guide if adding new test types
-
-### Test Maintenance
-
-- **Keep tests fast**: Split slow tests into separate files
-- **Update on API changes**: Fix tests when functionality changes
-- **Remove obsolete tests**: Delete tests for removed features
-- **Regular review**: Audit test coverage quarterly
-
-## Troubleshooting
-
-### Test Fails Intermittently
-
-1. Check for race conditions in concurrent tests
-2. Verify test isolation (each test should be independent)
-3. Check for external dependencies (network, filesystem)
-
-### Coverage Not Updating
-
-1. Ensure `cargo-llvm-cov` is installed
-2. Check that tests are running with coverage enabled
-3. Verify source files are included in coverage analysis
-
-### CI/CD Coverage Issues
-
-1. Check GitHub Actions logs for coverage upload failures
-2. Verify LCOV file is generated correctly
-3. Ensure Codecov token is configured (if private repo)
-
-## See Also
-
-- [Development Guide](../development.md) - General development setup
-- [Performance Tuning](../operations/performance-tuning.md) - Performance testing
-- [Troubleshooting](../operations/troubleshooting.md) - Debugging production issues
+Each SQL test runs in a throwaway database whose `search_path` includes `tviews`.
+
+## Writing a test
+
+- A new behaviour gets a regress file in the feature directory it belongs to,
+  named after the behaviour (`regress_<behaviour>.sql`, unique across
+  `test/sql/regress/`). Its header says what it checks and why, and names the
+  `-- expect-output: <name>: PASS` line it `\echo`es at the end. It fails by
+  raising, never by printing something someone has to read.
+- Check a TVIEW against its backing view with `assert_fresh(tv, key, label)` from
+  `test/sql/lib/assert_fresh.sql` (`\ir ../../lib/assert_fresh.sql` from a regress
+  file): it compares under the settings refreshes render values under.
+- A test reproducing an open defect carries `-- known-failing: <issue>`: the runner
+  reports it as XFAIL until it passes, then fails until the marker is removed.
+- A concurrency property is an isolation spec with its expected output; one
+  reproducing an open defect stays out of `isolation_schedule`
+  (`test/isolation/README.md`).
+- Prove a new test fails for the right reason before fixing the code: run it on the
+  build without the fix.
+
+## Coverage
+
+`.github/workflows/coverage.yml` measures line coverage of the unit tests with
+`cargo llvm-cov` (PostgreSQL 18); the SQL suites are not counted.

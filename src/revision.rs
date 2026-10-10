@@ -30,6 +30,8 @@ pub enum Installed {
     Differs(i32),
     /// A catalog without `pg_tviews_catalog_revision()`: a `0.1.0` install.
     Unversioned,
+    /// The revision could not be read: why.
+    Unreadable(String),
 }
 
 /// Raise an error unless the installed catalog has the library's revision.
@@ -65,6 +67,12 @@ pub fn check() {
              from the pg_tviews release",
         )
         .report(PgLogLevel::ERROR),
+        Installed::Unreadable(why) => pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+            format!("pg_tviews could not read the installed catalog revision: {why}"),
+            function_name!(),
+        )
+        .report(PgLogLevel::ERROR),
     }
 }
 
@@ -75,7 +83,7 @@ pub fn is_current() -> bool {
 
 /// What fixes a catalog of `revision` for this library.
 #[must_use]
-pub fn remedy(revision: i32) -> &'static str {
+pub const fn remedy(revision: i32) -> &'static str {
     if revision > CATALOG_REVISION {
         "the installed extension is newer than this library: install the pg_tviews package \
          that matches it"
@@ -100,19 +108,21 @@ pub fn installed() -> Installed {
     // The function is looked up in the extension's own schema, so a 0.1.0 install
     // (another schema, no such function) is told apart from a wrong revision.
     let revision = Spi::connect(|client| {
-        let schema = client
-            .select(
-                "SELECT pg_catalog.quote_ident(n.nspname) \
+        let found = client.select(
+            "SELECT pg_catalog.quote_ident(n.nspname) \
                  FROM pg_catalog.pg_extension e \
                  JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
                  JOIN pg_catalog.pg_proc p ON p.pronamespace = e.extnamespace \
                   AND p.proname = 'pg_tviews_catalog_revision' AND p.pronargs = 0 \
                  WHERE e.extname = 'pg_tviews'",
-                None,
-                &[],
-            )?
-            .first()
-            .get_one::<String>()?;
+            None,
+            &[],
+        )?;
+        let schema = if found.is_empty() {
+            None
+        } else {
+            found.first().get_one::<String>()?
+        };
         match schema {
             Some(schema) => client
                 .select(
@@ -121,19 +131,20 @@ pub fn installed() -> Installed {
                     &[],
                 )?
                 .first()
-                .get_one::<i32>(),
+                .get_one::<i32>()
+                .map(|revision| Some(revision.ok_or("the revision function returned NULL"))),
             None => Ok(None),
         }
-    })
-    .ok()
-    .flatten();
+    });
     match revision {
-        Some(CATALOG_REVISION) => {
+        Ok(Some(Ok(CATALOG_REVISION))) => {
             MATCHED.set(true);
             Installed::Matches
         }
-        Some(other) => Installed::Differs(other),
-        None => Installed::Unversioned,
+        Ok(Some(Ok(other))) => Installed::Differs(other),
+        Ok(Some(Err(why))) => Installed::Unreadable(why.to_string()),
+        Ok(None) => Installed::Unversioned,
+        Err(e) => Installed::Unreadable(e.to_string()),
     }
 }
 

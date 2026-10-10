@@ -135,12 +135,13 @@ pub(crate) fn in_extension_schema_for<T>(
     ddl: impl FnOnce() -> TViewResult<T>,
 ) -> TViewResult<T> {
     let schema = crate::utils::ext_schema();
-    let args = [crate::utils::spi::oid(role)];
+    let args = [
+        crate::utils::spi::oid(role),
+        crate::utils::spi::text(schema),
+    ];
     let (can_create, name) = Spi::get_two_with_args::<bool, String>(
-        &format!(
-            "SELECT pg_catalog.has_schema_privilege($1, '{schema}', 'CREATE'), \
-                    pg_catalog.quote_ident(pg_catalog.pg_get_userbyid($1))"
-        ),
+        "SELECT pg_catalog.has_schema_privilege($1, $2, 'CREATE'), \
+                pg_catalog.quote_ident(pg_catalog.pg_get_userbyid($1))",
         &args,
     )
     .map_err(|e| TViewError::CatalogError {

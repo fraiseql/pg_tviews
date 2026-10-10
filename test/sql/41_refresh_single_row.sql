@@ -13,6 +13,7 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
+\ir lib/assert_fresh.sql
 
 \echo '=========================================='
 \echo 'Test 41: Single Row Refresh'
@@ -65,16 +66,23 @@ SELECT
     SUM((data->>'view_count')::int) = 155 as total_view_count_correct
 FROM tv_article;
 
+SELECT assert_fresh('tv_article', 'pk_article', 'pg_tviews_create');
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM tv_article) <> 3
+       OR (SELECT SUM((data->>'view_count')::int) FROM tv_article) <> 155 THEN
+        RAISE EXCEPTION 'FAIL: tv_article initial population wrong';
+    END IF;
+END $$;
+
 \echo '✓ Test 1 passed: Initial population correct'
 
 -- Test 2: Update single scalar field
 \echo ''
 \echo 'Test 2: Update single scalar field'
--- Record timestamp before update
-SELECT updated_at AS before_update FROM tv_article WHERE pk_article = 1 \gset
-
--- Wait a moment to ensure timestamp difference
-SELECT pg_sleep(0.1);
+-- The whole file runs in one transaction, where now() (and so updated_at)
+-- never advances: whether a row was rewritten shows in its ctid instead, since
+-- every UPDATE writes a new tuple version and a no-op refresh writes none.
+CREATE TEMP TABLE article_before AS SELECT pk_article, ctid AS tid FROM tv_article;
 
 -- Update title
 UPDATE tb_article SET title = 'First Article - Updated' WHERE pk_article = 1;
@@ -82,7 +90,7 @@ UPDATE tb_article SET title = 'First Article - Updated' WHERE pk_article = 1;
 -- Verify refresh
 SELECT
     (data->>'title') = 'First Article - Updated' as title_updated,
-    updated_at > :'before_update'::timestamptz as timestamp_changed
+    ctid <> (SELECT tid FROM article_before b WHERE b.pk_article = 1) as row_rewritten
 FROM tv_article
 WHERE pk_article = 1;
 
@@ -90,10 +98,25 @@ WHERE pk_article = 1;
 SELECT
     COUNT(*) = 2 as other_rows_unchanged,
     COUNT(*) FILTER (WHERE data->>'title' != 'First Article - Updated') = 2 as other_titles_unchanged
-FROM tv_article
-WHERE pk_article != 1
-  AND updated_at <= :'before_update'::timestamptz;
--- Expected: 2 (other rows should have old timestamp)
+FROM tv_article t
+JOIN article_before b ON b.pk_article = t.pk_article AND b.tid = t.ctid
+WHERE t.pk_article != 1;
+
+SELECT assert_fresh('tv_article', 'pk_article', 'an UPDATE of one title');
+DO $$ BEGIN
+    IF (SELECT data->>'title' FROM tv_article WHERE pk_article = 1) IS DISTINCT FROM 'First Article - Updated' THEN
+        RAISE EXCEPTION 'FAIL: article 1 title not refreshed';
+    END IF;
+    IF (SELECT t.ctid FROM tv_article t WHERE pk_article = 1)
+       = (SELECT tid FROM article_before WHERE pk_article = 1) THEN
+        RAISE EXCEPTION 'FAIL: article 1 row not rewritten';
+    END IF;
+    IF (SELECT COUNT(*) FROM tv_article t
+        JOIN article_before b ON b.pk_article = t.pk_article AND b.tid = t.ctid
+        WHERE t.pk_article <> 1) <> 2 THEN
+        RAISE EXCEPTION 'FAIL: refreshing article 1 rewrote other rows';
+    END IF;
+END $$;
 
 \echo '✓ Test 2 passed: Single field update works'
 
@@ -110,7 +133,14 @@ SELECT
     (data->>'view_count')::int AS view_count
 FROM tv_article
 WHERE pk_article = 2;
--- Expected: 'archived', 999
+
+SELECT assert_fresh('tv_article', 'pk_article', 'an UPDATE of two fields');
+DO $$ BEGIN
+    IF (SELECT (data->>'status', (data->>'view_count')::int) FROM tv_article WHERE pk_article = 2)
+       IS DISTINCT FROM ('archived'::text, 999) THEN
+        RAISE EXCEPTION 'FAIL: article 2 not (archived, 999)';
+    END IF;
+END $$;
 
 \echo '✓ Test 3 passed: Multiple field update works'
 
@@ -131,7 +161,15 @@ SELECT
     (data->>'view_count')::int AS view_count
 FROM tv_article
 WHERE pk_article = 3;
--- Expected: all new values
+
+SELECT assert_fresh('tv_article', 'pk_article', 'an UPDATE of every field');
+DO $$ BEGIN
+    IF (SELECT (data->>'title', data->>'body', data->>'status', (data->>'view_count')::int)
+        FROM tv_article WHERE pk_article = 3)
+       IS DISTINCT FROM ('New Title'::text, 'New Body'::text, 'published'::text, 12345) THEN
+        RAISE EXCEPTION 'FAIL: article 3 does not carry all new values';
+    END IF;
+END $$;
 
 \echo '✓ Test 4 passed: Full row update works'
 
@@ -144,7 +182,15 @@ SELECT
     updated_at < NOW() + INTERVAL '1 second' AS not_future
 FROM tv_article
 ORDER BY pk_article;
--- Expected: all true (all updated recently)
+
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM tv_article
+               WHERE updated_at IS NULL
+                  OR updated_at <= NOW() - INTERVAL '10 seconds'
+                  OR updated_at >= NOW() + INTERVAL '1 second') THEN
+        RAISE EXCEPTION 'FAIL: an updated_at is missing or out of range';
+    END IF;
+END $$;
 
 \echo '✓ Test 5 passed: updated_at timestamps correct'
 
@@ -158,7 +204,13 @@ SELECT
     data->>'body' IS NULL AS body_is_null
 FROM tv_article
 WHERE pk_article = 1;
--- Expected: true
+
+SELECT assert_fresh('tv_article', 'pk_article', 'an UPDATE to NULL');
+DO $$ BEGIN
+    IF (SELECT data->>'body' FROM tv_article WHERE pk_article = 1) IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: article 1 body not NULL';
+    END IF;
+END $$;
 
 \echo '✓ Test 6 passed: NULL values handled correctly'
 
@@ -167,7 +219,12 @@ WHERE pk_article = 1;
 \echo 'Test 7: Verify no cascade happened'
 -- This test just confirms we only have one table/TVIEW
 SELECT COUNT(*) AS tview_count FROM pg_tview_meta;
--- Expected: 1
+
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_tview_meta) <> 1 THEN
+        RAISE EXCEPTION 'FAIL: expected exactly one TVIEW';
+    END IF;
+END $$;
 
 \echo '✓ Test 7 passed: No unexpected cascades'
 

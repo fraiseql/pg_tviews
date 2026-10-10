@@ -43,6 +43,9 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
 
         let relname = relation_name(relid)?;
         let rewritten = rewrite_column_references(&definition, &relname, old_name, new_name)
+            // Only ever run as one SELECT: the rewrite works on tokens, and the
+            // check executes the candidate.
+            .filter(|candidate| crate::ddl::create::check_one_select(candidate).is_ok())
             .filter(|candidate| defines_view(candidate, view_oid));
         let new_definition = if let Some(sql) = rewritten {
             sql

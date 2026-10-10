@@ -39,7 +39,7 @@ psql -X -d mydb_restored -c "SELECT schema, name FROM tviews.registry;"
 The restore target must have the same pg_tviews release (and `jsonb_delta`, when used)
 installed on the server. After the restore the TVIEWs are registered, point at the
 restored relations and keep propagating; this round trip is tested in
-`test/sql/regress_issue_96_dump_restore.sql`. See
+`test/sql/regress/catalog/regress_dump_restore.sql`. See
 [Full Database Restore](../recovery-procedures/full-database-restore.md).
 
 To keep dumps smaller you may skip the data of UNLOGGED tables with

@@ -14,7 +14,8 @@ fn pg_tviews_version() -> &'static str {
 ///
 /// Checks if a TVIEW table has been truncated due to crash and automatically
 /// refreshes it if recovery is needed. This function is safe to call multiple times
-/// and will only perform refresh when actually needed.
+/// and will only perform refresh when actually needed. Requires owning the TVIEW
+/// (or the extension): the rebuild runs as its owner.
 ///
 /// # Arguments
 /// * `entity_name` - Name of the TVIEW entity (without tv_ prefix)
@@ -24,6 +25,13 @@ fn pg_tviews_version() -> &'static str {
 #[pg_extern]
 pub fn pg_tviews_recover_after_crash(entity_name: &str) -> Result<bool, ErrorReport> {
     crate::revision::check();
+    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)?.ok_or_else(|| {
+        crate::TViewError::MetadataNotFound {
+            entity: entity_name.to_string(),
+        }
+    })?;
+    // The rebuild runs as the TVIEW's owner: only its owner may ask for it.
+    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity_name}"))?;
     if detect_post_crash_truncation(entity_name)? {
         // Only this TVIEW was reset; what reads it is unchanged.
         crate::admin::rebuild_one(entity_name)?;

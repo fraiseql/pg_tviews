@@ -1,590 +1,271 @@
-# Operator Guide
+# Operator guide
 
-Production deployment and operations guide for running pg_tviews in production environments.
+Running pg_tviews in production: server setup, the settings operators tune, monitoring,
+recovery, maintenance and the operator role.
 
-**Version**: 0.1.0-beta.1 • **Last Updated**: December 11, 2025
+The SQL examples on this page run in order in a fresh database; they create a small
+schema to work on.
 
-## Overview
+## Requirements
 
-This guide helps database operators and DevOps engineers deploy and maintain pg_tviews in production. You'll learn about installation, monitoring, backup/restore, and operational best practices.
+- PostgreSQL 16, 17 or 18. `CREATE EXTENSION` refuses older versions.
+- The library preloaded in every server that runs pg_tviews (see below).
+- Optional: the `jsonb_delta` extension, which speeds up patching documents in place.
+  `tviews.pg_tviews_check_jsonb_delta()` reports whether it is installed.
 
-## Production Installation
+## Server setup
 
-### Prerequisites
-
-- **PostgreSQL**: 15, 16, or 17 (17 recommended for latest features)
-- **System Resources**: 2GB RAM minimum, 4GB recommended
-- **Storage**: SSD storage recommended for performance
-- **Network**: Low-latency connection to application servers
-
-### Multi-Server Installation
-
-For production environments with multiple PostgreSQL servers:
-
-```bash
-# On build server
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
-cargo pgrx install --release
-
-# Copy extension files to production servers
-# Files to copy:
-# - pg_tviews.so → $libdir/
-# - pg_tviews.control → $sharedir/extension/
-# - pg_tviews--*.sql → $sharedir/extension/
-
-# Verify on each server
-psql -d your_db -c "CREATE EXTENSION pg_tviews;"
-psql -d your_db -c "SELECT pg_tviews_version();"
-```
-
-### Docker Deployment
-
-```dockerfile
-# Dockerfile for pg_tviews-enabled PostgreSQL
-FROM postgres:17
-
-# Copy extension files (build externally)
-COPY --from=pgtviews-builder /usr/lib/postgresql/17/lib/pg_tviews.so /usr/lib/postgresql/17/lib/
-COPY --from=pgtviews-builder /usr/share/postgresql/17/extension/pg_tviews* /usr/share/postgresql/17/extension/
-
-# Initialize with extension
-COPY init.sql /docker-entrypoint-initdb.d/
-```
-
-```sql
--- init.sql
-CREATE EXTENSION pg_tviews;
-```
-
-### Connection Pooling
-
-pg_tviews works with popular connection poolers:
-
-#### PgBouncer Configuration
+pg_tviews must be preloaded: its hooks intercept `CREATE TABLE tv_* AS`, `COMMIT`,
+`DROP` and `REFRESH MATERIALIZED VIEW`, and its settings and background worker are
+registered at server start. Without the preload, a `CREATE TABLE tv_* AS` the hook did
+not see fails, naming the fix. Set it in `postgresql.conf` and restart:
 
 ```ini
-# pgbouncer.ini
-[databases]
-mydb = host=localhost port=5432 dbname=mydb
-
-[pgbouncer]
-pool_mode = transaction
-server_reset_query = DISCARD ALL  # pg_tviews handles this automatically
-max_client_conn = 1000
-default_pool_size = 20
+shared_preload_libraries = 'pg_tviews'          # add to any existing list
+# Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart to change)
+pg_tviews.auto_rebuild_databases = 'app'
 ```
 
-#### Pgpool-II Configuration
-
-```ini
-# pgpool.conf
-connection_cache = on
-reset_query_list = 'DISCARD ALL'
-max_pool = 4
-num_init_children = 32
-```
-
-## Database Configuration
-
-### Memory Settings
+Then, in each database:
 
 ```sql
--- For datasets up to 100GB
-ALTER SYSTEM SET shared_buffers = '2GB';
-ALTER SYSTEM SET work_mem = '64MB';
-ALTER SYSTEM SET maintenance_work_mem = '512MB';
-ALTER SYSTEM SET wal_buffers = '16MB';
-
--- For larger datasets, scale accordingly
--- shared_buffers = 25% of RAM (max 8GB)
--- work_mem = 2-4MB per connection
+CREATE EXTENSION jsonb_delta;   -- optional
+CREATE EXTENSION pg_tviews;     -- objects go to schema tviews
+SHOW shared_preload_libraries;
+SELECT tviews.pg_tviews_version();
 ```
 
-### WAL Configuration
+To call the functions unqualified, add `tviews` to the database's `search_path`
+(`ALTER DATABASE app SET search_path = "$user", public, tviews;`). This page qualifies
+them.
+
+The example schema used below:
 
 ```sql
--- Ensure WAL is configured for your workload
-ALTER SYSTEM SET wal_level = replica;
-ALTER SYSTEM SET max_wal_senders = 10;
-ALTER SYSTEM SET wal_keep_size = '1GB';
-
--- For high-write workloads
-ALTER SYSTEM SET checkpoint_segments = 32;
-ALTER SYSTEM SET checkpoint_completion_target = 0.9;
-```
-
-### Autovacuum Tuning
-
-```sql
--- Tune autovacuum for TVIEW tables
-ALTER TABLE tv_post SET (autovacuum_vacuum_scale_factor = 0.1);
-ALTER TABLE tv_post SET (autovacuum_analyze_scale_factor = 0.05);
-
--- For high-write tables
-ALTER TABLE tb_post SET (autovacuum_vacuum_scale_factor = 0.02);
-ALTER TABLE tb_post SET (autovacuum_analyze_scale_factor = 0.01);
-```
-
-## Monitoring Setup
-
-### Health Checks
-
-Implement comprehensive health monitoring:
-
-```sql
--- Basic health check
-CREATE OR REPLACE FUNCTION health_check()
-RETURNS jsonb AS $$
-DECLARE
-    result jsonb;
-BEGIN
-    -- Extension health
-    SELECT jsonb_build_object(
-        'extension_version', pg_tviews_version(),
-        'jsonb_delta_available', pg_tviews_check_jsonb_delta(),
-        'server_version', version(),
-        'current_time', now()
-    ) INTO result;
-
-    RETURN result;
-END;
-$$ LANGUAGE plpgsql;
-
--- TVIEW-specific health check
-CREATE OR REPLACE FUNCTION tview_health_check()
-RETURNS jsonb AS $$
-DECLARE
-    health_record record;
-    result jsonb := '{}';
-BEGIN
-    -- Get pg_tviews health
-    SELECT * INTO health_record FROM pg_tviews_health_check();
-
-    result := result || jsonb_build_object('tview_health', row_to_json(health_record));
-
-    -- Check TVIEW counts vs base tables
-    SELECT result || jsonb_build_object('table_counts',
-        jsonb_build_object(
-            'tv_post_count', (SELECT COUNT(*) FROM tv_post),
-            'tb_post_count', (SELECT COUNT(*) FROM tb_post),
-            'tv_user_count', (SELECT COUNT(*) FROM tv_user),
-            'tb_user_count', (SELECT COUNT(*) FROM tb_user)
-        )
-    ) INTO result;
-
-    RETURN result;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-### Performance Metrics
-
-Set up continuous performance monitoring:
-
-```sql
--- Create metrics table
-CREATE TABLE tview_metrics (
-    id BIGSERIAL PRIMARY KEY,
-    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    queue_stats jsonb,
-    cache_stats jsonb,
-    performance_summary jsonb
+CREATE TABLE tb_user (
+    pk_user bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id      uuid NOT NULL DEFAULT gen_random_uuid(),
+    name    text NOT NULL
 );
-
--- Collect metrics every 5 minutes
-CREATE OR REPLACE FUNCTION collect_tview_metrics()
-RETURNS void AS $$
-BEGIN
-    INSERT INTO tview_metrics (queue_stats, cache_stats, performance_stats)
-    VALUES (
-        pg_tviews_queue_stats(),
-        (SELECT jsonb_object_agg(table_name, cache_info)
-         FROM (
-             SELECT schemaname || '.' || tablename as table_name,
-                    jsonb_build_object('reltuples', reltuples, 'relpages', relpages)
-             FROM pg_class c
-             JOIN pg_namespace n ON c.relnamespace = n.oid
-             WHERE n.nspname = 'public' AND c.relname LIKE 'tv_%'
-         ) cache_info),
-        (SELECT jsonb_agg(row_to_json(ps))
-         FROM pg_tviews_performance_stats() ps)
-    );
-END;
-$$ LANGUAGE plpgsql;
-
--- Schedule collection (requires pg_cron or similar)
--- SELECT cron.schedule('collect-tview-metrics', '*/5 * * * *', 'SELECT collect_tview_metrics();');
+INSERT INTO tb_user (name) VALUES ('Alice'), ('Bob');
+CREATE TABLE tv_user AS
+SELECT pk_user, id, jsonb_build_object('id', id, 'name', name) AS data FROM tb_user;
 ```
 
-### Alerting Queries
+## Settings operators tune
 
-Set up alerts for common issues:
+Every setting, with its type and default, is in the
+[README's configuration table](../../README.md#configuration); the
+[API reference](../reference/api.md#configuration) says when each is read. The ones
+that matter in operations:
+
+| Setting | Default | When to change it |
+|---|---|---|
+| `pg_tviews.auto_rebuild_databases` | `''` | list the databases whose UNLOGGED TVIEWs must be refilled after a crash restart or promotion (restart required) |
+| `pg_tviews.unlogged_by_default` | `on` | turn off when TVIEWs are read on standbys: UNLOGGED tables are not replicated |
+| `pg_tviews.fillfactor` | `85` | raise to 100 for append-mostly TVIEWs; lower keeps refreshes HOT |
+| `pg_tviews.uncascaded_policy` | `error` | the policy new TVIEWs get when they declare none |
+| `pg_tviews.max_queue_size` | `10000` | raise for transactions that queue more refreshes (else `54000`) |
+| `pg_tviews.max_propagation_depth` | `100` | raise for very deep embed chains (else `54001`) |
+| `pg_tviews.batch_size` | `1000` | keys per bulk-refresh statement |
+| `pg_tviews.cache_size` | `10000` | entries per in-memory metadata cache, per backend |
+| `pg_tviews.audit_enabled` | `off` | record creates, drops and refreshes in `tviews.pg_tview_audit_log` |
+| `pg_tviews.log_level` | `info` | `debug` shows internal diagnostics as NOTICEs |
+
+All but `auto_rebuild_databases` can be set per session, or per role or database with
+`ALTER ROLE … SET` / `ALTER DATABASE … SET`:
 
 ```sql
--- Alert: High queue size
-SELECT CASE
-    WHEN (pg_tviews_queue_stats()->>'queue_size')::int > 1000
-    THEN 'CRITICAL: TVIEW refresh queue > 1000'
-    WHEN (pg_tviews_queue_stats()->>'queue_size')::int > 100
-    THEN 'WARNING: TVIEW refresh queue > 100'
-    ELSE 'OK'
-END as queue_status;
-
--- Alert: Slow refreshes
-SELECT CASE
-    WHEN (pg_tviews_queue_stats()->>'total_timing_ms')::float > 5000
-    THEN 'WARNING: TVIEW refresh time > 5 seconds'
-    ELSE 'OK'
-END as timing_status;
-
--- Alert: Low cache hit rate
-SELECT CASE
-    WHEN (pg_tviews_queue_stats()->>'graph_cache_hit_rate')::float < 0.8
-    THEN 'WARNING: Graph cache hit rate < 80%'
-    ELSE 'OK'
-END as cache_status;
-
--- Alert: TVIEW/base table count mismatch
-SELECT CASE
-    WHEN ABS(tv_count - tb_count) > (tb_count * 0.01)  -- 1% tolerance
-    THEN format('WARNING: TVIEW %s count mismatch: TVIEW=%s, Base=%s',
-                entity, tv_count, tb_count)
-    ELSE 'OK'
-END as consistency_status
-FROM (
-    SELECT 'post' as entity,
-           (SELECT COUNT(*) FROM tv_post) as tv_count,
-           (SELECT COUNT(*) FROM tb_post) as tb_count
-) counts;
+SET pg_tviews.max_queue_size = 50000;
+RESET pg_tviews.max_queue_size;
 ```
 
-## Backup and Recovery
+## Connection poolers
 
-### Logical Backups
+pg_tviews keeps its refresh queue per transaction, so PgBouncer and Pgpool-II work in
+transaction pooling mode. Keep a bulk load that suspends refresh
+(`pg_tviews_suspend_triggers()` … `pg_tviews_resume_triggers()`) inside one transaction.
+`pg_tviews_queue_stats()` reports the counters of the backend it runs on: behind a
+pooler, read it in the same transaction as the writes.
 
-pg_tviews works with standard PostgreSQL backup tools:
-
-```bash
-# pg_dump (includes TVIEWs)
-pg_dump -Fc mydb > mydb_backup.dump
-
-# Restore
-pg_restore -d mydb mydb_backup.dump
-```
-
-### Physical Backups
-
-TVIEWs are included in physical backups (streaming replication, PITR):
-
-```bash
-# Base backup
-pg_basebackup -D /var/lib/postgresql/backup -Ft -z -P
-
-# WAL archiving setup
-archive_command = 'cp %p /var/lib/postgresql/archive/%f'
-restore_command = 'cp /var/lib/postgresql/archive/%f %p'
-```
-
-### Point-in-Time Recovery
-
-pg_tviews supports PITR with TVIEW consistency:
+## Monitoring
 
 ```sql
--- Recover to specific time
-recovery_target_time = '2025-12-11 14:30:00'
-recovery_target_action = 'promote'
+-- Anything not OK: catalog, plans, triggers, TVIEWs to re-register
+SELECT component, status, message FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
 
--- TVIEWs will be consistent with recovered base tables
--- No manual refresh needed
+-- Size and row count of each TVIEW, largest first
+SELECT * FROM tviews.pg_tviews_performance_stats();
+
+-- Physical health: HOT ratio, bloat, missing propagation indexes, warnings
+SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, warnings
+FROM tviews.pg_tviews_profile();
+
+-- TVIEWs a standby cannot serve, or that need a rebuild
+SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild OR NOT replica_readable;
 ```
 
-### High Availability
+Alert on any health row whose `status` is not `OK`, on `needs_rebuild`, and on
+`tviews.registry.needs_reregister`. See [Monitoring](../operations/monitoring.md) for
+thresholds and exporters.
 
-#### Streaming Replication
+## Backup, replication and recovery
 
-pg_tviews works with PostgreSQL streaming replication:
+- `pg_dump` dumps the TVIEW registrations with the extension, and the backing views
+  after the tables they read; see [Upgrades](../operations/upgrades.md).
+- An UNLOGGED TVIEW is not written to WAL: a standby cannot read it, and a crash
+  restart, a promotion or a physical restore leaves it empty. Make TVIEWs served from
+  standbys LOGGED (`pg_tviews_set_logged(entity, true)` or the `logged` option).
+- Refill emptied TVIEWs with `pg_tviews.auto_rebuild_databases`, or by hand after a
+  failover or restore:
 
 ```sql
--- On primary
-ALTER SYSTEM SET wal_level = replica;
-ALTER SYSTEM SET max_wal_senders = 3;
-
--- On standby
-primary_conninfo = 'host=primary dbname=mydb user=repl password=secret'
-
--- TVIEWs are replicated automatically
--- Triggers fire on primary, TVIEWs updated on standby
+SELECT * FROM tviews.pg_tviews_rebuild_all();                     -- emptied UNLOGGED TVIEWs
+SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => false);  -- every TVIEW
 ```
 
-#### Failover Considerations
+Details: [Replication](../operations/replication.md),
+[Disaster recovery](../operations/disaster-recovery.md).
+
+## Upgrades
+
+Install the new package, restart, then in each database run
+`ALTER EXTENSION pg_tviews UPDATE;` and `SELECT * FROM tviews.pg_tviews_reregister_all();`.
+Until the `UPDATE` runs, writes to base tables fail rather than be served by a
+mismatched library. The full procedure is in [Upgrades](../operations/upgrades.md).
+
+## Maintenance
 
 ```sql
--- Check replication lag
-SELECT client_addr, state, sent_lsn, write_lsn, flush_lsn, replay_lsn
-FROM pg_stat_replication;
+-- Registered TVIEWs: tables, backing views, and whether they need re-registering
+SELECT entity, schema, name, view, needs_reregister FROM tviews.registry ORDER BY entity;
 
--- Manual failover
--- 1. Stop primary
--- 2. Promote standby: pg_ctl promote
--- 3. Redirect applications to new primary
--- 4. TVIEWs remain consistent (no manual intervention needed)
-```
+-- pg_tviews triggers on base tables, with the entity each one serves
+SELECT t.tgrelid::regclass AS base_table, t.tgname, p.proname
+FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+WHERE p.pronamespace = 'tviews'::regnamespace AND NOT t.tgisinternal
+ORDER BY 1, 2;
 
-## Maintenance Tasks
-
-### Regular Maintenance
-
-```sql
--- Daily: Update statistics
-ANALYZE tv_post, tv_user, tv_comment;
-
--- Weekly: Reindex TVIEWs (if needed)
-REINDEX TABLE CONCURRENTLY tv_post;
-
--- Monthly: Check for bloat
-SELECT schemaname, tablename, n_dead_tup, n_live_tup
-FROM pg_stat_user_tables
-WHERE n_dead_tup > n_live_tup * 0.1;  -- >10% bloat
-
--- Clean up bloat if needed
-VACUUM FULL tv_post;  -- During maintenance window
-```
-
-### TVIEW Maintenance
-
-```sql
--- Check TVIEW metadata health
-SELECT entity, table_oid, view_oid, trigger_count
-FROM pg_tview_meta;
-
--- Verify triggers exist
-SELECT tgname, tgtype, tgenabled
-FROM pg_trigger
-WHERE tgname LIKE 'tview%';
-
--- Recreate triggers if missing (rare)
-SELECT pg_tviews_create('tv_post', 'SELECT ...');  -- Recreate TVIEW
-```
-
-### Performance Maintenance
-
-```sql
--- Check index usage
-SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
-FROM pg_stat_user_indexes
-WHERE tablename LIKE 'tv_%'
-ORDER BY idx_scan DESC;
-
--- Rebuild unused indexes
-DROP INDEX CONCURRENTLY unused_index;
-CREATE INDEX CONCURRENTLY new_index ON tv_post(user_id, (data->>'created_at'));
-
--- Update query plans
-SELECT pg_stat_statements_reset();  -- If extension available
-```
-
-## Troubleshooting Production Issues
-
-### High CPU Usage
-
-**Symptoms**: High CPU, slow queries, queue backlog
-
-**Diagnosis**:
-```sql
--- Check queue size
-SELECT pg_tviews_queue_stats();
-
--- Check cascade depth
-SELECT pg_tviews_debug_queue();
-
--- Check for long-running refreshes
-SELECT * FROM pg_stat_activity
-WHERE query LIKE '%pg_tviews%' AND state = 'active';
-```
-
-**Solutions**:
-```sql
--- Check the propagation indexes cascades rely on
+-- Propagation indexes a cascade needs, reported without being built
 SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
 
--- Check for missing indexes
-EXPLAIN ANALYZE SELECT data FROM tv_post WHERE user_id = 'uuid';
-
--- Reduce cascade depth by restructuring relationships
+-- Autovacuum for a frequently refreshed TVIEW
+ALTER TABLE tv_user SET (autovacuum_vacuum_scale_factor = 0.05);
+ANALYZE tv_user;
 ```
 
-### Memory Issues
+`pg_tviews_ensure_propagation_indexes()` without `dry_run` builds what is missing; on
+large tables run the reported statements with `CREATE INDEX CONCURRENTLY` instead.
+`REINDEX … CONCURRENTLY` and `VACUUM` work on `tv_*` tables as on any table.
 
-**Symptoms**: Out of memory errors, swap usage, slow performance
+## Troubleshooting
 
-**Diagnosis**:
-```sql
--- Check memory usage
-SELECT name, setting, unit
-FROM pg_settings
-WHERE name IN ('shared_buffers', 'work_mem', 'maintenance_work_mem');
-
--- Size of each TVIEW, largest first
-SELECT * FROM pg_tviews_performance_stats();
-```
-
-**Solutions**:
-```sql
--- Increase work_mem for complex queries
-ALTER SYSTEM SET work_mem = '128MB';
-
--- Add memory limits
-ALTER SYSTEM SET work_mem = '64MB';  -- Per connection limit
-
--- Monitor and restart if needed
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE query LIKE '%pg_tviews%' AND now() - query_start > interval '5 minutes';
-```
-
-### Lock Contention
-
-**Symptoms**: Slow updates, deadlock errors, timeout errors
-
-**Diagnosis**:
-```sql
--- Check for locks
-SELECT locktype, mode, granted, relation::regclass
-FROM pg_locks
-WHERE relation::regclass::text LIKE 'tv_%';
-
--- Check for deadlocks
-SELECT * FROM pg_stat_database_conflicts;
-```
-
-**Solutions**:
-```sql
--- Use shorter transactions
-BEGIN;
--- Do updates
-COMMIT;
-
--- Implement retry logic in application
--- Use optimistic locking where appropriate
-```
-
-### Data Inconsistency
-
-**Symptoms**: TVIEW data doesn't match base tables
-
-**Diagnosis**:
-```sql
--- Compare counts
-SELECT 'tv_post' as table, COUNT(*) as count FROM tv_post
-UNION ALL
-SELECT 'tb_post', COUNT(*) FROM tb_post;
-
--- Check for missing triggers
-SELECT tgname FROM pg_trigger WHERE tgname LIKE 'tview%';
-```
-
-**Solutions**:
-```sql
--- Recreate TVIEW
-DROP TABLE tv_post;
-CREATE TABLE tv_post AS SELECT ...;
-
--- Manual refresh if needed
-SELECT tviews.pg_tviews_refresh('post');
-```
-
-## Scaling Strategies
-
-### Read Scaling
+| Symptom | Cause | Fix |
+|---|---|---|
+| A TVIEW differs from its view | a change the triggers did not see (`session_replication_role = replica`, disabled triggers) | `SELECT tviews.pg_tviews_refresh('<entity>');` |
+| A write fails naming a TVIEW, hint `pg_tviews_reregister` | its stored plan does not decode or no longer matches the tables | `SELECT tviews.pg_tviews_reregister('<entity>');` |
+| `COMMIT` fails with `55000`, refresh work still queued | a missing or disabled flush trigger | `pg_tviews_reregister`, then check `pg_tviews_health_check()` |
+| `54000` refresh queue full | one transaction queued more than `pg_tviews.max_queue_size` | raise it, or write in smaller transactions |
+| `42501` must be owner of TVIEW | the role does not own the TVIEW | run as its owner (see below) |
+| An UNLOGGED TVIEW is empty | crash restart, promotion or restore | `pg_tviews_rebuild_all()` |
 
 ```sql
--- Use read replicas for TVIEW queries
--- TVIEWs are automatically updated on replicas
--- Configure hot standby feedback
-
--- hot_standby_feedback = on
--- Prevents query conflicts on replicas
+SELECT tviews.pg_tviews_refresh('user');
 ```
 
-### Write Scaling
+More in [Troubleshooting](../operations/troubleshooting.md).
+
+## Security
+
+Readers need only `SELECT` on the `tv_*` tables; writers need privileges on the base
+tables only, since refreshes run as each TVIEW's owner. `pg_tviews_health_check()` and
+the other read-only functions are executable by everyone.
 
 ```sql
--- Partition large TVIEWs
-CREATE TABLE tv_post_y2025 PARTITION OF tv_post
-    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE ROLE ops_doc_reader;
+GRANT SELECT ON tv_user TO ops_doc_reader;
 
--- Bulk loads: every statement refreshes once, through the statement-level trigger
+-- An application role owning the TVIEW; refreshes now run as it
+CREATE ROLE ops_doc_app;
+GRANT SELECT ON tb_user TO ops_doc_app;
+ALTER TABLE tv_user OWNER TO ops_doc_app;
 ```
 
-### Connection Pooling at Scale
+### Operator role
 
-```ini
-# Advanced PgBouncer config
-[pgbouncer]
-pool_mode = transaction
-max_client_conn = 10000
-default_pool_size = 50
-reserve_pool_size = 10
-reserve_pool_timeout = 5
-max_db_connections = 100
-max_user_connections = 1000
-```
+The functions that act on every TVIEW are not executable by `PUBLIC`: only superusers,
+the extension's owner and the roles granted them may run them.
 
-## Security Considerations
+| Function | What it does |
+|---|---|
+| `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()` | Rebuild every TVIEW |
+| `pg_tviews_rebuild_all(only_empty)` | Rebuild every (emptied) TVIEW, e.g. after a restore |
+| `pg_tviews_reregister_all(strict)` | Re-derive every TVIEW's plan and triggers |
+| `pg_tviews_set_logged(entity, logged)` | Switch a TVIEW between LOGGED and UNLOGGED |
+| `pg_tviews_ensure_propagation_indexes(entity, dry_run)` | Create missing propagation indexes |
+| `pg_tviews_invalidate_caches(relid)` | Internal: invalidate cached metadata |
 
-### Access Control
+A deploy or restore tool that runs as a non-superuser role gets them with a grant (the
+extension lives in schema `tviews`). Bulk rebuilds run each TVIEW's backing view as that
+TVIEW's owner, never as the caller, so the grant alone is enough for
+`pg_tviews_refresh_all()` and `pg_tviews_refresh_all_entities()`.
+`pg_tviews_rebuild_all()` also reads each TVIEW as the caller, to find the empty ones
+and count the rows it filled, so the role needs `SELECT` on the `tv_*` tables too.
+
+Every function acting on one TVIEW (`pg_tviews_refresh`, `pg_tviews_reregister`,
+`pg_tviews_set_logged`, `pg_tviews_recover_after_crash`, `pg_tviews_drop`,
+`pg_tviews_create_or_replace`, …) requires owning it, or being a member of its owner
+or of the extension's owner, whoever may execute it; anyone else gets SQLSTATE `42501`.
+`pg_tviews_reregister_all()`, `pg_tviews_set_logged()` and
+`pg_tviews_ensure_propagation_indexes()` check this for each TVIEW too. A deploy role
+that runs them is simplest made a member of the role owning the TVIEWs.
 
 ```sql
--- Grant minimal permissions
-GRANT SELECT ON tv_post TO readonly_user;
-GRANT SELECT ON tv_user TO readonly_user;
+CREATE ROLE ops_doc_deploy;
+GRANT EXECUTE ON FUNCTION
+    tviews.pg_tviews_refresh_all(),
+    tviews.pg_tviews_refresh_all_entities(),
+    tviews.pg_tviews_rebuild_all(boolean),
+    tviews.pg_tviews_reregister_all(boolean),
+    tviews.pg_tviews_set_logged(text, boolean),
+    tviews.pg_tviews_ensure_propagation_indexes(text, boolean)
+TO ops_doc_deploy;
 
--- No direct DML on TVIEWs
-REVOKE INSERT, UPDATE, DELETE ON tv_post FROM public;
+SET ROLE ops_doc_deploy;
+SELECT tviews.pg_tviews_refresh_all();            -- allowed: runs as each owner
+SELECT * FROM tviews.pg_tviews_reregister_all();  -- status: must be owner of TVIEW tv_user
+RESET ROLE;
 
--- Function permissions
-GRANT EXECUTE ON FUNCTION pg_tviews_health_check() TO monitoring_user;
+GRANT ops_doc_app TO ops_doc_deploy;              -- member of the role owning the TVIEWs
+SET ROLE ops_doc_deploy;
+SELECT * FROM tviews.pg_tviews_reregister_all();  -- status: reregistered
+SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => false);
+RESET ROLE;
 ```
 
-### Audit Logging
+### Audit log
+
+With `pg_tviews.audit_enabled = on`, creates, drops and refreshes are recorded in
+`tviews.pg_tview_audit_log` (operation, entity, role, time, transaction, client).
 
 ```sql
--- Enable audit logging for TVIEW changes
-ALTER SYSTEM SET log_statement = 'ddl';
-ALTER SYSTEM SET log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ';
-
--- Monitor DDL changes
-SELECT * FROM pg_stat_user_tables
-WHERE schemaname = 'public' AND tablename LIKE 'tv_%';
+SELECT operation, entity, performed_by, performed_at
+FROM tviews.pg_tview_audit_log ORDER BY performed_at DESC LIMIT 20;
 ```
 
-## Disaster Recovery
-
-### Recovery Planning
+The roles created on this page are cluster-wide; drop them:
 
 ```sql
--- Document recovery procedures
--- Test recovery regularly
--- Keep multiple backup copies
--- Monitor backup success/failure
+DROP TABLE tv_user;
+DROP OWNED BY ops_doc_deploy, ops_doc_reader, ops_doc_app;
+DROP ROLE ops_doc_deploy, ops_doc_reader, ops_doc_app;
 ```
 
-### Emergency Procedures
+## See also
 
-```sql
--- Quick TVIEW recreation
-DROP TABLE tv_post;
-CREATE TABLE tv_post AS SELECT ... FROM tv_post_backup;
-
--- Manual data repair
-UPDATE tv_post SET data = data || '{"status": "repaired"}'::jsonb
-WHERE id = 'problematic-id';
-```
-
-## See Also
-
-- [Installation Guide](../getting-started/installation.md) - Setup instructions
-- [Monitoring Guide](../operations/monitoring.md) - Detailed monitoring setup
-- [Troubleshooting Guide](../operations/troubleshooting.md) - Issue resolution
-- [Performance Tuning](../operations/performance-tuning.md) - Optimization strategies
+- [Installation](../getting-started/installation.md)
+- [API reference](../reference/api.md)
+- [Monitoring](../operations/monitoring.md)
+- [Replication](../operations/replication.md)
+- [Troubleshooting](../operations/troubleshooting.md)
+- [Performance tuning](../operations/performance-tuning.md)

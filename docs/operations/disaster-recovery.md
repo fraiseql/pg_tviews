@@ -1,8 +1,5 @@
 # Disaster Recovery Procedures
 
-**Version**: 0.1.0-beta.1
-**Last Updated**: December 11, 2025
-
 ## Overview
 
 This document outlines backup strategies, recovery procedures, and disaster recovery testing for pg_tviews deployments.

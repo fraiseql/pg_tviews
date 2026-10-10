@@ -1,372 +1,81 @@
 # Reproducible Builds
 
-**Document Version:** 1.0
-**Last Updated:** 2025-12-11
-**Classification:** Public
-**Applicable Standards:** SLSA Level 3, ISO 27001
+`scripts/reproducible-build.sh` builds the extension in a pinned container and packs it
+in the release layout as a deterministic tarball: two runs from the same commit give
+the same bytes.
 
-## Overview
+## Pinned environment
 
-pg_tviews implements fully reproducible builds using Docker containers with locked dependencies and controlled environments. This ensures that anyone can rebuild the exact same artifacts from source code, providing supply chain security and build verification.
+`docker/dockerfile-build`:
 
-## Why Reproducible Builds?
+| | |
+|---|---|
+| Base image | `rust:1.98-slim-bookworm` (the channel of `rust-toolchain.toml`) |
+| PostgreSQL | 18 (`postgresql-server-dev-18` from apt.postgresql.org) |
+| pgrx | `cargo-pgrx` 0.17.0, `--locked`; the crate pins `pgrx = "=0.17.0"` |
+| Dependencies | `Cargo.lock` |
+| Flags | `SOURCE_DATE_EPOCH=1`; `RUSTFLAGS` with `opt-level=3`, no debug info, stripped symbols, PIC, RELRO + `BIND_NOW`, non-executable stack |
 
-### Security Benefits
-- **Build Verification**: Independent verification of official releases
-- **Supply Chain Security**: Detect tampering or malicious builds
-- **Audit Compliance**: Meet regulatory requirements for build transparency
-- **Trust**: Community can verify official builds match source code
+The container runs `cargo pgrx package --no-default-features --features pg18` into
+`/out`. pg_tviews supports PostgreSQL 16, 17 and 18; to build for 16 or 17, change the
+`postgresql-*` packages, the `cargo pgrx init` line and the `pg18` feature in the
+Dockerfile.
 
-### Development Benefits
-- **Debugging**: Reproduce issues in controlled environments
-- **Testing**: Consistent builds across different systems
-- **CI/CD**: Reliable automated builds
-- **Collaboration**: Team members get identical results
-
-## Build Environment
-
-### Docker Configuration
-
-pg_tviews uses a locked Docker environment defined in `Dockerfile.build`:
-
-```dockerfile
-FROM rust:1.91.1-slim-bookworm
-
-# PostgreSQL 17 (locked version)
-RUN apt-get install postgresql-17 postgresql-server-dev-17
-
-# pgrx 0.12.8 (locked version)
-RUN cargo install --locked cargo-pgrx
-
-# Reproducible build flags
-ENV SOURCE_DATE_EPOCH=1
-ENV RUSTFLAGS="-C opt-level=3 -C debuginfo=0 -C strip=symbols"
-```
-
-### Controlled Variables
-
-#### Locked Versions
-- **Rust**: 1.91.1 (exact compiler version)
-- **PostgreSQL**: 17 (major version)
-- **pgrx**: 0.12.8 (exact framework version)
-- **Base OS**: Debian Bookworm slim
-
-#### Build Flags
-- **Optimization**: `-C opt-level=3` (maximum optimization)
-- **Debug Info**: `-C debuginfo=0` (no debug symbols)
-- **Stripping**: `-C strip=symbols` (remove symbols)
-- **Timestamps**: `SOURCE_DATE_EPOCH=1` (normalized timestamps)
-
-## Build Locally
-
-### Prerequisites
+## Build
 
 ```bash
-# Install Docker
-curl -fsSL https://get.docker.com | sh
-
-# Clone repository
-git clone https://github.com/fraiseql/pg_tviews.git
-cd pg_tviews
+./scripts/reproducible-build.sh 0.1.0-beta.27
+ls dist/
+# pg_tviews-0.1.0-beta.27.tar.gz  build-info.json  SHA256SUMS  SHA512SUMS
 ```
 
-### Reproducible Build Process
+The tarball has the layout of a release tarball:
+
+```
+lib/pg_tviews.so           -> $(pg_config --pkglibdir)
+extension/pg_tviews.control, pg_tviews--*.sql
+                           -> $(pg_config --sharedir)/extension
+```
+
+It is written with `tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner`
+and `gzip -n`, so file order, times, owners and the gzip header carry nothing from the
+build machine. `build-info.json` records the version, commit, toolchain, pgrx and
+PostgreSQL versions (its `timestamp` is the only field that changes between runs; it
+is not inside the tarball).
+
+## Check reproducibility
 
 ```bash
-# Build specific version
-./scripts/reproducible-build.sh 0.1.0
-
-# Check output
-ls -lh dist/
-# pg_tviews-0.1.0.tar.gz
-# build-info.json
-# SHA256SUMS
-# SHA512SUMS
+./scripts/reproducible-build.sh 0.1.0-beta.27 && mv dist dist1
+./scripts/reproducible-build.sh 0.1.0-beta.27 && mv dist dist2
+cmp dist1/pg_tviews-0.1.0-beta.27.tar.gz dist2/pg_tviews-0.1.0-beta.27.tar.gz
+diff dist1/SHA256SUMS dist2/SHA256SUMS
 ```
 
-### Verify Against Official Release
+Both commands print nothing when the builds match.
 
-```bash
-# Download official checksums
-curl -fsSL https://github.com/fraiseql/pg_tviews/releases/download/v0.1.0/SHA256SUMS -o official-checksums.txt
+## Relation to the official release
 
-# Verify your build matches
-cd dist
-sha256sum -c ../official-checksums.txt
-```
+The release tarball is built by `.github/workflows/release.yml` on a GitHub runner
+(PostgreSQL 18, `cargo pgrx package`), not by this script. Its integrity comes from:
 
-**Expected Output:**
-```
-pg_tviews-0.1.0.tar.gz: OK
-```
+- a Sigstore keyless signature (`cosign sign-blob`) of the tarball and of each SBOM;
+- a build provenance attestation of the tarball, made by
+  `actions/attest-build-provenance` in the same job, verifiable with
+  `gh attestation verify pg_tviews-v<version>.tar.gz --repo fraiseql/pg_tviews`.
 
-## Verify Build Reproducibility
-
-### Multiple Build Test
-
-```bash
-# Build first time
-./scripts/reproducible-build.sh 0.1.0
-mv dist dist1
-
-# Build second time
-./scripts/reproducible-build.sh 0.1.0
-mv dist dist2
-
-# Compare builds (should be identical)
-diff -r dist1 dist2
-```
-
-**Expected Output:** No differences (empty output)
-
-### Checksum Consistency
-
-```bash
-# Generate checksums for both builds
-cd dist1 && sha256sum pg_tviews-0.1.0.tar.gz > checksum1.txt
-cd ../dist2 && sha256sum pg_tviews-0.1.0.tar.gz > checksum2.txt
-
-# Compare checksums
-diff ../dist1/checksum1.txt checksum2.txt
-```
-
-**Expected Output:** Identical checksums
-
-## Build Metadata
-
-### Build Information
-
-Each reproducible build generates `build-info.json`:
-
-```json
-{
-  "version": "0.1.0",
-  "timestamp": "2025-12-11T10:00:00Z",
-  "builder": "docker",
-  "rust_version": "1.91.1",
-  "postgres_version": "17",
-  "pgrx_version": "0.12.8",
-  "commit": "abc123...",
-  "build_environment": "debian-bookworm-slim",
-  "reproducible": true
-}
-```
-
-### Checksum Files
-
-Build generates multiple checksum formats:
-
-```bash
-# SHA256 checksums
-cat dist/SHA256SUMS
-# abc123...  pg_tviews-0.1.0.tar.gz
-
-# SHA512 checksums
-cat dist/SHA512SUMS
-# def456...  pg_tviews-0.1.0.tar.gz
-```
-
-## Factors Affecting Reproducibility
-
-### Controlled Factors ✅
-
-- **Source Code**: Git commit hash locked
-- **Dependencies**: Cargo.lock with exact versions
-- **Build Environment**: Docker image with locked versions
-- **Compiler**: Rust version pinned
-- **Build Flags**: RUSTFLAGS environment variable
-- **Timestamps**: SOURCE_DATE_EPOCH normalization
-
-### Uncontrolled Factors ⚠️
-
-- **System Timezone**: Use UTC in containers
-- **Locale Settings**: Container uses C locale
-- **File Permissions**: Docker normalizes permissions
-- **Network Dependencies**: Builds are offline after dependency fetch
+See [../security/provenance.md](../security/provenance.md) and
+[../security/verify-release.md](../security/verify-release.md). The release job and this
+script use different environments and archive flags, so their tarballs are not expected
+to be byte-identical: use the script to check that a build from source is
+deterministic, and the signature and attestation to check the release.
 
 ## Troubleshooting
 
-### Build Fails in Docker
-
-**Issue**: `cargo pgrx package` fails
-
-**Solutions**:
-```bash
-# Check PostgreSQL is running
-docker exec -it <container> pg_isready
-
-# Initialize pgrx manually
-docker exec -it <container> cargo pgrx init --pg17
-
-# Check build logs
-docker logs <container>
-```
-
-### Checksums Don't Match
-
-**Issue**: Local build checksums differ from official
-
-**Solutions**:
-```bash
-# Verify Docker image
-docker build --no-cache -t pg_tviews-builder:test -f Dockerfile.build .
-
-# Check environment variables
-docker run --rm pg_tviews-builder:test env | grep -E "(SOURCE_DATE_EPOCH|RUSTFLAGS)"
-
-# Verify Rust version
-docker run --rm pg_tviews-builder:test rustc --version
-```
-
-### PostgreSQL Connection Issues
-
-**Issue**: pgrx cannot connect to PostgreSQL
-
-**Solutions**:
-```bash
-# Start PostgreSQL in container
-docker run -d --name postgres postgres:17
-
-# Link containers
-docker run --link postgres:postgres pg_tviews-builder:test
-
-# Or use host networking
-docker run --network host pg_tviews-builder:test
-```
-
-### Out of Memory
-
-**Issue**: Build fails with memory errors
-
-**Solutions**:
-```bash
-# Increase Docker memory
-docker run --memory=4g --memory-swap=4g pg_tviews-builder:test
-
-# Reduce parallel jobs
-docker run -e CARGO_BUILD_JOBS=1 pg_tviews-builder:test
-```
-
-## Advanced Usage
-
-### Custom Build Environment
-
-```bash
-# Build with custom Rust flags
-docker run -e RUSTFLAGS="-C opt-level=3 -C lto=fat" pg_tviews-builder:test
-
-# Build with different PostgreSQL version
-sed 's/postgresql-17/postgresql-16/g' Dockerfile.build > Dockerfile.custom
-docker build -f Dockerfile.custom -t custom-builder .
-```
-
-### Integration Testing
-
-```bash
-# Build and test in one command
-docker run --rm \
-  -v $(pwd)/dist:/build/target \
-  pg_tviews-builder:test \
-  bash -c "cargo pgrx package --release && cargo test"
-```
-
-### CI/CD Integration
-
-```yaml
-# .github/workflows/verify-reproducibility.yml
-name: Verify Reproducible Builds
-
-on: [pull_request]
-
-jobs:
-  reproducible:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Build reproducibly
-        run: ./scripts/reproducible-build.sh ${{ github.sha }}
-
-      - name: Verify checksums
-        run: |
-          cd dist
-          sha256sum -c SHA256SUMS
-```
-
-## Security Considerations
-
-### Build Environment Security
-
-- **Minimal Base Image**: Debian slim reduces attack surface
-- **Locked Dependencies**: No automatic updates during build
-- **No Network Access**: Builds run offline after setup
-- **Controlled Compiler**: Specific Rust version prevents compiler bugs
-
-### Verification Best Practices
-
-1. **Always verify checksums** after building
-2. **Compare against official releases** for security
-3. **Use trusted Docker images** for build environment
-4. **Check build metadata** for environment consistency
-5. **Report discrepancies** to maintainers immediately
-
-## Performance Optimization
-
-### Build Time Optimization
-
-```bash
-# Use build cache
-docker build --cache-from pg_tviews-builder:latest -t pg_tviews-builder:new .
-
-# Parallel builds
-docker run -e CARGO_BUILD_JOBS=$(nproc) pg_tviews-builder:test
-
-# Incremental builds
-docker run -v $(pwd)/target:/build/target pg_tviews-builder:test
-```
-
-### Storage Optimization
-
-```bash
-# Multi-stage builds
-FROM rust:1.91.1-slim-bookworm AS builder
-# Build stage
-
-FROM debian:bookworm-slim AS runtime
-# Runtime stage with only artifacts
-```
-
-## Contributing
-
-### Adding New Dependencies
-
-When adding dependencies to `Cargo.toml`:
-
-1. **Test reproducibility** before committing
-2. **Update documentation** if build process changes
-3. **Verify checksums** match after changes
-4. **Update CI/CD** if new tools are required
-
-### Modifying Build Environment
-
-When changing `Dockerfile.build`:
-
-1. **Test on multiple systems** (Linux, macOS, Windows)
-2. **Verify reproducibility** across environments
-3. **Update documentation** with new requirements
-4. **Tag new versions** appropriately
-
-## References
-
-- [Reproducible Builds Project](https://reproducible-builds.org/)
-- [SLSA Framework](https://slsa.dev/)
-- [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
-- [pg_tviews Provenance](../security/provenance.md)
-
----
-
-**Document Control:**
-- **Author**: Lionel Hamayon
-- **Reviewers**: Project Contributors
-- **Review Cycle**: Annual
-- **Distribution**: Public
+- **`cargo pgrx package` fails in the container**: rebuild the image without cache
+  (`docker build --no-cache -f docker/dockerfile-build .`) and check that
+  `rust-toolchain.toml` and the Dockerfile's base image name the same Rust version.
+- **Two builds differ**: compare `dist*/build-info.json` (commit, toolchain), then
+  unpack both tarballs and `cmp` the files; a difference in `pg_tviews.so` points to a
+  toolchain or dependency drift, one in `extension/` to an uncommitted SQL change.
+- **Out of memory**: give Docker more memory, or set `CARGO_BUILD_JOBS=1`.

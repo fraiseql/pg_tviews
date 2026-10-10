@@ -22,9 +22,9 @@ both. The refresh runs as the TVIEW's owner with `search_path = pg_catalog, pg_t
 whoever the writer is, and renders values under fixed settings (see
 [Rendering](reference/ddl.md#rendering)).
 
-Nothing is queued across transactions: work left queued when a transaction commits is
-dropped with a WARNING naming the TVIEWs (it means a flush trigger is missing; see
-`pg_tviews_health_check()`).
+Nothing is queued across transactions. A transaction that would commit with refresh
+work still queued (a flush trigger dropped or disabled) fails instead, with SQLSTATE
+`55000`, naming the TVIEWs; `pg_tviews_health_check()` reports the missing trigger.
 
 ## Locks
 
@@ -47,7 +47,8 @@ in different orders can deadlock. PostgreSQL detects it and aborts one of them w
 
 Every isolation level works. They differ when **two concurrent transactions write
 rows that feed the same TVIEW row** (a writer renames a user while another edits one
-of the user's posts, and `tv_post` embeds the author).
+of the user's posts, and `tv_post` embeds the author). The specs in
+`test/isolation/` check each case below.
 
 | Isolation level | What happens to the second writer | The TVIEW row |
 |---|---|---|
@@ -57,12 +58,28 @@ of the user's posts, and `tv_post` embeds the author).
 Under `READ COMMITTED`, the refresh locks the existing TVIEW rows it is about to
 recompute (`SELECT … FOR UPDATE`, in key order) before it reads the view: a second
 writer waits there, and the recompute that follows sees the first writer's change.
+Under `REPEATABLE READ` and `SERIALIZABLE` the rows are not locked first: the write of
+a row another transaction changed since the snapshot fails with `40001` rather than
+store a document computed from that snapshot.
 
-One case remains: two transactions that **create** the same TVIEW row at once (the row
-does not exist yet, so there is nothing to lock). The second waits on the unique
-index, then writes the row it computed. It needs both writers to insert rows that
-feed one key that no transaction has materialized yet; the next write to that row,
-or `SELECT tviews.pg_tviews_refresh('…')`, repairs it.
+### Known defects
+
+A row that does not exist yet has nothing to lock, so a TVIEW row being **created**
+while a row it reads is changed can be written stale, under `READ COMMITTED`:
+
+- **A new parent while its embedded child changes.** One transaction inserts a parent
+  row (a post) while another renames the child it embeds (its author), and both
+  commit: the new `tv_post` row keeps the author's old name. The inserter computes the
+  row from a snapshot without the rename, and the rename's propagation cannot see the
+  parent row that is not committed yet. This is an open defect, reproduced by
+  `test/isolation/specs/new-parent-vs-write.spec` (not in the default schedule; see
+  `test/isolation/README.md`).
+- **Two transactions creating the same TVIEW row.** Both insert rows that feed one key
+  no transaction has materialized yet; the second waits on the unique index, then
+  writes the row it computed.
+
+In both cases the next write to that row, or `SELECT tviews.pg_tviews_refresh('…')`,
+repairs it.
 
 ## Suspended refresh
 

@@ -8,7 +8,7 @@ database that uses pg_tviews. What pg_tviews adds to an ordinary PostgreSQL rest
 - **Logical backups** (`pg_dump`): the catalog table `tviews.pg_tview_meta` is dumped
   (it is registered with `pg_extension_config_dump`), so after `pg_restore` the TVIEWs
   come back registered and keep propagating. Covered by
-  `test/sql/regress_issue_96_dump_restore.sql`.
+  `test/sql/regress/catalog/regress_dump_restore.sql`.
 - **Physical backups** (`pg_basebackup`, PITR) and crash restarts: UNLOGGED TVIEW tables
   (the default) have no WAL and no data in a base backup. They come back **empty** and
   must be rebuilt with `tviews.pg_tviews_rebuild_all()` (or automatically, see

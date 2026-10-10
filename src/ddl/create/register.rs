@@ -40,7 +40,7 @@ impl Registration<'_> {
             &qualified,
             &self.derivation.undeclared_functions,
             declarations.policy,
-        )?;
+        );
         crate::ddl::uncascaded::report_time(&qualified, &lineage.time_reads, &declarations)?;
         crate::ddl::uncascaded::check_declared(&qualified, &declarations, lineage)?;
         let uncascaded = Uncascaded {
@@ -48,7 +48,7 @@ impl Registration<'_> {
             declarations,
             time_dependent: !lineage.time_reads.is_empty(),
         };
-        crate::ddl::uncascaded::report(&qualified, &uncascaded)?;
+        crate::ddl::uncascaded::report(&qualified, &uncascaded);
         let plan = &self.derivation.plan;
         index_embed_lookups(
             self.entity,

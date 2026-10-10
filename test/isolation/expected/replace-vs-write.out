@@ -1,0 +1,60 @@
+Parsed test spec with 2 sessions
+
+starting permutation: x_begin x_replace w_write x_commit w_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step x_begin: BEGIN;
+step x_replace: 
+  SELECT tviews.pg_tviews_create_or_replace('public.tv_post', $$
+      SELECT pk_post, id, jsonb_build_object('title', upper(title)) AS data FROM tb_post $$);
+
+pg_tviews_create_or_replace
+---------------------------
+replaced                   
+(1 row)
+
+step w_write: UPDATE tb_post SET title = 'changed' WHERE pk_post = 1; <waiting ...>
+step x_commit: COMMIT;
+step w_write: <... completed>
+step w_check: 
+  SELECT t.pk_post, t.data AS tview, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|tview               |fresh
+-------+--------------------+-----
+      1|{"title": "CHANGED"}|t    
+      2|{"title": "P2"}     |t    
+(2 rows)
+
+
+starting permutation: w_write x_begin x_replace x_commit w_check
+pg_tviews_create                    
+------------------------------------
+TVIEW 'tv_post' created successfully
+(1 row)
+
+step w_write: UPDATE tb_post SET title = 'changed' WHERE pk_post = 1;
+step x_begin: BEGIN;
+step x_replace: 
+  SELECT tviews.pg_tviews_create_or_replace('public.tv_post', $$
+      SELECT pk_post, id, jsonb_build_object('title', upper(title)) AS data FROM tb_post $$);
+
+pg_tviews_create_or_replace
+---------------------------
+replaced                   
+(1 row)
+
+step x_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data AS tview, t.data = v.data AS fresh
+  FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|tview               |fresh
+-------+--------------------+-----
+      1|{"title": "CHANGED"}|t    
+      2|{"title": "P2"}     |t    
+(2 rows)
+

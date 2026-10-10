@@ -1,6 +1,7 @@
 # ADR 0077: Refresh strategy selection
 
-- Status: Accepted
+- Status: Accepted. Since measured: `pg_tviews_suspend_triggers()` suspends refresh (fixed), and
+  `pg_tviews_refresh(entity)` requires owning the TVIEW (0.1.0-beta.27); the recipe below stands.
 - Issue: #77
 - Harness: `test/sql/real_benchmark/scenarios/refresh_strategy.sh`
 

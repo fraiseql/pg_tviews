@@ -1,8 +1,5 @@
-//! Refresh Module: Smart JSONB Patching for Cascade Updates
-//!
-//! This module handles refreshing transformed views (TVIEWs) when underlying source
-//! table rows change. It uses **smart JSONB patching** via the `jsonb_delta` extension
-//! for 1.5-3× performance improvement on cascade updates.
+//! Writing TVIEW rows: one row recomputed from its backing view (`row`), many at
+//! once (`bulk`), and the direct patch of a TVIEW's own columns (`direct`).
 
 pub mod row;
 
@@ -52,7 +49,7 @@ enum KeyValues {
     Text(Vec<String>),
 }
 
-/// `keys` as one array parameter, for [`key_cast`]`(…, true)`.
+/// `keys` as one array parameter, for `key_cast(…, true)`.
 pub(crate) fn key_array(
     key_type: &KeyType,
     keys: &[KeyValue],
@@ -63,7 +60,7 @@ pub(crate) fn key_array(
     })
 }
 
-/// One key as a parameter, for [`key_cast`]`(…, false)`.
+/// One key as a parameter, for `key_cast(…, false)`.
 pub(crate) fn key_scalar(
     key_type: &KeyType,
     key: &KeyValue,
@@ -166,25 +163,13 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
 /// qualified with `qi_tv`, the quoted (schema-qualified) TVIEW table, because the
 /// source relation is in scope too.
-///
-/// `data_expr` replaces `EXCLUDED.data` as the new `data` value (the smart-patch
-/// path merges into the stored document). Every other column still tracks the
-/// backing view, so no projected column is left stale.
-pub(crate) fn upsert_conflict_action(
-    qi_tv: &str,
-    col_names: &[String],
-    key_col: &str,
-    data_expr: Option<&str>,
-) -> String {
+pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col: &str) -> String {
     let cols: Vec<(String, String)> = col_names
         .iter()
         .filter(|c| c.as_str() != key_col)
         .map(|c| {
             let q = quote_identifier(c);
-            let fresh = match data_expr {
-                Some(expr) if c == "data" => expr.to_string(),
-                _ => format!("EXCLUDED.{q}"),
-            };
+            let fresh = format!("EXCLUDED.{q}");
             (q, fresh)
         })
         .collect();
@@ -348,8 +333,7 @@ mod tests {
             super::upsert_conflict_action(
                 r#""app"."tv_post""#,
                 &cols(&["pk_post", "id", "data"]),
-                "pk_post",
-                None
+                "pk_post"
             ),
             r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
         );
@@ -358,7 +342,7 @@ mod tests {
     #[test]
     fn conflict_action_single_column_compares_one_column_records() {
         assert_eq!(
-            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x", None),
+            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x"),
             r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
         );
     }
@@ -366,26 +350,8 @@ mod tests {
     #[test]
     fn conflict_action_quotes_reserved_and_mixed_case_columns() {
         assert_eq!(
-            super::upsert_conflict_action(
-                r#""tv_x""#,
-                &cols(&["pk_x", "order", "Label"]),
-                "pk_x",
-                None
-            ),
+            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "order", "Label"]), "pk_x"),
             r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
-        );
-    }
-
-    #[test]
-    fn conflict_action_data_expr_replaces_only_data() {
-        assert_eq!(
-            super::upsert_conflict_action(
-                r#""tv_x""#,
-                &cols(&["pk_x", "label", "data"]),
-                "pk_x",
-                Some("patch(\"tv_x\".data)"),
-            ),
-            r#"DO UPDATE SET "label" = EXCLUDED."label", "data" = patch("tv_x".data), updated_at = NOW() WHERE NOT (ROW("tv_x"."label", "tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."label", patch("tv_x".data))::pg_catalog.record)"#
         );
     }
 
@@ -430,7 +396,7 @@ mod tests {
     #[test]
     fn conflict_action_key_only_does_nothing() {
         assert_eq!(
-            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x"]), "pk_x", None),
+            super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x"]), "pk_x"),
             "DO NOTHING"
         );
     }

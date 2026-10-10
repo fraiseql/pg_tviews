@@ -12,7 +12,7 @@ impl Walker<'_> {
     /// Record the virtual generated columns among the keys and equalities.
     pub(super) fn note_virtual_columns(&mut self) {
         let graph = &self.graph;
-        let columns: Vec<&Column> = graph
+        let found: Vec<(usize, i16)> = graph
             .roots
             .iter()
             .map(|r| &r.key)
@@ -23,13 +23,10 @@ impl Walker<'_> {
                     .filter_map(|c| c.equality.as_ref())
                     .flat_map(|(x, y)| [x, y]),
             )
-            .collect();
-        let found: Vec<(usize, i16)> = columns
-            .into_iter()
             .filter(|c| {
                 let relid = Oid::from(graph.occurrences[c.occ].relid);
                 // SAFETY: a catalog lookup by OID and attribute number.
-                unsafe { pg_sys::get_attgenerated(relid, c.attnum) as u8 == b'v' }
+                unsafe { pg_sys::get_attgenerated(relid, c.attnum).cast_unsigned() == b'v' }
             })
             .map(|c| (c.occ, c.attnum))
             .collect();
@@ -328,7 +325,7 @@ impl Walker<'_> {
         self.levels.last_mut().expect("inside a query level")
     }
 
-    pub(super) fn next_union(&mut self) -> usize {
+    pub(super) const fn next_union(&mut self) -> usize {
         self.unions += 1;
         self.unions
     }
@@ -485,7 +482,7 @@ impl Walker<'_> {
     pub(super) fn relation(&mut self, relid: Oid, flags: &Flags) -> TViewResult<RteInfo> {
         // SAFETY: catalog lookups by OID.
         let (relkind, relname, qualified) = unsafe {
-            let relkind = pg_sys::get_rel_relkind(relid) as u8;
+            let relkind = pg_sys::get_rel_relkind(relid).cast_unsigned();
             let relname = cstr(pg_sys::get_rel_name(relid));
             let nsp = cstr(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid)));
             let qualified = format!("{}.{}", quote_ident(&nsp), quote_ident(&relname));
@@ -641,7 +638,7 @@ impl Walker<'_> {
         unsafe {
             match tag(node) {
                 Some(pg_sys::NodeTag::T_RangeTblRef) => {
-                    let rtindex = (*node.cast::<pg_sys::RangeTblRef>()).rtindex as usize;
+                    let rtindex = super::index((*node.cast::<pg_sys::RangeTblRef>()).rtindex);
                     Ok(self.occurrences_of(rtindex))
                 }
                 Some(pg_sys::NodeTag::T_FromExpr) => {

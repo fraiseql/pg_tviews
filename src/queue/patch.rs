@@ -22,7 +22,7 @@ use std::collections::HashMap;
 pub type PatchEntry = (Vec<String>, Map<String, Value>);
 
 /// The patch payload carried for a queued [`RefreshKey`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchState {
     /// A usable chain of patches to apply directly. Entries with distinct
     /// prefixes accumulate; a same-prefix merge keeps the later value per key.
