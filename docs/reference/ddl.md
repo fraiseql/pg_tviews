@@ -110,7 +110,7 @@ except columns whose names give them a fixed type:
 
 | Column | Type | Notes |
 |---|---|---|
-| `pk_<entity>` (the first `pk_*`) | `bigint` | the primary key, unless the TVIEW is `DISTINCT ON`; its values must be integers |
+| `pk_<entity>` (the first `pk_*`) | `bigint` | the primary key, unless the TVIEW is `DISTINCT ON`; the definition gives it as `smallint`, `integer`, `bigint` or a domain over one, else it is refused (`42804`) |
 | `id` | `uuid` | `NOT NULL`, indexed |
 | `data` | `jsonb` | optional |
 | `fk_*` | `bigint` | indexed with `pk_<entity>` |
@@ -662,9 +662,14 @@ SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT … $$);
 
 A column rename on a table or view the definition reads (`ALTER TABLE tb_post RENAME
 COLUMN title TO headline`) is followed: the stored definition and plan are rewritten
-with the new name. Do not rename the columns of `tv_<entity>` itself: the definition
-still outputs the old name, and the next write to a base table fails. Rename the
-column in the definition with `pg_tviews_create_or_replace()` instead.
+with the new name.
+
+The columns of `tv_<entity>` itself are its definition's: refreshes write each one
+by name, with the backing view's type. `ALTER TABLE tv_<entity>` refuses (`42809`)
+`RENAME COLUMN`, `DROP COLUMN`, and `ALTER COLUMN … TYPE` on `pk_<entity>`, `id` or
+`data`, or to a type the view's column does not convert to on assignment. Change the
+column in the definition with `pg_tviews_create_or_replace()` instead. Other `ALTER
+TABLE` forms (storage, compression, fillfactor, a type the view's converts to) run.
 
 ## Triggers
 
@@ -699,7 +704,8 @@ not decode) fails naming the TVIEW, with the `pg_tviews_reregister` hint.
 | `TVIEW tv_post already exists` | `42P07` | use `pg_tviews_create_or_replace()` |
 | `writes to … would not refresh …` | `22023` | declare an `uncascaded_policy` or `uncascaded_tables` ([Tables no cascade reaches](#tables-no-cascade-reaches)), or join on a traceable column |
 | `relations would read each other in a cycle: …` | `42P17` | restructure the definitions so no TVIEW reads itself through others |
-| `column "pk_x" is of type bigint but expression is of type uuid` | `42804` | `pk_<entity>` is stored as `bigint`: key on an integer column |
+| `pk_x is uuid: a TVIEW's pk_<entity> must be an integer key …` | `42804` | key on an integer column, and keep the uuid in `id` |
+| `RENAME COLUMN on TVIEW public.tv_x is refused …` | `42809` | change the definition with `pg_tviews_create_or_replace()` |
 | `cannot drop table tv_user because other objects depend on it` | `2BP01` | drop the TVIEWs that read it first, or `DROP TABLE … CASCADE` |
 
 See [Troubleshooting](../operations/troubleshooting.md) for refresh problems and the

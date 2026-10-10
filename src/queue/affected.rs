@@ -8,9 +8,12 @@
 //! [`crate::report::pg_tviews_flush_and_report`] reads it.
 //!
 //! Entries are appended in write order. A savepoint records the journal position and
-//! a rollback to it truncates back, so rolled-back writes are never reported. The
+//! a rollback to it truncates back, so rolled-back writes are never reported. A
+//! report with reset hides what it reported; inside a subtransaction the entries are
+//! kept until no subtransaction is open, so rolling one back undoes its resets. The
 //! journal is cleared when the transaction ends. Past `pg_tviews.report_max_tracked`
-//! entries only the entity names are kept and the report says it was truncated.
+//! unreported entries only the entity names are kept and the report says it was
+//! truncated.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -35,12 +38,36 @@ pub struct NetChange {
 #[derive(Default)]
 struct Journal {
     entries: Vec<(String, String, Change)>,
-    /// Entries summarized and dropped before `entries[0]`: positions count from
-    /// the start of the transaction, so a savepoint taken before a summary still
-    /// rolls back exactly what came after it.
+    /// Entries dropped before `entries[0]`: positions count from the start of the
+    /// transaction, so a savepoint taken before a reset still rolls back exactly
+    /// what came after it.
     base: usize,
+    /// The position of the first entry not yet reported (with reset). Entries
+    /// before it are dropped once no subtransaction is open.
+    reported: usize,
     /// Entities with changes that were not journaled because the cap was reached.
     overflow: BTreeSet<String>,
+    /// Subtransactions open.
+    open: usize,
+}
+
+/// Where the journal stood when a subtransaction started.
+#[derive(Debug)]
+pub struct Mark {
+    position: usize,
+    reported: usize,
+    overflow: BTreeSet<String>,
+}
+
+impl Journal {
+    /// Drop the reported entries, unless a subtransaction could still undo the
+    /// reset that reported them.
+    fn compact(&mut self) {
+        if self.open == 0 {
+            self.entries.drain(..self.reported - self.base);
+            self.base = self.reported;
+        }
+    }
 }
 
 thread_local! {
@@ -70,7 +97,7 @@ pub fn record(entity: &str, pk: String, change: Change) {
     }
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        if j.entries.len() < cap {
+        if j.base + j.entries.len() - j.reported < cap {
             j.entries.push((entity.to_string(), pk, change));
         } else {
             j.overflow.insert(entity.to_string());
@@ -78,20 +105,40 @@ pub fn record(entity: &str, pk: String, change: Change) {
     });
 }
 
-/// The journal position now: what a savepoint records.
-pub fn position() -> usize {
+/// A subtransaction started: where the journal stands.
+pub fn mark() -> Mark {
     JOURNAL.with(|j| {
-        let j = j.borrow();
-        j.base + j.entries.len()
+        let mut j = j.borrow_mut();
+        j.open += 1;
+        Mark {
+            position: j.base + j.entries.len(),
+            reported: j.reported,
+            overflow: j.overflow.clone(),
+        }
     })
 }
 
-/// A savepoint taken at `position` rolled back: forget what was journaled since.
-pub fn rollback_to(position: usize) {
+/// The subtransaction of `mark` committed: its entries and resets belong to its
+/// parent.
+pub fn release(_mark: Mark) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        let keep = position.saturating_sub(j.base);
+        j.open = j.open.saturating_sub(1);
+        j.compact();
+    });
+}
+
+/// The subtransaction of `mark` rolled back: forget what was journaled since, and
+/// undo the resets made since.
+pub fn rollback(mark: Mark) {
+    JOURNAL.with(|j| {
+        let mut j = j.borrow_mut();
+        j.open = j.open.saturating_sub(1);
+        let keep = mark.position - j.base;
         j.entries.truncate(keep);
+        j.reported = mark.reported;
+        j.overflow.extend(mark.overflow);
+        j.compact();
     });
 }
 
@@ -100,17 +147,17 @@ pub fn clear() {
     JOURNAL.with(|j| *j.borrow_mut() = Journal::default());
 }
 
-/// The net change per row, in order of each row's first entry, and the entities
-/// whose changes overflowed the cap. With `reset` the journal is emptied.
+/// The net change per unreported row, in order of each row's first entry, and the
+/// entities whose changes overflowed the cap. With `reset` they count as reported.
 pub fn summarize(reset: bool) -> (Vec<NetChange>, BTreeSet<String>) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        let net = net_changes(&j.entries);
+        let net = net_changes(&j.entries[j.reported - j.base..]);
         let overflow = j.overflow.clone();
         if reset {
-            j.base += j.entries.len();
-            j.entries.clear();
+            j.reported = j.base + j.entries.len();
             j.overflow.clear();
+            j.compact();
         }
         (net, overflow)
     })
@@ -155,7 +202,60 @@ fn net_changes(entries: &[(String, String, Change)]) -> Vec<NetChange> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, net_changes};
+    use super::{Change, JOURNAL, clear, mark, net_changes, release, rollback, summarize};
+
+    /// Journal a change without `record`, which reads a GUC.
+    fn push(pk: &str) {
+        JOURNAL.with(|j| {
+            j.borrow_mut()
+                .entries
+                .push(("user".to_string(), pk.to_string(), Change::Updated));
+        });
+    }
+
+    fn report(reset: bool) -> Vec<String> {
+        summarize(reset).0.into_iter().map(|n| n.pk).collect()
+    }
+
+    #[test]
+    fn a_rolled_back_reset_is_undone() {
+        clear();
+        push("1");
+        let m = mark();
+        assert_eq!(report(true), ["1"]);
+        push("2");
+        rollback(m);
+        assert_eq!(report(true), ["1"]);
+        assert!(report(false).is_empty());
+        clear();
+    }
+
+    #[test]
+    fn a_released_reset_holds_until_an_outer_rollback() {
+        clear();
+        push("1");
+        let outer = mark();
+        let inner = mark();
+        assert_eq!(report(true), ["1"]);
+        release(inner);
+        assert!(report(false).is_empty());
+        rollback(outer);
+        assert_eq!(report(false), ["1"]);
+        clear();
+    }
+
+    #[test]
+    fn reported_entries_are_dropped_once_no_subtransaction_is_open() {
+        clear();
+        push("1");
+        let m = mark();
+        report(true);
+        release(m);
+        push("2");
+        assert_eq!(report(true), ["2"]);
+        JOURNAL.with(|j| assert!(j.borrow().entries.is_empty()));
+        clear();
+    }
 
     fn e(entity: &str, pk: &str, c: Change) -> (String, String, Change) {
         (entity.to_string(), pk.to_string(), c)

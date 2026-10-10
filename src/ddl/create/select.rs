@@ -112,6 +112,45 @@ pub fn analyze(sql: &str) -> TViewResult<Vec<(String, String)>> {
     }
 }
 
+/// Refuse a `pk_<entity>` column that is not an integer (a domain over one is):
+/// the TVIEW table keys on BIGINT, and refreshes carry keys as 64-bit integers.
+///
+/// # Errors
+/// [`TViewError::KeyTypeRefused`] for another type, or the error resolving a
+/// type name.
+fn check_key_type(columns: &ViewColumns) -> TViewResult<()> {
+    let Some(pk) = &columns.pk else {
+        return Ok(());
+    };
+    let Some((_, found)) = columns.columns.iter().find(|(c, _)| c == pk) else {
+        return Ok(());
+    };
+    if matches!(found.as_str(), "smallint" | "integer" | "bigint") {
+        return Ok(());
+    }
+    let typid = crate::utils::spi::one::<pg_sys::Oid>(
+        "SELECT pg_catalog.to_regtype($1)::pg_catalog.oid",
+        &[crate::utils::spi::text(found.as_str())],
+    )?
+    .unwrap_or(pg_sys::InvalidOid);
+    let base = if typid == pg_sys::InvalidOid {
+        typid
+    } else {
+        // SAFETY: a syscache lookup of a type that exists (the definition analyzed).
+        unsafe { pg_sys::getBaseType(typid) }
+    };
+    if matches!(base, pg_sys::INT2OID | pg_sys::INT4OID | pg_sys::INT8OID) {
+        return Ok(());
+    }
+    Err(TViewError::KeyTypeRefused {
+        column: pk.clone(),
+        found: found
+            .strip_prefix("pg_catalog.")
+            .unwrap_or(found)
+            .to_string(),
+    })
+}
+
 /// Check that an aggregate definition can be maintained group by group, as
 /// PostgreSQL analyzes it: no window function (a window spans rows of other
 /// groups), no set operation, and a `pk_<entity>` output that is a plain column and
@@ -233,15 +272,18 @@ fn parse_one_select(sql: &str, c_sql: &CStr) -> TViewResult<*mut pg_sys::RawStmt
 /// `pk_<entity>, id, data` shape.
 ///
 /// # Errors
-/// What [`analyze`] returns, or 42601 when a raw SELECT has no column to key on.
+/// What [`analyze`] returns, 42601 when a raw SELECT has no column to key on, or
+/// 0A000 when its key is not an integer.
 pub fn normalize(entity: &str, select_sql: &str) -> TViewResult<(String, ViewColumns)> {
     let columns = ViewColumns::classify(analyze(select_sql)?);
     if columns.entity.is_some() {
+        check_key_type(&columns)?;
         let sql = expand_star(select_sql, &columns).unwrap_or_else(|| select_sql.to_string());
         return Ok((sql, columns));
     }
     let transformed = raw_to_tview(entity, select_sql, &columns)?;
     let columns = ViewColumns::classify(analyze(&transformed)?);
+    check_key_type(&columns)?;
     Ok((transformed, columns))
 }
 

@@ -91,6 +91,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `DROP TABLE tv_*` or a column rename run by a function that `EXECUTE` or
   `CREATE TABLE AS` calls is intercepted like any other: the TVIEW was left
   registered with no table, or its definition kept the old column name.
+- `ALTER TABLE tv_*` that would leave the refreshes writing a column that no longer
+  fits is refused with 42809 (#208): `RENAME COLUMN`, `DROP COLUMN`, and `ALTER
+  COLUMN … TYPE` on `pk_<entity>`, `id` or `data` or to a type the backing view's
+  column does not convert to. It was accepted, and every later write to a base
+  table failed.
+- A definition whose `pk_<entity>` is not an integer (`smallint`, `integer`,
+  `bigint`, or a domain over one) is refused with 42804 before anything is created,
+  naming the column and its type, with a hint to keep a uuid in `id` (#209).
+  `pg_tviews_create` failed with PostgreSQL's raw 42804 from its fill query.
+- `pg_tviews_flush_and_report(reset => true)` in a subtransaction that rolls back
+  (`ROLLBACK TO SAVEPOINT`, a plpgsql `EXCEPTION` handler) no longer loses what it
+  reported: the next call reports those rows again (#210).
 
 ### Removed
 

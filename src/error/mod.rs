@@ -28,6 +28,13 @@ pub enum TViewError {
     /// `pg_tviews` cannot maintain a TVIEW with this definition.
     DefinitionRefused { reason: String },
 
+    /// The definition's `pk_<entity>` column is not an integer.
+    KeyTypeRefused { column: String, found: String },
+
+    /// A statement would change a TVIEW table's columns, which its definition
+    /// sets.
+    ColumnDdlRefused { table: String, change: String },
+
     /// The current role may not do this.
     PermissionDenied { reason: String },
 
@@ -78,6 +85,8 @@ impl TViewError {
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+            Self::KeyTypeRefused { .. } => PgSqlErrorCode::ERRCODE_DATATYPE_MISMATCH,
+            Self::ColumnDdlRefused { .. } => PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE,
             Self::PermissionDenied { .. } => PgSqlErrorCode::ERRCODE_INSUFFICIENT_PRIVILEGE,
             Self::DependencyCycle { .. } => PgSqlErrorCode::ERRCODE_INVALID_OBJECT_DEFINITION,
             Self::DepthExceeded { .. } => PgSqlErrorCode::ERRCODE_STATEMENT_TOO_COMPLEX,
@@ -125,6 +134,14 @@ impl TViewError {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
             Self::JsonbDeltaMissing => Some("CREATE EXTENSION jsonb_delta;".into()),
+            Self::KeyTypeRefused { .. } => Some(
+                "Key the rows on an integer column, and keep a uuid key in the id column.".into(),
+            ),
+            Self::ColumnDdlRefused { .. } => Some(
+                "Change the definition with tviews.pg_tviews_create_or_replace(): the table \
+                 follows it."
+                    .into(),
+            ),
             Self::QueueFull { .. } => {
                 Some("Raise pg_tviews.max_queue_size, or write in smaller transactions.".into())
             }
@@ -211,6 +228,15 @@ impl fmt::Display for TViewError {
             | Self::WrongState { reason } => {
                 write!(f, "{reason}")
             }
+            Self::KeyTypeRefused { column, found } => write!(
+                f,
+                "{column} is {found}: a TVIEW's pk_<entity> must be an integer key \
+                 (smallint, integer or bigint)"
+            ),
+            Self::ColumnDdlRefused { table, change } => write!(
+                f,
+                "{change} on TVIEW {table} is refused: a TVIEW's columns are its definition's"
+            ),
             Self::DependencyCycle { entities } => write!(
                 f,
                 "relations would read each other in a cycle: {}",
@@ -285,6 +311,14 @@ mod tests {
                 reason: s(),
             },
             TViewError::DefinitionRefused { reason: s() },
+            TViewError::KeyTypeRefused {
+                column: s(),
+                found: s(),
+            },
+            TViewError::ColumnDdlRefused {
+                table: s(),
+                change: s(),
+            },
             TViewError::PermissionDenied { reason: s() },
             TViewError::DependencyCycle { entities: vec![] },
             TViewError::DepthExceeded {
@@ -323,6 +357,8 @@ mod tests {
                 | TViewError::RelationExists { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
+                | TViewError::KeyTypeRefused { .. }
+                | TViewError::ColumnDdlRefused { .. }
                 | TViewError::PermissionDenied { .. }
                 | TViewError::DependencyCycle { .. }
                 | TViewError::DepthExceeded { .. }
