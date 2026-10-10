@@ -181,6 +181,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emptiness checks of `pg_tviews_rebuild_all(true)` too); `pg_tviews_refresh(entity)` by a role that neither owns
   `tv_<entity>` nor the extension fails with 42501 (it rebuilt the requested TVIEW
   with the caller's privileges before).
+
+### Added
+
+- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
+  in the current transaction.
+
+### Fixed
+
+- **A subtransaction that commits inside a writing statement no longer drops the
+  refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
+  trigger on a base table, a function in the `SET` list) took the whole pending queue
+  aside when it started and threw it away when it committed: every row the statement
+  wrote before the block stayed stale, without a warning. Savepoints now leave the
+  pending work in place and undo only what was queued inside one that rolls back.
+- **A direct patch never calls a function outside jsonb_delta's schema.** When
+  jsonb_delta was dropped between capturing a patch and flushing it, the flush called
+  `public.jsonb_smart_patch_scalar`, which any role with `CREATE` on `public` could
+  have planted, as the TVIEW's owner. It now fails, naming jsonb_delta.
+- An error message cut a long query at byte 100 even inside a multi-byte character,
+  and the formatting panic replaced the real error.
+- **An error raised under another library's executor or utility hook no longer
+  stops refreshes for the rest of the session.** With `pg_stat_statements` (or any
+  other hook) loaded before pg_tviews, an error inside a writing query, caught by an
+  EXCEPTION block, skipped pg_tviews' bookkeeping of the running query: every later
+  statement in the session deferred its refresh to a statement that no longer ran,
+  and the work was dropped at commit. Calls to the previous hooks are now guarded,
+  and a rolled-back subtransaction forgets the queries it ran.
+- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` roll back with
+  a savepoint.** A suspension inside a savepoint that was rolled back stayed in force
+  for the rest of the transaction.
+- `COMMIT` of a transaction that already failed runs no catch-up or refresh: the
+  server rolls it back.
+- A refresh write that fires a base table's flush (a user trigger on a TVIEW's
+  table writing a base table) no longer starts a second flush inside the running
+  one; the running flush takes the work.
+- `DROP TABLE tv_a, other` in a function called twice dropped `tv_a` only the first
+  time: the TVIEW was taken out of the function's cached plan. The plan is copied
+  before it is changed.
+- A `TRUNCATE` run by a trigger of a writing statement leaves the refresh to that
+  statement, as its other nested statements do.
+- The query tree walkers report a stack-depth error as an ERROR, the view-query
+  reader refuses a relation that is not a view, and the DDL pg_tviews runs from a
+  trigger or a function no longer gets a connection that may end the transaction.
+- The quick start works as written: it loads the library in
+  `shared_preload_libraries` and puts `tviews` on the `search_path`. The
+  troubleshooting guide no longer recommends `pg_tviews_convert_existing_table`
+  (it always fails), and `pg_tviews_health_check()` is documented with its real
+  columns `(status, component, message, severity)`.
+
+## [0.1.0-beta.26] - 2026-10-09
+
+### Changed (breaking)
+
 - **Refreshes render values under fixed settings, not the writer's** (#200):
   `TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`,
   `extra_float_digits` `1`, `bytea_output` `hex`, on every path that computes a
@@ -212,9 +265,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a NOTICE and writes to those tables left the TVIEW stale.
 
 ### Added
-
-- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
-  in the current transaction.
 
 - **`REFRESH MATERIALIZED VIEW` refreshes the TVIEWs that read the matview** under
   `full_refresh` (#189), plain or `CONCURRENTLY`, in the REFRESH's transaction.
@@ -268,46 +318,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A subtransaction that commits inside a writing statement no longer drops the
-  refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
-  trigger on a base table, a function in the `SET` list) took the whole pending queue
-  aside when it started and threw it away when it committed: every row the statement
-  wrote before the block stayed stale, without a warning. Savepoints now leave the
-  pending work in place and undo only what was queued inside one that rolls back.
-- **A direct patch never calls a function outside jsonb_delta's schema.** When
-  jsonb_delta was dropped between capturing a patch and flushing it, the flush called
-  `public.jsonb_smart_patch_scalar`, which any role with `CREATE` on `public` could
-  have planted, as the TVIEW's owner. It now fails, naming jsonb_delta.
-- An error message cut a long query at byte 100 even inside a multi-byte character,
-  and the formatting panic replaced the real error.
-- **An error raised under another library's executor or utility hook no longer
-  stops refreshes for the rest of the session.** With `pg_stat_statements` (or any
-  other hook) loaded before pg_tviews, an error inside a writing query, caught by an
-  EXCEPTION block, skipped pg_tviews' bookkeeping of the running query: every later
-  statement in the session deferred its refresh to a statement that no longer ran,
-  and the work was dropped at commit. Calls to the previous hooks are now guarded,
-  and a rolled-back subtransaction forgets the queries it ran.
-- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` roll back with
-  a savepoint.** A suspension inside a savepoint that was rolled back stayed in force
-  for the rest of the transaction.
-- `COMMIT` of a transaction that already failed runs no catch-up or refresh: the
-  server rolls it back.
-- A refresh write that fires a base table's flush (a user trigger on a TVIEW's
-  table writing a base table) no longer starts a second flush inside the running
-  one; the running flush takes the work.
-- `DROP TABLE tv_a, other` in a function called twice dropped `tv_a` only the first
-  time: the TVIEW was taken out of the function's cached plan. The plan is copied
-  before it is changed.
-- A `TRUNCATE` run by a trigger of a writing statement leaves the refresh to that
-  statement, as its other nested statements do.
-- The query tree walkers report a stack-depth error as an ERROR, the view-query
-  reader refuses a relation that is not a view, and the DDL pg_tviews runs from a
-  trigger or a function no longer gets a connection that may end the transaction.
-- The quick start works as written: it loads the library in
-  `shared_preload_libraries` and puts `tviews` on the `search_path`. The
-  troubleshooting guide no longer recommends `pg_tviews_convert_existing_table`
-  (it always fails), and `pg_tviews_health_check()` is documented with its real
-  columns `(status, component, message, severity)`.
 - **`DROP EXTENSION pg_tviews CASCADE` drops the backing views** (#199). They are not
   extension members (so `pg_dump` keeps them) and stayed in `tviews`, and
   re-creating the extension and a TVIEW then failed ("the backing view … is already
