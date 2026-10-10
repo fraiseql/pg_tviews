@@ -242,6 +242,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emptiness checks of `pg_tviews_rebuild_all(true)` too); `pg_tviews_refresh(entity)` by a role that neither owns
   `tv_<entity>` nor the extension fails with 42501 (it rebuilt the requested TVIEW
   with the caller's privileges before).
+
+### Added
+
+- **`tviews.registry.managed_indexes regclass[]`** (#219, appended; `contract_version()`
+  stays 1): the indexes pg_tviews created on the TVIEW's table and still owns,
+  sorted by name, without the primary key; NULL when the table is gone. A TVIEW's
+  user indexes are every other index on its table that backs no constraint. Renames
+  and drops of these indexes are followed, and
+  `pg_tviews_ensure_propagation_indexes()` records the indexes it creates.
+- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
+  on one relation before it locks the relation instead, so a bulk write never
+  exhausts the shared lock table (0 always locks relations, -1 never does).
+- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
+  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
+  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
+- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
+  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
+  TVIEW's keys to the values compared with it), from the plan, which now stores it
+  (ADR 0207).
+- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
+  in the current transaction.
+
+### Fixed
+
+- **A subtransaction that commits inside a writing statement no longer drops the
+  refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
+  trigger on a base table, a function in the `SET` list) took the whole pending queue
+  aside when it started and threw it away when it committed: every row the statement
+  wrote before the block stayed stale, without a warning. Savepoints now leave the
+  pending work in place and undo only what was queued inside one that rolls back.
+- **A direct patch never calls a function outside jsonb_delta's schema.** When
+  jsonb_delta was dropped between capturing a patch and flushing it, the flush called
+  `public.jsonb_smart_patch_scalar`, which any role with `CREATE` on `public` could
+  have planted, as the TVIEW's owner. It now fails, naming jsonb_delta.
+- An error message cut a long query at byte 100 even inside a multi-byte character,
+  and the formatting panic replaced the real error.
+- **An error raised under another library's executor or utility hook no longer
+  stops refreshes for the rest of the session.** With `pg_stat_statements` (or any
+  other hook) loaded before pg_tviews, an error inside a writing query, caught by an
+  EXCEPTION block, skipped pg_tviews' bookkeeping of the running query: every later
+  statement in the session deferred its refresh to a statement that no longer ran,
+  and the work was dropped at commit. Calls to the previous hooks are now guarded,
+  and a rolled-back subtransaction forgets the queries it ran.
+- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` roll back with
+  a savepoint.** A suspension inside a savepoint that was rolled back stayed in force
+  for the rest of the transaction.
+- `COMMIT` of a transaction that already failed runs no catch-up or refresh: the
+  server rolls it back.
+- A refresh write that fires a base table's flush (a user trigger on a TVIEW's
+  table writing a base table) no longer starts a second flush inside the running
+  one; the running flush takes the work.
+- `DROP TABLE tv_a, other` in a function called twice dropped `tv_a` only the first
+  time: the TVIEW was taken out of the function's cached plan. The plan is copied
+  before it is changed.
+- A `TRUNCATE` run by a trigger of a writing statement leaves the refresh to that
+  statement, as its other nested statements do.
+- The query tree walkers report a stack-depth error as an ERROR, the view-query
+  reader refuses a relation that is not a view, and the DDL pg_tviews runs from a
+  trigger or a function no longer gets a connection that may end the transaction.
+- The quick start works as written: it loads the library in
+  `shared_preload_libraries` and puts `tviews` on the `search_path`. The
+  troubleshooting guide no longer recommends `pg_tviews_convert_existing_table`
+  (it always fails), and `pg_tviews_health_check()` is documented with its real
+  columns `(status, component, message, severity)`.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` (and `scripts/migrate-from-0.1.0.sql`) records,
+  for each TVIEW, the indexes that are exactly those pg_tviews creates, under their
+  names, as pg_tviews' (`tviews.registry.managed_indexes`). Any other index on a
+  TVIEW's table is the user's, including one under such a name with another
+  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say). The update
+  warns about each of those: rename it, since its name is now reserved and a dump of
+  the database would not restore it.
+- `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
+  every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
+  from its view by its next write, once (nothing to do when its view is empty too).
+
+## [0.1.0-beta.26] - 2026-10-09
+
+### Changed (breaking)
+
 - **Refreshes render values under fixed settings, not the writer's** (#200):
   `TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`,
   `extra_float_digits` `1`, `bytea_output` `hex`, on every path that computes a
@@ -273,25 +355,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a NOTICE and writes to those tables left the TVIEW stale.
 
 ### Added
-
-- **`tviews.registry.managed_indexes regclass[]`** (#219, appended; `contract_version()`
-  stays 1): the indexes pg_tviews created on the TVIEW's table and still owns,
-  sorted by name, without the primary key; NULL when the table is gone. A TVIEW's
-  user indexes are every other index on its table that backs no constraint. Renames
-  and drops of these indexes are followed, and
-  `pg_tviews_ensure_propagation_indexes()` records the indexes it creates.
-- `pg_tviews.lock_escalation_threshold` (default 64): value locks a transaction takes
-  on one relation before it locks the relation instead, so a bulk write never
-  exhausts the shared lock table (0 always locks relations, -1 never does).
-- `pg_tviews_queue_stats()` reports `value_locks`, `value_lock_escalations`,
-  `value_lock_waits` and `value_lock_wait_ms` for the current transaction;
-  `docs/operations/monitoring.md` shows the locks in `pg_locks` and who waits for whom.
-- `tviews.pg_tviews_read_set_queries(tview, base_table)`: what a refresh of a
-  TVIEW's rows reads of a table its mapping joins (the column, and the query from the
-  TVIEW's keys to the values compared with it), from the plan, which now stores it
-  (ADR 0207).
-- `pg_tviews_queue_stats()` reports `flushes`: the flushes that refreshed something
-  in the current transaction.
 
 - **`REFRESH MATERIALIZED VIEW` refreshes the TVIEWs that read the matview** under
   `full_refresh` (#189), plain or `CONCURRENTLY`, in the REFRESH's transaction.
@@ -345,46 +408,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A subtransaction that commits inside a writing statement no longer drops the
-  refreshes queued before it.** A plpgsql `BEGIN … EXCEPTION … END` block (an audit
-  trigger on a base table, a function in the `SET` list) took the whole pending queue
-  aside when it started and threw it away when it committed: every row the statement
-  wrote before the block stayed stale, without a warning. Savepoints now leave the
-  pending work in place and undo only what was queued inside one that rolls back.
-- **A direct patch never calls a function outside jsonb_delta's schema.** When
-  jsonb_delta was dropped between capturing a patch and flushing it, the flush called
-  `public.jsonb_smart_patch_scalar`, which any role with `CREATE` on `public` could
-  have planted, as the TVIEW's owner. It now fails, naming jsonb_delta.
-- An error message cut a long query at byte 100 even inside a multi-byte character,
-  and the formatting panic replaced the real error.
-- **An error raised under another library's executor or utility hook no longer
-  stops refreshes for the rest of the session.** With `pg_stat_statements` (or any
-  other hook) loaded before pg_tviews, an error inside a writing query, caught by an
-  EXCEPTION block, skipped pg_tviews' bookkeeping of the running query: every later
-  statement in the session deferred its refresh to a statement that no longer ran,
-  and the work was dropped at commit. Calls to the previous hooks are now guarded,
-  and a rolled-back subtransaction forgets the queries it ran.
-- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` roll back with
-  a savepoint.** A suspension inside a savepoint that was rolled back stayed in force
-  for the rest of the transaction.
-- `COMMIT` of a transaction that already failed runs no catch-up or refresh: the
-  server rolls it back.
-- A refresh write that fires a base table's flush (a user trigger on a TVIEW's
-  table writing a base table) no longer starts a second flush inside the running
-  one; the running flush takes the work.
-- `DROP TABLE tv_a, other` in a function called twice dropped `tv_a` only the first
-  time: the TVIEW was taken out of the function's cached plan. The plan is copied
-  before it is changed.
-- A `TRUNCATE` run by a trigger of a writing statement leaves the refresh to that
-  statement, as its other nested statements do.
-- The query tree walkers report a stack-depth error as an ERROR, the view-query
-  reader refuses a relation that is not a view, and the DDL pg_tviews runs from a
-  trigger or a function no longer gets a connection that may end the transaction.
-- The quick start works as written: it loads the library in
-  `shared_preload_libraries` and puts `tviews` on the `search_path`. The
-  troubleshooting guide no longer recommends `pg_tviews_convert_existing_table`
-  (it always fails), and `pg_tviews_health_check()` is documented with its real
-  columns `(status, component, message, severity)`.
 - **`DROP EXTENSION pg_tviews CASCADE` drops the backing views** (#199). They are not
   extension members (so `pg_dump` keeps them) and stayed in `tviews`, and
   re-creating the extension and a TVIEW then failed ("the backing view … is already
@@ -425,16 +448,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
-- `ALTER EXTENSION pg_tviews UPDATE` (and `scripts/migrate-from-0.1.0.sql`) records,
-  for each TVIEW, the indexes that are exactly those pg_tviews creates, under their
-  names, as pg_tviews' (`tviews.registry.managed_indexes`). Any other index on a
-  TVIEW's table is the user's, including one under such a name with another
-  definition (a `jsonb_path_ops` GIN named `idx_<tv>_data_gin`, say). The update
-  warns about each of those: rename it, since its name is now reserved and a dump of
-  the database would not restore it.
-- `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
-  every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
-  from its view by its next write, once (nothing to do when its view is empty too).
 - `ALTER EXTENSION pg_tviews UPDATE` drops the backing views beta.25 left in
   `tviews` after a `DROP SCHEMA … CASCADE` (views named `<schema>__tv_*` that no TVIEW
   owns, unless something depends on them), and marks every TVIEW for
