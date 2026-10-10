@@ -94,10 +94,6 @@ impl Txn {
 
 thread_local! {
     static TXN: RefCell<Txn> = RefCell::new(Txn::default());
-
-    /// Entities checked for a post-crash truncation in this transaction, so the
-    /// check runs at most once per entity.
-    pub static TX_CRASH_RECOVERY_CHECKED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Queue `key`. Returns whether it was not queued yet.

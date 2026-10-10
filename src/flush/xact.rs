@@ -24,23 +24,23 @@ const RESET_AT_END: &[fn()] = &[
 
 /// What an abort resets besides: the catalog the caches memoized may be rolled
 /// back with it (a TVIEW create that failed leaves no view), the
-/// suspension, the revision check, the hook's pending CTAS and the crash-recovery
+/// suspension, the revision check, the hook's pending CTAS and the UNLOGGED
 /// checks.
 const RESET_ON_ABORT: &[fn()] = &[
     crate::cache::invalidate_all,
     crate::suspend::force_resume,
     crate::revision::reset,
     || crate::internal_ddl::release_on_abort(true),
-    crate::queue::ops::clear_crash_recovery_cache,
+    crate::lifecycle::validity::forget_checks,
 ];
 
 /// What a rolled-back subtransaction resets besides its savepoint: the hook's
 /// pending CTAS (it never reached the event trigger), the cached catalog of DDL it
-/// undid, and the crash-recovery rebuilds it undid.
+/// undid, and the UNLOGGED fills it undid.
 const RESET_ON_SUBABORT: &[fn()] = &[
     || crate::internal_ddl::release_on_abort(false),
     crate::cache::invalidate_all,
-    crate::queue::ops::clear_crash_recovery_cache,
+    crate::lifecycle::validity::forget_checks,
 ];
 
 fn run(resets: &[fn()]) {
@@ -140,7 +140,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 
             crate::suspend::force_resume();
 
-            // The crash-recovery check stays done for this backend: an UNLOGGED
+            // The UNLOGGED checks stay done for this backend: an UNLOGGED
             // TVIEW is only reset by a restart, which ends every backend.
             run(RESET_AT_END);
         }
@@ -149,7 +149,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // the refresh writes are part of the prepared transaction. This backend's
             // transaction ends here: drop its in-memory state (no SPI in callbacks).
             crate::suspend::force_resume();
-            crate::queue::ops::clear_crash_recovery_cache();
+            crate::lifecycle::validity::forget_checks();
             run(RESET_AT_END);
         }
         XactEvent::Abort => {

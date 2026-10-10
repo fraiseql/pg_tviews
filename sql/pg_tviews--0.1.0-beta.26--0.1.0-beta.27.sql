@@ -195,6 +195,35 @@ BEGIN
 END
 $$;
 
+-- The UNLOGGED TVIEW tables whose rows can be trusted. UNLOGGED itself: a crash
+-- restart or a promotion empties it together with them, and a table missing here
+-- is filled from its view by the next write. Not dumped: a restored TVIEW is
+-- filled once.
+CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
+    table_oid OID NOT NULL PRIMARY KEY
+);
+COMMENT ON TABLE @extschema@.pg_tview_valid IS
+    'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
+GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
+-- An UNLOGGED TVIEW holding rows is trusted; an empty one is filled once by its
+-- next write (cheap when its view is empty too). Only the tables are read.
+DO $$
+DECLARE
+    t pg_catalog.regclass;
+    filled boolean;
+BEGIN
+    FOR t IN SELECT m.table_oid FROM @extschema@.pg_tview_meta m
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid
+             WHERE c.relpersistence = 'u'
+    LOOP
+        EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
+        IF filled THEN
+            INSERT INTO @extschema@.pg_tview_valid VALUES (t::pg_catalog.oid);
+        END IF;
+    END LOOP;
+END
+$$;
+
 -- Re-derive every TVIEW, dependencies first. Until then a row's plan is empty.
 -- A row registered before the row identity (ADR 0169) names its rows by
 -- pk_<entity>, which the library no longer assumes: record it, so each TVIEW

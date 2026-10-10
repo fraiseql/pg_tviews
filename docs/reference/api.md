@@ -423,12 +423,15 @@ tviews.pg_tviews_recover_after_crash(entity_name text) RETURNS boolean
   one, NULL for an unknown entity. `pg_tviews_replication_status` reports every TVIEW
   and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
-  restore left empty (every TVIEW with `only_empty => false`), dependencies first,
-  each as its owner, which also finds the empty ones and counts their rows; it refuses
-  to run during recovery. Operator function: the caller needs no privilege on the
-  `tv_*` tables.
+  restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
+  dependencies first, each as its owner, and counts their rows; it refuses to run
+  during recovery. A TVIEW that is merely empty is not a reset one. Operator
+  function: the caller needs no privilege on the `tv_*` tables.
 - `pg_tviews_recover_after_crash` does the same for one entity, returning whether it
   had to. Requires owning the TVIEW.
+- `needs_rebuild` is true for an UNLOGGED TVIEW missing from `tviews.pg_tview_valid`,
+  the UNLOGGED table that a reset empties together with the TVIEWs
+  ([Replication](../operations/replication.md#rebuilding-after-promotion-a-crash-or-a-restore)).
 
 ```sql
 SELECT tviews.pg_tviews_set_logged('post', true);

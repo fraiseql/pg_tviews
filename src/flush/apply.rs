@@ -46,14 +46,8 @@ impl Flush {
         // The entity is read and written as the owner of its tv_* table, whoever
         // wrote to the base table.
         let _owner = crate::owner::AsOwner::of_entity(entity)?;
-        if !crate::queue::ops::is_crash_recovery_checked(entity) {
-            crate::queue::mark_crash_recovery_checked(entity);
-            if crate::lifecycle::detect_post_crash_truncation(entity)? {
-                // The TVIEW is empty but its view is not: fill it. No TRUNCATE, so
-                // no ACCESS EXCLUSIVE lock held until the transaction ends.
-                crate::admin::fill_empty_tview(entity)?;
-            }
-        }
+        // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
+        crate::lifecycle::validity::ensure(entity)?;
         if keys.iter().any(RefreshKey::is_all) {
             return self.refresh_all(entity);
         }

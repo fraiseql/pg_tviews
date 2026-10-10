@@ -7,6 +7,8 @@
 #      the UNLOGGED TVIEW without any write.
 #   3. After an immediate (crash) stop and restart of the promoted node, the
 #      worker repopulates it again.
+#   4. After a clean restart, a TVIEW that is merely empty stays empty: only a
+#      reset is refilled (tviews.pg_tview_valid survives a clean restart).
 #
 # The standby is a pg_basebackup of the primary on a spare port, in a temporary
 # directory; the primary is not restarted. Needs pg_tviews preloaded on the
@@ -105,3 +107,18 @@ echo "PASS  promotion: tv_post rebuilt by the worker without any write"
 start_node
 wait_for_rows 2 "after crash restart"
 echo "PASS  crash restart: tv_post rebuilt by the worker without any write"
+
+# 4. Clean restart of a TVIEW that is merely empty
+node -c "TRUNCATE tv_post" >/dev/null
+idle_lines() { grep -c "no TVIEW to rebuild in database \"$db\"" "$standby/log" || true; }
+before="$(idle_lines)"
+"$PGBIN/pg_ctl" -D "$standby" -m fast -w stop >/dev/null
+start_node
+for _ in $(seq 1 60); do
+  [[ "$(idle_lines)" -gt "$before" ]] && break
+  sleep 0.5
+done
+[[ "$(idle_lines)" -gt "$before" ]] || fail "clean restart: the worker did not report"
+[[ "$(node -c "SELECT count(*) FROM tv_post")" == "0" ]] \
+  || fail "clean restart: an empty but trusted tv_post was refilled"
+echo "PASS  clean restart: an empty TVIEW is not mistaken for a reset one"

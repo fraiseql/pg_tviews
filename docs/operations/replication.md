@@ -53,9 +53,18 @@ and keep every type backed by a `replica_readable = false` TVIEW on the primary.
 
 ## Rebuilding after promotion, a crash or a restore
 
-Without further setup, an emptied UNLOGGED TVIEW is rebuilt on the first write
-that touches it. Until then, readers see an empty table. Two ways to close that
-window:
+PostgreSQL leaves no trace of the reset beyond the emptied tables, so pg_tviews
+keeps one: `tviews.pg_tview_valid`, itself UNLOGGED, holds a row per UNLOGGED
+TVIEW whose rows can be trusted, and the reset empties it together with the
+TVIEWs. A TVIEW missing from it is reported with `needs_rebuild = true`. A TVIEW
+that is merely empty (its base tables have no rows, or someone ran `TRUNCATE`)
+keeps its row and is never refilled behind your back. The rows are not dumped:
+after a restore, each UNLOGGED TVIEW is refilled once.
+
+Without further setup, a reset UNLOGGED TVIEW is filled on the first write that
+touches it, after the TVIEWs it reads. Concurrent first writers wait for the one
+that fills it (under `REPEATABLE READ` they fail with `40001` instead, and can be
+retried). Until then, readers see an empty table. Two ways to close that window:
 
 **Automatically.** List the databases in `postgresql.conf` and restart:
 
@@ -74,7 +83,7 @@ as its `search_path`.
 **By hand**, from deploy tooling after a failover or a restore:
 
 ```sql
-SELECT * FROM pg_tviews_rebuild_all();                    -- only emptied UNLOGGED TVIEWs
+SELECT * FROM pg_tviews_rebuild_all();                    -- only reset UNLOGGED TVIEWs
 SELECT * FROM pg_tviews_rebuild_all(only_empty => false); -- every TVIEW
 ```
 

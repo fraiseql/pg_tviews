@@ -84,7 +84,9 @@ SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 With `pg_tviews.auto_rebuild_databases` listing the database, a background worker runs
 this rebuild when recovery ends; check `needs_rebuild = false` instead. Until the
-rebuild, readers of an emptied UNLOGGED TVIEW see an empty table. See
+rebuild, readers of a reset UNLOGGED TVIEW see an empty table. After a `pg_dump`
+restore every UNLOGGED TVIEW needs one rebuild, even one restored with its rows:
+which TVIEWs can be trusted is not dumped. See
 [Replication](../../replication.md).
 
 ## Post-Restore Validation

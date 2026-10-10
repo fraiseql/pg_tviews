@@ -338,9 +338,11 @@ the databases in `pg_tviews.auto_rebuild_databases` (needs a restart), or call
 
 ### Crash Recovery
 
-UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** rebuilds a
-TVIEW on the first write that touches it, and the startup worker above rebuilds
-the configured databases without waiting for a write. To check one TVIEW by hand:
+UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** records which
+UNLOGGED TVIEWs it can trust in an UNLOGGED table the crash empties too, and
+refills a reset TVIEW on the first write that touches it; the startup worker above
+refills the configured databases without waiting for a write. A TVIEW that is
+merely empty is never refilled. To check one TVIEW by hand:
 
 ```sql
 -- Check and recover after potential crash

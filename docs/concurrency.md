@@ -33,6 +33,7 @@ work still queued (a flush trigger dropped or disabled) fails instead, with SQLS
 | A refresh of some rows (every write) | row locks on the `tv_<entity>` rows it recomputes (taken before it reads the view, under `READ COMMITTED`), inserts, updates or deletes | end of the writer's transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | row locks on the rows that differ (it reconciles the TVIEW with its view) | end of transaction |
 | `pg_tviews_refresh(entity)` | `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
+| Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it (under `REPEATABLE READ` they fail with `40001`); readers are not blocked | end of transaction |
 | Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
 
 So two transactions whose writes refresh the same TVIEW row run one after the other

@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent first writes into an UNLOGGED TVIEW no longer fail on a duplicate
+  key** (#214), and a TVIEW that is merely empty is no longer refilled from its
+  view. pg_tviews told a TVIEW reset by a crash restart or a promotion from an
+  empty one only by "empty while its view has rows", so every new backend's first
+  write into an empty TVIEW refilled it, and two of them at once both inserted the
+  view's rows (`duplicate key value violates unique constraint "tv_…_pkey"`). The
+  new UNLOGGED table `tviews.pg_tview_valid` holds a row per UNLOGGED TVIEW whose
+  rows can be trusted; a reset empties it together with the TVIEWs. The first write
+  to a TVIEW missing from it claims the row and fills the TVIEW, the TVIEWs it reads
+  first; concurrent writers wait for the claim (under `REPEATABLE READ` they get a
+  retryable `40001`). `needs_rebuild`, `pg_tviews_rebuild_all()`,
+  `pg_tviews_recover_after_crash()` and the startup worker follow it. Its rows are
+  not dumped: a restored UNLOGGED TVIEW is refilled once.
 - A column copied into `data` that the definition also joins or filters on was
   patched in place, leaving the values that depend on it stale.
 - A TVIEW embedding another one twice (an author and an editor, both `tv_user`) was
@@ -348,6 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
+- `ALTER EXTENSION pg_tviews UPDATE` creates `tviews.pg_tview_valid` and records
+  every UNLOGGED TVIEW that holds rows as trusted. An empty UNLOGGED TVIEW is filled
+  from its view by its next write, once (nothing to do when its view is empty too).
 - `ALTER EXTENSION pg_tviews UPDATE` drops the backing views beta.25 left in
   `tviews` after a `DROP SCHEMA … CASCADE` (views named `<schema>__tv_*` that no TVIEW
   owns, unless something depends on them), and marks every TVIEW for

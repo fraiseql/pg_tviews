@@ -351,9 +351,12 @@ fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     let args = [crate::utils::spi::text(entity_name)];
+    // With its row in pg_tview_valid: a later table may get its OID.
     let sql = format!(
-        "DELETE FROM {} WHERE entity = $1",
-        crate::utils::meta_table()
+        "WITH gone AS (DELETE FROM {} WHERE entity = $1 RETURNING table_oid) \
+         DELETE FROM {}.pg_tview_valid v USING gone WHERE v.table_oid = gone.table_oid",
+        crate::utils::meta_table(),
+        crate::utils::ext_schema()
     );
     // The catalog is written as the extension's owner.
     let _owner = crate::owner::AsOwner::of_extension()?;

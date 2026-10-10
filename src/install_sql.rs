@@ -163,6 +163,17 @@ extension_sql!(
     -- extension owner writes it.
     GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
 
+    -- The UNLOGGED TVIEW tables whose rows can be trusted. UNLOGGED itself: a crash
+    -- restart or a promotion empties it together with them, and a table missing here
+    -- is filled from its view by the next write. Not dumped: a restored TVIEW is
+    -- filled once.
+    CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
+        table_oid OID NOT NULL PRIMARY KEY
+    );
+    COMMENT ON TABLE @extschema@.pg_tview_valid IS
+        'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
+    GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
+
     -- Revision of this catalog. The library refuses to work against a
     -- catalog of another revision; an upgrade script that changes the extension SQL
     -- redefines this function, and the library's revision::CATALOG_REVISION with it.
