@@ -183,6 +183,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔍 Smart Dependency Detection**: Automatically analyzes SQL to find source tables and relationships
 - **🎯 Surgical Updates**: Updates only affected rows—never full table scans
 - **🔄 Transactional Consistency**: Refresh happens atomically within your transaction
+- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit (`READ COMMITTED`), or one fails with a retryable `40001` (`REPEATABLE READ`, `SERIALIZABLE`). See [Concurrency](docs/concurrency.md)
 - **📊 Cascade Propagation**: Automatically handles multi-level view dependencies
 
 ### High Performance
@@ -406,6 +407,7 @@ reason and how to declare a full refresh instead.
 - **✅ Data Recovery**: All TVIEW data reconstructible from base tables
 - **✅ Transparent**: Applications work unchanged
 - **✅ Configurable**: Can disable UNLOGGED for specific use cases
+- **✅ Only after a reset**: An empty TVIEW is refilled only when PostgreSQL reset it, once, whatever the number of concurrent writers
 - **✅ Tested**: Comprehensive crash simulation and recovery testing
 
 ---

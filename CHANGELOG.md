@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy, `pg_tviews_refresh()`) locks the TVIEW and the relations it reads. Not
   under `SERIALIZABLE`. The queries that find and compute TVIEW rows run with a
   fresh snapshot.
+  Transactions taking these locks in opposite orders can deadlock (`40P01`); under
+  `REPEATABLE READ`, contention on the same values fails transactions with `40001`, and
+  each refreshed row is computed twice (measured: about a fifth fewer transactions per
+  second than `READ COMMITTED`). Retry both errors; prefer `READ COMMITTED` for writes
+  to TVIEW base tables ([Concurrency](docs/concurrency.md)).
 - **A definition is read only from PostgreSQL's query tree** (ADR 0203). The
   text-pattern analysis that registration still used for columns, embeds and the
   direct-patch map is gone, and with it the spelling rules it imposed:

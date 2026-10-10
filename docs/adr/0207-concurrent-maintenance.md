@@ -1,7 +1,8 @@
 # ADR 0207: Concurrent maintenance with value locks
 
-- Status: Proposed
-- Fixes: #207 (concurrent writes leave TVIEW rows stale)
+- Status: Accepted (implemented in 0.1.0-beta.27)
+- Fixes: #207 (concurrent writes leave TVIEW rows stale), #214 (concurrent first writes
+  into a reset UNLOGGED TVIEW)
 - Builds on: [ADR 0157](0157-cascade-key-mapping.md) (mapping queries),
   [ADR 0203](0203-propagation-plan.md) (the propagation plan)
 
@@ -150,11 +151,38 @@ instead. Values already held stay held.
 Deadlocks between value locks taken in different statements are possible, as with row locks;
 PostgreSQL reports them with 40P01. Both 40001 and 40P01 are retryable.
 
+### Fresh snapshots
+
+The queries that find TVIEW rows (mapping queries, the embed lookup) and that compute them run
+as read-write SPI statements: under READ COMMITTED each takes a new snapshot, so one run after a
+lock wait sees what it waited for. A read-only SPI statement reuses the snapshot of the statement
+that fired the trigger, taken before the wait.
+
 ## Consequences
 
 - A write can now wait for a concurrent transaction writing related rows: an insert of a post
-  waits for an open rename of its author, and the reverse.
+  waits for an open rename of its author, and the reverse. Deadlocks between such writes are
+  reported with 40P01.
 - REPEATABLE READ transactions can fail with 40001 where they used to write stale rows.
-- Each refresh runs one read-set query per `mapped` table and one lookup query per embed, and
-  takes one lock per distinct join value up to the escalation threshold.
-- The plan gains, per `mapped` table, its lock columns and a read-set query.
+- Each refresh runs one more statement, the read sets of all its mapped tables and embeds
+  together, from a generic plan kept for the backend, and takes one lock per distinct join
+  value up to the escalation threshold.
+- The plan gains, per `mapped` table, its read sets (`reads`: the joined column and the
+  read-set query); `pg_tviews_read_set_queries()` shows them.
+
+## Results
+
+Measured on a shared 24-core host (its load moved ±10% between runs), against the same branch
+before the protocol, runs interleaved:
+
+| Workload (pgbench, 16 clients) | Before | After |
+|---|---|---|
+| 1,000 users, 80% post inserts / 20% renames | 2,988 tps, 39–59 stale rows | 3,193 tps, 0 stale |
+| 10 hot users | 651 tps, 12–19 stale | 683 tps, 0 stale |
+| one transaction renaming 20,000 users during inserts | ~5.0 s, 4–9 stale | ~5.0 s, 0 stale |
+| one client (latency) | 4.06 ms | 4.30 ms |
+
+A single-row statement of the product benchmark (`test/sql/real_benchmark`) costs about 4% more
+at the median (about 0.05 ms). A 10-minute mixed run (inserts, renames of users and of
+organisations two hops away, users moving between organisations, a rename of every user every
+30 s) ends with no stale row.
