@@ -1,8 +1,8 @@
 -- ALTER TABLE tv_x SET LOGGED / SET UNLOGGED on a TVIEW keeps its rows and its
 -- refresh.
 --
--- pg_tviews.unlogged_by_default picks a TVIEW's persistence when it is created;
--- an operator may switch it later with plain ALTER TABLE (PostgreSQL rewrites the
+-- A TVIEW is LOGGED unless its options say `logged: false` (ADR 0220); an
+-- operator may switch it later with plain ALTER TABLE (PostgreSQL rewrites the
 -- table). The rows must survive both ways, tviews.registry must report the new
 -- persistence, and writes to the base table must keep refreshing the rewritten
 -- table.
@@ -24,14 +24,12 @@ BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'alter_persistence FAIL: %', what; 
 CREATE TABLE tb_item (pk_item int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 INSERT INTO tb_item (pk_item, name) VALUES (1, 'alice'), (2, 'bob'), (3, 'carol');
 
-SET pg_tviews.unlogged_by_default = off;
 SELECT pg_tviews_create('tv_item', $$
     SELECT pk_item, id, jsonb_build_object('name', name) AS data FROM tb_item $$);
-RESET pg_tviews.unlogged_by_default;
 CREATE FUNCTION persistence_is(want "char") RETURNS boolean LANGUAGE sql AS $$
     SELECT (SELECT relpersistence FROM pg_class WHERE oid = 'tv_item'::regclass) = want
        AND (SELECT logged FROM tviews.registry WHERE entity = 'item') = (want = 'p') $$;
-SELECT must(persistence_is('p'), 'created LOGGED with unlogged_by_default = off');
+SELECT must(persistence_is('p'), 'a TVIEW is LOGGED by default');
 
 -- LOGGED -> UNLOGGED
 ALTER TABLE tv_item SET UNLOGGED;

@@ -111,7 +111,7 @@ BEGIN
            'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',
            'tviews.pg_tviews_is_suspended()', 'tviews.pg_tviews_suspended_entities()',
            -- one TVIEW, owner checked (creation: the schema's CREATE privilege)
-           'tviews.pg_tviews_create(text,text)', 'tviews.pg_tviews_create_aggregate(text,text,jsonb)',
+           'tviews.pg_tviews_create(text,text,jsonb)', 'tviews.pg_tviews_create_aggregate(text,text,jsonb)',
            'tviews.pg_tviews_create_or_replace(text,text,jsonb)',
            'tviews.pg_tviews_drop(text,boolean,boolean)', 'tviews.pg_tviews_refresh(text)',
            'tviews.pg_tviews_reregister(text)', 'tviews.pg_tviews_set_typename(text,text)',

@@ -55,18 +55,14 @@ impl TimeRefresh {
 }
 
 impl Declarations {
-    /// The settings' declarations: `pg_tviews.uncascaded_policy`, no table.
-    pub(crate) fn from_settings() -> Self {
+    /// What a TVIEW declares when its options say nothing: the `error` policy,
+    /// no table or function, no time refresh (ADR 0220).
+    pub(crate) fn defaults() -> Self {
         Self::new(
-            crate::config::uncascaded_policy(),
+            UncascadedPolicy::default(),
             Vec::new(),
             Vec::new(),
-            match crate::config::time_refresh() {
-                crate::config::TimeRefreshSetting::None => TimeRefresh::None,
-                crate::config::TimeRefreshSetting::External => {
-                    TimeRefresh::External { declared: false }
-                }
-            },
+            TimeRefresh::None,
         )
     }
 
@@ -228,8 +224,8 @@ fn describe(tview: &str, tables: &[&UncascadedTable], verb: &str) -> String {
 }
 
 /// What to write to declare the policy of `tables` of `tview`: the option of
-/// `pg_tviews_create_or_replace()`, for those tables or the whole TVIEW, or the
-/// setting `CREATE TABLE … AS` and `pg_tviews_create()` read.
+/// `pg_tviews_create_or_replace()` or `pg_tviews_create()`, for those tables or
+/// the whole TVIEW.
 fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> String {
     let json = |text: &str| serde_json::Value::from(text).to_string();
     let named = tables
@@ -242,8 +238,8 @@ fn how_to_declare(tview: &str, tables: &[&UncascadedTable], policy: &str) -> Str
     format!(
         "pg_tviews_create_or_replace('{tview}', <definition>, options => \
          {option}), or for the whole TVIEW \
-         '{{\"uncascaded_policy\": \"{policy}\"}}'; before CREATE TABLE … AS or \
-         pg_tviews_create(): SET pg_tviews.uncascaded_policy = '{policy}'"
+         '{{\"uncascaded_policy\": \"{policy}\"}}' (pg_tviews_create() takes the same \
+         options)"
     )
 }
 
@@ -451,10 +447,10 @@ pub(crate) fn report_time(
             )
             .set_hint(format!(
                 "Declare who brings it up to date: pg_tviews_create_or_replace('{tview}', \
-                 <definition>, options => '{{\"time_refresh\": \"external\"}}'), or before \
-                 CREATE TABLE … AS / pg_tviews_create(): SET pg_tviews.time_refresh = \
-                 'external'; then call tviews.pg_tviews_refresh_time_dependent() at the \
-                 boundary (pg_cron, the application). Or pass the date as data instead."
+                 <definition>, options => '{{\"time_refresh\": \"external\"}}') \
+                 (pg_tviews_create() takes the same options); then call \
+                 tviews.pg_tviews_refresh_time_dependent() at the boundary (pg_cron, the \
+                 application). Or pass the date as data instead."
             ))
             .report(if warn {
                 PgLogLevel::WARNING
@@ -532,7 +528,7 @@ pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
         return Ok(());
     }
     for entity in &entities {
-        if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+        if crate::suspend::is_suspended() {
             crate::suspend::record_change(entity);
         } else {
             crate::queue::enqueue_refresh_all(entity);

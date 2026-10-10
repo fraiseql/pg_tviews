@@ -214,14 +214,21 @@ pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
     })
 }
 
-/// SQL function: create a TVIEW. An existing one is an error; use
+/// SQL function: create a TVIEW with `options` (those of
+/// [`pg_tviews_create_or_replace`]). An existing one is an error; use
 /// [`pg_tviews_create_or_replace`] to change it.
 ///
 /// Usage: `SELECT tviews.pg_tviews_create('tv_post', 'SELECT pk_post, id, … AS data FROM tb_post');`
-#[pg_extern]
-fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, ErrorReport> {
+#[pg_extern(name = "pg_tviews_create")]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires JsonB by value
+fn pg_tviews_create_with_options(
+    tview_name: &str,
+    select_sql: &str,
+    options: default!(pgrx::JsonB, "'{}'"),
+) -> Result<String, ErrorReport> {
     crate::revision::check();
-    create_reported(tview_name, select_sql, replace::Options::default())
+    let options = replace::parse_options(&options.0)?;
+    create_reported(tview_name, select_sql, options)
 }
 
 /// SQL function: create an aggregate TVIEW.

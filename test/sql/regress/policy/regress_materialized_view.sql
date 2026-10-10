@@ -37,15 +37,13 @@ SELECT coalesce(error_of(format('SELECT tviews.pg_tviews_create(%L, %L)', 'tv_cu
 SELECT must(:'refusal' LIKE '%public.mv_order_count%materialized view%', 'not refused: ' || :'refusal');
 
 -- 2. warn: created, the matview listed as uncascaded.
-SET pg_tviews.uncascaded_policy = 'warn';
-SELECT tviews.pg_tviews_create('tv_customer', :'definition');
+SELECT tviews.pg_tviews_create('tv_customer', :'definition', '{"uncascaded_policy": "warn"}');
 SELECT must((SELECT uncascaded_tables = '{mv_order_count}' AND cascade_kinds ->> 'mv_order_count' = 'all_keys'
              FROM tviews.registry WHERE entity = 'customer'),
             'registry: ' || (SELECT uncascaded_tables::text || ' ' || cascade_kinds::text FROM tviews.registry));
 SELECT must(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'mv_order_count'::regclass),
             'a trigger on the matview');
 SELECT tviews.pg_tviews_drop('tv_customer');
-RESET pg_tviews.uncascaded_policy;
 
 -- 3. full_refresh: REFRESH MATERIALIZED VIEW rebuilds the TVIEW.
 SELECT tviews.pg_tviews_create_or_replace('tv_customer', :'definition',

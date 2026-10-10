@@ -118,11 +118,9 @@ COMMIT;
 -- 6. A write refreshing a whole TVIEW (full_refresh policy) locks the TVIEW.
 CREATE TABLE tb_site (name text);
 INSERT INTO tb_site VALUES ('blog');
-SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_page', $$
     SELECT p.pk_post AS pk_page, p.id, jsonb_build_object('site', s.name) AS data
-    FROM tb_post p CROSS JOIN tb_site s $$);
-RESET pg_tviews.uncascaded_policy;
+    FROM tb_post p CROSS JOIN tb_site s $$, '{"uncascaded_policy": "full_refresh"}');
 BEGIN;
 UPDATE tb_site SET name = 'news';
 SELECT must(held('tv_page') = '{relation:ExclusiveLock:1}',

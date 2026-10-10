@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **A TVIEW is its definition and its options; no setting changes it** (ADR 0220).
+  These settings are removed, and setting one fails: `pg_tviews.unlogged_by_default`,
+  `pg_tviews.fillfactor`, `pg_tviews.data_gin_index` (now options only),
+  `pg_tviews.uncascaded_policy`, `pg_tviews.time_refresh` (options only),
+  `pg_tviews.suspend_triggers` (use `pg_tviews_suspend_triggers()`, which records and
+  refreshes what it suspends) and `pg_tviews.log_level` (diagnostics are `DEBUG1`
+  messages: `client_min_messages = debug1`). A `postgresql.conf` or `ALTER ROLE … SET`
+  naming one must drop it.
+- **TVIEWs are LOGGED by default.** `logged: false` (or `CREATE UNLOGGED TABLE tv_x
+  AS`) makes one UNLOGGED. The other defaults are fixed: fillfactor 85, no GIN index on
+  `data`, `uncascaded_policy` `error`. Existing TVIEWs keep their tables.
+- **`pg_tviews_create_or_replace()` options are the whole declaration**: an option not
+  passed is at its default, also on an existing TVIEW. It kept the TVIEW's current
+  value. Pass every option the TVIEW should have: `tviews.registry.options` lists them.
+- **Settings that decide whether a write or a creation succeeds are a superuser's**:
+  `max_propagation_depth`, `max_dependency_depth`, `max_queue_size`,
+  `lock_escalation_threshold`, `audit_enabled`. The cache and direct-patch switches
+  are a superuser's too, and hidden from `SHOW ALL`.
+
 - **A UNION TVIEW whose branches return one key twice fails on every path with
   `21000`** (#216, ADR 0216): creation, a write refreshing one key or several,
   `pg_tviews_refresh()`, `pg_tviews_refresh_all()`, the refill of a reset UNLOGGED
@@ -21,12 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pg_tviews_create()` takes `options`**, those of `pg_tviews_create_or_replace()`.
+- **Option `typename`**: the GraphQL type name `pg_tviews_flush_and_report()` reports,
+  declared with the TVIEW.
+- **`tviews.registry.options` holds every option**, defaults included: `logged`,
+  `fillfactor`, `data_gin_index`, `group_keys`, `uncascaded_policy`,
+  `uncascaded_tables`, `function_reads`, `time_refresh`, `typename`. Passing it back to
+  `pg_tviews_create_or_replace()` with `query` returns `unchanged`.
+
 - **A `DISTINCT ON` key may be a column of a UNION subquery** (ADR 0216): a TVIEW
   `SELECT DISTINCT ON (u.pk_x) … FROM (… UNION ALL …) u ORDER BY u.pk_x, <preference>`
   is accepted, and a write to any branch's table refreshes it. It was refused ("not
   a column of a base table").
 
 ### Fixed
+
+- **`time_refresh` declared for a TVIEW that reads no time is refused at creation too**,
+  as it was when changing an existing TVIEW.
 
 - **A transaction that refilled a reset UNLOGGED TVIEW cannot be prepared** (#215):
   `PREPARE TRANSACTION` fails with `25000`. The claim it held made every writer of

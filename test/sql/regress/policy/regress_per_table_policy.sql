@@ -22,7 +22,6 @@ CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN EXECUTE stmt; RETURN 'created';
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 
-SET pg_tviews.uncascaded_policy = 'error';
 
 CREATE SCHEMA catalog;
 CREATE TABLE tb_locale (code text PRIMARY KEY, label text);
@@ -83,9 +82,15 @@ SELECT must(uncascaded_policy = 'warn' AND uncascaded_table_policies = '{"tb_loc
 FROM tviews.registry WHERE entity = 'item';
 UPDATE tb_locale SET label = 'Fr';
 SELECT assert_fresh('tv_item', 'pk_item', 'full_refresh table after the map changed');
--- Omitted, the map is kept.
+-- Omitted, the map is the default, none (the options are the whole declaration).
 SELECT must(tviews.pg_tviews_create_or_replace('public.tv_item', :'def', '{"uncascaded_policy": "warn"}')
-            = 'unchanged', 'an omitted map');
+            = 'altered', 'an omitted map');
+SELECT must(options->'uncascaded_tables' = '{}', 'an omitted map cleared: ' || options::text)
+FROM tviews.registry WHERE entity = 'item';
+SELECT tviews.pg_tviews_create_or_replace('public.tv_item', :'def', '{
+  "uncascaded_policy": "warn",
+  "uncascaded_tables": {"public.tb_locale": "full_refresh"}
+}');
 
 -- 4. A table named with "error" under a full_refresh TVIEW is refused alone.
 SELECT must(outcome ~ '^writes to catalog\.tb_currency would not refresh', 'a table named with error: ' || outcome)

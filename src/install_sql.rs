@@ -106,9 +106,8 @@ extension_sql!(
         -- TVIEW's keys. regclass, like view_oid: a dump names
         -- them, so a restored row names the restored tables.
         uncascaded_oids REGCLASS[] NOT NULL DEFAULT '{}',
-        -- pg_tviews.uncascaded_policy when the TVIEW was created: what a write to
-        -- one of uncascaded_oids does. The row trigger reads this, never the
-        -- writing session's setting.
+        -- The TVIEW's uncascaded_policy option: what a write to one of
+        -- uncascaded_oids does.
         uncascaded_policy TEXT NOT NULL DEFAULT 'error'
             CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh')),
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
@@ -275,7 +274,26 @@ SELECT
               ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
               AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
-        'group_keys', m.group_keys) END AS options,
+        'group_keys', m.group_keys,
+        'uncascaded_policy', m.uncascaded_policy,
+        'uncascaded_tables', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
+             FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
+                             pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
+            '{}'),
+        'function_reads', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
+             FROM (SELECT r.function,
+                          COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
+                                       FILTER (WHERE r.relation IS NOT NULL),
+                                   '[]') AS tables
+                   FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
+                                   pg_catalog.unnest(m.function_read_tables))
+                        WITH ORDINALITY AS r(function, relation, n)
+                   GROUP BY r.function) f),
+            '{}'),
+        'time_refresh', m.time_refresh,
+        'typename', m.graphql_typename) END AS options,
     m.needs_reregister,
     v.oid::pg_catalog.regclass AS view,
     m.uncascaded_oids AS uncascaded_tables,
@@ -777,7 +795,7 @@ BEGIN
         END LOOP;
         IF fillfactor = 100 AND n_tup_upd > 0 AND n_tup_upd > coalesce(rows_estimate, 0) THEN
             warnings := warnings ||
-                'fillfactor 100 on a frequently updated TVIEW: refreshed rows cannot stay on their page (see pg_tviews.fillfactor)'::TEXT;
+                'fillfactor 100 on a frequently updated TVIEW: refreshed rows cannot stay on their page (option fillfactor, default 85)'::TEXT;
         END IF;
         IF toast_bytes > 0 AND toast_bytes > 0.3 * (heap_bytes + toast_bytes) THEN
             warnings := warnings || format(

@@ -163,8 +163,7 @@ INSERT INTO tb_order (customer_name) VALUES ('John Doe');
 
 -- Create TVIEW with order items
 -- A table read in an uncorrelated subquery: rows stay stale on its writes.
-SET pg_tviews.uncascaded_policy = 'warn';
-CREATE TABLE tv_order AS
+SELECT pg_tviews_create('tv_order', $$
 SELECT
     o.pk_order,
     o.id,
@@ -183,8 +182,8 @@ SELECT
             WHERE p.pk_product IN (1, 2, 3)
         ), '[]'::jsonb)
     ) AS data
-FROM tb_order o;
-RESET pg_tviews.uncascaded_policy;
+FROM tb_order o
+$$, '{"uncascaded_policy": "warn"}');
 
 -- Test batch price updates cascade
 UPDATE tb_product SET price = price * 1.1 WHERE pk_product IN (1, 2);

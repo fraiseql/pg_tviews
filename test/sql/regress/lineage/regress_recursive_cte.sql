@@ -18,8 +18,8 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 \ir ../../lib/assert_fresh.sql
 
--- The lookup tree is small and rarely written: it is refreshed in full.
-SET pg_tviews.uncascaded_policy = 'full_refresh';
+-- The lookup tree is small and rarely written: it is refreshed in full (every
+-- TVIEW here is created with option uncascaded_policy "full_refresh").
 
 CREATE TABLE tb_category (pk_category bigint PRIMARY KEY, id uuid UNIQUE NOT NULL DEFAULT gen_random_uuid(),
                           fk_parent bigint REFERENCES tb_category, name text);
@@ -40,7 +40,7 @@ DO $$ BEGIN
     PERFORM tviews.pg_tviews_create('tv_item', $q$
         SELECT i.pk_item, i.id, jsonb_build_object('name', i.name, 'category_path', cp.names) AS data
         FROM tb_item i JOIN v_category_path cp ON cp.pk_category = i.fk_category
-        WHERE i.deleted_at IS NULL $q$);
+        WHERE i.deleted_at IS NULL $q$, '{"uncascaded_policy": "full_refresh"}');
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION '#183 FAIL: a view reading a recursive view is refused: %', SQLERRM;
 END $$;
@@ -76,7 +76,7 @@ DO $$ BEGIN
           UNION ALL
           SELECT c.pk_category, p.names || c.name FROM tb_category c JOIN p ON p.pk_category = c.fk_parent)
         SELECT l.pk_listing, l.id, jsonb_build_object('name', l.name, 'path', p.names) AS data
-        FROM tb_listing l JOIN p ON p.pk_category = l.fk_category $q$);
+        FROM tb_listing l JOIN p ON p.pk_category = l.fk_category $q$, '{"uncascaded_policy": "full_refresh"}');
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION '#183 FAIL: WITH RECURSIVE in the definition is refused: %', SQLERRM;
 END $$;
@@ -107,7 +107,7 @@ DO $$ BEGIN
           SELECT pk_category, id, ARRAY[name] AS names FROM tb_category WHERE fk_parent IS NULL
           UNION ALL
           SELECT c.pk_category, c.id, p.names || c.name FROM tb_category c JOIN p ON p.pk_category = c.fk_parent)
-        SELECT pk_category, id, jsonb_build_object('names', names) AS data FROM p $q$);
+        SELECT pk_category, id, jsonb_build_object('names', names) AS data FROM p $q$, '{"uncascaded_policy": "full_refresh"}');
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION '#183 FAIL: a TVIEW keyed out of a recursive CTE is refused: %', SQLERRM;
 END $$;
@@ -130,7 +130,8 @@ BEGIN
         q := format('SELECT pk_item, id, name FROM (%s) s%s', q, i);
     END LOOP;
     PERFORM tviews.pg_tviews_create('tv_deep', format(
-        'SELECT pk_item AS pk_deep, id, jsonb_build_object(''name'', name) AS data FROM (%s) s', q));
+        'SELECT pk_item AS pk_deep, id, jsonb_build_object(''name'', name) AS data FROM (%s) s', q),
+        '{"uncascaded_policy": "full_refresh"}');
     RAISE EXCEPTION '#183 FAIL: a definition 35 levels deep was accepted';
 EXCEPTION WHEN OTHERS THEN
     IF SQLERRM NOT LIKE '%more than 32 levels deep%' THEN

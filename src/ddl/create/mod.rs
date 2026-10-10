@@ -64,16 +64,13 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// What a new TVIEW gets unless told otherwise: `pg_tviews.unlogged_by_default`,
-    /// `pg_tviews.fillfactor` and `pg_tviews.data_gin_index`.
-    #[must_use]
-    pub fn from_settings() -> Self {
-        Self {
-            logged: !crate::config::unlogged_by_default(),
-            fillfactor: crate::config::fillfactor(),
-            data_gin_index: crate::config::data_gin_index(),
-        }
-    }
+    /// What a TVIEW gets unless its options say otherwise (ADR 0220): LOGGED,
+    /// fillfactor 85 (room for HOT updates), no GIN index on `data`.
+    pub const DEFAULT: Self = Self {
+        logged: true,
+        fillfactor: 85,
+        data_gin_index: false,
+    };
 }
 
 /// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW
@@ -88,7 +85,7 @@ impl Storage {
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
 /// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
-/// own); `None` reads `pg_tviews.uncascaded_policy`.
+/// own); `None` stores the defaults.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
@@ -103,7 +100,7 @@ pub(crate) fn create_tview_in(
         schema_name,
         group_keys,
         storage,
-        declarations.unwrap_or_else(Declarations::from_settings),
+        declarations.unwrap_or_else(Declarations::defaults),
     )
 }
 

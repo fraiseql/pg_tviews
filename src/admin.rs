@@ -106,7 +106,7 @@ fn pg_tviews_refresh_time_dependent(
     chosen.sort_by_key(|(entity, _)| order.iter().position(|e| e == entity).unwrap_or(usize::MAX));
     let mut refreshed = Vec::new();
     for (entity, table) in &chosen {
-        if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+        if crate::suspend::is_suspended() {
             crate::suspend::record_change(entity);
         } else {
             crate::queue::enqueue_refresh_all(entity);

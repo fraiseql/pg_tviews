@@ -1,6 +1,6 @@
 //! Physical replication and UNLOGGED TVIEWs.
 //!
-//! An UNLOGGED `tv_*` table (the default, `pg_tviews.unlogged_by_default`) is
+//! An UNLOGGED `tv_*` table (option `logged: false`) is
 //! not WAL-logged: a hot standby refuses to read it, and promotion or a crash
 //! restart resets it to its empty init fork. These functions let clients see
 //! which TVIEWs a standby can serve, let deploy tooling rebuild the emptied

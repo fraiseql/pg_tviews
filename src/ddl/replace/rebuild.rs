@@ -1,10 +1,9 @@
 //! Storage changes in place, and the rebuild of a TVIEW whose columns change.
 
+use super::Declared;
 use super::{Spi, invalid, pg_sys, spi};
 use crate::catalog::TviewMeta;
-use crate::ddl::aggregate::GroupKeys;
 use crate::ddl::create::{self, Storage};
-use crate::ddl::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
 use crate::utils::quote_identifier;
 
@@ -96,9 +95,7 @@ pub(super) fn rebuild(
     schema: &str,
     meta: &TviewMeta,
     query: &str,
-    storage: Storage,
-    group_keys: Option<&GroupKeys>,
-    declarations: Declarations,
+    declared: Declared,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
     let objects = [
@@ -133,20 +130,6 @@ pub(super) fn rebuild(
 
     // What the rebuild must put back, as statements computed before the drop.
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
-    let graphql_typename = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT graphql_typename FROM {} WHERE entity = $1",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &[crate::utils::spi::text(entity)],
-            )?
-            .first()
-            .get_one::<String>()
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))?;
     let user_indexes = user_indexes(meta.tview_oid)?;
 
     crate::ddl::drop::drop_tview(
@@ -159,9 +142,9 @@ pub(super) fn rebuild(
             &tv_name,
             query,
             schema,
-            group_keys,
-            storage,
-            Some(declarations),
+            declared.group_keys.as_ref(),
+            declared.storage,
+            Some(declared.declarations),
         )
     })?;
 
@@ -179,8 +162,8 @@ pub(super) fn rebuild(
     );
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
-    if let Some(typename) = graphql_typename {
-        restore_typename(entity, &typename)?;
+    if declared.typename.is_some() {
+        super::store_typename(entity, declared.typename.as_deref())?;
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
     // Filled as its owner, now that the owner is back.
@@ -214,22 +197,6 @@ fn restore_privileges(restore: &[String], tv: &str, view: &str) -> TViewResult<(
         crate::utils::spi::run_ddl(statement)?;
     }
     Ok(())
-}
-
-/// Give the rebuilt TVIEW of `entity` back its GraphQL type name.
-fn restore_typename(entity: &str, typename: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
-        &format!(
-            "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(typename),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Restore the GraphQL type name", &e))
 }
 
 /// Re-create the user's indexes on the rebuilt `tv_name`, each in a block that

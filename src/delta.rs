@@ -56,7 +56,7 @@ pub fn trigger_entity(trigger: &PgTrigger<'_>) -> String {
 }
 
 fn suspended() -> bool {
-    crate::config::suspend_triggers() || crate::suspend::is_suspended()
+    crate::suspend::is_suspended()
 }
 
 /// Statement-level trigger over the transition tables of a `mapped` or

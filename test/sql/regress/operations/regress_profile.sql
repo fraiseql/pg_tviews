@@ -42,13 +42,11 @@ INSERT INTO tb_user (name) SELECT 'u' || g FROM generate_series(1, 50) g;
 INSERT INTO tb_post (fk_user, title)
 SELECT CASE WHEN g <= 3000 THEN 1 ELSE 2 + g % 49 END, 't' || g FROM generate_series(1, 5000) g;
 
-CREATE TABLE tv_user AS
+CREATE UNLOGGED TABLE tv_user AS
 SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
-CREATE TABLE tv_post AS
+CREATE UNLOGGED TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.name) AS data
 FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user;
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
 CREATE TABLE tb_tag (
     pk_tag BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id     UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
@@ -56,7 +54,6 @@ CREATE TABLE tb_tag (
 );
 INSERT INTO tb_tag (label) SELECT 'l' || g FROM generate_series(1, 100) g;
 CREATE TABLE tv_tag AS SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
-COMMIT;
 ANALYZE tv_user, tv_post, tv_tag;
 
 -- ========================================================================
@@ -95,17 +92,14 @@ SELECT must(NOT warned('post', 'fk_user has no index%'), 'W1 after ensure_propag
 -- ========================================================================
 -- W2 low HOT ratio, W3 unused GIN, W4 fillfactor 100
 -- ========================================================================
-BEGIN;
-SET LOCAL pg_tviews.data_gin_index = on;
-SET LOCAL pg_tviews.fillfactor = 100;
 CREATE TABLE tb_doc (
     pk_doc BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id     UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     n      INT
 );
 INSERT INTO tb_doc (n) SELECT g FROM generate_series(1, 500) g;
-CREATE TABLE tv_doc AS SELECT pk_doc, id, jsonb_build_object('n', n) AS data FROM tb_doc;
-COMMIT;
+SELECT tviews.pg_tviews_create('tv_doc', $$SELECT pk_doc, id, jsonb_build_object('n', n) AS data FROM tb_doc$$,
+                                '{"data_gin_index": true, "fillfactor": 100}');
 SELECT must(NOT warned('doc', 'HOT ratio%'), 'W2 before any update');
 SELECT must(NOT warned('doc', 'fillfactor 100%'), 'W4 before any update');
 UPDATE tb_doc SET n = n + 1;

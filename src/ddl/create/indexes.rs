@@ -219,7 +219,7 @@ pub(crate) fn tview_indexes(
         }
     }
 
-    // Opt-in (pg_tviews.data_gin_index): top-level containment queries on data
+    // Opt-in (option data_gin_index): top-level containment queries on data
     if data_gin && let Some(data) = &schema.data {
         indexes.push(ManagedIndex::data_gin(tview_name, data));
     }

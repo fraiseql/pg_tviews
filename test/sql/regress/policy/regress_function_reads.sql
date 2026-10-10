@@ -24,7 +24,6 @@ CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN EXECUTE stmt; RETURN 'created';
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 
-SET pg_tviews.uncascaded_policy = 'error';
 CREATE TABLE tb_setting (code text PRIMARY KEY, value text);
 INSERT INTO tb_setting VALUES ('label_suffix', ' (a)');
 CREATE FUNCTION label_suffix() RETURNS text STABLE LANGUAGE sql
@@ -47,10 +46,8 @@ FROM (SELECT error_of(format($$SELECT tviews.pg_tviews_create_or_replace(%L, %L,
         '{"uncascaded_policy": "full_refresh"}')$$, 'tv_contract', :'def')) AS outcome) o;
 
 -- 2. Undeclared under warn: created, with a warning.
-SET pg_tviews.uncascaded_policy = 'warn';
-SELECT tviews.pg_tviews_create('tv_contract', :'def');
+SELECT tviews.pg_tviews_create('tv_contract', :'def', '{"uncascaded_policy": "warn"}');
 SELECT tviews.pg_tviews_drop('tv_contract');
-SET pg_tviews.uncascaded_policy = 'error';
 
 -- 3. Declared, its table under no policy of its own: refused like any table no
 --    cascade reaches, with the function as the reason.

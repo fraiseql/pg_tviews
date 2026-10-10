@@ -32,8 +32,9 @@ INSERT INTO tb_flag VALUES (1, true);
 INSERT INTO tb_rate VALUES (1, 5);
 INSERT INTO tb_item (pk_item, name) VALUES (1, 'a');
 
-SELECT must(current_setting('pg_tviews.uncascaded_policy') = 'error', 'the default is '
-            || current_setting('pg_tviews.uncascaded_policy'));
+-- The policy is the TVIEW's own (ADR 0220): no session setting can change it.
+SELECT must((SELECT message FROM refusal($$SET pg_tviews.uncascaded_policy = 'warn'$$))
+            LIKE '%pg_tviews.uncascaded_policy%', 'pg_tviews.uncascaded_policy still exists');
 
 -- pg_tviews_create_or_replace() without the option.
 SELECT * FROM refusal($q$SELECT tviews.pg_tviews_create_or_replace('tv_item', $$
@@ -48,8 +49,8 @@ SELECT must(:'r_hint' LIKE '%options => ''{"uncascaded_tables": {"public.tb_flag
             'the hint gives the per-table option: ' || :'r_hint');
 SELECT must(:'r_hint' LIKE '%''{"uncascaded_policy": "full_refresh"}''%',
             'the hint gives the option: ' || :'r_hint');
-SELECT must(:'r_hint' LIKE '%SET pg_tviews.uncascaded_policy = ''full_refresh''%',
-            'the hint gives the setting: ' || :'r_hint');
+SELECT must(:'r_hint' LIKE '%pg_tviews_create() takes the same options%'
+            AND :'r_hint' NOT LIKE '%SET %', 'the hint gives no setting: ' || :'r_hint');
 SELECT must(NOT EXISTS (SELECT 1 FROM tviews.registry) AND to_regclass('tv_item') IS NULL,
             'a refused create left a TVIEW');
 
@@ -58,18 +59,18 @@ SELECT * FROM refusal($q$CREATE TABLE tv_item AS
     SELECT pk_item, id, jsonb_build_object('flags', (SELECT count(*) FROM tb_flag)) AS data FROM tb_item$q$) \gset c_
 SELECT must(:'c_message' LIKE 'writes to public.tb_flag would not refresh public.tv_item (read in a subquery%',
             'CREATE TABLE AS: ' || :'c_message');
-SELECT must(:'c_hint' LIKE '%SET pg_tviews.uncascaded_policy%', 'CREATE TABLE AS hint: ' || :'c_hint');
+SELECT must(:'c_hint' LIKE '%''{"uncascaded_policy": "full_refresh"}''%', 'CREATE TABLE AS hint: ' || :'c_hint');
 
 -- What the hint says to write works.
 SELECT tviews.pg_tviews_create_or_replace('tv_item', $$
     SELECT pk_item, id, jsonb_build_object('flags', (SELECT count(*) FROM tb_flag)) AS data FROM tb_item $$,
     '{"uncascaded_policy": "full_refresh"}');
-SELECT must((SELECT uncascaded_policy FROM tviews.registry WHERE entity = 'item') = 'full_refresh',
+SELECT must((SELECT options->>'uncascaded_policy' FROM tviews.registry WHERE entity = 'item') = 'full_refresh',
             'the declared policy');
 -- A TVIEW every read of which is traced needs no declaration.
 CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
 CREATE TABLE tv_note AS SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM tb_note;
-SELECT must((SELECT uncascaded_policy FROM tviews.registry WHERE entity = 'note') = 'error',
+SELECT must((SELECT options->>'uncascaded_policy' FROM tviews.registry WHERE entity = 'note') = 'error',
             'a fully traced TVIEW stores the default');
 
 \echo 'uncascaded_policy default: PASS'

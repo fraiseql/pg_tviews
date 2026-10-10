@@ -85,18 +85,17 @@ SQL
 tview_sql() {  # $1 = mode
   cat <<SQL
 SET client_min_messages TO WARNING;
-$(mode_sql "$1")
 SELECT pg_tviews_create('tv_user', \$v\$
     SELECT pk_user, id, jsonb_build_object('name', name, 'bio', bio) AS data
-    FROM tb_user \$v\$);
+    FROM tb_user \$v\$, $(mode_options "$1"));
 SELECT pg_tviews_create('tv_post', \$v\$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
            jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user \$v\$);
+    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user \$v\$, $(mode_options "$1"));
 SELECT pg_tviews_create('tv_comment', \$v\$
     SELECT tb_comment.pk_comment, tb_comment.id, tb_comment.fk_post,
            jsonb_build_object('body', tb_comment.body, 'post', v_post.data) AS data
-    FROM tb_comment LEFT JOIN v_post ON v_post.pk_post = tb_comment.fk_post \$v\$);
+    FROM tb_comment LEFT JOIN v_post ON v_post.pk_post = tb_comment.fk_post \$v\$, $(mode_options "$1"));
 SQL
 }
 

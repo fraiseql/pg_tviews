@@ -36,23 +36,18 @@ INSERT INTO tb_user (pk_user, name) VALUES (1, 'alice');
 INSERT INTO app.tb_post (pk_post, fk_user, title) VALUES (1, 1, 'p1');
 INSERT INTO tb_order (pk_order, fk_user, total) VALUES (1, 1, 10);
 
-SET pg_tviews.unlogged_by_default = off;
 SELECT pg_tviews_create('tv_user', $$
     SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$);
 -- Off-path, reading a plain view (followed), another TVIEW's view (followed) and
 -- another TVIEW's table (listed, not followed).
 SET search_path TO app, public, tviews;
-SET pg_tviews.data_gin_index = on;
-SET pg_tviews.unlogged_by_default = on;
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', t.title, 'author', u.data, 'name', tu.data->>'name') AS data
     FROM app.tb_post p
     JOIN app.v_titles t ON t.pk_post = p.pk_post
     JOIN tviews.public__tv_user u ON u.pk_user = p.fk_user
-    JOIN public.tv_user tu ON tu.pk_user = p.fk_user $$);
-RESET pg_tviews.data_gin_index;
-RESET pg_tviews.unlogged_by_default;
+    JOIN public.tv_user tu ON tu.pk_user = p.fk_user $$, '{"logged": false, "data_gin_index": true}');
 RESET search_path;
 SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
@@ -83,7 +78,9 @@ SELECT must((SELECT count(*) FROM tviews.registry) = 3, 'expected three rows');
 SELECT must(
     (SELECT schema = 'public' AND name = 'tv_user' AND logged
             AND options = '{"logged": true, "fillfactor": 70, "data_gin_index": false,
-                            "group_keys": null}'::jsonb
+                            "group_keys": null, "uncascaded_policy": "error",
+                            "uncascaded_tables": {}, "function_reads": {},
+                            "time_refresh": null, "typename": null}'::jsonb
      FROM tviews.registry WHERE entity = 'user'),
     'tv_user row: ' || (SELECT row(schema, name, logged, options)::text
                         FROM tviews.registry WHERE entity = 'user'));

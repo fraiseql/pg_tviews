@@ -27,11 +27,11 @@ BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'recover_after_crash FAIL: %', what
 CREATE TABLE tb_item (pk_item int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 INSERT INTO tb_item (pk_item, name) VALUES (1, 'alice'), (2, 'bob');
 SELECT pg_tviews_create('tv_item', $$
-    SELECT pk_item, id, jsonb_build_object('name', name) AS data FROM tb_item $$);
+    SELECT pk_item, id, jsonb_build_object('name', name) AS data FROM tb_item $$, '{"logged": false}');
 
 CREATE TABLE tb_empty (pk_empty int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 SELECT pg_tviews_create('tv_empty', $$
-    SELECT pk_empty, id, jsonb_build_object('name', name) AS data FROM tb_empty $$);
+    SELECT pk_empty, id, jsonb_build_object('name', name) AS data FROM tb_empty $$, '{"logged": false}');
 
 -- 1. A populated TVIEW needs nothing.
 SELECT must(NOT pg_tviews_recover_after_crash('item'), 'recovered a populated TVIEW');

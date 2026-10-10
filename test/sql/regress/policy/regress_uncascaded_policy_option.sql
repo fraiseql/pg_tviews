@@ -1,7 +1,7 @@
 -- A TVIEW declares what a write to a table no cascade reaches does, with the
 -- `uncascaded_policy` option of pg_tviews_create_or_replace(): stored with the
--- TVIEW whatever pg_tviews.uncascaded_policy says, and changed in place
--- ("altered", no rebuild).
+-- TVIEW, changed in place ("altered", no rebuild), and `error` when omitted
+-- (ADR 0220).
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/policy/regress_uncascaded_policy_option.sql
 --
@@ -22,7 +22,7 @@ CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN EXECUTE stmt; RETURN NULL;
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 CREATE FUNCTION policy_of(e text) RETURNS text LANGUAGE sql AS $$
-    SELECT uncascaded_policy FROM tviews.registry WHERE entity = e $$;
+    SELECT options->>'uncascaded_policy' FROM tviews.registry WHERE entity = e $$;
 
 CREATE TABLE tb_flag (pk_flag int PRIMARY KEY, on_off boolean NOT NULL);
 CREATE TABLE tb_item (pk_item int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
@@ -32,20 +32,19 @@ INSERT INTO tb_item (pk_item, name) VALUES (1, 'a'), (2, 'b');
 -- tb_flag is read in an uncorrelated subquery: no cascade reaches it.
 \set def 'SELECT pk_item, id, jsonb_build_object(''name'', name, ''flags'', (SELECT count(*) FROM tb_flag WHERE on_off)) AS data FROM tb_item'
 
--- The option wins over the setting.
-SET pg_tviews.uncascaded_policy = 'warn';
 SELECT must(tviews.pg_tviews_create_or_replace('tv_item', :'def', '{"uncascaded_policy": "full_refresh"}') = 'created',
             'created');
-RESET pg_tviews.uncascaded_policy;
 SELECT must(policy_of('item') = 'full_refresh', 'stored ' || policy_of('item'));
 INSERT INTO tb_flag VALUES (2, true);
 SELECT assert_fresh('tv_item', 'pk_item', 'a write to tb_flag under full_refresh');
 
--- The same declaration: unchanged; no option: unchanged, the policy kept.
+-- The same declaration: unchanged. No option is the default, `error`, which
+-- refuses this TVIEW; nothing changes.
 SELECT must(tviews.pg_tviews_create_or_replace('tv_item', :'def', '{"uncascaded_policy": "full_refresh"}') = 'unchanged',
             'the same option');
-SELECT must(tviews.pg_tviews_create_or_replace('tv_item', :'def') = 'unchanged', 'no option');
-SELECT must(policy_of('item') = 'full_refresh', 'no option kept ' || policy_of('item'));
+SELECT must(error_of(format('SELECT tviews.pg_tviews_create_or_replace(%L, %L)', 'tv_item', :'def'))
+            LIKE '%would not refresh%', 'no option is error');
+SELECT must(policy_of('item') = 'full_refresh', 'a refused change kept ' || policy_of('item'));
 
 -- Another policy: altered in place, rows and table kept.
 CREATE TEMP TABLE before AS SELECT 'tv_item'::regclass::oid AS tv, xmin::text AS x FROM tv_item WHERE pk_item = 1;

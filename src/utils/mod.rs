@@ -4,17 +4,12 @@ use pgrx::prelude::*;
 
 pub mod spi;
 
-/// Emit an internal diagnostic. Silent at the default settings: it is a `DEBUG1` message
-/// (visible with `client_min_messages = debug1`), or a `NOTICE` when the session sets
-/// `pg_tviews.log_level = 'debug'`. Use it for tracing only; anything the user must act on
-/// belongs in `warning!`/`error!`.
+/// Emit an internal diagnostic: a `DEBUG1` message, visible with
+/// `client_min_messages = debug1` or `log_min_messages = debug1`. Use it for tracing
+/// only; anything the user must act on belongs in `warning!`/`error!`.
 macro_rules! log_debug {
     ($($arg:tt)+) => {
-        if $crate::config::log_level().eq_ignore_ascii_case("debug") {
-            ::pgrx::notice!($($arg)+);
-        } else {
-            ::pgrx::debug1!($($arg)+);
-        }
+        ::pgrx::debug1!($($arg)+);
     };
 }
 pub(crate) use log_debug;

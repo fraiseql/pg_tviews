@@ -2,21 +2,24 @@
 //! definition and storage options with the smallest change (ADR 0136
 //! Decision 5).
 //!
+//! The options passed are the whole declaration: an option not passed is at its
+//! default (ADR 0220), whatever the TVIEW had.
+//!
 //! - **created**: the TVIEW did not exist.
-//! - **unchanged**: the definition and the options passed match what exists.
-//! - **altered**: only `logged`, `fillfactor`, `data_gin_index`,
-//!   `uncascaded_policy` or `uncascaded_tables` differ; changed in place, rows kept.
+//! - **unchanged**: the definition and the options match what exists.
+//! - **altered**: only options other than `group_keys` differ; changed in place,
+//!   rows kept.
 //! - **replaced**: the definition differs but produces the same columns, and
 //!   `group_keys` is the same; the backing view is replaced and the rows reconciled
 //!   in place, touching only rows that change.
 //! - **rebuilt**: the columns or `group_keys` differ; the TVIEW is dropped and
-//!   created again, with its owner, privileges, comment, GraphQL type name and user
-//!   indexes carried over. Refused when something depends on it or it has what a
+//!   created again, with its owner, privileges, comment and user indexes carried
+//!   over. Refused when something depends on it or it has what a
 //!   rebuild cannot carry.
 //!
 //! The DDL runs as the caller; replacing an existing TVIEW requires owning it.
 
-use super::create::{self, Storage};
+use super::create;
 use super::uncascaded::{Declarations, TimeRefresh};
 use crate::catalog::TviewMeta;
 use crate::error::{TViewError, TViewResult};
@@ -26,9 +29,9 @@ use pgrx::prelude::*;
 mod options;
 mod rebuild;
 
-pub(crate) use options::{Options, parse_name, parse_options};
-use options::{invalid, resolve_function_reads, resolve_tables};
-use rebuild::{alter_storage, current_storage, rebuild};
+use options::invalid;
+pub(crate) use options::{Declared, Options, parse_name, parse_options};
+use rebuild::{alter_storage, rebuild};
 
 /// Schema of a registered entity: that of its `tv_*` table, or of its view when
 /// the table is gone.
@@ -85,8 +88,10 @@ pub(crate) fn create_or_replace(
     };
     let tv_name = format!("tv_{entity}");
 
+    let declared = options.resolve()?;
+
     let Some(meta) = TviewMeta::load_by_entity(&entity)? else {
-        create_new(&entity, &schema, query, options)?;
+        create_new(&entity, &schema, query, &declared)?;
         return Ok("created");
     };
 
@@ -113,46 +118,54 @@ pub(crate) fn create_or_replace(
     let (normalized_sql, normalized) = create::normalize_definition(&entity, query)?;
     check_key(&entity, &normalized)?;
     let comparison = compare_definition(&entity, meta.view_oid, &normalized_sql)?;
-
-    let current = current_storage(&entity)?;
-    let desired = Storage {
-        logged: options.logged.unwrap_or(current.logged),
-        fillfactor: options.fillfactor.unwrap_or(current.fillfactor),
-        data_gin_index: options.data_gin_index.unwrap_or(current.data_gin_index),
+    let current = Declared {
+        storage: rebuild::current_storage(&entity)?,
+        group_keys: create::stored_group_keys(&entity)?,
+        declarations: Declarations::of(&meta),
+        typename: stored_typename(&entity)?,
     };
-    let current_keys = create::stored_group_keys(&entity)?;
-    let current_declarations = Declarations::of(&meta);
-    let declarations = desired_declarations(&options, &current_declarations)?;
-    let desired_keys = options.group_keys.or(current_keys.clone());
-
-    if comparison.same_view && desired_keys == current_keys {
-        let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired == current && declarations.stored() == current_declarations {
-            return Ok(if retyped { "altered" } else { "unchanged" });
-        }
-        if desired != current {
+    // Options other than the definition's own (storage, declarations, type name)
+    // change in place.
+    let alter = |current: &Declared| -> TViewResult<()> {
+        if declared.storage != current.storage {
             alter_storage(
                 &qualified_tv,
                 &tv_name,
                 &schema,
                 meta.tview_oid,
-                current,
-                desired,
+                current.storage,
+                declared.storage,
             )?;
         }
-        if declarations.stored() != current_declarations {
+        if declared.typename != current.typename {
+            store_typename(&entity, declared.typename.as_deref())?;
+        }
+        Ok(())
+    };
+
+    if comparison.same_view && declared.group_keys == current.group_keys {
+        let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
+        let same_declarations = declared.declarations.stored() == current.declarations;
+        if declared.storage == current.storage
+            && same_declarations
+            && declared.typename == current.typename
+        {
+            return Ok(if retyped { "altered" } else { "unchanged" });
+        }
+        alter(&current)?;
+        if !same_declarations {
             // The stored policies are re-checked by a re-registration, which also
             // brings the triggers in line: `error` still refuses a TVIEW with
             // tables no cascade reaches.
-            declarations.store(&entity)?;
+            declared.declarations.store(&entity)?;
             create::reregister_tview(&entity)?;
         }
         check_time_declared(&entity, declares_time)?;
         return Ok("altered");
     }
-    declarations.store(&entity)?;
+    declared.declarations.store(&entity)?;
     if comparison.same_columns
-        && desired_keys == current_keys
+        && declared.group_keys == current.group_keys
         && same_table_key(meta.tview_oid, comparison.identity.as_deref())?
     {
         replace_in_place(
@@ -164,47 +177,45 @@ pub(crate) fn create_or_replace(
             &comparison.base_tables,
         )?;
         retype_drifted_columns(&entity, &meta, &qualified_tv)?;
-        if desired != current {
-            alter_storage(
-                &qualified_tv,
-                &tv_name,
-                &schema,
-                meta.tview_oid,
-                current,
-                desired,
-            )?;
-        }
+        alter(&current)?;
         check_time_declared(&entity, declares_time)?;
         return Ok("replaced");
     }
 
-    rebuild(
-        &entity,
-        &schema,
-        &meta,
-        query,
-        desired,
-        desired_keys.as_ref(),
-        declarations,
-    )?;
+    rebuild(&entity, &schema, &meta, query, declared)?;
     check_time_declared(&entity, declares_time)?;
     Ok("rebuilt")
 }
 
-/// The declarations `options` asks for, `current` for those it omits.
-fn desired_declarations(options: &Options, current: &Declarations) -> TViewResult<Declarations> {
-    Ok(Declarations::new(
-        options.uncascaded_policy.unwrap_or(current.policy),
-        match &options.uncascaded_tables {
-            Some(declared) => resolve_tables(declared)?,
-            None => current.tables.clone(),
-        },
-        match &options.function_reads {
-            Some(declared) => resolve_function_reads(declared)?,
-            None => current.function_reads.clone(),
-        },
-        options.time_refresh.unwrap_or(current.time_refresh),
-    ))
+/// The GraphQL type name stored for `entity`; `None` for `PascalCase(entity)`.
+fn stored_typename(entity: &str) -> TViewResult<Option<String>> {
+    Spi::get_one_with_args::<String>(
+        &format!(
+            "SELECT graphql_typename FROM {} WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[crate::utils::spi::text(entity)],
+    )
+    .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))
+}
+
+/// Store the GraphQL type name of `entity`'s TVIEW (`None`: `PascalCase(entity)`).
+///
+/// # Errors
+/// Returns an error if the catalog cannot be written.
+pub(crate) fn store_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    Spi::run_with_args(
+        &format!(
+            "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
+            crate::utils::meta_table()
+        ),
+        &[
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(typename),
+        ],
+    )
+    .map_err(|e| crate::utils::spi::catalog_error("Store the GraphQL type name", &e))
 }
 
 /// Refuse `time_refresh` passed for a TVIEW whose definition, as registered,
@@ -308,41 +319,32 @@ pub(crate) fn create_only(
         Some(schema) => schema,
         None => create::current_schema()?,
     };
-    create_new(&entity, &schema, query, options).map(Created::Rows)
+    create_new(&entity, &schema, query, &options.resolve()?).map(Created::Rows)
 }
 
-/// Create `entity`'s TVIEW in `schema`: storage options default to the settings.
-fn create_new(entity: &str, schema: &str, query: &str, options: Options) -> TViewResult<u64> {
+/// Create `entity`'s TVIEW in `schema` as `declared`.
+fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> TViewResult<u64> {
     let (_, normalized) = create::normalize_definition(entity, query)?;
     check_key(entity, &normalized)?;
-    let defaults = Storage::from_settings();
-    let storage = Storage {
-        logged: options.logged.unwrap_or(defaults.logged),
-        fillfactor: options.fillfactor.unwrap_or(defaults.fillfactor),
-        data_gin_index: options.data_gin_index.unwrap_or(defaults.data_gin_index),
-    };
-    // What the options leave out comes from the settings.
-    let settings = Declarations::from_settings();
-    let declarations = Declarations::new(
-        options.uncascaded_policy.unwrap_or(settings.policy),
-        match &options.uncascaded_tables {
-            Some(declared) => resolve_tables(declared)?,
-            None => Vec::new(),
-        },
-        match &options.function_reads {
-            Some(declared) => resolve_function_reads(declared)?,
-            None => Vec::new(),
-        },
-        options.time_refresh.unwrap_or(settings.time_refresh),
-    );
-    create::create_tview_in(
+    let rows = create::create_tview_in(
         &format!("tv_{entity}"),
         query,
         schema,
-        options.group_keys.or(None).as_ref(),
-        storage,
-        Some(declarations),
-    )
+        declared.group_keys.as_ref(),
+        declared.storage,
+        Some(declared.declarations.clone()),
+    )?;
+    if declared.typename.is_some() {
+        store_typename(entity, declared.typename.as_deref())?;
+    }
+    check_time_declared(
+        entity,
+        matches!(
+            declared.declarations.time_refresh,
+            TimeRefresh::External { declared: true }
+        ),
+    )?;
+    Ok(rows)
 }
 
 /// The TVIEW's name must match the key its definition produces.
@@ -689,7 +691,6 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::options::GroupKeysOption;
     use super::{parse_name, parse_options};
 
     #[test]
@@ -742,8 +743,20 @@ mod tests {
     #[test]
     fn test_parse_options_group_keys_null_is_plain() {
         let options = parse_options(&serde_json::json!({"group_keys": null})).unwrap();
-        assert_eq!(options.group_keys, GroupKeysOption::Plain);
-        let options = parse_options(&serde_json::json!({})).unwrap();
-        assert_eq!(options.group_keys, GroupKeysOption::Omitted);
+        assert_eq!(options.group_keys, None);
+    }
+
+    #[test]
+    fn test_parse_options_typename() {
+        let options = parse_options(&serde_json::json!({"typename": "BlogPost"})).unwrap();
+        assert_eq!(options.typename.as_deref(), Some("BlogPost"));
+        assert_eq!(
+            parse_options(&serde_json::json!({"typename": null}))
+                .unwrap()
+                .typename,
+            None
+        );
+        assert!(parse_options(&serde_json::json!({"typename": "blog-post"})).is_err());
+        assert!(parse_options(&serde_json::json!({"typename": "9Lives"})).is_err());
     }
 }

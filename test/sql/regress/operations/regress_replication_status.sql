@@ -1,5 +1,5 @@
 -- Regression test for issue #75:
---   "UNLOGGED TVIEWs (the default) are unreadable on hot standbys; empty after
+--   "UNLOGGED TVIEWs are unreadable on hot standbys; empty after
 --    promotion."
 --
 -- PostgreSQL refuses to read UNLOGGED relations during recovery and resets them
@@ -44,18 +44,15 @@ INSERT INTO tb_user (name) VALUES ('ann'), ('bob');
 INSERT INTO tb_post (fk_user, title) VALUES (1, 'p1'), (2, 'p2'), (2, 'p3');
 INSERT INTO tb_tag (label) VALUES ('t1');
 
--- Two UNLOGGED TVIEWs (the default), post embedding user, and one LOGGED.
-CREATE TABLE tv_user AS
+-- Two UNLOGGED TVIEWs, post embedding user, and one LOGGED (the default).
+CREATE UNLOGGED TABLE tv_user AS
 SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
-CREATE TABLE tv_post AS
+CREATE UNLOGGED TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user,
        jsonb_build_object('title', p.title, 'user', tv_user.data) AS data
 FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
 CREATE TABLE tv_tag AS
 SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
-COMMIT;
 
 -- ========================================================================
 -- Cycle 1: detection

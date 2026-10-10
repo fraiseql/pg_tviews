@@ -63,11 +63,8 @@ CREATE TABLE tb_tag (pk_tag BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                      id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE, label TEXT);
 INSERT INTO tb_post (title) VALUES ('a'), ('b');
 INSERT INTO tb_tag (label) VALUES ('x');
-CREATE TABLE tv_post AS SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
+CREATE UNLOGGED TABLE tv_post AS SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
 CREATE TABLE tv_tag AS SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
-COMMIT;
 CHECKPOINT;
 SQL
 

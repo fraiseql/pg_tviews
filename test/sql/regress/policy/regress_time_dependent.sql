@@ -28,7 +28,6 @@ EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 -- Refreshes render under TimeZone UTC: the dates this test writes are UTC dates,
 -- whatever the session's zone.
 SET TimeZone = 'UTC';
-SET pg_tviews.uncascaded_policy = 'error';
 CREATE TABLE tb_contract (pk_contract bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                           name text, end_date date, ends_at timestamptz);
 INSERT INTO tb_contract VALUES (1, default, 'c1', current_date, now()), (2, default, 'c2', current_date + 1, now());
@@ -73,10 +72,10 @@ SELECT must(tviews.pg_tviews_create_or_replace('tv_contract', :'def', '{"time_re
             'declared');
 SELECT must(time_dependent AND time_refresh = 'external', 'registry: ' || time_dependent || ' ' || coalesce(time_refresh, 'NULL'))
 FROM tviews.registry WHERE entity = 'contract';
--- Rows that changed with no write the TVIEW saw (as at midnight): suspended triggers.
-SET pg_tviews.suspend_triggers = on;
+-- Rows that changed with no write the TVIEW saw (as at midnight): triggers off.
+ALTER TABLE tb_contract DISABLE TRIGGER USER;
 UPDATE tb_contract SET end_date = current_date - 1 WHERE pk_contract = 1;
-RESET pg_tviews.suspend_triggers;
+ALTER TABLE tb_contract ENABLE TRIGGER USER;
 SELECT must(fresh_diff('tv_contract', 'pk_contract') IS NOT NULL, 'the TVIEW was not stale');
 SELECT must(array_agg(r) = ARRAY['public.tv_contract'], 'refreshed: ' || array_agg(r)::text)
 FROM tviews.pg_tviews_refresh_time_dependent() r;
@@ -104,23 +103,23 @@ SELECT must(error_of($$SELECT tviews.pg_tviews_create_or_replace('tv_party', 'SE
 SELECT must(error_of($$SELECT tviews.pg_tviews_create_or_replace('tv_party', 'SELECT pk_party, id, name FROM tb_party',
                        '{"time_refresh": "daily"}')$$) LIKE '%time_refresh%', 'an unknown value');
 
--- 6. The setting, for CREATE TABLE … AS and pg_tviews_create(): applies to a
---    TVIEW reading the time, and is ignored by one that reads none.
+-- 6. pg_tviews_create() takes the same option, and refuses it for a TVIEW that
+--    reads no time, as pg_tviews_create_or_replace() does.
 SELECT tviews.pg_tviews_drop('tv_contract');
 DROP TABLE tb_party CASCADE;
 CREATE TABLE tb_party (pk_party bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
-SET pg_tviews.time_refresh = 'external';
-SELECT tviews.pg_tviews_create('tv_contract', :'def');
+SELECT tviews.pg_tviews_create('tv_contract', :'def', '{"time_refresh": "external"}');
+SELECT must(error_of($$SELECT tviews.pg_tviews_create('tv_party', 'SELECT pk_party, id, name FROM tb_party',
+                       '{"time_refresh": "external"}')$$) LIKE '%time_refresh%reads no time%',
+            'pg_tviews_create: declared, no time');
 SELECT tviews.pg_tviews_create('tv_party', 'SELECT pk_party, id, name FROM tb_party');
-RESET pg_tviews.time_refresh;
 SELECT must(string_agg(entity || '=' || time_dependent || '/' || coalesce(time_refresh, 'NULL'), ',' ORDER BY entity)
-            = 'contract=true/external,party=false/NULL', 'the setting: ' || string_agg(entity || '=' || time_dependent || '/' || coalesce(time_refresh, 'NULL'), ','))
+            = 'contract=true/external,party=false/NULL', 'the option: ' || string_agg(entity || '=' || time_dependent || '/' || coalesce(time_refresh, 'NULL'), ','))
 FROM tviews.registry;
 SELECT tviews.pg_tviews_drop('tv_contract');
 
 -- 7. Under warn: created, warned, reported as time-dependent and refreshable.
-SET pg_tviews.uncascaded_policy = 'warn';
-SELECT tviews.pg_tviews_create('tv_contract', :'def');
+SELECT tviews.pg_tviews_create('tv_contract', :'def', '{"uncascaded_policy": "warn"}');
 SELECT must(time_dependent AND time_refresh IS NULL, 'warn: registry')
 FROM tviews.registry WHERE entity = 'contract';
 SELECT must(array_agg(r) = ARRAY['public.tv_contract'], 'warn: refreshed ' || array_agg(r)::text)
@@ -132,7 +131,8 @@ FROM tviews.pg_tviews_refresh_time_dependent() r;
 CREATE TABLE tb_legacy (pk_legacy bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                         end_date date);
 INSERT INTO tb_legacy VALUES (1, default, current_date);
-SELECT tviews.pg_tviews_create('tv_legacy', 'SELECT pk_legacy, id, end_date >= CURRENT_DATE AS is_current FROM tb_legacy');
+SELECT tviews.pg_tviews_create('tv_legacy', 'SELECT pk_legacy, id, end_date >= CURRENT_DATE AS is_current FROM tb_legacy',
+                               '{"uncascaded_policy": "warn"}');
 UPDATE tviews.pg_tview_meta SET uncascaded_policy = 'error', time_dependent = false WHERE entity = 'legacy';
 SELECT must(status LIKE '%reads the time (CURRENT_DATE)%', 'reregister_all: ' || status)
 FROM tviews.pg_tviews_reregister_all() WHERE entity = 'legacy';

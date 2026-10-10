@@ -29,10 +29,10 @@ CREATE TABLE tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_r
 INSERT INTO tb_user VALUES (1, DEFAULT, 'ann'), (2, DEFAULT, 'bob');
 INSERT INTO tb_post VALUES (1, DEFAULT, 1, 'p1'), (2, DEFAULT, 2, 'p2');
 SELECT pg_tviews_create('tv_user', $$
-    SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$);
+    SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$, '{"logged": false}');
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
-    FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
+    FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$, '{"logged": false}');
 
 -- 1. Empty is not reset: a TVIEW whose rows were deleted is not refilled by the
 --    first write of a new backend. (TRUNCATE leaves the TVIEW trusted.)
@@ -98,12 +98,9 @@ SELECT pg_tviews_set_logged('post', false);
 SELECT must((SELECT count(*) FROM tviews.pg_tview_valid) = 2, 'not one row per UNLOGGED TVIEW');
 SELECT pg_tviews_drop('tv_post');
 SELECT must((SELECT count(*) FROM tviews.pg_tview_valid) = 1, 'a dropped TVIEW kept its row');
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
 SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
     FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
-COMMIT;
 SELECT must((SELECT count(*) FROM tviews.pg_tview_valid) = 1, 'a LOGGED TVIEW got a row');
 
 -- 7. Only pg_tviews writes the rows.

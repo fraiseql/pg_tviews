@@ -38,7 +38,7 @@ INSERT INTO public.tb_thing VALUES (1, DEFAULT, 'x');
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 RESET ROLE;
 
 -- Each entry point, called by the superuser.
@@ -65,12 +65,12 @@ SET regress.via = 'replace';
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n || '!', 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 SET regress.via = 'replace_rebuild';
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, n, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 RESET regress.via;
 
 DO $$

@@ -58,6 +58,10 @@ changes them.
 | `time_refresh` | none | `external` for a definition that reads the current time |
 | `typename` | `PascalCase(entity)` | the GraphQL type name in `pg_tviews_flush_and_report()` |
 
+- The options passed are the whole declaration. An option not passed is at its default,
+  including on an existing TVIEW: `pg_tviews_create_or_replace` puts back a default a
+  template no longer states, as it puts back a definition. It does not keep whatever the
+  TVIEW had, which would let a database drift from its migrations.
 - `pg_tviews_create(tview, query, options jsonb DEFAULT '{}')` takes the same options as
   `pg_tviews_create_or_replace`.
 - `CREATE TABLE tv_x AS SELECT …` creates the TVIEW with the defaults.
