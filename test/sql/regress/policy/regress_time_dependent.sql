@@ -25,6 +25,9 @@ CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN EXECUTE stmt; RETURN 'created';
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 
+-- Refreshes render under TimeZone UTC: the dates this test writes are UTC dates,
+-- whatever the session's zone.
+SET TimeZone = 'UTC';
 SET pg_tviews.uncascaded_policy = 'error';
 CREATE TABLE tb_contract (pk_contract bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                           name text, end_date date, ends_at timestamptz);
