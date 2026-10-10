@@ -50,6 +50,15 @@ pub(crate) fn forget(table: pg_sys::Oid, names: &[String]) -> TViewResult<()> {
     )
 }
 
+/// Record that the managed index `old` is now named `new`.
+pub(crate) fn rename(table: pg_sys::Oid, old: &str, new: &str) -> TViewResult<()> {
+    if recorded(table)?.iter().any(|n| n == old) {
+        forget(table, &[old.to_string()])?;
+        record(table, &[new.to_string()])?;
+    }
+    Ok(())
+}
+
 /// The recorded names, sorted; empty for a table that is no TVIEW's.
 pub(crate) fn recorded(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
     crate::utils::spi::strings(
