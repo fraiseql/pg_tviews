@@ -114,7 +114,10 @@ transactions creating rows of that TVIEW. Existing rows keep their row locks
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:
 
 - `field1` = database, `field2` = relation OID, `field3` = a 32-bit FNV-1a hash of
-  (attnum, value text);
+  (attnum, the value's lock form). The lock form is the hash the column type's equality uses
+  (its default hash operator class), in the written column's type and collation, as text, so
+  equal values with different text forms (`5` and `5.00`, `Ann` and `ann` under a
+  case-insensitive collation) take the same lock on both sides;
 - `field4` = `0x5476` for value locks, `0x5477` for relation (intent and escalated) locks,
   whose `field3` is 0 for the values of the relation and 1 for the keys of a TVIEW's rows
   being created.
