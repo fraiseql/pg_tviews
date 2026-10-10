@@ -103,12 +103,14 @@ SELECT must(managed('app.tv_post') = '{idx_tv_post_author_pk_pk_post,idx_tv_post
             'after reregister: ' || managed('app.tv_post')::text);
 SELECT must(unmanaged('app.tv_post') = '{post_by_author}', 'tv_post user indexes');
 
--- pg_tviews_ensure_propagation_indexes() records what it creates.
+-- pg_tviews_ensure_propagation_indexes() (an administrator's) records what it creates.
 DROP INDEX idx_tv_post_author_pk_pk_post, post_by_author;
+RESET ROLE;
 SELECT must((SELECT count(*) FROM tviews.pg_tviews_ensure_propagation_indexes('post')) = 1,
             'ensure_propagation_indexes created nothing');
 SELECT must(managed('app.tv_post') = '{idx_tv_post_author_pk_pk_post,idx_tv_post_id}',
             'after ensure: ' || managed('app.tv_post')::text);
+SET ROLE regress_219_migrator;
 
 -- Writes keep refreshing.
 UPDATE tb_user SET name = 'alice 2' WHERE pk_user = 1;

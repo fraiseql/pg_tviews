@@ -30,6 +30,11 @@ DROP TYPE @extschema@.tviewschema CASCADE;
 -- exception). A TVIEW that no longer analyses fails the update and is named.
 ALTER TABLE @extschema@.pg_tview_meta ADD COLUMN plan JSONB;
 
+-- The indexes pg_tviews created on each TVIEW's table (#219). NULL until the
+-- re-registration below takes the indexes that are exactly the ones pg_tviews
+-- creates, under their names.
+ALTER TABLE @extschema@.pg_tview_meta ADD COLUMN managed_index_names TEXT[];
+
 -- The rebind trigger reads the plan; the old one called a removed function.
 DROP TRIGGER pg_tview_meta_rebind ON @extschema@.pg_tview_meta;
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_meta_rebind()
@@ -127,12 +132,10 @@ SELECT
             FROM pg_catalog.pg_index i
             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
             JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin'
-            JOIN pg_catalog.pg_opclass oc ON oc.oid = i.indclass[0]
-             AND oc.opcname = 'jsonb_ops'
             JOIN pg_catalog.pg_attribute a
               ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
-              AND i.indisvalid),
+              AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
         'group_keys', m.group_keys) END AS options,
     m.needs_reregister,
     v.oid::pg_catalog.regclass AS view,
@@ -164,7 +167,15 @@ SELECT
                GROUP BY r.function) f),
         '{}') AS function_reads,
     m.time_dependent,
-    m.time_refresh
+    m.time_refresh,
+    CASE WHEN c.oid IS NOT NULL THEN ARRAY(
+        SELECT i.indexrelid::pg_catalog.regclass
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+        WHERE i.indrelid = c.oid AND ic.relname = ANY (m.managed_index_names)
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                          WHERE k.conindid = i.indexrelid)
+        ORDER BY ic.relname) END AS managed_indexes
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -256,6 +267,11 @@ BEGIN
 END
 $$;
 ALTER TABLE @extschema@.pg_tview_meta ALTER COLUMN plan SET NOT NULL;
+UPDATE @extschema@.pg_tview_meta SET managed_index_names = '{}'
+ WHERE managed_index_names IS NULL;
+ALTER TABLE @extschema@.pg_tview_meta
+    ALTER COLUMN managed_index_names SET DEFAULT '{}',
+    ALTER COLUMN managed_index_names SET NOT NULL;
 
 ALTER TABLE @extschema@.pg_tview_meta
     DROP COLUMN cascade_paths,

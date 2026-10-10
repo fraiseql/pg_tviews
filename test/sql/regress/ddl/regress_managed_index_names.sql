@@ -70,11 +70,13 @@ SELECT must(error_of($$ALTER INDEX post_data_gin RENAME TO idx_tv_post_author_pk
 
 -- 3. What pg_tviews_ensure_propagation_indexes() reports, run by hand, is accepted
 --    and recorded.
+RESET ROLE;
 SELECT must((SELECT array_agg(s) FROM tviews.pg_tviews_ensure_propagation_indexes('post', true) s)
-            = ARRAY['CREATE INDEX IF NOT EXISTS idx_tv_post_author_pk_pk_post '
-                    'ON app.tv_post (author_pk, pk_post)'],
+            = ARRAY['CREATE INDEX IF NOT EXISTS "idx_tv_post_author_pk_pk_post" '
+                    'ON "app"."tv_post" ("author_pk", "pk_post")'],
             'dry run: ' || (SELECT string_agg(s, '; ')
                             FROM tviews.pg_tviews_ensure_propagation_indexes('post', true) s));
+SET ROLE regress_219_owner;
 CREATE INDEX CONCURRENTLY idx_tv_post_author_pk_pk_post ON app.tv_post (author_pk, pk_post);
 SELECT must(managed('post') = '{idx_tv_post_author_pk_pk_post,idx_tv_post_id}',
             'hand-run propagation index not recorded: ' || managed('post')::text);

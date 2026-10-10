@@ -259,7 +259,7 @@ pub(crate) fn create_materialized_table(
     identity: &str,
     storage: Storage,
     view_oid: pg_sys::Oid,
-) -> TViewResult<()> {
+) -> TViewResult<Vec<String>> {
     let qi_schema = quote_identifier(schema_name);
     let qi_tview = quote_identifier(tview_name);
     // `<name> <type>`, with PRIMARY KEY on the identity column.
@@ -358,10 +358,7 @@ pub(crate) fn create_materialized_table(
         error: e,
     })?;
 
-    // Create indexes for performance
-    create_tview_indexes(tview_name, schema, schema_name, storage.data_gin_index)?;
-
-    Ok(())
+    create_tview_indexes(tview_name, schema, schema_name, storage.data_gin_index)
 }
 
 /// Populate the materialized table with initial data from the backing view, and

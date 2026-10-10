@@ -71,28 +71,6 @@ pub fn all() -> TViewResult<Vec<Registered>> {
     Ok(rows.into_iter().flatten().collect())
 }
 
-/// The output columns of `entity` holding the keys of the TVIEWs it embeds.
-///
-/// # Errors
-/// The catalog cannot be read, or `entity` is not registered.
-pub fn embed_columns(entity: &str) -> TViewResult<Vec<String>> {
-    let sql = format!(
-        "SELECT ARRAY(SELECT pg_catalog.jsonb_array_elements_text(e->'lookups') \
-                      FROM pg_catalog.jsonb_array_elements(plan->'embeds') e) \
-         FROM {} WHERE entity = $1",
-        crate::utils::meta_table()
-    );
-    let mut rows = crate::utils::spi::rows(&sql, &[crate::utils::spi::text(entity)], |row| {
-        Ok(row.get::<Vec<String>>(1)?)
-    })?;
-    let Some(columns) = rows.pop() else {
-        return Err(crate::TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        });
-    };
-    Ok(columns.unwrap_or_default())
-}
-
 /// SQL over a `pg_tview_meta` row aliased `meta`: the mapping kind of table
 /// `relid` (`local`, `mapped`, `propagated`, `all_keys`; NULL when unmapped).
 #[must_use]
