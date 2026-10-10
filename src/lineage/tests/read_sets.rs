@@ -41,7 +41,7 @@ fn one_hop_reads_the_join_value_from_the_root() {
         vec![ReadSet {
             attnum: 1,
             sql: Some(
-                "SELECT DISTINCT (o1.{c:10:3})::pg_catalog.text FROM {r:10} o1 \
+                "SELECT DISTINCT o1.{c:10:3} FROM {r:10} o1 \
                  WHERE o1.{c:10:1} OPERATOR(pg_catalog.=) ANY ($1)"
                     .into()
             ),
@@ -56,7 +56,7 @@ fn two_hops_walk_back_from_the_root() {
         vec![ReadSet {
             attnum: 1,
             sql: Some(
-                "SELECT DISTINCT (o1.{c:20:4})::pg_catalog.text FROM {r:10} o2, {r:20} o1 \
+                "SELECT DISTINCT o1.{c:20:4} FROM {r:10} o2, {r:20} o1 \
                  WHERE o2.{c:10:1} OPERATOR(pg_catalog.=) ANY ($1) \
                  AND o1.{c:20:1} OPERATOR(pg_catalog.=) o2.{c:10:3}"
                     .into()
@@ -82,9 +82,9 @@ fn reads_of_the_same_column_are_one_union() {
     assert_eq!(
         sets[0].sql.as_deref(),
         Some(
-            "SELECT DISTINCT (o1.{c:10:3})::pg_catalog.text FROM {r:10} o1 \
+            "SELECT DISTINCT o1.{c:10:3} FROM {r:10} o1 \
              WHERE o1.{c:10:1} OPERATOR(pg_catalog.=) ANY ($1) \
-             UNION SELECT DISTINCT (o1.{c:10:4})::pg_catalog.text FROM {r:10} o1 \
+             UNION SELECT DISTINCT o1.{c:10:4} FROM {r:10} o1 \
              WHERE o1.{c:10:1} OPERATOR(pg_catalog.=) ANY ($1)"
         )
     );
@@ -121,7 +121,7 @@ fn a_join_on_the_key_reads_the_keys() {
         vec![ReadSet {
             attnum: 2,
             sql: Some(
-                "SELECT DISTINCT (o1.{c:1:1})::pg_catalog.text FROM {r:1} o1 \
+                "SELECT DISTINCT o1.{c:1:1} FROM {r:1} o1 \
                  WHERE o1.{c:1:1} OPERATOR(pg_catalog.=) ANY ($1)"
                     .into()
             ),

@@ -162,12 +162,8 @@ pub fn apply_fanout_patch(
              WHERE t.{qi_lookup} = ANY ($1::pg_catalog.int8[])"
         );
         let args = [crate::utils::spi::int8_array(keys)];
-        let found = Spi::connect(|client| {
-            client
-                .select(&lookup, None, &args)?
-                .map(|row| row.get::<String>(1).map(|pk| vec![pk]))
-                .collect::<pgrx::spi::Result<Vec<_>>>()
-        })?;
+        // Read-write, as the patch: its snapshot sees this flush's own writes.
+        let found = crate::utils::spi::kept_rows(&lookup, &args)?;
         crate::concurrency::crosscheck::discovered_by(&lookup, &args, &found)?;
     }
     crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);

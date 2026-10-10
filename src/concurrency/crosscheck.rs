@@ -20,56 +20,38 @@ pub fn enabled() -> bool {
     Policy::current() == Policy::FailFast
 }
 
-/// Refresh side: the rows of `meta` named by `keys`, as this transaction wrote
-/// them, are what its backing view computes under the latest snapshot.
+/// Refresh side: the rows of `meta` named by `keys` are the same under the latest
+/// snapshot as under the transaction's, which the refresh computed them from.
+/// Both are read from the backing view with one kept plan, so only what the
+/// snapshots see can differ, never how the rows are computed (duplicate UNION
+/// keys, row order inside an aggregate, a direct patch). A TVIEW that reads the
+/// current time is left alone: its rows differ between any two computations.
 ///
 /// # Errors
 /// Returns an error if a query fails; a difference raises 40001.
 pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
-    if keys.is_empty() || !enabled() {
+    if keys.is_empty() || !enabled() || meta.time_dependent {
         return Ok(());
     }
-    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-    let stored: std::collections::HashMap<String, String> =
-        crate::utils::column_types(meta.tview_oid)?
-            .into_iter()
-            .collect();
+    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?
+        .iter()
+        .map(|c| format!("v.{}", quote_identifier(c)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let key_type = meta.key_type()?;
     let key = quote_identifier(&meta.identity.column);
-    let any = crate::refresh::key_cast(&key_type, "$1", true);
-    // A stored column can have another type than the view's: compare the
-    // view's value as the table stores it.
-    let row = |alias: &str, cast: bool| {
-        columns
-            .iter()
-            .map(|c| {
-                let column = format!("{alias}.{}", quote_identifier(c));
-                match stored.get(c) {
-                    Some(ty) if cast => format!("{column}::{ty}"),
-                    _ => column,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let select = |relation: &str, alias: &str, cast: bool| {
-        format!(
-            "SELECT {alias}.{key}::pg_catalog.text, ROW({})::pg_catalog.text FROM {relation} {alias} \
-             WHERE {alias}.{key} OPERATOR(pg_catalog.=) ANY ({any})",
-            row(alias, cast)
-        )
-    };
-    let tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+    let sql = format!(
+        "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v \
+         WHERE v.{key} OPERATOR(pg_catalog.=) ANY ({})",
+        crate::refresh::key_cast(&key_type, "$1", true)
+    );
     let args = [crate::refresh::key_array(&key_type, keys)?];
-    let written = sorted(crate::utils::spi::kept_rows(
-        &select(&tv, "t", false),
-        &args,
-    )?);
+    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args)?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(&select(&view, "v", true), &args, true)
+        crate::utils::spi::latest_rows_connected(&sql, &args, true)
     })?);
-    if written != latest {
+    if seen != latest {
         super::serialization_failure(
             "a TVIEW row this transaction refreshed changed in a concurrent transaction",
         );

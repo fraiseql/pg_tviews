@@ -202,8 +202,9 @@ CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
 COMMENT ON TABLE @extschema@.pg_tview_valid IS
     'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
 GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
--- An UNLOGGED TVIEW holding rows is trusted; an empty one is filled once by its
--- next write (cheap when its view is empty too). Only the tables are read.
+-- An UNLOGGED TVIEW holding rows is trusted; an empty one, or one this role may
+-- not read, is filled once by its next write (cheap when its view is empty too).
+-- Only the tables are read.
 DO $$
 DECLARE
     t pg_catalog.regclass;
@@ -213,7 +214,11 @@ BEGIN
              JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid
              WHERE c.relpersistence = 'u'
     LOOP
-        EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
+        BEGIN
+            EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
+        EXCEPTION WHEN insufficient_privilege THEN
+            filled := false;
+        END;
         IF filled THEN
             INSERT INTO @extschema@.pg_tview_valid VALUES (t::pg_catalog.oid);
         END IF;

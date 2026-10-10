@@ -298,11 +298,19 @@ pub(crate) fn lock_rows(
         Ok::<_, spi::Error>((pks, held))
     })?;
     if key_locks {
-        let missing: Vec<String> = keys
-            .iter()
-            .map(ToString::to_string)
-            .filter(|k| !held.contains(k))
-            .collect();
+        // As the identity's type writes them, as the rows found are compared:
+        // the same uuid can be queued in another spelling.
+        let keys: Vec<String> = match &key_type {
+            KeyType::Int => keys.iter().map(ToString::to_string).collect(),
+            KeyType::Text(_) => crate::utils::spi::strings(
+                &format!(
+                    "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
+                    key_cast(&key_type, "$1", true)
+                ),
+                &args,
+            )?,
+        };
+        let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
         crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
     }
     Ok(pks)

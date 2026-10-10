@@ -268,9 +268,10 @@ fn relation_lock(relid: u32, space: Space, side: Side, mode: pg_sys::LOCKMODE) {
 
 /// Writer side: before a query finds TVIEW rows by the values a statement wrote
 /// to `mapping`'s table, lock those values in each read-set column. `values`
-/// returns the distinct text values of a column (its quoted name) among the
-/// changed rows, both images of an update. A read set with no column (the
-/// table is locked as a whole by refreshes) takes the intent lock alone.
+/// runs, over the changed rows (both images of an update), the lock value of a
+/// column ([`lock_value`]: an expression of its quoted name) and returns the
+/// distinct results. A read set with no column (the table is locked as a whole
+/// by refreshes), or whose column is gone, takes the intent lock alone.
 ///
 /// # Errors
 /// What `values` returns.
@@ -282,18 +283,20 @@ pub fn lock_changed_rows(
         return Ok(());
     }
     for set in &mapping.reads {
-        if set.attnum == 0 {
+        let column = if set.attnum == 0 {
+            None
+        } else {
+            lock_value(mapping.relid, set.attnum)?
+        };
+        let Some(column) = column else {
             lock_intent(mapping.relid, Side::Writer);
-            continue;
-        }
-        let Some(column) = column_name(mapping.relid, set.attnum)? else {
             continue;
         };
         let target = LockTarget {
             relid: mapping.relid,
             attnums: vec![set.attnum],
         };
-        lock_values(&target, Side::Writer, &values(&column)?);
+        lock_values(&target, Side::Writer, &values(&column.of(&column.name))?);
     }
     Ok(())
 }
@@ -314,18 +317,98 @@ pub const fn embedded_keys_target(child_table: pg_sys::Oid) -> LockTarget {
     }
 }
 
-/// The quoted name of column `attnum` of `relid` (cached); `None` when it is gone.
-fn column_name(relid: u32, attnum: i16) -> crate::TViewResult<Option<String>> {
-    let key = (relid, attnum);
-    if let Some(name) = crate::cache::LOCK_COLUMNS.with(|m| m.get(&key)) {
-        return Ok(name);
+/// How a value of a column is locked: the hash its type's equality uses (the
+/// support function of the type's default hash operator class), in the
+/// column's type and collation, as text. Equal values then lock the same tag
+/// whatever their text forms (`5` and `5.00`, `Ann` and `ann` under a
+/// case-insensitive collation), on the writer's side (the column itself) and
+/// on the refresh's (the value it is compared with). A type with no hash
+/// operator class is locked by its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockValue {
+    /// The column's quoted name.
+    pub name: String,
+    prefix: String,
+    suffix: String,
+}
+
+impl LockValue {
+    /// The lock value of `expr`, a value compared with the column.
+    #[must_use]
+    pub fn of(&self, expr: &str) -> String {
+        format!("{}({expr}){}", self.prefix, self.suffix)
     }
-    let template = format!("{{c:{relid}:{attnum}}}");
-    let name = crate::lineage::render_template(&template)
-        .map_err(|e| crate::utils::spi::error(&template, &e))?;
+}
+
+/// The lock value of column `attnum` of `relid` (cached); `None` when it is gone.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValue>> {
+    const SQL: &str = "\
+        SELECT pg_catalog.quote_ident(a.attname::pg_catalog.text), \
+               pg_catalog.format_type(a.atttypid, a.atttypmod), \
+               (SELECT p.amproc::pg_catalog.regproc::pg_catalog.text \
+                  FROM pg_catalog.pg_opclass oc \
+                  JOIN pg_catalog.pg_am am ON am.oid = oc.opcmethod AND am.amname = 'hash' \
+                  JOIN pg_catalog.pg_amproc p ON p.amprocfamily = oc.opcfamily \
+                   AND p.amprocnum = 1 AND p.amproclefttype = oc.opcintype \
+                   AND p.amprocrighttype = oc.opcintype \
+                 WHERE oc.opcdefault \
+                   AND (oc.opcintype = t.base OR EXISTS ( \
+                        SELECT 1 FROM pg_catalog.pg_cast c WHERE c.castsource = t.base \
+                           AND c.casttarget = oc.opcintype AND c.castmethod = 'b')) \
+                 ORDER BY oc.opcintype = t.base DESC LIMIT 1), \
+               CASE WHEN a.attcollation NOT IN (0, 100) THEN \
+                    (SELECT pg_catalog.quote_ident(n.nspname) || '.' \
+                            || pg_catalog.quote_ident(co.collname) \
+                       FROM pg_catalog.pg_collation co \
+                       JOIN pg_catalog.pg_namespace n ON n.oid = co.collnamespace \
+                      WHERE co.oid = a.attcollation) END \
+          FROM pg_catalog.pg_attribute a \
+          JOIN pg_catalog.pg_type ty ON ty.oid = a.atttypid, \
+               LATERAL (SELECT CASE WHEN ty.typtype = 'd' THEN ty.typbasetype \
+                                    ELSE a.atttypid END AS base) t \
+         WHERE a.attrelid = $1 AND a.attnum = $2 AND NOT a.attisdropped";
+    let key = (relid, attnum);
+    if let Some(value) = crate::cache::LOCK_VALUES.with(|m| m.get(&key)) {
+        return Ok(value);
+    }
+    let args = [
+        crate::utils::spi::oid(pg_sys::Oid::from(relid)),
+        crate::utils::spi::int2(attnum),
+    ];
+    let row = crate::utils::spi::kept_rows(SQL, &args)?.into_iter().next();
+    let value = row.and_then(|row| {
+        let mut cells = row.into_iter();
+        let (name, ty, hash, collation) = (
+            cells.next().flatten()?,
+            cells.next().flatten()?,
+            cells.next().flatten(),
+            cells.next().flatten(),
+        );
+        let collate = collation
+            .map(|c| format!(" COLLATE {c}"))
+            .unwrap_or_default();
+        let (prefix, suffix) = match hash {
+            Some(hash) => (
+                format!("{hash}(("),
+                format!(")::{ty}{collate})::pg_catalog.text"),
+            ),
+            None => (
+                "((".to_string(),
+                format!(")::{ty}{collate})::pg_catalog.text"),
+            ),
+        };
+        Some(LockValue {
+            name,
+            prefix,
+            suffix,
+        })
+    });
     crate::cache::watch(&[pg_sys::Oid::from(relid)]);
-    crate::cache::LOCK_COLUMNS.with(|m| m.insert(key, name.clone()));
-    Ok(name)
+    crate::cache::LOCK_VALUES.with(|m| m.insert(key, value.clone()));
+    Ok(value)
 }
 
 /// Acquire `tag` in `mode`: at once, or as `policy` says when another

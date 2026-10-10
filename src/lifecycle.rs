@@ -73,7 +73,7 @@ pub mod validity {
             "SELECT EXISTS (SELECT 1 FROM {} WHERE table_oid = $1)",
             table()
         );
-        // Read-only (`select`): it runs on a hot standby too.
+        // Read-only (`select`): a status call must not assign a transaction id.
         let marked = Spi::connect(|client| {
             client
                 .select(&sql, Some(1), &[crate::utils::spi::oid(table_oid)])?

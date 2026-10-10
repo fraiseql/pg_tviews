@@ -60,12 +60,19 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
     let key_type = meta.key_type()?;
     let entity = meta.entity_name.as_str();
-    // Each read set's query, run as one statement: (target, query).
-    let mut sets: Vec<(LockTarget, String)> = Vec::new();
+    // Each read set's query, run as one statement: (target, query, its lock
+    // value of `v`).
+    let mut sets: Vec<(LockTarget, String, String)> = Vec::new();
     for mapping in &meta.plan.tables {
         for set in &mapping.reads {
-            let Some(sql) = rendered(entity, mapping, set, &key_type)? else {
-                // No equality to lock by, or a relation it reads is gone.
+            let value = if set.attnum == 0 {
+                None
+            } else {
+                super::lock_value(mapping.relid, set.attnum)?
+            };
+            let (Some(sql), Some(value)) = (rendered(entity, mapping, set, &key_type)?, value)
+            else {
+                // No equality to lock by, or a relation or column it reads is gone.
                 super::lock_relation(mapping.relid, Side::Refresh);
                 continue;
             };
@@ -73,7 +80,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
                 relid: mapping.relid,
                 attnums: vec![set.attnum],
             };
-            sets.push((target, sql));
+            sets.push((target, sql, value.of("v")));
         }
     }
     for embed in &meta.plan.embeds {
@@ -81,7 +88,11 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
             continue;
         };
         if let Some(sql) = embed_keys_sql(meta, &embed.lookups)? {
-            sets.push((super::embedded_keys_target(child.tview_oid), sql));
+            sets.push((
+                super::embedded_keys_target(child.tview_oid),
+                sql,
+                "v".to_string(),
+            ));
         }
     }
     if sets.is_empty() {
@@ -90,7 +101,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
     let sql = sets
         .iter()
         .enumerate()
-        .map(|(i, (_, query))| format!("SELECT {i}, v FROM ({query}) s{i}(v)"))
+        .map(|(i, (_, query, value))| format!("SELECT {i}, {value} FROM ({query}) s{i}(v)"))
         .collect::<Vec<_>>()
         .join(" UNION ALL ");
     let args = [crate::refresh::key_array(&key_type, keys)?];
@@ -103,7 +114,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
             set.push(value.clone());
         }
     }
-    for ((target, _), values) in sets.iter().zip(values) {
+    for ((target, _, _), values) in sets.iter().zip(values) {
         super::lock_values(target, Side::Refresh, &values);
     }
     Ok(())

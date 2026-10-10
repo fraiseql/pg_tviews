@@ -730,11 +730,12 @@ fn crosscheck_keys(sql: &str, args: &[DatumWithOid<'_>], keys: &[KeyValue]) -> T
     Ok(())
 }
 
-/// `SELECT DISTINCT (<column>)::text` of the changed rows `delta`, NULLs left out.
-fn changed_values(delta: &str, column: &str) -> String {
+/// `SELECT DISTINCT <value>` of the changed rows `delta`, `value` a lock value
+/// over their columns, NULLs left out.
+fn changed_values(delta: &str, value: &str) -> String {
     format!(
         "WITH {DELTA} AS ({delta}) \
-         SELECT DISTINCT ({column})::pg_catalog.text FROM {DELTA} WHERE {column} IS NOT NULL"
+         SELECT DISTINCT v FROM (SELECT {value} AS v FROM {DELTA}) s WHERE v IS NOT NULL"
     )
 }
 

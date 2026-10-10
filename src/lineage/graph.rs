@@ -631,7 +631,7 @@ impl QueryGraph {
 
     /// The read set of one path from `occ` to its root: the column of `occ` its
     /// first step compares by equality, and
-    /// `SELECT DISTINCT (<other side>)::text FROM <root> … <step's other occurrence>
+    /// `SELECT DISTINCT <other side> FROM <root> … <step's other occurrence>
     /// WHERE <root key> = ANY ($1) AND <the other steps>`; `(0, None)` when the
     /// first step is no equality; `None` for the root occurrence itself.
     fn read_set_sql(&self, occ: usize, path: &[usize]) -> Option<(i16, Option<String>)> {
@@ -681,7 +681,7 @@ impl QueryGraph {
         Some((
             attnum,
             Some(format!(
-                "SELECT DISTINCT ({})::pg_catalog.text FROM {from} WHERE {}",
+                "SELECT DISTINCT {} FROM {from} WHERE {}",
                 render(&value.sql()),
                 conditions.join(" AND ")
             )),

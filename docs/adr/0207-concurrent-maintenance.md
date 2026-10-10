@@ -51,7 +51,7 @@ Measured with the same pgbench workload (tps):
 | Protocol | 1,000 users | 10 hot users | Stale |
 |---|---|---|---|
 | none (before this ADR) | 3,300–3,800 | 890 | 10–15 |
-| value locks (this ADR, trigger prototype) | 3,800–4,100 | 925 | 0 |
+| value locks (this ADR, measured with triggers) | 3,800–4,100 | 925 | 0 |
 | one lock per relationship, inserts vs updates (`S`/`RX`) | ~720 | 400 | 0 |
 | one lock per TVIEW (pg_ivm's `ExclusiveLock`) | ~200 | 230 | 0 |
 
