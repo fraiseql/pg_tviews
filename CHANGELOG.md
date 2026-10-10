@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A UNION TVIEW whose branches return one key twice fails on every path with
+  `21000`** (#216, ADR 0216): creation, a write refreshing one key or several,
+  `pg_tviews_refresh()`, `pg_tviews_refresh_all()`, the refill of a reset UNLOGGED
+  TVIEW and the reconcile of a replaced definition. Creation and full refreshes
+  failed with the table's raw `23505`; a single-key write failed with `ON CONFLICT
+  DO UPDATE command cannot affect row a second time`.
+- **`pg_tviews.union_duplicate_policy` is removed.** Its `first` value kept an
+  arbitrary row, on one path in five. Keep one row per key in the definition
+  instead: `DISTINCT ON` over the UNION, ordered by preference.
+
+### Added
+
+- **A `DISTINCT ON` key may be a column of a UNION subquery** (ADR 0216): a TVIEW
+  `SELECT DISTINCT ON (u.pk_x) … FROM (… UNION ALL …) u ORDER BY u.pk_x, <preference>`
+  is accepted, and a write to any branch's table refreshes it. It was refused ("not
+  a column of a base table").
+
 ### Fixed
 
 - **A transaction that refilled a reset UNLOGGED TVIEW cannot be prepared** (#215):

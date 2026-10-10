@@ -289,7 +289,10 @@ fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
         rel.qualified(&rel.table)
     );
     crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })?;
-    Ok(crate::lifecycle::validity::after_persistence_change(rel.table_oid, logged)?)
+    Ok(crate::lifecycle::validity::after_persistence_change(
+        rel.table_oid,
+        logged,
+    )?)
 }
 
 #[cfg(test)]

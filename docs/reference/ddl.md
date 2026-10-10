@@ -225,9 +225,12 @@ All of it happens in the caller's transaction: a rollback leaves nothing behind.
   itself or a view it reads (`SELECT v.pk_attachment, … FROM v_attachment v`): a
   write to a branch's table refreshes that branch's keys, and a table joined to
   the union's output refreshes the keys of every branch. Branch keys must be
-  disjoint: overlapping ones fail the create (duplicate key) and, later, the
-  write that makes two rows share a key (`pg_tviews.union_duplicate_policy`,
-  `error` by default). A key computed from two tables (`COALESCE(p.pk_product,
+  disjoint: two rows for one key fail with `21000`, at the create, at the write
+  that makes them share it, and at every refresh ([ADR 0216](../adr/0216-union-keys.md)).
+  To keep one row per key, say which in the definition: `SELECT DISTINCT ON
+  (u.pk_x) u.pk_x, u.id, u.data FROM (<branch> UNION ALL <branch>) u ORDER BY
+  u.pk_x, <preference>`. The `DISTINCT ON` key stands for a column of each
+  branch's table, so a write to either refreshes it. A key computed from two tables (`COALESCE(p.pk_product,
   -l.pk_order_line)` over two outer joins) is no branch table's: put it in the
   branches instead. A key taken from one branch's table through an inner join
   holds only that branch's rows, as the definition says. A branch keyed by an

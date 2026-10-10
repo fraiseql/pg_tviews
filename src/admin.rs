@@ -236,8 +236,9 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
-/// its backing view. The explicit column list comes from the view's own
-/// columns, which excludes the table-only `created_at`/`updated_at` columns.
+/// its backing view, once the view is known to return one row per key. The
+/// explicit column list comes from the view's own columns, which excludes the
+/// table-only `created_at`/`updated_at` columns.
 /// Taking the owner's guard makes running the statements as anyone else
 /// unrepresentable.
 fn rebuild_statements(
@@ -263,6 +264,9 @@ fn rebuild_statements(
         .map(|c| quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ");
+    // A key names one row: a UNION view returning several for one is refused
+    // before the fill, instead of failing on the table's primary key.
+    crate::refresh::refuse_duplicate_keys(&meta, "true", &[])?;
     let insert = format!("INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}");
     Ok((qi_tv, insert))
 }

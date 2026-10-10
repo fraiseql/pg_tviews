@@ -70,6 +70,13 @@ pub enum TViewError {
     /// The session or transaction is not in a state that allows this.
     WrongState { reason: String },
 
+    /// A UNION TVIEW's backing view returns several rows for one key (ADR 0216).
+    DuplicateKey {
+        tview: String,
+        key_column: String,
+        key: String,
+    },
+
     /// PREPARE TRANSACTION of a transaction that claimed the refill of a reset
     /// UNLOGGED TVIEW: every writer of it would wait for `COMMIT PREPARED`.
     PrepareHoldsRefill { table: String },
@@ -105,6 +112,7 @@ impl TViewError {
             Self::QueueFull { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
             Self::PrepareHoldsRefill { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
+            Self::DuplicateKey { .. } => PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
             Self::CatalogError { .. } | Self::SpiError { .. } | Self::SerializationError { .. } => {
                 PgSqlErrorCode::ERRCODE_INTERNAL_ERROR
             }
@@ -162,6 +170,11 @@ impl TViewError {
             }
             Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
                 "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
+                    .into(),
+            ),
+            Self::DuplicateKey { .. } => Some(
+                "Make the UNION branches' keys disjoint (a sign or an offset per branch), or \
+                 keep one row per key with DISTINCT ON over the UNION, ordered by preference."
                     .into(),
             ),
             Self::PrepareHoldsRefill { .. } => Some(
@@ -281,6 +294,14 @@ impl fmt::Display for TViewError {
             Self::JsonbDeltaMissing => {
                 write!(f, "Required extension 'jsonb_delta' is not installed")
             }
+            Self::DuplicateKey {
+                tview,
+                key_column,
+                key,
+            } => write!(
+                f,
+                "TVIEW {tview}: its backing view returned multiple rows for {key_column}={key}"
+            ),
             Self::PrepareHoldsRefill { table } => write!(
                 f,
                 "cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW {table}, \
@@ -374,6 +395,11 @@ mod tests {
             },
             TViewError::WrongState { reason: s() },
             TViewError::PrepareHoldsRefill { table: s() },
+            TViewError::DuplicateKey {
+                tview: s(),
+                key_column: s(),
+                key: s(),
+            },
             TViewError::CatalogError {
                 operation: s(),
                 pg_error: s(),
@@ -403,6 +429,7 @@ mod tests {
                 | TViewError::QueueFull { .. }
                 | TViewError::WrongState { .. }
                 | TViewError::PrepareHoldsRefill { .. }
+                | TViewError::DuplicateKey { .. }
                 | TViewError::CatalogError { .. }
                 | TViewError::SpiError { .. }
                 | TViewError::SerializationError { .. } => {}
@@ -514,6 +541,14 @@ mod tests {
                 table: String::new()
             }),
             "25000"
+        );
+        assert_eq!(
+            code(TViewError::DuplicateKey {
+                tview: String::new(),
+                key_column: String::new(),
+                key: String::new()
+            }),
+            "21000"
         );
         assert_eq!(
             code(TViewError::InvalidSelectStatement {

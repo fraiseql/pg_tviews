@@ -576,6 +576,8 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     // Every row is computed: writers of anything they read wait, and are waited for.
     crate::concurrency::reads::lock_whole_read_set(meta)?;
 
+    // A key names one row: a UNION view returning several for one is refused.
+    crate::refresh::refuse_duplicate_keys(meta, "true", &[])?;
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
 

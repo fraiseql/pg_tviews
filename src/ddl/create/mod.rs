@@ -247,6 +247,21 @@ fn create_tview_inner(
     let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
         0
     } else {
+        // A key names one row: a UNION view returning several for one is
+        // refused before the fill, instead of failing on the primary key.
+        if lineage.set_operation {
+            crate::refresh::refuse_duplicate_keys_in(
+                &format!(
+                    "{}.{}",
+                    crate::utils::quote_identifier(&schema_name),
+                    crate::utils::quote_identifier(&tv_table_name)
+                ),
+                &lineage.identity.name,
+                &crate::utils::qualified_relname_from_oid(view_oid)?,
+                "true",
+                &[],
+            )?;
+        }
         populate_initial_data(&tv_table_name, &schema_name, view_oid)?
     };
 

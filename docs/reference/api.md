@@ -653,7 +653,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
 | `22023` | `invalid_parameter_value` | an invalid argument or option |
-| `21000` | `cardinality_violation` | two rows for one key of a UNION TVIEW under `union_duplicate_policy = 'error'` |
+| `21000` | `cardinality_violation` | two rows for one key of a UNION TVIEW (ADR 0216) |
 | `XX000` | `internal_error` | internal failures |
 
 ```sql

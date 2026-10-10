@@ -136,6 +136,60 @@ pub(crate) struct Written {
     pub updated: Vec<i64>,
 }
 
+/// Refuse a UNION TVIEW whose backing view returns several rows for one key
+/// (ADR 0216), among the rows `filter` selects (`$1`… bound to `args`): a key
+/// names one row, and no path picks one of several. Nothing to check for a
+/// TVIEW without a set operation.
+///
+/// # Errors
+/// [`TViewError::DuplicateKey`](crate::TViewError::DuplicateKey) for the first
+/// such key, or the error of the query.
+pub(crate) fn refuse_duplicate_keys(
+    meta: &crate::catalog::TviewMeta,
+    filter: &str,
+    args: &[DatumWithOid],
+) -> crate::TViewResult<()> {
+    if !meta.plan.set_operation {
+        return Ok(());
+    }
+    refuse_duplicate_keys_in(
+        &crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        &meta.identity.column,
+        &crate::utils::qualified_relname_from_oid(meta.view_oid)?,
+        filter,
+        args,
+    )
+}
+
+/// [`refuse_duplicate_keys`] for a TVIEW not registered yet: its table
+/// `qualified_tv`, key column and backing view `qualified_view`.
+///
+/// # Errors
+/// As [`refuse_duplicate_keys`].
+pub(crate) fn refuse_duplicate_keys_in(
+    qualified_tv: &str,
+    key_column: &str,
+    qualified_view: &str,
+    filter: &str,
+    args: &[DatumWithOid],
+) -> crate::TViewResult<()> {
+    let qi_key = quote_identifier(key_column);
+    let sql = format!(
+        "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
+                 GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
+    );
+    match Spi::get_one_with_args::<String>(&sql, args)
+        .map_err(|e| crate::utils::spi::error(&sql, &e))?
+    {
+        Some(key) => Err(crate::TViewError::DuplicateKey {
+            tview: qualified_tv.to_string(),
+            key_column: key_column.to_string(),
+            key,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Quoted, comma-separated column list of a refresh upsert (`INSERT INTO tv (…)`
 /// and the matching `SELECT …`), so reserved-word and mixed-case columns work.
 pub(crate) fn column_list(col_names: &[String]) -> String {
