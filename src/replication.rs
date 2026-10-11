@@ -35,7 +35,7 @@ impl TviewRelation {
              JOIN pg_namespace n ON n.oid = t.relnamespace \
              WHERE $1::text IS NULL OR m.entity = $1 \
              ORDER BY m.entity",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         );
         Spi::connect(|client| {
             let args = [crate::utils::spi::text(entity)];
@@ -149,7 +149,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
     let mut targets = TviewRelation::load(None)?;
-    let graph = crate::catalog::EntityDepGraph::load()?;
+    let graph = crate::cache::graph()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order

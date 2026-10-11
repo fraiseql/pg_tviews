@@ -158,7 +158,7 @@ pub(super) fn rebuild(
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
     if declared.typename.is_some() {
-        super::store_typename(entity, declared.typename.as_deref())?;
+        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
     // Filled as its owner, now that the owner is back.
@@ -305,7 +305,7 @@ fn user_index_filter() -> String {
                          WHERE k.conindid = i.indexrelid) \
          AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
                                 FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     )
 }
 

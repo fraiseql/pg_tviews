@@ -4,10 +4,17 @@ pub mod plan;
 pub mod reads;
 pub mod registered;
 pub mod resolve;
+pub mod row;
 
 pub use graph::EntityDepGraph;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
+
+/// The catalog table, schema-qualified: every read or write of it names it so.
+#[must_use]
+pub fn meta_table() -> String {
+    format!("{}.pg_tview_meta", crate::utils::ext_schema())
+}
 
 /// Represents a row in `pg_tview_meta` (your own catalog table).
 #[derive(Debug, Clone)]
@@ -110,7 +117,7 @@ pub(crate) fn meta_select() -> String {
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
          time_dependent \
          FROM {}",
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     )
 }
 
@@ -254,7 +261,7 @@ impl TviewMeta {
         crate::utils::spi::one::<String>(
             &format!(
                 "SELECT entity FROM {} WHERE table_oid::pg_catalog.oid = $1",
-                crate::utils::meta_table()
+                crate::catalog::meta_table()
             ),
             &[crate::utils::spi::oid(tview_oid)],
         )

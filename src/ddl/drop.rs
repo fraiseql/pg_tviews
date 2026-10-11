@@ -28,7 +28,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     super::lock_entity(entity_name)?;
 
     // Check if TVIEW exists (in the named schema, if one is named)
-    let exists = tview_exists_in_metadata(entity_name)?
+    let exists = crate::catalog::row::exists(entity_name)?
         && match &schema {
             Some(schema) => {
                 crate::catalog::resolve::registered_schema(entity_name)?.as_ref() == Some(schema)
@@ -114,7 +114,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
              JOIN {} m ON d.objid IN (m.view_oid, m.table_oid) \
              WHERE m.entity = $1 AND d.objsubid = 0 \
                AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass)",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &args,
     )?;
@@ -132,7 +132,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
                     COALESCE(pg_catalog.pg_has_role(t.relowner, 'USAGE'), false) \
              FROM {} m LEFT JOIN pg_catalog.pg_class t ON t.oid = m.table_oid \
              WHERE m.entity = $1",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &args,
     )
@@ -171,7 +171,7 @@ fn drop_backing_view(entity: &str) -> TViewResult<()> {
         &format!(
             "SELECT (SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
              WHERE m.entity = $1)",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &args,
     )?;
@@ -193,7 +193,9 @@ pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
     // its backing views were the application's `v_*` views): nothing to drop.
     let current = crate::utils::spi::one::<bool>(
         "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
-        &[crate::utils::spi::text(crate::utils::meta_table().as_str())],
+        &[crate::utils::spi::text(
+            crate::catalog::meta_table().as_str(),
+        )],
     )?;
     if current != Some(true) {
         return Ok(Vec::new());
@@ -204,7 +206,7 @@ pub fn backing_views() -> TViewResult<Vec<pg_sys::Oid>> {
                 &format!(
                     "SELECT v.oid FROM {} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid \
                      WHERE v.relnamespace = '{}'::pg_catalog.regnamespace",
-                    crate::utils::meta_table(),
+                    crate::catalog::meta_table(),
                     crate::utils::ext_schema()
                 ),
                 None,
@@ -263,7 +265,7 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
                        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
                                        WHERE d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
                                          AND d.refobjid = c.oid AND d.deptype = 'n'))",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &args,
     )?;
@@ -310,23 +312,6 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
     Ok(())
 }
 
-/// Check if a TVIEW exists in metadata
-fn tview_exists_in_metadata(entity_name: &str) -> TViewResult<bool> {
-    let args = vec![crate::utils::spi::text(entity_name)];
-    Spi::get_one_with_args::<bool>(
-        &format!(
-            "SELECT COUNT(*) > 0 FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check TVIEW metadata: {entity_name}"),
-        pg_error: e.to_string(),
-    })
-    .map(|opt| opt.unwrap_or(false))
-}
-
 /// The relation whose owner may drop the TVIEW: its table, or its view when the
 /// table is gone (dropped where the hook did not run). `None` when both are gone:
 /// the registration is all that is left, and any role may remove it.
@@ -356,7 +341,7 @@ fn drop_metadata(entity_name: &str) -> TViewResult<()> {
     let sql = format!(
         "WITH gone AS (DELETE FROM {} WHERE entity = $1 RETURNING table_oid) \
          DELETE FROM {}.pg_tview_valid v USING gone WHERE v.table_oid = gone.table_oid",
-        crate::utils::meta_table(),
+        crate::catalog::meta_table(),
         crate::utils::ext_schema()
     );
     // The catalog is written as the extension's owner.

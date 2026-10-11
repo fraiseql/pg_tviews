@@ -66,6 +66,12 @@ fn count_of(component: &str, sql: &str) -> Result<i64, Check> {
         .map_err(|e| error(component, format!("could not be checked: {e}")))
 }
 
+/// The catalog's counts ([`crate::catalog::row::counts`]), or the failed check.
+fn registered(component: &str) -> Result<(i64, i64, i64), Check> {
+    crate::catalog::row::counts()
+        .map_err(|e| error(component, format!("could not be checked: {e}")))
+}
+
 fn jsonb_delta_check() -> Check {
     let installed = match count_of(
         "jsonb_delta",
@@ -131,15 +137,8 @@ fn catalog_check() -> (Check, bool) {
 }
 
 fn metadata_check() -> Check {
-    let orphaned = match count_of(
-        "metadata",
-        &format!(
-            "SELECT COUNT(*) FROM {} m
-             WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
-            crate::utils::meta_table()
-        ),
-    ) {
-        Ok(n) => n,
+    let orphaned = match registered("metadata") {
+        Ok((_, _, orphaned)) => orphaned,
         Err(check) => return check,
     };
     if orphaned > 0 {
@@ -176,14 +175,8 @@ fn plan_check() -> Check {
 
 /// TVIEWs registered before a release that changed what registration derives.
 fn reregister_check() -> Check {
-    let stale = match count_of(
-        "reregister",
-        &format!(
-            "SELECT count(*) FROM {} WHERE needs_reregister",
-            crate::utils::meta_table()
-        ),
-    ) {
-        Ok(n) => n,
+    let stale = match registered("reregister") {
+        Ok((_, stale, _)) => stale,
         Err(check) => return check,
     };
     if stale == 0 {
@@ -249,11 +242,8 @@ fn trigger_check() -> Check {
 }
 
 fn count_check() -> Check {
-    match count_of(
-        "tviews",
-        &format!("SELECT COUNT(*) FROM {}", crate::utils::meta_table()),
-    ) {
-        Ok(tviews) => ok("tviews", format!("{tviews} TVIEWs registered")),
+    match registered("tviews") {
+        Ok((tviews, _, _)) => ok("tviews", format!("{tviews} TVIEWs registered")),
         Err(check) => check,
     }
 }

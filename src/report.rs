@@ -71,7 +71,7 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
                  JOIN pg_class c ON c.oid = m.table_oid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE m.entity = ANY($1)",
-                crate::utils::meta_table()
+                crate::catalog::meta_table()
             ),
             None,
             &args,

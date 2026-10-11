@@ -393,7 +393,7 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
                 "SELECT a.atttypid FROM {} m JOIN pg_catalog.pg_attribute a \
                  ON a.attrelid = m.view_oid::pg_catalog.oid \
                  WHERE m.table_oid::pg_catalog.oid = $1 AND a.attname = $2 AND NOT a.attisdropped",
-                crate::utils::meta_table()
+                crate::catalog::meta_table()
             ),
             &[
                 crate::utils::spi::oid(relid),

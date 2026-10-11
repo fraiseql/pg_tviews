@@ -135,21 +135,7 @@ pub(crate) fn view_source_columns(view_oid: Oid, source_oid: Oid) -> Vec<String>
 
 /// Check if a TVIEW already exists
 pub(crate) fn tview_exists(tview_name: &str) -> TViewResult<bool> {
-    let entity_name = tview_name.trim_start_matches("tv_");
-    let args = vec![crate::utils::spi::text(entity_name)];
-
-    Spi::get_one_with_args::<bool>(
-        &format!(
-            "SELECT COUNT(*) > 0 FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Check TVIEW exists: {tview_name}"),
-        pg_error: e.to_string(),
-    })
-    .map(|opt| opt.unwrap_or(false))
+    crate::catalog::row::exists(tview_name.trim_start_matches("tv_"))
 }
 
 /// Create the backing view that contains the user's SELECT definition

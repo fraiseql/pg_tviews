@@ -242,12 +242,6 @@ pub fn forget_logged(key: &str) {
     LOGGED_ONCE.with(|seen| seen.borrow_mut().remove(key));
 }
 
-/// `pg_tview_meta`, qualified with the extension's schema, so catalog queries do
-/// not depend on the session's `search_path`.
-pub fn meta_table() -> String {
-    format!("{EXT_SCHEMA}.pg_tview_meta")
-}
-
 /// Schema the `pg_tviews` extension is installed in. It needs no quoting.
 pub const fn ext_schema() -> &'static str {
     EXT_SCHEMA

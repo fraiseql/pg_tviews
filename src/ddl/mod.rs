@@ -46,20 +46,7 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
 /// Returns an error if the catalog cannot be read, the name is taken, or the
 /// rename fails.
 pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
-    let args = [crate::utils::spi::oid(table)];
-    let view = Spi::get_one_with_args::<pg_sys::Oid>(
-        &format!(
-            "SELECT (SELECT m.view_oid::pg_catalog.oid FROM {} m \
-                     WHERE m.table_oid::pg_catalog.oid = $1)",
-            crate::utils::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Find the TVIEW of a moved table".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    let Some(view) = view else {
+    let Some(view) = crate::catalog::row::view_of_table(table)? else {
         return Ok(());
     };
     let (schema, name) = relation_name(table)?;

@@ -399,7 +399,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
                      JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                      WHERE m.entity = $1",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &args,
@@ -418,18 +418,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     };
     let plan = reregister_metadata(entity, &schema_name, &definition)?;
     crate::dependency::sync_entity_triggers(&plan, entity)?;
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
-        &format!(
-            "UPDATE {} SET needs_reregister = false WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Clear needs_reregister of TVIEW {entity}"),
-        pg_error: e.to_string(),
-    })
+    crate::catalog::row::clear_needs_reregister(entity)
 }
 
 /// The `group_keys` of an aggregate TVIEW, `None` for any other.
@@ -440,20 +429,9 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 pub(crate) fn stored_group_keys(
     entity_name: &str,
 ) -> TViewResult<Option<super::aggregate::GroupKeys>> {
-    let stored: Option<pgrx::JsonB> = Spi::get_one_with_args(
-        &format!(
-            "SELECT group_keys FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity_name)],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Read group_keys".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    stored
-        .map(|j| {
-            serde_json::from_value(j.0).map_err(|e| TViewError::CatalogError {
+    crate::catalog::row::group_keys(entity_name)?
+        .map(|keys| {
+            serde_json::from_value(keys).map_err(|e| TViewError::CatalogError {
                 operation: format!("Read the group keys of tv_{entity_name}"),
                 pg_error: e.to_string(),
             })

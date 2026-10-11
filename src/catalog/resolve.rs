@@ -67,7 +67,7 @@ pub fn find(name: &str) -> TViewResult<Found> {
         &format!(
             "SELECT COALESCE(c.oid, 0) FROM {} m \
              LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid WHERE m.entity = $1",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &[crate::utils::spi::text(named.entity.as_str())],
     )?
@@ -117,7 +117,7 @@ pub fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
                                     pg_catalog.length('__tv_' || m.entity)) \
                                 = '__tv_' || m.entity)) \
                      FROM {} m WHERE m.entity = $1",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &[crate::utils::spi::text(entity)],

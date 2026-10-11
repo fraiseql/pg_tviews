@@ -299,7 +299,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          FROM ours o WHERE o.tgenabled = 'D' \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
-        meta = crate::utils::meta_table(),
+        meta = crate::catalog::meta_table(),
     );
     Spi::connect(|client| {
         let mut problems = TriggerProblems::default();

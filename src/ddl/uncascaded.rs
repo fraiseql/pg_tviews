@@ -166,7 +166,7 @@ impl Declarations {
                      function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
                      time_refresh = $7 \
                  WHERE entity = $1",
-                crate::utils::meta_table()
+                crate::catalog::meta_table()
             ),
             &args,
         )
@@ -344,7 +344,7 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
                     "SELECT c.relname::text, c.relkind::text, \
                             (SELECT m.entity::text FROM {} m WHERE m.table_oid::pg_catalog.oid = c.oid) \
                      FROM pg_catalog.pg_class c WHERE c.oid = $1",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &[crate::utils::spi::oid(table)],
@@ -511,7 +511,7 @@ pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
                                uncascaded_table_oids, $1::pg_catalog.regclass)], \
                            uncascaded_policy) = 'full_refresh' \
                      ORDER BY entity",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &args,

@@ -95,7 +95,7 @@ pub(crate) fn create_or_replace(
         storage: rebuild::current_storage(&entity)?,
         group_keys: create::stored_group_keys(&entity)?,
         declarations: Declarations::of(&meta),
-        typename: stored_typename(&entity)?,
+        typename: crate::catalog::row::typename(&entity)?,
     };
     // Options other than the definition's own (storage, declarations, type name)
     // change in place.
@@ -111,7 +111,7 @@ pub(crate) fn create_or_replace(
             )?;
         }
         if declared.typename != current.typename {
-            store_typename(&entity, declared.typename.as_deref())?;
+            crate::catalog::row::set_typename(&entity, declared.typename.as_deref())?;
         }
         Ok(())
     };
@@ -160,37 +160,6 @@ pub(crate) fn create_or_replace(
     Ok("rebuilt")
 }
 
-/// The GraphQL type name stored for `entity`; `None` for `PascalCase(entity)`.
-fn stored_typename(entity: &str) -> TViewResult<Option<String>> {
-    Spi::get_one_with_args::<String>(
-        &format!(
-            "SELECT graphql_typename FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))
-}
-
-/// Store the GraphQL type name of `entity`'s TVIEW (`None`: `PascalCase(entity)`).
-///
-/// # Errors
-/// Returns an error if the catalog cannot be written.
-pub(crate) fn store_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
-        &format!(
-            "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(typename),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Store the GraphQL type name", &e))
-}
-
 /// Refuse `time_refresh` passed for a TVIEW whose definition, as registered,
 /// reads no time: the declaration would never apply. A re-registration
 /// keeps a stored one silently.
@@ -198,15 +167,8 @@ fn check_time_declared(entity: &str, declared: bool) -> TViewResult<()> {
     if !declared {
         return Ok(());
     }
-    let dependent = Spi::get_one_with_args::<bool>(
-        &format!(
-            "SELECT time_dependent FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Read whether a TVIEW reads the time", &e))?;
-    if dependent == Some(true) {
+    let dependent = crate::catalog::row::time_dependent(entity)?;
+    if dependent {
         Ok(())
     } else {
         Err(invalid(
@@ -307,7 +269,7 @@ fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> T
         Some(declared.declarations.clone()),
     )?;
     if declared.typename.is_some() {
-        store_typename(entity, declared.typename.as_deref())?;
+        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
     }
     check_time_declared(
         entity,
@@ -497,7 +459,7 @@ fn dependents(
     table_oid: pg_sys::Oid,
 ) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
     let (meta_table, reads) = (
-        crate::utils::meta_table(),
+        crate::catalog::meta_table(),
         format!("{}.pg_tview_reads", crate::utils::ext_schema()),
     );
     // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and

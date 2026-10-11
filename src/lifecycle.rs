@@ -158,7 +158,7 @@ pub mod validity {
         if !needs_fill(meta.tview_oid)? {
             return Ok(false);
         }
-        let graph = crate::catalog::EntityDepGraph::load()?;
+        let graph = crate::cache::graph()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_reset(dependency)?;
         }

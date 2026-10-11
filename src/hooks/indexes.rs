@@ -56,13 +56,7 @@ struct Tview {
 impl Tview {
     /// The TVIEW whose table is `table`, if it is one.
     fn of(table: pg_sys::Oid) -> TViewResult<Option<Self>> {
-        let entity = crate::utils::spi::one::<String>(
-            &format!(
-                "SELECT entity FROM {} WHERE table_oid = $1::pg_catalog.oid::pg_catalog.regclass",
-                crate::utils::meta_table()
-            ),
-            &[crate::utils::spi::oid(table)],
-        )?;
+        let entity = crate::catalog::TviewMeta::entity_of_table(table)?;
         let Some(entity) = entity else {
             return Ok(None);
         };

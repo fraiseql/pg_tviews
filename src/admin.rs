@@ -2,7 +2,6 @@
 //! refresh, propagation indexes, cascade paths.
 
 use crate::TViewResult;
-use pgrx::prelude::*;
 
 /// The TVIEWs whose definitions read the current time that the caller owns (or
 /// may change as a member of its owner's role).
@@ -15,7 +14,7 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMet
             "SELECT m.entity::text FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
              WHERE m.time_dependent AND pg_catalog.pg_has_role(c.relowner, 'USAGE') \
              ORDER BY m.entity",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &[],
     )?;
@@ -37,7 +36,7 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMet
 pub(crate) fn refresh_time_dependent(
     chosen: &[crate::catalog::TviewMeta],
 ) -> TViewResult<Vec<String>> {
-    let order = crate::catalog::EntityDepGraph::load()?.topo_order;
+    let order = crate::cache::graph()?.topo_order;
     let mut chosen: Vec<&crate::catalog::TviewMeta> = chosen.iter().collect();
     chosen.sort_by_key(|meta| {
         order
@@ -66,7 +65,7 @@ pub(crate) fn refresh_time_dependent(
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
-    let graph = crate::catalog::EntityDepGraph::load()?;
+    let graph = crate::cache::graph()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
         for entity in read {
@@ -171,7 +170,7 @@ pub(crate) fn ensure_propagation_indexes(
 /// # Errors
 /// Returns error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
-    let graph = crate::catalog::EntityDepGraph::load()?;
+    let graph = crate::cache::graph()?;
     for entity in &graph.topo_order {
         crate::refresh::full::rebuild_one(entity)?;
     }
@@ -185,49 +184,28 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub(crate) fn cascade_path(entity: &str) -> TViewResult<Vec<(i32, String, String)>> {
-    let results = Spi::connect(|client| {
-        let args = vec![crate::utils::spi::text(entity)];
-        let rows = client.select(
-            &format!(
-                "WITH RECURSIVE dep_tree AS (
-                SELECT
-                    pg_tview_meta.entity,
-                    0 as depth,
-                    ARRAY[pg_tview_meta.entity] as path,
-                    pg_tview_meta.entity as depends_on
-                FROM {meta} pg_tview_meta
-                WHERE pg_tview_meta.entity = $1
-
-                UNION ALL
-
-                SELECT
-                    m.entity,
-                    dt.depth + 1,
-                    dt.path || m.entity,
-                    dt.entity as depends_on
-                FROM dep_tree dt
-                JOIN {meta} m ON m.plan->'embeds'
-                    @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('entity', dt.entity))
-                WHERE NOT (m.entity = ANY(dt.path))
-                  AND dt.depth < 10
-            )
-            SELECT depth, entity, depends_on
-            FROM dep_tree
-            ORDER BY depth, entity",
-                meta = crate::utils::meta_table()
-            ),
-            None,
-            &args,
-        )?;
-        let mut paths = Vec::new();
-        for row in rows {
-            let depth = row["depth"].value::<i32>()?.unwrap_or(0);
-            let embedding = row["entity"].value::<String>()?.unwrap_or_default();
-            let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
-            paths.push((depth, embedding, depends_on));
+    const MAX_DEPTH: i32 = 10;
+    let graph = crate::cache::graph()?;
+    let mut rows = vec![(0, entity.to_string(), entity.to_string())];
+    // Every path up from `entity` that visits a TVIEW once.
+    let mut frontier = vec![vec![entity.to_string()]];
+    for depth in 1..=MAX_DEPTH {
+        let mut next = Vec::new();
+        for path in frontier {
+            let Some(node) = path.last() else { continue };
+            let mut embedding: Vec<&String> =
+                graph.parents.get(node).into_iter().flatten().collect();
+            embedding.sort();
+            embedding.dedup();
+            for parent in embedding.into_iter().filter(|p| !path.contains(p)) {
+                rows.push((depth, parent.clone(), node.clone()));
+                let mut longer = path.clone();
+                longer.push(parent.clone());
+                next.push(longer);
+            }
         }
-        Ok::<_, spi::Error>(paths)
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Read the cascade path", &e))?;
-    Ok(results)
+        frontier = next;
+    }
+    rows.sort();
+    Ok(rows)
 }
