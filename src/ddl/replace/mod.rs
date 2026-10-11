@@ -22,50 +22,17 @@
 use super::create;
 use super::uncascaded::{Declarations, TimeRefresh};
 use crate::catalog::TviewMeta;
+use crate::catalog::resolve::{self, Name};
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::prelude::*;
 
 mod options;
 mod rebuild;
 
 use options::invalid;
-pub(crate) use options::{Declared, Options, parse_name, parse_options};
+pub(crate) use options::{Declared, Options, parse_options};
 use rebuild::{alter_storage, rebuild};
-
-/// Schema of a registered entity: that of its `tv_*` table, or of its view when
-/// the table is gone.
-///
-/// # Errors
-/// Returns an error if the catalog query fails.
-pub(crate) fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
-    Spi::connect(|client| {
-        client
-            .select(
-                // With its table gone, a TVIEW's schema is the prefix of its backing
-                // view's name, `<schema>__tv_<entity>`.
-                &format!(
-                    "SELECT COALESCE( \
-                         (SELECT n.nspname::text FROM pg_catalog.pg_class t \
-                          JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
-                          WHERE t.oid = m.table_oid), \
-                         (SELECT pg_catalog.left(v.relname::text, \
-                                     -pg_catalog.length('__tv_' || m.entity)) \
-                          FROM pg_catalog.pg_class v WHERE v.oid = m.view_oid \
-                            AND pg_catalog.right(v.relname::text, \
-                                    pg_catalog.length('__tv_' || m.entity)) \
-                                = '__tv_' || m.entity)) \
-                     FROM {} m WHERE m.entity = $1",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &[crate::utils::spi::text(entity)],
-            )?
-            .first()
-            .get_one::<String>()
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Find the schema of a TVIEW", &e))
-}
 
 /// Create `name` from `query`, or bring the existing TVIEW to it.
 ///
@@ -78,35 +45,41 @@ pub(crate) fn create_or_replace(
     query: &str,
     options: &serde_json::Value,
 ) -> TViewResult<&'static str> {
-    let (schema, entity) = parse_name(name)?;
+    let Name { schema, entity } = resolve::parse(name)?;
     let options = parse_options(options)?;
     let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
     super::lock_entity(&entity)?;
-    let schema = match schema {
-        Some(schema) => schema,
-        None => create::current_schema()?,
-    };
     let tv_name = format!("tv_{entity}");
 
     let declared = options.resolve()?;
+    let registered = resolve::registered_schema(&entity)?;
 
     let Some(meta) = TviewMeta::load_by_entity(&entity)? else {
+        let schema = match schema {
+            Some(schema) => schema,
+            None => create::current_schema()?,
+        };
         create_new(&entity, &schema, query, &declared)?;
         return Ok("created");
     };
 
-    // An entity is unique across the database.
-    if let Some(registered) = registered_schema(&entity)?
-        && registered != schema
-    {
-        return Err(invalid(
-            "tview_name",
-            format!(
-                "TVIEW {entity} is registered in schema {registered}, not {schema}: an entity \
-                 names one TVIEW in the whole database"
-            ),
-        ));
-    }
+    // An entity names one TVIEW in the whole database: unqualified, the name is
+    // that TVIEW wherever it lives; qualified, the schema must be its own.
+    let schema = match (schema, registered) {
+        (None, Some(registered)) => registered,
+        (Some(schema), Some(registered)) if schema == registered => schema,
+        (Some(schema), registered) => {
+            let registered = registered.unwrap_or_default();
+            return Err(invalid(
+                "tview",
+                format!(
+                    "TVIEW {entity} is registered in schema {registered}, not {schema}: an \
+                     entity names one TVIEW in the whole database"
+                ),
+            ));
+        }
+        (None, None) => create::current_schema()?,
+    };
     crate::owner::require_owner(meta.tview_oid, &tv_name)?;
 
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
@@ -266,7 +239,7 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
         {
             continue;
         }
-        let qi = quote_identifier(&column);
+        let qi = ident::quoted(&column);
         crate::utils::spi::run_ddl(&format!(
             "ALTER TABLE {qualified_tv} ALTER COLUMN {qi} TYPE {view_type} USING {qi}::{view_type}"
         ))
@@ -292,9 +265,8 @@ pub(crate) enum Created {
 }
 
 /// Create `name` from `query` with `CREATE TABLE AS` semantics: an existing TVIEW
-/// is not replaced. `pg_tviews_create()`, `pg_tviews_create_aggregate()`
-/// and an intercepted `CREATE TABLE tv_* AS` run this code, which is the create
-/// path of [`create_or_replace`].
+/// is not replaced. `pg_tviews_create()` and an intercepted `CREATE TABLE tv_* AS`
+/// run this code, which is the create path of [`create_or_replace`].
 ///
 /// # Errors
 /// Returns an error for an invalid name, a definition that does not analyze or is
@@ -305,7 +277,7 @@ pub(crate) fn create_only(
     options: Options,
     if_not_exists: bool,
 ) -> TViewResult<Created> {
-    let (schema, entity) = parse_name(name)?;
+    let Name { schema, entity } = resolve::parse(name)?;
     super::lock_entity(&entity)?;
     if TviewMeta::load_by_entity(&entity)?.is_some() {
         return Ok(if if_not_exists {
@@ -352,7 +324,7 @@ fn check_key(entity: &str, normalized: &create::ViewColumns) -> TViewResult<()> 
     match normalized.entity.as_deref() {
         Some(keyed) if keyed == entity => Ok(()),
         Some(keyed) => Err(invalid(
-            "tview_name",
+            "tview",
             format!(
                 "TVIEW tv_{entity} does not match its definition, which is keyed on pk_{keyed}"
             ),
@@ -509,8 +481,8 @@ fn replace_in_place(
         let _owner = crate::owner::AsOwner::of_table(*table)?;
         create::reregister_tview(dependent)?;
         let meta =
-            TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::MetadataNotFound {
-                entity: dependent.clone(),
+            TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
+                name: dependent.clone(),
             })?;
         reconcile(dependent, &meta)?;
     }
@@ -594,7 +566,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     let prefixed = |columns: &[&String], prefix: &str| -> Vec<String> {
         columns
             .iter()
-            .map(|c| format!("{prefix}{}", quote_identifier(c)))
+            .map(|c| format!("{prefix}{}", ident::quoted(c)))
             .collect()
     };
     let list = |columns: &[&String], prefix: &str| prefixed(columns, prefix).join(", ");
@@ -606,7 +578,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
         list(&key_columns, "t."),
         list(&key_columns, "v.")
     );
-    let pk = quote_identifier(&format!("pk_{entity}"));
+    let pk = ident::quoted(&format!("pk_{entity}"));
 
     let deleted = Spi::connect_mut(|client| {
         let mut rows = Vec::new();
@@ -656,7 +628,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             .collect();
         let set = value_columns
             .iter()
-            .map(|c| format!("{0} = v.{0}", quote_identifier(c)))
+            .map(|c| format!("{0} = v.{0}", ident::quoted(c)))
             .collect::<Vec<_>>()
             .join(", ");
         for key in crate::utils::spi::strings(
@@ -691,43 +663,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_name, parse_options};
-
-    #[test]
-    fn test_parse_name_forms() {
-        assert_eq!(parse_name("tv_post").unwrap(), (None, "post".to_string()));
-        assert_eq!(parse_name("post").unwrap(), (None, "post".to_string()));
-        assert_eq!(
-            parse_name("app.tv_post").unwrap(),
-            (Some("app".to_string()), "post".to_string())
-        );
-        assert!(parse_name("app.tv post").is_err());
-    }
-
-    #[test]
-    fn test_parse_name_quoting() {
-        assert_eq!(
-            parse_name("\"Odd.Schema\".tv_post").unwrap(),
-            (Some("Odd.Schema".to_string()), "post".to_string())
-        );
-        assert_eq!(
-            parse_name("\"a\"\"b\".\"tv_post\"").unwrap(),
-            (Some("a\"b".to_string()), "post".to_string())
-        );
-        assert_eq!(
-            parse_name("App.tv_Post").unwrap(),
-            (Some("App".to_string()), "Post".to_string())
-        );
-        for bad in [
-            "\"app.tv_post",
-            "app..tv_post",
-            "a.b.tv_post",
-            "\"app\"x.tv_post",
-            "",
-        ] {
-            assert!(parse_name(bad).is_err(), "{bad}");
-        }
-    }
+    use super::parse_options;
 
     #[test]
     fn test_parse_options_rejects_unknown_and_mistyped() {

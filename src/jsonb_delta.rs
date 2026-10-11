@@ -51,9 +51,3 @@ pub fn jsonb_delta_schema() -> Option<String> {
     crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.insert((), schema.clone()));
     schema
 }
-
-/// SQL function: whether `jsonb_delta` is installed (cached).
-#[pg_extern]
-fn pg_tviews_check_jsonb_delta() -> bool {
-    check_jsonb_delta_available()
-}

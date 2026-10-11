@@ -4,7 +4,7 @@ use super::{
     Column, Flags, HashSet, IdentityKind, Level, Link, MAX_DEPTH, Occurrence, Oid, Origin, Piece,
     Resolved, Root, RteInfo, Scope, TViewError, TViewResult, WINDOW_REASON, WalkedIdentity, Walker,
     conjuncts, cstr, elements, in_clause, is_required_sublink, list_len, opaque_reason,
-    output_position, pg_sys, quote_ident, referenced_columns, setop_leaves, sql_occs, tag,
+    output_position, pg_sys, quote_if_needed, referenced_columns, setop_leaves, sql_occs, tag,
     top_opaque_reason, unnest_array, view_query, windows_partitioned,
 };
 
@@ -485,7 +485,7 @@ impl Walker<'_> {
             let relkind = pg_sys::get_rel_relkind(relid).cast_unsigned();
             let relname = cstr(pg_sys::get_rel_name(relid));
             let nsp = cstr(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid)));
-            let qualified = format!("{}.{}", quote_ident(&nsp), quote_ident(&relname));
+            let qualified = format!("{}.{}", quote_if_needed(&nsp), quote_if_needed(&relname));
             (relkind, relname, qualified)
         };
         match relkind {

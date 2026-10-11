@@ -7,9 +7,9 @@
 -- such a TVIEW only lazily, on the first write that touched it.
 --
 -- Correct behaviour: clients can tell which TVIEWs a standby can serve
--- (pg_tviews_is_replica_readable / pg_tviews_replication_status), deploy tooling
--- can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a TVIEW
--- can be switched to LOGGED (pg_tviews_set_logged). TRUNCATE plus deleting the
+-- (pg_tviews_replication_status, tviews.registry.options->'logged'), deploy
+-- tooling can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a
+-- TVIEW can be switched to LOGGED (ALTER TABLE … SET LOGGED, or the option). TRUNCATE plus deleting the
 -- rows of tviews.pg_tview_valid stands in for the init-fork reset here (it
 -- empties both); test/replication/promote_rebuild.sh runs a real standby.
 --
@@ -58,12 +58,10 @@ SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
 -- Cycle 1: detection
 -- ========================================================================
 DO $$ BEGIN
-  IF pg_tviews_is_replica_readable('user') OR NOT pg_tviews_is_replica_readable('tag') THEN
-    RAISE EXCEPTION '#75 FAIL: is_replica_readable user=% tag=%',
-      pg_tviews_is_replica_readable('user'), pg_tviews_is_replica_readable('tag');
-  END IF;
-  IF pg_tviews_is_replica_readable('nope') IS NOT NULL THEN
-    RAISE EXCEPTION '#75 FAIL: is_replica_readable of an unknown entity should be NULL';
+  IF (SELECT array_agg(entity || ':' || (options->>'logged') ORDER BY entity) FROM tviews.registry)
+     IS DISTINCT FROM ARRAY['post:false', 'tag:true', 'user:false'] THEN
+    RAISE EXCEPTION '#75 FAIL: registry logged %',
+      (SELECT array_agg(entity || ':' || (options->>'logged') ORDER BY entity) FROM tviews.registry);
   END IF;
   IF (SELECT array_agg(entity || ':' || persistence || ':' || replica_readable
                        || ':' || is_empty || ':' || needs_rebuild ORDER BY entity)
@@ -120,18 +118,19 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
--- Cycle 3: set_logged switches persistence (and back)
+-- Cycle 3: ALTER TABLE switches persistence (and back)
 -- ========================================================================
-SELECT pg_tviews_set_logged('user', true);
+ALTER TABLE tv_user SET LOGGED;
 DO $$ BEGIN
-  IF NOT pg_tviews_is_replica_readable('user') OR (SELECT count(*) FROM tv_user) <> 2 THEN
-    RAISE EXCEPTION '#75 FAIL: set_logged(user, true)';
+  IF NOT (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user')
+     OR (SELECT count(*) FROM tv_user) <> 2 THEN
+    RAISE EXCEPTION '#75 FAIL: SET LOGGED';
   END IF;
 END $$;
-SELECT pg_tviews_set_logged('user', false);
+ALTER TABLE tv_user SET UNLOGGED;
 DO $$ BEGIN
-  IF pg_tviews_is_replica_readable('user') THEN
-    RAISE EXCEPTION '#75 FAIL: set_logged(user, false)';
+  IF (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user') THEN
+    RAISE EXCEPTION '#75 FAIL: SET UNLOGGED';
   END IF;
 END $$;
 

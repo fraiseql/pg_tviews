@@ -72,7 +72,7 @@ pub fn apply_direct_patch(
     }
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
     let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, chain);
     let pk_param = chain.len() + 1;
@@ -129,8 +129,8 @@ pub fn apply_fanout_patch(
     }
     let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::quote_identifier(&format!("pk_{}", meta.entity_name));
-    let qi_lookup = crate::utils::quote_identifier(lookup_col);
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_lookup = crate::utils::ident::quoted(lookup_col);
     let patch = format!("{schema}.jsonb_smart_patch_scalar(t.data, f.patch)");
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patch}, updated_at = now() \

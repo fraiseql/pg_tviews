@@ -62,7 +62,7 @@ ANALYZE tv_user, tv_post, tv_tag;
 SELECT must((SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_profile()) = ARRAY['post', 'tag', 'user'],
             'one row per TVIEW');
 SELECT must((SELECT heap_bytes > 0 AND index_bytes > 0 AND rows_estimate = 5000
-                    AND fillfactor = 85 AND tview = 'public.tv_post'
+                    AND fillfactor = 85 AND schema = 'public' AND name = 'tv_post'
              FROM pg_tviews_profile('post')), 'sizes / estimates / fillfactor of tv_post');
 
 -- ========================================================================

@@ -17,7 +17,7 @@ const PAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/error-reference.md
 /// is named, and then needs an example in [`examples`].
 const fn variant_name(e: &TViewError) -> &'static str {
     match e {
-        TViewError::MetadataNotFound { .. } => "MetadataNotFound",
+        TViewError::TviewNotFound { .. } => "TviewNotFound",
         TViewError::RelationExists { .. } => "RelationExists",
         TViewError::InvalidInput { .. } => "InvalidInput",
         TViewError::DefinitionRefused { .. } => "DefinitionRefused",
@@ -44,9 +44,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
 fn examples() -> Vec<TViewError> {
     let p = |s: &str| format!("<{s}>");
     vec![
-        TViewError::MetadataNotFound {
-            entity: p("entity"),
-        },
+        TViewError::TviewNotFound { name: p("tview") },
         TViewError::RelationExists { name: p("name") },
         TViewError::InvalidInput {
             parameter: p("parameter"),

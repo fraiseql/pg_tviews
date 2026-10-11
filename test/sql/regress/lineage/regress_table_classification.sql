@@ -133,11 +133,11 @@ SELECT pg_tviews_create('tv_media', $$
 INSERT INTO expected VALUES ('media', 'tb_book', 'local'), ('media', 'tb_movie', 'local');
 
 -- an aggregate TVIEW: the key is the group key
-SELECT pg_tviews_create_aggregate('tv_user_orders', $$
+SELECT pg_tviews_create('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 INSERT INTO expected VALUES ('user_orders', 'tb_order', 'local'), ('user_orders', 'tb_user', 'local');
 
 -- a function that may read tables pg_tviews cannot see: warned under warn (#193)

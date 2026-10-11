@@ -16,8 +16,9 @@ mod reference;
 /// An error `pg_tviews` raises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
-    /// No TVIEW is registered under this entity.
-    MetadataNotFound { entity: String },
+    /// No TVIEW has this name (ADR 0211: an entity, `tv_<entity>` or
+    /// `schema.tv_<entity>`).
+    TviewNotFound { name: String },
 
     /// The table or backing view a TVIEW needs is already taken.
     RelationExists { name: String },
@@ -96,7 +97,7 @@ impl TViewError {
     #[must_use]
     pub const fn errcode(&self) -> PgSqlErrorCode {
         match self {
-            Self::MetadataNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
+            Self::TviewNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
@@ -145,9 +146,11 @@ impl TViewError {
     #[must_use]
     pub fn hint(&self) -> Option<String> {
         match self {
-            Self::MetadataNotFound { .. } => {
-                Some("SELECT entity FROM tviews.pg_tview_meta lists the registered TVIEWs.".into())
-            }
+            Self::TviewNotFound { .. } => Some(
+                "SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by \
+                 its entity, tv_<entity> or schema.tv_<entity>."
+                    .into(),
+            ),
             Self::RelationExists { .. } => {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
@@ -249,9 +252,7 @@ impl From<TViewError> for ErrorReport {
 impl fmt::Display for TViewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MetadataNotFound { entity } => {
-                write!(f, "TVIEW metadata not found for entity '{entity}'")
-            }
+            Self::TviewNotFound { name } => write!(f, "TVIEW {name} does not exist"),
             Self::RelationExists { name } => write!(f, "TVIEW {name} already exists"),
             Self::InvalidInput { parameter, reason } => {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
@@ -354,7 +355,7 @@ mod tests {
     fn every_variant() -> Vec<TViewError> {
         let s = String::new;
         let all = vec![
-            TViewError::MetadataNotFound { entity: s() },
+            TViewError::TviewNotFound { name: s() },
             TViewError::RelationExists { name: s() },
             TViewError::InvalidInput {
                 parameter: s(),
@@ -413,7 +414,7 @@ mod tests {
         for e in &all {
             // Exhaustive: adding a variant breaks this match until it is listed above.
             match e {
-                TViewError::MetadataNotFound { .. }
+                TViewError::TviewNotFound { .. }
                 | TViewError::RelationExists { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
@@ -508,8 +509,8 @@ mod tests {
     fn documented_codes() {
         let code = |e: TViewError| e.sqlstate();
         assert_eq!(
-            code(TViewError::MetadataNotFound {
-                entity: "post".into()
+            code(TViewError::TviewNotFound {
+                name: "post".into()
             }),
             "42704"
         );

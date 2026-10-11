@@ -345,14 +345,15 @@ mod nodes;
 mod predicate;
 mod time;
 
+use crate::utils::ident::quote_if_needed;
 use collect::{
     base_read, collect_functions, collect_params, collect_sublinks, collect_vars,
     column_read_counts, const_text, has_sublink, referenced_columns, relation_entry,
 };
 use nodes::{
     Cast, WINDOW_REASON, equality, in_clause, is_required_sublink, opaque_reason, output_position,
-    quote_ident, quote_literal, setop_leaves, strip_casts, strip_relabel, term_sql,
-    top_opaque_reason, unnest_array, windows_partitioned,
+    quote_literal, setop_leaves, strip_casts, strip_relabel, term_sql, top_opaque_reason,
+    unnest_array, windows_partitioned,
 };
 
 #[cfg(test)]

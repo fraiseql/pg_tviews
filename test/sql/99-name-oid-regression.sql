@@ -4,7 +4,7 @@
 -- INSERTs that should have triggered a refresh.
 --
 -- Updated for the current API (issue #55): the removed pg_tviews_register(name,
--- view, table, pk) form is replaced by pg_tviews_create(tview_name, select_sql),
+-- view, table, pk) form is replaced by pg_tviews_create(tview, query),
 -- which builds the backing view itself. The regression intent is preserved: a
 -- TVIEW whose projection carries a text column must populate after an INSERT.
 --

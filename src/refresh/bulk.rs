@@ -37,8 +37,8 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
 
     // Load metadata once
     let meta =
-        TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
+            name: entity.to_string(),
         })?;
 
     // Resolve the schema-qualified backing view + tview and the authoritative
@@ -60,8 +60,8 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // Rows whose recomputed columns equal the stored ones are left alone.
     // The filter is on the identity, bound with its type, so it reaches the base
     // tables' indexes through the view.
-    let qi_key = crate::utils::quote_identifier(key_col);
-    let qi_pk = crate::utils::quote_identifier(&format!("pk_{entity}"));
+    let qi_key = crate::utils::ident::quoted(key_col);
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{entity}"));
     let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
     let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
     let conflict = format!(

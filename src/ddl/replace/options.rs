@@ -50,14 +50,6 @@ impl Options {
         }
     }
 
-    /// Options of `pg_tviews_create_aggregate()`.
-    pub(crate) fn aggregate(group_keys: GroupKeys) -> Self {
-        Self {
-            group_keys: Some(group_keys),
-            ..Self::default()
-        }
-    }
-
     /// What these options declare, every option not passed at its default.
     ///
     /// # Errors
@@ -339,71 +331,4 @@ pub(super) fn resolve_function_reads(
         reads.push((signature, tables));
     }
     Ok(reads)
-}
-
-/// Split a TVIEW name, `tv_<entity>`, `<entity>` or `schema.tv_<entity>`, into
-/// its schema (if named) and entity. A part is taken as written, as the names of
-/// earlier releases were; double-quote it (`""` for a quote) to include a dot.
-///
-/// # Errors
-/// Returns an error if the name does not parse, or the entity is not a valid
-/// identifier.
-pub(crate) fn parse_name(name: &str) -> TViewResult<(Option<String>, String)> {
-    let mut parts = split_identifiers(name)
-        .ok_or_else(|| invalid("tview_name", format!("{name} is not a valid TVIEW name")))?;
-    let table = parts.pop().unwrap_or_default();
-    let schema = match parts.as_slice() {
-        [] => None,
-        [schema] => Some(schema.clone()),
-        _ => {
-            return Err(invalid(
-                "tview_name",
-                format!("{name} has too many dotted parts: use schema.tv_<entity>"),
-            ));
-        }
-    };
-    crate::validation::validate_sql_identifier(&table, "tview_name")?;
-    let entity = table.strip_prefix("tv_").unwrap_or(&table);
-    Ok((schema, entity.to_string()))
-}
-
-/// The dot-separated parts of `name`, double-quoted parts unquoted, or `None` if a
-/// part is empty or a quote is not closed.
-pub(super) fn split_identifiers(name: &str) -> Option<Vec<String>> {
-    let mut parts = Vec::new();
-    let mut chars = name.chars().peekable();
-    loop {
-        let mut part = String::new();
-        if chars.peek() == Some(&'"') {
-            chars.next();
-            loop {
-                match chars.next()? {
-                    '"' if chars.peek() == Some(&'"') => {
-                        chars.next();
-                        part.push('"');
-                    }
-                    '"' => break,
-                    c => part.push(c),
-                }
-            }
-            if !matches!(chars.peek(), None | Some('.')) {
-                return None;
-            }
-        } else {
-            while let Some(&c) = chars.peek() {
-                if c == '.' {
-                    break;
-                }
-                part.push(c);
-                chars.next();
-            }
-        }
-        if part.is_empty() {
-            return None;
-        }
-        parts.push(part);
-        if chars.next().is_none() {
-            return Some(parts);
-        }
-    }
 }

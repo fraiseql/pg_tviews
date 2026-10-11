@@ -9,8 +9,7 @@
 //! [`pg_tviews_rebuild_all`] once recovery has finished.
 
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
-use pgrx::pg_sys::panic::ErrorReport;
+use crate::utils::ident;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -59,11 +58,7 @@ impl TviewRelation {
     }
 
     fn qualified(&self, name: &str) -> String {
-        format!(
-            "{}.{}",
-            quote_identifier(&self.schema),
-            quote_identifier(name)
-        )
+        format!("{}.{}", ident::quoted(&self.schema), ident::quoted(name))
     }
 
     /// Whether the `tv_*` table has no rows.
@@ -98,18 +93,6 @@ fn in_recovery() -> bool {
     unsafe { pg_sys::RecoveryInProgress() }
 }
 
-/// Whether a hot standby can read `tv_<entity>`: true for a LOGGED table, false
-/// for an UNLOGGED one, NULL for an unknown entity.
-///
-/// # Errors
-/// Returns an error if the catalog query fails.
-#[pg_extern]
-fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorReport> {
-    Ok(TviewRelation::load(Some(entity))?
-        .first()
-        .map(|r| !r.unlogged))
-}
-
 /// Replication state of every TVIEW, safe to call on a standby.
 ///
 /// `is_empty` and `needs_rebuild` are NULL for an UNLOGGED TVIEW during
@@ -118,21 +101,9 @@ fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorRepo
 ///
 /// # Errors
 /// Returns an error if a catalog query or an emptiness probe fails.
-#[pg_extern]
-#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
-fn pg_tviews_replication_status() -> Result<
-    TableIterator<
-        'static,
-        (
-            name!(entity, String),
-            name!(persistence, String),
-            name!(replica_readable, bool),
-            name!(is_empty, Option<bool>),
-            name!(needs_rebuild, Option<bool>),
-        ),
-    >,
-    ErrorReport,
-> {
+#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_replication_status()
+pub(crate) fn replication_status()
+-> TViewResult<Vec<(String, String, bool, Option<bool>, Option<bool>)>> {
     let recovering = in_recovery();
     let relations = TviewRelation::load(None)?;
     let mut rows = Vec::new();
@@ -157,28 +128,12 @@ fn pg_tviews_replication_status() -> Result<
             needs_rebuild,
         ));
     }
-    Ok(TableIterator::new(rows))
+    Ok(rows)
 }
 
-/// Rebuild TVIEWs from their backing views, dependencies first, and return
-/// each rebuilt entity with its row count, in rebuild order.
-///
-/// With `only_empty` (the default) only the UNLOGGED TVIEWs PostgreSQL reset
-/// are filled: run it after a promotion, a crash restart or a restore. With
-/// `only_empty => false` every TVIEW is rebuilt.
-///
-/// # Errors
-/// Returns an error during recovery, or if a catalog query or a refresh fails.
-#[pg_extern]
-#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
-fn pg_tviews_rebuild_all(
-    only_empty: default!(bool, true),
-) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, ErrorReport> {
-    crate::revision::check();
-    Ok(TableIterator::new(rebuild_all(only_empty)?))
-}
-
-/// See [`pg_tviews_rebuild_all`].
+/// Rebuild TVIEWs from their backing views, dependencies first, and return each
+/// rebuilt entity with its row count, in rebuild order: only the UNLOGGED TVIEWs
+/// PostgreSQL reset with `only_empty`, every TVIEW otherwise.
 ///
 /// # Errors
 /// Returns an error during recovery, or if a catalog query or a refresh fails.
@@ -261,38 +216,6 @@ fn dependencies_first(depends_on: &HashMap<String, Vec<String>>) -> Vec<String> 
         visit(entity, depends_on, &mut seen, &mut out);
     }
     out
-}
-
-/// Switch `tv_<entity>` to LOGGED (`logged => true`, readable on standbys) or
-/// back to UNLOGGED. `ALTER TABLE … SET [UN]LOGGED` rewrites the whole table
-/// under an ACCESS EXCLUSIVE lock.
-///
-/// # Errors
-/// Returns an error if the entity is unknown or the `ALTER TABLE` fails.
-#[pg_extern]
-fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
-    crate::revision::check();
-    let rel = TviewRelation::load(Some(entity))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
-    crate::owner::require_owner(rel.table_oid, &format!("tv_{entity}"))?;
-    if logged != rel.unlogged {
-        return Ok(());
-    }
-    crate::lifecycle::validity::before_persistence_change(entity, logged)?;
-    let persistence = if logged { "LOGGED" } else { "UNLOGGED" };
-    let sql = format!(
-        "ALTER TABLE {} SET {persistence}",
-        rel.qualified(&rel.table)
-    );
-    crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })?;
-    Ok(crate::lifecycle::validity::after_persistence_change(
-        rel.table_oid,
-        logged,
-    )?)
 }
 
 #[cfg(test)]

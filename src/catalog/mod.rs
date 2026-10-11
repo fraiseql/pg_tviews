@@ -2,6 +2,7 @@ pub(crate) mod indexes;
 pub mod plan;
 pub mod reads;
 pub mod registered;
+pub mod resolve;
 
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;

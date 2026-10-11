@@ -566,10 +566,8 @@ CREATE TRIGGER pg_tview_meta_changed
 -- checks that the caller owns it.
 REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_refresh_all(),
-    @extschema@.pg_tviews_refresh_all_entities(),
     @extschema@.pg_tviews_rebuild_all(BOOLEAN),
     @extschema@.pg_tviews_reregister_all(BOOLEAN),
-    @extschema@.pg_tviews_set_logged(TEXT, BOOLEAN),
     @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
@@ -623,11 +621,12 @@ REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
 extension_sql!(
     r"
 CREATE FUNCTION @extschema@.pg_tviews_profile(
-    p_entity    TEXT   DEFAULT NULL,
+    tview       TEXT   DEFAULT NULL,
     fanout_warn BIGINT DEFAULT 1000)
 RETURNS TABLE (
     entity                      TEXT,
-    tview                       TEXT,
+    schema                      TEXT,
+    name                        TEXT,
     persistence                 TEXT,
     replica_readable            BOOLEAN,
     rows_estimate               BIGINT,
@@ -662,7 +661,14 @@ DECLARE
     all_visible  BIGINT;
     stats_reset  TIMESTAMPTZ := (SELECT d.stats_reset FROM pg_stat_database d
                                  WHERE d.datname = current_database());
+    chosen       TEXT;
+    qualified    TEXT;
 BEGIN
+    -- The TVIEW named as every function names one (ADR 0211).
+    IF tview IS NOT NULL THEN
+        chosen := @extschema@.pg_tviews_entity_of(tview);
+    END IF;
+
     vis_schema := (SELECT n.nspname FROM pg_extension e
                    JOIN pg_namespace n ON n.oid = e.extnamespace
                    WHERE e.extname = 'pg_visibility');
@@ -682,11 +688,13 @@ BEGIN
         FROM @extschema@.pg_tview_meta m
         JOIN pg_class c ON c.oid = m.table_oid
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE p_entity IS NULL OR m.entity = p_entity
+        WHERE chosen IS NULL OR m.entity = chosen
         ORDER BY m.entity
     LOOP
         entity           := r.ent;
-        tview            := quote_ident(r.nsp) || '.' || quote_ident(r.tbl);
+        schema           := r.nsp;
+        name             := r.tbl;
+        qualified        := quote_ident(r.nsp) || '.' || quote_ident(r.tbl);
         persistence      := CASE r.pers WHEN 'u' THEN 'unlogged' ELSE 'logged' END;
         replica_readable := r.pers = 'p';
         rows_estimate    := CASE WHEN r.reltuples < 0 THEN NULL ELSE r.reltuples::BIGINT END;
@@ -764,7 +772,7 @@ BEGIN
         FOREACH col IN ARRAY missing_propagation_indexes LOOP
             warnings := warnings || format(
                 '%s has no index: a cascade into %s scans the whole table. Run pg_tviews_ensure_propagation_indexes(%L)',
-                col, tview, r.ent);
+                col, qualified, r.ent);
         END LOOP;
         IF n_tup_upd > 1000 AND hot_ratio < 0.5 THEN
             FOR idx IN
@@ -811,7 +819,7 @@ BEGIN
         END LOOP;
         IF r.pers = 'u' THEN
             warnings := warnings ||
-                'UNLOGGED: not readable on hot standbys, empty after promotion or a crash restart (pg_tviews_set_logged)'::TEXT;
+                'UNLOGGED: not readable on hot standbys, empty after promotion or a crash restart (option logged)'::TEXT;
         END IF;
         IF rows_estimate > 0 AND n_dead_tup > 0.2 * rows_estimate THEN
             warnings := warnings || format(

@@ -415,7 +415,7 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
             let new_type = crate::utils::qualified_type_name(to, typmod);
             return refused(format!(
                 "ALTER COLUMN {} TYPE {}",
-                crate::utils::quote_identifier(column),
+                crate::utils::ident::quoted(column),
                 new_type.strip_prefix("pg_catalog.").unwrap_or(&new_type)
             ));
         }

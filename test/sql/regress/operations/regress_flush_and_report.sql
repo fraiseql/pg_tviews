@@ -137,7 +137,8 @@ SELECT updated_of(:'report'::jsonb) = ARRAY['BlogPost:' || (SELECT id FROM tb_bl
 -- ========================================================================
 -- Cycle 5: max_entities truncates deterministically; typename override; reset
 -- ========================================================================
-SELECT pg_tviews_set_typename('blog_post', 'Article');
+SELECT pg_tviews_create_or_replace(format('%I.%I', schema, name), query, options || '{"typename": "Article"}')
+FROM tviews.registry WHERE entity = 'blog_post';
 DO $$
 DECLARE rep JSONB; again JSONB;
 BEGIN

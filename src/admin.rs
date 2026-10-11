@@ -1,120 +1,60 @@
 //! Administrative SQL functions: refresh, migration, cascade path.
 
-use crate::{TViewError, TViewResult, utils::quote_identifier};
-use pgrx::pg_sys::panic::ErrorReport;
+use crate::{TViewError, TViewResult, utils::ident};
 use pgrx::prelude::*;
 
-/// Rebuild a TVIEW from its backing view, then every TVIEW whose view reads it,
-/// directly or through others, in dependency order: a manual repair leaves
-/// nothing stale.
-///
-/// Each rebuild is a `TRUNCATE` and an `INSERT … SELECT` with an explicit column
-/// list (the view's own columns, so not the table-only `created_at`/`updated_at`),
-/// and holds an ACCESS EXCLUSIVE lock on that TVIEW until the transaction ends.
-/// Like `REFRESH MATERIALIZED VIEW`, it requires owning the TVIEW (or the
-/// extension), and every TVIEW is rebuilt as its owner.
+/// The TVIEWs whose definitions read the current time that the caller owns (or
+/// may change as a member of its owner's role).
 ///
 /// # Errors
-/// Returns error if the caller does not own the TVIEW, the entity is not
-/// registered, the dependency graph cannot be loaded, or a rebuild fails.
-#[pg_extern]
-fn pg_tviews_refresh(entity: &str) -> Result<(), ErrorReport> {
-    crate::revision::check();
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-        TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+/// Returns an error if the catalog cannot be read.
+pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMeta>> {
+    let entities = crate::utils::spi::strings(
+        &format!(
+            "SELECT m.entity::text FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+             WHERE m.time_dependent AND pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+             ORDER BY m.entity",
+            crate::utils::meta_table()
+        ),
+        &[],
+    )?;
+    let mut metas = Vec::new();
+    for entity in entities {
+        if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(&entity)? {
+            metas.push(meta);
         }
-    })?;
-    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
-    rebuild_with_dependents(&[entity.to_string()])?;
-    Ok(())
+    }
+    Ok(metas)
 }
 
-/// Bring the TVIEWs whose definitions read the current time up to date:
-/// `tview`, or every such TVIEW the caller owns (or may change as a member of its
-/// owner's role). Each is refreshed in full as a write to a `full_refresh` table
-/// would refresh it, then the TVIEWs reading it are, through the flush. For
-/// `pg_cron` or the application to call at the boundary its rows depend on (the
-/// day, for `CURRENT_DATE`). Returns the TVIEWs refreshed, dependencies first.
+/// Refresh `chosen` TVIEWs, which read the current time, in full, as a write to a
+/// `full_refresh` table would refresh them, then the TVIEWs reading them, through
+/// the flush. Returns the TVIEWs refreshed, dependencies first.
 ///
 /// # Errors
-/// Returns an error if `tview` is not a TVIEW, reads no time or is not the
-/// caller's, or a refresh fails.
-#[pg_extern]
-fn pg_tviews_refresh_time_dependent(
-    tview: default!(Option<&str>, "NULL"),
-) -> Result<SetOfIterator<'static, String>, ErrorReport> {
-    crate::revision::check();
-    let rows: Vec<(String, pgrx::pg_sys::Oid, bool, bool)> = Spi::connect(|client| {
-        let mut rows = Vec::new();
-        for row in client.select(
-            &format!(
-                "SELECT m.entity::text, m.table_oid::oid, m.time_dependent, \
-                        pg_catalog.pg_has_role(c.relowner, 'USAGE') \
-                 FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
-                 WHERE $1::text IS NULL \
-                    OR m.table_oid::oid = $1::text::pg_catalog.regclass::pg_catalog.oid",
-                crate::utils::meta_table()
-            ),
-            None,
-            &[crate::utils::spi::text(tview)],
-        )? {
-            if let (Some(entity), Some(table)) =
-                (row.get::<String>(1)?, row.get::<pgrx::pg_sys::Oid>(2)?)
-            {
-                rows.push((
-                    entity,
-                    table,
-                    row.get::<bool>(3)?.unwrap_or(false),
-                    row.get::<bool>(4)?.unwrap_or(false),
-                ));
-            }
-        }
-        Ok::<_, pgrx::spi::Error>(rows)
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Find the time-dependent TVIEWs".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    let chosen: Vec<(String, pgrx::pg_sys::Oid)> = match tview {
-        Some(name) => {
-            let Some((entity, table, dependent, _)) = rows.into_iter().next() else {
-                return Err(TViewError::InvalidInput {
-                    parameter: "tview".to_string(),
-                    reason: format!("{name} is not a TVIEW"),
-                }
-                .into());
-            };
-            if !dependent {
-                return Err(TViewError::InvalidInput {
-                    parameter: "tview".to_string(),
-                    reason: format!("{name} does not read the time: nothing to refresh"),
-                }
-                .into());
-            }
-            crate::owner::require_owner(table, name)?;
-            vec![(entity, table)]
-        }
-        None => rows
-            .into_iter()
-            .filter(|(_, _, dependent, owned)| *dependent && *owned)
-            .map(|(entity, table, _, _)| (entity, table))
-            .collect(),
-    };
+/// Returns an error if the dependency graph cannot be loaded or a refresh fails.
+pub(crate) fn refresh_time_dependent(
+    chosen: &[crate::catalog::TviewMeta],
+) -> TViewResult<Vec<String>> {
     let order = crate::flush::EntityDepGraph::load()?.topo_order;
-    let mut chosen = chosen;
-    chosen.sort_by_key(|(entity, _)| order.iter().position(|e| e == entity).unwrap_or(usize::MAX));
+    let mut chosen: Vec<&crate::catalog::TviewMeta> = chosen.iter().collect();
+    chosen.sort_by_key(|meta| {
+        order
+            .iter()
+            .position(|e| *e == meta.entity_name)
+            .unwrap_or(usize::MAX)
+    });
     let mut refreshed = Vec::new();
-    for (entity, table) in &chosen {
+    for meta in chosen {
         if crate::suspend::is_suspended() {
-            crate::suspend::record_change(entity);
+            crate::suspend::record_change(&meta.entity_name);
         } else {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::queue::enqueue_refresh_all(&meta.entity_name);
         }
-        refreshed.push(crate::utils::qualified_relname_from_oid(*table)?);
+        refreshed.push(crate::utils::qualified_relname_from_oid(meta.tview_oid)?);
     }
     crate::flush::flush_refresh_queue()?;
-    Ok(SetOfIterator::new(refreshed))
+    Ok(refreshed)
 }
 
 /// Rebuild `entities` and every TVIEW whose view reads one of them, transitively
@@ -193,8 +133,8 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
     drop(owner);
     // Rebuilt from its view: its rows can be trusted again.
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-        TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        TViewError::TviewNotFound {
+            name: entity.to_string(),
         }
     })?;
     crate::lifecycle::validity::mark(meta.tview_oid)?;
@@ -247,8 +187,8 @@ fn rebuild_statements(
 ) -> TViewResult<(String, String)> {
     use crate::catalog::TviewMeta;
 
-    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
-        entity: entity.to_string(),
+    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
+        name: entity.to_string(),
     })?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
@@ -261,7 +201,7 @@ fn rebuild_statements(
     }
     let col_list = view_columns
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|c| ident::quoted(c))
         .collect::<Vec<_>>()
         .join(", ");
     // A key names one row: a UNION view returning several for one is refused
@@ -271,50 +211,25 @@ fn rebuild_statements(
     Ok((qi_tv, insert))
 }
 
-/// Create the propagation indexes `(<lookup>, <identity>)` that TVIEWs created
-/// before they became part of TVIEW creation are missing.
+/// Create the propagation indexes `(<lookup>, <identity>)` that `metas` are
+/// missing, and return the DDL of each; with `dry_run`, only return it.
 ///
 /// A TVIEW's rows are looked up by the columns holding an embedded TVIEW's key
 /// and those a fan-out patch writes through (the plan's lookup columns); without
-/// an index each lookup scans the whole TVIEW. A lookup column counts as covered when **any** index on the TVIEW
-/// leads with it, so user-created indexes are respected.
-///
-/// Returns the DDL for each missing index: executed, or only reported when
-/// `dry_run` is true. Idempotent: a second call returns no rows. On large
-/// TVIEWs run the reported statements by hand with `CREATE INDEX CONCURRENTLY`
-/// (which cannot run inside a function). The indexes it creates, and those its
-/// statements created when run by hand, are `pg_tviews`' (listed in
-/// `tviews.registry.managed_indexes`). Requires owning each TVIEW (or the
-/// extension).
-///
-/// Usage:
-///   `SELECT * FROM pg_tviews_ensure_propagation_indexes();`         -- all TVIEWs
-///   `SELECT * FROM pg_tviews_ensure_propagation_indexes('post');`   -- one entity
-///   `SELECT * FROM pg_tviews_ensure_propagation_indexes(NULL, true);` -- dry run
+/// an index each lookup scans the whole TVIEW. A lookup column counts as covered
+/// when **any** index on the TVIEW leads with it, so user-created indexes are
+/// respected. Idempotent. On large TVIEWs run the returned statements by hand with
+/// `CREATE INDEX CONCURRENTLY`. The indexes it creates, and those its statements
+/// created when run by hand, are `pg_tviews`' (`tviews.registry.managed_indexes`).
 ///
 /// # Errors
-/// Returns error if the catalog query or an index creation fails, or the caller
-/// does not own a TVIEW.
-#[pg_extern]
-fn pg_tviews_ensure_propagation_indexes(
-    entity: default!(Option<&str>, "NULL"),
-    dry_run: default!(bool, false),
-) -> Result<SetOfIterator<'static, String>, ErrorReport> {
-    crate::revision::check();
-    let metas = match entity {
-        Some(entity) => vec![
-            crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-                TViewError::MetadataNotFound {
-                    entity: entity.to_string(),
-                }
-            })?,
-        ],
-        None => crate::catalog::TviewMeta::load_all()?,
-    };
+/// Returns error if the catalog query or an index creation fails.
+pub(crate) fn ensure_propagation_indexes(
+    metas: &[crate::catalog::TviewMeta],
+    dry_run: bool,
+) -> TViewResult<Vec<String>> {
     let mut missing = Vec::new();
-    for meta in &metas {
-        let tview = format!("tv_{}", meta.entity_name);
-        crate::owner::require_owner(meta.tview_oid, &tview)?;
+    for meta in metas {
         let key = &meta.identity.column;
         let mut lookups = meta.plan.lookup_columns();
         lookups.remove(key.as_str());
@@ -349,26 +264,7 @@ fn pg_tviews_ensure_propagation_indexes(
             crate::catalog::indexes::record(meta.tview_oid, &recorded)?;
         }
     }
-
-    Ok(SetOfIterator::new(missing))
-}
-
-/// Refresh all TVIEWs in the database, dependencies first.
-/// This is a convenience function for bulk operations like schema migrations
-/// or data seeding workflows.
-///
-/// # Errors
-/// Returns error if any TVIEW cannot be refreshed
-#[pg_extern]
-fn pg_tviews_refresh_all_entities() -> Result<(), ErrorReport> {
-    crate::revision::check();
-    let order = refresh_all_in_dependency_order()?;
-    if order.is_empty() {
-        info!("No TVIEWs found to refresh");
-    } else {
-        info!("Successfully refreshed {} TVIEWs", order.len());
-    }
-    Ok(())
+    Ok(missing)
 }
 
 /// Rebuild every TVIEW from its backing view in dependency order: a TVIEW whose
@@ -386,30 +282,12 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
     Ok(graph.topo_order)
 }
 
-/// Show cascade dependency path for a given entity
+/// The TVIEWs embedding `entity`'s, transitively: each with its depth and the
+/// TVIEW it embeds.
 ///
-/// Returns the dependency chain showing which TVIEWs depend on this entity
-#[pg_extern]
-fn pg_tviews_show_cascade_path(
-    entity: &str,
-) -> Result<
-    TableIterator<
-        'static,
-        (
-            name!(depth, i32),
-            name!(entity_name, String),
-            name!(depends_on, String),
-        ),
-    >,
-    ErrorReport,
-> {
-    crate::revision::check();
-    if crate::catalog::TviewMeta::load_by_entity(entity)?.is_none() {
-        return Err(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        }
-        .into());
-    }
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub(crate) fn cascade_path(entity: &str) -> TViewResult<Vec<(i32, String, String)>> {
     let results = Spi::connect(|client| {
         let args = vec![crate::utils::spi::text(entity)];
         let rows = client.select(
@@ -436,9 +314,9 @@ fn pg_tviews_show_cascade_path(
                 WHERE NOT (m.entity = ANY(dt.path))
                   AND dt.depth < 10
             )
-            SELECT depth, entity AS entity_name, depends_on
+            SELECT depth, entity, depends_on
             FROM dep_tree
-            ORDER BY depth, entity_name",
+            ORDER BY depth, entity",
                 meta = crate::utils::meta_table()
             ),
             None,
@@ -447,13 +325,12 @@ fn pg_tviews_show_cascade_path(
         let mut paths = Vec::new();
         for row in rows {
             let depth = row["depth"].value::<i32>()?.unwrap_or(0);
-            let entity_name = row["entity_name"].value::<String>()?.unwrap_or_default();
+            let embedding = row["entity"].value::<String>()?.unwrap_or_default();
             let depends_on = row["depends_on"].value::<String>()?.unwrap_or_default();
-            paths.push((depth, entity_name, depends_on));
+            paths.push((depth, embedding, depends_on));
         }
         Ok::<_, spi::Error>(paths)
     })
     .map_err(|e| crate::utils::spi::catalog_error("Read the cascade path", &e))?;
-
-    Ok(TableIterator::new(results))
+    Ok(results)
 }

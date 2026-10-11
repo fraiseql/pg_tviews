@@ -62,14 +62,15 @@ SELECT assert_fresh('tv_post', 'pk_post', 'tv_post after a reset');
 SELECT must(NOT bool_or(needs_rebuild), 'a filled TVIEW still needs a rebuild')
 FROM pg_tviews_replication_status();
 
--- 3. pg_tviews_recover_after_crash fills a reset TVIEW once, and only a reset one.
+-- 3. pg_tviews_rebuild_all() fills a reset TVIEW once, and only a reset one.
 TRUNCATE tv_post;
-SELECT must(NOT pg_tviews_recover_after_crash('post'), 'recovered a trusted TVIEW');
+SELECT must(NOT EXISTS (SELECT 1 FROM pg_tviews_rebuild_all()), 'rebuilt a trusted TVIEW');
 DELETE FROM tviews.pg_tview_valid
  WHERE table_oid = 'tv_post'::regclass;
-SELECT must(pg_tviews_recover_after_crash('post'), 'a reset TVIEW was not recovered');
-SELECT must(NOT pg_tviews_recover_after_crash('post'), 'recovered twice');
-SELECT assert_fresh('tv_post', 'pk_post', 'tv_post after recover_after_crash');
+SELECT must((SELECT array_agg(entity) FROM pg_tviews_rebuild_all()) = '{post}',
+            'a reset TVIEW was not rebuilt');
+SELECT must(NOT EXISTS (SELECT 1 FROM pg_tviews_rebuild_all()), 'rebuilt twice');
+SELECT assert_fresh('tv_post', 'pk_post', 'tv_post after rebuild_all');
 
 -- 4. pg_tviews_rebuild_all() fills the reset TVIEWs only, dependencies first.
 TRUNCATE tv_user, tv_post;
@@ -82,17 +83,17 @@ SELECT pg_tviews_refresh('post');
 
 -- 5. A LOGGED TVIEW has no row and is never refilled; switching persistence
 --    keeps the rows right, and switching a reset TVIEW to LOGGED fills it first.
-SELECT pg_tviews_set_logged('user', true);
+ALTER TABLE tv_user SET LOGGED;
 SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_user'::regclass),
             'a LOGGED TVIEW kept its row');
-SELECT pg_tviews_set_logged('user', false);
+ALTER TABLE tv_user SET UNLOGGED;
 SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_user'::regclass),
             'a TVIEW switched to UNLOGGED has no row');
 TRUNCATE tv_post;
 DELETE FROM tviews.pg_tview_valid WHERE table_oid = 'tv_post'::regclass;
-SELECT pg_tviews_set_logged('post', true);
+ALTER TABLE tv_post SET LOGGED;
 SELECT assert_fresh('tv_post', 'pk_post', 'a reset TVIEW switched to LOGGED');
-SELECT pg_tviews_set_logged('post', false);
+ALTER TABLE tv_post SET UNLOGGED;
 
 -- 6. The row follows the TVIEW's table: created with it, gone with it.
 SELECT must((SELECT count(*) FROM tviews.pg_tview_valid) = 2, 'not one row per UNLOGGED TVIEW');

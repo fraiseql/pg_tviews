@@ -211,8 +211,8 @@ impl Flush {
     /// `entity`'s catalog row.
     fn meta(&mut self, entity: &str) -> TViewResult<TviewMeta> {
         self.cached_meta(entity)?
-            .ok_or_else(|| crate::TViewError::MetadataNotFound {
-                entity: entity.to_string(),
+            .ok_or_else(|| crate::TViewError::TviewNotFound {
+                name: entity.to_string(),
             })
     }
 

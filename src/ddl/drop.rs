@@ -22,7 +22,8 @@ use pgrx::prelude::*;
 /// Returns error if TVIEW doesn't exist (unless `if_exists` is true) or drop operation fails
 pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResult<bool> {
     crate::revision::check();
-    let (schema, entity) = super::replace::parse_name(tview_name)?;
+    let crate::catalog::resolve::Name { schema, entity } =
+        crate::catalog::resolve::parse(tview_name)?;
     let entity_name = entity.as_str();
     super::lock_entity(entity_name)?;
 
@@ -30,14 +31,14 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     let exists = tview_exists_in_metadata(entity_name)?
         && match &schema {
             Some(schema) => {
-                super::replace::registered_schema(entity_name)?.as_ref() == Some(schema)
+                crate::catalog::resolve::registered_schema(entity_name)?.as_ref() == Some(schema)
             }
             None => true,
         };
 
     if !exists && !if_exists {
-        return Err(TViewError::MetadataNotFound {
-            entity: tview_name.to_string(),
+        return Err(TViewError::TviewNotFound {
+            name: tview_name.to_string(),
         });
     }
 

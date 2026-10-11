@@ -2,6 +2,7 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 
+pub mod ident;
 pub mod spi;
 
 /// Emit an internal diagnostic: a `DEBUG1` message, visible with
@@ -155,24 +156,9 @@ pub fn qualified_relname_from_oid(oid: Oid) -> crate::TViewResult<String> {
         };
         Ok(format!(
             "{}.{}",
-            quote_ident(&name(nsp)),
-            quote_ident(&name(rel))
+            ident::quote_if_needed(&name(nsp)),
+            ident::quote_if_needed(&name(rel))
         ))
-    }
-}
-
-/// `name` quoted as SQL needs it (`quote_ident`): unchanged when it is a plain
-/// lower-case identifier that is no keyword, double-quoted otherwise.
-#[must_use]
-pub fn quote_ident(name: &str) -> String {
-    let Ok(c) = std::ffi::CString::new(name) else {
-        return quote_identifier(name);
-    };
-    // SAFETY: a NUL-terminated string; the result is copied before `c` drops.
-    unsafe {
-        std::ffi::CStr::from_ptr(pg_sys::quote_identifier(c.as_ptr()))
-            .to_string_lossy()
-            .into_owned()
     }
 }
 
@@ -297,13 +283,6 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> 
     })
 }
 
-/// Quote a SQL identifier for safe use in queries: always double-quoted, with
-/// internal double quotes doubled, as `quote_ident` does for any name.
-#[must_use]
-pub fn quote_identifier(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
 /// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:
 /// quotes doubled, and an `E''` literal with backslashes doubled when it holds a
 /// backslash, so it reads the same whatever `standard_conforming_strings` is.
@@ -361,28 +340,28 @@ mod tests {
 
     #[test]
     fn quote_identifier_always_quotes_and_doubles_quotes() {
-        assert_eq!(quote_identifier("post"), "\"post\"");
-        assert_eq!(quote_identifier("Post"), "\"Post\"");
-        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+        assert_eq!(ident::quoted("post"), "\"post\"");
+        assert_eq!(ident::quoted("Post"), "\"Post\"");
+        assert_eq!(ident::quoted("test\"col"), "\"test\"\"col\"");
     }
 
     #[test]
     fn test_quote_identifier_normal() {
-        assert_eq!(quote_identifier("post"), "\"post\"");
+        assert_eq!(ident::quoted("post"), "\"post\"");
     }
 
     #[test]
     fn test_quote_identifier_uppercase() {
-        assert_eq!(quote_identifier("Post"), "\"Post\"");
+        assert_eq!(ident::quoted("Post"), "\"Post\"");
     }
 
     #[test]
     fn test_quote_identifier_with_underscore() {
-        assert_eq!(quote_identifier("pk_user"), "\"pk_user\"");
+        assert_eq!(ident::quoted("pk_user"), "\"pk_user\"");
     }
 
     #[test]
     fn test_quote_identifier_with_internal_quotes() {
-        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+        assert_eq!(ident::quoted("test\"col"), "\"test\"\"col\"");
     }
 }

@@ -7,8 +7,8 @@ use super::index_name;
 use super::indexes::{create_tview_indexes, storage_clause};
 use crate::error::TViewError;
 use crate::error::TViewResult;
+use crate::utils::ident;
 use crate::utils::log_debug;
-use crate::utils::quote_identifier;
 use pgrx::pg_sys;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::Spi;
@@ -43,8 +43,8 @@ pub(crate) fn key_table_on_identity(
     if leftover == Some(true) {
         let sql = format!(
             "DROP INDEX {}.{}",
-            quote_identifier(schema_name),
-            quote_identifier(&pk_unique)
+            ident::quoted(schema_name),
+            ident::quoted(&pk_unique)
         );
         crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
             query: sql,
@@ -65,7 +65,7 @@ pub(crate) fn key_table_on_identity(
         [] => {
             let sql = format!(
                 "ALTER TABLE {qualified} ADD PRIMARY KEY ({})",
-                quote_identifier(identity)
+                ident::quoted(identity)
             );
             crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
                 query: sql,
@@ -158,8 +158,8 @@ pub(crate) fn create_backing_view(
     select_sql: &str,
     schema_name: &str,
 ) -> TViewResult<()> {
-    let qi_schema = quote_identifier(schema_name);
-    let qi_view = quote_identifier(view_name);
+    let qi_schema = ident::quoted(schema_name);
+    let qi_view = ident::quoted(view_name);
     let create_view_sql = format!("CREATE VIEW {qi_schema}.{qi_view} AS {select_sql}");
 
     log_debug!(
@@ -260,8 +260,8 @@ pub(crate) fn create_materialized_table(
     storage: Storage,
     view_oid: pg_sys::Oid,
 ) -> TViewResult<Vec<String>> {
-    let qi_schema = quote_identifier(schema_name);
-    let qi_tview = quote_identifier(tview_name);
+    let qi_schema = ident::quoted(schema_name);
+    let qi_tview = ident::quoted(tview_name);
     // `<name> <type>`, with PRIMARY KEY on the identity column.
     let key = |name: &str| if name == identity { " PRIMARY KEY" } else { "" };
 
@@ -270,13 +270,13 @@ pub(crate) fn create_materialized_table(
 
     // pk_<entity>: the row identity, or a plain column (DISTINCT ON another key)
     if let Some(pk) = &schema.pk {
-        columns.push(format!("{} BIGINT{}", quote_identifier(pk), key(pk)));
+        columns.push(format!("{} BIGINT{}", ident::quoted(pk), key(pk)));
     }
 
     // ID column (Trinity identifier)
     if let Some(id) = &schema.id {
         let not_null = if id == identity { key(id) } else { " NOT NULL" };
-        columns.push(format!("{} UUID{not_null}", quote_identifier(id)));
+        columns.push(format!("{} UUID{not_null}", ident::quoted(id)));
     }
 
     // Every other column takes the backing view's type, typmod included and
@@ -296,7 +296,7 @@ pub(crate) fn create_materialized_table(
     if let Some(identifier) = &schema.identifier {
         columns.push(format!(
             "{} {}{}",
-            quote_identifier(identifier),
+            ident::quoted(identifier),
             view_type(identifier, "TEXT"),
             key(identifier)
         ));
@@ -304,14 +304,14 @@ pub(crate) fn create_materialized_table(
 
     // Data column (JSONB read model)
     if let Some(data) = &schema.data {
-        columns.push(format!("{} JSONB", quote_identifier(data)));
+        columns.push(format!("{} JSONB", ident::quoted(data)));
     }
 
     // fk_* columns: the type the definition gives them.
     for fk in &schema.fk {
         columns.push(format!(
             "{} {}{}",
-            quote_identifier(fk),
+            ident::quoted(fk),
             view_type(fk, "BIGINT"),
             key(fk)
         ));
@@ -321,7 +321,7 @@ pub(crate) fn create_materialized_table(
     for uuid_fk in &schema.uuid_fk {
         columns.push(format!(
             "{} {}{}",
-            quote_identifier(uuid_fk),
+            ident::quoted(uuid_fk),
             view_type(uuid_fk, "UUID"),
             key(uuid_fk)
         ));
@@ -330,7 +330,7 @@ pub(crate) fn create_materialized_table(
     for (col_name, col_type) in &schema.additional {
         columns.push(format!(
             "{} {}{}",
-            quote_identifier(col_name),
+            ident::quoted(col_name),
             view_type(col_name, col_type),
             key(col_name)
         ));
@@ -383,11 +383,11 @@ pub(crate) fn populate_initial_data(
     // Use the actual view columns for both insert and select
     let insert_columns = view_columns;
 
-    let qi_schema = quote_identifier(schema_name);
-    let qi_tview = quote_identifier(tview_name);
+    let qi_schema = ident::quoted(schema_name);
+    let qi_tview = ident::quoted(tview_name);
     let col_list = insert_columns
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|c| ident::quoted(c))
         .collect::<Vec<_>>()
         .join(", ");
 

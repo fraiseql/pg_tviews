@@ -14,7 +14,7 @@ Placeholders stand for the values each message carries.
 
 | SQLSTATE | Condition | Error | Message | Hint |
 |---|---|---|---|---|
-| `42704` | `undefined_object` | `MetadataNotFound` | TVIEW metadata not found for entity '&lt;entity&gt;' | SELECT entity FROM tviews.pg_tview_meta lists the registered TVIEWs. |
+| `42704` | `undefined_object` | `TviewNotFound` | TVIEW &lt;tview&gt; does not exist | SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by its entity, tv_&lt;entity&gt; or schema.tv_&lt;entity&gt;. |
 | `42P07` | `duplicate_table` | `RelationExists` | TVIEW &lt;name&gt; already exists | pg_tviews_create_or_replace() changes an existing TVIEW. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |

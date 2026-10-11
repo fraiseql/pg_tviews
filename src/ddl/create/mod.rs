@@ -250,8 +250,8 @@ fn create_tview_inner(
             crate::refresh::refuse_duplicate_keys_in(
                 &format!(
                     "{}.{}",
-                    crate::utils::quote_identifier(&schema_name),
-                    crate::utils::quote_identifier(&tv_table_name)
+                    crate::utils::ident::quoted(&schema_name),
+                    crate::utils::ident::quoted(&tv_table_name)
                 ),
                 &lineage.identity.name,
                 &crate::utils::qualified_relname_from_oid(view_oid)?,
@@ -331,8 +331,8 @@ pub fn reregister_metadata(
             operation: format!("Read the metadata of tv_{entity_name}"),
             pg_error: e.to_string(),
         })?
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity_name.to_string(),
+        .ok_or_else(|| TViewError::TviewNotFound {
+            name: entity_name.to_string(),
         })?;
     let view_oid = meta.view_oid;
     select::check_one_select(definition)?;
@@ -383,8 +383,8 @@ pub fn reregister_metadata(
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     // Ownership first: a role that may not re-register the TVIEW takes no lock.
     let meta = crate::catalog::TviewMeta::load_to_rederive(entity)?.ok_or_else(|| {
-        TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        TViewError::TviewNotFound {
+            name: entity.to_string(),
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
@@ -412,8 +412,8 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         pg_error: e.to_string(),
     })?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
-        return Err(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        return Err(TViewError::TviewNotFound {
+            name: entity.to_string(),
         });
     };
     let plan = reregister_metadata(entity, &schema_name, &definition)?;

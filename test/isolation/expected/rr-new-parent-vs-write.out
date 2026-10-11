@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: i_begin i_insert r_begin r_rename r_commit i_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step i_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
@@ -41,9 +41,9 @@ post| 2|ada   |t
 
 
 starting permutation: r_begin r_rename i_begin i_insert r_commit i_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
@@ -79,9 +79,9 @@ post| 1|grace |t
 
 
 starting permutation: i_begin r_begin r_rename r_commit i_insert i_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step i_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
@@ -117,9 +117,9 @@ post| 1|grace |t
 
 
 starting permutation: r_begin i_begin i_insert i_commit r_rename r_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;

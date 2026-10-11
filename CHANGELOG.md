@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **One name for a TVIEW across the API** (#211, ADR 0211). Every function acting on
+  one TVIEW takes it as its first parameter, `tview`, spelled as its entity
+  (`post`), `tv_post`, or `schema.tv_post`, quoted or not: `pg_tviews_refresh`,
+  `pg_tviews_reregister`, `pg_tviews_refresh_time_dependent`,
+  `pg_tviews_ensure_propagation_indexes`, `pg_tviews_show_cascade_path`,
+  `pg_tviews_mapping_query`, `pg_tviews_read_set_queries`, `pg_tviews_profile`,
+  `pg_tviews_create`, `pg_tviews_create_or_replace`, `pg_tviews_drop`. Named arguments
+  `tview_name =>`, `entity =>`, `entity_name =>` and `p_entity =>` become `tview =>`. A
+  name that names no TVIEW fails with `42704` and `TVIEW <name> does not exist`.
+  Messages name the TVIEW's table (`TVIEW public.tv_post created`, `… dropped`).
+  `pg_tviews_create_or_replace` with an unqualified name changes the existing TVIEW
+  wherever it lives.
+- **Removed functions** (ADR 0211), each with what replaces it:
+  `pg_tviews_create_aggregate` (`pg_tviews_create(…, '{"group_keys": …}')`),
+  `pg_tviews_refresh_all_entities` (`pg_tviews_refresh_all()`),
+  `pg_tviews_recover_after_crash` (`pg_tviews_rebuild_all()`),
+  `pg_tviews_set_logged` (the `logged` option, or `ALTER TABLE … SET [UN]LOGGED`),
+  `pg_tviews_is_replica_readable` (`pg_tviews_replication_status()`, or
+  `registry.options->'logged'`), `pg_tviews_performance_stats` (`pg_tviews_profile()`)
+  and `pg_tviews_set_typename` (the `typename` option).
+- **`pg_tviews_show_cascade_path` returns `entity`** (was `entity_name`);
+  **`pg_tviews_profile` returns `schema` and `name`** (was `tview`, now its parameter).
+
 - **A TVIEW is its definition and its options; no setting changes it** (ADR 0220).
   These settings are removed, and setting one fails: `pg_tviews.unlogged_by_default`,
   `pg_tviews.fillfactor`, `pg_tviews.data_gin_index` (now options only),
@@ -39,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead: `DISTINCT ON` over the UNION, ordered by preference.
 
 ### Added
+
+- **`tviews.pg_tviews_entity_of(tview)`**: the entity a TVIEW name names, for tools.
 
 - **`pg_tviews_create()` takes `options`**, those of `pg_tviews_create_or_replace()`.
 - **Option `typename`**: the GraphQL type name `pg_tviews_flush_and_report()` reports,

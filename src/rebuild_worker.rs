@@ -82,7 +82,7 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             );
             return;
         }
-        let path = format!("{}, public", crate::utils::quote_identifier(&schema));
+        let path = format!("{}, public", crate::utils::ident::quoted(&schema));
         let args = [crate::utils::spi::text(path.as_str())];
         if let Err(e) = Spi::run_with_args(
             "SELECT pg_catalog.set_config('search_path', $1, true)",

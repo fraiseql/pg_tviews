@@ -11,7 +11,7 @@ pub use row::refresh_key;
 
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
@@ -173,7 +173,7 @@ pub(crate) fn refuse_duplicate_keys_in(
     filter: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<()> {
-    let qi_key = quote_identifier(key_column);
+    let qi_key = ident::quoted(key_column);
     let sql = format!(
         "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
                  GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
@@ -195,7 +195,7 @@ pub(crate) fn refuse_duplicate_keys_in(
 pub(crate) fn column_list(col_names: &[String]) -> String {
     col_names
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|c| ident::quoted(c))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -222,7 +222,7 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
         .iter()
         .filter(|c| c.as_str() != key_col)
         .map(|c| {
-            let q = quote_identifier(c);
+            let q = ident::quoted(c);
             let fresh = format!("EXCLUDED.{q}");
             (q, fresh)
         })
@@ -271,7 +271,7 @@ pub(crate) fn run_counted_upsert(
     conflict: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<(i64, Written)> {
-    let qi_pk = quote_identifier(&format!("pk_{entity}"));
+    let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
@@ -326,8 +326,8 @@ pub(crate) fn lock_rows(
         return Ok(Vec::new());
     }
     let key_type = meta.key_type()?;
-    let qi_key = quote_identifier(&meta.identity.column);
-    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_key = ident::quoted(&meta.identity.column);
+    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let lock = if transaction_snapshot {
         ""
     } else {

@@ -254,7 +254,7 @@ SELECT must(cor('"Odd.Schema".tv_odd', $$
     = 'rebuilt', 'quoted schema rebuilt');
 SELECT tviews.pg_tviews_drop('"Odd.Schema".tv_odd');
 SELECT must(NOT EXISTS (SELECT 1 FROM tviews.registry WHERE entity = 'odd'), 'quoted schema drop');
-SELECT must(error_of($$SELECT cor('"app.tv_user', 'SELECT 1')$$) LIKE '%tview_name%',
+SELECT must(error_of($$SELECT cor('"app.tv_user', 'SELECT 1')$$) LIKE '%tview%',
             'unterminated quote');
 RESET ROLE;
 

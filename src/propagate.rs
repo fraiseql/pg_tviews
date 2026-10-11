@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::catalog::KeyType;
 use crate::queue::RefreshKey;
 use crate::queue::key::KeyValue;
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 
 /// The parent rows to refresh when rows of `child` changed: for each TVIEW that
 /// embeds `child`, its rows whose lookup columns (the output columns its plan
@@ -39,8 +39,8 @@ pub fn find_parents_batch(
         return Ok(result);
     }
     let child_table = crate::catalog::TviewMeta::load_by_entity(child)?
-        .ok_or_else(|| crate::TViewError::MetadataNotFound {
-            entity: child.to_string(),
+        .ok_or_else(|| crate::TViewError::TviewNotFound {
+            name: child.to_string(),
         })?
         .tview_oid;
     for parent in parents {
@@ -107,13 +107,13 @@ fn find_affected_keys_batch(
     in_view: &[i64],
 ) -> crate::TViewResult<HashMap<i64, Vec<KeyValue>>> {
     let meta = crate::catalog::TviewMeta::load_by_entity(parent)?.ok_or_else(|| {
-        crate::TViewError::MetadataNotFound {
-            entity: parent.to_string(),
+        crate::TViewError::TviewNotFound {
+            name: parent.to_string(),
         }
     })?;
-    let qi_fk = quote_identifier(lookup_col);
+    let qi_fk = ident::quoted(lookup_col);
     let qi_parent = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_key = quote_identifier(&meta.identity.column);
+    let qi_key = ident::quoted(&meta.identity.column);
     let parent_key_type = meta.key_type()?;
     let key_type = match parent_key_type {
         KeyType::Int => "pg_catalog.int8",

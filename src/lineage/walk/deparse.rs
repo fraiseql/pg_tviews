@@ -1,7 +1,7 @@
 //! Expressions written back as SQL for the mapping queries, and the functions a level calls.
 
 use super::{
-    Oid, Resolved, Spi, Sql, Walker, collect_functions, cstr, elements, pg_sys, quote_ident,
+    Oid, Resolved, Spi, Sql, Walker, collect_functions, cstr, elements, pg_sys, quote_if_needed,
     quote_literal, tag, term_sql,
 };
 
@@ -195,7 +195,7 @@ impl Walker<'_> {
                     let immutable = pg_sys::func_volatile(funcid)
                         == pg_sys::PROVOLATILE_IMMUTABLE.cast_signed();
                     (
-                        format!("{}.{}", quote_ident(&nsp), quote_ident(&name)),
+                        format!("{}.{}", quote_if_needed(&nsp), quote_if_needed(&name)),
                         immutable,
                     )
                 }

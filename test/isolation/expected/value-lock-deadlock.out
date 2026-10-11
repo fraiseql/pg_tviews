@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: o_begin o_insert t_begin t_insert o_rename t_rename o_commit t_commit t_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step o_begin: BEGIN;

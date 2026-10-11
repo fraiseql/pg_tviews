@@ -78,8 +78,8 @@ impl Tview {
     fn reserved(&self) -> TViewResult<(Vec<String>, Vec<ManagedIndex>)> {
         let recorded = indexes::recorded(self.table)?;
         let meta = crate::catalog::TviewMeta::load_by_entity(&self.entity)?.ok_or_else(|| {
-            TViewError::MetadataNotFound {
-                entity: self.entity.clone(),
+            TViewError::TviewNotFound {
+                name: self.entity.clone(),
             }
         })?;
         let tview = format!("tv_{}", self.entity);

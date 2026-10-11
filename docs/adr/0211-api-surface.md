@@ -49,19 +49,23 @@ So reading back what to pass to `pg_tviews_create_or_replace` meant mapping colu
   | the table name | `tv_post` |
   | a schema-qualified or quoted relation | `app.tv_post`, `"App".tv_post` |
 
-- Resolution order:
-  1. A qualified name, or a name starting with `tv_`, is looked up as a relation (with the
-     caller's `search_path` for an unqualified one).
-  2. Otherwise, or when that relation is not a TVIEW's table, the name is looked up as an
-     entity.
-  3. When both forms find different TVIEWs, the call fails as ambiguous.
+- A TVIEW's table is always `tv_<entity>`, and an entity names one TVIEW in the whole
+  database. So every spelling reduces to its entity: drop the schema and the `tv_`
+  prefix, then look the entity up. A schema, when written, must be the TVIEW's;
+  `search_path` plays no part.
+- `pg_tviews_create_or_replace` with an unqualified name changes the existing TVIEW
+  wherever it lives. It creates a new one in `current_schema()`.
+- `tviews.pg_tviews_entity_of(tview text)` exposes the resolver, for tools and for
+  `pg_tviews_profile`.
 - `tb_` and `v_` names are never accepted: they name other objects by the convention.
 - A name that resolves to nothing fails with `42704 undefined_object` and one message listing
   the forms tried. Messages name a TVIEW by its relation (`public.tv_post`).
 - Functions that create a TVIEW (`pg_tviews_create`, `pg_tviews_create_or_replace`) parse the
   same forms (`tview` is the TVIEW to create).
 - Output columns that name a TVIEW are `entity` (and `schema`, `name` where a relation is
-  meant), never `entity_name`.
+  meant), never `entity_name`. `pg_tviews_show_cascade_path` returns `entity`;
+  `pg_tviews_profile` returns `schema` and `name` instead of `tview` (now its
+  parameter).
 
 ### 2. One exported layer
 

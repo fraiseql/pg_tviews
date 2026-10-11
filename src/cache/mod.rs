@@ -213,14 +213,6 @@ pub fn register_relcache_callback() {
     }
 }
 
-/// Invalidate the `pg_tviews` caches of every backend (and this one) once the
-/// current transaction commits, by invalidating `relid`'s relcache entry.
-#[pg_extern]
-fn pg_tviews_invalidate_caches(relid: Oid) {
-    // SAFETY: the caller passes an existing relation (the trigger's TG_RELID).
-    unsafe { pg_sys::CacheInvalidateRelcacheByRelid(relid) };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -166,7 +166,7 @@ fn defines_view(candidate: &str, view_oid: Oid) -> bool {
 /// nothing matched. The result is a candidate: the caller must verify it.
 #[must_use]
 pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
-    rewrite_with(sql, table, old, new, crate::utils::quote_ident)
+    rewrite_with(sql, table, old, new, crate::utils::ident::quote_if_needed)
 }
 
 /// [`rewrite_column_references`] with `quote` writing an identifier.
@@ -327,14 +327,9 @@ fn select_list_items(tokens: &[&Token]) -> Vec<(usize, usize)> {
     items
 }
 
-/// Identifier equality with `PostgreSQL` folding: unquoted words compare
-/// case-insensitively, quoted ones exactly.
+/// Whether `word` names `name`, with `PostgreSQL`'s folding.
 fn ident_eq(word: &sqlparser::tokenizer::Word, name: &str) -> bool {
-    if word.quote_style.is_some() {
-        word.value == name
-    } else {
-        word.value.to_lowercase() == name
-    }
+    crate::utils::ident::names(&word.value, word.quote_style.is_some(), name)
 }
 
 #[cfg(test)]
@@ -351,7 +346,7 @@ mod tests {
         if plain {
             name.to_string()
         } else {
-            crate::utils::quote_identifier(name)
+            crate::utils::ident::quoted(name)
         }
     }
 

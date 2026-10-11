@@ -1,34 +1,6 @@
 //! Extension lifecycle: initialization, version, and runtime checks.
 
-use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
-
-/// Get the version of the `pg_tviews` extension
-#[pg_extern]
-#[allow(clippy::missing_const_for_fn)] // Reason: pgrx #[pg_extern] is incompatible with const fn
-fn pg_tviews_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-/// Fill `entity`'s TVIEW from its backing view if PostgreSQL reset it (an
-/// UNLOGGED table emptied by a crash restart or a promotion), and say whether it
-/// did. A TVIEW that is merely empty is left alone. Requires owning the TVIEW (or
-/// the extension): the fill runs as its owner.
-///
-/// # Errors
-/// Returns an error if the entity is not registered or the fill fails.
-#[pg_extern]
-pub fn pg_tviews_recover_after_crash(entity_name: &str) -> Result<bool, ErrorReport> {
-    crate::revision::check();
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)?.ok_or_else(|| {
-        crate::TViewError::MetadataNotFound {
-            entity: entity_name.to_string(),
-        }
-    })?;
-    // The fill runs as the TVIEW's owner: only its owner may ask for it.
-    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity_name}"))?;
-    Ok(validity::fill_if_reset(entity_name)?)
-}
 
 /// Whether an UNLOGGED TVIEW's rows can be trusted, and its fill when they can't.
 ///

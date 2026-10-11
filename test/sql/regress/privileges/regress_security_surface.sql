@@ -72,10 +72,8 @@ RESET ROLE;
 CREATE TABLE public.maintenance (fn regprocedure);
 INSERT INTO public.maintenance VALUES
     ('tviews.pg_tviews_refresh_all()'),
-    ('tviews.pg_tviews_refresh_all_entities()'),
     ('tviews.pg_tviews_rebuild_all(boolean)'),
     ('tviews.pg_tviews_reregister_all(boolean)'),
-    ('tviews.pg_tviews_set_logged(text, boolean)'),
     ('tviews.pg_tviews_ensure_propagation_indexes(text, boolean)'),
     ('tviews.pg_tviews_invalidate_caches(oid)'),
     ('tviews.pg_tviews_audit_write(jsonb)');
@@ -101,9 +99,9 @@ BEGIN
            'tviews.contract_version()', 'tviews.pg_tviews_version()',
            'tviews.pg_tviews_catalog_revision()', 'tviews.pg_tviews_check_jsonb_delta()',
            'tviews.pg_tviews_health_check()', 'tviews.pg_tviews_profile(text,bigint)',
-           'tviews.pg_tviews_performance_stats()', 'tviews.pg_tviews_queue_stats()',
+           'tviews.pg_tviews_queue_stats()', 'tviews.pg_tviews_entity_of(text)',
            'tviews.pg_tviews_debug_queue()', 'tviews.pg_tviews_replication_status()',
-           'tviews.pg_tviews_is_replica_readable(text)', 'tviews.pg_tviews_mapping_query(text,oid)',
+           'tviews.pg_tviews_mapping_query(text,oid)',
            'tviews.pg_tviews_read_set_queries(text,oid)',
            'tviews.pg_tviews_show_cascade_path(text)', 'tviews.pg_tviews_defines_view(oid,text)',
            -- the caller's session
@@ -111,11 +109,10 @@ BEGIN
            'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',
            'tviews.pg_tviews_is_suspended()', 'tviews.pg_tviews_suspended_entities()',
            -- one TVIEW, owner checked (creation: the schema's CREATE privilege)
-           'tviews.pg_tviews_create(text,text,jsonb)', 'tviews.pg_tviews_create_aggregate(text,text,jsonb)',
+           'tviews.pg_tviews_create(text,text,jsonb)',
            'tviews.pg_tviews_create_or_replace(text,text,jsonb)',
            'tviews.pg_tviews_drop(text,boolean,boolean)', 'tviews.pg_tviews_refresh(text)',
-           'tviews.pg_tviews_reregister(text)', 'tviews.pg_tviews_set_typename(text,text)',
-           'tviews.pg_tviews_recover_after_crash(text)',
+           'tviews.pg_tviews_reregister(text)',
            'tviews.pg_tviews_refresh_time_dependent(text)',
            'tviews.pg_tviews_handle_dropped(text)',
            -- triggers and event triggers
@@ -132,18 +129,15 @@ END $$;
 SET ROLE regress_sec_outsider;
 SELECT public.must_refuse(ARRAY[
     'SELECT tviews.pg_tviews_refresh_all()',
-    'SELECT tviews.pg_tviews_refresh_all_entities()',
     'SELECT * FROM tviews.pg_tviews_rebuild_all(false)',
     'SELECT * FROM tviews.pg_tviews_rebuild_all(true)',
     'SELECT * FROM tviews.pg_tviews_reregister_all()',
-    'SELECT tviews.pg_tviews_set_logged(''doc'', true)',
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes()',
     'SELECT tviews.pg_tviews_invalidate_caches(''public.tb_doc''::regclass)',
     -- someone else's TVIEW
     'SELECT tviews.pg_tviews_refresh(''doc'')',
     'SELECT tviews.pg_tviews_reregister(''doc'')',
-    'SELECT tviews.pg_tviews_recover_after_crash(''doc'')',
-    'SELECT tviews.pg_tviews_set_typename(''doc'', ''Doc'')',
+    'SELECT tviews.pg_tviews_refresh_time_dependent(''doc'')',
     'SELECT tviews.pg_tviews_drop(''public.tv_doc'')',
     'SELECT tviews.pg_tviews_create_or_replace(''public.tv_doc'', ''SELECT pk_doc, id, '
         'jsonb_build_object(''''title'''', title) AS data FROM public.tb_doc'')'
@@ -153,14 +147,12 @@ RESET ROLE;
 -- ── An operator role, granted the maintenance functions ─────────────────────
 -- (docs/user-guides/operators.md). Bulk maintenance runs each TVIEW's view as its
 -- owner; acting on one TVIEW still requires owning it.
-GRANT EXECUTE ON FUNCTION tviews.pg_tviews_refresh_all(), tviews.pg_tviews_refresh_all_entities(),
+GRANT EXECUTE ON FUNCTION tviews.pg_tviews_refresh_all(),
     tviews.pg_tviews_rebuild_all(boolean), tviews.pg_tviews_reregister_all(boolean),
-    tviews.pg_tviews_set_logged(text, boolean),
     tviews.pg_tviews_ensure_propagation_indexes(text, boolean)
     TO regress_sec_operator;
 SET ROLE regress_sec_operator;
 SELECT public.must_refuse(ARRAY[
-    'SELECT tviews.pg_tviews_set_logged(''doc'', true)',
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(''doc'')',
     'SELECT tviews.pg_tviews_refresh(''doc'')'
 ], 'an operator');
@@ -172,8 +164,7 @@ SET ROLE regress_sec_operator;
 SELECT public.must_allow(ARRAY[
     'SELECT * FROM tviews.pg_tviews_rebuild_all(true)',
     'SELECT * FROM tviews.pg_tviews_rebuild_all(false)',
-    'SELECT tviews.pg_tviews_refresh_all()',
-    'SELECT tviews.pg_tviews_refresh_all_entities()'
+    'SELECT tviews.pg_tviews_refresh_all()'
 ], 'an operator');
 RESET ROLE;
 DO $$
@@ -188,8 +179,8 @@ SET ROLE regress_sec_owner;
 SELECT public.must_allow(ARRAY[
     'SELECT tviews.pg_tviews_refresh(''doc'')',
     'SELECT tviews.pg_tviews_reregister(''doc'')',
-    'SELECT tviews.pg_tviews_recover_after_crash(''doc'')',
-    'SELECT tviews.pg_tviews_set_typename(''doc'', ''Doc'')'
+    'SELECT tviews.pg_tviews_create_or_replace(''doc'', query, options) FROM tviews.registry '
+        'WHERE entity = ''doc'''
 ], 'the owner');
 SELECT public.must_refuse(ARRAY[
     'SELECT tviews.pg_tviews_refresh_all()',

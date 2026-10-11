@@ -49,11 +49,11 @@ SELECT pg_tviews_create('tv_post', $$
     JOIN tviews.public__tv_user u ON u.pk_user = p.fk_user
     JOIN public.tv_user tu ON tu.pk_user = p.fk_user $$, '{"logged": false, "data_gin_index": true}');
 RESET search_path;
-SELECT pg_tviews_create_aggregate('tv_user_orders', $$
+SELECT pg_tviews_create('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 
 -- A manual change the registry must see.
 ALTER TABLE tv_user SET (fillfactor = 70);

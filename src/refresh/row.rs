@@ -14,7 +14,7 @@ use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
 
 use crate::jsonb_delta::jsonb_delta_schema;
-use crate::utils::{qualified_relname_from_oid, quote_identifier};
+use crate::utils::{ident, qualified_relname_from_oid};
 
 /// Refresh a single TVIEW row when its source data changes.
 ///
@@ -55,7 +55,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
         meta,
         &format!(
             "{} = {}",
-            quote_identifier(&meta.identity.column),
+            ident::quoted(&meta.identity.column),
             super::key_cast(&key_type, "$1", false)
         ),
         &[super::key_scalar(&key_type, key)?],
@@ -81,8 +81,8 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
 fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<i64>> {
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_key = quote_identifier(&meta.identity.column);
-    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_key = ident::quoted(&meta.identity.column);
+    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'",
@@ -117,7 +117,7 @@ fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, super
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
-    let qi_key = quote_identifier(key_col);
+    let qi_key = ident::quoted(key_col);
 
     // Schema-qualified backing view, so the refresh works under any search_path
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;

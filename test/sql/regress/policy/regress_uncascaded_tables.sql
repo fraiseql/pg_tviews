@@ -103,11 +103,11 @@ SELECT pg_tviews_create('tv_post', $$
     FROM tb_post p
     LEFT JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_user bu ON bu.pk_user = p.fk_user $$);
-SELECT pg_tviews_create_aggregate('tv_user_posts', $$
+SELECT pg_tviews_create('tv_user_posts', $$
     SELECT p.fk_user AS pk_user_posts, u.id, jsonb_build_object('posts', count(*)) AS data
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user
     GROUP BY p.fk_user, u.id
-$$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_post": "fk_user", "tb_user": "pk_user"}}');
 
 -- An uncorrelated subquery: nothing links tb_flag to the key; the TVIEW accepts
 -- stale rows (warn).

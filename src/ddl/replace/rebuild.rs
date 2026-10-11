@@ -5,7 +5,7 @@ use super::{Spi, invalid, pg_sys, spi};
 use crate::catalog::TviewMeta;
 use crate::ddl::create::{self, Storage};
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 
 /// The table's actual storage, as `tviews.registry` reports it.
 pub(super) fn current_storage(entity: &str) -> TViewResult<Storage> {
@@ -79,8 +79,8 @@ pub(super) fn alter_storage(
         for index in &gin {
             crate::utils::spi::run_ddl(&format!(
                 "DROP INDEX {}.{}",
-                quote_identifier(schema),
-                quote_identifier(index)
+                ident::quoted(schema),
+                ident::quoted(index)
             ))?;
         }
         crate::catalog::indexes::forget(table, &gin)?;
@@ -133,7 +133,7 @@ pub(super) fn rebuild(
     let user_indexes = user_indexes(meta.tview_oid)?;
 
     crate::ddl::drop::drop_tview(
-        &format!("{}.{tv_name}", quote_identifier(schema)),
+        &format!("{}.{tv_name}", ident::quoted(schema)),
         false,
         false,
     )?;
@@ -148,16 +148,11 @@ pub(super) fn rebuild(
         )
     })?;
 
-    let rebuilt =
-        TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
+    let rebuilt = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
+        name: entity.to_string(),
+    })?;
     let (tv, view) = (
-        format!(
-            "{}.{}",
-            quote_identifier(schema),
-            quote_identifier(&tv_name)
-        ),
+        format!("{}.{}", ident::quoted(schema), ident::quoted(&tv_name)),
         crate::utils::qualified_relname_from_oid(rebuilt.view_oid)?,
     );
     restore_privileges(&restore, &tv, &view)?;

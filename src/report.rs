@@ -8,9 +8,8 @@
 
 use crate::error::{TViewError, TViewResult};
 use crate::queue::affected::{self, Change, NetChange};
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::JsonB;
-use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
@@ -28,80 +27,15 @@ use std::collections::{BTreeSet, HashMap};
 ///
 /// # Errors
 /// Returns an error if the flush or a catalog/TVIEW read fails.
-#[pg_extern]
-fn pg_tviews_flush_and_report(
-    max_entities: default!(i32, 500),
-    include_data: default!(bool, true),
-    reset: default!(bool, true),
-) -> Result<JsonB, ErrorReport> {
-    crate::revision::check();
+pub(crate) fn flush_and_report(
+    max_entities: i32,
+    include_data: bool,
+    reset: bool,
+) -> TViewResult<Value> {
     crate::flush::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
-    Ok(JsonB(build_report(
-        &changes,
-        &overflow,
-        limit,
-        include_data,
-    )?))
-}
-
-/// Set (or with NULL, reset to `PascalCase(entity)`) the GraphQL type name that
-/// [`pg_tviews_flush_and_report`] reports for `entity`.
-///
-/// # Errors
-/// Returns an error if the entity is unknown or the name is not a GraphQL name.
-#[pg_extern]
-fn pg_tviews_set_typename(entity: &str, typename: Option<&str>) -> Result<(), ErrorReport> {
-    crate::revision::check();
-    if let Some(name) = typename {
-        let valid = name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !valid {
-            return Err(TViewError::InvalidInput {
-                parameter: "typename".to_string(),
-                reason: format!("'{name}' is not a GraphQL name ([_A-Za-z][_0-9A-Za-z]*)"),
-            }
-            .into());
-        }
-    }
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-        TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        }
-    })?;
-    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    let updated = Spi::connect_mut(|client| {
-        let args = [
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(typename),
-        ];
-        client
-            .update(
-                &format!(
-                    "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &args,
-            )
-            .map(|t| t.len())
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Set GraphQL type name".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    if updated == 0 {
-        return Err(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        }
-        .into());
-    }
-    Ok(())
+    build_report(&changes, &overflow, limit, include_data)
 }
 
 /// `blog_post` → `BlogPost`.
@@ -167,7 +101,7 @@ fn current_rows(
     table: &str,
     pks: Vec<String>,
 ) -> TViewResult<HashMap<String, (Value, Value)>> {
-    let qi_pk = quote_identifier(&format!("pk_{entity}"));
+    let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
         "SELECT t.{qi_pk}::text AS k, to_jsonb(t.*) AS r FROM {table} t \
          WHERE t.{qi_pk}::text = ANY($1)"
