@@ -1,8 +1,8 @@
 # Physical cost with HOT-friendly defaults (#70, #73)
 
 The [beta.17 physical baseline](physical-baseline-beta17.md) rerun with the new TVIEW
-storage defaults: **no GIN index on `data`** (`pg_tviews.data_gin_index = off`) and
-**fillfactor 85** (`pg_tviews.fillfactor`). See
+storage defaults: **no GIN index on `data`** (option `data_gin_index`, default `false`) and
+**fillfactor 85** (option `fillfactor`). See
 [HOT Updates and TVIEW Storage](../operations/hot-updates.md) for the mechanism.
 
 | | |
@@ -70,6 +70,6 @@ through and the rest spill to new pages:
 - **No-op rewrites** disappear with #72 (no write at all), so this case goes away.
 - **Genuine mass rewrites** of one TVIEW (every row of a large table refreshed in
   one statement) can use a lower fillfactor for that TVIEW
-  (`SET LOCAL pg_tviews.fillfactor = 70` at creation), at the cost of more heap.
+  (option `fillfactor: 70`), at the cost of more heap.
   Most refresh traffic (single rows and fan-outs up to tens of thousands of rows)
   is already 96–100 % HOT at 85.

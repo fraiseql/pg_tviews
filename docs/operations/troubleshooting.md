@@ -34,6 +34,8 @@ SELECT tviews.pg_tviews_debug_queue();   -- keys queued in this transaction
 SELECT tviews.pg_tviews_queue_stats();   -- counters of this session
 ```
 
+`tviews.stats` holds each TVIEW's refresh counters, cumulated over every session.
+
 ## Installation Issues
 
 ### Extension Not Found
@@ -117,7 +119,7 @@ Definitions that cannot be refreshed are rejected at create time. Set operations
 A window function not partitioned by a column linked to the key, `LIMIT`/`OFFSET`, a
 set-returning function in the backing view's own select list, `GROUPING SETS`, a
 recursive CTE or a materialized view is accepted, and the tables read under it go
-through `pg_tviews.uncascaded_policy` (next section). Full list:
+through the TVIEW's `uncascaded_policy` option (next section). Full list:
 [Supported SQL Features](../reference/ddl.md#supported-sql-features).
 
 ### Tables No Cascade Reaches
@@ -131,15 +133,14 @@ for the rows its other reads reach when the reason ends with `the rows its other
 reach are still refreshed`:
 
 ```sql
-SELECT name, uncascaded_tables, uncascaded_policy
+SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
 FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
 ```
 
 Rewrite the join, or declare the policy, for the tables named
 (`options => '{"uncascaded_tables": {"public.tb_flag": "full_refresh"}}'`) or the whole
 TVIEW (`options => '{"uncascaded_policy": "full_refresh"}'`) with
-`pg_tviews_create_or_replace('tv_report', $$ … $$, options => …)`,
-or `SET pg_tviews.uncascaded_policy = 'full_refresh'` before `CREATE TABLE … AS` (see
+`pg_tviews_create_or_replace('tv_report', $$ … $$, options => …)` (see
 [Tables no cascade reaches](../reference/ddl.md#tables-no-cascade-reaches)).
 
 **Error**: `public.tv_contract calls public.label_suffix(), not immutable: …: declare them in function_reads`
@@ -151,8 +152,7 @@ tables](../reference/ddl.md#functions-that-read-tables).
 
 **Error**: `public.tv_contract reads the time (CURRENT_DATE): its rows change with no write, which nothing refreshes: declare time_refresh`
 
-Declare `"time_refresh": "external"` (or `SET pg_tviews.time_refresh = 'external'`
-before `CREATE TABLE … AS`) and schedule
+Declare `"time_refresh": "external"` in the TVIEW's options and schedule
 `SELECT tviews.pg_tviews_refresh_time_dependent()` at the boundary:
 [Time-dependent TVIEWs](../reference/ddl.md#time-dependent-tviews).
 
@@ -207,22 +207,24 @@ keys than `pg_tviews.max_queue_size`. See
    FROM tviews.registry WHERE entity = 'post';
    SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
    ```
-4. **Check that refresh is not suspended** in the writing session:
+4. **Check that refresh is not suspended** in the writing transaction:
    ```sql
-   SELECT tviews.pg_tviews_is_suspended(),
-          current_setting('pg_tviews.suspend_triggers', true);
+   SELECT tviews.pg_tviews_is_suspended();
    ```
 5. **Repair**: `SELECT tviews.pg_tviews_refresh('post');` (or
    `SELECT tviews.pg_tviews_refresh_all();`).
 
 ### Empty TVIEWs After a Crash or on a Standby
 
-UNLOGGED TVIEWs (the default) are empty after a crash restart and on standbys.
+TVIEWs are LOGGED by default. One declared `logged: false` (or created with
+`CREATE UNLOGGED TABLE tv_x AS`) is empty after a crash restart or a promotion until
+the launcher worker (`pg_tviews.auto_rebuild_databases`, `*` by default) or its first
+write refills it, and a standby cannot read it.
 
 ```sql
 SELECT * FROM tviews.pg_tviews_replication_status();
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);
-SELECT tviews.pg_tviews_set_logged('post', true);   -- readable on standbys
+ALTER TABLE tv_post SET LOGGED;   -- readable on standbys; fills a reset TVIEW first
 ```
 
 See [Replication](replication.md).
@@ -240,6 +242,9 @@ SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('post', dry_run => tru
 
 -- Plan of one key's refresh
 EXPLAIN ANALYZE SELECT * FROM public.v_post WHERE pk_post = 1;
+
+-- Refresh work per TVIEW, from any session
+SELECT * FROM tviews.stats WHERE entity = 'post';
 
 -- Session counters (compare before and after a write, in one session)
 SELECT tviews.pg_tviews_queue_stats();
@@ -310,17 +315,16 @@ YMD`, …, see [Rendering](../reference/ddl.md#rendering)): from another time zo
 
 Suspension (`pg_tviews_suspend_triggers()`) ends with the transaction, and the
 refresh queue is per transaction, so transaction-mode pooling is safe. A session
-setting such as `SET pg_tviews.suspend_triggers = on` stays on the pooled
-connection: reset it (`RESET pg_tviews.suspend_triggers`) or configure
-`server_reset_query = DISCARD ALL` in PgBouncer session mode.
+setting such as `SET pg_tviews.batch_size` stays on the pooled connection: reset it
+or configure `server_reset_query = DISCARD ALL` in PgBouncer session mode.
 
 ## Advanced Troubleshooting
 
 ### Debug Logging
 
 ```sql
--- This session: pg_tviews' internal diagnostics as NOTICE
-SET pg_tviews.log_level = 'debug';
+-- This session: pg_tviews' internal diagnostics (DEBUG1 messages)
+SET client_min_messages = debug1;
 
 -- Server: log statements slower than 1 s (refreshes run inside them)
 ALTER SYSTEM SET log_min_duration_statement = 1000;

@@ -85,8 +85,7 @@ and `warnings` columns.
   queue lives and is flushed inside one transaction.
 - `tviews.pg_tviews_suspend_triggers()` / `tviews.pg_tviews_resume_triggers()` last
   until the end of the transaction: run the sequence inside one `BEGIN` … `COMMIT`,
-  which works with any pooler. The GUC `pg_tviews.suspend_triggers` is per session:
-  with a transaction-mode pooler use `SET LOCAL` inside the transaction instead.
+  which works with any pooler.
 
 ## Configuration Review
 ```sql

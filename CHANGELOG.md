@@ -115,6 +115,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked again). Both now do what `pg_tviews_set_logged()` did, and a switch to
   UNLOGGED records the rows as trusted.
 
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` (from 0.1.0-beta.27) swaps the functions whose
+  parameters were renamed, drops the seven removed ones, rebuilds `tviews.registry`
+  as contract v2 and adds `tviews.stats`. TVIEWs, their tables and their rows are
+  untouched; nothing needs to run afterwards.
+- Existing TVIEWs keep their persistence: one created UNLOGGED stays UNLOGGED, and
+  `registry.options->'logged'` says so. Only TVIEWs created after the update are
+  LOGGED by default.
+- Remove the removed settings from `postgresql.conf` and from `ALTER ROLE` /
+  `ALTER DATABASE … SET`: PostgreSQL warns about each and ignores it, and a `SET` of
+  one in a session fails. A TVIEW that relied on a session's
+  `pg_tviews.uncascaded_policy` already stores its own policy.
+- Callers using named arguments `tview_name =>`, `entity =>`, `entity_name =>` or
+  `p_entity =>` pass `tview =>`. Tools reading the dropped registry columns read
+  `options` (`tviews.contract_version()` is 2).
+- A migration that called `pg_tviews_create_or_replace()` without the options a TVIEW
+  has now resets them to their defaults: pass `registry.options` (or the options the
+  template declares) every time.
+- `tviews.stats` needs `shared_preload_libraries = 'pg_tviews'` (already required for
+  the settings) and a server restart after installing the library.
+
 ## [0.1.0-beta.27] - 2026-10-11
 
 ### Changed (breaking)

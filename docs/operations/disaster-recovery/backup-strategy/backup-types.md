@@ -8,8 +8,9 @@ PostgreSQL tables. What matters is how each PostgreSQL backup type treats two th
 - **The catalog** `tviews.pg_tview_meta` (and `tviews.pg_tview_helpers`): extension
   tables registered with `pg_extension_config_dump`, so `pg_dump` includes their rows.
 - **The TVIEW tables** `tv_*`: derived data that can always be rebuilt from the base
-  tables. They are UNLOGGED by default (`pg_tviews.unlogged_by_default = on`), so they
-  write no WAL and are **empty** after any restore from a physical backup or WAL.
+  tables. They are LOGGED by default and restored like any table. A TVIEW declared
+  `logged: false` is UNLOGGED: it writes no WAL and is **empty** after any restore
+  from a physical backup or WAL.
 
 | Backup type | Registrations | TVIEW rows (UNLOGGED) | TVIEW rows (LOGGED) |
 |-------------|---------------|-----------------------|---------------------|
@@ -74,10 +75,11 @@ restore they are empty. Check and rebuild:
 SELECT * FROM tviews.pg_tviews_replication_status();
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
-With `pg_tviews.auto_rebuild_databases` set in `postgresql.conf`, the rebuild runs when
-the server leaves recovery. Make a TVIEW LOGGED
-(`SELECT tviews.pg_tviews_set_logged('post', true);`) if it must be complete right after
-a physical restore or failover. See [Replication](../../replication.md).
+With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs it in every
+database when the server leaves recovery (`pg_tviews.auto_rebuild_databases`, default
+`*`). Keep a TVIEW LOGGED (the default) if it must be complete right after a physical
+restore or failover; `ALTER TABLE tv_post SET LOGGED` switches an UNLOGGED one. See
+[Replication](../../replication.md).
 
 ## 3. WAL Archiving (Point-in-Time Recovery)
 
@@ -96,10 +98,11 @@ currently registered:
 ```sql
 \copy (SELECT schema, name, entity, query, options FROM tviews.registry ORDER BY schema, name) TO 'tview-definitions.csv' WITH (FORMAT csv, HEADER)
 ```
-`query` is the SELECT the TVIEW was created from and `options` the options passed to
-`tviews.pg_tviews_create_or_replace(name, query, options)`. Recreating TVIEWs from this
+`query` is the SELECT the TVIEW was created from and `options` every option it has,
+defaults included: `tviews.pg_tviews_create_or_replace(format('%I.%I', schema, name),
+query, options)` recreates it. Recreating TVIEWs from this
 file must follow dependency order (a TVIEW whose query reads `v_user` comes after `user`;
-see `tviews.pg_tviews_show_cascade_path(entity)`).
+see `tviews.pg_tviews_show_cascade_path(tview)`).
 
 ## Recommendations
 

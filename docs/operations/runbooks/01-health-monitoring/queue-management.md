@@ -58,7 +58,7 @@ Options, in order of preference:
    Suspension ends with the transaction if `pg_tviews_resume_triggers()` is not called.
    `tviews.pg_tviews_is_suspended()` and `tviews.pg_tviews_suspended_entities()` show the
    current state.
-3. Raise the limit for the session: `SET pg_tviews.max_queue_size = 100000;`
+3. Raise the limit for the session, as a superuser: `SET pg_tviews.max_queue_size = 100000;`
 
 ## Writes that look stuck
 

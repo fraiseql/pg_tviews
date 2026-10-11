@@ -51,7 +51,6 @@ Save the output of [health-check.sql](../scripts/health-check.sql) and
 ### Step 4: Analyse
 - [ ] PostgreSQL log: refresh errors carry the failing statement in `CONTEXT`
 - [ ] Recent changes: deployments, extension upgrade, TVIEW definition changes, bulk loads
-- [ ] Sessions with refresh suspended (`pg_tviews.suspend_triggers` set for a role or database)
 - [ ] Resource use: CPU, I/O, locks
 
 ### Step 5: Diagnostic queries
@@ -61,7 +60,7 @@ SELECT component, severity, message
 FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
 
 -- Tables whose writes cannot reach a TVIEW
-SELECT name, uncascaded_tables, uncascaded_policy
+SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
 FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
 
 -- Empty TVIEWs (UNLOGGED after a crash, or on a standby)
@@ -74,15 +73,15 @@ and see [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooti
 
 ### Step 6: Root cause
 - [ ] Failing view expression on new data
-- [ ] Write not mapped to TVIEW keys (uncascaded table, suspended session, missing triggers)
+- [ ] Write not mapped to TVIEW keys (uncascaded table, missing triggers)
 - [ ] Missing index on a join or mapping query, or high fan-out
 - [ ] Lock contention between writers refreshing the same TVIEW rows
 
 ## Stage 3: Containment (30-60 minutes)
 
 ### Step 7: Mitigate
-- [ ] Unblock writers if needed: suspend refresh for the affected session or role
-      ([Emergency Procedures](emergency-procedures.md), Action 1)
+- [ ] Unblock writers if needed: defer refresh to the end of the writing
+      transaction ([Emergency Procedures](emergency-procedures.md), Action 1)
 - [ ] Clear blocking sessions
 - [ ] Tell stakeholders which TVIEWs may be stale meanwhile
 
@@ -131,8 +130,8 @@ FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';   -- expect no ro
 
 ### Pattern 4: Empty TVIEWs after crash or failover
 **Quick diagnosis**: `tviews.pg_tviews_replication_status()`.
-**Resolution**: `SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);`, or make
-the TVIEW logged with `pg_tviews_set_logged`.
+**Resolution**: `SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);`, or keep
+the TVIEW LOGGED (the default; `ALTER TABLE tv_<entity> SET LOGGED` switches an UNLOGGED one).
 
 ### Pattern 5: Connection issues
 **Quick diagnosis**: `pg_stat_activity` counts.

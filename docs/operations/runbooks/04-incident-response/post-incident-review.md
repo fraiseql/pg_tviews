@@ -72,8 +72,7 @@ Classify factors as people, process, technology or environment. pg_tviews-specif
 ones to check:
 - [ ] A base table no cascade reaches (`tviews.registry.uncascaded_tables`) under the `warn` policy
 - [ ] Re-registration skipped after an upgrade (`needs_reregister`)
-- [ ] Refresh suspended (`pg_tviews.suspend_triggers`) and not followed by a refresh
-- [ ] UNLOGGED TVIEWs read on a standby or after a crash
+- [ ] UNLOGGED TVIEWs (`logged: false`) read on a standby or after a crash
 - [ ] Missing indexes, or high fan-out (`tviews.pg_tviews_profile()`)
 - [ ] A health check warning ignored before the incident
 
@@ -112,9 +111,9 @@ Examples:
 - run the TVIEW-vs-view comparison (step 4 of
   [post-upgrade-validation.sql](../../upgrade/scripts/post-upgrade-validation.sql))
   after deployments;
-- create TVIEWs with `pg_tviews.uncascaded_policy = 'error'` so unmappable
+- keep the `uncascaded_policy` option at its default, `error`, so unmappable
   definitions are rejected;
-- make TVIEWs read on standbys logged (`pg_tviews_set_logged`).
+- keep TVIEWs read on standbys LOGGED (the default; check `tviews.registry.options->'logged'`).
 
 ### Step 12: Process improvements
 - [ ] Detection: monitoring and alerts

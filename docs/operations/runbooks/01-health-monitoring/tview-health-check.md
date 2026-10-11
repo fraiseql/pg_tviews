@@ -37,8 +37,8 @@ extension version, jsonb_delta, catalog revision, metadata, re-registration and 
 ### Step 1: Registered TVIEWs
 
 ```sql
-SELECT schema, name, entity, logged, needs_reregister,
-       base_tables, uncascaded_tables, uncascaded_policy, cascade_kinds
+SELECT schema, name, entity, options->'logged' AS logged, needs_reregister,
+       base_tables, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy, cascade_kinds
 FROM tviews.registry
 ORDER BY schema, name;
 ```
@@ -97,7 +97,8 @@ See [Performance Monitoring](performance-monitoring.md) for how to read it.
 SELECT * FROM tviews.pg_tviews_replication_status() ORDER BY entity;
 ```
 
-UNLOGGED TVIEWs (the default) are empty on a standby and after a crash restart.
+UNLOGGED TVIEWs (declared `logged: false`) are empty on a standby and after a crash
+restart, until the launcher refills them.
 `needs_rebuild = true`: run `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
 
 ## Expected Results

@@ -21,7 +21,7 @@ The workflow:
 1. Design the write tables.
 2. Create one TVIEW per GraphQL type that needs a read model.
 3. Read `tv_*` tables from resolvers; write only to the write tables.
-4. Watch refresh cost with `tviews.pg_tviews_queue_stats()` and `tviews.pg_tviews_profile()`.
+4. Watch refresh cost with `tviews.stats` and `tviews.pg_tviews_profile()`.
 
 ## Setup
 
@@ -205,7 +205,7 @@ CREATE INDEX idx_tv_post_identifier ON tv_post (identifier);
 
 Add a GIN index on `data` only for containment queries (`data @> '{...}'`): nearly every
 refresh rewrites `data`, so an index on it makes every refresh a non-HOT update.
-`SET pg_tviews.data_gin_index = on` before creating a TVIEW creates one.
+The option `"data_gin_index": true` (`pg_tviews_create(…, options)`) creates one.
 `tviews.pg_tviews_ensure_propagation_indexes('post')` adds the indexes pg_tviews' own
 lookups need (not executable by `PUBLIC`; it also requires owning the TVIEW).
 
@@ -223,8 +223,11 @@ rows refreshes each affected TVIEW row once, not 10,000 times. For a large load,
 ```sql
 BEGIN;
 UPDATE tb_user SET name = 'Alice Liddell' WHERE identifier = 'alice';
-SELECT tviews.pg_tviews_queue_stats();  -- this transaction's refreshes
+SELECT tviews.pg_tviews_queue_stats();  -- this session's refreshes
 COMMIT;
+
+SELECT entity, view_recomputes, noop_skipped, rows_written, refresh_ms
+FROM tviews.stats WHERE entity = 'post';
 
 SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile('post');
 ```
@@ -232,10 +235,11 @@ SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile('post');
 `pg_tviews_queue_stats()` reports the current transaction's queued refreshes
 (`total_refreshes`, `total_timing_ms`) and, cumulated over the session, how many rows were
 patched in place (`direct_patches_applied`) or recomputed from the definition
-(`view_recomputes`).
+(`view_recomputes`), for debugging. `tviews.stats` holds the same work per TVIEW,
+cumulated over every session since the server started, readable from any connection.
 `pg_tviews_profile()` reports sizes, dead tuples and the fan-out of each lookup column,
-with warnings. TVIEWs are created UNLOGGED by default (`pg_tviews.unlogged_by_default`):
-fast to write, but empty after a crash and unreadable on a standby
+with warnings. TVIEWs are LOGGED by default; `"logged": false` makes one UNLOGGED:
+faster to write, but empty after a crash until refilled, and unreadable on a standby
 ([Architect Guide](architects.md#read-replicas)).
 
 ## Errors and transactions
@@ -328,7 +332,8 @@ FROM pg_trigger WHERE tgname LIKE 'trg_tview_%' ORDER BY 1, 2;
 
 A TVIEW with `needs_reregister` set, or one whose stored plan no longer matches the tables,
 is fixed with `tviews.pg_tviews_reregister('post')`. Changes made while triggers were
-suspended are repaired with `tviews.pg_tviews_refresh('post')`.
+disabled (`session_replication_role = replica`) are repaired with
+`tviews.pg_tviews_refresh('post')`.
 
 ### Slow reads or writes
 
@@ -336,7 +341,7 @@ suspended are repaired with `tviews.pg_tviews_refresh('post')`.
 EXPLAIN SELECT data FROM tv_post WHERE identifier = 'hello-world';
 
 SELECT tviews.pg_tviews_debug_queue();  -- keys queued in this transaction
-SELECT * FROM tviews.pg_tviews_performance_stats();
+SELECT entity, heap_bytes, hot_ratio, fanout, warnings FROM tviews.pg_tviews_profile();
 ```
 
 A write that is slow usually reaches many TVIEW rows (a user embedded in every post):

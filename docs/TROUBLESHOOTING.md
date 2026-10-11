@@ -133,8 +133,8 @@ SELECT count(*) FROM (
 COMMIT;
 ```
 
-Rows differ when a table was written while refreshes were suspended
-(`pg_tviews.suspend_triggers`), under the `warn` policy, or by a path no trigger sees.
+Rows differ when a table was written with its triggers disabled
+(`session_replication_role = replica`), under the `warn` policy, or by a path no trigger sees.
 Recompute the TVIEW in full (it takes `ACCESS EXCLUSIVE` on the table):
 
 ```sql
