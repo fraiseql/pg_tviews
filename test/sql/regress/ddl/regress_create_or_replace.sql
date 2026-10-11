@@ -73,7 +73,7 @@ SELECT must(cor('app.tv_post', $$
 SELECT must(cor('user', $$
     SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM app.tb_user $$)
     = 'created', 'create tv_user by entity name');
-SELECT must((SELECT schema = 'app' AND logged AND (options->>'fillfactor')::int = 85
+SELECT must((SELECT schema = 'app' AND (options->>'logged')::boolean AND (options->>'fillfactor')::int = 85
              FROM tviews.registry WHERE entity = 'post'), 'tv_post storage on create');
 SELECT must((SELECT count(*) FROM app.tv_post) = 2, 'tv_post populated');
 SELECT must(pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'app.tv_post'::regclass))
@@ -86,19 +86,24 @@ SELECT must(cor('app.tv_post', $$
 SELECT must(cor('tv_post', $$select p.pk_post,p.id,p.fk_user,
     JSONB_BUILD_OBJECT('title', p.title) AS data -- a comment
     from app.tb_post AS p$$) = 'unchanged', 'same definition, other layout');
--- Omitted options keep the current value, even one tuned by hand.
+-- The options passed are the whole declaration: an omitted option is at its
+-- default (ADR 0220), so a fillfactor tuned by hand is put back.
 ALTER TABLE app.tv_post SET (fillfactor = 70);
 SELECT must(cor('app.tv_post', (SELECT query FROM tviews.registry WHERE entity = 'post'))
-            = 'unchanged', 'registry.query round trip');
-SELECT must((SELECT (options->>'fillfactor')::int FROM tviews.registry WHERE entity = 'post') = 70,
-            'omitted fillfactor kept');
+            = 'altered', 'an omitted option is at its default');
+SELECT must((SELECT (options->>'fillfactor')::int FROM tviews.registry WHERE entity = 'post') = 85,
+            'the default fillfactor put back');
+-- What the registry publishes recreates the TVIEW as it is (read contract).
+SELECT must(cor(format('%I.%I', schema, name), query, options) = 'unchanged',
+            'registry round trip: ' || options::text)
+FROM tviews.registry WHERE entity = 'post';
 
 -- 3. altered: storage only, rows kept.
 CREATE TEMP TABLE post_rows AS SELECT pk_post, data, created_at FROM app.tv_post;
 SELECT must(cor('app.tv_post', (SELECT query FROM tviews.registry WHERE entity = 'post'),
                 '{"logged": false, "fillfactor": 60, "data_gin_index": true}') = 'altered',
             'storage change');
-SELECT must((SELECT NOT logged AND (options->>'fillfactor')::int = 60
+SELECT must((SELECT NOT (options->>'logged')::boolean AND (options->>'fillfactor')::int = 60
                     AND (options->>'data_gin_index')::boolean
              FROM tviews.registry WHERE entity = 'post'), 'altered storage');
 SELECT must(NOT EXISTS (SELECT pk_post, data, created_at FROM app.tv_post
@@ -109,23 +114,23 @@ SELECT must((SELECT NOT (options->>'data_gin_index')::boolean
                     AND (options->>'fillfactor')::int = 100
              FROM tviews.registry WHERE entity = 'post'), 'GIN index dropped, fillfactor reset');
 
--- 4. rebuilt: new columns. Owner, privileges, comment, GraphQL type name and user
---    indexes are carried over.
+-- 4. rebuilt: new columns. Owner, privileges, comment and user indexes are
+--    carried over; the options are those declared.
 GRANT SELECT ON app.tv_post TO regress_134_reader;
 COMMENT ON TABLE app.tv_post IS 'posts for the API';
-SELECT tviews.pg_tviews_set_typename('post', 'BlogPost');
 CREATE INDEX tv_post_title_idx ON app.tv_post ((data->>'title'));
 SELECT must(cor('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, p.title,
            jsonb_build_object('title', p.title, 'body', p.body) AS data
-    FROM app.tb_post p $$) = 'rebuilt', 'column change rebuilds');
+    FROM app.tb_post p $$, '{"logged": false, "typename": "BlogPost"}') = 'rebuilt',
+            'column change rebuilds');
 SELECT must(has_table_privilege('regress_134_reader', 'app.tv_post', 'SELECT'), 'privilege kept');
 SELECT must(obj_description('app.tv_post'::regclass, 'pg_class') = 'posts for the API', 'comment kept');
-SELECT must((SELECT graphql_typename FROM tviews.pg_tview_meta WHERE entity = 'post') = 'BlogPost',
-            'graphql_typename kept');
+SELECT must((SELECT options->>'typename' FROM tviews.registry WHERE entity = 'post') = 'BlogPost',
+            'declared typename');
 SELECT must(to_regclass('app.tv_post_title_idx') IS NOT NULL, 'user index kept');
-SELECT must((SELECT NOT logged FROM tviews.registry WHERE entity = 'post'),
-            'omitted logged kept across a rebuild');
+SELECT must((SELECT NOT (options->>'logged')::boolean FROM tviews.registry WHERE entity = 'post'),
+            'declared logged across a rebuild');
 SELECT must((SELECT data->>'body' FROM app.tv_post WHERE pk_post = 1) = 'b1', 'rebuilt rows');
 UPDATE app.tb_post SET body = 'b1!' WHERE pk_post = 1;
 SELECT must((SELECT data->>'body' FROM app.tv_post WHERE pk_post = 1) = 'b1!',
@@ -249,7 +254,7 @@ SELECT must(cor('"Odd.Schema".tv_odd', $$
     = 'rebuilt', 'quoted schema rebuilt');
 SELECT tviews.pg_tviews_drop('"Odd.Schema".tv_odd');
 SELECT must(NOT EXISTS (SELECT 1 FROM tviews.registry WHERE entity = 'odd'), 'quoted schema drop');
-SELECT must(error_of($$SELECT cor('"app.tv_user', 'SELECT 1')$$) LIKE '%tview_name%',
+SELECT must(error_of($$SELECT cor('"app.tv_user', 'SELECT 1')$$) LIKE '%tview%',
             'unterminated quote');
 RESET ROLE;
 

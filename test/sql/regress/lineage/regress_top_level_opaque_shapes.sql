@@ -54,20 +54,19 @@ BEGIN
 END $$;
 
 -- ── behaviour under full_refresh ────────────────────────────────────────────
-SET pg_tviews.uncascaded_policy = 'full_refresh';
 SET client_min_messages TO ERROR;
 SELECT pg_tviews_create('tv_win', $$
-    SELECT pk_win, id, jsonb_build_object('s', s, 'n', count(*) OVER ()) AS data FROM tb_win $$);
+    SELECT pk_win, id, jsonb_build_object('s', s, 'n', count(*) OVER ()) AS data FROM tb_win $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_rank', $$
     SELECT pk_rank, id, jsonb_build_object('rank', row_number() OVER (PARTITION BY g ORDER BY s)) AS data
-    FROM tb_rank $$);
+    FROM tb_rank $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_top', $$
-    SELECT pk_top, id, jsonb_build_object('s', s) AS data FROM tb_top ORDER BY s DESC LIMIT 2 $$);
+    SELECT pk_top, id, jsonb_build_object('s', s) AS data FROM tb_top ORDER BY s DESC LIMIT 2 $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_srf', $$
-    SELECT pk_srf, id, jsonb_build_object('x', unnest(ARRAY[s])) AS data FROM tb_srf $$);
+    SELECT pk_srf, id, jsonb_build_object('x', unnest(ARRAY[s])) AS data FROM tb_srf $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_gs', $$
     SELECT pk_gs, id, jsonb_build_object('n', count(*), 's', sum(s)) AS data
-    FROM tb_gs GROUP BY GROUPING SETS ((pk_gs, id), ()) HAVING GROUPING(pk_gs, id) = 0 $$);
+    FROM tb_gs GROUP BY GROUPING SETS ((pk_gs, id), ()) HAVING GROUPING(pk_gs, id) = 0 $$, '{"uncascaded_policy": "full_refresh"}');
 SET client_min_messages TO WARNING;
 
 -- One statement per table: the write to a table is what refreshes its TVIEW.
@@ -93,11 +92,9 @@ BEGIN
     END LOOP;
 END $$;
 
--- ── warn and error ──────────────────────────────────────────────────────────
-SET pg_tviews.uncascaded_policy = 'warn';
+-- ── warn, and error (the default) ───────────────────────────────────────────
 SELECT pg_tviews_create('tv_warned', $$
-    SELECT pk_warned, id, jsonb_build_object('n', count(*) OVER ()) AS data FROM tb_warned $$);
-SET pg_tviews.uncascaded_policy = 'error';
+    SELECT pk_warned, id, jsonb_build_object('n', count(*) OVER ()) AS data FROM tb_warned $$, '{"uncascaded_policy": "warn"}');
 DO $$ BEGIN
     PERFORM tviews.pg_tviews_create('tv_refused', $q$
         SELECT pk_refused, id, jsonb_build_object('s', s) AS data FROM tb_refused ORDER BY s LIMIT 1 $q$);
@@ -105,7 +102,6 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN
     IF SQLERRM LIKE 'item 6 FAIL%' THEN RAISE; END IF;
 END $$;
-RESET pg_tviews.uncascaded_policy;
 
 -- Not opaque: ORDER BY alone stays local.
 SELECT pg_tviews_create('tv_ordered', $$

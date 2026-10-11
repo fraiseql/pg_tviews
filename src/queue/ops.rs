@@ -61,7 +61,7 @@ pub fn enqueue_refresh_patched(
     // Count the capture once per fresh key: a base table feeding several tviews
     // has several row triggers that each re-record the same key in one statement.
     if super::patch::record(RefreshKey::pk(entity, pk), Vec::new(), fields) {
-        crate::metrics::metrics_api::record_direct_patch_captured();
+        crate::metrics::metrics_api::record_direct_patch_captured(entity);
     }
 }
 

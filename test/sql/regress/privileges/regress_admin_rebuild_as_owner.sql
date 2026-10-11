@@ -38,7 +38,7 @@ INSERT INTO public.tb_thing VALUES (1, DEFAULT, 'x');
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 RESET ROLE;
 
 -- Each entry point, called by the superuser.
@@ -46,8 +46,6 @@ SET regress.via = 'refresh_all';
 SELECT (pg_tviews_refresh_all()->>'refreshed_count')::int AS refreshed;
 SET regress.via = 'rebuild_all';
 SELECT entity FROM pg_tviews_rebuild_all(false);
-SET regress.via = 'refresh_all_entities';
-SELECT pg_tviews_refresh_all_entities();
 SET regress.via = 'refresh';
 SELECT pg_tviews_refresh('thing');
 -- A crash empties tv_thing and its row in pg_tview_valid.
@@ -55,28 +53,24 @@ TRUNCATE public.tv_thing;
 DELETE FROM tviews.pg_tview_valid;
 SET regress.via = 'rebuild_all_only_empty';
 SELECT entity FROM pg_tviews_rebuild_all(true);
-TRUNCATE public.tv_thing;
-DELETE FROM tviews.pg_tview_valid;
-SET regress.via = 'recover_after_crash';
-SELECT pg_tviews_recover_after_crash('thing');
 -- A deploy re-applying the definition: the same columns (rows reconciled in
 -- place), then a new column (the table rebuilt).
 SET regress.via = 'replace';
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n || '!', 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 SET regress.via = 'replace_rebuild';
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, n, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
      FROM public.tb_thing$q$,
-  options => '{"function_reads": {"public.spy()": []}}');
+  options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 RESET regress.via;
 
 DO $$
 DECLARE
-    want text[] := ARRAY['refresh_all', 'rebuild_all', 'refresh_all_entities', 'refresh',
-                         'rebuild_all_only_empty', 'recover_after_crash', 'replace',
+    want text[] := ARRAY['refresh_all', 'rebuild_all', 'refresh',
+                         'rebuild_all_only_empty', 'replace',
                          'replace_rebuild'];
     entry text;
     users text;

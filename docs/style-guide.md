@@ -65,7 +65,7 @@ cargo pgrx install --release
 **Output**:
 ```text
 -- Use text for command output
-TVIEW 'tv_example' created successfully
+TVIEW public.tv_example created
 ```
 
 **Rules**:
@@ -77,7 +77,7 @@ TVIEW 'tv_example' created successfully
 ### Inline Code
 
 - **Function names**: `pg_tviews_create()`
-- **Parameters**: `tview_name`, `select_sql`
+- **Parameters**: `tview`, `query`
 - **File paths**: `docs/reference/api.md`
 - **Commands**: `cargo pgrx install`
 
@@ -318,8 +318,8 @@ CREATE TABLE tv_invalid (id INT);
 
 **For debugging docs only**:
 ```sql
--- Internal error (users should not see this):
--- ERROR: MetadataNotFound: TVIEW metadata not found for entity 'posts'
+-- Internal error (users should not see this; SQLSTATE XX000):
+-- ERROR: Catalog operation 'Read the propagation plan of tv_posts' failed: ...
 ```
 
 ---

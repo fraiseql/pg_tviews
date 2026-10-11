@@ -30,11 +30,9 @@ CREATE TABLE tb_tag (pk_tag int PRIMARY KEY, norm text);
 INSERT INTO tb_tag VALUES (1, 'a'), (2, 'b');
 CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), tag text);
 INSERT INTO tb_note (pk_note, tag) VALUES (1, 'a'), (2, 'zz');
-SET pg_tviews.uncascaded_policy = 'warn';
 SELECT pg_tviews_create('tv_note', $$SELECT n.pk_note, n.id,
     jsonb_build_object('tag', n.tag, 'tagged', t.pk_tag) AS data
-    FROM tb_note n LEFT JOIN tb_tag t ON t.norm = n.tag$$);
-RESET pg_tviews.uncascaded_policy;
+    FROM tb_note n LEFT JOIN tb_tag t ON t.norm = n.tag$$, '{"uncascaded_policy": "warn"}');
 UPDATE tb_note SET tag = 'b' WHERE pk_note = 1;
 SELECT assert_fresh('tv_note', 'pk_note', '(a) a joined column changed');
 

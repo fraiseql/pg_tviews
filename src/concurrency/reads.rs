@@ -153,12 +153,12 @@ fn embed_keys_sql(
     }
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let key_type = meta.key_type()?;
-    let identity = crate::utils::quote_identifier(&meta.identity.column);
+    let identity = crate::utils::ident::quoted(&meta.identity.column);
     Ok(Some(
         lookups
             .iter()
             .map(|lookup| {
-                let lookup = crate::utils::quote_identifier(lookup);
+                let lookup = crate::utils::ident::quoted(lookup);
                 format!(
                     "SELECT DISTINCT {lookup}::pg_catalog.text FROM {view} \
                      WHERE {identity} OPERATOR(pg_catalog.=) ANY ({}) AND {lookup} IS NOT NULL",

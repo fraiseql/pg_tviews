@@ -14,7 +14,7 @@
 //! - `Propagated(entity)`: read through a TVIEW this one embeds, joined on that
 //!   TVIEW's key: refreshing it refreshes the rows holding its key (the plan's
 //!   embed lookups);
-//! - `AllKeys`: nothing selective links it to the key; `pg_tviews.uncascaded_policy`
+//! - `AllKeys`: nothing selective links it to the key; the TVIEW's `uncascaded_policy`
 //!   decides.
 //!
 //! A predicate is used only as a *necessary* condition for a changed row to

@@ -11,7 +11,7 @@
 \echo '1. How writes to each base table reach each TVIEW'
 \echo '   local: key read off the row; mapped: one query per statement;'
 \echo '   propagated: through an embedded TVIEW; all_keys: see uncascaded_policy'
-SELECT r.schema, r.name, k.key AS base_table, k.value AS kind, r.uncascaded_policy
+SELECT r.schema, r.name, k.key AS base_table, k.value AS kind, r.options->>'uncascaded_policy' AS uncascaded_policy
 FROM tviews.registry r, pg_catalog.jsonb_each_text(r.cascade_kinds) k
 ORDER BY r.schema, r.name, k.key;
 

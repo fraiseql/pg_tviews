@@ -10,13 +10,11 @@
 //! (`refresh/direct.rs`) and the fan-out patch of a mapped table's columns
 //! (`delta.rs`). Parents are found and refreshed by the flush (`src/flush/`).
 
-use pgrx::prelude::*;
-
 use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
 
 use crate::jsonb_delta::jsonb_delta_schema;
-use crate::utils::{qualified_relname_from_oid, quote_identifier};
+use crate::utils::{ident, qualified_relname_from_oid};
 
 /// Refresh a single TVIEW row when its source data changes.
 ///
@@ -51,22 +49,26 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
         !meta.identity.is_pk(&meta.entity_name),
     )?;
 
-    // A UNION view can return several rows for one key: read it first so the
-    // union_duplicate_policy applies before the upsert.
-    let (written, deleted) = if meta.plan.set_operation && !view_row_exists(meta, key)? {
-        (super::Written::default(), delete_tview_row(meta, key)?)
+    // A key names one row: a UNION view returning several for it is refused.
+    let key_type = meta.key_type()?;
+    super::refuse_duplicate_keys(
+        meta,
+        &format!(
+            "{} = {}",
+            ident::quoted(&meta.identity.column),
+            super::key_cast(&key_type, "$1", false)
+        ),
+        &[super::key_scalar(&key_type, key)?],
+    )?;
+    // Upsert straight from v_entity: the view is evaluated once. No source row
+    // means the base row was deleted, so remove the tview row instead of
+    // erroring, which would leave the deleted row stale.
+    crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
+    let (produced, written) = write_row(meta, key)?;
+    let deleted = if produced == 0 {
+        delete_tview_row(meta, key)?
     } else {
-        // Upsert straight from v_entity: the view is evaluated once. No
-        // source row means the base row was deleted, so remove the tview row
-        // instead of erroring, which would leave the deleted row stale.
-        crate::metrics::metrics_api::record_view_recomputes(1);
-        let (produced, written) = write_row(meta, key)?;
-        let deleted = if produced == 0 {
-            delete_tview_row(meta, key)?
-        } else {
-            Vec::new()
-        };
-        (written, deleted)
+        Vec::new()
     };
     Ok(super::touched(meta, keys, before, written, deleted))
 }
@@ -79,8 +81,8 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
 fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<i64>> {
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_key = quote_identifier(&meta.identity.column);
-    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_key = ident::quoted(&meta.identity.column);
+    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'",
@@ -91,77 +93,6 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
         &sql,
         &[super::key_scalar(&key_type, key)?],
     )
-}
-
-/// Whether the backing view still has a row for `key`, applying the
-/// `union_duplicate_policy` when a UNION view returns several.
-///
-/// # Example Query
-///
-/// ```sql
-/// SELECT 1 FROM v_post WHERE pk_post = $1 LIMIT 2
-/// ```
-fn view_row_exists(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<bool> {
-    let key_type = meta.key_type()?;
-    let qi_view = qualified_relname_from_oid(meta.view_oid)?;
-
-    let sql = format!(
-        "SELECT 1 FROM {qi_view} WHERE {} = {} LIMIT 2",
-        quote_identifier(&meta.identity.column),
-        super::key_cast(&key_type, "$1", false)
-    );
-
-    Spi::connect(|client| {
-        let args = [super::key_scalar(&key_type, key)?];
-        let mut rows = client.select(&sql, None, &args)?;
-
-        // No backing-view row for this key means the base row was deleted (or now
-        // fails the view's WHERE/branch conditions). This is not an error: the
-        // caller removes the corresponding tview row.
-        if rows.next().is_none() {
-            return Ok(false);
-        }
-
-        // For UNION ALL TVIEWs, check for duplicate rows (non-mutually-exclusive branches)
-        if meta.plan.set_operation && rows.next().is_some() {
-            union_duplicate(meta, &key.to_string());
-        }
-
-        Ok(true)
-    })
-}
-
-/// Apply `pg_tviews.union_duplicate_policy` to a UNION TVIEW whose backing view
-/// returned several rows for the key `key`: an ERROR that aborts the write,
-/// or under `first` a note, once per backend, that the first row is kept.
-pub(super) fn union_duplicate(meta: &TviewMeta, key: &str) {
-    if crate::config::union_duplicate_policy() == "first" {
-        crate::utils::log_once(
-            &format!("union_duplicate:{}", meta.entity_name),
-            &format!(
-                "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}; \
-                 taking the first row (union_duplicate_policy=first). Reported once \
-                 per backend.",
-                meta.entity_name, meta.identity.column
-            ),
-        );
-        return;
-    }
-    // Raised, not returned: the flush trigger turns returned errors into warnings,
-    // and a write that gives two rows one key must fail.
-    pgrx::pg_sys::panic::ErrorReport::new(
-        PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
-        format!(
-            "TVIEW '{}': UNION ALL backing view returned multiple rows for {}={key}",
-            meta.entity_name, meta.identity.column
-        ),
-        function_name!(),
-    )
-    .set_hint(
-        "Make the UNION branches' keys disjoint (a sign or an offset per branch), or set \
-         pg_tviews.union_duplicate_policy = 'first' to keep the first row.",
-    )
-    .report(PgLogLevel::ERROR);
 }
 
 /// Write the row `key` of `meta`'s TVIEW from its backing view, its document
@@ -186,7 +117,7 @@ fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, super
     let key_type = meta.key_type()?;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
-    let qi_key = quote_identifier(key_col);
+    let qi_key = ident::quoted(key_col);
 
     // Schema-qualified backing view, so the refresh works under any search_path
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;

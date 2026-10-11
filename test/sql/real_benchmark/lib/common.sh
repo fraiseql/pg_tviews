@@ -3,8 +3,8 @@
 #
 # Conventions:
 #   RUN_DIR   results/physical/<run id>; every scenario writes into it
-#   MODES     "unlogged logged": TVIEW persistence via pg_tviews.unlogged_by_default
-#             (unlogged is the shipped default, so it runs first)
+#   MODES     "unlogged logged": TVIEW persistence, the `logged` option of each
+#             pg_tviews_create() (mode_options)
 #   EXPLAIN   1 (default) runs a separate auto_explain pass per scenario+mode
 #
 # A scenario builds a psql script, wrapping each measured step in snapshots
@@ -47,11 +47,11 @@ bench_install() {
   $PSQL -d "$1" -f "$bench_lib/stats.sql" >/dev/null
 }
 
-# SQL that makes the following pg_tviews_create() honour mode $1.
-mode_sql() {
+# The options of a pg_tviews_create() in mode $1, as an SQL literal.
+mode_options() {
   case "$1" in
-    unlogged) echo "SET pg_tviews.unlogged_by_default = on;" ;;
-    logged)   echo "SET pg_tviews.unlogged_by_default = off;" ;;
+    unlogged) echo "'{\"logged\": false}'" ;;
+    logged)   echo "'{\"logged\": true}'" ;;
     *) echo "unknown mode: $1" >&2; return 2 ;;
   esac
 }

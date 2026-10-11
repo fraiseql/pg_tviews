@@ -14,8 +14,7 @@
 -- (ADR 0157). A table that nothing links to the key (an uncorrelated subquery) is
 -- never dropped silently either: it is named at create time, recorded in
 -- tviews.registry.uncascaded_tables, and handled by the TVIEW's uncascaded_policy
--- (its option, else pg_tviews.uncascaded_policy), read once at create time and
--- stored with the TVIEW:
+-- option, declared at create time and stored with the TVIEW:
 --   error         ERROR, nothing is created (the default)
 --   warn          WARNING, the TVIEW is created
 --   full_refresh  NOTICE, and a write to the table refreshes the whole TVIEW
@@ -104,11 +103,11 @@ SELECT pg_tviews_create('tv_post', $$
     FROM tb_post p
     LEFT JOIN tv_user u ON u.pk_user = p.fk_user
     LEFT JOIN tb_user bu ON bu.pk_user = p.fk_user $$);
-SELECT pg_tviews_create_aggregate('tv_user_posts', $$
+SELECT pg_tviews_create('tv_user_posts', $$
     SELECT p.fk_user AS pk_user_posts, u.id, jsonb_build_object('posts', count(*)) AS data
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user
     GROUP BY p.fk_user, u.id
-$$, '{"tb_post": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_post": "fk_user", "tb_user": "pk_user"}}');
 
 -- An uncorrelated subquery: nothing links tb_flag to the key; the TVIEW accepts
 -- stale rows (warn).
@@ -152,16 +151,20 @@ INSERT INTO tb_basket (ref) SELECT 'b' || g FROM generate_series(1, 50) g;
 INSERT INTO tb_basket_item (fk_basket, sku) SELECT 1 + g % 50, 's' || g FROM generate_series(1, 200) g;
 
 -- Each basket shows the share of all items it holds: the uncorrelated count links
--- tb_basket_item to no key.
-SET pg_tviews.uncascaded_policy = 'full_refresh';
+-- tb_basket_item to no key. The declared option is stored with the TVIEW, and
+-- every later write uses it.
 SELECT pg_tviews_create('tv_basket', $$
     SELECT b.pk_basket, b.id,
            jsonb_build_object('ref', b.ref,
                'items', (SELECT count(*) FROM tb_basket_item i WHERE i.fk_basket = b.pk_basket),
                'of', (SELECT count(*) FROM tb_basket_item)) AS data
-    FROM tb_basket b $$);
--- The writer's session value does not matter: the stored policy does.
-SET pg_tviews.uncascaded_policy = 'warn';
+    FROM tb_basket b $$, '{"uncascaded_policy": "full_refresh"}');
+DO $$ BEGIN
+    IF (SELECT options ->> 'uncascaded_policy' FROM tviews.registry WHERE entity = 'basket')
+       IS DISTINCT FROM 'full_refresh' THEN
+        RAISE EXCEPTION 'FAIL [full_refresh]: the declared option is not stored';
+    END IF;
+END $$;
 UPDATE tb_basket_item SET fk_basket = 2 WHERE fk_basket = 1;
 SELECT _expect_fresh('basket', 'full_refresh: UPDATE moves items');
 INSERT INTO tb_basket_item (fk_basket, sku) VALUES (3, 'new');
@@ -171,10 +174,8 @@ DELETE FROM tb_basket_item WHERE fk_basket = 4;
 UPDATE tb_basket_item SET sku = 'z' WHERE fk_basket = 5;
 COMMIT;
 SELECT _expect_fresh('basket', 'full_refresh: explicit transaction');
-SET pg_tviews.uncascaded_policy = 'error';
 DELETE FROM tb_basket_item WHERE fk_basket = 6;
-SELECT _expect_fresh('basket', 'full_refresh: writer session says error');
-RESET pg_tviews.uncascaded_policy;
+SELECT _expect_fresh('basket', 'full_refresh: a later autocommit DELETE');
 
 -- ── error: nothing is created ───────────────────────────────────────────────
 CREATE TABLE tb_shelf (
@@ -184,7 +185,6 @@ CREATE TABLE tb_book (
     pk_book  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     fk_shelf bigint REFERENCES tb_shelf,
     title    text);
-SET pg_tviews.uncascaded_policy = 'error';
 DO $$
 BEGIN
     PERFORM pg_tviews_create('tv_shelf', $q$
@@ -198,7 +198,6 @@ EXCEPTION WHEN OTHERS THEN
         RAISE EXCEPTION 'FAIL [error]: the ERROR does not name tb_book: %', SQLERRM;
     END IF;
 END $$;
-RESET pg_tviews.uncascaded_policy;
 DO $$ BEGIN
     IF to_regclass('public.tv_shelf') IS NOT NULL OR to_regclass('tviews.public__tv_shelf') IS NOT NULL
        OR EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'shelf')
@@ -237,7 +236,7 @@ END $$;
 DO $$
 DECLARE r record;
 BEGIN
-    FOR r IN SELECT entity, uncascaded_tables, uncascaded_policy FROM tviews.registry LOOP
+    FOR r IN SELECT entity, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy FROM tviews.registry LOOP
         IF r.uncascaded_tables IS DISTINCT FROM (CASE r.entity
                 WHEN 'report'  THEN ARRAY['tb_flag'::regclass]
                 WHEN 'basket'  THEN ARRAY['tb_basket_item'::regclass]
@@ -253,12 +252,10 @@ BEGIN
 END $$;
 
 -- ── re-registration recomputes the set and keeps the stored policy ──────────
-SET pg_tviews.uncascaded_policy = 'error';
 SELECT pg_tviews_reregister('basket');
 SELECT pg_tviews_reregister('report');
-RESET pg_tviews.uncascaded_policy;
 DO $$ BEGIN
-    IF (SELECT uncascaded_policy FROM tviews.registry WHERE entity = 'basket') <> 'full_refresh'
+    IF (SELECT options->>'uncascaded_policy' FROM tviews.registry WHERE entity = 'basket') <> 'full_refresh'
        OR (SELECT uncascaded_tables FROM tviews.registry WHERE entity = 'report')
           IS DISTINCT FROM ARRAY['tb_flag'::regclass]
     THEN

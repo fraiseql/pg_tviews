@@ -90,6 +90,11 @@ pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
 
 /// Record that a refresh write changed `entity`'s row `pk`.
 pub fn record(entity: &str, pk: String, change: Change) {
+    let counter = match change {
+        Change::Deleted(_) => crate::stats::Counter::RowsDeleted,
+        _ => crate::stats::Counter::RowsWritten,
+    };
+    crate::stats::add(entity, counter, 1);
     FLUSH_CHANGED.with(|c| c.borrow_mut().insert((entity.to_string(), pk.clone())));
     let cap = crate::config::report_max_tracked();
     if cap == 0 {

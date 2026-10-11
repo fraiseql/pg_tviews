@@ -103,34 +103,27 @@ impl EntityDepGraph {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// Sort refresh keys by dependency order
-    ///
-    /// Keys are grouped by entity, then sorted by `topo_order`.
-    /// Within each entity group, insertion order is preserved.
-    /// Integer and text keys are retained as-is.
-    pub fn sort_keys(
-        &self,
-        keys: Vec<crate::queue::key::RefreshKey>,
-    ) -> Vec<crate::queue::key::RefreshKey> {
-        // Group by entity, preserving full RefreshKey values
-        let mut groups: HashMap<String, Vec<crate::queue::key::RefreshKey>> = HashMap::new();
-        for key in keys {
-            groups.entry(key.entity.clone()).or_default().push(key);
+    /// `items` in dependency order: grouped by the entity `entity_of` gives each,
+    /// the groups in topological order, then those of entities the graph does
+    /// not know, by name (none is dropped). Each group keeps its order.
+    pub fn in_order<T>(&self, items: Vec<T>, entity_of: impl Fn(&T) -> &str) -> Vec<T> {
+        let mut groups: HashMap<String, Vec<T>> = HashMap::new();
+        for item in items {
+            groups
+                .entry(entity_of(&item).to_string())
+                .or_default()
+                .push(item);
         }
-
-        // Emit groups in topological order, then any entity the graph does not
-        // know (never drop a key)
-        let mut sorted_keys = Vec::new();
+        let mut sorted = Vec::new();
         for entity in &self.topo_order {
-            if let Some(ks) = groups.remove(entity) {
-                sorted_keys.extend(ks);
+            if let Some(group) = groups.remove(entity) {
+                sorted.extend(group);
             }
         }
         let mut rest: Vec<_> = groups.into_iter().collect();
         rest.sort_by(|a, b| a.0.cmp(&b.0));
-        sorted_keys.extend(rest.into_iter().flat_map(|(_, ks)| ks));
-
-        sorted_keys
+        sorted.extend(rest.into_iter().flat_map(|(_, group)| group));
+        sorted
     }
 }
 
@@ -204,16 +197,9 @@ fn topological_sort(
 mod tests {
     use super::*;
 
-    fn text_key(entity: &str, value: &str) -> crate::queue::key::RefreshKey {
-        crate::queue::key::RefreshKey::new(
-            entity,
-            crate::queue::key::KeyValue::Text(value.to_string()),
-        )
-    }
-
     #[test]
-    fn test_sort_keys_preserves_text_keys() {
-        // Build a simple graph: company -> user -> post
+    fn in_order_groups_by_entity_in_topological_order() {
+        // company -> user -> post
         let graph = EntityDepGraph {
             parents: HashMap::new(),
             children: HashMap::new(),
@@ -221,30 +207,23 @@ mod tests {
             topo_order: vec!["company".into(), "user".into(), "post".into()],
             lookup_columns: HashMap::new(),
         };
-
         let keys = vec![
-            crate::queue::key::RefreshKey::pk("post", 10),
-            text_key("user", "some-uuid"),
-            crate::queue::key::RefreshKey::pk("company", 1),
-            crate::queue::key::RefreshKey::pk("user", 42),
-            text_key("post", "text-val"),
+            ("post", "10"),
+            ("user", "some-uuid"),
+            ("company", "1"),
+            ("user", "42"),
+            ("post", "text-val"),
         ];
-
-        let sorted = graph.sort_keys(keys);
-
-        // All 5 keys must be present
-        assert_eq!(sorted.len(), 5);
-
-        // Text keys must survive with their value intact
-        assert!(sorted.contains(&text_key("user", "some-uuid")));
-        assert!(sorted.contains(&text_key("post", "text-val")));
-
-        // Verify topological order: company entities before user, user before post
-        let first_company = sorted.iter().position(|k| k.entity == "company").unwrap();
-        let first_user = sorted.iter().position(|k| k.entity == "user").unwrap();
-        let first_post = sorted.iter().position(|k| k.entity == "post").unwrap();
-        assert!(first_company < first_user);
-        assert!(first_user < first_post);
+        assert_eq!(
+            graph.in_order(keys, |k| k.0),
+            [
+                ("company", "1"),
+                ("user", "some-uuid"),
+                ("user", "42"),
+                ("post", "10"),
+                ("post", "text-val"),
+            ]
+        );
     }
 
     fn depends_on(edges: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
@@ -309,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_keys_keeps_entities_missing_from_the_graph() {
+    fn in_order_keeps_entities_missing_from_the_graph() {
         let graph = EntityDepGraph {
             parents: HashMap::new(),
             children: HashMap::new(),
@@ -317,19 +296,9 @@ mod tests {
             topo_order: vec!["user".into()],
             lookup_columns: HashMap::new(),
         };
-        let keys = vec![
-            crate::queue::key::RefreshKey::pk("unknown", 1),
-            crate::queue::key::RefreshKey::pk("user", 2),
-        ];
-
-        let sorted = graph.sort_keys(keys);
-
         assert_eq!(
-            sorted,
-            [
-                crate::queue::key::RefreshKey::pk("user", 2),
-                crate::queue::key::RefreshKey::pk("unknown", 1),
-            ]
+            graph.in_order(vec![("unknown", 1), ("user", 2)], |k| k.0),
+            [("user", 2), ("unknown", 1)]
         );
     }
 

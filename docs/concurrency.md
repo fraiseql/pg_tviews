@@ -119,21 +119,19 @@ ORDER BY l.granted, l.pid;
 `pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`
 or the end of the transaction, whichever comes first: suspension never outlives the
 transaction that started it. Resuming rebuilds the TVIEWs that changed and those that
-embed them (each with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does). The
-`pg_tviews.suspend_triggers` setting suspends for the session, records nothing, and
-leaves the TVIEWs stale until they are refreshed.
+embed them (each with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does).
 
 ## Settings
 
 The settings are listed in the [README's Configuration table](../README.md#configuration).
 The ones that bear on concurrent writers:
 
-- `pg_tviews.lock_escalation_threshold`: value locks per relation before a transaction
+- `pg_tviews.lock_escalation_threshold` (superuser): value locks per relation before a transaction
   locks the relation (0 always locks relations; -1 never does, which can exhaust the
   shared lock table on a bulk write);
-- `pg_tviews.max_queue_size`: refreshes one transaction may queue before it fails;
-- `pg_tviews.direct_patch_enabled`: the direct-patch fast path (on by default);
-- `pg_tviews.suspend_triggers`: see above.
+- `pg_tviews.max_queue_size` (superuser): refreshes one transaction may queue before it fails;
+- `pg_tviews.direct_patch_enabled` (superuser, hidden): the direct-patch fast path (on
+  by default).
 
 PostgreSQL's settings apply to these locks like to any other:
 

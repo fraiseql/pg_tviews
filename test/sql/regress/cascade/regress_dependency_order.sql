@@ -122,8 +122,8 @@ SELECT pg_tviews_resume_triggers();
 COMMIT;
 SELECT assert_fresh('suspend, resume');
 
-SELECT pg_tviews_refresh_all_entities();
-SELECT assert_fresh('pg_tviews_refresh_all_entities');
+SELECT pg_tviews_refresh_all();
+SELECT assert_fresh('pg_tviews_refresh_all');
 
 SELECT 'issue #124 dependency order: PASS' AS result;
 -- expect-output: issue #124 dependency order: PASS

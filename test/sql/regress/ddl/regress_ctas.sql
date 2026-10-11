@@ -62,7 +62,7 @@ SELECT tviews.pg_tviews_drop('x');
 -- 3. UNLOGGED and WITH (fillfactor = n) are honoured.
 CREATE UNLOGGED TABLE tv_x WITH (fillfactor = 70) AS
     SELECT pk_x, id, jsonb_build_object('name', name) AS data FROM tb_x;
-SELECT must((SELECT NOT logged AND (options->>'fillfactor')::int = 70
+SELECT must((SELECT NOT (options->>'logged')::boolean AND (options->>'fillfactor')::int = 70
              FROM tviews.registry WHERE entity = 'x'), 'UNLOGGED and fillfactor');
 SELECT tviews.pg_tviews_drop('x');
 

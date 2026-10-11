@@ -68,7 +68,6 @@ SELECT n.pk_node, n.id,
                                           FROM tb_node a WHERE a.path <@ n.path)) AS data
   FROM tb_node n;
 
-SET pg_tviews.uncascaded_policy = 'error';
 SELECT tviews.pg_tviews_create('tv_node', 'SELECT pk_node, id, data FROM v_node');
 
 -- 1. Control: outside triggers, each statement still refreshes before the next

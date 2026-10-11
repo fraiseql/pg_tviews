@@ -29,10 +29,10 @@ between base tables and derived views through trigger-based change tracking.
 - `unsafe` is confined to FFI with `PostgreSQL`, each block with its `SAFETY:` reason.
 */
 
-use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 // Core modules
+mod api;
 mod audit;
 mod cache;
 mod catalog;
@@ -52,6 +52,7 @@ mod refresh;
 mod replication;
 mod report;
 mod revision;
+mod stats;
 mod trigger;
 mod utils;
 
@@ -73,57 +74,30 @@ use error::{TViewError, TViewResult};
 
 pg_module_magic!();
 
-/// Whether this session's trigger-based refresh is suspended.
-#[pg_extern]
-#[must_use]
-pub fn pg_tviews_is_suspended() -> bool {
-    crate::suspend::is_suspended()
-}
+/// Initialize the extension
+/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
+///
+/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
+/// not during initdb or other bootstrap contexts.
+#[pg_guard]
+pub extern "C-unwind" fn _PG_init() {
+    crate::config::register_gucs();
+    crate::stats::init();
+    crate::cache::register_relcache_callback();
+    crate::rebuild_worker::register();
 
-/// Suspend trigger-based refresh in this session: writes record which TVIEWs
-/// they change instead of refreshing them, until the matching resume.
-#[pg_extern]
-pub fn pg_tviews_suspend_triggers() {
-    crate::suspend::suspend();
-}
-
-/// Resume trigger-based refresh. When the outermost suspension ends, every TVIEW
-/// changed while suspended (and every TVIEW embedding one of them) is rebuilt.
-#[pg_extern]
-pub fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
-    crate::revision::check();
-    crate::suspend::resume()?;
-    if !crate::suspend::is_suspended() {
-        crate::suspend::catch_up()?;
-    }
-    Ok(())
-}
-
-/// Rebuild every TVIEW, dependencies first, and report how many were rebuilt,
-/// in which order, and how long it took.
-#[pg_extern]
-pub fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
-    crate::revision::check();
-    if crate::suspend::is_suspended() {
-        return Err(TViewError::WrongState {
-            reason: "Cannot refresh: triggers are suspended".to_string(),
-        }
-        .into());
+    // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
+    // registering callbacks is valid in this context.
+    unsafe {
+        crate::hooks::ensure_hook_installed();
     }
 
-    let start = std::time::Instant::now();
-    let order = crate::admin::refresh_all_in_dependency_order()?;
-
-    Ok(pgrx::datum::JsonB(serde_json::json!({
-        "refreshed_count": order.len(),
-        "order": order,
-        "duration_ms": start.elapsed().as_millis(),
-    })))
-}
-
-/// The TVIEWs changed while this session's refresh is suspended.
-#[pg_extern]
-#[must_use]
-pub fn pg_tviews_suspended_entities() -> Vec<String> {
-    crate::suspend::get_changed_entities()
+    // Register transaction callbacks once at startup.
+    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
+    // so registering per-transaction would accumulate N copies after N transactions.
+    // SAFETY: Transaction callbacks are registered in backend initialization context.
+    unsafe {
+        crate::flush::register_xact_callback();
+        crate::flush::register_subxact_callback();
+    }
 }

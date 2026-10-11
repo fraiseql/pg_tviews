@@ -23,32 +23,36 @@ On the beta.17 defaults, TVIEW refreshes were **0 % HOT** in every scenario of t
 `data` failed condition 1 on every refresh, and fillfactor 100 often failed
 condition 2.
 
-## Defaults for new TVIEWs
+## Defaults
 
-| Setting | Default | Effect |
+| Option | Default | Effect |
 |---|---|---|
-| `pg_tviews.data_gin_index` | `off` | no GIN index on `data` (it would block HOT on every refresh) |
-| `pg_tviews.fillfactor` | `85` | `CREATE TABLE … WITH (fillfactor = 85)`: 15 % of each page stays free for new row versions |
+| `data_gin_index` | `false` | no GIN index on `data` (it would block HOT on every refresh) |
+| `fillfactor` | `85` | `CREATE TABLE … WITH (fillfactor = 85)`: 15 % of each page stays free for new row versions |
 
 The indexes a TVIEW does get (`pk_<entity>`, `id`, UUID FKs, and the
 `(fk_<x>, pk_<entity>)` propagation indexes) are all on columns that a `data`
 refresh doesn't change. `updated_at` is never indexed. With these defaults,
 single-row refreshes measure **100 % HOT** (`regress_hot_defaults.sql`).
 
-Both settings apply when a TVIEW is created, through `pg_tviews_create()` or
-`CREATE TABLE tv_* AS SELECT …`. **Existing TVIEWs are not changed.**
+The defaults are fixed: no setting changes them. `pg_tviews_create()` and
+`CREATE TABLE tv_* AS SELECT …` both use them. TVIEWs created before 0.1.0-beta.28
+keep their tables; `tviews.registry.options` reports what they have.
 
 ## Per-TVIEW overrides
 
-Both GUCs are user-settable, so scope them to one creation with `SET LOCAL`:
+Declare a different value as an option of the TVIEW:
 
 ```sql
-BEGIN;
-SET LOCAL pg_tviews.fillfactor = 100;        -- append-mostly: rows are rarely refreshed
-SET LOCAL pg_tviews.data_gin_index = on;     -- top-level containment queries needed
-SELECT pg_tviews_create('tv_event_log', $$ … $$);
-COMMIT;
+SELECT pg_tviews_create('tv_event_log', $$ … $$,
+    '{"fillfactor": 100, "data_gin_index": true}');
+-- fillfactor 100: append-mostly, rows are rarely refreshed
+-- data_gin_index: top-level containment queries needed
 ```
+
+`CREATE TABLE tv_event_log WITH (fillfactor = 100) AS SELECT …` sets the fillfactor
+too. To change an existing TVIEW, pass the options it should have to
+`pg_tviews_create_or_replace()`: an option left out goes back to its default.
 
 ### When fillfactor 100 is right
 

@@ -39,10 +39,9 @@ INSERT INTO tb_doc (pk_doc, payload)
 SELECT g, left((SELECT string_agg(md5(g::text || ':' || s), '')
                 FROM generate_series(1, ceil($1 / 32.0)::int) s), $1)
 FROM generate_series(1, $ROWS) g;
-$(mode_sql "$2")
 SELECT pg_tviews_create('tv_doc', \$v\$
     SELECT pk_doc, id, jsonb_build_object('counter', counter, 'payload', payload) AS data
-    FROM tb_doc \$v\$);
+    FROM tb_doc \$v\$, $(mode_options "$2"));
 SQL
 }
 

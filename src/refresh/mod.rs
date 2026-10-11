@@ -5,13 +5,14 @@ pub mod row;
 
 pub mod bulk;
 pub mod direct;
+pub mod full;
 
 pub use bulk::refresh_bulk;
 pub use row::refresh_key;
 
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
@@ -136,12 +137,66 @@ pub(crate) struct Written {
     pub updated: Vec<i64>,
 }
 
+/// Refuse a UNION TVIEW whose backing view returns several rows for one key
+/// (ADR 0216), among the rows `filter` selects (`$1`… bound to `args`): a key
+/// names one row, and no path picks one of several. Nothing to check for a
+/// TVIEW without a set operation.
+///
+/// # Errors
+/// [`TViewError::DuplicateKey`](crate::TViewError::DuplicateKey) for the first
+/// such key, or the error of the query.
+pub(crate) fn refuse_duplicate_keys(
+    meta: &crate::catalog::TviewMeta,
+    filter: &str,
+    args: &[DatumWithOid],
+) -> crate::TViewResult<()> {
+    if !meta.plan.set_operation {
+        return Ok(());
+    }
+    refuse_duplicate_keys_in(
+        &crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        &meta.identity.column,
+        &crate::utils::qualified_relname_from_oid(meta.view_oid)?,
+        filter,
+        args,
+    )
+}
+
+/// [`refuse_duplicate_keys`] for a TVIEW not registered yet: its table
+/// `qualified_tv`, key column and backing view `qualified_view`.
+///
+/// # Errors
+/// As [`refuse_duplicate_keys`].
+pub(crate) fn refuse_duplicate_keys_in(
+    qualified_tv: &str,
+    key_column: &str,
+    qualified_view: &str,
+    filter: &str,
+    args: &[DatumWithOid],
+) -> crate::TViewResult<()> {
+    let qi_key = ident::quoted(key_column);
+    let sql = format!(
+        "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
+                 GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
+    );
+    match Spi::get_one_with_args::<String>(&sql, args)
+        .map_err(|e| crate::utils::spi::error(&sql, &e))?
+    {
+        Some(key) => Err(crate::TViewError::DuplicateKey {
+            tview: qualified_tv.to_string(),
+            key_column: key_column.to_string(),
+            key,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Quoted, comma-separated column list of a refresh upsert (`INSERT INTO tv (…)`
 /// and the matching `SELECT …`), so reserved-word and mixed-case columns work.
 pub(crate) fn column_list(col_names: &[String]) -> String {
     col_names
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|c| ident::quoted(c))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -168,7 +223,7 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
         .iter()
         .filter(|c| c.as_str() != key_col)
         .map(|c| {
-            let q = quote_identifier(c);
+            let q = ident::quoted(c);
             let fresh = format!("EXCLUDED.{q}");
             (q, fresh)
         })
@@ -217,7 +272,7 @@ pub(crate) fn run_counted_upsert(
     conflict: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<(i64, Written)> {
-    let qi_pk = quote_identifier(&format!("pk_{entity}"));
+    let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
@@ -232,6 +287,7 @@ pub(crate) fn run_counted_upsert(
     let updated = updated.unwrap_or_default();
     let written = (inserted.len() + updated.len()) as u64;
     crate::metrics::metrics_api::record_noop_skipped(
+        entity,
         produced.unwrap_or(0).unsigned_abs().saturating_sub(written),
     );
     let parse = |pks: &[String]| pks.iter().filter_map(|pk| pk.parse().ok()).collect();
@@ -272,8 +328,8 @@ pub(crate) fn lock_rows(
         return Ok(Vec::new());
     }
     let key_type = meta.key_type()?;
-    let qi_key = quote_identifier(&meta.identity.column);
-    let qi_pk = quote_identifier(&format!("pk_{}", meta.entity_name));
+    let qi_key = ident::quoted(&meta.identity.column);
+    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let lock = if transaction_snapshot {
         ""
     } else {

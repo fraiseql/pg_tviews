@@ -9,6 +9,8 @@ This document outlines backup strategies, recovery procedures, and disaster reco
 ### What to Backup
 
 **Critical (Must Backup)**:
+- `tviews.registry` (each TVIEW's `schema`, `name`, `query` and `options`: enough to
+  recreate it with `pg_tviews_create_or_replace`)
 - `pg_tview_meta` table (TVIEW definitions and metadata)
 - `pg_tview_helpers` table (helper view relationships)
 - `pg_tview_audit_log` table (audit trail)
@@ -125,15 +127,10 @@ cargo pgrx install --release
 DROP EXTENSION pg_tviews CASCADE;
 CREATE EXTENSION pg_tviews;
 
-# Restore metadata
-psql -d your_db < tview_metadata_backup.sql
-
-# Recreate TVIEWs from metadata
-SELECT pg_tviews_create(
-    pg_tview_meta.entity,
-    pg_tview_meta.definition
-)
-FROM pg_tview_meta;
+# Recreate TVIEWs from your schema scripts, or from a saved copy of
+# tviews.registry (here a table registry_copy with its schema, name, query, options)
+SELECT pg_tviews_create_or_replace(format('%I.%I', schema, name), query, options)
+FROM registry_copy;
 ```
 
 ### Scenario 4: Point-in-Time Recovery (PITR)
@@ -167,6 +164,10 @@ sudo systemctl start postgresql
 # Verify TVIEWs
 SELECT COUNT(*) FROM pg_tview_meta;
 SELECT * FROM pg_tviews_health_check();
+
+# UNLOGGED TVIEWs (logged: false) are empty after a physical restore. The rebuild
+# launcher refills them when the server leaves recovery; otherwise:
+SELECT * FROM pg_tviews_rebuild_all();
 ```
 
 ### Scenario 5: Complete Data Loss
@@ -184,6 +185,9 @@ gunzip -c full_backup.dump.gz | pg_restore -d postgres
 
 # Verify TVIEWs
 SELECT * FROM pg_tviews_health_check();
+
+# Fill UNLOGGED TVIEWs (logged: false) once after a dump restore
+SELECT * FROM pg_tviews_rebuild_all();
 ```
 
 ## Emergency Procedures
@@ -237,13 +241,13 @@ WHERE tablename LIKE 'tv_%'
 DO $$
 DECLARE
     tv_name text;
-    entity_name text;
+    ent text;
 BEGIN
     FOR tv_name IN
         SELECT tablename FROM pg_tables
         WHERE tablename LIKE 'tv_%' AND schemaname = 'public'
     LOOP
-        entity_name := substring(tv_name from 4); -- Remove 'tv_' prefix
+        ent := substring(tv_name from 4); -- Remove 'tv_' prefix
 
         -- Insert metadata (you need to know the original definition)
         -- This is tricky without the original definition

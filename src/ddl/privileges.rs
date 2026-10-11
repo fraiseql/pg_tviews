@@ -70,7 +70,7 @@ fn follow_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
     let changes = Spi::connect_mut(|client| {
         client
             .update(
-                &SELECT_GRANT_CHANGES.replace("{meta}", &crate::utils::meta_table()),
+                &SELECT_GRANT_CHANGES.replace("{meta}", &crate::catalog::meta_table()),
                 None,
                 &args,
             )?
@@ -108,7 +108,7 @@ fn follow_owners(table: Option<pg_sys::Oid>) -> TViewResult<()> {
                      JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace \
                      WHERE v.relowner <> t.relowner AND ($1 IS NULL OR t.oid = $1) \
                      ORDER BY v.oid",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &args,

@@ -3,7 +3,7 @@
 use super::ViewColumns;
 use crate::error::TViewError;
 use crate::error::TViewResult;
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::pg_sys;
 
 /// Deterministic index name `idx_<tview>_<suffix>`, fitted to 63 bytes by
@@ -22,14 +22,14 @@ fn index_ddl(
 ) -> String {
     let cols = columns
         .iter()
-        .map(|c| quote_identifier(c))
+        .map(|c| ident::quoted(c))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
         "CREATE INDEX IF NOT EXISTS {} ON {}.{} {method}({cols})",
-        quote_identifier(&index_name(tview_name, suffix)),
-        quote_identifier(schema_name),
-        quote_identifier(tview_name),
+        ident::quoted(&index_name(tview_name, suffix)),
+        ident::quoted(schema_name),
+        ident::quoted(tview_name),
     )
 }
 
@@ -219,7 +219,7 @@ pub(crate) fn tview_indexes(
         }
     }
 
-    // Opt-in (pg_tviews.data_gin_index): top-level containment queries on data
+    // Opt-in (option data_gin_index): top-level containment queries on data
     if data_gin && let Some(data) = &schema.data {
         indexes.push(ManagedIndex::data_gin(tview_name, data));
     }

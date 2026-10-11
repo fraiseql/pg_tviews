@@ -35,16 +35,7 @@ fn error(component: &str, message: impl Into<String>) -> Check {
 /// - Catalog revision and metadata consistency
 /// - Orphaned and missing triggers
 /// - TVIEW count
-#[pg_extern]
-fn pg_tviews_health_check() -> TableIterator<
-    'static,
-    (
-        name!(status, String),
-        name!(component, String),
-        name!(message, String),
-        name!(severity, String),
-    ),
-> {
+pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
     let mut results = vec![
         ok(
             "extension",
@@ -64,7 +55,7 @@ fn pg_tviews_health_check() -> TableIterator<
             count_check(),
         ]);
     }
-    TableIterator::new(results)
+    results
 }
 
 /// The count `sql` returns, or the error row of `component` saying it could
@@ -72,6 +63,12 @@ fn pg_tviews_health_check() -> TableIterator<
 fn count_of(component: &str, sql: &str) -> Result<i64, Check> {
     Spi::get_one::<i64>(sql)
         .map(Option::unwrap_or_default)
+        .map_err(|e| error(component, format!("could not be checked: {e}")))
+}
+
+/// The catalog's counts ([`crate::catalog::row::counts`]), or the failed check.
+fn registered(component: &str) -> Result<(i64, i64, i64), Check> {
+    crate::catalog::row::counts()
         .map_err(|e| error(component, format!("could not be checked: {e}")))
 }
 
@@ -140,15 +137,8 @@ fn catalog_check() -> (Check, bool) {
 }
 
 fn metadata_check() -> Check {
-    let orphaned = match count_of(
-        "metadata",
-        &format!(
-            "SELECT COUNT(*) FROM {} m
-             WHERE NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = m.table_oid)",
-            crate::utils::meta_table()
-        ),
-    ) {
-        Ok(n) => n,
+    let orphaned = match registered("metadata") {
+        Ok((_, _, orphaned)) => orphaned,
         Err(check) => return check,
     };
     if orphaned > 0 {
@@ -185,14 +175,8 @@ fn plan_check() -> Check {
 
 /// TVIEWs registered before a release that changed what registration derives.
 fn reregister_check() -> Check {
-    let stale = match count_of(
-        "reregister",
-        &format!(
-            "SELECT count(*) FROM {} WHERE needs_reregister",
-            crate::utils::meta_table()
-        ),
-    ) {
-        Ok(n) => n,
+    let stale = match registered("reregister") {
+        Ok((_, stale, _)) => stale,
         Err(check) => return check,
     };
     if stale == 0 {
@@ -258,19 +242,15 @@ fn trigger_check() -> Check {
 }
 
 fn count_check() -> Check {
-    match count_of(
-        "tviews",
-        &format!("SELECT COUNT(*) FROM {}", crate::utils::meta_table()),
-    ) {
-        Ok(tviews) => ok("tviews", format!("{tviews} TVIEWs registered")),
+    match registered("tviews") {
+        Ok((tviews, _, _)) => ok("tviews", format!("{tviews} TVIEWs registered")),
         Err(check) => check,
     }
 }
 
 /// Get current queue statistics
 /// Returns metrics about the current transaction's refresh operations
-#[pg_extern]
-fn pg_tviews_queue_stats() -> pgrx::JsonB {
+pub(crate) fn queue_stats() -> serde_json::Value {
     let stats = crate::metrics::metrics_api::get_queue_stats();
 
     let json_value = serde_json::json!({
@@ -299,13 +279,12 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
         "propagation_pruned": stats.propagation_pruned
     });
 
-    pgrx::JsonB(json_value)
+    json_value
 }
 
 /// Debug function: View current queue contents
 /// Returns the entities and PKs currently in the refresh queue
-#[pg_extern]
-fn pg_tviews_debug_queue() -> pgrx::JsonB {
+pub(crate) fn debug_queue() -> serde_json::Value {
     let contents = crate::metrics::metrics_api::get_queue_contents();
 
     let json_contents: Vec<serde_json::Value> = contents
@@ -321,74 +300,7 @@ fn pg_tviews_debug_queue() -> pgrx::JsonB {
         })
         .collect();
 
-    pgrx::JsonB(serde_json::json!(json_contents))
-}
-
-/// Size, row count and index count of each TVIEW, largest first.
-///
-/// The row count is a `count(*)` of each TVIEW run with the caller's privileges;
-/// a TVIEW the caller cannot read gets a NULL count and a NOTICE.
-#[pg_extern]
-fn pg_tviews_performance_stats() -> TableIterator<
-    'static,
-    (
-        name!(entity, String),
-        name!(table_size, String),
-        name!(total_size, String),
-        name!(row_count, Option<i64>),
-        name!(index_count, i32),
-    ),
-> {
-    // The TVIEW table is read through its catalog OID, so any schema works.
-    let query = format!(
-        "SELECT m.entity, m.table_oid::pg_catalog.regclass::pg_catalog.text AS tview,
-                pg_catalog.pg_size_pretty(pg_catalog.pg_relation_size(m.table_oid)) AS table_size,
-                pg_catalog.pg_size_pretty(pg_catalog.pg_total_relation_size(m.table_oid))
-                    AS total_size,
-                (SELECT pg_catalog.count(*)::int FROM pg_catalog.pg_index
-                 WHERE indrelid = m.table_oid) AS index_count
-         FROM {} m
-         ORDER BY pg_catalog.pg_relation_size(m.table_oid) DESC",
-        crate::utils::meta_table()
-    );
-    let tviews = Spi::connect(|client| {
-        let mut out = Vec::new();
-        for row in client.select(&query, None, &[])? {
-            out.push((
-                row["entity"].value::<String>()?.unwrap_or_default(),
-                row["tview"].value::<String>()?.unwrap_or_default(),
-                row["table_size"].value::<String>()?.unwrap_or_default(),
-                row["total_size"].value::<String>()?.unwrap_or_default(),
-                row["index_count"].value::<i32>()?.unwrap_or(0),
-            ));
-        }
-        Ok::<_, spi::Error>(out)
-    })
-    .unwrap_or_else(|e| error!("pg_tviews: could not read the TVIEW list: {e}"));
-
-    let stats: Vec<_> = tviews
-        .into_iter()
-        .map(|(entity, tview, table_size, total_size, index_count)| {
-            let row_count = row_count(&tview);
-            (entity, table_size, total_size, row_count, index_count)
-        })
-        .collect();
-    TableIterator::new(stats)
-}
-
-/// `count(*)` of `tview` (a regclass text, already quoted), or `None` with a
-/// NOTICE when the caller may not read it.
-fn row_count(tview: &str) -> Option<i64> {
-    let readable = Spi::get_one_with_args::<bool>(
-        "SELECT pg_catalog.has_table_privilege($1::pg_catalog.regclass, 'SELECT')",
-        &[crate::utils::spi::text(tview)],
-    );
-    if readable != Ok(Some(true)) {
-        notice!("pg_tviews: no row count for {tview}: permission denied");
-        return None;
-    }
-    Spi::get_one::<i64>(&format!("SELECT pg_catalog.count(*) FROM {tview}"))
-        .unwrap_or_else(|e| error!("pg_tviews: could not count the rows of {tview}: {e}"))
+    serde_json::json!(json_contents)
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.

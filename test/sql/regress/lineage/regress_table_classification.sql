@@ -21,8 +21,8 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
--- Tables no cascade reaches are what this file classifies: the TVIEWs accept them.
-SET pg_tviews.uncascaded_policy = 'warn';
+-- Tables no cascade reaches are what this file classifies: the TVIEWs accept
+-- them (option uncascaded_policy "warn").
 
 CREATE TABLE tb_user  (pk_user bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -63,7 +63,7 @@ CREATE FUNCTION label_of(t text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT u
 CREATE TABLE expected (entity text, tbl text, kind text);
 
 -- root and a direct fk
-SELECT pg_tviews_create('tv_user', $$ SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$);
+SELECT pg_tviews_create('tv_user', $$ SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('user', 'tb_user', 'local');
 SELECT pg_tviews_create('tv_order', $$
     SELECT o.pk_order, o.id, o.fk_user,
@@ -73,7 +73,7 @@ SELECT pg_tviews_create('tv_order', $$
     JOIN tviews.public__tv_user u ON u.pk_user = o.fk_user
     LEFT JOIN tb_line l ON l.fk_order = o.pk_order
     LEFT JOIN tb_sku s ON s.pk_sku = l.fk_sku
-    GROUP BY o.pk_order, o.id, o.fk_user, o.ref, u.data $$);
+    GROUP BY o.pk_order, o.id, o.fk_user, o.ref, u.data $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('order', 'tb_order', 'local'), ('order', 'tb_line', 'local'),
                             ('order', 'tb_sku', 'mapped'), ('order', 'tb_user', 'propagated');
 
@@ -93,57 +93,57 @@ INSERT INTO expected VALUES ('basket', 'tb_basket', 'local'), ('basket', 'tb_lin
 SELECT pg_tviews_create('tv_late', $$
     SELECT o.pk_late, o.id,
            jsonb_build_object('late', EXISTS (SELECT 1 FROM tb_line l WHERE l.pos > o.min_pos)) AS data
-    FROM tb_late o $$);
+    FROM tb_late o $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('late', 'tb_late', 'local'), ('late', 'tb_line', 'mapped');
 SELECT pg_tviews_create('tv_buyer', $$
     SELECT u.pk_buyer, u.id, jsonb_build_object('name', u.name) AS data
-    FROM tb_buyer u WHERE u.pk_buyer IN (SELECT o.fk_user FROM tb_order o WHERE o.ref IS NOT NULL) $$);
+    FROM tb_buyer u WHERE u.pk_buyer IN (SELECT o.fk_user FROM tb_order o WHERE o.ref IS NOT NULL) $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('buyer', 'tb_buyer', 'local'), ('buyer', 'tb_order', 'local');
 
 -- #158: a view with GROUP BY, and a view over it
 SELECT pg_tviews_create('tv_invoice', $$
     SELECT o.pk_invoice, o.id, jsonb_build_object('lines', v.lines) AS data
-    FROM tb_invoice o LEFT JOIN v_order_lines_2 v ON v.fk_order = o.pk_invoice $$);
+    FROM tb_invoice o LEFT JOIN v_order_lines_2 v ON v.fk_order = o.pk_invoice $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('invoice', 'tb_invoice', 'local'), ('invoice', 'tb_line', 'local');
 
 -- LATERAL; a CTE; a window function without PARTITION BY
 SELECT pg_tviews_create('tv_lat', $$
     SELECT o.pk_lat, o.id, jsonb_build_object('first', f.sku) AS data
     FROM tb_lat o
-    LEFT JOIN LATERAL (SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_lat ORDER BY l.pos LIMIT 1) f ON true $$);
+    LEFT JOIN LATERAL (SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_lat ORDER BY l.pos LIMIT 1) f ON true $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('lat', 'tb_lat', 'local'), ('lat', 'tb_line', 'local');
 SELECT pg_tviews_create('tv_cte', $$
     WITH lines AS (SELECT l.fk_order, l.fk_sku FROM tb_line l)
     SELECT o.pk_cte, o.id, jsonb_build_object('n', count(s.pk_sku)) AS data
     FROM tb_cte o LEFT JOIN lines x ON x.fk_order = o.pk_cte LEFT JOIN tb_sku s ON s.pk_sku = x.fk_sku
-    GROUP BY o.pk_cte, o.id $$);
+    GROUP BY o.pk_cte, o.id $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('cte', 'tb_cte', 'local'), ('cte', 'tb_line', 'local'), ('cte', 'tb_sku', 'mapped');
 SELECT pg_tviews_create('tv_rank', $$
     SELECT o.pk_rank, o.id, jsonb_build_object('rank', r.rn) AS data
     FROM tb_rank o
     LEFT JOIN (SELECT l.fk_order, row_number() OVER (ORDER BY l.pos) AS rn FROM tb_line l) r
-           ON r.fk_order = o.pk_rank $$);
+           ON r.fk_order = o.pk_rank $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('rank', 'tb_rank', 'local'), ('rank', 'tb_line', 'all_keys');
 
 -- UNION branches: each branch's table is the root of its branch
 SELECT pg_tviews_create('tv_media', $$
     SELECT b.pk_book AS pk_media, b.id, jsonb_build_object('title', b.title) AS data FROM tb_book b
     UNION ALL
-    SELECT m.pk_movie AS pk_media, m.id, jsonb_build_object('title', m.title) AS data FROM tb_movie m $$);
+    SELECT m.pk_movie AS pk_media, m.id, jsonb_build_object('title', m.title) AS data FROM tb_movie m $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('media', 'tb_book', 'local'), ('media', 'tb_movie', 'local');
 
 -- an aggregate TVIEW: the key is the group key
-SELECT pg_tviews_create_aggregate('tv_user_orders', $$
+SELECT pg_tviews_create('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 INSERT INTO expected VALUES ('user_orders', 'tb_order', 'local'), ('user_orders', 'tb_user', 'local');
 
 -- a function that may read tables pg_tviews cannot see: warned under warn (#193)
 SET client_min_messages TO NOTICE;
 SELECT pg_tviews_create('tv_fn', $$
-    SELECT u.pk_fn, u.id, jsonb_build_object('label', label_of(u.name)) AS data FROM tb_fn u $$);
+    SELECT u.pk_fn, u.id, jsonb_build_object('label', label_of(u.name)) AS data FROM tb_fn u $$, '{"uncascaded_policy": "warn"}');
 SET client_min_messages TO WARNING;
 INSERT INTO expected VALUES ('fn', 'tb_fn', 'local');
 

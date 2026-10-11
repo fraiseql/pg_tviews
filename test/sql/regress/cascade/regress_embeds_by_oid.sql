@@ -24,12 +24,12 @@ INSERT INTO tb_user (pk_user, name) VALUES (1, 'alice'), (2, 'bob');
 INSERT INTO tb_order (pk_order, fk_user, total) VALUES (1, 1, 10), (2, 2, 5);
 INSERT INTO tb_post (pk_post, fk_user, title) VALUES (1, 1, 'p1'), (2, 2, 'p2');
 
-SELECT pg_tviews_create_aggregate('tv_user_summary', $$
+SELECT pg_tviews_create('tv_user_summary', $$
     SELECT o.fk_user AS pk_user_summary, u.id,
            jsonb_build_object('orders', count(*), 'total', sum(o.total)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 
 -- The backing view, whatever its name, read by the dependent definition.
 SELECT format('%s', view) AS summary_view FROM tviews.registry WHERE entity = 'user_summary' \gset

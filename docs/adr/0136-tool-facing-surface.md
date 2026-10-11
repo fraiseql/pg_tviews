@@ -2,6 +2,7 @@
 
 - Status: Accepted; amended for #181 (see [Amendment](#amendment-181-pg_tviews-objects-live-in-tviews))
   and for the maintenance functions (see [Amendment](#amendment-maintenance-functions-and-the-real-privilege-model))
+  and by [ADR 0211](0211-api-surface.md) (one TVIEW name, removed functions, read contract v2)
 - Issues: #136 (fixed schema, privileges), #139 (health check), #137 (upgrade path),
   #133 (read contract), #134 (create-or-replace)
 

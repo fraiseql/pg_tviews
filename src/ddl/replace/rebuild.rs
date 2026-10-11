@@ -1,12 +1,11 @@
 //! Storage changes in place, and the rebuild of a TVIEW whose columns change.
 
+use super::Declared;
 use super::{Spi, invalid, pg_sys, spi};
 use crate::catalog::TviewMeta;
-use crate::ddl::aggregate::GroupKeys;
 use crate::ddl::create::{self, Storage};
-use crate::ddl::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 
 /// The table's actual storage, as `tviews.registry` reports it.
 pub(super) fn current_storage(entity: &str) -> TViewResult<Storage> {
@@ -43,8 +42,11 @@ pub(super) fn alter_storage(
     desired: Storage,
 ) -> TViewResult<()> {
     if desired.logged != current.logged {
+        let entity = crate::catalog::TviewMeta::entity_of_table(table)?.unwrap_or_default();
+        crate::lifecycle::validity::before_persistence_change(&entity, desired.logged)?;
         let persistence = if desired.logged { "LOGGED" } else { "UNLOGGED" };
         crate::utils::spi::run_ddl(&format!("ALTER TABLE {qualified_tv} SET {persistence}"))?;
+        crate::lifecycle::validity::after_persistence_change(table, desired.logged)?;
     }
     if desired.fillfactor != current.fillfactor {
         if desired.fillfactor == 100 {
@@ -77,8 +79,8 @@ pub(super) fn alter_storage(
         for index in &gin {
             crate::utils::spi::run_ddl(&format!(
                 "DROP INDEX {}.{}",
-                quote_identifier(schema),
-                quote_identifier(index)
+                ident::quoted(schema),
+                ident::quoted(index)
             ))?;
         }
         crate::catalog::indexes::forget(table, &gin)?;
@@ -93,9 +95,7 @@ pub(super) fn rebuild(
     schema: &str,
     meta: &TviewMeta,
     query: &str,
-    storage: Storage,
-    group_keys: Option<&GroupKeys>,
-    declarations: Declarations,
+    declared: Declared,
 ) -> TViewResult<()> {
     let tv_name = format!("tv_{entity}");
     let objects = [
@@ -130,24 +130,10 @@ pub(super) fn rebuild(
 
     // What the rebuild must put back, as statements computed before the drop.
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
-    let graphql_typename = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT graphql_typename FROM {} WHERE entity = $1",
-                    crate::utils::meta_table()
-                ),
-                None,
-                &[crate::utils::spi::text(entity)],
-            )?
-            .first()
-            .get_one::<String>()
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Read the GraphQL type name", &e))?;
     let user_indexes = user_indexes(meta.tview_oid)?;
 
     crate::ddl::drop::drop_tview(
-        &format!("{}.{tv_name}", quote_identifier(schema)),
+        &format!("{}.{tv_name}", ident::quoted(schema)),
         false,
         false,
     )?;
@@ -156,32 +142,27 @@ pub(super) fn rebuild(
             &tv_name,
             query,
             schema,
-            group_keys,
-            storage,
-            Some(declarations),
+            declared.group_keys.as_ref(),
+            declared.storage,
+            Some(declared.declarations),
         )
     })?;
 
-    let rebuilt =
-        TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
+    let rebuilt = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
+        name: entity.to_string(),
+    })?;
     let (tv, view) = (
-        format!(
-            "{}.{}",
-            quote_identifier(schema),
-            quote_identifier(&tv_name)
-        ),
+        format!("{}.{}", ident::quoted(schema), ident::quoted(&tv_name)),
         crate::utils::qualified_relname_from_oid(rebuilt.view_oid)?,
     );
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
-    if let Some(typename) = graphql_typename {
-        restore_typename(entity, &typename)?;
+    if declared.typename.is_some() {
+        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
     // Filled as its owner, now that the owner is back.
-    crate::admin::fill_empty_tview(entity)
+    crate::refresh::full::fill_empty_tview(entity)
 }
 
 /// Run the saved `restore` statements over the rebuilt table `tv` and view `view`:
@@ -211,22 +192,6 @@ fn restore_privileges(restore: &[String], tv: &str, view: &str) -> TViewResult<(
         crate::utils::spi::run_ddl(statement)?;
     }
     Ok(())
-}
-
-/// Give the rebuilt TVIEW of `entity` back its GraphQL type name.
-fn restore_typename(entity: &str, typename: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
-        &format!(
-            "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(typename),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Restore the GraphQL type name", &e))
 }
 
 /// Re-create the user's indexes on the rebuilt `tv_name`, each in a block that
@@ -340,7 +305,7 @@ fn user_index_filter() -> String {
                          WHERE k.conindid = i.indexrelid) \
          AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
                                 FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     )
 }
 

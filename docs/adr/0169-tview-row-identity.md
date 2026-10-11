@@ -3,7 +3,9 @@
 - Status: Accepted; amended by [ADR 0203](0203-propagation-plan.md): the identity is part of the
   stored plan, parents are found through lookup columns of any name (not `fk_<child>`, Decision 7),
   and Stage 2 below is done there. The `distinct_on_keys` / `distinct_on_output_keys` columns
-  (Decision 8) were dropped from `pg_tview_meta` in 0.1.0-beta.27.
+  (Decision 8) were dropped from `pg_tview_meta` in 0.1.0-beta.27. Amended by
+  [ADR 0216](0216-union-keys.md): a DISTINCT ON key may be a column of a UNION subquery that is
+  a base column in every branch.
 - Issues: #170 (umbrella), #169, #171, #172, #173, #174, #175
 - Supersedes in part: ADR 0157 ("`sqlparser` remains for … DISTINCT ON keys"), and the beta.22
   DISTINCT ON decisions (#164: the "key-aligned" check, `unique_root_column`, the `pk_unique` index)

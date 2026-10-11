@@ -13,6 +13,23 @@ re-create the TVIEWs.
 
 | Removed | In | Replacement |
 |---|---|---|
+| `pg_tviews.unlogged_by_default` | 0.1.0-beta.28 | Option `logged` (default `true`), or `CREATE UNLOGGED TABLE tv_<entity> AS …`. Setting it fails: remove it from `postgresql.conf` and `ALTER ROLE … SET`. |
+| `pg_tviews.fillfactor` | 0.1.0-beta.28 | Option `fillfactor` (default 85). |
+| `pg_tviews.data_gin_index` | 0.1.0-beta.28 | Option `data_gin_index` (default `false`). |
+| `pg_tviews.uncascaded_policy` | 0.1.0-beta.28 | Option `uncascaded_policy` (default `error`); `pg_tviews_create()` takes options too. |
+| `pg_tviews.time_refresh` | 0.1.0-beta.28 | Option `time_refresh`. |
+| `pg_tviews.union_duplicate_policy` (and its value `first`) | 0.1.0-beta.28 | None: a key returned by two UNION branches is always an error (`21000`). Keep one row per key in the definition with `DISTINCT ON` over the UNION, ordered by preference (ADR 0216). |
+| `pg_tviews.suspend_triggers` | 0.1.0-beta.28 | `pg_tviews_suspend_triggers()` / `pg_tviews_resume_triggers()`, which record the changed TVIEWs and refresh them at resume or commit. |
+| `pg_tviews.log_level` | 0.1.0-beta.28 | `client_min_messages = debug1` / `log_min_messages`: diagnostics are `DEBUG1` messages. |
+| `pg_tviews_create_aggregate(name, query, keys)` | 0.1.0-beta.28 | `pg_tviews_create(name, query, '{"group_keys": {…}}')`, or `pg_tviews_create_or_replace` with the same option. |
+| `pg_tviews_refresh_all_entities()` | 0.1.0-beta.28 | `pg_tviews_refresh_all()`. |
+| `pg_tviews_recover_after_crash(entity)` | 0.1.0-beta.28 | `pg_tviews_rebuild_all()`; the background worker (`pg_tviews.auto_rebuild_databases`, default `*`) refills reset UNLOGGED TVIEWs after a crash restart or a promotion. |
+| `pg_tviews_set_logged(entity, logged)` | 0.1.0-beta.28 | Option `logged` with `pg_tviews_create_or_replace()`, or `ALTER TABLE tv_<entity> SET [UN]LOGGED`; both fill a reset TVIEW first. |
+| `pg_tviews_is_replica_readable(entity)` | 0.1.0-beta.28 | `pg_tviews_replication_status()` (`replica_readable`), or `tviews.registry.options->'logged'`. |
+| `pg_tviews_performance_stats()` | 0.1.0-beta.28 | `pg_tviews_profile()` (sizes, rows estimate, indexes). |
+| `pg_tviews_set_typename(entity, name)` | 0.1.0-beta.28 | Option `typename`. |
+| `tviews.registry` columns `logged`, `uncascaded_policy`, `uncascaded_table_policies`, `function_reads`, `time_refresh` (read contract v2) | 0.1.0-beta.28 | `options->'logged'`, `options->>'uncascaded_policy'`, `options->'uncascaded_tables'`, `options->'function_reads'`, `options->>'time_refresh'`. `tviews.contract_version()` returns 2. |
+| Named arguments `tview_name =>`, `entity =>`, `entity_name =>`, `p_entity =>`; output columns `entity_name` (`pg_tviews_show_cascade_path`) and `tview` (`pg_tviews_profile`) | 0.1.0-beta.28 | `tview =>`; output columns `entity`, and `schema`, `name`. |
 | `pg_tviews_analyze_select(text)` | 0.1.0-beta.27 | None. `pg_tviews_create` analyses the definition and reports what it refuses; `tviews.pg_tview_reads` and `pg_tviews_mapping_query()` show what a TVIEW reads and how writes map to its rows. |
 | `pg_tviews_infer_types(text, text[])` | 0.1.0-beta.27 | `format_type(atttypid, atttypmod)` from `pg_attribute`. |
 | `pg_tviews_cascade(oid, bigint)`, `pg_tviews_insert(oid, bigint)`, `pg_tviews_delete(oid, bigint)` | 0.1.0-beta.27 | None needed: a write to a base table refreshes every TVIEW that reads it. `pg_tviews_refresh(entity)` rebuilds one TVIEW after changes the triggers did not see. |
@@ -30,6 +47,10 @@ full text.
 
 | Change | In | What to do |
 |---|---|---|
+| TVIEWs are LOGGED by default; every option has one fixed default | 0.1.0-beta.28 | Declare `logged: false` for a TVIEW that should stay UNLOGGED when it is next created. Existing TVIEWs keep their tables. |
+| `pg_tviews_create_or_replace()` options are the whole declaration: an option not passed goes back to its default on an existing TVIEW | 0.1.0-beta.28 | Pass every option the TVIEW should have; `tviews.registry.options` lists them. |
+| Every function acting on one TVIEW takes `tview` as entity, `tv_<entity>` or `schema.tv_<entity>`; an unknown name fails with 42704 | 0.1.0-beta.28 | Rename named arguments to `tview =>`; match messages naming the relation (`TVIEW public.tv_post created`). |
+| Limits (`max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `lock_escalation_threshold`) and `audit_enabled` are superuser settings | 0.1.0-beta.28 | Set them in `postgresql.conf` or as a superuser. |
 | `EXECUTE` on `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()`, `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`, `pg_tviews_set_logged()`, `pg_tviews_ensure_propagation_indexes()`, `pg_tviews_invalidate_caches()` revoked from `PUBLIC` | 0.1.0-beta.27 | `GRANT EXECUTE` to the operator role before upgrading (`docs/user-guides/operators.md`); others get 42501. |
 | Every function acting on one TVIEW requires owning it or the extension | 0.1.0-beta.27 | Call them as the TVIEW's owner, or a member of its role. |
 | `pg_tviews_refresh(entity)` and every rebuild run as the TVIEW's owner | 0.1.0-beta.27 | Nothing, unless a definition relied on the caller's privileges. |

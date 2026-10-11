@@ -106,12 +106,12 @@ SELECT pg_tviews_create('tv_thread', $$
     FROM app.tb_thread t LEFT JOIN app.tb_comment c ON c.fk_thread = t.pk_thread
     GROUP BY t.pk_thread, t.id, t.title $$);
 -- An aggregate TVIEW.
-SELECT pg_tviews_create_aggregate('tv_user_orders', $$
+SELECT pg_tviews_create('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id,
            jsonb_build_object('orders', count(*), 'total', sum(o.total)) AS data
     FROM app.tb_order o JOIN app.tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 
 -- The TVIEWs belong to regress_136_owner, which reads the base tables. The writer
 -- gets DML on the base tables and nothing else.

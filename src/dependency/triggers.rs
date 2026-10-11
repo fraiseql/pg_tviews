@@ -1,5 +1,5 @@
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::prelude::*;
 
 /// Row-level trigger function: enqueues refreshes.
@@ -299,7 +299,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          FROM ours o WHERE o.tgenabled = 'D' \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
-        meta = crate::utils::meta_table(),
+        meta = crate::catalog::meta_table(),
     );
     Spi::connect(|client| {
         let mut problems = TriggerProblems::default();
@@ -336,14 +336,10 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
 /// Returns error if trigger creation or installation fails.
 pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) -> TViewResult<()> {
     // A trigger argument written as a quoted identifier is stored as its name.
-    let entity_arg = quote_identifier(tview_entity);
+    let entity_arg = ident::quoted(tview_entity);
     for &(table_oid, set) in plan {
         let (schema, relname, partitioned) = get_table_name(table_oid)?;
-        let qi_table = format!(
-            "{}.{}",
-            quote_identifier(&schema),
-            quote_identifier(&relname)
-        );
+        let qi_table = format!("{}.{}", ident::quoted(&schema), ident::quoted(&relname));
         let installed = entity_triggers(tview_entity, Some(table_oid))?;
 
         for spec in set.specs(partitioned) {
@@ -355,7 +351,7 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
             }
             let trigger_sql = format!(
                 "CREATE TRIGGER {} {} EXECUTE FUNCTION {}.{}({entity_arg})",
-                quote_identifier(&trigger_name(spec.tag, tview_entity, &schema, &relname)),
+                ident::quoted(&trigger_name(spec.tag, tview_entity, &schema, &relname)),
                 spec.clause.replace("{table}", &qi_table),
                 crate::utils::ext_schema(),
                 spec.function,
@@ -482,11 +478,7 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
 
     for (action, entity, relid, proname, tgname) in changes {
         let (schema, relname, _) = get_table_name(relid)?;
-        let qi_table = format!(
-            "{}.{}",
-            quote_identifier(&schema),
-            quote_identifier(&relname)
-        );
+        let qi_table = format!("{}.{}", ident::quoted(&schema), ident::quoted(&relname));
         if let Some(trigger) = tgname.filter(|_| action == "drop") {
             drop_trigger(relid, &qi_table, &trigger)?;
             continue;
@@ -497,11 +489,11 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
         let _owner = crate::owner::AsOwner::of_table(relid)?;
         let trigger_sql = format!(
             "CREATE TRIGGER {} {} EXECUTE FUNCTION {}.{}({})",
-            quote_identifier(&trigger_name(spec.tag, &entity, &schema, &relname)),
+            ident::quoted(&trigger_name(spec.tag, &entity, &schema, &relname)),
             spec.clause.replace("{table}", &qi_table),
             crate::utils::ext_schema(),
             spec.function,
-            quote_identifier(&entity),
+            ident::quoted(&entity),
         );
         crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
             operation: format!("Install {} trigger on partition {qi_table}", spec.function),
@@ -575,7 +567,7 @@ fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResu
     let _owner = crate::owner::AsOwner::of_table(table_oid)?;
     let drop_sql = format!(
         "DROP TRIGGER IF EXISTS {} ON {table}",
-        quote_identifier(trigger)
+        ident::quoted(trigger)
     );
     crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
         operation: format!("Drop trigger {trigger} from {table}"),

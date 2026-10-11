@@ -55,12 +55,12 @@ SELECT * FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
     └─ none → continue
         ↓
 Does the write reach the TVIEW?
-SELECT cascade_kinds, uncascaded_tables, uncascaded_policy FROM tviews.registry WHERE entity = 'post';
+SELECT cascade_kinds, uncascaded_tables, options->>'uncascaded_policy' FROM tviews.registry WHERE entity = 'post';
     ├─ base table in uncascaded_tables → change the view, or the policy
     └─ base table in cascade_kinds → continue
         ↓
-Was refresh suspended for that write?
-SELECT tviews.pg_tviews_is_suspended(), current_setting('pg_tviews.suspend_triggers');
+Did the write bypass the triggers (session_replication_role = replica, disabled triggers)?
+SELECT tgname, tgenabled FROM pg_trigger WHERE tgname LIKE 'trg_tview_%';
     ├─ yes → SELECT tviews.pg_tviews_refresh('post');
     └─ no  → continue
         ↓
@@ -90,9 +90,9 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_post WHERE pk_post = 
     ├─ seq scans → index the join / foreign-key columns of the base tables
     └─ fast → continue
         ↓
-Recomputes vs direct patches for one write (same session, before and after)
-SELECT tviews.pg_tviews_queue_stats();
-    └─ compare view_recomputes, direct_patches_applied, direct_patch_fallbacks
+Recomputes vs direct patches, per TVIEW, from any session
+SELECT entity, view_recomputes, patch_applied, patch_fallbacks, refresh_ms FROM tviews.stats;
+    └─ many view_recomputes or patch_fallbacks → the writes miss the direct-patch path
 ```
 
 ## Debugging Tools
@@ -105,6 +105,9 @@ SELECT tviews.pg_tviews_debug_queue();
 
 -- Refresh counters of this session
 SELECT tviews.pg_tviews_queue_stats();
+
+-- Refresh counters per TVIEW, cumulated over every session
+SELECT * FROM tviews.stats;
 
 -- TVIEW rows the current transaction changed, per entity
 SELECT tviews.pg_tviews_flush_and_report();
@@ -174,7 +177,7 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tv_post WHERE data->>'title' = 'x';
 CREATE INDEX idx_tv_post_title ON tv_post ((data->>'title'));
 ```
 
-`pg_tviews.data_gin_index` creates a GIN index on `data` for new TVIEWs. Every index on
+The `data_gin_index` option creates a GIN index on `data` for its TVIEW. Every index on
 `data` makes refresh updates non-HOT; check `hot_ratio` in `tviews.pg_tviews_profile()`.
 
 ### Issue: Memory Errors
@@ -192,8 +195,9 @@ once (see [Failure Modes](FAILURE_MODES.md)).
 
 The refresh queue lives in the writing transaction and is flushed before COMMIT
 completes, so transaction pooling is safe. Session state that does matter:
-`pg_tviews_suspend_triggers()` (ends with the transaction) and `SET pg_tviews.*`
-(session GUCs; reset by `DISCARD ALL`).
+`pg_tviews_suspend_triggers()` (ends with the transaction) and
+`SET pg_tviews.batch_size` / `cache_size` / `report_max_tracked` (session settings;
+reset by `DISCARD ALL`).
 
 ### Issue: TVIEW Content Differs From Its View
 
@@ -220,7 +224,8 @@ SELECT pg_reload_conf();
 grep -iE "pg_tviews|tview" /var/log/postgresql/postgresql-*.log
 ```
 
-`SET pg_tviews.log_level = 'debug';` makes pg_tviews log more detail in one session.
+pg_tviews' diagnostics are `DEBUG1` messages: `SET client_min_messages = debug1;` shows
+them in one session, `log_min_messages = debug1` writes them to the server log.
 
 ### Lock Analysis
 
