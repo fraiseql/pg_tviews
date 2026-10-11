@@ -3,8 +3,9 @@
 #
 #   1. On a hot standby, an UNLOGGED tv_* cannot be read, a LOGGED one can, and
 #      pg_tviews_replication_status() works (read-only).
-#   2. After promotion, the pg_tviews.auto_rebuild_databases worker repopulates
-#      the UNLOGGED TVIEW without any write.
+#   2. After promotion, the rebuild launcher (pg_tviews.auto_rebuild_databases,
+#      `*` by default: no configuration) repopulates the UNLOGGED TVIEW without
+#      any write.
 #   3. After an immediate (crash) stop and restart of the promoted node, the
 #      worker repopulates it again.
 #   4. After a clean restart, a TVIEW that is merely empty stays empty: only a
@@ -77,7 +78,6 @@ SQL
   echo "listen_addresses = 'localhost'"
   echo "unix_socket_directories = ''"
   echo "hba_file = '$standby/pg_hba.conf'"
-  echo "pg_tviews.auto_rebuild_databases = '$db'"
 } >> "$standby/postgresql.auto.conf"
 start_node
 

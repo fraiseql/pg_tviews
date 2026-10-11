@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion in every
+  database, unconfigured** (#215): `pg_tviews.auto_rebuild_databases` defaults to
+  `*`. One launcher starts a worker per database, one at a time; each exits when
+  done. A list restricts it to those databases; an empty value disables it. A
+  database without the extension is skipped quietly.
+
 - **Read contract v2** (ADR 0211): `tviews.contract_version()` returns `2`.
   `tviews.registry` drops the columns `options` now carries: `logged`
   (`options->'logged'`), `uncascaded_policy` (`options->>'uncascaded_policy'`),

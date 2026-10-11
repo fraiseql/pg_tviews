@@ -19,7 +19,7 @@
 //! | `pg_tviews.batch_size` | int | 1000 | user | Max keys per bulk-refresh statement |
 //! | `pg_tviews.cache_size` | int | 10000 | user | Max entries per in-memory cache |
 //! | `pg_tviews.report_max_tracked` | int | 10000 | user | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
-//! | `pg_tviews.auto_rebuild_databases` | string | "" | postmaster | Databases whose reset UNLOGGED TVIEWs are rebuilt after recovery |
+//! | `pg_tviews.auto_rebuild_databases` | string | `*` | postmaster | Databases whose reset UNLOGGED TVIEWs are rebuilt after recovery: `*` every one, a list, or empty for none |
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 
@@ -74,7 +74,7 @@ static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
 static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static REPORT_MAX_TRACKED_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
-    GucSetting::<Option<std::ffi::CString>>::new(None);
+    GucSetting::<Option<std::ffi::CString>>::new(Some(c"*"));
 
 // ── GUC registration (called from _PG_init) ─────────────────────────────
 
@@ -235,9 +235,10 @@ fn register_postmaster_gucs() {
         GucRegistry::define_string_guc(
             c"pg_tviews.auto_rebuild_databases",
             c"Databases whose emptied UNLOGGED TVIEWs are rebuilt once recovery finishes.",
-            c"Comma-separated database names. For each one a background worker runs \
+            c"* (the default): every database that accepts connections; a comma-separated \
+              list: only those; empty: none. A launcher starts a worker per database running \
               pg_tviews_rebuild_all() at startup, after a crash restart and on promotion. \
-              Empty (the default) starts no worker. Requires a server restart.",
+              Requires a server restart.",
             &AUTO_REBUILD_DATABASES_GUC,
             GucContext::Postmaster,
             GucFlags::default(),
@@ -328,18 +329,52 @@ pub fn report_max_tracked() -> usize {
     usize::try_from(REPORT_MAX_TRACKED_GUC.get()).unwrap_or(0)
 }
 
-/// Database names listed in `pg_tviews.auto_rebuild_databases`.
+/// The databases whose reset UNLOGGED TVIEWs are rebuilt after recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebuildDatabases {
+    /// `*`: every database that accepts connections.
+    All,
+    /// These databases.
+    Only(Vec<String>),
+    /// Empty: no rebuild worker.
+    None,
+}
+
+/// `pg_tviews.auto_rebuild_databases`.
 #[must_use]
-pub fn auto_rebuild_databases() -> Vec<String> {
-    AUTO_REBUILD_DATABASES_GUC
+pub fn rebuild_databases() -> RebuildDatabases {
+    let value = AUTO_REBUILD_DATABASES_GUC
         .get()
         .and_then(|s| s.to_str().ok().map(str::to_string))
-        .map(|s| {
-            s.split(',')
-                .map(str::trim)
-                .filter(|d| !d.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    parse_rebuild_databases(&value)
+}
+
+fn parse_rebuild_databases(value: &str) -> RebuildDatabases {
+    let names: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .collect();
+    match names.as_slice() {
+        [] => RebuildDatabases::None,
+        [all] if all == "*" => RebuildDatabases::All,
+        _ => RebuildDatabases::Only(names),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RebuildDatabases, parse_rebuild_databases};
+
+    #[test]
+    fn rebuild_databases_parse() {
+        assert_eq!(parse_rebuild_databases("*"), RebuildDatabases::All);
+        assert_eq!(parse_rebuild_databases(" "), RebuildDatabases::None);
+        assert_eq!(
+            parse_rebuild_databases("app, reporting"),
+            RebuildDatabases::Only(vec!["app".into(), "reporting".into()])
+        );
+    }
 }
