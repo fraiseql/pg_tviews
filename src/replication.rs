@@ -149,7 +149,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
     let mut targets = TviewRelation::load(None)?;
-    let graph = crate::flush::EntityDepGraph::load()?;
+    let graph = crate::catalog::EntityDepGraph::load()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order
@@ -168,7 +168,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             }
         } else {
             // Every target is rebuilt, dependencies first: no cascade needed.
-            crate::admin::rebuild_one(&rel.entity)?;
+            crate::refresh::full::rebuild_one(&rel.entity)?;
         }
         // Counted as its owner, as it was rebuilt: the caller may not read it.
         let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;

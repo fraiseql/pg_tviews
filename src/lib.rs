@@ -72,3 +72,30 @@ mod validation;
 use error::{TViewError, TViewResult};
 
 pg_module_magic!();
+
+/// Initialize the extension
+/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
+///
+/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
+/// not during initdb or other bootstrap contexts.
+#[pg_guard]
+pub extern "C-unwind" fn _PG_init() {
+    crate::config::register_gucs();
+    crate::cache::register_relcache_callback();
+    crate::rebuild_worker::register();
+
+    // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
+    // registering callbacks is valid in this context.
+    unsafe {
+        crate::hooks::ensure_hook_installed();
+    }
+
+    // Register transaction callbacks once at startup.
+    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
+    // so registering per-transaction would accumulate N copies after N transactions.
+    // SAFETY: Transaction callbacks are registered in backend initialization context.
+    unsafe {
+        crate::flush::register_xact_callback();
+        crate::flush::register_subxact_callback();
+    }
+}

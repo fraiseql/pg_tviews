@@ -1,6 +1,5 @@
-//! Extension lifecycle: initialization, version, and runtime checks.
-
-use pgrx::prelude::*;
+//! The lifecycle of an UNLOGGED TVIEW's rows: trusted until PostgreSQL resets the
+//! table, then refilled once.
 
 /// Whether an UNLOGGED TVIEW's rows can be trusted, and its fill when they can't.
 ///
@@ -159,7 +158,7 @@ pub mod validity {
         if !needs_fill(meta.tview_oid)? {
             return Ok(false);
         }
-        let graph = crate::flush::EntityDepGraph::load()?;
+        let graph = crate::catalog::EntityDepGraph::load()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_reset(dependency)?;
         }
@@ -171,7 +170,7 @@ pub mod validity {
         // SAFETY: reads the backend's transaction state.
         let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
         CLAIMS.with_borrow_mut(|claims| claims.push((meta.tview_oid, level)));
-        crate::admin::refill(entity)?;
+        crate::refresh::full::refill(entity)?;
         Ok(true)
     }
 
@@ -198,32 +197,5 @@ pub mod validity {
         } else {
             mark(table_oid).map(|_| ())
         }
-    }
-}
-
-/// Initialize the extension
-/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
-///
-/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
-/// not during initdb or other bootstrap contexts.
-#[pg_guard]
-pub extern "C-unwind" fn _PG_init() {
-    crate::config::register_gucs();
-    crate::cache::register_relcache_callback();
-    crate::rebuild_worker::register();
-
-    // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
-    // registering callbacks is valid in this context.
-    unsafe {
-        crate::hooks::ensure_hook_installed();
-    }
-
-    // Register transaction callbacks once at startup.
-    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
-    // so registering per-transaction would accumulate N copies after N transactions.
-    // SAFETY: Transaction callbacks are registered in backend initialization context.
-    unsafe {
-        crate::flush::register_xact_callback();
-        crate::flush::register_subxact_callback();
     }
 }

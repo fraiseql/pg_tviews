@@ -1,6 +1,7 @@
-//! Administrative SQL functions: refresh, migration, cascade path.
+//! Maintenance services behind the API: rebuilds with their dependents, time
+//! refresh, propagation indexes, cascade paths.
 
-use crate::{TViewError, TViewResult, utils::ident};
+use crate::TViewResult;
 use pgrx::prelude::*;
 
 /// The TVIEWs whose definitions read the current time that the caller owns (or
@@ -36,7 +37,7 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMet
 pub(crate) fn refresh_time_dependent(
     chosen: &[crate::catalog::TviewMeta],
 ) -> TViewResult<Vec<String>> {
-    let order = crate::flush::EntityDepGraph::load()?.topo_order;
+    let order = crate::catalog::EntityDepGraph::load()?.topo_order;
     let mut chosen: Vec<&crate::catalog::TviewMeta> = chosen.iter().collect();
     chosen.sort_by_key(|meta| {
         order
@@ -65,7 +66,7 @@ pub(crate) fn refresh_time_dependent(
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
-    let graph = crate::flush::EntityDepGraph::load()?;
+    let graph = crate::catalog::EntityDepGraph::load()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
         for entity in read {
@@ -90,7 +91,7 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
             .unwrap_or(usize::MAX)
     });
     for entity in &order {
-        rebuild_one(entity)?;
+        crate::refresh::full::rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
     Ok(order)
@@ -105,110 +106,6 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
 /// Returns an error if the refresh fails.
 pub fn flush_after_rebuilds() -> TViewResult<()> {
     crate::flush::flush_refresh_queue()
-}
-
-/// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
-/// its owner, and nothing that reads it.
-///
-/// The backing view runs the functions it calls as the querying role: rebuilding
-/// as the caller would run the owner's view code with the caller's privileges
-/// (a superuser's, after a migration).
-///
-/// # Errors
-/// Returns error if the entity is not registered or the truncate/insert fails.
-pub fn rebuild_one(entity: &str) -> TViewResult<()> {
-    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
-        // Every row changes: refreshes of any of them wait, and are waited for,
-        // and so are writers of anything they read.
-        crate::concurrency::lock_relation(
-            meta.tview_oid.to_u32(),
-            crate::concurrency::Side::Writer,
-        );
-        crate::concurrency::reads::lock_whole_read_set(&meta)?;
-    }
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&format!("TRUNCATE {qi_tv}"))?;
-    Spi::run(&insert)?;
-    drop(owner);
-    // Rebuilt from its view: its rows can be trusted again.
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-        TViewError::TviewNotFound {
-            name: entity.to_string(),
-        }
-    })?;
-    crate::lifecycle::validity::mark(meta.tview_oid)?;
-    Ok(())
-}
-
-/// Replace every row of `tv_<entity>` with its backing view's, without `TRUNCATE`
-/// (readers are never blocked), as its owner: the fill of a TVIEW whose rows
-/// can't be trusted ([`crate::lifecycle::validity`]). Rows a concurrent writer
-/// committed meanwhile are kept.
-///
-/// # Errors
-/// Returns error if the entity is not registered or the delete/insert fails.
-pub fn refill(entity: &str) -> TViewResult<()> {
-    if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
-        crate::concurrency::reads::lock_whole_read_set(&meta)?;
-    }
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&format!("DELETE FROM {qi_tv}"))?;
-    Spi::run(&format!("{insert} ON CONFLICT DO NOTHING"))?;
-    Ok(())
-}
-
-/// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,
-/// as its owner.
-///
-/// Used to fill a TVIEW created empty (a rebuild by another role). Unlike
-/// [`rebuild_one`] it takes only a ROW EXCLUSIVE lock, so readers are never
-/// blocked, even when the transaction stays prepared (2PC) for a while.
-///
-/// # Errors
-/// Returns error if the entity is not registered or the insert fails.
-pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (_, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&insert)?;
-    Ok(())
-}
-
-/// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
-/// its backing view, once the view is known to return one row per key. The
-/// explicit column list comes from the view's own columns, which excludes the
-/// table-only `created_at`/`updated_at` columns.
-/// Taking the owner's guard makes running the statements as anyone else
-/// unrepresentable.
-fn rebuild_statements(
-    _owner: &crate::owner::AsOwner,
-    entity: &str,
-) -> TViewResult<(String, String)> {
-    use crate::catalog::TviewMeta;
-
-    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
-        name: entity.to_string(),
-    })?;
-    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let view_columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-    if view_columns.is_empty() {
-        return Err(TViewError::CatalogError {
-            operation: format!("Get columns for view {qi_view}"),
-            pg_error: "View has no selectable columns".to_string(),
-        });
-    }
-    let col_list = view_columns
-        .iter()
-        .map(|c| ident::quoted(c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    // A key names one row: a UNION view returning several for one is refused
-    // before the fill, instead of failing on the table's primary key.
-    crate::refresh::refuse_duplicate_keys(&meta, "true", &[])?;
-    let insert = format!("INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}");
-    Ok((qi_tv, insert))
 }
 
 /// Create the propagation indexes `(<lookup>, <identity>)` that `metas` are
@@ -274,9 +171,9 @@ pub(crate) fn ensure_propagation_indexes(
 /// # Errors
 /// Returns error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
-    let graph = crate::flush::EntityDepGraph::load()?;
+    let graph = crate::catalog::EntityDepGraph::load()?;
     for entity in &graph.topo_order {
-        rebuild_one(entity)?;
+        crate::refresh::full::rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
     Ok(graph.topo_order)

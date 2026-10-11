@@ -474,7 +474,7 @@ fn replace_in_place(
     {
         // The rows are recomputed as the TVIEW's owner, as every refresh is.
         let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-        reconcile(entity, meta)?;
+        crate::refresh::full::reconcile(entity, meta)?;
     }
 
     for (dependent, table) in &dependents {
@@ -484,7 +484,7 @@ fn replace_in_place(
             TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
                 name: dependent.clone(),
             })?;
-        reconcile(dependent, &meta)?;
+        crate::refresh::full::reconcile(dependent, &meta)?;
     }
     Ok(())
 }
@@ -538,127 +538,6 @@ fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
     let _owner = crate::owner::AsOwner::of_table(table)?;
     crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
-}
-
-/// Bring the rows of a TVIEW's table to those of its backing view with three
-/// statements that touch only rows that change, journaling each change. Rows
-/// that leave go first, so a unique index holds throughout. Returns the
-/// `pk_<entity>` of every row deleted, updated or inserted.
-pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
-    use crate::queue::affected::{Change, record};
-    let _pin = crate::owner::RenderPin::new();
-    // Every row is computed: writers of anything they read wait, and are waited for.
-    crate::concurrency::reads::lock_whole_read_set(meta)?;
-
-    // A key names one row: a UNION view returning several for one is refused.
-    crate::refresh::refuse_duplicate_keys(meta, "true", &[])?;
-    let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-
-    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
-    let keys = crate::utils::spi::strings(
-        "SELECT a.attname::text FROM pg_catalog.pg_index i \
-         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
-          AND a.attnum = ANY (i.indkey) \
-         WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
-        &[crate::utils::spi::oid(meta.tview_oid)],
-    )?;
-    let prefixed = |columns: &[&String], prefix: &str| -> Vec<String> {
-        columns
-            .iter()
-            .map(|c| format!("{prefix}{}", ident::quoted(c)))
-            .collect()
-    };
-    let list = |columns: &[&String], prefix: &str| prefixed(columns, prefix).join(", ");
-    let key_columns: Vec<&String> = keys.iter().collect();
-    let value_columns: Vec<&String> = columns.iter().filter(|c| !keys.contains(c)).collect();
-    let all_columns: Vec<&String> = columns.iter().collect();
-    let same_key = format!(
-        "({}) = ({})",
-        list(&key_columns, "t."),
-        list(&key_columns, "v.")
-    );
-    let pk = ident::quoted(&format!("pk_{entity}"));
-
-    let deleted = Spi::connect_mut(|client| {
-        let mut rows = Vec::new();
-        for row in client.update(
-            &format!(
-                "DELETE FROM {qualified_tv} t \
-                 WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
-                 RETURNING t.{pk}::text, pg_catalog.to_jsonb(t.*)->>'id'"
-            ),
-            None,
-            &[],
-        )? {
-            if let Some(key) = row.get::<String>(1)? {
-                rows.push((key, row.get::<String>(2)?));
-            }
-        }
-        Ok::<_, spi::Error>(rows)
-    })
-    .map_err(|e| {
-        crate::utils::spi::catalog_error("Delete the rows the new definition drops", &e)
-    })?;
-    let mut changed: Vec<String> = deleted.iter().map(|(key, _)| key.clone()).collect();
-    for (key, id) in deleted {
-        record(entity, key, Change::Deleted(id));
-    }
-    if !value_columns.is_empty() {
-        // A stored column can have another type than the view's (an unmapped user type
-        // is stored as text): compare against the value the UPDATE would assign.
-        let stored: std::collections::HashMap<String, String> =
-            crate::utils::column_types(meta.tview_oid)?
-                .into_iter()
-                .collect();
-        let stored_types: Vec<String> = value_columns
-            .iter()
-            .filter_map(|c| stored.get(c.as_str()).cloned())
-            .collect();
-        if stored_types.len() != value_columns.len() {
-            return Err(TViewError::CatalogError {
-                operation: format!("Compare the rows of {qualified_tv} with its view"),
-                pg_error: "a view column is missing from the TVIEW's table".to_string(),
-            });
-        }
-        let fresh: Vec<String> = prefixed(&value_columns, "v.")
-            .into_iter()
-            .zip(&stored_types)
-            .map(|(v, ty)| format!("{v}::{ty}"))
-            .collect();
-        let set = value_columns
-            .iter()
-            .map(|c| format!("{0} = v.{0}", ident::quoted(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        for key in crate::utils::spi::strings(
-            &format!(
-                "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
-                 FROM {qualified_view} v \
-                 WHERE {same_key} AND {} \
-                 RETURNING t.{pk}::text",
-                crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh)
-            ),
-            &[],
-        )? {
-            changed.push(key.clone());
-            record(entity, key, Change::Updated);
-        }
-    }
-    for key in crate::utils::spi::strings(
-        &format!(
-            "INSERT INTO {qualified_tv} ({columns}) \
-             SELECT {columns} FROM {qualified_view} v \
-             WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
-             RETURNING {pk}::text",
-            columns = list(&all_columns, "")
-        ),
-        &[],
-    )? {
-        changed.push(key.clone());
-        record(entity, key, Change::Inserted);
-    }
-    Ok(changed)
 }
 
 #[cfg(test)]

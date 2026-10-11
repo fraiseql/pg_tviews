@@ -5,6 +5,7 @@ pub mod row;
 
 pub mod bulk;
 pub mod direct;
+pub mod full;
 
 pub use bulk::refresh_bulk;
 pub use row::refresh_key;

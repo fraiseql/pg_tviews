@@ -162,7 +162,7 @@ pub(super) fn rebuild(
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
     // Filled as its owner, now that the owner is back.
-    crate::admin::fill_empty_tview(entity)
+    crate::refresh::full::fill_empty_tview(entity)
 }
 
 /// Run the saved `restore` statements over the rebuilt table `tv` and view `view`:

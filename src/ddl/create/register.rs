@@ -172,7 +172,7 @@ impl MetaRow<'_> {
 
         // TVIEWs that read each other in a cycle could never be refreshed in
         // order: refuse the definition that closes one.
-        crate::flush::EntityDepGraph::load()?;
+        crate::catalog::EntityDepGraph::load()?;
         Ok(())
     }
 }

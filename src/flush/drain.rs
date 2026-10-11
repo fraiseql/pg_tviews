@@ -82,7 +82,9 @@ impl Flush {
         }
         // The parents a refresh discovers come later in this order, so every key
         // is refreshed after everything it reads, and only once.
-        let sorted = self.graph.sort_keys(self.pending.drain().collect());
+        let sorted = self
+            .graph
+            .in_order(self.pending.drain().collect(), |k| &k.entity);
         let entity = sorted[0].entity.clone();
         let mut keys = Vec::new();
         for key in sorted {

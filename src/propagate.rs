@@ -28,7 +28,7 @@ pub fn find_parents_batch(
     child: &str,
     pks: &[i64],
     appeared: &[i64],
-    graph: &crate::flush::EntityDepGraph,
+    graph: &crate::catalog::EntityDepGraph,
 ) -> crate::TViewResult<HashMap<i64, Vec<RefreshKey>>> {
     let mut result: HashMap<i64, Vec<RefreshKey>> = HashMap::with_capacity(pks.len());
     if pks.is_empty() {
@@ -87,7 +87,7 @@ pub fn find_parents_batch(
 /// parent embeds only the child's computed document, and the child's refresh in
 /// this flush changed nothing. A scalar embed that follows the child's
 /// FK to a deeper relationship always propagates.
-fn prune_edge(graph: &crate::flush::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
+fn prune_edge(graph: &crate::catalog::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
     let prune = graph
         .document_edges
         .contains(&(child.to_string(), parent.to_string()))

@@ -22,13 +22,7 @@ use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::RefCell;
 
-/// The statement event a delta trigger fired for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Event {
-    Insert,
-    Update,
-    Delete,
-}
+pub use crate::queue::Event;
 
 thread_local! {
     /// Number of the current `TRUNCATE` statement, counted by the `ProcessUtility`
