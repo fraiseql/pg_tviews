@@ -75,6 +75,7 @@ INSERT INTO public.maintenance VALUES
     ('tviews.pg_tviews_rebuild_all(boolean)'),
     ('tviews.pg_tviews_reregister_all(boolean)'),
     ('tviews.pg_tviews_ensure_propagation_indexes(text, boolean)'),
+    ('tviews.pg_tviews_stats_reset(text)'),
     ('tviews.pg_tviews_invalidate_caches(oid)'),
     ('tviews.pg_tviews_audit_write(jsonb)');
 DO $$
@@ -100,6 +101,7 @@ BEGIN
            'tviews.pg_tviews_catalog_revision()', 'tviews.pg_tviews_check_jsonb_delta()',
            'tviews.pg_tviews_health_check()', 'tviews.pg_tviews_profile(text,bigint)',
            'tviews.pg_tviews_queue_stats()', 'tviews.pg_tviews_entity_of(text)',
+           'tviews.pg_tviews_stats_rows()',
            'tviews.pg_tviews_debug_queue()', 'tviews.pg_tviews_replication_status()',
            'tviews.pg_tviews_mapping_query(text,oid)',
            'tviews.pg_tviews_read_set_queries(text,oid)',

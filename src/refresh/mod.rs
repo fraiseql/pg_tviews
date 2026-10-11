@@ -287,6 +287,7 @@ pub(crate) fn run_counted_upsert(
     let updated = updated.unwrap_or_default();
     let written = (inserted.len() + updated.len()) as u64;
     crate::metrics::metrics_api::record_noop_skipped(
+        entity,
         produced.unwrap_or(0).unsigned_abs().saturating_sub(written),
     );
     let parse = |pks: &[String]| pks.iter().filter_map(|pk| pk.parse().ok()).collect();

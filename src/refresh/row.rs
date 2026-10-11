@@ -63,7 +63,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     // Upsert straight from v_entity: the view is evaluated once. No source row
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
-    crate::metrics::metrics_api::record_view_recomputes(1);
+    crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
     let (produced, written) = write_row(meta, key)?;
     let deleted = if produced == 0 {
         delete_tview_row(meta, key)?

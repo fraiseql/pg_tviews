@@ -33,7 +33,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     }
 
     // Count the backing-view recompute of these rows.
-    crate::metrics::metrics_api::record_view_recomputes(keys.len() as u64);
+    crate::metrics::metrics_api::record_view_recomputes(entity, keys.len() as u64);
 
     // Load metadata once
     let meta =

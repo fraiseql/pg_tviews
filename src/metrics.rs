@@ -169,40 +169,47 @@ pub mod metrics_api {
         });
     }
 
-    /// Record an eligible direct-patch capture. Session-cumulative.
-    pub fn record_direct_patch_captured() {
+    /// Record an eligible direct-patch capture of `entity`'s TVIEW.
+    /// Session-cumulative, and counted in `tviews.stats`.
+    pub fn record_direct_patch_captured(entity: &str) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().captured += 1;
         });
+        crate::stats::add(entity, crate::stats::Counter::PatchCaptured, 1);
     }
 
-    /// Record `n` tview rows updated directly by a patch.
-    pub fn record_direct_patches_applied(n: u64) {
+    /// Record `n` rows of `entity`'s TVIEW updated directly by a patch.
+    pub fn record_direct_patches_applied(entity: &str, n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().applied += n;
         });
+        crate::stats::add(entity, crate::stats::Counter::PatchApplied, n);
     }
 
-    /// Record `n` patched pks that fell back to recompute.
-    pub fn record_direct_patch_fallbacks(n: u64) {
+    /// Record `n` patched keys of `entity`'s TVIEW that fell back to recompute.
+    pub fn record_direct_patch_fallbacks(entity: &str, n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().fallbacks += n;
         });
+        crate::stats::add(entity, crate::stats::Counter::PatchFallbacks, n);
     }
 
-    /// Record `n` tview rows recomputed from the backing view.
-    pub fn record_view_recomputes(n: u64) {
+    /// Record `n` rows of `entity`'s TVIEW recomputed from the backing view.
+    pub fn record_view_recomputes(entity: &str, n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().view_recomputes += n;
         });
+        crate::stats::add(entity, crate::stats::Counter::ViewRecomputes, n);
     }
 
-    /// Record `n` refresh writes skipped because nothing changed.
-    pub fn record_noop_skipped(n: u64) {
+    /// Record `n` refresh writes to `entity`'s TVIEW skipped because nothing
+    /// changed.
+    pub fn record_noop_skipped(entity: &str, n: u64) {
         if n > 0 {
             DIRECT_PATCH_METRICS.with(|m| {
                 m.borrow_mut().noop_skipped += n;
             });
+            crate::stats::add(entity, crate::stats::Counter::NoopSkipped, n);
         }
     }
 
@@ -213,11 +220,13 @@ pub mod metrics_api {
         });
     }
 
-    /// Record one propagation edge skipped at an unchanged child row.
-    pub fn record_propagation_pruned() {
+    /// Record one propagation edge into `parent`'s TVIEW skipped at an unchanged
+    /// child row.
+    pub fn record_propagation_pruned(parent: &str) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().propagation_pruned += 1;
         });
+        crate::stats::add(parent, crate::stats::Counter::PropagationPruned, 1);
     }
 
     /// A value or key lock taken (ADR 0207).

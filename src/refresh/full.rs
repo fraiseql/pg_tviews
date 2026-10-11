@@ -19,6 +19,7 @@ use pgrx::spi;
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+    crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         // Every row changes: refreshes of any of them wait, and are waited for,
         // and so are writers of anything they read.
@@ -51,6 +52,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
 /// # Errors
 /// Returns error if the entity is not registered or the delete/insert fails.
 pub fn refill(entity: &str) -> TViewResult<()> {
+    crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
     }
@@ -119,6 +121,7 @@ fn rebuild_statements(
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
     use crate::queue::affected::{Change, record};
+    crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     let _pin = crate::owner::RenderPin::new();
     // Every row is computed: writers of anything they read wait, and are waited for.
     crate::concurrency::reads::lock_whole_read_set(meta)?;

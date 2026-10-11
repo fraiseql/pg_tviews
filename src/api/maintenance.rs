@@ -41,3 +41,16 @@ fn pg_tviews_rebuild_all(
         only_empty,
     )?))
 }
+
+/// Zero the refresh statistics of `tview`, or of every TVIEW of the database
+/// (`tviews.stats`, ADR 0221).
+#[pg_extern]
+fn pg_tviews_stats_reset(tview: default!(Option<&str>, "NULL")) -> Result<(), ErrorReport> {
+    crate::revision::check();
+    let table = match tview {
+        Some(name) => Some(crate::catalog::resolve::find(name)?.table),
+        None => None,
+    };
+    crate::stats::reset(table)?;
+    Ok(())
+}

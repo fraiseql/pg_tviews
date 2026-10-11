@@ -76,6 +76,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
     if let Some(ref m) = meta {
         drop_by_oid(m.tview_oid, "TABLE", cascade)?;
+        crate::stats::forget(m.tview_oid);
     }
 
     // Drop the backing view (schema-resolved via OID)

@@ -550,6 +550,7 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_rebuild_all(BOOLEAN),
     @extschema@.pg_tviews_reregister_all(BOOLEAN),
     @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
+    @extschema@.pg_tviews_stats_reset(TEXT),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
     ",

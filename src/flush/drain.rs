@@ -29,7 +29,13 @@ pub(super) fn flush_pending() -> TViewResult<()> {
 
     loop {
         while let Some((entity, keys)) = flush.next_entity() {
+            let started = std::time::Instant::now();
             flush.apply_entity(&entity, keys)?;
+            crate::stats::add(
+                &entity,
+                crate::stats::Counter::RefreshMicros,
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            );
             flush.iteration += 1;
             let max_depth = crate::config::max_propagation_depth();
             if flush.iteration > max_depth {

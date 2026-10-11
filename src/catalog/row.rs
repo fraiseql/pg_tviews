@@ -183,3 +183,44 @@ pub fn counts() -> TViewResult<(i64, i64, i64)> {
         orphaned.unwrap_or(0),
     ))
 }
+
+/// A TVIEW as [`relations`] lists it.
+pub struct Listed {
+    pub entity: String,
+    pub table: Oid,
+    /// The table's schema and name; `None` once the table is gone.
+    pub schema: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Every TVIEW of the database.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn relations() -> TViewResult<Vec<Listed>> {
+    Spi::connect(|client| {
+        let mut out = Vec::new();
+        for row in client.select(
+            &format!(
+                "SELECT m.entity::pg_catalog.text, m.table_oid::pg_catalog.oid, \
+                        n.nspname::pg_catalog.text, c.relname::pg_catalog.text \
+                 FROM {} m \
+                 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                 ORDER BY m.entity",
+                super::meta_table()
+            ),
+            None,
+            &[],
+        )? {
+            out.push(Listed {
+                entity: row.get::<String>(1)?.unwrap_or_default(),
+                table: row.get::<Oid>(2)?.unwrap_or(Oid::INVALID),
+                schema: row.get::<String>(3)?,
+                name: row.get::<String>(4)?,
+            });
+        }
+        Ok::<_, pgrx::spi::Error>(out)
+    })
+    .map_err(|e| crate::utils::spi::catalog_error("List the TVIEWs", &e))
+}

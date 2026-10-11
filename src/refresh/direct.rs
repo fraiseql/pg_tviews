@@ -166,7 +166,10 @@ pub fn apply_fanout_patch(
         let found = crate::utils::spi::kept_rows(&lookup, &args)?;
         crate::concurrency::crosscheck::discovered_by(&lookup, &args, &found)?;
     }
-    crate::metrics::metrics_api::record_direct_patches_applied(changed.len() as u64);
+    crate::metrics::metrics_api::record_direct_patches_applied(
+        &meta.entity_name,
+        changed.len() as u64,
+    );
     for &pk in &changed {
         crate::queue::affected::record(
             &meta.entity_name,
@@ -203,8 +206,11 @@ pub fn apply_entity_patches(
             let present: HashSet<i64> = materialised.iter().map(|&(pk, _)| pk).collect();
             let changed = materialised.iter().filter(|&&(_, c)| c).count() as u64;
 
-            crate::metrics::metrics_api::record_direct_patches_applied(changed);
-            crate::metrics::metrics_api::record_noop_skipped(materialised.len() as u64 - changed);
+            crate::metrics::metrics_api::record_direct_patches_applied(&meta.entity_name, changed);
+            crate::metrics::metrics_api::record_noop_skipped(
+                &meta.entity_name,
+                materialised.len() as u64 - changed,
+            );
             for &(pk, _) in materialised.iter().filter(|&&(_, c)| c) {
                 crate::queue::affected::record(
                     &meta.entity_name,
@@ -221,7 +227,10 @@ pub fn apply_entity_patches(
     }
 
     if !fallback.is_empty() {
-        crate::metrics::metrics_api::record_direct_patch_fallbacks(fallback.len() as u64);
+        crate::metrics::metrics_api::record_direct_patch_fallbacks(
+            &meta.entity_name,
+            fallback.len() as u64,
+        );
     }
     Ok(fallback)
 }

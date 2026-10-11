@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tviews.stats`: per-TVIEW refresh statistics readable from any session** (#220,
+  ADR 0221): `view_recomputes`, `noop_skipped`, `patch_captured`, `patch_applied`,
+  `patch_fallbacks`, `propagation_pruned`, `rows_written`, `rows_deleted`,
+  `full_refreshes`, `refresh_ms`, `stats_reset` and `untracked`, per TVIEW of the
+  database, cumulative since the server started or `pg_tviews_stats_reset(tview)`
+  (an operator's). Kept in shared memory (4096 TVIEWs per cluster) and merged once
+  per transaction; needs `shared_preload_libraries = 'pg_tviews'`.
+
 - **`tviews.pg_tviews_entity_of(tview)`**: the entity a TVIEW name names, for tools.
 
 - **`pg_tviews_create()` takes `options`**, those of `pg_tviews_create_or_replace()`.

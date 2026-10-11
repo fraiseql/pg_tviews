@@ -40,10 +40,11 @@ One row per registered TVIEW of the current database:
 | `noop_skipped` | refreshes skipped because the row already held the result |
 | `patch_captured`, `patch_applied`, `patch_fallbacks` | the direct-patch path |
 | `propagation_pruned` | parent lookups skipped because the child row did not change |
-| `rows_written`, `rows_deleted` | TVIEW rows inserted or updated, deleted |
-| `full_refreshes` | whole-TVIEW refreshes (uncascaded `full_refresh`, `pg_tviews_refresh`) |
+| `rows_written`, `rows_deleted` | TVIEW rows inserted or updated, deleted, by a refresh of some rows or a reconcile (a whole rebuild counts in `full_refreshes`) |
+| `full_refreshes` | whole-TVIEW refreshes (uncascaded `full_refresh`, `pg_tviews_refresh`, the refill of a reset TVIEW) |
 | `refresh_ms` | time spent refreshing this TVIEW (`double precision`) |
 | `stats_reset` | when its counters started |
+| `untracked` | the shared table was full when it first refreshed: its counters are NULL |
 
 `tviews.pg_tviews_stats_reset(tview text DEFAULT NULL)` zeroes one TVIEW (resolved as in ADR
 0211) or every TVIEW of the database. Its `EXECUTE` is revoked from `PUBLIC`, like the other
@@ -59,13 +60,14 @@ maintenance functions. The view is readable by `PUBLIC`: it holds counts, no dat
 
 ### Storage
 
-- Shared memory, allocated at preload: a fixed table of 8192 TVIEWs (about 1 MB), keyed by
-  `(database oid, table oid)`, under one lightweight lock.
+- Shared memory, allocated at preload: a fixed table of 4096 TVIEWs (about 400 kB) for the
+  cluster, keyed by `(database oid, table oid)`, under one lightweight lock. All-zero memory
+  is an empty table, so the startup hook zeroes it instead of building a value on the stack.
 - Each backend adds to a local map during the transaction. At commit, abort or prepare, the
   map is merged into shared memory: one lock acquisition per transaction, no SPI.
-- When the table is full, entries of TVIEWs no longer registered are swept first. A TVIEW that
-  still finds no slot is untracked: `tviews.stats` shows it with NULL counters, and its
-  `untracked` column is true. Nothing is silently missing.
+- Dropping a TVIEW, or rebuilding it (a new table), frees its entry; a reset of the database
+  frees all of its entries. A TVIEW that finds the table full is untracked: `tviews.stats`
+  shows it with NULL counters, and its `untracked` column is true. Nothing is silently missing.
 - Without `shared_preload_libraries = 'pg_tviews'`, reading `tviews.stats` fails with a hint;
   it does not return zeros.
 - The store sits behind one module (`stats`). When PostgreSQL 18 is the oldest supported

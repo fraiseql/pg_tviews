@@ -4,7 +4,7 @@
 # the flush or anything above it (#212). Comments do not count.
 set -u
 cd "$(dirname "$0")/.."
-lower=(catalog cache concurrency refresh propagate queue lifecycle lineage utils config error)
+lower=(catalog cache concurrency refresh propagate queue lifecycle lineage utils config error stats)
 upper='flush|admin|ddl|hooks|api|trigger|replication|report|delta|rebuild_worker|suspend'
 bad=""
 for module in "${lower[@]}"; do

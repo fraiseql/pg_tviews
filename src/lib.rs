@@ -52,6 +52,7 @@ mod refresh;
 mod replication;
 mod report;
 mod revision;
+mod stats;
 mod trigger;
 mod utils;
 
@@ -81,6 +82,7 @@ pg_module_magic!();
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     crate::config::register_gucs();
+    crate::stats::init();
     crate::cache::register_relcache_callback();
     crate::rebuild_worker::register();
 
