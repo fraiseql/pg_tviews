@@ -244,22 +244,7 @@ fn create_tview_inner(
     let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
         0
     } else {
-        // A key names one row: a UNION view returning several for one is
-        // refused before the fill, instead of failing on the primary key.
-        if lineage.set_operation {
-            crate::refresh::refuse_duplicate_keys_in(
-                &format!(
-                    "{}.{}",
-                    crate::utils::ident::quoted(&schema_name),
-                    crate::utils::ident::quoted(&tv_table_name)
-                ),
-                &lineage.identity.name,
-                &crate::utils::qualified_relname_from_oid(view_oid)?,
-                "true",
-                &[],
-            )?;
-        }
-        populate_initial_data(&tv_table_name, &schema_name, view_oid)?
+        fill_new(&schema_name, &tv_table_name, view_oid, lineage)?
     };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
@@ -288,29 +273,68 @@ fn create_tview_inner(
     }
     .write(declarations, false)?;
 
-    // Whoever reads the TVIEW's table reads its backing view.
     let table_oid = relation_oid(&schema_name, &tv_table_name)?;
-    crate::catalog::indexes::record(table_oid, &indexes)?;
+    finish(
+        entity_name,
+        table_oid,
+        &indexes,
+        &derivation,
+        &final_select_sql,
+    )?;
+    Ok(rows)
+}
+
+/// Fill a new TVIEW's table from its backing view `view_oid`: a UNION view
+/// returning one key twice is refused first, instead of failing on the primary
+/// key (ADR 0216). Returns the rows written.
+fn fill_new(
+    schema: &str,
+    table: &str,
+    view_oid: pg_sys::Oid,
+    lineage: &crate::lineage::Lineage,
+) -> TViewResult<u64> {
+    if lineage.set_operation {
+        crate::refresh::refuse_duplicate_keys_in(
+            &format!(
+                "{}.{}",
+                crate::utils::ident::quoted(schema),
+                crate::utils::ident::quoted(table)
+            ),
+            &lineage.identity.name,
+            &crate::utils::qualified_relname_from_oid(view_oid)?,
+            "true",
+            &[],
+        )?;
+    }
+    populate_initial_data(table, schema, view_oid)
+}
+
+/// What follows a new TVIEW's registration: its indexes recorded, its backing
+/// view given the table's readers, its rows marked trusted, the triggers on the
+/// tables it reads, the caches dropped, the audit entry.
+fn finish(
+    entity: &str,
+    table_oid: pg_sys::Oid,
+    indexes: &[String],
+    derivation: &derive::Derivation,
+    definition: &str,
+) -> TViewResult<()> {
+    crate::catalog::indexes::record(table_oid, indexes)?;
+    // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
     // UNLOGGED table's rows can be trusted until a reset.
     crate::lifecycle::validity::mark(table_oid)?;
-
-    // Install triggers on the tables it reads, as their lineage needs them: base
-    // tables, and other TVIEWs' tables it maps like them.
+    // Triggers on the tables it reads, as their lineage needs them: base tables,
+    // and other TVIEWs' tables it maps like them.
     crate::dependency::install_triggers(
-        &crate::dependency::trigger_plan(&derivation.base_tables, lineage),
-        entity_name,
+        &crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage),
+        entity,
     )?;
-
-    // Invalidate caches since new TVIEW was created
     crate::cache::invalidate_all();
-
-    // Buffer and flush audit entry immediately (we're in SPI context)
-    crate::audit::log_create(entity_name, &final_select_sql);
-    crate::audit::flush_audit_buffer()?;
-
-    Ok(rows)
+    // Buffered and flushed at once (in SPI context).
+    crate::audit::log_create(entity, definition);
+    crate::audit::flush_audit_buffer()
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,

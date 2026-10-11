@@ -2,3 +2,6 @@
 
 # Note: Specific lint allows are configured in Cargo.toml [lints.clippy] section
 # This file is reserved for clippy.toml-specific settings
+
+# Functions longer than this fail clippy (#212): split them along their steps.
+too-many-lines-threshold = 120

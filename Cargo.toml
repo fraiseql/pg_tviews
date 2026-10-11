@@ -55,7 +55,6 @@ undocumented_unsafe_blocks = "deny"
 # allowed on the item, with a `// Reason:` comment.
 missing_errors_doc = "allow"  # an extern's errors are the SQLSTATEs in docs/error-reference.md
 missing_panics_doc = "allow"  # internal invariants; most "panics" are pgrx error!() conversions
-too_many_lines = "allow"  # the walker's node dispatch and SQL builders are long by nature
 similar_names = "allow"  # pk/fk/oid/tv/tb domain names are intentionally similar
 struct_field_names = "allow"  # catalog structs mirror PostgreSQL column names
 manual_let_else = "allow"  # explicit match reads clearer in FFI null-check paths
