@@ -236,7 +236,7 @@ END $$;
 DO $$
 DECLARE r record;
 BEGIN
-    FOR r IN SELECT entity, uncascaded_tables, uncascaded_policy FROM tviews.registry LOOP
+    FOR r IN SELECT entity, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy FROM tviews.registry LOOP
         IF r.uncascaded_tables IS DISTINCT FROM (CASE r.entity
                 WHEN 'report'  THEN ARRAY['tb_flag'::regclass]
                 WHEN 'basket'  THEN ARRAY['tb_basket_item'::regclass]
@@ -255,7 +255,7 @@ END $$;
 SELECT pg_tviews_reregister('basket');
 SELECT pg_tviews_reregister('report');
 DO $$ BEGIN
-    IF (SELECT uncascaded_policy FROM tviews.registry WHERE entity = 'basket') <> 'full_refresh'
+    IF (SELECT options->>'uncascaded_policy' FROM tviews.registry WHERE entity = 'basket') <> 'full_refresh'
        OR (SELECT uncascaded_tables FROM tviews.registry WHERE entity = 'report')
           IS DISTINCT FROM ARRAY['tb_flag'::regclass]
     THEN

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Read contract v2** (ADR 0211): `tviews.contract_version()` returns `2`.
+  `tviews.registry` drops the columns `options` now carries: `logged`
+  (`options->'logged'`), `uncascaded_policy` (`options->>'uncascaded_policy'`),
+  `uncascaded_table_policies` (`options->'uncascaded_tables'`), `function_reads`
+  (`options->'function_reads'`) and `time_refresh` (`options->>'time_refresh'`). Its
+  columns are, in order: `schema`, `name`, `entity`, `query`, `options`, `view`,
+  `identity`, `base_tables`, `cascade_kinds`, `uncascaded_tables`, `time_dependent`,
+  `managed_indexes`, `needs_reregister`.
+
 - **One name for a TVIEW across the API** (#211, ADR 0211). Every function acting on
   one TVIEW takes it as its first parameter, `tview`, spelled as its entity
   (`post`), `tv_post`, or `schema.tv_post`, quoted or not: `pg_tviews_refresh`,

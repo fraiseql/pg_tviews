@@ -60,10 +60,10 @@ FROM (SELECT error_of(format($$SELECT tviews.pg_tviews_create_or_replace(%L, %L,
 SELECT must(tviews.pg_tviews_create_or_replace('tv_contract', :'def', '{
   "function_reads": {"label_suffix()": ["tb_setting"]},
   "uncascaded_tables": {"tb_setting": "full_refresh"}}') = 'created', 'declared and full_refresh');
-SELECT must(function_reads = '{"public.label_suffix()": ["tb_setting"]}'
+SELECT must(options->'function_reads' = '{"public.label_suffix()": ["tb_setting"]}'
             AND 'tb_setting'::regclass = ANY (base_tables) AND 'tb_setting'::regclass = ANY (uncascaded_tables)
             AND cascade_kinds ->> 'tb_setting' = 'all_keys',
-            'registry: ' || function_reads::text || ' ' || base_tables::text || ' ' || cascade_kinds::text)
+            'registry: ' || (options->'function_reads')::text || ' ' || base_tables::text || ' ' || cascade_kinds::text)
 FROM tviews.registry WHERE entity = 'contract';
 UPDATE tb_setting SET value = ' (b)';
 SELECT assert_fresh('tv_contract', 'pk_contract', 'a write to the table the function reads');
@@ -84,9 +84,9 @@ SELECT must(tviews.pg_tviews_create_or_replace('tv_contract',
   "function_reads": {"public.label_suffix()": ["public.tb_setting"], "public.tag()": [],
                      "setting(text)": ["public.tb_setting"]},
   "uncascaded_tables": {"tb_setting": "full_refresh"}}') = 'replaced', 'a function reading no table');
-SELECT must(function_reads = '{"public.tag()": [], "public.label_suffix()": ["tb_setting"],
+SELECT must(options->'function_reads' = '{"public.tag()": [], "public.label_suffix()": ["tb_setting"],
                                "public.setting(text)": ["tb_setting"]}',
-            'registry: ' || function_reads::text)
+            'registry: ' || (options->'function_reads')::text)
 FROM tviews.registry WHERE entity = 'contract';
 
 -- 6. Fail loud: a declared function the definition does not call, or that does

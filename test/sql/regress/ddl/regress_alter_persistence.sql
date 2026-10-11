@@ -28,7 +28,7 @@ SELECT pg_tviews_create('tv_item', $$
     SELECT pk_item, id, jsonb_build_object('name', name) AS data FROM tb_item $$);
 CREATE FUNCTION persistence_is(want "char") RETURNS boolean LANGUAGE sql AS $$
     SELECT (SELECT relpersistence FROM pg_class WHERE oid = 'tv_item'::regclass) = want
-       AND (SELECT logged FROM tviews.registry WHERE entity = 'item') = (want = 'p') $$;
+       AND (SELECT (options->>'logged')::boolean FROM tviews.registry WHERE entity = 'item') = (want = 'p') $$;
 SELECT must(persistence_is('p'), 'a TVIEW is LOGGED by default');
 
 -- LOGGED -> UNLOGGED

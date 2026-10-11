@@ -62,34 +62,32 @@ CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#133 FAIL: %', what; END IF; END $$;
 
 -- 1. The contract version and the view's columns, in order.
-SELECT must(tviews.contract_version() = 1, 'contract_version() is not 1');
+SELECT must(tviews.contract_version() = 2, 'contract_version() is not 2');
 SELECT must(
     (SELECT string_agg(attname || ' ' || format_type(atttypid, atttypmod), ', ' ORDER BY attnum)
      FROM pg_attribute WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0)
-    = 'schema text, name text, entity text, query text, base_tables regclass[], '
-      'logged boolean, options jsonb, needs_reregister boolean, view regclass, '
-      'uncascaded_tables regclass[], uncascaded_policy text, cascade_kinds jsonb, identity text[], '
-      'uncascaded_table_policies jsonb, function_reads jsonb, time_dependent boolean, time_refresh text, '
-      'managed_indexes regclass[]',
-    'tviews.registry columns differ from contract 1');
+    = 'schema text, name text, entity text, query text, options jsonb, view regclass, '
+      'identity text[], base_tables regclass[], cascade_kinds jsonb, uncascaded_tables regclass[], '
+      'time_dependent boolean, managed_indexes regclass[], needs_reregister boolean',
+    'tviews.registry columns differ from contract 2');
 
 -- 2. One row per TVIEW, with catalog truth.
 SELECT must((SELECT count(*) FROM tviews.registry) = 3, 'expected three rows');
 SELECT must(
-    (SELECT schema = 'public' AND name = 'tv_user' AND logged
+    (SELECT schema = 'public' AND name = 'tv_user' AND (options->>'logged')::boolean
             AND options = '{"logged": true, "fillfactor": 70, "data_gin_index": false,
                             "group_keys": null, "uncascaded_policy": "error",
                             "uncascaded_tables": {}, "function_reads": {},
                             "time_refresh": null, "typename": null}'::jsonb
      FROM tviews.registry WHERE entity = 'user'),
-    'tv_user row: ' || (SELECT row(schema, name, logged, options)::text
+    'tv_user row: ' || (SELECT row(schema, name, options)::text
                         FROM tviews.registry WHERE entity = 'user'));
 SELECT must(
-    (SELECT schema = 'app' AND name = 'tv_post' AND NOT logged
+    (SELECT schema = 'app' AND name = 'tv_post'
             AND options->'logged' = 'false' AND options->'data_gin_index' = 'true'
             AND options->'fillfactor' IS NOT NULL AND options->'group_keys' = 'null'
      FROM tviews.registry WHERE entity = 'post'),
-    'tv_post row: ' || (SELECT row(schema, name, logged, options)::text
+    'tv_post row: ' || (SELECT row(schema, name, options)::text
                         FROM tviews.registry WHERE entity = 'post'));
 SELECT must(
     (SELECT options->'group_keys' FROM tviews.registry WHERE entity = 'user_orders')
@@ -142,7 +140,7 @@ SELECT must((SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.pro
 CREATE ROLE regress_133_reader;
 SET ROLE regress_133_reader;
 SELECT must((SELECT count(*) FROM tviews.registry) = 3, 'a plain role cannot read the registry');
-SELECT must(tviews.contract_version() = 1, 'a plain role cannot call contract_version()');
+SELECT must(tviews.contract_version() = 2, 'a plain role cannot call contract_version()');
 RESET ROLE;
 
 DROP SCHEMA app CASCADE;

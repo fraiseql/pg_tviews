@@ -73,7 +73,7 @@ SELECT must(cor('app.tv_post', $$
 SELECT must(cor('user', $$
     SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM app.tb_user $$)
     = 'created', 'create tv_user by entity name');
-SELECT must((SELECT schema = 'app' AND logged AND (options->>'fillfactor')::int = 85
+SELECT must((SELECT schema = 'app' AND (options->>'logged')::boolean AND (options->>'fillfactor')::int = 85
              FROM tviews.registry WHERE entity = 'post'), 'tv_post storage on create');
 SELECT must((SELECT count(*) FROM app.tv_post) = 2, 'tv_post populated');
 SELECT must(pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'app.tv_post'::regclass))
@@ -103,7 +103,7 @@ CREATE TEMP TABLE post_rows AS SELECT pk_post, data, created_at FROM app.tv_post
 SELECT must(cor('app.tv_post', (SELECT query FROM tviews.registry WHERE entity = 'post'),
                 '{"logged": false, "fillfactor": 60, "data_gin_index": true}') = 'altered',
             'storage change');
-SELECT must((SELECT NOT logged AND (options->>'fillfactor')::int = 60
+SELECT must((SELECT NOT (options->>'logged')::boolean AND (options->>'fillfactor')::int = 60
                     AND (options->>'data_gin_index')::boolean
              FROM tviews.registry WHERE entity = 'post'), 'altered storage');
 SELECT must(NOT EXISTS (SELECT pk_post, data, created_at FROM app.tv_post
@@ -129,7 +129,7 @@ SELECT must(obj_description('app.tv_post'::regclass, 'pg_class') = 'posts for th
 SELECT must((SELECT options->>'typename' FROM tviews.registry WHERE entity = 'post') = 'BlogPost',
             'declared typename');
 SELECT must(to_regclass('app.tv_post_title_idx') IS NOT NULL, 'user index kept');
-SELECT must((SELECT NOT logged FROM tviews.registry WHERE entity = 'post'),
+SELECT must((SELECT NOT (options->>'logged')::boolean FROM tviews.registry WHERE entity = 'post'),
             'declared logged across a rebuild');
 SELECT must((SELECT data->>'body' FROM app.tv_post WHERE pk_post = 1) = 'b1', 'rebuilt rows');
 UPDATE app.tb_post SET body = 'b1!' WHERE pk_post = 1;

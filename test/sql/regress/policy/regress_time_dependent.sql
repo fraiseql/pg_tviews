@@ -53,7 +53,7 @@ FROM (VALUES ('CURRENT_DATE', 'CURRENT_DATE'), ('CURRENT_TIMESTAMP', 'CURRENT_TI
 -- Not the time: age() of two values, a date literal, CURRENT_USER.
 SELECT tviews.pg_tviews_create('tv_contract', $$SELECT pk_contract, id, age(ends_at, ends_at) AS a,
     DATE '2026-01-01' AS d, CURRENT_USER AS u FROM tb_contract$$);
-SELECT must(NOT time_dependent AND time_refresh IS NULL, 'a TVIEW reading no time')
+SELECT must(NOT time_dependent AND options->>'time_refresh' IS NULL, 'a TVIEW reading no time')
 FROM tviews.registry WHERE entity = 'contract';
 SELECT tviews.pg_tviews_drop('tv_contract');
 
@@ -70,7 +70,7 @@ FROM (VALUES ('view', 'CURRENT_DATE', $$SELECT c.pk_contract, c.id, v.name FROM 
 -- 4. Declared: created, reported, refreshed on demand.
 SELECT must(tviews.pg_tviews_create_or_replace('tv_contract', :'def', '{"time_refresh": "external"}') = 'created',
             'declared');
-SELECT must(time_dependent AND time_refresh = 'external', 'registry: ' || time_dependent || ' ' || coalesce(time_refresh, 'NULL'))
+SELECT must(time_dependent AND options->>'time_refresh' = 'external', 'registry: ' || time_dependent || ' ' || coalesce(options->>'time_refresh', 'NULL'))
 FROM tviews.registry WHERE entity = 'contract';
 -- Rows that changed with no write the TVIEW saw (as at midnight): triggers off.
 ALTER TABLE tb_contract DISABLE TRIGGER USER;
@@ -91,7 +91,7 @@ SELECT must(error_of('SELECT tviews.pg_tviews_refresh_time_dependent(''tv_party'
 SELECT must(tviews.pg_tviews_create_or_replace('tv_contract', :'def', '{"time_refresh": "external"}') = 'unchanged',
             'the same declaration');
 SELECT tviews.pg_tviews_reregister('contract');
-SELECT must(time_dependent AND time_refresh = 'external', 'after reregister')
+SELECT must(time_dependent AND options->>'time_refresh' = 'external', 'after reregister')
 FROM tviews.registry WHERE entity = 'contract';
 -- Writes still refresh it as usual.
 UPDATE tb_contract SET name = 'C1' WHERE pk_contract = 1;
@@ -113,14 +113,14 @@ SELECT must(error_of($$SELECT tviews.pg_tviews_create('tv_party', 'SELECT pk_par
                        '{"time_refresh": "external"}')$$) LIKE '%time_refresh%reads no time%',
             'pg_tviews_create: declared, no time');
 SELECT tviews.pg_tviews_create('tv_party', 'SELECT pk_party, id, name FROM tb_party');
-SELECT must(string_agg(entity || '=' || time_dependent || '/' || coalesce(time_refresh, 'NULL'), ',' ORDER BY entity)
-            = 'contract=true/external,party=false/NULL', 'the option: ' || string_agg(entity || '=' || time_dependent || '/' || coalesce(time_refresh, 'NULL'), ','))
+SELECT must(string_agg(entity || '=' || time_dependent || '/' || coalesce(options->>'time_refresh', 'NULL'), ',' ORDER BY entity)
+            = 'contract=true/external,party=false/NULL', 'the option: ' || string_agg(entity || '=' || time_dependent || '/' || coalesce(options->>'time_refresh', 'NULL'), ','))
 FROM tviews.registry;
 SELECT tviews.pg_tviews_drop('tv_contract');
 
 -- 7. Under warn: created, warned, reported as time-dependent and refreshable.
 SELECT tviews.pg_tviews_create('tv_contract', :'def', '{"uncascaded_policy": "warn"}');
-SELECT must(time_dependent AND time_refresh IS NULL, 'warn: registry')
+SELECT must(time_dependent AND options->>'time_refresh' IS NULL, 'warn: registry')
 FROM tviews.registry WHERE entity = 'contract';
 SELECT must(array_agg(r) = ARRAY['public.tv_contract'], 'warn: refreshed ' || array_agg(r)::text)
 FROM tviews.pg_tviews_refresh_time_dependent() r;
@@ -136,7 +136,7 @@ SELECT tviews.pg_tviews_create('tv_legacy', 'SELECT pk_legacy, id, end_date >= C
 UPDATE tviews.pg_tview_meta SET uncascaded_policy = 'error', time_dependent = false WHERE entity = 'legacy';
 SELECT must(status LIKE '%reads the time (CURRENT_DATE)%', 'reregister_all: ' || status)
 FROM tviews.pg_tviews_reregister_all() WHERE entity = 'legacy';
-SELECT must(uncascaded_policy = 'error' AND NOT time_dependent, 'the old registration is kept')
+SELECT must(options->>'uncascaded_policy' = 'error' AND NOT time_dependent, 'the old registration is kept')
 FROM tviews.registry WHERE entity = 'legacy';
 UPDATE tb_legacy SET end_date = current_date - 1;
 SELECT assert_fresh('tv_legacy', 'pk_legacy', 'a write after the refused re-registration');

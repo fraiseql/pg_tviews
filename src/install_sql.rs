@@ -224,7 +224,7 @@ GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
     requires = ["create_metadata_tables"],
 );
 
-// The read contract for tools (ADR 0136 Decision 4). Plain SQL over
+// The read contract for tools (ADR 0136 Decision 4; version 2, ADR 0211). Plain SQL over
 // the internal tables and the system catalogs, calling no function of the library,
 // so it can be read without the library, with a mismatched one, and on a standby.
 // contract_version() covers the view's columns, the `options` keys and the
@@ -235,7 +235,7 @@ extension_sql!(
 CREATE FUNCTION @extschema@.contract_version()
 RETURNS integer
 LANGUAGE sql STABLE PARALLEL SAFE
-AS 'SELECT 1';
+AS 'SELECT 2';
 
 COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
@@ -250,14 +250,6 @@ SELECT
     COALESCE(c.relname::text, 'tv_' || m.entity) AS name,
     m.entity,
     m.definition AS query,
-    COALESCE(
-        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
-         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
-               WHERE r.entity = m.entity) x
-         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
-         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
-        '{}') AS base_tables,
-    c.relpersistence = 'p' AS logged,
     CASE WHEN c.oid IS NOT NULL THEN pg_catalog.jsonb_build_object(
         'logged', c.relpersistence = 'p',
         'fillfactor', COALESCE(
@@ -294,37 +286,25 @@ SELECT
             '{}'),
         'time_refresh', m.time_refresh,
         'typename', m.graphql_typename) END AS options,
-    m.needs_reregister,
     v.oid::pg_catalog.regclass AS view,
-    m.uncascaded_oids AS uncascaded_tables,
-    m.uncascaded_policy,
+    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
+         ELSE ARRAY(SELECT c->>'name'
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
+    COALESCE(
+        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
+               WHERE r.entity = m.entity) x
+         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
+         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
+        '{}') AS base_tables,
     COALESCE(
         (SELECT pg_catalog.jsonb_object_agg(
                     (e->>'relid')::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text,
                     e->>'kind')
          FROM pg_catalog.jsonb_array_elements(m.plan->'tables') e),
         '{}') AS cascade_kinds,
-    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
-         ELSE ARRAY(SELECT c->>'name'
-                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
-    COALESCE(
-        (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
-         FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
-                         pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
-        '{}') AS uncascaded_table_policies,
-    COALESCE(
-        (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
-         FROM (SELECT r.function,
-                      COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
-                                   FILTER (WHERE r.relation IS NOT NULL),
-                               '[]') AS tables
-               FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
-                               pg_catalog.unnest(m.function_read_tables))
-                    WITH ORDINALITY AS r(function, relation, n)
-               GROUP BY r.function) f),
-        '{}') AS function_reads,
+    m.uncascaded_oids AS uncascaded_tables,
     m.time_dependent,
-    m.time_refresh,
     CASE WHEN c.oid IS NOT NULL THEN ARRAY(
         SELECT i.indexrelid::pg_catalog.regclass
         FROM pg_catalog.pg_index i
@@ -332,7 +312,8 @@ SELECT
         WHERE i.indrelid = c.oid AND ic.relname = ANY (m.managed_index_names)
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                           WHERE k.conindid = i.indexrelid)
-        ORDER BY ic.relname) END AS managed_indexes
+        ORDER BY ic.relname) END AS managed_indexes,
+    m.needs_reregister
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
