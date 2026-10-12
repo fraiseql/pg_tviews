@@ -9,6 +9,7 @@ pub mod row;
 pub use graph::EntityDepGraph;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
+use std::rc::Rc;
 
 /// The catalog table, schema-qualified: every read or write of it names it so.
 #[must_use]
@@ -123,7 +124,7 @@ pub(crate) fn meta_select() -> String {
 
 /// The cached catalog row of `entity`, unless `pg_tviews.table_cache_enabled` is
 /// off.
-fn cached(entity: &str) -> Option<TviewMeta> {
+fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     if !crate::config::table_cache_enabled() {
         return None;
     }
@@ -137,8 +138,9 @@ fn cached(entity: &str) -> Option<TviewMeta> {
 }
 
 /// Count the catalog query just made and cache its result.
-fn remember(loaded: Option<TviewMeta>) -> Option<TviewMeta> {
+fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
     crate::metrics::metrics_api::record_catalog_lookup();
+    let loaded = loaded.map(Rc::new);
     if let Some(meta) = &loaded {
         crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
         crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
@@ -203,8 +205,9 @@ impl TviewMeta {
             .find(|m| m.relid == table_oid.to_u32() || root.is_some_and(|r| m.relid == r.to_u32()))
     }
 
-    /// Look up metadata by entity name (cached per backend).
-    pub fn load_by_entity(entity_name: &str) -> crate::TViewResult<Option<Self>> {
+    /// Look up metadata by entity name (cached per backend, shared: a lookup
+    /// copies nothing).
+    pub fn load_by_entity(entity_name: &str) -> crate::TViewResult<Option<Rc<Self>>> {
         if let Some(meta) = cached(entity_name) {
             return Ok(Some(meta));
         }

@@ -31,7 +31,7 @@ fn owned(tview: &str) -> TViewResult<Found> {
 }
 
 /// [`owned`], with the TVIEW's catalog row and plan.
-fn owned_meta(tview: &str) -> TViewResult<TviewMeta> {
+fn owned_meta(tview: &str) -> TViewResult<std::rc::Rc<TviewMeta>> {
     owned(tview)?;
     resolve::resolve(tview)
 }

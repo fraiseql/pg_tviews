@@ -66,9 +66,9 @@ thread_local! {
     /// The entity dependency graph (one entry, keyed by `()`).
     pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
     /// Table → the local paths starting at it.
-    pub static CASCADE_PATHS: Memo<Oid, Vec<LocalPath>> = Memo::new();
+    pub static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
     /// Every `TviewMeta` read so far (keyed by entity).
-    pub static METAS: Memo<String, TviewMeta> = Memo::new();
+    pub static METAS: Memo<String, std::rc::Rc<TviewMeta>> = Memo::new();
     /// TVIEW table → the type of its identity column.
     pub static KEY_TYPES: Memo<Oid, KeyType> = Memo::new();
     /// Relation → its column names, in order.
@@ -128,14 +128,15 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<Vec<LocalPath>> {
+pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPath]>> {
     CASCADE_PATHS.with(|m| {
         m.get_or_load(table_oid, || {
             Ok(TviewMeta::load_all()?
                 .into_iter()
                 .flat_map(|meta| meta.plan.paths)
                 .filter(|path| path.source_oid == table_oid)
-                .collect())
+                .collect::<Vec<_>>()
+                .into())
         })
     })
 }

@@ -127,9 +127,10 @@ fn pg_tview_trigger_handler<'a>(
     // A row of a partition: what pg_tviews knows is its partitioned table.
     let table_oid = crate::delta::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
-    let paths: Vec<crate::catalog::plan::LocalPath> = crate::cache::cascade_paths(table_oid)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"))
-        .into_iter()
+    let all_paths = crate::cache::cascade_paths(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
+    let paths: Vec<&crate::catalog::plan::LocalPath> = all_paths
+        .iter()
         .filter(|p| p.entity_name == served)
         .collect();
     // If triggers are suspended, record the change instead of enqueuing
@@ -164,7 +165,7 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 /// Each path is followed from the old and the new row: an UPDATE that moves the
 /// row to another key (a changed join key, a changed DISTINCT ON key) refreshes
 /// both.
-fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalPath]) {
+fn enqueue_local_keys(trigger: &PgTrigger, paths: &[&crate::catalog::plan::LocalPath]) {
     if paths.is_empty() {
         return;
     }

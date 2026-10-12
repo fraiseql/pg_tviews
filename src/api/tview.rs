@@ -191,7 +191,10 @@ fn pg_tviews_ensure_propagation_indexes(
     let metas = if let Some(name) = tview {
         vec![super::owned_meta(name)?]
     } else {
-        let metas = crate::catalog::TviewMeta::load_all()?;
+        let metas: Vec<_> = crate::catalog::TviewMeta::load_all()?
+            .into_iter()
+            .map(std::rc::Rc::new)
+            .collect();
         for meta in &metas {
             crate::owner::require_owner(meta.tview_oid, &super::relation(meta))?;
         }

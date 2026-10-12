@@ -8,7 +8,7 @@ use crate::TViewResult;
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMeta>> {
+pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catalog::TviewMeta>>> {
     let entities = crate::utils::spi::strings(
         &format!(
             "SELECT m.entity::text FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
@@ -34,10 +34,11 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<crate::catalog::TviewMet
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a refresh fails.
 pub(crate) fn refresh_time_dependent(
-    chosen: &[crate::catalog::TviewMeta],
+    chosen: &[std::rc::Rc<crate::catalog::TviewMeta>],
 ) -> TViewResult<Vec<String>> {
     let order = crate::cache::graph()?.topo_order;
-    let mut chosen: Vec<&crate::catalog::TviewMeta> = chosen.iter().collect();
+    let mut chosen: Vec<&crate::catalog::TviewMeta> =
+        chosen.iter().map(std::rc::Rc::as_ref).collect();
     chosen.sort_by_key(|meta| {
         order
             .iter()
@@ -121,7 +122,7 @@ pub fn flush_after_rebuilds() -> TViewResult<()> {
 /// # Errors
 /// Returns error if the catalog query or an index creation fails.
 pub(crate) fn ensure_propagation_indexes(
-    metas: &[crate::catalog::TviewMeta],
+    metas: &[std::rc::Rc<crate::catalog::TviewMeta>],
     dry_run: bool,
 ) -> TViewResult<Vec<String>> {
     let mut missing = Vec::new();
