@@ -185,7 +185,7 @@ Each write costs the rows it reaches. Two dimensions drive it:
 - **Depth**: each level of TVIEW embedding TVIEW adds a round of refreshes. Keep chains
   short; `pg_tviews.max_propagation_depth` (default 100) stops a runaway chain.
 
-`pg_tviews.max_queue_size` (default 10,000 keys) bounds the work one transaction can queue:
+`pg_tviews.max_queue_size` (default 1,000,000 keys) bounds the work one transaction can queue:
 beyond it the write fails with SQLSTATE 54000. Split a write that reaches more rows into
 several transactions, or suspend triggers for it (below).
 

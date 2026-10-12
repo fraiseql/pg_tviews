@@ -13,7 +13,7 @@ many TVIEWs up to date at once.
 - Triggers on the base tables queue the affected TVIEW keys in memory, per
   transaction. The queue is flushed (the TVIEW rows are recomputed) at the end of
   each statement and on `COMMIT`. There is no queue table and no background job.
-- `pg_tviews.max_queue_size` (default 10000) caps the keys queued before a flush. A
+- `pg_tviews.max_queue_size` (default 1,000,000) caps the keys queued before a flush. A
   statement that queues more fails with
   `ERROR: refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`
   and rolls back.
@@ -28,7 +28,7 @@ session if one statement must touch more keys (`max_queue_size` is a superuser's
 setting; `batch_size` any role's):
 
 ```sql
-SET pg_tviews.max_queue_size = 100000;  -- this session only; superuser
+SET pg_tviews.max_queue_size = 10000000;  -- this session only; superuser
 SET pg_tviews.batch_size = 5000;        -- larger refresh chunks
 -- ... bulk statements ...
 RESET pg_tviews.max_queue_size;

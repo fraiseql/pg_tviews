@@ -32,7 +32,8 @@ pg_tviews cannot turn into a TVIEW (`WITH NO DATA`, a temporary table, a column 
 `TABLESPACE`, …) fail with SQLSTATE `0A000` ([error reference](../error-reference.md)).
 
 The TVIEW gets the default options, so it is LOGGED. `CREATE UNLOGGED TABLE
-tv_<entity> AS SELECT …` makes an UNLOGGED one (`logged: false`).
+tv_<entity> AS SELECT …` makes an UNLOGGED one (`logged: false`), and
+`WITH (fillfactor = n, toast_tuple_target = n)` sets those two options.
 
 ### `pg_tviews_create()` and `pg_tviews_create_or_replace()`
 
@@ -58,6 +59,10 @@ A TVIEW is its definition and its options; no setting changes it
 | `logged` | `true` | the table is LOGGED (crash-safe, replicated); `false` for UNLOGGED |
 | `fillfactor` | `85` | heap fillfactor (room for HOT updates) |
 | `data_gin_index` | `false` | pg_tviews' GIN index on `data` |
+| `data_compression` | `lz4` (`pglz` on a server built without lz4) | how `data` is compressed ([below](#storage-of-data)) |
+| `data_storage` | `"main"` | `data` kept inline, out of line only as a last resort ([below](#storage-of-data)) |
+| `toast_tuple_target` | `null` (PostgreSQL's 2032) | row size above which `data` is compressed or moved out of line |
+| `indexes` | `[]` | JSON-path btrees over `data` ([below](#json-path-indexes)) |
 | `group_keys` | `null` | aggregate TVIEW keys |
 | `uncascaded_policy` | `"error"` | what a write to a table no cascade reaches does ([below](#tables-no-cascade-reaches)) |
 | `uncascaded_tables` | `{}` | a policy per table ([below](#a-policy-per-table)) |
@@ -148,6 +153,69 @@ shows the definition as stored.
 The table is LOGGED unless the `logged` option is `false` (or it was created with
 `CREATE UNLOGGED TABLE … AS`); its fillfactor is 85 unless the `fillfactor` option
 says otherwise.
+
+### Storage of `data`
+
+A TVIEW's documents are read far more often than they are written, so `data` is stored
+for reads by default: compressed with lz4 and kept inline (`STORAGE MAIN`), read back
+without a TOAST lookup. lz4 is a build option of PostgreSQL: on a server built without
+it, the default is pglz, and declaring `"data_compression": "lz4"` fails (`22023`). The
+options use PostgreSQL's own words:
+
+| Option | Values | Column or table setting |
+|---|---|---|
+| `data_compression` | `lz4`, `pglz` | `ALTER COLUMN data SET COMPRESSION` |
+| `data_storage` | `main`, `extended`, `external` | `ALTER COLUMN data SET STORAGE` |
+| `toast_tuple_target` | 128–8160 | `ALTER TABLE … SET (toast_tuple_target = n)` |
+
+Measured on 4.4 kB FraiseQL documents (fraiseql/fraiseql#1553): lz4 + MAIN read 2.7×
+faster than PostgreSQL's defaults (pglz, EXTENDED) at about the same disk use; storing
+them uncompressed inline (`"data_storage": "main"` with a `toast_tuple_target` above the
+document size and pglz failing to compress) is faster still but takes about 3× the heap.
+A reader that detoasts `data` once per row already (FraiseQL since fraiseql#1554) gains
+less.
+
+PostgreSQL applies a compression or storage change to new values only. pg_tviews
+writes the rows again when one changes, so the declared storage is the one every row
+has; `tviews.registry.options` reads it back from the catalog.
+
+### JSON-path indexes
+
+The `indexes` option declares btree indexes over paths in `data`, written exactly as
+FraiseQL writes its filters and sorts, so the planner uses them:
+
+```sql
+SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ … $$, options => '{
+  "indexes": [
+    ["status", "created_at"],
+    ["author.id"],
+    [{"path": "rating", "type": "numeric", "desc": true}]
+  ]}');
+```
+
+An index is an array of keys; a key is a path (`"author.id"`) or an object with
+`path`, `type` (`text`, the default, `bigint`, `numeric` or `boolean`) and `desc`.
+
+| FraiseQL writes | Declare |
+|---|---|
+| `data->>'status' = $1`, `ORDER BY data->>'status'` | `"status"` |
+| `data->'author'->>'id' = $1` | `"author.id"` |
+| `(data->>'age')::bigint > $1`, `ORDER BY (data->>'age')::bigint` | `{"path": "age", "type": "bigint"}` |
+| `(data->>'price')::numeric` | `{"path": "price", "type": "numeric"}` |
+| `(data->>'active')::boolean = true` | `{"path": "active", "type": "boolean"}` |
+| `ORDER BY data->>'name' DESC` | `{"path": "name", "desc": true}` |
+
+`timestamptz`, `date` and `time` are refused: a cast from text to them depends on
+settings (`TimeZone`, `DateStyle`), so it is not immutable and no index can be built
+over it. pg_tviews renders timestamps as ISO 8601 text in UTC, which sorts
+chronologically byte by byte: sort the text under `COLLATE "C"` (a linguistic collation
+may not keep that order), or keep the value in a column of its own.
+
+The indexes are pg_tviews' (`registry.managed_indexes`), named `idx_<tv>_data_<keys>`
+(the name is reserved). A replace creates and drops only the difference, and
+re-creates a declared index dropped by hand; a rebuild and a dump keep them. An index
+on `data` makes every refresh of a row a non-HOT update, since a refresh rewrites
+`data`: declare the paths your queries filter or sort on, not every path.
 
 Because the backing view's columns depend on their types, `DROP TYPE … CASCADE` of a
 type the view returns drops the view, and pg_tviews then drops the whole TVIEW (its
@@ -382,8 +450,20 @@ then refreshes the rows of this one they map to.
 
 Every base table but a `propagated` one also gets an `AFTER TRUNCATE` trigger, which
 refreshes the whole TVIEW. An `UPDATE` that changes none of the columns the TVIEW
-reads from a `mapped` table maps nothing (rows are matched to their old image by
-primary key).
+reads refreshes none of its rows, whatever the kind: the changed rows are compared
+with their old images before anything is queried. Writing a column's own value
+(`SET name = name`) is no change.
+
+**Patches instead of recomputes.** A refresh recomputes a row through the backing
+view, unless the write only changed columns the TVIEW copies into `data` as they are
+(a `jsonb_build_object` value, at any depth of nested `jsonb_build_object`s, read
+nowhere else in the definition). Then the new values are written into `data` in
+place: into the TVIEW's own row (a `local` table holding the key), or, for a `mapped`
+table joined by one equality onto a column the TVIEW projects, into every row holding
+that value, in one statement (`'author', jsonb_build_object('bio', u.bio)` gets the
+user's new bio in each of its posts). A field computed from a column (`upper(u.bio)`,
+`COALESCE(u.bio, '')`), an array of embedded rows (`jsonb_agg`) and an embed two joins
+away are recomputed. `tviews.stats` counts both (`patch_applied`, `view_recomputes`).
 
 **Partitioned tables.** A partitioned table of any kind but `propagated` gets the
 row trigger, which PostgreSQL copies onto every partition, and maps each changed row

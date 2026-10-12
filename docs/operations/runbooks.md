@@ -130,7 +130,7 @@ ORDER BY heap_bytes DESC;
    COMMIT;
    ```
 3. Raise limits for the session if the load is legitimate:
-   `SET work_mem = '256MB'; SET pg_tviews.max_queue_size = 100000;` (the latter as a
+   `SET work_mem = '256MB'; SET pg_tviews.max_queue_size = 10000000;` (the latter as a
    superuser)
 
 ---
