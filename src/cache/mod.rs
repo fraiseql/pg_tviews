@@ -83,8 +83,9 @@ thread_local! {
     /// SQL → its kept plan, for the queries every refresh runs (PostgreSQL
     /// revalidates a kept plan when what it reads changes).
     pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
-    /// `(SQL, argument types, mutating)` → the statement kept for the backend.
-    pub static STATEMENTS: Memo<(String, Vec<Oid>, bool), std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
+    /// `(SQL, argument types, mutating, the table whose transition tables it
+    /// reads)` → the statement kept for the backend.
+    pub static STATEMENTS: Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
         Memo::new();
     /// `(table, attnums)` → how its old and new transition rows pair up, and the
     /// names of those columns (`None`: they can't be paired).
@@ -99,6 +100,10 @@ thread_local! {
     /// The quoted schema of `jsonb_delta` (`None`: not installed).
     pub static JSONB_DELTA_SCHEMA: Memo<(), Option<String>> = Memo::new();
 }
+
+/// What a kept statement is found by: its SQL, its argument types, whether it
+/// may change data, and the table whose transition tables it reads.
+pub type StatementKey = (String, Vec<Oid>, bool, Option<Oid>);
 
 /// The condition pairing an updated row's two images in a mapped table's
 /// transition tables, and the names of the columns the TVIEW reads.

@@ -85,11 +85,11 @@ pub(crate) fn unrecorded(table: pg_sys::Oid) -> TViewResult<bool> {
     .unwrap_or(false))
 }
 
-/// The `indexes` option `entity` declared.
+/// The `indexes` option `entity` declared, as stored (`[]` when none).
 ///
 /// # Errors
-/// A failed catalog read, or a stored declaration this release cannot read.
-pub(crate) fn declared(entity: &str) -> TViewResult<Vec<crate::ddl::create::JsonIndex>> {
+/// A failed catalog read.
+pub(crate) fn declared(entity: &str) -> TViewResult<serde_json::Value> {
     let stored = crate::utils::spi::one::<pgrx::JsonB>(
         &format!(
             "SELECT declared_indexes FROM {} WHERE entity = $1",
@@ -97,17 +97,14 @@ pub(crate) fn declared(entity: &str) -> TViewResult<Vec<crate::ddl::create::Json
         ),
         &[crate::utils::spi::text(entity)],
     )?;
-    stored.map_or_else(
-        || Ok(Vec::new()),
-        |s| crate::ddl::create::parse_json_indexes(&s.0),
-    )
+    Ok(stored.map_or_else(|| serde_json::Value::Array(Vec::new()), |s| s.0))
 }
 
 /// Store the `indexes` option `entity` declares.
 ///
 /// # Errors
 /// A failed catalog write.
-pub(crate) fn declare(entity: &str, indexes: &[crate::ddl::create::JsonIndex]) -> TViewResult<()> {
+pub(crate) fn declare(entity: &str, indexes: serde_json::Value) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_extension()?;
     crate::utils::spi::run(
         &format!(
@@ -116,9 +113,7 @@ pub(crate) fn declare(entity: &str, indexes: &[crate::ddl::create::JsonIndex]) -
         ),
         &[
             crate::utils::spi::text(entity),
-            crate::utils::spi::jsonb(pgrx::JsonB(crate::ddl::create::canonical_json_indexes(
-                indexes,
-            ))),
+            crate::utils::spi::jsonb(pgrx::JsonB(indexes)),
         ],
     )
 }

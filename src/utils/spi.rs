@@ -183,15 +183,19 @@ pub fn run_ddl(sql: &str) -> TViewResult<()> {
 /// types of `args` (allowed to change data when `mutating`), then run from its
 /// plan. `PostgreSQL` picks custom or generic plans for it, and plans it again when
 /// what it reads changes; a changed TVIEW changes the SQL `pg_tviews` generates.
-/// Inside `client`'s connection, which may have transition tables registered.
+/// Inside `client`'s connection. A statement over a trigger's transition tables
+/// names them alike whatever the table: it is kept per table (`over`), as
+/// PL/pgSQL keeps a trigger function's plans per relation, and dropped with the
+/// other caches when the table changes.
 fn statement(
     client: &SpiClient<'_>,
     sql: &str,
     args: &[DatumWithOid<'_>],
     mutating: bool,
+    over: Option<Oid>,
 ) -> pgrx::spi::Result<std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> {
     let types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
-    let key = (sql.to_string(), types, mutating);
+    let key = (sql.to_string(), types, mutating, over);
     if let Some(kept) = crate::cache::STATEMENTS.with(|m| m.get(&key)) {
         return Ok(kept);
     }
@@ -203,6 +207,9 @@ fn statement(
     };
     let kept = std::rc::Rc::new(prepared.keep());
     crate::metrics::metrics_api::record_plan_prepared();
+    if let Some(table) = over {
+        crate::cache::watch(&[table]);
+    }
     crate::cache::STATEMENTS.with(|m| m.insert(key, kept.clone()));
     Ok(kept)
 }
@@ -216,7 +223,7 @@ pub fn kept_select<'conn>(
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
-    let kept = statement(client, sql, args, false)?;
+    let kept = statement(client, sql, args, false, None)?;
     client.select(&*kept, None, args)
 }
 
@@ -229,7 +236,22 @@ pub fn kept_update<'conn>(
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
-    let kept = statement(client, sql, args, true)?;
+    let kept = statement(client, sql, args, true, None)?;
+    client.update(&*kept, None, args)
+}
+
+/// Run `sql`, a statement over the transition tables of `table`'s trigger, from
+/// its kept plan ([`statement`]).
+///
+/// # Errors
+/// The statement's error.
+pub fn kept_update_over<'conn>(
+    client: &mut SpiClient<'conn>,
+    table: Oid,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, true, Some(table))?;
     client.update(&*kept, None, args)
 }
 

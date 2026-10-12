@@ -213,6 +213,14 @@ impl JsonKey {
 }
 
 impl JsonIndex {
+    /// The `indexes` option ([`parse`]).
+    ///
+    /// # Errors
+    /// [`TViewError::InvalidInput`] naming what is wrong.
+    pub fn parse_option(value: &Value) -> TViewResult<Vec<Self>> {
+        parse(value)
+    }
+
     /// The index as declared, shortest form (`tviews.registry` publishes it).
     #[must_use]
     pub fn canonical(&self) -> Value {
@@ -258,7 +266,7 @@ pub(crate) fn present(entity: &str, table: pg_sys::Oid) -> TViewResult<Vec<JsonI
     let tview = format!("tv_{entity}");
     let on_table = names_on(table)?;
     let recorded = crate::catalog::indexes::recorded(table)?;
-    Ok(crate::catalog::indexes::declared(entity)?
+    Ok(declared(entity)?
         .into_iter()
         .filter(|index| {
             let name = index.managed(&tview).name;
@@ -316,7 +324,15 @@ pub(crate) fn apply(
         }
     }
     crate::catalog::indexes::record(table, &created)?;
-    crate::catalog::indexes::declare(entity, desired)
+    crate::catalog::indexes::declare(entity, canonical(desired))
+}
+
+/// The `indexes` option `entity` declared.
+///
+/// # Errors
+/// A failed catalog read, or a stored declaration this release cannot read.
+pub(crate) fn declared(entity: &str) -> TViewResult<Vec<JsonIndex>> {
+    parse(&crate::catalog::indexes::declared(entity)?)
 }
 
 /// The names of the indexes on `table`.

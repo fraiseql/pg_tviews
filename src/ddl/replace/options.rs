@@ -142,7 +142,9 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
             "time_refresh" => options.time_refresh = Some(time_refresh(key, value)?),
             "group_keys" => options.group_keys = group_keys(key, value)?,
             "typename" => options.typename = typename(key, value)?,
-            "indexes" => options.indexes = Some(crate::ddl::create::parse_json_indexes(value)?),
+            "indexes" => {
+                options.indexes = Some(crate::ddl::create::JsonIndex::parse_option(value)?);
+            }
             other => {
                 return Err(invalid(
                     "options",

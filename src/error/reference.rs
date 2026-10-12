@@ -149,8 +149,8 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
         PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
         "A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, \
          `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, \
-         `TABLESPACE`, `USING`, a storage parameter other than `fillfactor`, a query with \
-         parameters.",
+         `TABLESPACE`, `USING`, a storage parameter other than `fillfactor` and \
+         `toast_tuple_target`, a query with parameters.",
     ),
     (
         "src/hooks/ctas.rs",
