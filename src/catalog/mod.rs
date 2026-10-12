@@ -256,8 +256,12 @@ impl TviewMeta {
     /// its plan: what dropping a TVIEW needs.
     ///
     /// # Errors
-    /// The catalog cannot be read.
+    /// The catalog cannot be read. Raises the revision error for a catalog of
+    /// another revision.
     pub fn entity_of_table(tview_oid: Oid) -> crate::TViewResult<Option<String>> {
+        // The hooks' first catalog read in a statement: a catalog of another
+        // revision fails here with its remedy, not on a table or column it lacks.
+        crate::revision::check();
         crate::utils::spi::one::<String>(
             &format!(
                 "SELECT entity FROM {} WHERE table_oid::pg_catalog.oid = $1",

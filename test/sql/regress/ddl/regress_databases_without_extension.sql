@@ -53,5 +53,54 @@ END $$;
 DROP EXTENSION pg_tviews CASCADE;
 DROP TABLE tb_thing;
 
+-- #227: every statement kind the hook inspects, on tv_* and plain tables, in a
+-- database that never had the extension or no longer has it.
+CREATE TABLE tb_any (pk_any int PRIMARY KEY, id uuid DEFAULT gen_random_uuid(), name text);
+CREATE TABLE tv_any (pk_any int PRIMARY KEY, id uuid, data jsonb);
+INSERT INTO tb_any (pk_any, name) VALUES (1, 'a');
+INSERT INTO tv_any SELECT pk_any, id, jsonb_build_object('name', name) FROM tb_any;
+CREATE INDEX tv_any_name ON tv_any ((data->>'name'));
+ALTER INDEX tv_any_name RENAME TO tv_any_name2;
+DROP INDEX tv_any_name2;
+ALTER TABLE tv_any ADD COLUMN extra int;
+ALTER TABLE tv_any RENAME COLUMN extra TO extra2;
+ALTER TABLE tv_any ALTER COLUMN extra2 TYPE bigint;
+ALTER TABLE tv_any DROP COLUMN extra2;
+ALTER TABLE tv_any SET UNLOGGED;
+ALTER TABLE tv_any SET LOGGED;
+ALTER TABLE tv_any RENAME TO tv_any2;
+ALTER TABLE tv_any2 RENAME TO tv_any;
+GRANT SELECT ON tv_any TO PUBLIC;
+REVOKE SELECT ON tv_any FROM PUBLIC;
+TRUNCATE tv_any, tb_any;
+CREATE MATERIALIZED VIEW mv_any AS SELECT count(*) AS n FROM tb_any;
+REFRESH MATERIALIZED VIEW mv_any;
+DROP MATERIALIZED VIEW mv_any;
+BEGIN;
+INSERT INTO tb_any (pk_any, name) VALUES (2, 'b');
+DROP TABLE IF EXISTS tv_missing;
+DROP TABLE tv_any, tb_any CASCADE;
+COMMIT;
+DO $$ BEGIN
+    CREATE TABLE tv_in_do (a int);
+    DROP TABLE tv_in_do;
+END $$;
+CREATE TABLE tb_prep (a int);
+SELECT current_setting('max_prepared_transactions')::int > 0 AS has_2pc \gset
+\if :has_2pc
+BEGIN;
+INSERT INTO tb_prep VALUES (1);
+DROP TABLE tb_prep;
+PREPARE TRANSACTION 'regress_227';
+COMMIT PREPARED 'regress_227';
+\else
+DROP TABLE tb_prep;
+\endif
+DO $$ BEGIN
+    IF to_regclass('tv_any') IS NOT NULL OR to_regclass('tb_prep') IS NOT NULL THEN
+        RAISE EXCEPTION '#227 FAIL: DDL without the extension did not run';
+    END IF;
+END $$;
+
 SELECT 'issue #128 without extension: PASS' AS result;
 -- expect-output: issue #128 without extension: PASS
