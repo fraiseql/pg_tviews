@@ -142,8 +142,17 @@ impl Walker<'_> {
                     {
                         shape.opaque = true;
                     }
-                    if let Some(&first) = args.first() {
-                        self.data_value(query, first, path, shape, fields);
+                    // Only around an aggregate: around a column the fallback
+                    // replaces its NULLs, so the field is no copy of it.
+                    match args
+                        .first()
+                        .map(|&first| (first, tag(strip_relabel(first))))
+                    {
+                        Some((
+                            first,
+                            Some(pg_sys::NodeTag::T_Aggref | pg_sys::NodeTag::T_SubLink),
+                        )) => self.data_value(query, first, path, shape, fields),
+                        _ => shape.opaque = true,
                     }
                 }
                 Some(pg_sys::NodeTag::T_Aggref) => {
