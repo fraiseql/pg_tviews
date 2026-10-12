@@ -125,21 +125,23 @@ pub fn apply_fanout_patch(
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
 ) -> TViewResult<Vec<i64>> {
-    // The rows writing the same paths, each with its values in path order.
-    let mut shapes: std::collections::BTreeMap<Vec<String>, Map<String, Value>> =
+    // The rows writing the same paths, each key with its values in path order.
+    type Targets = (Vec<i64>, Vec<pgrx::JsonB>);
+    let mut shapes: std::collections::BTreeMap<Vec<String>, Targets> =
         std::collections::BTreeMap::new();
     for (key, fields) in rows {
         let mut paths: Vec<&String> = fields.keys().collect();
         paths.sort();
         let values = paths.iter().map(|p| fields[*p].clone()).collect();
-        shapes
+        let (keys, all_values) = shapes
             .entry(paths.into_iter().cloned().collect())
-            .or_default()
-            .insert(key.to_string(), Value::Array(values));
+            .or_default();
+        keys.push(*key);
+        all_values.push(pgrx::JsonB(Value::Array(values)));
     }
     let mut changed = Vec::new();
-    for (paths, by_key) in shapes {
-        changed.extend(write_fanout(meta, lookup_col, &paths, by_key)?);
+    for (paths, (keys, values)) in shapes {
+        changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
     }
 
     // REPEATABLE READ: the patch reached every row the latest snapshot holds
@@ -172,14 +174,17 @@ pub fn apply_fanout_patch(
     Ok(changed)
 }
 
-/// One UPDATE writing the values of `by_key` (`{key: [value at each path]}`) at
-/// `paths` (fan-out path keys) into the rows whose `lookup_col` is the key:
-/// `jsonb_set` at each path, the paths bound as parameters. The pks written.
+/// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
+/// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
+/// at each path, the paths bound as parameters. The keys come as an array, which
+/// the planner counts, so it looks the rows up by `lookup_col`'s index. The pks
+/// written.
 fn write_fanout(
     meta: &TviewMeta,
     lookup_col: &str,
     paths: &[String],
-    by_key: Map<String, Value>,
+    keys: Vec<i64>,
+    values: Vec<pgrx::JsonB>,
 ) -> TViewResult<Vec<i64>> {
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
@@ -187,16 +192,20 @@ fn write_fanout(
     let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
         format!(
             "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], f.v -> {i})",
-            i + 2
+            i + 3
         )
     });
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now() \
-         FROM pg_catalog.jsonb_each($1) AS f(k, v) \
-         WHERE t.{qi_lookup} = f.k::pg_catalog.int8 AND t.data IS DISTINCT FROM {patched} \
+         FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
+                         pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v) \
+         WHERE t.{qi_lookup} = f.k AND t.data IS DISTINCT FROM {patched} \
          RETURNING t.{qi_pk}::pg_catalog.int8"
     );
-    let mut args = vec![crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
+    let mut args = vec![
+        crate::utils::spi::int8_array(keys),
+        pgrx::datum::DatumWithOid::from(values),
+    ];
     for key in paths {
         let path = crate::queue::patch::fanout_path(key).ok_or_else(|| {
             crate::error::TViewError::SerializationError {
