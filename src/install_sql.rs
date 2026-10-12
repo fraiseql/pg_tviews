@@ -136,7 +136,10 @@ extension_sql!(
         -- The indexes pg_tviews created on the table and still owns, by name
         -- (resolved among the table's indexes: a dump restores indexes after
         -- this table's rows, so they cannot be regclass).
-        managed_index_names TEXT[] NOT NULL DEFAULT '{}'
+        managed_index_names TEXT[] NOT NULL DEFAULT '{}',
+        -- The indexes option as declared (#226): an array of indexes, each an
+        -- array of keys. pg_tviews creates them under managed_index_names.
+        declared_indexes JSONB NOT NULL DEFAULT '[]'
     );
 
     CREATE TABLE @extschema@.pg_tview_helpers (
@@ -278,6 +281,7 @@ SELECT
             (SELECT o.option_value::integer
              FROM pg_catalog.pg_options_to_table(c.reloptions) o
              WHERE o.option_name = 'toast_tuple_target'),
+        'indexes', m.declared_indexes,
         'group_keys', m.group_keys,
         'uncascaded_policy', m.uncascaded_policy,
         'uncascaded_tables', COALESCE(

@@ -34,13 +34,16 @@ fn index_ddl(
 }
 
 /// An index `pg_tviews` creates on a TVIEW's table: `idx_<tview>_<suffix>` over
-/// `columns`, btree or GIN.
+/// `columns`, btree or GIN, or a btree over `expressions`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedIndex {
     pub(crate) name: String,
     suffix: String,
     gin: bool,
     pub(crate) columns: Vec<String>,
+    /// The index elements of an expression index (a declared JSON-path index),
+    /// as SQL: `((data ->> 'k'::text)), …`.
+    pub(crate) expressions: Option<String>,
 }
 
 impl ManagedIndex {
@@ -50,6 +53,18 @@ impl ManagedIndex {
             suffix,
             gin: false,
             columns,
+            expressions: None,
+        }
+    }
+
+    /// A btree over `elements`, SQL index elements.
+    pub(crate) fn expressions(tview_name: &str, suffix: String, elements: String) -> Self {
+        Self {
+            name: index_name(tview_name, &suffix),
+            suffix,
+            gin: false,
+            columns: Vec::new(),
+            expressions: Some(elements),
         }
     }
 
@@ -74,6 +89,7 @@ impl ManagedIndex {
             suffix,
             gin: true,
             columns: vec![data.to_string()],
+            expressions: None,
         }
     }
 
@@ -84,6 +100,14 @@ impl ManagedIndex {
 
     /// `CREATE INDEX IF NOT EXISTS` for this index on `schema_name.tview_name`.
     pub(crate) fn ddl(&self, schema_name: &str, tview_name: &str) -> String {
+        if let Some(elements) = &self.expressions {
+            return format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({elements})",
+                ident::quoted(&self.name),
+                ident::quoted(schema_name),
+                ident::quoted(tview_name),
+            );
+        }
         let columns: Vec<&str> = self.columns.iter().map(String::as_str).collect();
         index_ddl(
             schema_name,

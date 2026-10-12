@@ -96,9 +96,10 @@ pub(crate) fn create_or_replace(
         group_keys: create::stored_group_keys(&entity)?,
         declarations: Declarations::of(&meta),
         typename: crate::catalog::row::typename(&entity)?,
+        indexes: create::present_json_indexes(&entity, meta.tview_oid)?,
     };
-    // Options other than the definition's own (storage, declarations, type name)
-    // change in place.
+    // Options other than the definition's own (storage, declarations, type name,
+    // indexes) change in place.
     let alter = |current: &Declared| -> TViewResult<()> {
         if declared.storage != current.storage {
             alter_storage(
@@ -113,6 +114,9 @@ pub(crate) fn create_or_replace(
         if declared.typename != current.typename {
             crate::catalog::row::set_typename(&entity, declared.typename.as_deref())?;
         }
+        if declared.indexes != current.indexes {
+            create::apply_json_indexes(&entity, &schema, meta.tview_oid, &declared.indexes)?;
+        }
         Ok(())
     };
 
@@ -122,6 +126,7 @@ pub(crate) fn create_or_replace(
         if declared.storage == current.storage
             && same_declarations
             && declared.typename == current.typename
+            && declared.indexes == current.indexes
         {
             return Ok(if retyped { "altered" } else { "unchanged" });
         }
@@ -270,6 +275,14 @@ fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> T
     )?;
     if declared.typename.is_some() {
         crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
+    }
+    if !declared.indexes.is_empty() {
+        let table = TviewMeta::load_by_entity(entity)?
+            .ok_or_else(|| crate::error::TViewError::TviewNotFound {
+                name: entity.to_string(),
+            })?
+            .tview_oid;
+        create::apply_json_indexes(entity, schema, table, &declared.indexes)?;
     }
     check_time_declared(
         entity,

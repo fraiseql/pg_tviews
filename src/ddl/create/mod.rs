@@ -1,5 +1,6 @@
 mod derive;
 mod indexes;
+mod json_indexes;
 mod register;
 mod relations;
 mod select;
@@ -7,6 +8,11 @@ mod storage;
 
 use derive::derive;
 pub(crate) use indexes::{ManagedIndex, index_name, managed_indexes};
+pub use json_indexes::JsonIndex;
+pub(crate) use json_indexes::{
+    apply as apply_json_indexes, canonical as canonical_json_indexes, parse as parse_json_indexes,
+    present as present_json_indexes,
+};
 use register::Registration;
 pub(crate) use relations::view_source_columns;
 use relations::{

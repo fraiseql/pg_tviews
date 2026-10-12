@@ -76,7 +76,7 @@ SELECT must((SELECT count(*) FROM tviews.registry) = 3, 'expected three rows');
 SELECT must(
     (SELECT schema = 'public' AND name = 'tv_user' AND (options->>'logged')::boolean
             AND options - 'data_compression' = '{"logged": true, "fillfactor": 70, "data_gin_index": false,
-                            "data_storage": "main", "toast_tuple_target": null,
+                            "data_storage": "main", "toast_tuple_target": null, "indexes": [],
                             "group_keys": null, "uncascaded_policy": "error",
                             "uncascaded_tables": {}, "function_reads": {},
                             "time_refresh": null, "typename": null}'::jsonb

@@ -319,6 +319,10 @@ RETURNS integer
 LANGUAGE sql STABLE PARALLEL SAFE
 AS 'SELECT 2';
 
+-- The indexes option as declared (#226).
+ALTER TABLE @extschema@.pg_tview_meta
+    ADD COLUMN declared_indexes JSONB NOT NULL DEFAULT '[]';
+
 DROP VIEW @extschema@.registry;
 CREATE VIEW @extschema@.registry AS
 SELECT
@@ -354,6 +358,7 @@ SELECT
             (SELECT o.option_value::integer
              FROM pg_catalog.pg_options_to_table(c.reloptions) o
              WHERE o.option_name = 'toast_tuple_target'),
+        'indexes', m.declared_indexes,
         'group_keys', m.group_keys,
         'uncascaded_policy', m.uncascaded_policy,
         'uncascaded_tables', COALESCE(

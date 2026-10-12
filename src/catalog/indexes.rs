@@ -84,3 +84,41 @@ pub(crate) fn unrecorded(table: pg_sys::Oid) -> TViewResult<bool> {
     )?
     .unwrap_or(false))
 }
+
+/// The `indexes` option `entity` declared.
+///
+/// # Errors
+/// A failed catalog read, or a stored declaration this release cannot read.
+pub(crate) fn declared(entity: &str) -> TViewResult<Vec<crate::ddl::create::JsonIndex>> {
+    let stored = crate::utils::spi::one::<pgrx::JsonB>(
+        &format!(
+            "SELECT declared_indexes FROM {} WHERE entity = $1",
+            crate::catalog::meta_table()
+        ),
+        &[crate::utils::spi::text(entity)],
+    )?;
+    stored.map_or_else(
+        || Ok(Vec::new()),
+        |s| crate::ddl::create::parse_json_indexes(&s.0),
+    )
+}
+
+/// Store the `indexes` option `entity` declares.
+///
+/// # Errors
+/// A failed catalog write.
+pub(crate) fn declare(entity: &str, indexes: &[crate::ddl::create::JsonIndex]) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    crate::utils::spi::run(
+        &format!(
+            "UPDATE {} SET declared_indexes = $2 WHERE entity = $1",
+            crate::catalog::meta_table()
+        ),
+        &[
+            crate::utils::spi::text(entity),
+            crate::utils::spi::jsonb(pgrx::JsonB(crate::ddl::create::canonical_json_indexes(
+                indexes,
+            ))),
+        ],
+    )
+}

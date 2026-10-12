@@ -42,7 +42,7 @@ CREATE TABLE tv_a AS SELECT pk_a, id, jsonb_build_object('name', name) AS data F
 SELECT tviews.pg_tviews_create('tv_b', 'SELECT pk_b, id, jsonb_build_object(''name'', name) AS data FROM tb_b');
 SELECT tviews.pg_tviews_create_or_replace('tv_c', 'SELECT pk_c, id, jsonb_build_object(''name'', name) AS data FROM tb_c');
 SELECT must(options_of('a') - 'data_compression' = '{"logged": true, "fillfactor": 85, "data_gin_index": false,
-                            "data_storage": "main", "toast_tuple_target": null,
+                            "data_storage": "main", "toast_tuple_target": null, "indexes": [],
                                "group_keys": null, "uncascaded_policy": "error",
                                "uncascaded_tables": {}, "function_reads": {},
                                "time_refresh": null, "typename": null}'::jsonb,
@@ -90,13 +90,15 @@ SELECT tviews.pg_tviews_create_or_replace('tv_spend', $$
       "uncascaded_policy": "warn", "uncascaded_tables": {"public.tb_b": "full_refresh"},
       "function_reads": {"public.current_rate()": ["public.tb_rate"]},
       "time_refresh": "external", "typename": "Spend",
-      "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000}');
+      "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000,
+      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]]}');
 SELECT must(options_of('spend') = '{"group_keys": {"tb_order": "fk_a", "tb_a": "pk_a"},
       "logged": false, "fillfactor": 90, "data_gin_index": true,
       "uncascaded_policy": "warn", "uncascaded_tables": {"tb_b": "full_refresh"},
       "function_reads": {"public.current_rate()": ["tb_rate"]},
       "time_refresh": "external", "typename": "Spend",
-      "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000}'::jsonb,
+      "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000,
+      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]]}'::jsonb,
             'every option published: ' || options_of('spend')::text);
 SELECT must(tviews.pg_tviews_create_or_replace(format('%I.%I', schema, name), query, options) = 'unchanged',
             'round trip of ' || entity || ': ' || options::text)

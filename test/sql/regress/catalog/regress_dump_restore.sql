@@ -82,7 +82,7 @@ END $$;
 
 -- Declared storage of data (#225): pg_dump carries SET STORAGE / SET COMPRESSION
 -- and the reloptions.
-SELECT tviews.pg_tviews_create_or_replace('tv_author', query, '{"data_storage": "external", "toast_tuple_target": 3000}')
+SELECT tviews.pg_tviews_create_or_replace('tv_author', query, '{"data_storage": "external", "toast_tuple_target": 3000, "indexes": [["name"]]}')
 FROM tviews.registry WHERE entity = 'author';
 SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::text AS author_options \gset
 
@@ -106,7 +106,8 @@ FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i
 SET client_min_messages TO WARNING;
 
 SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::jsonb = :'author_options'::jsonb
-       AND :'author_options'::jsonb @> '{"data_storage": "external", "toast_tuple_target": 3000}' AS storage_ok \gset
+       AND :'author_options'::jsonb @> '{"data_storage": "external", "toast_tuple_target": 3000, "indexes": [["name"]]}'
+       AND :'managed_before' LIKE '%author:idx_tv_author_data_name%' AS storage_ok \gset
 \if :storage_ok
 \else
   DO $$ BEGIN RAISE EXCEPTION '#225 FAIL: declared data storage differs after restore'; END $$;

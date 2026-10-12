@@ -2,7 +2,7 @@
 
 use crate::config::UncascadedPolicy;
 use crate::ddl::aggregate::GroupKeys;
-use crate::ddl::create::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
+use crate::ddl::create::{Compression, DataStorage, JsonIndex, Storage, TOAST_TUPLE_TARGET};
 use crate::ddl::uncascaded::{Declarations, TimeRefresh};
 use crate::error::{TViewError, TViewResult};
 use pgrx::prelude::*;
@@ -30,6 +30,8 @@ pub(crate) struct Options {
     pub(super) time_refresh: Option<TimeRefresh>,
     /// The GraphQL type name `pg_tviews_flush_and_report()` reports.
     pub(super) typename: Option<String>,
+    /// Declared JSON-path indexes.
+    pub(super) indexes: Option<Vec<JsonIndex>>,
 }
 
 /// A TVIEW as its options declare it: every option, those not passed at their
@@ -41,6 +43,7 @@ pub(crate) struct Declared {
     pub declarations: Declarations,
     /// `None`: `PascalCase(entity)`.
     pub typename: Option<String>,
+    pub indexes: Vec<JsonIndex>,
 }
 
 impl Options {
@@ -91,6 +94,7 @@ impl Options {
                 self.time_refresh.unwrap_or(TimeRefresh::None),
             ),
             typename: self.typename,
+            indexes: self.indexes.unwrap_or_default(),
         })
     }
 }
@@ -138,6 +142,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
             "time_refresh" => options.time_refresh = Some(time_refresh(key, value)?),
             "group_keys" => options.group_keys = group_keys(key, value)?,
             "typename" => options.typename = typename(key, value)?,
+            "indexes" => options.indexes = Some(crate::ddl::create::parse_json_indexes(value)?),
             other => {
                 return Err(invalid(
                     "options",
@@ -145,7 +150,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                         "unknown option \"{other}\" (known: logged, fillfactor, \
                          data_gin_index, data_compression, data_storage, toast_tuple_target, \
                          group_keys, uncascaded_policy, uncascaded_tables, \
-                         function_reads, time_refresh, typename)"
+                         function_reads, time_refresh, typename, indexes)"
                     ),
                 ));
             }

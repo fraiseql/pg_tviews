@@ -208,6 +208,7 @@ pub(super) fn rebuild(
         crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
     }
     recreate_user_indexes(&tv_name, user_indexes)?;
+    create::apply_json_indexes(entity, schema, rebuilt.tview_oid, &declared.indexes)?;
     // Filled as its owner, now that the owner is back.
     crate::refresh::full::fill_empty_tview(entity)
 }
