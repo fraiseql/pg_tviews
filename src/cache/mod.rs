@@ -83,6 +83,12 @@ thread_local! {
     /// SQL → its kept plan, for the queries every refresh runs (PostgreSQL
     /// revalidates a kept plan when what it reads changes).
     pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
+    /// `(SQL, argument types, mutating)` → the statement kept for the backend.
+    pub static STATEMENTS: Memo<(String, Vec<Oid>, bool), std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
+        Memo::new();
+    /// `(table, attnums)` → how its old and new transition rows pair up, and the
+    /// names of those columns (`None`: they can't be paired).
+    pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<crate::delta::RowPairing>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -140,7 +146,9 @@ pub fn invalidate_all() {
     READ_SETS.with(Memo::clear);
     LOCK_VALUES.with(Memo::clear);
     PLANS.with(Memo::clear);
+    STATEMENTS.with(Memo::clear);
     DELTAS.with(Memo::clear);
+    PAIRINGS.with(Memo::clear);
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
     JSONB_DELTA_SCHEMA.with(Memo::clear);

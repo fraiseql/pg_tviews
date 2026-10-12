@@ -179,9 +179,13 @@ pub(crate) fn refuse_duplicate_keys_in(
         "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
                  GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
     );
-    match Spi::get_one_with_args::<String>(&sql, args)
-        .map_err(|e| crate::utils::spi::error(&sql, &e))?
-    {
+    let duplicate = Spi::connect(|client| {
+        crate::utils::spi::kept_select(client, &sql, args)?
+            .first()
+            .get::<String>(1)
+    })
+    .map_err(|e| crate::utils::spi::error(&sql, &e))?;
+    match duplicate {
         Some(key) => Err(crate::TViewError::DuplicateKey {
             tview: qualified_tv.to_string(),
             key_column: key_column.to_string(),
@@ -281,8 +285,14 @@ pub(crate) fn run_counted_upsert(
                 (SELECT array_agg(k) FROM written WHERE inserted), \
                 (SELECT array_agg(k) FROM written WHERE NOT inserted)"
     );
-    let (produced, inserted, updated) =
-        Spi::get_three_with_args::<i64, Vec<String>, Vec<String>>(&sql, args)?;
+    let (produced, inserted, updated) = Spi::connect_mut(|client| {
+        let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
+        Ok::<_, spi::Error>((
+            row.get::<i64>(1)?,
+            row.get::<Vec<String>>(2)?,
+            row.get::<Vec<String>>(3)?,
+        ))
+    })?;
     let inserted = inserted.unwrap_or_default();
     let updated = updated.unwrap_or_default();
     let written = (inserted.len() + updated.len()) as u64;
@@ -345,7 +355,7 @@ pub(crate) fn lock_rows(
     let (pks, held) = Spi::connect_mut(|client| {
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
-        for row in client.update(&sql, None, &args)? {
+        for row in crate::utils::spi::kept_update(client, &sql, &args)? {
             if let Some(pk) = row.get::<i64>(1)? {
                 pks.push(pk);
             }
@@ -381,7 +391,7 @@ pub(crate) fn run_journaled_delete(
 ) -> crate::TViewResult<Vec<i64>> {
     let deleted = Spi::connect_mut(|client| {
         let mut out = Vec::new();
-        for row in client.update(sql, None, args)? {
+        for row in crate::utils::spi::kept_update(client, sql, args)? {
             let pk: Option<String> = row.get(1)?;
             let id: Option<String> = row.get(2)?;
             if let Some(pk) = pk {

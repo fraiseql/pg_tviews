@@ -94,7 +94,7 @@ pub fn apply_direct_patch(
         .collect();
     let pk_vec = pks.to_vec();
 
-    Spi::connect(|client| {
+    Spi::connect_mut(|client| {
         let mut args: Vec<DatumWithOid> = Vec::with_capacity(chain.len() + 1 + path_args.len());
         for j in &json_args {
             args.push(crate::utils::spi::jsonb(pgrx::JsonB(j.0.clone())));
@@ -104,7 +104,7 @@ pub fn apply_direct_patch(
             args.push(crate::utils::spi::text_array(path.clone()));
         }
 
-        let rows = client.select(&sql, None, &args)?;
+        let rows = crate::utils::spi::kept_update(client, &sql, &args)?;
         let mut materialised = Vec::new();
         for row in rows {
             if let (Some(pk), Some(changed)) = (row[1].value::<i64>()?, row[2].value::<bool>()?) {
@@ -215,8 +215,7 @@ fn write_fanout(
         args.push(crate::utils::spi::text_array(path));
     }
     Ok(Spi::connect_mut(|client| {
-        client
-            .update(&sql, None, &args)?
+        crate::utils::spi::kept_update(client, &sql, &args)?
             .map(|row| row[1].value::<i64>())
             .filter_map(Result::transpose)
             .collect::<pgrx::spi::Result<_>>()

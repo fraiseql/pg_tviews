@@ -6,7 +6,7 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::{DatumWithOid, FromDatum, IntoDatum};
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
-use pgrx::spi::SpiHeapTupleData;
+use pgrx::spi::{SpiClient, SpiHeapTupleData, SpiTupleTable};
 
 /// Values bound as `text` (`None` is NULL).
 pub trait Text: IntoDatum {}
@@ -177,6 +177,60 @@ pub fn rows<T>(
 /// Returns the statement's error.
 pub fn run_ddl(sql: &str) -> TViewResult<()> {
     super::spi_run_ddl(sql).map_err(|e| error(sql, &e))
+}
+
+/// The statement `sql` kept for the backend: prepared on first use for the
+/// types of `args` (allowed to change data when `mutating`), then run from its
+/// plan. `PostgreSQL` picks custom or generic plans for it, and plans it again when
+/// what it reads changes; a changed TVIEW changes the SQL `pg_tviews` generates.
+/// Inside `client`'s connection, which may have transition tables registered.
+fn statement(
+    client: &SpiClient<'_>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    mutating: bool,
+) -> pgrx::spi::Result<std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> {
+    let types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
+    let key = (sql.to_string(), types, mutating);
+    if let Some(kept) = crate::cache::STATEMENTS.with(|m| m.get(&key)) {
+        return Ok(kept);
+    }
+    let pg_types: Vec<pgrx::PgOid> = key.1.iter().map(|&t| pgrx::PgOid::from(t)).collect();
+    let prepared = if mutating {
+        client.prepare_mut(sql, &pg_types)?
+    } else {
+        client.prepare(sql, &pg_types)?
+    };
+    let kept = std::rc::Rc::new(prepared.keep());
+    crate::metrics::metrics_api::record_plan_prepared();
+    crate::cache::STATEMENTS.with(|m| m.insert(key, kept.clone()));
+    Ok(kept)
+}
+
+/// Run the read-only query `sql` from its kept plan ([`statement`]).
+///
+/// # Errors
+/// The query's error.
+pub fn kept_select<'conn>(
+    client: &SpiClient<'conn>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, false)?;
+    client.select(&*kept, None, args)
+}
+
+/// Run `sql`, which may change data, from its kept plan ([`statement`]).
+///
+/// # Errors
+/// The statement's error.
+pub fn kept_update<'conn>(
+    client: &mut SpiClient<'conn>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, true)?;
+    client.update(&*kept, None, args)
 }
 
 /// A row of a query, its columns as text (`None` for NULL).

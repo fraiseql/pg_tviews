@@ -143,7 +143,7 @@ fn find_affected_keys_batch(
         };
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
         let mut found = Vec::new();
-        for row in client.update(&query, None, &args)? {
+        for row in crate::utils::spi::kept_update(client, &query, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
             };

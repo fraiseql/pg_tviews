@@ -276,6 +276,7 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "view_recomputes": stats.view_recomputes,
         "refresh_noop_skipped": stats.refresh_noop_skipped,
         "catalog_lookups": stats.catalog_lookups,
+        "plans_prepared": stats.plans_prepared,
         "propagation_pruned": stats.propagation_pruned
     });
 

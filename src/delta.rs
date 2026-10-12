@@ -329,7 +329,7 @@ fn fan_out(
     );
     let pairs = with_transition_tables(trigger, entity, |client| {
         let mut pairs = Vec::new();
-        for row in client.update(&sql, None, &[])? {
+        for row in crate::utils::spi::kept_update(client, &sql, &[])? {
             if row.get::<bool>(3)? != Some(true) {
                 return Ok(None);
             }
@@ -449,7 +449,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
             // Read-write: a fresh snapshot, which sees what the locks waited for.
             let keys = Spi::connect_mut(|client| {
                 let mut keys = Vec::new();
-                for row in client.update(&sql, None, &images)? {
+                for row in crate::utils::spi::kept_update(client, &sql, &images)? {
                     keys.extend(key_of(&row, key_type)?);
                 }
                 crosscheck_keys(&sql, &images, &keys)?;
@@ -594,14 +594,29 @@ fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>>
     )))
 }
 
+/// The condition pairing an updated row's two images, and the names of the
+/// columns the TVIEW reads.
+pub type RowPairing = (String, Vec<String>);
+
 /// How to pair the old and new image of an updated row, `n.pk = o.pk` over the
 /// primary key, and the names of the columns `attnums` the TVIEW reads. `None`
 /// without a primary key whose types have a `pg_catalog` equality, or without a
 /// known column list.
-fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, Vec<String>)>> {
+fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<RowPairing>> {
     if attnums.is_empty() {
         return Ok(None);
     }
+    crate::cache::PAIRINGS.with(|m| {
+        m.get_or_load((table_oid, attnums.to_vec()), || {
+            crate::cache::watch(&[table_oid]);
+            read_row_pairing(table_oid, attnums)
+        })
+    })
+}
+
+/// [`row_pairing`], read from the catalog.
+fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, Vec<String>)>> {
+    crate::metrics::metrics_api::record_catalog_lookup();
     let args = [
         crate::utils::spi::oid(table_oid),
         crate::utils::spi::int2_array(attnums.to_vec()),
@@ -682,7 +697,7 @@ fn run_with_transition_tables(
 ) -> TViewResult<Vec<KeyValue>> {
     with_transition_tables(trigger, entity, |client| {
         let mut keys = Vec::new();
-        for row in client.update(sql, None, &[])? {
+        for row in crate::utils::spi::kept_update(client, sql, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
         crosscheck_keys(sql, &[], &keys)?;
@@ -720,7 +735,7 @@ fn texts(
     args: &[DatumWithOid<'_>],
 ) -> TViewResult<Vec<String>> {
     let mut out = Vec::new();
-    for row in client.update(sql, None, args)? {
+    for row in crate::utils::spi::kept_update(client, sql, args)? {
         out.extend(row.get::<String>(1)?);
     }
     Ok(out)
