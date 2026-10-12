@@ -37,12 +37,42 @@ fn test_index_ddl_gin_only_when_requested() {
 }
 
 #[test]
-fn test_storage_clause() {
+fn test_storage_clauses() {
+    use crate::ddl::create::{Compression, DataStorage, Storage};
+    let default = Storage::DEFAULT;
+    assert_eq!(default.with_clause(), " WITH (fillfactor = 85)");
     assert_eq!(
-        crate::ddl::create::indexes::storage_clause(85),
-        " WITH (fillfactor = 85)"
+        default.data_column_clause(),
+        " STORAGE MAIN COMPRESSION lz4"
     );
-    assert_eq!(crate::ddl::create::indexes::storage_clause(100), "");
+    let declared = Storage {
+        fillfactor: 100,
+        toast_tuple_target: Some(4000),
+        data_compression: Compression::Pglz,
+        data_storage: DataStorage::Extended,
+        ..default
+    };
+    assert_eq!(declared.with_clause(), " WITH (toast_tuple_target = 4000)");
+    assert_eq!(
+        declared.data_column_clause(),
+        " STORAGE EXTENDED COMPRESSION pglz"
+    );
+    assert_eq!(
+        Storage {
+            fillfactor: 100,
+            ..default
+        }
+        .with_clause(),
+        ""
+    );
+    assert!(declared.rewrites_rows_from(&default));
+    assert!(
+        !Storage {
+            fillfactor: 70,
+            ..default
+        }
+        .rewrites_rows_from(&default)
+    );
 }
 
 // ── Unit tests for index naming (no database required) ─────────────────────

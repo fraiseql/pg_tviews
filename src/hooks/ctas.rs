@@ -5,13 +5,14 @@ use super::{
     pg_guard, pg_sys,
 };
 
-/// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n)]
-/// AS SELECT …`, read from the parse tree.
+/// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n,
+/// toast_tuple_target = n)] AS SELECT …`, read from the parse tree.
 pub(super) struct Ctas {
     pub(super) target: CtasTarget,
     pub(super) query: String,
     pub(super) logged: Option<bool>,
     pub(super) fillfactor: Option<i32>,
+    pub(super) toast_tuple_target: Option<i32>,
 }
 
 /// The table a `CREATE TABLE … AS` creates.
@@ -154,23 +155,35 @@ pub(super) unsafe fn inspect_create_table_as(
             ));
         }
         let mut fillfactor = None;
+        let mut toast_tuple_target = None;
         for i in 0..pg_sys::list_length(into.options) {
             let option = pg_sys::list_nth(into.options, i).cast::<pg_sys::DefElem>();
             if option.is_null() || (*option).defname.is_null() {
                 continue;
             }
             let name = CStr::from_ptr((*option).defname).to_string_lossy();
-            if name != "fillfactor" || !(*option).defnamespace.is_null() {
+            let (slot, range) = match &*name {
+                _ if !(*option).defnamespace.is_null() => (None, 0..=0),
+                "fillfactor" => (Some(&mut fillfactor), 10..=100),
+                "toast_tuple_target" => (
+                    Some(&mut toast_tuple_target),
+                    crate::ddl::create::TOAST_TUPLE_TARGET,
+                ),
+                _ => (None, 0..=0),
+            };
+            let Some(slot) = slot else {
                 return refuse(&format!(
                     "storage parameter {name} is not supported for TVIEW {table_name}; only \
-                     fillfactor is"
+                     fillfactor and toast_tuple_target are"
                 ));
-            }
+            };
             match option_integer(option) {
-                Some(value) if (10..=100).contains(&value) => fillfactor = Some(value),
+                Some(value) if range.contains(&value) => *slot = Some(value),
                 _ => {
                     return refuse(&format!(
-                        "fillfactor for TVIEW {table_name} must be an integer from 10 to 100"
+                        "{name} for TVIEW {table_name} must be an integer from {} to {}",
+                        range.start(),
+                        range.end()
                     ));
                 }
             }
@@ -195,6 +208,7 @@ pub(super) unsafe fn inspect_create_table_as(
             query,
             logged: (persistence == pg_sys::RELPERSISTENCE_UNLOGGED).then_some(false),
             fillfactor,
+            toast_tuple_target,
         }))
     }
 }
@@ -322,7 +336,11 @@ pub(super) unsafe fn create_tview_from_ctas(ctas: &Ctas, qc: *mut pg_sys::QueryC
     let created = crate::ddl::replace::create_only(
         &ctas.target.name(),
         &ctas.query,
-        crate::ddl::replace::Options::storage(ctas.logged, ctas.fillfactor),
+        crate::ddl::replace::Options::storage(
+            ctas.logged,
+            ctas.fillfactor,
+            ctas.toast_tuple_target,
+        ),
         ctas.target.if_not_exists,
     );
     match created {

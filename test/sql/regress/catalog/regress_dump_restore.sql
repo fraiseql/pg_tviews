@@ -80,6 +80,12 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- Declared storage of data (#225): pg_dump carries SET STORAGE / SET COMPRESSION
+-- and the reloptions.
+SELECT tviews.pg_tviews_create_or_replace('tv_author', query, '{"data_storage": "external", "toast_tuple_target": 3000}')
+FROM tviews.registry WHERE entity = 'author';
+SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::text AS author_options \gset
+
 -- A user's index, and the indexes pg_tviews created (#219), as names.
 CREATE INDEX post_title ON app.tv_post ((data->>'title'));
 SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname) AS managed_before
@@ -98,6 +104,13 @@ FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i
 \set restored :DBNAME '_restored'
 \c :restored
 SET client_min_messages TO WARNING;
+
+SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::jsonb = :'author_options'::jsonb
+       AND :'author_options'::jsonb @> '{"data_storage": "external", "toast_tuple_target": 3000}' AS storage_ok \gset
+\if :storage_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION '#225 FAIL: declared data storage differs after restore'; END $$;
+\endif
 
 -- pg_tviews' indexes come back as its own, the user's index as the user's (#219).
 SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname)

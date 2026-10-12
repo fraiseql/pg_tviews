@@ -3,32 +3,52 @@
 use super::Declared;
 use super::{Spi, invalid, pg_sys, spi};
 use crate::catalog::TviewMeta;
-use crate::ddl::create::{self, Storage};
+use crate::ddl::create::{self, Compression, DataStorage, Storage};
 use crate::error::{TViewError, TViewResult};
 use crate::utils::ident;
 
-/// The table's actual storage, as `tviews.registry` reports it.
-pub(super) fn current_storage(entity: &str) -> TViewResult<Storage> {
-    let (logged, fillfactor, data_gin_index) = Spi::connect(|client| {
-        client
+/// The table's actual storage, as `tviews.registry` reports it. A TVIEW without
+/// a `data` column stores no document: its `data` settings are `declared`'s.
+pub(super) fn current_storage(entity: &str, declared: &Storage) -> TViewResult<Storage> {
+    let row = Spi::connect(|client| {
+        let row = client
             .select(
                 &format!(
                     "SELECT (options->>'logged')::boolean, (options->>'fillfactor')::integer, \
-                            (options->>'data_gin_index')::boolean \
+                            (options->>'data_gin_index')::boolean, \
+                            options->>'data_compression', options->>'data_storage', \
+                            (options->>'toast_tuple_target')::integer \
                      FROM {}.registry WHERE entity = $1",
                     crate::utils::ext_schema()
                 ),
                 None,
                 &[crate::utils::spi::text(entity)],
             )?
-            .first()
-            .get_three::<bool, i32, bool>()
+            .first();
+        Ok::<_, pgrx::spi::Error>((
+            row.get::<bool>(1)?,
+            row.get::<i32>(2)?,
+            row.get::<bool>(3)?,
+            row.get::<String>(4)?,
+            row.get::<String>(5)?,
+            row.get::<i32>(6)?,
+        ))
     })
     .map_err(|e| crate::utils::spi::catalog_error("Read TVIEW storage", &e))?;
+    let (logged, fillfactor, data_gin_index, compression, data_storage, toast_tuple_target) = row;
     Ok(Storage {
         logged: logged.unwrap_or(true),
         fillfactor: fillfactor.unwrap_or(100),
         data_gin_index: data_gin_index.unwrap_or(false),
+        data_compression: compression
+            .as_deref()
+            .and_then(Compression::parse)
+            .unwrap_or(declared.data_compression),
+        data_storage: data_storage
+            .as_deref()
+            .and_then(DataStorage::parse)
+            .unwrap_or(declared.data_storage),
+        toast_tuple_target,
     })
 }
 
@@ -57,6 +77,33 @@ pub(super) fn alter_storage(
                 desired.fillfactor
             ))?;
         }
+    }
+    if desired.data_compression != current.data_compression {
+        desired.data_compression.check_available()?;
+        crate::utils::spi::run_ddl(&format!(
+            "ALTER TABLE {qualified_tv} ALTER COLUMN data SET COMPRESSION {}",
+            desired.data_compression.name()
+        ))?;
+    }
+    if desired.data_storage != current.data_storage {
+        crate::utils::spi::run_ddl(&format!(
+            "ALTER TABLE {qualified_tv} ALTER COLUMN data SET STORAGE {}",
+            desired.data_storage.name().to_uppercase()
+        ))?;
+    }
+    if desired.toast_tuple_target != current.toast_tuple_target {
+        crate::utils::spi::run_ddl(&match desired.toast_tuple_target {
+            Some(target) => {
+                format!("ALTER TABLE {qualified_tv} SET (toast_tuple_target = {target})")
+            }
+            None => format!("ALTER TABLE {qualified_tv} RESET (toast_tuple_target)"),
+        })?;
+    }
+    // PostgreSQL stores new values only the new way: the rows are written again,
+    // so the declared storage is the one they have.
+    if desired.rewrites_rows_from(&current) {
+        let entity = crate::catalog::TviewMeta::entity_of_table(table)?.unwrap_or_default();
+        crate::refresh::full::refill(&entity)?;
     }
     if desired.data_gin_index && !current.data_gin_index {
         let created = create::ManagedIndex::data_gin(tv_name, "data").create(schema, tv_name)?;

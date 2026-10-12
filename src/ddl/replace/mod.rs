@@ -92,7 +92,7 @@ pub(crate) fn create_or_replace(
     check_key(&entity, &normalized)?;
     let comparison = compare_definition(&entity, meta.view_oid, &normalized_sql)?;
     let current = Declared {
-        storage: rebuild::current_storage(&entity)?,
+        storage: rebuild::current_storage(&entity, &declared.storage)?,
         group_keys: create::stored_group_keys(&entity)?,
         declarations: Declarations::of(&meta),
         typename: crate::catalog::row::typename(&entity)?,

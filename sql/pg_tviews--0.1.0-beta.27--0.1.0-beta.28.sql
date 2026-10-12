@@ -342,6 +342,18 @@ SELECT
               ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
               AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
+        'data_compression', (
+            SELECT CASE a.attcompression WHEN 'l' THEN 'lz4' WHEN 'p' THEN 'pglz'
+                   ELSE pg_catalog.current_setting('default_toast_compression') END
+            FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'data'),
+        'data_storage', (
+            SELECT CASE a.attstorage WHEN 'm' THEN 'main' WHEN 'e' THEN 'external'
+                   WHEN 'x' THEN 'extended' ELSE 'plain' END
+            FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'data'),
+        'toast_tuple_target',
+            (SELECT o.option_value::integer
+             FROM pg_catalog.pg_options_to_table(c.reloptions) o
+             WHERE o.option_name = 'toast_tuple_target'),
         'group_keys', m.group_keys,
         'uncascaded_policy', m.uncascaded_policy,
         'uncascaded_tables', COALESCE(

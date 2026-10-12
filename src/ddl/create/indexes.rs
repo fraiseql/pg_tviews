@@ -241,16 +241,6 @@ pub(crate) fn tview_index_ddl(
         .collect()
 }
 
-/// `WITH (fillfactor = N)` for a new TVIEW table; empty at 100 (the heap default),
-/// so opting out yields the same DDL as before the setting existed.
-pub(crate) fn storage_clause(fillfactor: i32) -> String {
-    if fillfactor < 100 {
-        format!(" WITH (fillfactor = {fillfactor})")
-    } else {
-        String::new()
-    }
-}
-
 /// The embed lookup columns that need an index of their own: neither the TVIEW's
 /// primary key nor an `fk_*` column, which has its propagation index already.
 fn embed_lookup_columns<'a>(
