@@ -65,7 +65,7 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
 thread_local! {
     /// The entity dependency graph (one entry, keyed by `()`).
     pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
-    /// Table → the local paths starting at it. Also cleared at transaction end.
+    /// Table → the local paths starting at it.
     pub static CASCADE_PATHS: Memo<Oid, Vec<LocalPath>> = Memo::new();
     /// Every `TviewMeta` read so far (keyed by entity).
     pub static METAS: Memo<String, TviewMeta> = Memo::new();
@@ -123,7 +123,8 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
 }
 
 /// The local paths starting at `table_oid`, across every TVIEW's plan (cached
-/// for the transaction).
+/// for the backend: a TVIEW created, changed or dropped anywhere writes
+/// `pg_tview_meta`, which invalidates it).
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
@@ -159,11 +160,6 @@ pub fn invalidate_all() {
     crate::utils::forget_logged(crate::jsonb_delta::JSONB_DELTA_MISSING);
     // The catalog may have been dropped and created again under another OID.
     CATALOG_WATCHED.with(|w| w.set(false));
-}
-
-/// Forget what is valid for one transaction only.
-pub fn end_transaction() {
-    CASCADE_PATHS.with(Memo::clear);
 }
 
 // ── cross-backend invalidation ───────────────────────────────────────────────

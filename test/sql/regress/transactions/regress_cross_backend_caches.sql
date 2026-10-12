@@ -55,6 +55,24 @@ UPDATE tb_item SET name = name || '3';
 SELECT assert_fresh('moved.tv_item', 'pk_item', 'after a move in another backend');
 SELECT assert_fresh('tv_order', 'pk_order', 'tv_order after a move in another backend');
 
+-- (3b) The tables a write reaches, and the plans of the statements it runs, are
+--      kept across this backend's transactions (#224): a TVIEW the other backend
+--      creates over a table this session already wrote, and one it rebuilds with
+--      another column list, are refreshed by this session's next write.
+UPDATE tb_order SET qty = qty + 1;
+SELECT * FROM dblink('other', $$SELECT pg_tviews_create('tv_qty',
+    'SELECT pk_order AS pk_qty, id, jsonb_build_object(''qty'', qty) AS data FROM tb_order')$$) AS t(result text);
+UPDATE tb_order SET qty = qty + 1;
+SELECT assert_fresh('tv_qty', 'pk_qty', 'a TVIEW created over a table already written');
+SELECT * FROM dblink('other', $$SELECT pg_tviews_create_or_replace('tv_qty',
+    'SELECT pk_order AS pk_qty, id, qty AS qty_col, jsonb_build_object(''qty'', qty, ''double'', qty * 2) AS data
+     FROM tb_order')$$) AS t(result text);
+UPDATE tb_order SET qty = qty + 1;
+SELECT assert_fresh('tv_qty', 'pk_qty', 'a TVIEW rebuilt with another column list');
+SELECT * FROM dblink('other', $$SELECT pg_tviews_drop('tv_qty')$$) AS t(result text);
+UPDATE tb_order SET qty = qty + 1;
+SELECT assert_fresh('tv_order', 'pk_order', 'tv_order after another TVIEW of its table was dropped');
+
 -- (4) The other backend drops the extension and creates it again, with tv_item
 --     defined differently.
 SELECT dblink_exec('other', 'DROP EXTENSION pg_tviews CASCADE');
