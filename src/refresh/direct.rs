@@ -115,47 +115,39 @@ pub fn apply_direct_patch(
     })
 }
 
-/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`,
-/// merge `fields` into the `data` of every row whose `lookup_col` equals `key`,
-/// in one statement. Rows already holding those values are left alone. Returns
-/// the pks of the rows written, which are journaled and counted as applied.
+/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
+/// `fields` (keyed by their paths in `data`) into the `data` of every row whose
+/// `lookup_col` equals `key`, with one statement per set of paths. Rows already
+/// holding those values are left alone. Returns the pks of the rows written,
+/// which are journaled and counted as applied.
 pub fn apply_fanout_patch(
     meta: &TviewMeta,
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
 ) -> TViewResult<Vec<i64>> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
+    // The rows writing the same paths, each with its values in path order.
+    let mut shapes: std::collections::BTreeMap<Vec<String>, Map<String, Value>> =
+        std::collections::BTreeMap::new();
+    for (key, fields) in rows {
+        let mut paths: Vec<&String> = fields.keys().collect();
+        paths.sort();
+        let values = paths.iter().map(|p| fields[*p].clone()).collect();
+        shapes
+            .entry(paths.into_iter().cloned().collect())
+            .or_default()
+            .insert(key.to_string(), Value::Array(values));
     }
-    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
-    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-    let qi_lookup = crate::utils::ident::quoted(lookup_col);
-    let patch = format!("{schema}.jsonb_smart_patch_scalar(t.data, f.patch)");
-    let sql = format!(
-        "UPDATE {qi_tv} t SET data = {patch}, updated_at = now() \
-         FROM jsonb_each($1) AS f(k, patch) \
-         WHERE t.{qi_lookup} = f.k::bigint AND t.data IS DISTINCT FROM {patch} \
-         RETURNING t.{qi_pk}::bigint"
-    );
-    // One JSONB object `{key: fields}` carries every target group.
-    let by_key: Map<String, Value> = rows
-        .iter()
-        .map(|(key, fields)| (key.to_string(), Value::Object(fields.clone())))
-        .collect();
-
-    let changed: Vec<i64> = Spi::connect_mut(|client| {
-        let args = [crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
-        client
-            .update(&sql, None, &args)?
-            .map(|row| row[1].value::<i64>())
-            .filter_map(Result::transpose)
-            .collect::<pgrx::spi::Result<_>>()
-    })?;
+    let mut changed = Vec::new();
+    for (paths, by_key) in shapes {
+        changed.extend(write_fanout(meta, lookup_col, &paths, by_key)?);
+    }
 
     // REPEATABLE READ: the patch reached every row the latest snapshot holds
     // with these values (a row it couldn't see would keep the old value).
     if crate::concurrency::crosscheck::enabled() {
+        let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+        let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+        let qi_lookup = crate::utils::ident::quoted(lookup_col);
         let keys: Vec<i64> = rows.iter().map(|(key, _)| *key).collect();
         let lookup = format!(
             "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t \
@@ -178,6 +170,48 @@ pub fn apply_fanout_patch(
         );
     }
     Ok(changed)
+}
+
+/// One UPDATE writing the values of `by_key` (`{key: [value at each path]}`) at
+/// `paths` (fan-out path keys) into the rows whose `lookup_col` is the key:
+/// `jsonb_set` at each path, the paths bound as parameters. The pks written.
+fn write_fanout(
+    meta: &TviewMeta,
+    lookup_col: &str,
+    paths: &[String],
+    by_key: Map<String, Value>,
+) -> TViewResult<Vec<i64>> {
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_lookup = crate::utils::ident::quoted(lookup_col);
+    let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
+        format!(
+            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], f.v -> {i})",
+            i + 2
+        )
+    });
+    let sql = format!(
+        "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now() \
+         FROM pg_catalog.jsonb_each($1) AS f(k, v) \
+         WHERE t.{qi_lookup} = f.k::pg_catalog.int8 AND t.data IS DISTINCT FROM {patched} \
+         RETURNING t.{qi_pk}::pg_catalog.int8"
+    );
+    let mut args = vec![crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
+    for key in paths {
+        let path = crate::queue::patch::fanout_path(key).ok_or_else(|| {
+            crate::error::TViewError::SerializationError {
+                message: format!("fan-out path {key} of tv_{}", meta.entity_name),
+            }
+        })?;
+        args.push(crate::utils::spi::text_array(path));
+    }
+    Ok(Spi::connect_mut(|client| {
+        client
+            .update(&sql, None, &args)?
+            .map(|row| row[1].value::<i64>())
+            .filter_map(Result::transpose)
+            .collect::<pgrx::spi::Result<_>>()
+    })?)
 }
 
 /// Apply all direct patches for one entity, grouping pks that share an identical

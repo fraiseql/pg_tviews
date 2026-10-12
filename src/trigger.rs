@@ -275,6 +275,14 @@ fn try_capture_direct_patch(
     if changed.contains(&path.initial_col) {
         return None;
     }
+    // Columns the TVIEW does not read change none of its data.
+    let changed: Vec<&String> = changed
+        .iter()
+        .filter(|c| path.source_columns.is_empty() || path.source_columns.contains(c))
+        .collect();
+    if changed.is_empty() {
+        return None;
+    }
     let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
     let direct = &meta.plan.direct;

@@ -71,12 +71,35 @@ pub struct LocalPath {
 
 /// How an UPDATE of a mapped table is written into every TVIEW row it reaches
 /// in one statement: the rows whose `lookup_col` holds the changed
-/// row's key, each changed column in `fields` written to its top-level key.
+/// row's key, each changed column in `fields` written at its path in `data`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanoutPatch {
     pub lookup_col: String,
-    /// `(source column, data key)` pairs copied unchanged.
-    pub fields: Vec<(String, String)>,
+    /// `(source column, path in data)` pairs copied unchanged; a column copied
+    /// to several paths has a pair for each.
+    #[serde(deserialize_with = "fanout_fields")]
+    pub fields: Vec<(String, Vec<String>)>,
+}
+
+/// The fields of a fan-out patch. A plan written before nested paths holds a
+/// top-level key where a path now is: it reads as that one-key path.
+fn fanout_fields<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<(String, Vec<String>)>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Path {
+        Keys(Vec<String>),
+        Key(String),
+    }
+    let fields: Vec<(String, Path)> = Vec::deserialize(deserializer)?;
+    Ok(fields
+        .into_iter()
+        .map(|(column, path)| match path {
+            Path::Keys(keys) => (column, keys),
+            Path::Key(key) => (column, vec![key]),
+        })
+        .collect())
 }
 
 impl TviewPlan {
@@ -186,6 +209,25 @@ mod tests {
         assert_eq!(
             plan.lookup_columns().into_iter().collect::<Vec<_>>(),
             ["author_pk", "editor_pk", "tag_pk"]
+        );
+    }
+
+    #[test]
+    fn fanout_fields_read_paths_and_top_level_keys() {
+        let fanout: FanoutPatch = serde_json::from_value(serde_json::json!({
+            "lookup_col": "fk_user",
+            "fields": [["name", "author_name"], ["bio", ["author", "bio"]]]
+        }))
+        .unwrap();
+        assert_eq!(
+            fanout.fields,
+            [
+                ("name".to_string(), vec!["author_name".to_string()]),
+                (
+                    "bio".to_string(),
+                    vec!["author".to_string(), "bio".to_string()]
+                )
+            ]
         );
     }
 

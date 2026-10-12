@@ -356,15 +356,19 @@ fn fan_out(
         if old.get(key_col) != new.get(key_col) {
             return Ok(false);
         }
+        // Each changed column at every path it is copied to.
         let mut fields = serde_json::Map::new();
         for column in changed {
-            let Some((_, data_key)) = fanout.fields.iter().find(|(c, _)| c == column) else {
+            let mut paths = fanout.fields.iter().filter(|(c, _)| c == column).peekable();
+            if paths.peek().is_none() {
                 return Ok(false);
-            };
-            fields.insert(
-                data_key.clone(),
-                new.get(column).cloned().unwrap_or_default(),
-            );
+            }
+            for (_, path) in paths {
+                fields.insert(
+                    crate::queue::patch::fanout_path_key(path),
+                    new.get(column).cloned().unwrap_or_default(),
+                );
+            }
         }
         patches.push((key, fields));
     }

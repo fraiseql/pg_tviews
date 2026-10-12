@@ -59,6 +59,11 @@ SELECT pg_tviews_create('tv_post', $TVIEW$
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_author
 $TVIEW$);
 
+-- Rows written into the embedding TVIEWs: recomputed, or patched in place (a
+-- nested field copied unchanged is written by the fan-out patch, #224).
+CREATE FUNCTION _written() RETURNS bigint LANGUAGE sql AS
+  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint
+          + (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $$;
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
   $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
 
@@ -88,11 +93,11 @@ END $$;
 DO $$
 DECLARE rc0 bigint;
 BEGIN
-  rc0 := _rc();
+  rc0 := _written();
   UPDATE tb_user SET username = 'alice2' WHERE pk_user = 1;
 
-  IF _rc() = rc0 THEN
-    RAISE EXCEPTION 'column-aware FAIL: username update did not cascade (0 recomputes)';
+  IF _written() = rc0 THEN
+    RAISE EXCEPTION 'column-aware FAIL: username update did not cascade (no row written)';
   END IF;
   IF (SELECT count(*) FROM tv_post WHERE data->'author'->>'username' = 'alice2') <> 3 THEN
     RAISE EXCEPTION 'column-aware FAIL: username change not reflected in tv_post.author (% of 3)',
@@ -104,9 +109,9 @@ END $$;
 DO $$
 DECLARE rc0 bigint;
 BEGIN
-  rc0 := _rc();
+  rc0 := _written();
   UPDATE tb_user SET full_name = 'Alice Prime' WHERE pk_user = 1;
-  IF _rc() = rc0 THEN
+  IF _written() = rc0 THEN
     RAISE EXCEPTION 'column-aware FAIL: full_name update did not cascade';
   END IF;
   IF (SELECT count(*) FROM tv_post WHERE data->'author'->>'full_name' = 'Alice Prime') <> 3 THEN
@@ -118,9 +123,9 @@ END $$;
 DO $$
 DECLARE rc0 bigint;
 BEGIN
-  rc0 := _rc();
+  rc0 := _written();
   UPDATE tb_user SET username = 'alice3', bio = 'a-bio-3' WHERE pk_user = 1;
-  IF _rc() = rc0 THEN
+  IF _written() = rc0 THEN
     RAISE EXCEPTION 'column-aware FAIL: mixed update (username+bio) did not cascade';
   END IF;
   IF (SELECT count(*) FROM tv_post WHERE data->'author'->>'username' = 'alice3') <> 3 THEN

@@ -147,12 +147,13 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- (c) Ineligible mixed change (bio mapped + status unmapped) poisons ⇒ recompute.
+-- (c) A column the TVIEW does not read (status) changes nothing it holds: the
+--     copied one (bio) is still patched.
 UPDATE tb_user SET bio = 'mix', status = 'inactive' WHERE pk_user = 1;
-SELECT _c_assert(0, 0, 1, 'mixed eligible+unmapped: poison to recompute');
+SELECT _c_assert(1, 0, 0, 'copied + unread column: patched');
 DO $$ BEGIN
   IF (SELECT data->>'bio' FROM tv_user WHERE pk_user = 1) <> 'mix' THEN
-    RAISE EXCEPTION '#56 FAIL: mixed-update recompute wrong';
+    RAISE EXCEPTION '#56 FAIL: copied + unread column patch wrong';
   END IF;
 END $$;
 

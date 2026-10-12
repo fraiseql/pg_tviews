@@ -319,6 +319,12 @@ RETURNS integer
 LANGUAGE sql STABLE PARALLEL SAFE
 AS 'SELECT 2';
 
+-- Registration derives more fan-out patches (fields of nested objects, #224) and
+-- no longer reads a column under COALESCE as copied into data: re-derive every
+-- TVIEW with pg_tviews_reregister_all() after the update. Until then each keeps
+-- its earlier plan, which still reads.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
+
 -- The indexes option as declared (#226).
 ALTER TABLE @extschema@.pg_tview_meta
     ADD COLUMN declared_indexes JSONB NOT NULL DEFAULT '[]';

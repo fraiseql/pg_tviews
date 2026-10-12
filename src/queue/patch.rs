@@ -82,8 +82,22 @@ pub fn poison(key: RefreshKey) {
 /// `(entity, lookup column of tv_<entity>, key)`: the target rows of a fan-out.
 pub type FanoutKey = (String, String, i64);
 
-/// Fan-out patches: the `data` fields to write into every target row.
+/// Fan-out patches: the `data` fields to write into every target row, each
+/// keyed by its path ([`fanout_path_key`]).
 pub type FanoutMap = HashMap<FanoutKey, Map<String, Value>>;
+
+/// The key of a fan-out field at `path` in `data`: the path as a JSON array, so
+/// two writes to one path merge, and any key spelling round-trips.
+#[must_use]
+pub fn fanout_path_key(path: &[String]) -> String {
+    serde_json::to_string(path).unwrap_or_default()
+}
+
+/// The path a [`fanout_path_key`] names.
+#[must_use]
+pub fn fanout_path(key: &str) -> Option<Vec<String>> {
+    serde_json::from_str(key).ok()
+}
 
 /// Record a fan-out patch, merging with an earlier one for the same targets (the
 /// later value wins per key).
