@@ -9,7 +9,6 @@ use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::queue::patch::PatchEntry;
 use pgrx::datum::DatumWithOid;
-use pgrx::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -109,15 +108,13 @@ fn apply_direct_patch(
     for path in path_args {
         args.push(crate::utils::spi::text_array(path));
     }
-    Spi::connect_mut(|client| {
-        let mut materialised = Vec::new();
-        for row in crate::utils::spi::kept_update(client, &sql, &args)? {
-            if let (Some(pk), Some(changed)) = (row[1].value::<i64>()?, row[2].value::<bool>()?) {
-                materialised.push((pk, changed));
-            }
-        }
-        Ok(materialised)
-    })
+    Ok(crate::utils::spi::kept_rows(&sql, &args)?
+        .into_iter()
+        .filter_map(|row| match &row[..] {
+            [Some(pk), Some(changed)] => Some((pk.parse().ok()?, changed == "t")),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
@@ -219,16 +216,14 @@ fn write_fanout(
         })?;
         args.push(crate::utils::spi::text_array(path));
     }
-    Ok(Spi::connect_mut(|client| {
-        crate::utils::spi::kept_update(client, &sql, &args)?
-            .map(|row| row[1].value::<i64>())
-            .filter_map(Result::transpose)
-            .collect::<pgrx::spi::Result<_>>()
-    })?)
+    Ok(crate::utils::spi::kept_rows(&sql, &args)?
+        .into_iter()
+        .filter_map(|row| row.first()?.as_deref()?.parse().ok())
+        .collect())
 }
 
-/// Apply all direct patches for one entity, grouping pks that share an identical
-/// chain into a single UPDATE (chunked by `pg_tviews.batch_size`). Increments the
+/// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
+/// by `pg_tviews.batch_size`). Increments the
 /// applied/fallback counters. Returns the pks that fell back (row not materialised)
 /// and must be recomputed by the caller.
 pub fn apply_entity_patches(

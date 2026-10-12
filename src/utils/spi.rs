@@ -307,7 +307,10 @@ impl Drop for KeptPlan {
 }
 
 /// The rows of `sql` as text, run read-write (a fresh snapshot under READ
-/// COMMITTED) from its kept plan, prepared on first use.
+/// COMMITTED) from its kept generic plan, prepared on first use: never planned
+/// again. For a statement whose generic plan is the right one whatever its
+/// arguments, which `PostgreSQL` would otherwise plan at every execution when
+/// a custom plan looks cheaper (rows looked up by arrays of keys).
 ///
 /// # Errors
 /// Returns an error if the query can't be prepared or doesn't return rows.
@@ -356,6 +359,7 @@ fn kept_plan(sql: &str, types: &mut [Oid]) -> TViewResult<std::rc::Rc<KeptPlan>>
         pg_sys::SPI_keepplan(plan.as_ptr());
         std::rc::Rc::new(KeptPlan(plan))
     };
+    crate::metrics::metrics_api::record_plan_prepared();
     crate::cache::PLANS.with(|m| m.insert(sql.to_string(), plan.clone()));
     Ok(plan)
 }
@@ -382,7 +386,13 @@ fn bind(args: &[DatumWithOid<'_>]) -> (Vec<Oid>, Vec<pg_sys::Datum>, Vec<std::ff
 /// # Safety
 /// The SPI call that returned `rc` was the last one, in the current connection.
 unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
-    if rc != pg_sys::SPI_OK_SELECT.cast_signed() {
+    let returning = [
+        pg_sys::SPI_OK_SELECT,
+        pg_sys::SPI_OK_INSERT_RETURNING,
+        pg_sys::SPI_OK_UPDATE_RETURNING,
+        pg_sys::SPI_OK_DELETE_RETURNING,
+    ];
+    if !returning.iter().any(|&ok| rc == ok.cast_signed()) {
         return Err(error(sql, &format!("SPI returned {rc}")));
     }
     // SAFETY: per the contract, SPI_tuptable holds the last result.
