@@ -241,6 +241,16 @@ fn map_statement(
         return Ok(());
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
+    // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
+    // decided from the transition tables themselves, before any query.
+    if event == Event::Update
+        && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
+        && computed_columns(entity, table_oid)?.is_none()
+        // SAFETY: an AFTER statement trigger's TriggerData.
+        && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) }
+    {
+        return Ok(());
+    }
     match mapping.kind {
         MappingKind::AllKeys if full_refresh => {
             let table = if event == Event::Delete {
@@ -501,6 +511,78 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     Ok(sql)
 }
 
+/// Whether every row an UPDATE statement changed holds the same values in the
+/// columns `attnums` before and after: the transition tables are read pairwise,
+/// each row's old image next to its new one, and compared datum by datum.
+/// False when they can't be paired (different row counts) or `attnums` is empty
+/// (the columns read are unknown). Virtual generated columns are NULL in
+/// transition tables: the caller checks the table has none.
+///
+/// SAFETY: `td` is the `TriggerData` of an AFTER statement trigger, whose
+/// transition tables and relation are valid for the call.
+unsafe fn reads_unchanged(td: &pg_sys::TriggerData, attnums: &[i16]) -> bool {
+    if attnums.is_empty() || td.tg_oldtable.is_null() || td.tg_newtable.is_null() {
+        return false;
+    }
+    // SAFETY: the trigger's relation and its tuple descriptor.
+    let natts = unsafe { (*(*td.tg_relation).rd_att).natts };
+    if attnums.iter().any(|&a| a < 1 || i32::from(a) > natts) {
+        return false;
+    }
+    // SAFETY: per the contract; each tuplestore is read through a read pointer of
+    // its own (as a scan of it in a query would be), and the slots are dropped.
+    unsafe {
+        let tupdesc = (*td.tg_relation).rd_att;
+        let desc = pgrx::PgTupleDesc::from_pg_unchecked(tupdesc);
+        let open = |store: *mut pg_sys::Tuplestorestate| {
+            let pointer = pg_sys::tuplestore_alloc_read_pointer(
+                store,
+                pg_sys::EXEC_FLAG_REWIND.cast_signed(),
+            );
+            pg_sys::tuplestore_select_read_pointer(store, pointer);
+            pg_sys::tuplestore_rescan(store);
+            pg_sys::MakeSingleTupleTableSlot(tupdesc, &raw const pg_sys::TTSOpsMinimalTuple)
+        };
+        let (old, new) = (td.tg_oldtable, td.tg_newtable);
+        let (old_slot, new_slot) = (open(old), open(new));
+        let unchanged = loop {
+            let got_old = pg_sys::tuplestore_gettupleslot(old, true, false, old_slot);
+            let got_new = pg_sys::tuplestore_gettupleslot(new, true, false, new_slot);
+            match (got_old, got_new) {
+                (false, false) => break true,
+                (true, true) => {}
+                _ => break false,
+            }
+            let same = attnums.iter().all(|&attnum| {
+                let mut old_null = false;
+                let mut new_null = false;
+                let old_value = pg_sys::slot_getattr(old_slot, attnum.into(), &raw mut old_null);
+                let new_value = pg_sys::slot_getattr(new_slot, attnum.into(), &raw mut new_null);
+                let Some(att) = desc.get(usize::try_from(attnum - 1).unwrap_or(usize::MAX)) else {
+                    return false;
+                };
+                old_null == new_null
+                    && (old_null
+                        || crate::utils::datum_is_equal(
+                            old_value,
+                            new_value,
+                            att.attbyval,
+                            i32::from(att.attlen),
+                        ))
+            });
+            if !same {
+                break false;
+            }
+        };
+        pg_sys::ExecDropSingleTupleTableSlot(old_slot);
+        pg_sys::ExecDropSingleTupleTableSlot(new_slot);
+        // Back to the stores' first read pointer, as they were.
+        pg_sys::tuplestore_select_read_pointer(old, 0);
+        pg_sys::tuplestore_select_read_pointer(new, 0);
+        unchanged
+    }
+}
+
 /// The changed rows of a statement: the new rows of an INSERT, the old rows of a
 /// DELETE, both images of an UPDATE. An UPDATE row whose columns the TVIEW reads
 /// (`attnums`) are unchanged, matched to its other image by primary key, is left
@@ -594,15 +676,11 @@ fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>>
     )))
 }
 
-/// The condition pairing an updated row's two images, and the names of the
-/// columns the TVIEW reads.
-pub type RowPairing = (String, Vec<String>);
-
 /// How to pair the old and new image of an updated row, `n.pk = o.pk` over the
 /// primary key, and the names of the columns `attnums` the TVIEW reads. `None`
 /// without a primary key whose types have a `pg_catalog` equality, or without a
 /// known column list.
-fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<RowPairing>> {
+fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<crate::cache::RowPairing>> {
     if attnums.is_empty() {
         return Ok(None);
     }

@@ -185,10 +185,9 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalP
     let changed = changed_columns(trigger);
 
     for path in paths {
-        // A root path always refreshes: the TVIEW's own row is recomputed (and the
-        // no-op guard skips the write) as before root paths existed.
+        // An UPDATE changing none of the columns the TVIEW reads changes none of
+        // its rows, its own included.
         if let Some(changed) = &changed
-            && !path.root
             && !path.source_columns.is_empty()
             && !path.source_columns.iter().any(|c| changed.contains(c))
         {
@@ -239,19 +238,6 @@ fn follow_local_path(
 }
 
 // ── Direct-patch capture ─────────────────────────────────────────────────────
-
-unsafe extern "C" {
-    /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
-    /// by the backend but absent from the pgrx bindings; resolved at `.so` load
-    /// time like every other `pg_sys` symbol. Compares datums for physical equality.
-    #[link_name = "datumIsEqual"]
-    fn datum_is_equal(
-        value1: pg_sys::Datum,
-        value2: pg_sys::Datum,
-        typ_by_val: bool,
-        typ_len: i32,
-    ) -> bool;
-}
 
 /// Try to capture a direct patch for an eligible row-level UPDATE.
 ///
@@ -349,7 +335,12 @@ fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
             } else if old_isnull {
                 false // both NULL
             } else {
-                !datum_is_equal(old_datum, new_datum, att.attbyval, i32::from(att.attlen))
+                !crate::utils::datum_is_equal(
+                    old_datum,
+                    new_datum,
+                    att.attbyval,
+                    i32::from(att.attlen),
+                )
             };
             if differs {
                 changed.push(att.name().to_string());

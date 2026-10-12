@@ -29,13 +29,15 @@ DROP TABLE IF EXISTS tb_post, tb_article, tb_user, tb_item, tb_contract CASCADE;
 CREATE TABLE tb_user (
     pk_user INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
-    name    TEXT
+    name    TEXT,
+    note TEXT
 );
 CREATE TABLE tb_post (
     pk_post INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     fk_user INTEGER REFERENCES tb_user(pk_user),
-    title   TEXT
+    title   TEXT,
+    note TEXT
 );
 -- Scalar dependency (base-table join, no v_* embed): single-key refreshes take
 -- the smart-patch upsert.
@@ -43,23 +45,29 @@ CREATE TABLE tb_article (
     pk_article INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id         UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     fk_user    INTEGER REFERENCES tb_user(pk_user),
-    title      TEXT
+    title      TEXT,
+    note TEXT
 );
 -- No dependencies: eligible for the #56 direct-patch fast path (text/jsonb columns).
 CREATE TABLE tb_item (
     pk_item INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     meta    JSONB,
-    label   TEXT
+    label   TEXT,
+    note TEXT
 );
 CREATE TABLE tb_contract (
     pk_contract INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id          UUID DEFAULT gen_random_uuid() NOT NULL,
     id_contract INTEGER NOT NULL,
     version_no  INTEGER NOT NULL,
-    status      TEXT
+    status      TEXT,
+    note TEXT
 );
 
+-- `note` is read only in a filter no row fails: writing it recomputes rows that
+-- come out unchanged, which is what the no-op guard is for (an UPDATE writing a
+-- column's own value changes nothing pg_tviews reads, and refreshes nothing).
 INSERT INTO tb_user (name) SELECT 'user ' || g FROM generate_series(1, 10) g;
 INSERT INTO tb_post (fk_user, title) SELECT 1 + g % 10, 'post ' || g FROM generate_series(1, 200) g;
 INSERT INTO tb_article (fk_user, title) SELECT 1 + g % 10, 'article ' || g FROM generate_series(1, 20) g;
@@ -68,20 +76,24 @@ INSERT INTO tb_contract (id_contract, version_no, status) VALUES (100, 1, 'draft
 
 SELECT pg_tviews_create('tv_user', $TV$
     SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user
+    WHERE note IS DISTINCT FROM 'hidden'
 $TV$);
 SELECT pg_tviews_create('tv_post', $TV$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
            jsonb_build_object('title', tb_post.title, 'author', tv_user.data) AS data
     FROM tb_post LEFT JOIN tv_user ON tv_user.pk_user = tb_post.fk_user
+    WHERE tb_post.note IS DISTINCT FROM 'hidden'
 $TV$);
 -- A scalar dependency: it reads tv_user, not for its document but for one value.
 SELECT pg_tviews_create('tv_article', $TV$
     SELECT a.pk_article, a.id, a.fk_user,
            jsonb_build_object('title', a.title, 'author_name', u.data->>'name') AS data
     FROM tb_article a JOIN tv_user u ON u.pk_user = a.fk_user
+    WHERE a.note IS DISTINCT FROM 'hidden'
 $TV$);
 SELECT pg_tviews_create('tv_item', $TV$
     SELECT pk_item, id, jsonb_build_object('meta', meta, 'label', label) AS data FROM tb_item
+    WHERE note IS DISTINCT FROM 'hidden'
 $TV$);
 
 -- Preconditions: the classifications that route refreshes to the intended paths.
@@ -98,6 +110,7 @@ SELECT pg_tviews_create('tv_contract', $TV$
            c.id_contract AS pk_contract, c.id,
            jsonb_build_object('status', c.status, 'version', c.version_no) AS data
     FROM tb_contract c
+    WHERE c.note IS DISTINCT FROM 'hidden'
     ORDER BY c.id_contract, c.version_no DESC
 $TV$);
 
@@ -155,21 +168,21 @@ END $$;
 SELECT pg_stat_force_next_flush();
 SELECT _set_mark();
 INSERT INTO _skip0 SELECT _skipped();
-UPDATE tb_post SET title = title;
+UPDATE tb_post SET note = coalesce(note, '') || '.';
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_post', 0, 'bulk no-op');
 SELECT _expect_skipped(200, 'bulk no-op');
 
 -- ── 2. same no-op, repeated ─────────────────────────────────────────────────
-UPDATE tb_post SET title = title;
-UPDATE tb_post SET title = title;
+UPDATE tb_post SET note = coalesce(note, '') || '.';
+UPDATE tb_post SET note = coalesce(note, '') || '.';
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_post', 0, 'bulk no-op x3');
 
 -- ── 3. cascade: embedded column set to its current value ────────────────────
 SELECT pg_stat_force_next_flush();
 SELECT _set_mark();
-UPDATE tb_user SET name = name WHERE pk_user = 1;
+UPDATE tb_user SET note = coalesce(note, '') || '.' WHERE pk_user = 1;
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_user', 0, 'cascade no-op (own)');
 SELECT _expect('tv_post', 0, 'cascade no-op (parent)');
@@ -200,9 +213,9 @@ END $$;
 SET pg_tviews.direct_patch_enabled = off;
 SELECT pg_stat_force_next_flush();
 SELECT _set_mark();
-UPDATE tb_item SET label = label WHERE pk_item = 6;
-UPDATE tb_article SET title = title WHERE pk_article = 1;
-UPDATE tb_user SET name = name WHERE pk_user = 2;
+UPDATE tb_item SET note = coalesce(note, '') || '.' WHERE pk_item = 6;
+UPDATE tb_article SET note = coalesce(note, '') || '.' WHERE pk_article = 1;
+UPDATE tb_user SET note = coalesce(note, '') || '.' WHERE pk_user = 2;
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_item', 0, 'full-replacement no-op');
 SELECT _expect('tv_article', 0, 'smart-patch no-op');
@@ -212,7 +225,7 @@ SET pg_tviews.direct_patch_enabled = on;
 -- ── 6. DISTINCT ON upsert ───────────────────────────────────────────────────
 SELECT pg_stat_force_next_flush();
 SELECT _set_mark();
-UPDATE tb_contract SET status = status WHERE id_contract = 100;
+UPDATE tb_contract SET note = coalesce(note, '') || '.' WHERE id_contract = 100;
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_contract', 0, 'distinct-on no-op');
 

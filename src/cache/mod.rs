@@ -88,7 +88,7 @@ thread_local! {
         Memo::new();
     /// `(table, attnums)` → how its old and new transition rows pair up, and the
     /// names of those columns (`None`: they can't be paired).
-    pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<crate::delta::RowPairing>> = Memo::new();
+    pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<RowPairing>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -99,6 +99,10 @@ thread_local! {
     /// The quoted schema of `jsonb_delta` (`None`: not installed).
     pub static JSONB_DELTA_SCHEMA: Memo<(), Option<String>> = Memo::new();
 }
+
+/// The condition pairing an updated row's two images in a mapped table's
+/// transition tables, and the names of the columns the TVIEW reads.
+pub type RowPairing = (String, Vec<String>);
 
 /// The entity dependency graph (cached per backend).
 ///
