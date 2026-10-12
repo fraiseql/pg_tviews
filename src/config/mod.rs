@@ -9,7 +9,7 @@
 //! |-----------|------|---------|---------|-------------|
 //! | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations |
 //! | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
-//! | `pg_tviews.max_queue_size` | int | 10000 | superuser | Refresh-queue backpressure limit |
+//! | `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
 //! | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks per relation before a transaction locks the relation (ADR 0207) |
 //! | `pg_tviews.audit_enabled` | bool | false | superuser | Audit logging (opt-in) |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | superuser, hidden | Cache dependency graphs |
@@ -63,7 +63,7 @@ impl UncascadedPolicy {
 
 static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
-static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000_000);
 static LOCK_ESCALATION_THRESHOLD_GUC: GucSetting<i32> = GucSetting::<i32>::new(64);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
@@ -122,8 +122,8 @@ fn register_limits() {
         c"Maximum number of refresh items allowed in the transaction queue.",
         c"When exceeded, new refresh enqueues raise an error to prevent unbounded queue growth.",
         &MAX_QUEUE_SIZE_GUC,
-        1,         // min
-        1_000_000, // max
+        1,        // min
+        i32::MAX, // max
         GucContext::Suset,
         GucFlags::default(),
     );
@@ -262,7 +262,7 @@ pub fn max_dependency_depth() -> usize {
     MAX_DEPENDENCY_DEPTH_GUC.get().unsigned_abs() as usize
 }
 
-/// Maximum queue size before backpressure enforcement (default: 10000)
+/// Maximum queue size before backpressure enforcement (default: 1,000,000)
 /// Prevents unbounded queue growth during high-load scenarios
 #[must_use]
 pub fn max_queue_size() -> usize {

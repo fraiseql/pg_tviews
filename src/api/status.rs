@@ -125,7 +125,11 @@ fn pg_tviews_stats_rows() -> Result<
                 value(Counter::RowsDeleted),
                 value(Counter::FullRefreshes),
                 refresh_ms,
-                found.and_then(|c| pgrx::datum::TimestampWithTimeZone::try_from(c.since).ok()),
+                // An untracked TVIEW counts nothing, from no time.
+                found
+                    .map(|c| c.since)
+                    .or_else(|| (!overflowed).then(crate::stats::started))
+                    .and_then(|since| pgrx::datum::TimestampWithTimeZone::try_from(since).ok()),
                 found.is_none() && overflowed,
             )
         })
