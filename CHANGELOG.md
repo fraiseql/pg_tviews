@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but left out of the report, not counted against `max_entities`, and listed by type
   in `omitted_types` (present only with `types`); `reset` clears them too. An unknown
   name fails with `22023` before anything is reported or reset.
+- **A column copied two joins away is patched in place** (#228): a write to
+  `tb_user.username` copied into `tv_comment.post.author.username` (comment →
+  post → user) finds the comments through the table in between (the user's
+  posts) and writes the name into them in one statement, instead of recomputing
+  each comment: 3.9× less refresh work for 50 comments. Three joins and more are
+  recomputed, as before. Re-register existing TVIEWs to derive the new fan-outs
+  (`pg_tviews_reregister_all()`; `registry.needs_reregister` says which).
 - **`pg_tviews_profile()` projects what each fan-out costs per write** (#233):
   `fanout` gains `p99_ms_per_write` and `p99_wal_bytes_per_write` per lookup column,
   from the measured model (ADR 0233) and the TVIEW's bytes per row, and the fan-out

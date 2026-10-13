@@ -1,0 +1,81 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_begin r_rename m_begin m_repoint r_commit m_commit r_check
+pg_tviews_create               
+-------------------------------
+TVIEW public.tv_comment created
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET username = 'ann2' WHERE pk_user = 1;
+step m_begin: BEGIN;
+step m_repoint: UPDATE tb_post SET fk_author = 1 WHERE pk_post = 2; <waiting ...>
+step r_commit: COMMIT;
+step m_repoint: <... completed>
+step m_commit: COMMIT;
+step r_check: 
+  SELECT t.pk_comment, t.data -> 'post' -> 'author' ->> 'username' AS author,
+         t.data = v.data AS fresh
+  FROM tv_comment t JOIN tviews.public__tv_comment v USING (pk_comment) ORDER BY 1;
+
+pk_comment|author|fresh
+----------+------+-----
+         1|ann2  |t    
+         2|ann2  |t    
+(2 rows)
+
+
+starting permutation: m_begin m_repoint r_begin r_rename m_commit r_commit r_check
+pg_tviews_create               
+-------------------------------
+TVIEW public.tv_comment created
+(1 row)
+
+step m_begin: BEGIN;
+step m_repoint: UPDATE tb_post SET fk_author = 1 WHERE pk_post = 2;
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET username = 'ann2' WHERE pk_user = 1; <waiting ...>
+step m_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step r_check: 
+  SELECT t.pk_comment, t.data -> 'post' -> 'author' ->> 'username' AS author,
+         t.data = v.data AS fresh
+  FROM tv_comment t JOIN tviews.public__tv_comment v USING (pk_comment) ORDER BY 1;
+
+pk_comment|author|fresh
+----------+------+-----
+         1|ann2  |t    
+         2|ann2  |t    
+(2 rows)
+
+
+starting permutation: r_begin_rr m_begin m_repoint m_commit r_rename r_commit r_check
+pg_tviews_create               
+-------------------------------
+TVIEW public.tv_comment created
+(1 row)
+
+step r_begin_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1 AS snapshot;
+snapshot
+--------
+       1
+(1 row)
+
+step m_begin: BEGIN;
+step m_repoint: UPDATE tb_post SET fk_author = 1 WHERE pk_post = 2;
+step m_commit: COMMIT;
+step r_rename: UPDATE tb_user SET username = 'ann2' WHERE pk_user = 1;
+ERROR:  could not serialize access: a concurrent transaction added rows this write must refresh
+step r_commit: COMMIT;
+step r_check: 
+  SELECT t.pk_comment, t.data -> 'post' -> 'author' ->> 'username' AS author,
+         t.data = v.data AS fresh
+  FROM tv_comment t JOIN tviews.public__tv_comment v USING (pk_comment) ORDER BY 1;
+
+pk_comment|author|fresh
+----------+------+-----
+         1|ann   |t    
+         2|ann   |t    
+(2 rows)
+

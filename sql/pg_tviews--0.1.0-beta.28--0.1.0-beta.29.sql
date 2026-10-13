@@ -311,3 +311,7 @@ CREATE  FUNCTION @extschema@."pg_tviews_flush_and_report"(
 ) RETURNS jsonb /* core::result::Result<pgrx::datum::json::JsonB, pgrx_pg_sys::submodules::panic::ErrorReport> */
 LANGUAGE c /* Rust */
 AS 'MODULE_PATHNAME', 'pg_tviews_flush_and_report_wrapper';
+
+-- #228: registration derives fan-out patches for columns copied two joins away.
+-- Existing TVIEWs keep refreshing with their plans until re-registered.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

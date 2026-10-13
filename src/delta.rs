@@ -382,6 +382,16 @@ fn fan_out(
         }
         patches.push((key, fields));
     }
+    // Two joins away: the rows are those whose lookup column holds a value the
+    // table in between pairs with the changed key (#228).
+    let patches = if fanout.via.is_some() {
+        let Some(reached) = reached_through(entity, mapping, &patches)? else {
+            return Ok(false);
+        };
+        reached
+    } else {
+        patches
+    };
     for (key, fields) in patches {
         crate::queue::patch::record_fanout(
             (entity.to_string(), fanout.lookup_col.clone(), key),
@@ -389,6 +399,44 @@ fn fan_out(
         );
     }
     Ok(true)
+}
+
+/// A fan-out key and the fields it writes, by path.
+type FanoutFields = (i64, serde_json::Map<String, serde_json::Value>);
+
+/// The fan-out `patches` of keys of a table two joins away, by the lookup value
+/// each key reaches through the table in between (`fanout.via`): a key reaching
+/// none writes nothing. Under REPEATABLE READ the lookup is checked against the
+/// latest snapshot, as the patch's own lookup is. `None` when a relation the
+/// lookup reads is gone.
+///
+/// # Errors
+/// Returns an error if the lookup fails; a missed row raises 40001.
+fn reached_through(
+    entity: &str,
+    mapping: &KeyMapping,
+    patches: &[FanoutFields],
+) -> TViewResult<Option<Vec<FanoutFields>>> {
+    let Some(sql) = rendered_via(entity, mapping)? else {
+        return Ok(None);
+    };
+    let keys: Vec<i64> = patches.iter().map(|(key, _)| *key).collect();
+    let args = [crate::utils::spi::int8_array(keys)];
+    let plan = crate::utils::spi::Plan::PerExecution;
+    let found = crate::utils::spi::kept_rows(&sql, &args, plan)?;
+    crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
+    let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
+        patches.iter().map(|(key, fields)| (*key, fields)).collect();
+    Ok(Some(
+        found
+            .iter()
+            .filter_map(|row| {
+                let key: i64 = row.first()?.as_deref()?.parse().ok()?;
+                let reached: i64 = row.get(1)?.as_deref()?.parse().ok()?;
+                Some((reached, (*fields.get(&key)?).clone()))
+            })
+            .collect(),
+    ))
 }
 
 /// Map one changed row of a partitioned `mapped` / `all_keys` table, from the row
@@ -497,11 +545,31 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     if let Some(sql) = crate::cache::MAPPINGS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
-    let template = mapping.sql.clone().unwrap_or_default();
-    let sql = crate::lineage::render_template(&template)
-        .map_err(|e| crate::utils::spi::error(&template, &e))?;
-    // A rename of any relation it reads invalidates the cache.
-    let relids: Vec<Oid> = crate::lineage::template_placeholders(&template)
+    let sql = render_watched(mapping.sql.as_deref().unwrap_or_default())?;
+    crate::cache::MAPPINGS.with(|m| m.insert(key, sql.clone()));
+    Ok(sql)
+}
+
+/// The lookup through the table in between of `mapping`'s fan-out
+/// ([`crate::catalog::plan::FanoutPatch::via`]), with the current names of what
+/// it reads (cached until one of them changes).
+fn rendered_via(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
+    let key = (entity.to_string(), mapping.relid);
+    if let Some(sql) = crate::cache::FANOUT_VIAS.with(|m| m.get(&key)) {
+        return Ok(sql);
+    }
+    let template = mapping.fanout.as_ref().and_then(|f| f.via.as_deref());
+    let sql = render_watched(template.unwrap_or_default())?;
+    crate::cache::FANOUT_VIAS.with(|m| m.insert(key, sql.clone()));
+    Ok(sql)
+}
+
+/// `template` with the current names of what it reads; a rename of any of them
+/// invalidates the caches.
+fn render_watched(template: &str) -> TViewResult<Option<String>> {
+    let sql = crate::lineage::render_template(template)
+        .map_err(|e| crate::utils::spi::error(template, &e))?;
+    let relids: Vec<Oid> = crate::lineage::template_placeholders(template)
         .into_iter()
         .map(|p| match p {
             crate::lineage::Placeholder::Relation(r)
@@ -509,7 +577,6 @@ fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
         })
         .collect();
     crate::cache::watch(&relids);
-    crate::cache::MAPPINGS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 

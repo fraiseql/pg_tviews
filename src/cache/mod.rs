@@ -75,6 +75,9 @@ thread_local! {
     pub static COLUMNS: Memo<Oid, Vec<String>> = Memo::new();
     /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
     pub static MAPPINGS: Memo<(String, u32), Option<String>> = Memo::new();
+    /// `(entity, relid)` → the rendered lookup of a fan-out through a table in
+    /// between (`None`: a relation is gone).
+    pub static FANOUT_VIAS: Memo<(String, u32), Option<String>> = Memo::new();
     /// `(entity, relid, attnum)` → the rendered read-set query (`None`: a
     /// relation is gone).
     pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
@@ -155,6 +158,7 @@ pub fn invalidate_all() {
     KEY_TYPES.with(Memo::clear);
     COLUMNS.with(Memo::clear);
     MAPPINGS.with(Memo::clear);
+    FANOUT_VIAS.with(Memo::clear);
     READ_SETS.with(Memo::clear);
     LOCK_VALUES.with(Memo::clear);
     PLANS.with(Memo::clear);
