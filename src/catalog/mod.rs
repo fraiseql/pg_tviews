@@ -47,6 +47,12 @@ pub struct TviewMeta {
 
     /// The column that names the TVIEW's rows (ADR 0169).
     pub identity: RowIdentity,
+
+    /// The GraphQL type name of its rows ([`typename`]).
+    pub typename: String,
+    /// Whether its table has an `id` column, the rows' public id that the journal
+    /// carries.
+    pub has_public_id: bool,
 }
 
 /// The column that names a TVIEW's rows (ADR 0169), as the catalog records it.
@@ -116,7 +122,9 @@ pub(crate) fn meta_select() -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent \
+         time_dependent, graphql_typename, \
+         EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
+                 AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id \
          FROM {}",
         crate::catalog::meta_table()
     )
@@ -149,6 +157,18 @@ fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
 }
 
 impl TviewMeta {
+    /// The rows' public id as JSON text (`"…"` for a uuid, a number for an
+    /// integer), read from `table`, its table's name or alias in a statement;
+    /// `NULL` for a TVIEW without an `id` column.
+    #[must_use]
+    pub fn id_json(&self, table: &str) -> String {
+        if self.has_public_id {
+            format!("pg_catalog.to_jsonb({table}.\"id\")::pg_catalog.text")
+        } else {
+            "NULL::pg_catalog.text".to_string()
+        }
+    }
+
     /// How the values of the identity column are bound: the type of the column in
     /// the TVIEW's table (cached per backend).
     ///
@@ -373,6 +393,7 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
+        let typename = typename(&entity_name, row["graphql_typename"].value::<String>()?);
         Ok(Self {
             tview_oid: row["tview_oid"]
                 .value()?
@@ -397,6 +418,8 @@ impl TviewMeta {
                 .unwrap_or(false),
             time_dependent: row["time_dependent"].value::<bool>()?.unwrap_or(false),
             identity,
+            typename,
+            has_public_id: row["has_public_id"].value::<bool>()?.unwrap_or(false),
         })
     }
 }
@@ -425,6 +448,8 @@ impl Default for TviewMeta {
             time_refresh_external: false,
             time_dependent: false,
             identity: RowIdentity::unknown(),
+            typename: String::new(),
+            has_public_id: false,
         }
     }
 }

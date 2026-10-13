@@ -80,8 +80,9 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
-         RETURNING t.{qi_pk}::text, to_jsonb(t.*)->>'id'",
-        super::key_cast(&key_type, "$2", true)
+         RETURNING t.{qi_pk}::text, {}",
+        super::key_cast(&key_type, "$2", true),
+        meta.id_json("t")
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
@@ -100,10 +101,9 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &[super::key_array(&key_type, chunk)?],
         )?;
         let produced = super::run_counted_upsert(
-            entity,
+            &meta,
             &qi_tv,
             &col_list,
-            key_col,
             &source_sql,
             &conflict,
             &[super::key_array(&key_type, chunk)?],
@@ -114,7 +114,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             Vec::new()
         } else {
             super::run_journaled_delete(
-                entity,
+                &meta,
                 &delete_sql,
                 &[
                     super::key_array(&key_type, chunk)?,

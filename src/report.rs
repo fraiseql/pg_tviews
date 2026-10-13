@@ -126,15 +126,15 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
     })
 }
 
-/// Current `id` and `data` of `entity`'s rows `pks`, keyed by pk text.
-fn current_rows(
+/// The current `data` of `entity`'s rows `pks`, keyed by pk text.
+fn current_data(
     entity: &str,
     table: &str,
     pks: Vec<String>,
-) -> TViewResult<HashMap<String, (Value, Value)>> {
+) -> TViewResult<HashMap<String, Value>> {
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
-        "SELECT t.{qi_pk}::text AS k, to_jsonb(t.*) AS r FROM {table} t \
+        "SELECT t.{qi_pk}::text AS k, t.data AS d FROM {table} t \
          WHERE t.{qi_pk}::text = ANY($1)"
     );
     Spi::connect(|client| {
@@ -142,11 +142,9 @@ fn current_rows(
         let mut out = HashMap::new();
         for row in client.select(&sql, None, &args)? {
             let key: Option<String> = row["k"].value()?;
-            let rec: Option<JsonB> = row["r"].value()?;
-            if let (Some(key), Some(JsonB(Value::Object(mut rec)))) = (key, rec) {
-                let id = rec.remove("id").unwrap_or(Value::Null);
-                let data = rec.remove("data").unwrap_or(Value::Null);
-                out.insert(key, (id, data));
+            let data: Option<JsonB> = row["d"].value()?;
+            if let Some(key) = key {
+                out.insert(key, data.map_or(Value::Null, |JsonB(d)| d));
             }
         }
         Ok::<_, spi::Error>(out)
@@ -204,21 +202,22 @@ fn build_report(
     });
     let (reported, left_out) = changes.split_at(changes.len().min(max_entities));
 
-    // One read per entity for the rows still present.
-    let mut pks_by_entity: HashMap<&str, Vec<String>> = HashMap::new();
-    for c in reported {
-        if !matches!(c.change, Change::Deleted(_)) {
+    // The fresh documents, one read per entity, only when asked for: the ids
+    // come from the journal.
+    let mut rows: HashMap<(String, String), Value> = HashMap::new();
+    if include_data {
+        let mut pks_by_entity: HashMap<&str, Vec<String>> = HashMap::new();
+        for c in reported.iter().filter(|c| c.change != Change::Deleted) {
             pks_by_entity
                 .entry(&c.entity)
                 .or_default()
                 .push(c.pk.clone());
         }
-    }
-    let mut rows: HashMap<(String, String), (Value, Value)> = HashMap::new();
-    for (entity, pks) in pks_by_entity {
-        if let Some(i) = info.get(entity) {
-            for (pk, row) in current_rows(entity, &i.table, pks)? {
-                rows.insert((entity.to_string(), pk), row);
+        for (entity, pks) in pks_by_entity {
+            if let Some(i) = info.get(entity) {
+                for (pk, data) in current_data(entity, &i.table, pks)? {
+                    rows.insert((entity.to_string(), pk), data);
+                }
             }
         }
     }
@@ -228,29 +227,30 @@ fn build_report(
     for c in reported {
         let mut item = Map::new();
         item.insert("__typename".into(), Value::String(typename(&c.entity)));
-        match &c.change {
-            Change::Deleted(id) => {
-                item.insert("id".into(), id.clone().map_or(Value::Null, Value::String));
-                deleted.push(Value::Object(item));
-            }
-            change => {
-                // A row written then removed by a later, unjournaled path is skipped.
-                let Some((id, data)) = rows.remove(&(c.entity.clone(), c.pk.clone())) else {
-                    continue;
-                };
-                let op = if *change == Change::Inserted {
-                    "CREATED"
-                } else {
-                    "UPDATED"
-                };
-                item.insert("id".into(), id);
-                item.insert("operation".into(), Value::String(op.into()));
-                if include_data {
-                    item.insert("data".into(), data);
-                }
-                updated.push(Value::Object(item));
-            }
+        item.insert(
+            "id".into(),
+            c.id.as_deref()
+                .and_then(|id| serde_json::from_str(id).ok())
+                .unwrap_or(Value::Null),
+        );
+        if c.change == Change::Deleted {
+            deleted.push(Value::Object(item));
+            continue;
         }
+        let op = if c.change == Change::Inserted {
+            "CREATED"
+        } else {
+            "UPDATED"
+        };
+        item.insert("operation".into(), Value::String(op.into()));
+        if include_data {
+            // A row written then removed by a later, unjournaled path is skipped.
+            let Some(data) = rows.remove(&(c.entity.clone(), c.pk.clone())) else {
+                continue;
+            };
+            item.insert("data".into(), data);
+        }
+        updated.push(Value::Object(item));
     }
 
     let invalidated: BTreeSet<String> = left_out

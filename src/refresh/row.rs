@@ -91,14 +91,11 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
-         RETURNING {qi_pk}::text, to_jsonb({qi_tv}.*)->>'id'",
-        super::key_cast(&key_type, "$1", false)
+         RETURNING {qi_pk}::text, {}",
+        super::key_cast(&key_type, "$1", false),
+        meta.id_json(&qi_tv)
     );
-    super::run_journaled_delete(
-        &meta.entity_name,
-        &sql,
-        &[super::key_scalar(&key_type, key)?],
-    )
+    super::run_journaled_delete(meta, &sql, &[super::key_scalar(&key_type, key)?])
 }
 
 /// Write the row `key` of `meta`'s TVIEW from its backing view, its document
@@ -137,10 +134,9 @@ fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Prod
     // when a column actually changed. This handles both new rows (inserted into
     // the base table after TVIEW creation) and existing rows that need refreshing.
     super::run_counted_upsert(
-        &meta.entity_name,
+        meta,
         &qi_tv,
         &col_list,
-        key_col,
         &format!(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
             super::key_cast(&key_type, "$1", false)
