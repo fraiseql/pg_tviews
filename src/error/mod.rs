@@ -13,6 +13,21 @@ use std::fmt;
 #[cfg(test)]
 mod reference;
 
+/// What a statement's refresh exceeded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Limit {
+    /// The transaction queued more refreshes than `pg_tviews.max_queue_size`.
+    Queue { size: usize, max: usize },
+    /// The refresh would write more TVIEW rows than `pg_tviews.max_refresh_rows`:
+    /// `count` rows of `tview`, written `how` (`via fk_cat`, `by a full refresh`).
+    Rows {
+        tview: String,
+        how: String,
+        count: u64,
+        max: u64,
+    },
+}
+
 /// An error `pg_tviews` raises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
@@ -65,8 +80,8 @@ pub enum TViewError {
     /// The `jsonb_delta` extension is not installed.
     JsonbDeltaMissing,
 
-    /// The transaction queued more refreshes than `pg_tviews.max_queue_size`.
-    QueueFull { size: usize, max_size: usize },
+    /// A statement's refresh is bigger than a limit allows (ADR 0233).
+    RefreshLimit { limit: Limit },
 
     /// The session or transaction is not in a state that allows this.
     WrongState { reason: String },
@@ -110,7 +125,7 @@ impl TViewError {
             Self::InvalidSelectStatement { .. } => PgSqlErrorCode::ERRCODE_SYNTAX_ERROR,
             Self::RequiredColumnMissing { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_COLUMN,
             Self::JsonbDeltaMissing => PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
-            Self::QueueFull { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
+            Self::RefreshLimit { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
             Self::PrepareHoldsRefill { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
             Self::DuplicateKey { .. } => PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
@@ -168,9 +183,16 @@ impl TViewError {
                  (tviews.registry.managed_indexes lists them)."
                     .into(),
             ),
-            Self::QueueFull { .. } => {
-                Some("Raise pg_tviews.max_queue_size, or write in smaller transactions.".into())
-            }
+            Self::RefreshLimit {
+                limit: Limit::Queue { .. },
+            } => Some("Raise pg_tviews.max_queue_size, or write in smaller transactions.".into()),
+            Self::RefreshLimit {
+                limit: Limit::Rows { tview, .. },
+            } => Some(format!(
+                "Don't embed this entity in {tview}, batch the change offline, or make it \
+                 after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
+                 once, at resume or commit."
+            )),
             Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
                 "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
                     .into(),
@@ -308,10 +330,25 @@ impl fmt::Display for TViewError {
                 "cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW {table}, \
                  and every writer of it would wait for COMMIT PREPARED"
             ),
-            Self::QueueFull { size, max_size } => write!(
+            Self::RefreshLimit {
+                limit: Limit::Queue { size, max },
+            } => write!(
                 f,
                 "refresh queue backpressure: queue size ({size}) would exceed \
-                 max_queue_size ({max_size})"
+                 max_queue_size ({max})"
+            ),
+            Self::RefreshLimit {
+                limit:
+                    Limit::Rows {
+                        tview,
+                        how,
+                        count,
+                        max,
+                    },
+            } => write!(
+                f,
+                "refreshing {tview} {how} would write {count} rows in one statement \
+                 (max_refresh_rows = {max})"
             ),
             Self::CatalogError {
                 operation,
@@ -390,9 +427,8 @@ mod tests {
                 context: s(),
             },
             TViewError::JsonbDeltaMissing,
-            TViewError::QueueFull {
-                size: 1,
-                max_size: 1,
+            TViewError::RefreshLimit {
+                limit: Limit::Queue { size: 1, max: 1 },
             },
             TViewError::WrongState { reason: s() },
             TViewError::PrepareHoldsRefill { table: s() },
@@ -427,7 +463,7 @@ mod tests {
                 | TViewError::InvalidSelectStatement { .. }
                 | TViewError::RequiredColumnMissing { .. }
                 | TViewError::JsonbDeltaMissing
-                | TViewError::QueueFull { .. }
+                | TViewError::RefreshLimit { .. }
                 | TViewError::WrongState { .. }
                 | TViewError::PrepareHoldsRefill { .. }
                 | TViewError::DuplicateKey { .. }
@@ -462,6 +498,34 @@ mod tests {
             sqlstate_text(PgSqlErrorCode::ERRCODE_INTERNAL_ERROR),
             "XX000"
         );
+    }
+
+    #[test]
+    fn refresh_limits_name_what_was_exceeded() {
+        let queue = TViewError::RefreshLimit {
+            limit: Limit::Queue { size: 11, max: 10 },
+        };
+        assert_eq!(
+            queue.to_string(),
+            "refresh queue backpressure: queue size (11) would exceed max_queue_size (10)"
+        );
+        let rows = TViewError::RefreshLimit {
+            limit: Limit::Rows {
+                tview: "public.tv_item".into(),
+                how: "via fk_cat".into(),
+                count: 1000,
+                max: 100,
+            },
+        };
+        assert_eq!(
+            rows.to_string(),
+            "refreshing public.tv_item via fk_cat would write 1000 rows in one statement \
+             (max_refresh_rows = 100)"
+        );
+        assert!(rows.hint().is_some_and(
+            |h| h.contains("public.tv_item") && h.contains("pg_tviews_suspend_triggers()")
+        ));
+        assert_eq!(queue.sqlstate(), rows.sqlstate());
     }
 
     #[test]
@@ -525,9 +589,19 @@ mod tests {
             "42P17"
         );
         assert_eq!(
-            code(TViewError::QueueFull {
-                size: 1,
-                max_size: 1
+            code(TViewError::RefreshLimit {
+                limit: Limit::Queue { size: 1, max: 1 }
+            }),
+            "54000"
+        );
+        assert_eq!(
+            code(TViewError::RefreshLimit {
+                limit: Limit::Rows {
+                    tview: "public.tv_item".into(),
+                    how: "via fk_cat".into(),
+                    count: 2,
+                    max: 1
+                }
             }),
             "54000"
         );
