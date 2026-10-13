@@ -38,26 +38,20 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
         .map(|c| format!("v.{}", ident::quoted(c)))
         .collect::<Vec<_>>()
         .join(", ");
-    let key_type = meta.key_type()?;
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
+        return Ok(());
+    };
     let key = ident::quoted(&meta.identity.column);
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let sql = format!(
         "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v \
-         WHERE v.{key} OPERATOR(pg_catalog.=) ANY ({})",
-        crate::refresh::key_cast(&key_type, "$1", true)
+         WHERE v.{key} OPERATOR(pg_catalog.=) {}",
+        lookup.rhs
     );
-    let args = [crate::refresh::key_array(&key_type, keys)?];
-    let seen = sorted(crate::utils::spi::kept_rows(
-        &sql,
-        &args,
-        crate::utils::spi::Plan::Generic,
-    )?);
+    let args = [lookup.arg];
+    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args, lookup.plan)?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(
-            &sql,
-            &args,
-            Some(crate::utils::spi::Plan::Generic),
-        )
+        crate::utils::spi::latest_rows_connected(&sql, &args, Some(lookup.plan))
     })?);
     if seen != latest {
         super::serialization_failure(

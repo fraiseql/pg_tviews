@@ -218,8 +218,8 @@ pub(crate) fn read_set_queries(
             .transpose()
             .map_err(|e| crate::utils::spi::error("the column's name", &e))?
             .flatten();
-        let query =
-            crate::concurrency::reads::rendered(&meta.entity_name, mapping, set, &key_type)?;
+        let keys = format!("ANY ({})", crate::refresh::key_cast(&key_type, "$1", true));
+        let query = crate::concurrency::reads::rendered(&meta.entity_name, mapping, set, &keys)?;
         rows.push((column, query));
     }
     Ok(rows)

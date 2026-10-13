@@ -72,6 +72,42 @@ pub(crate) fn key_scalar(
     })
 }
 
+/// Identity keys bound as `$1` for a lookup, shaped by their count as
+/// [`crate::utils::spi::LookupKeys`] shapes keys of `fk_<entity>`: a backing view
+/// read by identity may join many rows of a table for each key (an aggregate of
+/// children), which a generic plan for an array estimates as ten keys' worth.
+pub(crate) struct KeyLookup {
+    /// What the identity is compared with by `OPERATOR(pg_catalog.=)`.
+    pub rhs: String,
+    /// The keys, as `rhs` reads them.
+    pub arg: DatumWithOid<'static>,
+    /// How a statement looking them up is planned.
+    pub plan: crate::utils::spi::Plan,
+}
+
+/// The lookup of `keys` of an identity of `key_type`; `None` without any.
+///
+/// # Errors
+/// A text key of an integer identity that is not an integer.
+pub(crate) fn key_lookup(
+    key_type: &KeyType,
+    keys: &[KeyValue],
+) -> crate::TViewResult<Option<KeyLookup>> {
+    Ok(match keys {
+        [] => None,
+        [key] => Some(KeyLookup {
+            rhs: key_cast(key_type, "$1", false),
+            arg: key_scalar(key_type, key)?,
+            plan: crate::utils::spi::Plan::Generic,
+        }),
+        _ => Some(KeyLookup {
+            rhs: format!("ANY ({})", key_cast(key_type, "$1", true)),
+            arg: key_array(key_type, keys)?,
+            plan: crate::utils::spi::Plan::PerExecution,
+        }),
+    })
+}
+
 /// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look
 /// them up by (ADR 0169, D4).
 #[derive(Debug, Default, PartialEq, Eq)]
