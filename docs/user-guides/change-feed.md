@@ -65,6 +65,9 @@ Past a point, it is described by type instead of by id.
 - The writing session receives them too, if it listens.
 - A write made inside a function (a FraiseQL mutation called by `SELECT`) publishes like
   any other.
+- A TVIEW rebuilt whole (`pg_tviews_refresh()`, the catch-up of a suspended transaction,
+  the refill of a reset UNLOGGED TVIEW, `pg_tviews_rebuild_all()`) is published by type
+  in `t`: its rows are not listed one by one.
 
 ## The reconnect rule
 
@@ -163,7 +166,8 @@ any pool mode.
   sessions `idle in transaction` that LISTEN.
 - **Above 90 % queue usage, transactions commit unpublished.** pg_tviews does not let a
   stuck listener fail every write. The writer gets a WARNING naming the cause, and
-  `pg_tviews_queue_stats()->'publish_skipped'` counts these transactions in the session.
+  `pg_tviews_queue_stats()->'publish_skipped'` counts these transactions in the writing
+  session (the WARNING also goes to the server log, where monitoring sees it).
   Listeners missed them: that is why a cache evicts everything when it reconnects.
   The check is made just before the commit; another session can fill the last pages in
   between, and PostgreSQL then fails that commit (`too many notifications in the NOTIFY

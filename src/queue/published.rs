@@ -89,6 +89,13 @@ pub fn add(publish: Publish, recorded: &Recorded) {
     });
 }
 
+/// Publish `typename` by name: its rows changed without being listed (a rebuild).
+pub fn add_type(typename: &Rc<str>) {
+    SET.with_borrow_mut(|set| {
+        set.types.insert(Rc::clone(typename));
+    });
+}
+
 /// A subtransaction started: where the set stands.
 pub fn mark() -> Mark {
     SET.with_borrow(|set| Mark {

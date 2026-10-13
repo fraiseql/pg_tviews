@@ -146,6 +146,24 @@ pub fn record(recorded: Recorded) {
     });
 }
 
+/// Record that `entity`'s TVIEW was rebuilt or refilled whole, its rows not
+/// journaled one by one: the report lists its type in `invalidated_types`, and
+/// commit publishes the type by name.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn record_rebuilt(entity: &str) -> crate::TViewResult<()> {
+    if crate::config::report_max_tracked() > 0 {
+        JOURNAL.with(|j| j.borrow_mut().overflow.insert(entity.to_string()));
+    }
+    if crate::config::publish_changes().is_some()
+        && let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)?
+    {
+        super::published::add_type(&meta.typename);
+    }
+    Ok(())
+}
+
 /// A subtransaction started: where the journal stands.
 pub fn mark() -> Mark {
     JOURNAL.with(|j| {

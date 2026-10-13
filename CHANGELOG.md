@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but left out of the report, not counted against `max_entities`, and listed by type
   in `omitted_types` (present only with `types`); `reset` clears them too. An unknown
   name fails with `22023` before anything is reported or reset.
+- **A TVIEW rebuilt whole is reported and published by type**: `pg_tviews_refresh()`,
+  the catch-up of a suspended transaction, the refill of a reset UNLOGGED TVIEW and
+  `pg_tviews_rebuild_all()` list the type in the report's `invalidated_types` and in
+  the change feed's `t`, since their rows are not journaled one by one.
 - **A column copied two joins away is patched in place** (#228): a write to
   `tb_user.username` copied into `tv_comment.post.author.username` (comment →
   post → user) finds the comments through the table in between (the user's

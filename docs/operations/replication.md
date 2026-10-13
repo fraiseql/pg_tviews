@@ -86,6 +86,12 @@ UNLOGGED tables' rows:
 | `pg_dump --no-unlogged-table-data` | restored empty, untrusted: refilled once |
 | physical (base backup, pgBackRest), or a crash | reset with the table: refilled once |
 
+`pg_dump` decides about the extension's configuration separately from your tables: a dump
+that leaves out an UNLOGGED TVIEW's rows by name (`--exclude-table-data='tv_*'`, `-T`, a
+selective `pg_restore -L`) still carries its validity row, and the TVIEW comes back empty
+but trusted. Leave `tviews.pg_tview_valid` out too (`--exclude-table-data=tviews.pg_tview_valid`),
+or refill after the restore with `SELECT * FROM pg_tviews_rebuild_all(only_empty => false);`.
+
 ### The launcher
 
 With `shared_preload_libraries = 'pg_tviews'`, a launcher worker starts when the

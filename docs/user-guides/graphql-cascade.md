@@ -87,6 +87,9 @@ tviews.pg_tviews_flush_and_report(
 - **`operation`** is `CREATED` for a row first inserted in this span, `UPDATED`
   otherwise. A row inserted and then deleted in the same span is not reported; a row
   deleted and then re-inserted is `UPDATED`.
+- **Rebuilds**: a TVIEW rebuilt whole in the transaction (`pg_tviews_refresh()`, the
+  catch-up at the end of a suspension) lists its type in `invalidated_types`: its rows
+  are not reported one by one.
 - **Order** is by entity, then primary key, so truncation is deterministic. With more
   than `max_entities` entries, the rest are left out, `truncated` is true and
   `invalidated_types` lists their types, so a client can invalidate those types instead.

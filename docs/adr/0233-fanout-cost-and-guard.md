@@ -64,10 +64,12 @@ An integer, `0` (off, the default) up to 2,147,483,647, **superuser** context li
   - a direct patch: by its rows;
   - a fan-out: by its children, counted through the lookup index (`count(*)` with the
     #235 shapes), and only while the guard is on;
-  - a full refresh: by the TVIEW's `reltuples`, an estimate.
+  - a full refresh: by the rows the TVIEW holds (counted, a scan the full refresh
+    reads past anyway), an upper bound of what it rewrites while the TVIEW is filled.
   When the rows charged so far plus the next batch exceed the limit, the statement fails
   before that batch is written, and the base write rolls back with it.
-- Explicit rebuilds are not charged: `pg_tviews_refresh()`, `pg_tviews_rebuild_all()`, and
+- Explicit rebuilds are not charged: `pg_tviews_refresh()`, `pg_tviews_rebuild_all()`, the
+  refill of an UNLOGGED TVIEW a crash or a promotion reset (recovery, not a write's work), and
   the catch-up that rebuilds the TVIEWs a suspended transaction changed, at
   `pg_tviews_resume_triggers()` or at commit. They are the remedy for a bulk change:
   `pg_tviews_suspend_triggers()`, the change, then the resume or the commit (or

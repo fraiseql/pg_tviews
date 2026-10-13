@@ -42,6 +42,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
         }
     })?;
     crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
+    crate::queue::affected::record_rebuilt(entity)?;
     Ok(inserted)
 }
 
@@ -60,7 +61,9 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("DELETE FROM {qi_tv}"))?;
-    crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))
+    let inserted = crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))?;
+    crate::queue::affected::record_rebuilt(entity)?;
+    Ok(inserted)
 }
 
 /// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,
@@ -76,7 +79,7 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (_, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&insert)?;
-    Ok(())
+    crate::queue::affected::record_rebuilt(entity)
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
