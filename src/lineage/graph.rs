@@ -760,12 +760,13 @@ impl QueryGraph {
 
     /// For a hop through a table in between, the query from values of this
     /// table's hop column (`$1`, `int8[]`) to the root column's values they reach:
-    /// `(value, root value)` pairs, read from that table.
+    /// `(value, root value)` pairs as text, read from that table (a root value
+    /// that is no integer leaves the rows to the recompute).
     fn hop_via(&self, occ: usize, path: &[usize]) -> Option<String> {
         let (joined, to_root) = self.hop_columns(occ, path)?.between?;
         let relid = self.occurrences[joined.occ].relid;
         Some(format!(
-            "SELECT o.{{c:{relid}:{}}}::pg_catalog.int8, o.{{c:{relid}:{}}}::pg_catalog.int8 \
+            "SELECT o.{{c:{relid}:{}}}::pg_catalog.text, o.{{c:{relid}:{}}}::pg_catalog.text \
              FROM {{r:{relid}}} o WHERE o.{{c:{relid}:{}}} = ANY ($1::pg_catalog.int8[])",
             joined.attnum, to_root.attnum, joined.attnum
         ))

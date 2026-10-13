@@ -115,7 +115,31 @@ SELECT must((patched, recomputed) = (0, 50), format('patch off: %s patched, %s r
 FROM counts();
 SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename recomputed');
 
--- 8. The plan: tb_user fans out by fk_post, through tb_post.
+-- 8. Keys of the table in between that are no integers (a uuid post): the write
+--    still succeeds, its rows recomputed.
+CREATE TABLE tb_author (pk_author int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                        name text NOT NULL);
+CREATE TABLE tb_article (pk_article uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                         fk_author int NOT NULL REFERENCES tb_author, title text NOT NULL);
+CREATE TABLE tb_reply (pk_reply int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       fk_article uuid NOT NULL REFERENCES tb_article, body text NOT NULL);
+INSERT INTO tb_author (pk_author, name) VALUES (1, 'ann'), (2, 'bob');
+INSERT INTO tb_article (fk_author, title) SELECT 1 + g % 2, 'a' || g FROM generate_series(1, 4) g;
+INSERT INTO tb_reply (pk_reply, fk_article, body)
+    SELECT g, (SELECT pk_article FROM tb_article ORDER BY title OFFSET g % 4 LIMIT 1), 'r'
+    FROM generate_series(1, 8) g;
+SELECT tviews.pg_tviews_create('tv_reply', $$
+    SELECT r.pk_reply, r.id, r.fk_article,
+           jsonb_build_object('body', r.body,
+               'article', jsonb_build_object('title', a.title,
+                   'author', jsonb_build_object('name', u.name))) AS data
+    FROM tb_reply r
+    JOIN tb_article a ON a.pk_article = r.fk_article
+    JOIN tb_author u ON u.pk_author = a.fk_author $$);
+UPDATE tb_author SET name = 'ann2' WHERE pk_author = 1;
+SELECT assert_fresh('tv_reply', 'pk_reply', 'a rename through uuid keys');
+
+-- 9. The plan: tb_user fans out by fk_post, through tb_post.
 SELECT must((SELECT t->'fanout'->>'lookup_col' = 'fk_post' AND t->'fanout' ? 'via'
              FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'tables') t
              WHERE m.entity = 'comment' AND (t->>'relid')::oid = 'tb_user'::regclass::oid),

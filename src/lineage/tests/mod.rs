@@ -575,9 +575,14 @@ mod read_sets;
 /// `tb_org g ON g.pk_org = u.fk_org` and `data` copies `g.name` too.
 fn comment_thread(org: bool) -> QueryGraph {
     let mut occurrences = vec![occ(1, "tb_comment"), occ(2, "tb_post"), occ(3, "tb_user")];
+    // Distinct attnums on tb_post, so that the lookup's columns can be told apart.
+    let at = |occ: usize, name: &str, attnum: i16| Column {
+        attnum,
+        ..col(occ, name)
+    };
     let mut conjuncts = vec![
-        eq(col(1, "pk_post"), col(0, "fk_post"), true, true),
-        eq(col(2, "pk_user"), col(1, "fk_author"), true, true),
+        eq(at(1, "pk_post", 1), col(0, "fk_post"), true, true),
+        eq(col(2, "pk_user"), at(1, "fk_author", 4), true, true),
     ];
     let field = |occ: usize, relid: u32, name: &str, path: &[&str]| DataField {
         path: path.iter().map(|p| (*p).to_string()).collect(),
@@ -631,8 +636,8 @@ fn a_column_two_joins_away_fans_out_through_the_table_between() {
     assert_eq!(
         user.via.as_deref(),
         Some(
-            "SELECT o.{c:2:1}::pg_catalog.int8, o.{c:2:1}::pg_catalog.int8 \
-             FROM {r:2} o WHERE o.{c:2:1} = ANY ($1::pg_catalog.int8[])"
+            "SELECT o.{c:2:4}::pg_catalog.text, o.{c:2:1}::pg_catalog.text \
+             FROM {r:2} o WHERE o.{c:2:4} = ANY ($1::pg_catalog.int8[])"
         )
     );
     // One join away, the post's own columns fan out as before, by fk_post.

@@ -408,7 +408,8 @@ type FanoutFields = (i64, serde_json::Map<String, serde_json::Value>);
 /// each key reaches through the table in between (`fanout.via`): a key reaching
 /// none writes nothing. Under REPEATABLE READ the lookup is checked against the
 /// latest snapshot, as the patch's own lookup is. `None` when a relation the
-/// lookup reads is gone.
+/// lookup reads is gone, or a value it reaches is no integer: the rows are then
+/// mapped and recomputed.
 ///
 /// # Errors
 /// Returns an error if the lookup fails; a missed row raises 40001.
@@ -417,6 +418,9 @@ fn reached_through(
     mapping: &KeyMapping,
     patches: &[FanoutFields],
 ) -> TViewResult<Option<Vec<FanoutFields>>> {
+    if patches.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
     let Some(sql) = rendered_via(entity, mapping)? else {
         return Ok(None);
     };
@@ -427,16 +431,17 @@ fn reached_through(
     crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
     let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
         patches.iter().map(|(key, fields)| (*key, fields)).collect();
-    Ok(Some(
-        found
-            .iter()
-            .filter_map(|row| {
-                let key: i64 = row.first()?.as_deref()?.parse().ok()?;
-                let reached: i64 = row.get(1)?.as_deref()?.parse().ok()?;
-                Some((reached, (*fields.get(&key)?).clone()))
-            })
-            .collect(),
-    ))
+    let mut reached = Vec::with_capacity(found.len());
+    for row in &found {
+        let parse = |i: usize| row.get(i)?.as_deref()?.parse::<i64>().ok();
+        let (Some(key), Some(value)) = (parse(0), parse(1)) else {
+            return Ok(None);
+        };
+        if let Some(fields) = fields.get(&key) {
+            reached.push((value, (*fields).clone()));
+        }
+    }
+    Ok(Some(reached))
 }
 
 /// Map one changed row of a partitioned `mapped` / `all_keys` table, from the row
