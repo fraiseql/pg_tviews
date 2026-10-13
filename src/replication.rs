@@ -26,35 +26,16 @@ pub struct TviewRelation {
 impl TviewRelation {
     /// Every registered TVIEW (or only `entity`), ordered by entity.
     pub fn load(entity: Option<&str>) -> TViewResult<Vec<Self>> {
-        let query = format!(
-            "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
-                    t.relpersistence = 'u' AS unlogged, \
-                    m.table_oid::oid AS table_oid \
-             FROM {} m \
-             JOIN pg_class t ON t.oid = m.table_oid \
-             JOIN pg_namespace n ON n.oid = t.relnamespace \
-             WHERE $1::text IS NULL OR m.entity = $1 \
-             ORDER BY m.entity",
-            crate::catalog::meta_table()
-        );
-        Spi::connect(|client| {
-            let args = [crate::utils::spi::text(entity)];
-            let mut out = Vec::new();
-            for row in client.select(&query, None, &args)? {
-                out.push(Self {
-                    entity: row["entity"].value()?.unwrap_or_default(),
-                    schema: row["schema"].value()?.unwrap_or_default(),
-                    table: row["tbl"].value()?.unwrap_or_default(),
-                    unlogged: row["unlogged"].value()?.unwrap_or(false),
-                    table_oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
-                });
-            }
-            Ok::<_, spi::Error>(out)
-        })
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Load TVIEW relations".to_string(),
-            pg_error: e.to_string(),
-        })
+        Ok(crate::catalog::queries::tables(entity)?
+            .into_iter()
+            .map(|t| Self {
+                entity: t.entity,
+                schema: t.schema,
+                table: t.name,
+                unlogged: t.unlogged,
+                table_oid: t.oid,
+            })
+            .collect())
     }
 
     fn qualified(&self, name: &str) -> String {

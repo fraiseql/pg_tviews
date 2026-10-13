@@ -44,6 +44,33 @@ pub fn definition(entity: &str) -> TViewResult<Option<String>> {
     .map_err(|e| read_error("definition", entity, &e))
 }
 
+/// The stored definition of `entity`'s TVIEW and the schema of its table; both
+/// `None` when there is no such TVIEW.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn definition_and_schema(entity: &str) -> TViewResult<(Option<String>, Option<String>)> {
+    Spi::connect(|client| {
+        let args = [crate::utils::spi::text(entity)];
+        client
+            .select(
+                &format!(
+                    "SELECT m.definition, n.nspname::text \
+                     FROM {} m \
+                     JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE m.entity = $1",
+                    super::meta_table()
+                ),
+                None,
+                &args,
+            )?
+            .first()
+            .get_two::<String, String>()
+    })
+    .map_err(|e| read_error("definition", entity, &e))
+}
+
 /// The stored `group_keys` of `entity`'s TVIEW, as stored (`None` for a plain
 /// TVIEW).
 ///

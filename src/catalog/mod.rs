@@ -1,6 +1,7 @@
 pub mod graph;
 pub(crate) mod indexes;
 pub mod plan;
+pub mod queries;
 pub mod reads;
 pub mod registered;
 pub mod resolve;

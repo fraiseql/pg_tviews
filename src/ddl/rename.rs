@@ -26,7 +26,7 @@ use sqlparser::tokenizer::{Token, TokenWithSpan, Tokenizer};
 /// Returns an error if a catalog query fails or the re-derived definition cannot
 /// be analyzed; the caller aborts the `RENAME` so no TVIEW is left stale.
 pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TViewResult<()> {
-    let affected = affected_tviews(relid, new_name)?;
+    let affected = crate::catalog::queries::reading_column(relid, new_name)?;
     if !affected.is_empty() {
         crate::revision::check();
     }
@@ -58,64 +58,11 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         // An aggregate TVIEW names its group key columns by name. The
         // rename was authorized by PostgreSQL; the catalog is written as the
         // extension's owner.
-        let owner = crate::owner::AsOwner::of_extension()?;
-        Spi::run_with_args(
-            &format!(
-                "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
-                 WHERE entity = $1 AND group_keys->>$2 = $3",
-                crate::catalog::meta_table()
-            ),
-            &[
-                crate::utils::spi::text(&entity),
-                crate::utils::spi::text(&relname),
-                crate::utils::spi::text(old_name),
-                crate::utils::spi::text(new_name),
-            ],
-        )
-        .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))?;
-        drop(owner);
+        crate::catalog::queries::rename_group_key(&entity, &relname, old_name, new_name)?;
 
         crate::ddl::create::reregister_metadata(&entity, &schema_name, &new_definition)?;
     }
     Ok(())
-}
-
-/// TVIEWs whose backing view's own rule depends on column `column` of `relid`
-/// (the column-level `pg_depend` entries of its rewrite rule): the definitions
-/// that name the column. A view the TVIEW reads follows the rename by itself.
-fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String, Oid)>> {
-    let query = format!(
-        "{} SELECT DISTINCT m.entity, n.nspname::text AS schema, m.view_oid::oid AS view_oid \
-         FROM reads r \
-         JOIN {} m ON m.view_oid::oid = r.root \
-         JOIN pg_catalog.pg_class t ON t.oid = m.table_oid \
-         JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
-         JOIN pg_catalog.pg_attribute a ON a.attrelid = r.relid AND a.attnum = r.attnum \
-         WHERE r.depth = 0 AND r.relid = $1 AND a.attname = $2 \
-         ORDER BY m.entity",
-        crate::catalog::reads::view_reads_cte(&format!(
-            "SELECT m.view_oid::pg_catalog.oid, m.view_oid::pg_catalog.oid, 0 FROM {} m",
-            crate::catalog::meta_table()
-        )),
-        crate::catalog::meta_table()
-    );
-    Spi::connect(|client| {
-        let args = [
-            crate::utils::spi::oid(relid),
-            crate::utils::spi::text(column),
-        ];
-        let mut out = Vec::new();
-        for row in client.select(&query, None, &args)? {
-            let entity: Option<String> = row["entity"].value()?;
-            let schema: Option<String> = row["schema"].value()?;
-            let view_oid: Option<Oid> = row["view_oid"].value()?;
-            if let (Some(e), Some(s), Some(v)) = (entity, schema, view_oid) {
-                out.push((e, s, v));
-            }
-        }
-        Ok::<_, spi::Error>(out)
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Find TVIEWs reading the renamed column", &e))
 }
 
 fn relation_name(relid: Oid) -> TViewResult<String> {

@@ -91,39 +91,10 @@ struct EntityInfo {
 
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
-    Spi::connect(|client| {
-        let args = [crate::utils::spi::text_array(names)];
-        let mut out = HashMap::new();
-        for row in client.select(
-            &format!(
-                "SELECT m.entity, m.graphql_typename, \
-                        quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
-                 FROM {} m \
-                 JOIN pg_class c ON c.oid = m.table_oid \
-                 JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE m.entity = ANY($1)",
-                crate::catalog::meta_table()
-            ),
-            None,
-            &args,
-        )? {
-            let entity: String = row["entity"].value()?.unwrap_or_default();
-            let typename: Option<String> = row["graphql_typename"].value()?;
-            let table: String = row["tbl"].value()?.unwrap_or_default();
-            out.insert(
-                entity.clone(),
-                EntityInfo {
-                    typename: crate::catalog::typename(&entity, typename),
-                    table,
-                },
-            );
-        }
-        Ok::<_, spi::Error>(out)
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Load TVIEWs for the report".to_string(),
-        pg_error: e.to_string(),
-    })
+    Ok(crate::catalog::queries::typenames_and_tables(names)?
+        .into_iter()
+        .map(|(entity, typename, table)| (entity, EntityInfo { typename, table }))
+        .collect())
 }
 
 /// The current `data` of `entity`'s rows `pks`, keyed by pk text.

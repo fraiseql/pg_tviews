@@ -186,10 +186,7 @@ fn watch_catalog() {
         return;
     }
     crate::metrics::metrics_api::record_catalog_lookup();
-    if let Ok(Some(oid)) = Spi::get_one::<Oid>(&format!(
-        "SELECT pg_catalog.to_regclass('{}')::pg_catalog.oid",
-        crate::catalog::meta_table()
-    )) {
+    if let Ok(Some(oid)) = crate::catalog::queries::meta_table_oid() {
         watch(&[oid]);
         CATALOG_WATCHED.with(|w| w.set(true));
     }

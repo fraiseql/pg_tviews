@@ -408,7 +408,7 @@ fn replace_in_place(
     definition: &str,
     new_base_tables: &[pg_sys::Oid],
 ) -> TViewResult<()> {
-    let dependents = dependents(entity, meta.view_oid, meta.tview_oid)?;
+    let dependents = crate::catalog::queries::readers_of(entity, meta.view_oid, meta.tview_oid)?;
 
     // Writers lock a base table, then the TVIEW tables their flush writes: take
     // the same order. SHARE on every table read, before or after, holds writers
@@ -462,50 +462,6 @@ fn replace_in_place(
         crate::refresh::full::reconcile(dependent, &meta)?;
     }
     Ok(())
-}
-
-/// The TVIEWs whose view reads `view_oid`, directly or through views, as
-/// `(entity, table)`, each after the others it reads.
-fn dependents(
-    entity: &str,
-    view_oid: pg_sys::Oid,
-    table_oid: pg_sys::Oid,
-) -> TViewResult<Vec<(String, pg_sys::Oid)>> {
-    let (meta_table, reads) = (
-        crate::catalog::meta_table(),
-        format!("{}.pg_tview_reads", crate::utils::ext_schema()),
-    );
-    // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
-    // their views: it reads more of the others' views and tables than any of them.
-    Spi::connect(|client| {
-        let mut dependents = Vec::new();
-        for row in client.select(
-            &format!(
-                "SELECT m.entity::text, m.table_oid FROM {meta_table} m \
-                 JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
-                 WHERE m.entity <> $1 \
-                   AND EXISTS (SELECT 1 FROM {reads} r \
-                               WHERE r.entity = m.entity AND r.relid IN ($2, $3)) \
-                 ORDER BY (SELECT count(*) FROM {reads} r JOIN {meta_table} o \
-                           ON r.relid IN (o.view_oid, o.table_oid) AND o.entity <> r.entity \
-                           WHERE r.entity = m.entity), m.entity"
-            ),
-            None,
-            &[
-                crate::utils::spi::text(entity),
-                crate::utils::spi::oid(view_oid),
-                crate::utils::spi::oid(table_oid),
-            ],
-        )? {
-            if let (Some(dependent), Some(table)) =
-                (row.get::<String>(1)?, row.get::<pg_sys::Oid>(2)?)
-            {
-                dependents.push((dependent, table));
-            }
-        }
-        Ok::<_, spi::Error>(dependents)
-    })
-    .map_err(|e| crate::utils::spi::catalog_error("Find the TVIEWs reading a replaced one", &e))
 }
 
 /// `LOCK TABLE` in `mode`, as the table's owner.

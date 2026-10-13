@@ -230,7 +230,6 @@ pub struct TriggerProblems {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn trigger_problems() -> TViewResult<TriggerProblems> {
-    let kind = crate::catalog::registered::mapping_kind_sql("m", "r.relid");
     let query = format!(
         "WITH ours AS ( \
              SELECT t.tgname, t.tgrelid, p.proname, t.tgenabled, \
@@ -245,12 +244,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                AND t.tgparentid = 0 \
          ), \
          reads AS ( \
-             SELECT DISTINCT r.entity, r.relid, c.relkind, \
-                    r.relid IN (SELECT table_oid::oid FROM {meta}) AS tview, \
-                    {kind} AS kind \
-             FROM {schema}.pg_tview_reads r \
-             JOIN {meta} m ON m.entity = r.entity \
-             JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
+             {reads} \
          ), \
          planned AS ( \
              SELECT r.entity, r.relid, r.relkind, f.proname \
@@ -299,7 +293,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
          FROM ours o WHERE o.tgenabled = 'D' \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
-        meta = crate::catalog::meta_table(),
+        reads = crate::catalog::registered::reads_with_kind_sql(),
     );
     Spi::connect(|client| {
         let mut problems = TriggerProblems::default();

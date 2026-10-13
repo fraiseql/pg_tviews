@@ -82,63 +82,6 @@ fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
         .map_err(|e| e.report_in(&format!("Failed to re-register TVIEW {tview}")))
 }
 
-// pg_tviews_reregister_all(): an operator's, like the functions in
-// `super::maintenance`. Every TVIEW, dependencies first: an entity comes after every TVIEW its backing
-// view reads, through views. Each runs in its own subtransaction, so a failure
-// becomes that entity's status and the others go on; `strict` raises at the end.
-extension_sql!(
-    r"
-CREATE FUNCTION @extschema@.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
-RETURNS TABLE (entity TEXT, status TEXT)
-LANGUAGE plpgsql
-AS $$
-#variable_conflict use_column
-DECLARE
-    next_entity TEXT;
-    failures INTEGER := 0;
-BEGIN
-    FOR next_entity IN
-        WITH RECURSIVE edges(entity, dependency) AS (
-            SELECT DISTINCT r.entity, m.entity
-            FROM @extschema@.pg_tview_reads r
-            JOIN @extschema@.pg_tview_meta m
-              ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
-            WHERE m.entity <> r.entity
-        ),
-        depth(entity, level) AS (
-            SELECT m.entity, 0 FROM @extschema@.pg_tview_meta m
-          UNION
-            SELECT e.entity, d.level + 1
-            FROM depth d JOIN edges e ON e.dependency = d.entity
-            WHERE d.level < 100
-        )
-        SELECT d.entity FROM depth d GROUP BY d.entity ORDER BY max(d.level), d.entity
-    LOOP
-        entity := next_entity;
-        BEGIN
-            PERFORM @extschema@.pg_tviews_reregister(next_entity);
-            status := 'reregistered';
-        EXCEPTION WHEN OTHERS THEN
-            status := SQLERRM;
-            failures := failures + 1;
-        END;
-        RETURN NEXT;
-    END LOOP;
-    IF strict AND failures > 0 THEN
-        RAISE EXCEPTION 'pg_tviews: % TVIEW(s) could not be re-registered', failures
-            USING HINT = 'SELECT * FROM tviews.pg_tviews_reregister_all() lists them';
-    END IF;
-END;
-$$;
-    ",
-    name = "reregister_all",
-    requires = [
-        pg_tviews_reregister,
-        "create_metadata_tables",
-        "tview_reads"
-    ],
-);
-
 /// Rebuild a TVIEW from its backing view, then every TVIEW reading it, in
 /// dependency order, each as its owner.
 #[pg_extern]

@@ -399,18 +399,7 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
                 &raw mut typmod,
             );
         }
-        let from = crate::utils::spi::one::<pg_sys::Oid>(
-            &format!(
-                "SELECT a.atttypid FROM {} m JOIN pg_catalog.pg_attribute a \
-                 ON a.attrelid = m.view_oid::pg_catalog.oid \
-                 WHERE m.table_oid::pg_catalog.oid = $1 AND a.attname = $2 AND NOT a.attisdropped",
-                crate::catalog::meta_table()
-            ),
-            &[
-                crate::utils::spi::oid(relid),
-                crate::utils::spi::text(column.as_str()),
-            ],
-        )?;
+        let from = crate::catalog::queries::view_column_type(relid, column.as_str())?;
         let fixed = column == "id" || column == "data" || column.starts_with("pk_");
         // SAFETY: catalog lookups on two type OIDs.
         let writable = !fixed
@@ -476,7 +465,7 @@ impl FollowUps {
         }
         // SAFETY: as above.
         let extension_drop = unsafe { drops_pg_tviews(pstmt) }.then(|| {
-            crate::ddl::drop::backing_views().unwrap_or_else(|e| {
+            crate::catalog::queries::extension_backing_views().unwrap_or_else(|e| {
                 e.raise_in("pg_tviews: could not read the backing views before DROP EXTENSION")
             })
         });
