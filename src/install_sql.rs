@@ -664,6 +664,18 @@ DECLARE
                                  WHERE d.datname = current_database());
     chosen       TEXT;
     qualified    TEXT;
+    doc_bytes    FLOAT8;
+    -- The fan-out cost model (ADR 0233), measured 2026-10-13 on the stock
+    -- PostgreSQL 18.4 release package: a write costs a fixed part plus a part per
+    -- embedding row it patches, and writes WAL per row in proportion to the
+    -- document. Documents over toasted_doc bytes are stored out of line and
+    -- rewritten whole.
+    fixed_ms       CONSTANT FLOAT8 := 0.15;
+    inline_row_ms  CONSTANT FLOAT8 := 0.0028;
+    toasted_row_ms CONSTANT FLOAT8 := 0.021;
+    inline_wal     CONSTANT FLOAT8 := 0.7;
+    toasted_wal    CONSTANT FLOAT8 := 1.2;
+    toasted_doc    CONSTANT FLOAT8 := 2000;
 BEGIN
     -- The TVIEW named as every function names one (ADR 0211).
     IF tview IS NOT NULL THEN
@@ -769,6 +781,19 @@ BEGIN
                   WHERE s.schemaname = r.nsp AND s.tablename = r.tbl
                     AND s.attname = ANY (r.lookups) AND r.reltuples > 0) x);
 
+        -- What one parent change costs at that p99, by the model: its documents
+        -- are the table's bytes per row.
+        doc_bytes := (heap_bytes + toast_bytes) / greatest(r.reltuples, 1);
+        fanout := (
+            SELECT jsonb_object_agg(e.key, e.value || jsonb_build_object(
+                       'p99_ms_per_write', round((fixed_ms + (e.value->>'p99')::FLOAT8 *
+                           CASE WHEN doc_bytes > toasted_doc THEN toasted_row_ms
+                                ELSE inline_row_ms END)::NUMERIC, 2),
+                       'p99_wal_bytes_per_write', round((e.value->>'p99')::FLOAT8 * doc_bytes *
+                           CASE WHEN doc_bytes > toasted_doc THEN toasted_wal
+                                ELSE inline_wal END)))
+            FROM jsonb_each(fanout) e);
+
         warnings := ARRAY[]::TEXT[];
         FOREACH col IN ARRAY missing_propagation_indexes LOOP
             warnings := warnings || format(
@@ -811,11 +836,13 @@ BEGIN
                 '%s%% of the table is TOAST: each refresh rewrites whole data documents (see docs/adr/0094-large-document-refresh.md)',
                 round(100.0 * toast_bytes / (heap_bytes + toast_bytes)));
         END IF;
-        FOR f IN SELECT key, (value->>'p99')::BIGINT AS p99 FROM jsonb_each(fanout) ORDER BY key LOOP
+        FOR f IN SELECT key, (value->>'p99')::BIGINT AS p99, value->>'p99_ms_per_write' AS ms,
+                        (value->>'p99_wal_bytes_per_write')::BIGINT AS wal
+                 FROM jsonb_each(fanout) ORDER BY key LOOP
             IF f.p99 > fanout_warn THEN
                 warnings := warnings || format(
-                    'p99 fan-out through %s is about %s rows per key: one parent change refreshes that many rows',
-                    f.key, f.p99);
+                    'p99 fan-out through %s is about %s rows per key: one parent change refreshes that many rows, about %s ms and %s of WAL per write (see docs/user-guides/architects.md#fan-out)',
+                    f.key, f.p99, f.ms, pg_size_pretty(f.wal));
             END IF;
         END LOOP;
         IF r.pers = 'u' THEN

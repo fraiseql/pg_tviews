@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (counted through the lookup index, only while the guard is on) and a full
   refresh's rows are charged; explicit rebuilds, including the catch-up of a
   suspended transaction, are not.
+- **`pg_tviews_profile()` projects what each fan-out costs per write** (#233):
+  `fanout` gains `p99_ms_per_write` and `p99_wal_bytes_per_write` per lookup column,
+  from the measured model (ADR 0233) and the TVIEW's bytes per row, and the fan-out
+  warning says them and points to the architects guide's fan-out section.
 
 ### Changed (breaking)
 
