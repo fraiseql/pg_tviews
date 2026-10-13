@@ -91,6 +91,8 @@ The `pg_tviews.` prefix is reserved: setting a removed name fails. A `postgresql
 | Setting | Context | Why |
 |---|---|---|
 | `max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `lock_escalation_threshold` | superuser | decide whether a write or a creation succeeds: the same for every session |
+| `max_refresh_rows` | superuser | decides whether a write succeeds ([ADR 0233](0233-fanout-cost-and-guard.md)) |
+| `publish_changes` | superuser | what other sessions observe: listeners rely on it ([ADR 0231](0231-publish-changes.md)) |
 | `audit_enabled` | superuser | an audit the audited cannot turn off |
 | `graph_cache_enabled`, `table_cache_enabled`, `direct_patch_enabled`, `test_skip_ctas_intercept` | superuser, hidden from `SHOW ALL` | diagnostics; results are the same either way |
 | `batch_size`, `cache_size` | user | performance only |
