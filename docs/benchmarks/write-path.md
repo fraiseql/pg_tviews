@@ -40,6 +40,30 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.29 against 0.1.0-beta.28
+
+Stock PostgreSQL 18.4 (Arch), release builds, data directory on NVMe with `fsync` on (a
+plain write costs ~0.5 ms here, mostly the commit), pgbench one client, 10 s per run, a
+fresh copy of the seeded database per run, three interleaved rounds, ms per write;
+`publish_changes` and `max_refresh_rows` at their defaults (off). "beta.28" is 0f010972.
+
+| write | beta.28 | beta.29 | | WAL B, beta.28 | WAL B, beta.29 |
+|---|---:|---:|---:|---:|---:|
+| `bio` | 0.574 / 0.556 / 0.569 | 0.574 / 0.560 / 0.550 | −0.9 % | 14,779 | 14,751 |
+| `title` | 0.552 / 0.561 / 0.542 | 0.553 / 0.543 / 0.560 | +0.1 % | 11,382 | 11,390 |
+| `username` | 0.858 / 0.860 / 0.869 | 0.857 / 0.860 / 0.865 | −0.2 % | 44,011 | 44,069 |
+| `comment_insert` | 0.526 / 0.537 / 0.528 | 0.540 / 0.518 / 0.517 | −1.0 % | 6,080 | 6,016 |
+| `bio_bulk100` | 6.722 / 6.736 / 6.748 | 6.882 / 6.912 / 6.927 | +2.5 % | 1,412,717 | 1,417,250 |
+| fan-out 1 (`fanout.sql`) | 0.513 / 0.521 / 0.529 | 0.534 / 0.525 / 0.533 | +1.9 % | 1,168 | 1,170 |
+| fan-out 1,000 | 4.038 / 4.044 / 4.061 | 4.139 / 4.142 / 4.121 | +2.1 % | 884,827 | 896,980 |
+| `username_two_hop` (`shapes.sql`) | 1.364 / 1.360 / 1.365 | 0.749 / 0.752 / 0.747 | −45 % | 28,754 | 22,067 |
+
+Writes that change a thousand TVIEW rows cost about 2 % more: each refresh write now
+returns the rows' public ids, so that `pg_tviews_flush_and_report()` and the change feed
+never look rows up again. A multi-key refresh of an aggregate TVIEW no longer evaluates its
+view a second time (fraiseql/pg_tviews#237, not in this table: 17× on 100 keys, 140× on
+2 keys of a 5,000-group aggregate).
+
 ## Where the time went
 
 Before, a `bio` write cost ~1.3 ms more than the plain write
