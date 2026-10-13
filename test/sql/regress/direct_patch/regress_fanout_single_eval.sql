@@ -13,7 +13,6 @@
 -- rows' new values only, never in a filter.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_fanout_single_eval.sql
--- known-failing: #238
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;

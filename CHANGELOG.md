@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below a GROUP BY, so a multi-key write to an aggregate TVIEW computed every one of
   its groups. A batch whose keys all produced a row deletes nothing and runs no
   delete.
+- **A fan-out patch builds each embedding row's document once** (#238): the guard
+  that leaves alone rows already holding the values compares the values at the
+  patched paths, not the whole document with a second copy of it.
 
 ## [0.1.0-beta.28] - not yet released
 
