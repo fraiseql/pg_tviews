@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pg_tviews.max_refresh_rows` caps the TVIEW rows one statement's refresh
+  writes** (#233, ADR 0233): `0` (the default) is no limit; superuser. Above it the
+  statement fails with `54000` before writing them, naming the TVIEW, how it would
+  be written (`via fk_cat`, `by key`, `by a full refresh`), the count and the limit;
+  its write rolls back with it. Recomputed keys, patched rows, fan-out children
+  (counted through the lookup index, only while the guard is on) and a full
+  refresh's rows are charged; explicit rebuilds, including the catch-up of a
+  suspended transaction, are not.
+
 ### Changed (breaking)
+
+- **`QueueFull` is `RefreshLimit`**: the same `54000`, message and hint for the
+  queue limit, now one variant with the rows limit.
 
 - **`pg_tviews_rebuild_all()` reports the rows it inserted** (#236): its second
   column is `rows_inserted` (was `rows`, the table's size after the fill). A

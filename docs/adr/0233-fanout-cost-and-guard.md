@@ -67,10 +67,11 @@ An integer, `0` (off, the default) up to 2,147,483,647, **superuser** context li
   - a full refresh: by the TVIEW's `reltuples`, an estimate.
   When the rows charged so far plus the next batch exceed the limit, the statement fails
   before that batch is written, and the base write rolls back with it.
-- A resume of suspended triggers, or a commit that ends a suspension, is one flush and is
-  charged. The remedy for a bulk change is `pg_tviews_suspend_triggers()`, the change, then
-  `pg_tviews_refresh('tv_…')`. That refresh is an explicit full refresh, not a write's flush,
-  and is not charged.
+- Explicit rebuilds are not charged: `pg_tviews_refresh()`, `pg_tviews_rebuild_all()`, and
+  the catch-up that rebuilds the TVIEWs a suspended transaction changed, at
+  `pg_tviews_resume_triggers()` or at commit. They are the remedy for a bulk change:
+  `pg_tviews_suspend_triggers()`, the change, then the resume or the commit (or
+  `pg_tviews_refresh('tv_…')`).
 - Off costs one integer comparison per flush, with no count queries.
 
 ### 3. One error for refresh limits
@@ -82,7 +83,7 @@ refresh"), the count and the limit:
 
 ```
 pg_tviews: refreshing tv_item via fk_cat would write 10000 rows in one statement (max_refresh_rows = 5000)
-HINT: Don't embed this entity in tv_item, batch the change offline, or call pg_tviews_suspend_triggers() before it and pg_tviews_refresh('tv_item') after.
+HINT: Don't embed this entity in tv_item, batch the change offline, or make it after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt once, at resume or commit.
 ```
 
 ### 4. No deferred refresh before 1.0

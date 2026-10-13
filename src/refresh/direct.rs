@@ -180,6 +180,28 @@ pub fn apply_fanout_patch(
     Ok(changed)
 }
 
+/// The rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`: the children a
+/// fan-out of those keys writes, counted through the lookup index with the
+/// statement shapes [`write_fanout`] uses.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TViewResult<u64> {
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(0);
+    };
+    let sql = format!(
+        "SELECT pg_catalog.count(*) FROM {} t WHERE {}",
+        crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
+    );
+    let rows = crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?;
+    Ok(rows
+        .first()
+        .and_then(|row| row.first()?.as_deref()?.parse().ok())
+        .unwrap_or(0))
+}
+
 /// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
 /// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
 /// at each path, the paths bound as parameters. The pks written.
