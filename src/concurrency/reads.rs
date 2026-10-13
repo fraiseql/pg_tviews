@@ -106,7 +106,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
         .join(" UNION ALL ");
     let args = [crate::refresh::key_array(&key_type, keys)?];
     let mut values: Vec<Vec<String>> = vec![Vec::new(); sets.len()];
-    for row in crate::utils::spi::kept_rows(&sql, &args)? {
+    for row in crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)? {
         if let [Some(i), Some(value)] = row.as_slice()
             && let Ok(i) = i.parse::<usize>()
             && let Some(set) = values.get_mut(i)

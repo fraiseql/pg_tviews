@@ -1,0 +1,137 @@
+-- Regression test (#235): a write looks its children up through the lookup
+-- index on a freshly built TVIEW.
+--
+-- The statements that find a parent's children (the fan-out UPDATE, its
+-- REPEATABLE READ cross-check, parent discovery) took the keys as an array and
+-- ran from a plan made once, without them. That plan assumed ten keys, each
+-- matching the average number of rows per lookup value; when the lookup column
+-- has few distinct values (categories, statuses, small parents) it estimated a
+-- large share of the table and hash-joined over a sequential scan of the whole
+-- child TVIEW, on every write. One key is now looked up by `= $1` from a plan
+-- whose estimate is one key's, and several keys are planned for their count.
+--
+-- Each write is counted in pg_stat_xact_user_tables inside its own transaction:
+-- the backend's pending counters reach the shared statistics only once it is
+-- idle outside a transaction, so a before/after delta there is exact, with no
+-- timing and no wait.
+--
+--   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/cascade/regress_fanout_fresh_plan.sql
+
+\set ON_ERROR_STOP on
+SET client_min_messages TO WARNING;
+
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
+
+-- `cats` categories of `per` items each, tv_item embedding the category's name
+-- (copied from tb_cat, or tv_cat's document when `embedded`), freshly analyzed.
+CREATE FUNCTION build(cats int, per int, embedded boolean) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF to_regclass('tv_item') IS NOT NULL THEN PERFORM tviews.pg_tviews_drop('tv_item'); END IF;
+    IF to_regclass('tv_cat') IS NOT NULL THEN PERFORM tviews.pg_tviews_drop('tv_cat'); END IF;
+    DROP TABLE IF EXISTS tb_item, tb_cat;
+    CREATE TABLE tb_cat (pk_cat int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                         name text NOT NULL);
+    CREATE TABLE tb_item (pk_item int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                          fk_cat int NOT NULL REFERENCES tb_cat, title text NOT NULL);
+    CREATE INDEX ON tb_item (fk_cat);
+    INSERT INTO tb_cat (pk_cat, name) SELECT g, 'cat ' || g FROM generate_series(1, cats) g;
+    INSERT INTO tb_item (pk_item, fk_cat, title)
+        SELECT (c - 1) * per + i, c, repeat('t', 300)
+        FROM generate_series(1, cats) c, generate_series(1, per) i;
+    PERFORM tviews.pg_tviews_create('tv_cat', $q$
+        SELECT c.pk_cat, c.id, jsonb_build_object('id', c.id, 'name', c.name) AS data
+        FROM tb_cat c $q$);
+    IF embedded THEN
+        PERFORM tviews.pg_tviews_create('tv_item', $q$
+            SELECT i.pk_item, i.id, i.fk_cat,
+                   jsonb_build_object('title', i.title, 'category', c.data) AS data
+            FROM tb_item i JOIN tv_cat c ON c.pk_cat = i.fk_cat $q$);
+    ELSE
+        PERFORM tviews.pg_tviews_create('tv_item', $q$
+            SELECT i.pk_item, i.id, i.fk_cat,
+                   jsonb_build_object('title', i.title,
+                                      'category', jsonb_build_object('name', c.name)) AS data
+            FROM tb_item i JOIN tb_cat c ON c.pk_cat = i.fk_cat $q$);
+    END IF;
+    ANALYZE tb_cat, tb_item, tv_cat, tv_item;
+END $$;
+
+-- The sequential scans of tv_item while `write` runs, in the caller's transaction.
+CREATE FUNCTION seq_scans_during(write text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE before bigint;
+BEGIN
+    SELECT seq_scan INTO before FROM pg_stat_xact_user_tables WHERE relid = 'tv_item'::regclass;
+    EXECUTE write;
+    RETURN (SELECT seq_scan FROM pg_stat_xact_user_tables WHERE relid = 'tv_item'::regclass)
+           - before;
+END $$;
+
+CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#235 FAIL: %', what; END IF; END $$;
+
+-- Every row of tv_item is the one its backing view computes.
+CREATE FUNCTION fresh() RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN NOT EXISTS ((SELECT pk_item, data FROM tv_item
+                        EXCEPT SELECT pk_item, data FROM tviews.public__tv_item)
+                       UNION ALL (SELECT pk_item, data FROM tviews.public__tv_item
+                                  EXCEPT SELECT pk_item, data FROM tv_item));
+END $$;
+
+-- The write in its own transaction: no sequential scan of tv_item, children fresh.
+CREATE FUNCTION check_write(label text, write text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE scans bigint := seq_scans_during(write);
+BEGIN
+    PERFORM must(scans = 0, format('%s: %s seq scan(s) of tv_item', label, scans));
+    PERFORM must(fresh(), format('%s: tv_item is stale', label));
+END $$;
+
+-- 1. One category at READ COMMITTED: the fan-out UPDATE.
+SELECT build(20, 50, false);
+SELECT check_write('one key, READ COMMITTED',
+                   $$UPDATE tb_cat SET name = 'one' WHERE pk_cat = 2$$);
+SELECT must(count(*) = 50, 'one key: the 50 children hold the new name')
+FROM tv_item WHERE data #>> '{category,name}' = 'one';
+
+-- 2. Two categories in one statement: one fan-out UPDATE for both keys.
+SELECT build(100, 20, false);
+SELECT check_write('two keys, READ COMMITTED',
+                   $$UPDATE tb_cat SET name = 'two' WHERE pk_cat IN (2, 3)$$);
+SELECT must(count(*) = 40, 'two keys: the 40 children hold the new name')
+FROM tv_item WHERE data #>> '{category,name}' = 'two';
+
+-- 3. Both shapes write exactly the children a key has when the statement ends:
+--    none, or children another write in the same statement moved to it. The
+--    patches counted include the categories' own tv_cat rows.
+CREATE FUNCTION patched_during(write text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE before bigint := (tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::bigint;
+BEGIN
+    EXECUTE write;
+    RETURN (tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::bigint - before;
+END $$;
+DELETE FROM tb_item WHERE fk_cat IN (5, 6);
+SELECT must(patched_during($$UPDATE tb_cat SET name = 'none' WHERE pk_cat = 5$$) = 1,
+            'one key without children: only its tv_cat row written');
+SELECT must(patched_during($$UPDATE tb_cat SET name = 'some' WHERE pk_cat IN (6, 7)$$) = 22,
+            'two keys, one without children: their tv_cat rows and the 20 children written');
+SELECT must(fresh(), 'keys without children: tv_item is stale');
+WITH moved AS (UPDATE tb_item SET fk_cat = 9 WHERE fk_cat = 8 RETURNING 1)
+UPDATE tb_cat SET name = 'moved' WHERE pk_cat = 9;
+SELECT must(count(*) = 40, 'one key: the children moved to it hold its new name')
+FROM tv_item WHERE fk_cat = 9 AND data #>> '{category,name}' = 'moved';
+WITH moved AS (UPDATE tb_item SET fk_cat = 11 WHERE fk_cat = 10 RETURNING 1)
+UPDATE tb_cat SET name = 'moved too' WHERE pk_cat IN (11, 12);
+SELECT must(count(*) = 60, 'two keys: the children moved to them hold their new name')
+FROM tv_item WHERE fk_cat IN (11, 12) AND data #>> '{category,name}' = 'moved too';
+SELECT must(fresh(), 'moved children: tv_item is stale');
+
+-- 4. Control: with 1,000 categories of 2 items the lookup column is selective
+--    enough for any plan, so a scan here would be the test's, not the write's.
+SELECT build(1000, 2, false);
+SELECT check_write('control, 1,000 categories', $$UPDATE tb_cat SET name = 'six' WHERE pk_cat = 2$$);
+
+SELECT 'fan-out fresh plan: PASS' AS result;
+-- expect-output: fan-out fresh plan: PASS

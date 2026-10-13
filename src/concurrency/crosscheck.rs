@@ -47,9 +47,17 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
         crate::refresh::key_cast(&key_type, "$1", true)
     );
     let args = [crate::refresh::key_array(&key_type, keys)?];
-    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args)?);
+    let seen = sorted(crate::utils::spi::kept_rows(
+        &sql,
+        &args,
+        crate::utils::spi::Plan::Generic,
+    )?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(&sql, &args, true)
+        crate::utils::spi::latest_rows_connected(
+            &sql,
+            &args,
+            Some(crate::utils::spi::Plan::Generic),
+        )
     })?);
     if seen != latest {
         super::serialization_failure(
@@ -70,16 +78,21 @@ pub fn discovered(found: &[TextRow], latest: &[TextRow]) {
     }
 }
 
-/// Writer side, for a query run on its own: `sql` returns, under the latest
-/// snapshot, no row missing from `found`.
+/// Writer side, for a query run on its own: `sql`, kept with `plan`, returns
+/// under the latest snapshot no row missing from `found`.
 ///
 /// # Errors
 /// Returns an error if the query fails; a missed row raises 40001.
-pub fn discovered_by(sql: &str, args: &[DatumWithOid<'_>], found: &[TextRow]) -> TViewResult<()> {
+pub fn discovered_by(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: crate::utils::spi::Plan,
+    found: &[TextRow],
+) -> TViewResult<()> {
     if !enabled() {
         return Ok(());
     }
-    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args, true))?;
+    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args, Some(plan)))?;
     discovered(found, &latest);
     Ok(())
 }

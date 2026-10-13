@@ -158,7 +158,11 @@ fn find_affected_keys_batch(
         }
         // REPEATABLE READ: no parent row the latest snapshot holds is missed.
         if crate::concurrency::crosscheck::enabled() {
-            let latest = crate::utils::spi::latest_rows_connected(&query, &args, true)?;
+            let latest = crate::utils::spi::latest_rows_connected(
+                &query,
+                &args,
+                Some(crate::utils::spi::Plan::Generic),
+            )?;
             crate::concurrency::crosscheck::discovered(&found, &latest);
         }
         Ok::<_, crate::TViewError>(result)

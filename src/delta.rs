@@ -792,7 +792,7 @@ fn crosscheck_keys(sql: &str, args: &[DatumWithOid<'_>], keys: &[KeyValue]) -> T
     if !crate::concurrency::crosscheck::enabled() {
         return Ok(());
     }
-    let latest = crate::utils::spi::latest_rows_connected(sql, args, false)?;
+    let latest = crate::utils::spi::latest_rows_connected(sql, args, None)?;
     let found: Vec<crate::concurrency::crosscheck::TextRow> =
         keys.iter().map(|k| vec![Some(k.to_string())]).collect();
     crate::concurrency::crosscheck::discovered(&found, &latest);

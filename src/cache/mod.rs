@@ -80,9 +80,10 @@ thread_local! {
     pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
     /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
     pub static LOCK_VALUES: Memo<(u32, i16), Option<crate::concurrency::LockValue>> = Memo::new();
-    /// SQL → its kept plan, for the queries every refresh runs (PostgreSQL
-    /// revalidates a kept plan when what it reads changes).
-    pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
+    /// `(how it is planned, SQL)` → its kept statement, for the queries every
+    /// refresh runs (PostgreSQL revalidates a kept plan when what it reads changes).
+    pub static PLANS: Memo<(crate::utils::spi::Plan, String), std::rc::Rc<crate::utils::spi::KeptPlan>> =
+        Memo::new();
     /// `(SQL, argument types, mutating, the table whose transition tables it
     /// reads)` → the statement kept for the backend.
     pub static STATEMENTS: Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =

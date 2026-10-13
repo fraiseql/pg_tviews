@@ -8,6 +8,7 @@
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::queue::patch::PatchEntry;
+use crate::utils::spi::LookupKeys;
 use pgrx::datum::DatumWithOid;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -108,13 +109,15 @@ fn apply_direct_patch(
     for path in path_args {
         args.push(crate::utils::spi::text_array(path));
     }
-    Ok(crate::utils::spi::kept_rows(&sql, &args)?
-        .into_iter()
-        .filter_map(|row| match &row[..] {
-            [Some(pk), Some(changed)] => Some((pk.parse().ok()?, changed == "t")),
-            _ => None,
-        })
-        .collect())
+    Ok(
+        crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)?
+            .into_iter()
+            .filter_map(|row| match &row[..] {
+                [Some(pk), Some(changed)] => Some((pk.parse().ok()?, changed == "t")),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 /// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
@@ -159,8 +162,13 @@ pub fn apply_fanout_patch(
         );
         let args = [crate::utils::spi::int8_array(keys)];
         // Read-write, as the patch: its snapshot sees this flush's own writes.
-        let found = crate::utils::spi::kept_rows(&lookup, &args)?;
-        crate::concurrency::crosscheck::discovered_by(&lookup, &args, &found)?;
+        let found = crate::utils::spi::kept_rows(&lookup, &args, crate::utils::spi::Plan::Generic)?;
+        crate::concurrency::crosscheck::discovered_by(
+            &lookup,
+            &args,
+            crate::utils::spi::Plan::Generic,
+            &found,
+        )?;
     }
     crate::metrics::metrics_api::record_direct_patches_applied(
         &meta.entity_name,
@@ -178,9 +186,15 @@ pub fn apply_fanout_patch(
 
 /// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
 /// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
-/// at each path, the paths bound as parameters. The keys come as an array, which
-/// the planner counts, so it looks the rows up by `lookup_col`'s index. The pks
-/// written.
+/// at each path, the paths bound as parameters. The pks written.
+///
+/// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
+/// a generic plan of a join with an array assumes ten keys, each matching
+/// `lookup_col`'s average number of rows, and on a TVIEW whose lookup column
+/// has few distinct values it scans the whole table for a few rows. One key,
+/// a write to one parent, is compared with `=` from a generic plan, whose
+/// estimate is the rows of one value; several are joined from the arrays,
+/// planned at each execution for their count.
 fn write_fanout(
     meta: &TviewMeta,
     lookup_col: &str,
@@ -188,26 +202,38 @@ fn write_fanout(
     keys: Vec<i64>,
     values: Vec<pgrx::JsonB>,
 ) -> TViewResult<Vec<i64>> {
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(Vec::new());
+    };
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
+    // The rows written, and where each one's values come from.
+    let (from, filter, value) = match lookup {
+        LookupKeys::One(_) => (
+            "",
+            lookup.predicate(&format!("t.{qi_lookup}"), 1),
+            "($2::pg_catalog.jsonb[])[1]",
+        ),
+        LookupKeys::Many(_) => (
+            " FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
+                              pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v)",
+            format!("t.{qi_lookup} = f.k"),
+            "f.v",
+        ),
+    };
     let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
         format!(
-            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], f.v -> {i})",
+            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], {value} -> {i})",
             i + 3
         )
     });
     let sql = format!(
-        "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now() \
-         FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
-                         pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v) \
-         WHERE t.{qi_lookup} = f.k AND t.data IS DISTINCT FROM {patched} \
+        "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
+         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
          RETURNING t.{qi_pk}::pg_catalog.int8"
     );
-    let mut args = vec![
-        crate::utils::spi::int8_array(keys),
-        pgrx::datum::DatumWithOid::from(values),
-    ];
+    let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
     for key in paths {
         let path = crate::queue::patch::fanout_path(key).ok_or_else(|| {
             crate::error::TViewError::SerializationError {
@@ -216,7 +242,7 @@ fn write_fanout(
         })?;
         args.push(crate::utils::spi::text_array(path));
     }
-    Ok(crate::utils::spi::kept_rows(&sql, &args)?
+    Ok(crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?
         .into_iter()
         .filter_map(|row| row.first()?.as_deref()?.parse().ok())
         .collect())
