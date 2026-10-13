@@ -207,8 +207,10 @@ PostgreSQL 18.4 release package, one client):
 | ~1 KB, inline | recompute | ~0.2 ms | ~8 µs | ~0.8-1 KB |
 | ~4 KB, TOASTed | patch or recompute | ~0.25 ms | ~21-30 µs | ~5-6 KB |
 
-A TOASTed document is rewritten whole, so the patch saves nothing there. With ~1 KB
-documents:
+A TOASTed document is rewritten whole, so the patch saves nothing there. The patch reaches
+an embed one join away (`tb_post.fk_author → tb_user`) or two (`tb_comment → tb_post →
+tb_user`, found through the table in between); arrays of embedded rows (`jsonb_agg`) and
+embeds three joins away are recomputed. With ~1 KB documents:
 
 | fan-out N | per write | WAL per write | at 10 writes/s | at 100 writes/s |
 |---:|---:|---:|---|---|

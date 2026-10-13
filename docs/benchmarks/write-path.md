@@ -59,8 +59,8 @@ from a statement trigger before any query when the TVIEW reads none of the chang
 columns, and keeps and shares its catalog caches for the backend. What remains is the
 work itself: the patch of the TVIEW rows, the value locks, and the trigger calls.
 
-Still recomputed: arrays of embedded rows (`jsonb_agg`) and embeds two joins away
-(fraiseql/pg_tviews#228).
+Embeds two joins away are patched in place since 0.1.0-beta.29; arrays of embedded
+rows (`jsonb_agg`) are still recomputed (fraiseql/pg_tviews#228, below).
 
 ## Arrays of embedded rows and two-hop embeds
 
@@ -71,10 +71,14 @@ commented on) and into `tv_comment.post.author` (the 50 comments on a user's pos
 200 username writes in one transaction (no round trips, no commit), stock PostgreSQL
 18.4, three rounds, ms per write:
 
-| shape | rows | recompute (0.1.0-beta.29 before #228) | hand-written patch | plain write |
-|---|---:|---:|---:|---:|
-| array of embedded rows | 10 posts | 0.53 / 0.55 / 0.56 | 0.25 / 0.25 / 0.21 | 0.01-0.02 |
-| two hops | 50 comments | 1.00 / 1.02 / 1.03 | 0.27 / 0.27 / 0.25 | 0.01-0.03 |
+| shape | rows | recompute | pg_tviews patch | hand-written patch | plain write |
+|---|---:|---:|---:|---:|---:|
+| array of embedded rows | 10 posts | 0.53 / 0.55 / 0.56 | (recomputes) | 0.25 / 0.25 / 0.21 | 0.01-0.02 |
+| two hops | 50 comments | 1.01 / 1.03 / 1.02 | 0.47 / 0.47 / 0.47 | 0.28 / 0.25 / 0.24 | 0.01-0.04 |
+
+Two hops: 2.2× less work per write. Arrays: the hand-written patch is 2.4× cheaper than the
+recompute, and a pg_tviews patch path would add its own overhead (0.05-0.1 ms at this
+fan-out), leaving about 1.8×, so they stay recomputed.
 
 ## How pg_tviews plans its statements
 
