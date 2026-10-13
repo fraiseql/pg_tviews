@@ -22,6 +22,12 @@ N in `FANOUTS` (default `1 10 100 1000 10000`) and `MODES` (`patch recompute pla
 prints ms and WAL bytes per write. `doc_bytes` 1000 (default) keeps the item documents
 inline; 4000 stores them TOASTed.
 
+`shapes.sh [seconds] [shape ...]` measures the two shapes of
+[#228](https://github.com/fraiseql/pg_tviews/issues/228) (`shapes.sql`, one TVIEW per
+database): a username copied into arrays of embedded rows (`array`) and across two hops
+(`two_hop`), with pg_tviews, with the patch path off, with the patch written by hand
+(`writes/*.manual.sql`) and plain.
+
 Every run starts on a fresh copy of the seeded template database (`CREATE DATABASE …
 STRATEGY FILE_COPY`), so no run measures a table an earlier one bloated.
 

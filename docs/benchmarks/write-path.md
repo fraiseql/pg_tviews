@@ -62,6 +62,20 @@ work itself: the patch of the TVIEW rows, the value locks, and the trigger calls
 Still recomputed: arrays of embedded rows (`jsonb_agg`) and embeds two joins away
 (fraiseql/pg_tviews#228).
 
+## Arrays of embedded rows and two-hop embeds
+
+`shapes.sh` measures the two shapes #228 names on the same seed, one TVIEW per database
+(`shapes.sql`): a username copied into `tv_post.comments[].author` (the 10 posts a user
+commented on) and into `tv_comment.post.author` (the 50 comments on a user's posts).
+`*.manual.sql` is the patch pg_tviews would generate, written by hand. Server-side time of
+200 username writes in one transaction (no round trips, no commit), stock PostgreSQL
+18.4, three rounds, ms per write:
+
+| shape | rows | recompute (0.1.0-beta.29 before #228) | hand-written patch | plain write |
+|---|---:|---:|---:|---:|
+| array of embedded rows | 10 posts | 0.53 / 0.55 / 0.56 | 0.25 / 0.25 / 0.21 | 0.01-0.02 |
+| two hops | 50 comments | 1.00 / 1.02 / 1.03 | 0.27 / 0.27 / 0.25 | 0.01-0.03 |
+
 ## How pg_tviews plans its statements
 
 The statements a write runs are prepared once per backend and kept. How each is
