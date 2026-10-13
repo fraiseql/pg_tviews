@@ -66,6 +66,7 @@ that matter in operations:
 |---|---|---|---|
 | `pg_tviews.auto_rebuild_databases` | `*` | postmaster | `*` refills the reset UNLOGGED TVIEWs of every database after a crash restart or promotion; a list restricts it to those databases; empty disables it (restart required) |
 | `pg_tviews.max_queue_size` | `1000000` | superuser | raise for transactions that queue more refreshes (else `54000`) |
+| `pg_tviews.publish_changes` | `off` | superuser | `rows` or `types` publishes each committed transaction's TVIEW changes on `tviews_changes` ([change feed](change-feed.md)) |
 | `pg_tviews.max_refresh_rows` | `0` (off) | superuser | cap on the TVIEW rows one statement's refresh writes (else `54000` before writing); see [fan-out](architects.md#fan-out) |
 | `pg_tviews.max_propagation_depth` | `100` | superuser | raise for very deep embed chains (else `54001`) |
 | `pg_tviews.max_dependency_depth` | `10` | superuser | raise for deeper view-on-view hierarchies |

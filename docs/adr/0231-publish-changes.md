@@ -68,7 +68,8 @@ per journaled row.
 - each message is under 8,000 bytes; a transaction sends at most **8 messages** (≈ 1,500
   UUIDs). Past that, the remaining types go to `t` of the last message.
 
-The grammar and examples live in the [change feed guide](../user-guides/change-feed.md).
+The grammar, examples and listener code live in the
+[change feed guide](../user-guides/change-feed.md), the one source for consumers.
 
 ### 4. The consumer contract
 

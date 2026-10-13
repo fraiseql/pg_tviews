@@ -103,7 +103,7 @@ tviews.pg_tviews_flush_and_report(
   apart from `invalidated_types`. They were still refreshed, and `reset` clears them too.
   `'{}'` reports nothing and omits every changed type. A name no TVIEW has fails with
   `22023`, before anything is reported or reset. `types` filters the report only, never
-  the change feed ([ADR 0231](../adr/0231-publish-changes.md)): a cache elsewhere needs every change.
+  the [change feed](change-feed.md): a cache elsewhere needs every change.
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
   kept per transaction, not counting reported ones (kept only until the
   subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
@@ -129,3 +129,7 @@ COMMIT;
 
 The report describes what this transaction wrote. Other transactions committing in
 between can change the same rows before yours commits.
+
+The report is for the mutation's own response, inside its transaction. Caches in other
+processes learn what committed transactions changed from the
+[change feed](change-feed.md) (`pg_tviews.publish_changes`).

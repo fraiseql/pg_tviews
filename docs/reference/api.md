@@ -678,7 +678,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `54001` | `statement_too_complex` | propagation or view nesting deeper than `pg_tviews.max_propagation_depth` / `max_dependency_depth` |
 | `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
 | `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued |
-| `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW |
+| `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
 | `22023` | `invalid_parameter_value` | an invalid argument or option |
 | `21000` | `cardinality_violation` | two rows for one key of a UNION TVIEW (ADR 0216) |
@@ -721,7 +721,8 @@ The settings are listed, with types and defaults, in the
 TVIEW is: that comes only from its definition and its [options](#options). The
 settings that decide whether a write or a creation succeeds
 (`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `max_refresh_rows`,
-`lock_escalation_threshold`) and `pg_tviews.audit_enabled` are a superuser's.
+`lock_escalation_threshold`), `pg_tviews.audit_enabled` and `pg_tviews.publish_changes`
+(what other sessions observe, [change feed](../user-guides/change-feed.md)) are a superuser's.
 `batch_size`, `cache_size` and `report_max_tracked` apply to each session.
 `pg_tviews.auto_rebuild_databases` is read at server start. Diagnostics are `DEBUG1`
 messages: `SET client_min_messages = debug1` shows them.
@@ -735,8 +736,9 @@ SHOW pg_tviews.max_propagation_depth;
 pg_tviews refreshes the TVIEWs before `PREPARE TRANSACTION`, so the refresh writes
 belong to the prepared transaction: `COMMIT PREPARED` applies them and
 `ROLLBACK PREPARED` discards them. Prepared transactions require
-`max_prepared_transactions > 0`. A transaction that refilled a reset UNLOGGED TVIEW
-cannot be prepared (`25000`).
+`max_prepared_transactions > 0`. A transaction that refilled a reset UNLOGGED TVIEW, or
+that has TVIEW changes to publish ([change feed](../user-guides/change-feed.md)), cannot
+be prepared (`25000`).
 
 ```text
 BEGIN;
