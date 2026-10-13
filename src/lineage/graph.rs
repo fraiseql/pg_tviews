@@ -259,6 +259,17 @@ pub enum Kind {
     AllKeys(String),
 }
 
+/// The columns a hop from a changed table to a column of the root joins on.
+struct HopColumns<'a> {
+    /// The changed table's column.
+    own: &'a Column,
+    /// The root's column, which the TVIEW projects for a fan-out.
+    root: &'a Column,
+    /// Through a table in between: its column joined to `own`, and its column
+    /// joined to `root`.
+    between: Option<(&'a Column, &'a Column)>,
+}
+
 /// How a write to a whole table maps to keys: the kinds of its occurrences combined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableLineage {
@@ -280,10 +291,14 @@ pub struct TableLineage {
     /// Expressions the mapping query looks rows up by (array membership, computed
     /// columns), with the index that serves each.
     pub index_hints: Vec<IndexHint>,
-    /// `mapped` through one equality onto a column of the root, `(column of this
-    /// table, column of the root)`: the TVIEW rows can be found by that column
-    /// when the TVIEW projects it (fan-out).
+    /// `mapped` through one equality onto a column of the root, or two through a
+    /// table in between, `(column of this table, column of the root)`: the TVIEW
+    /// rows can be found by that column when the TVIEW projects it (fan-out).
     pub hop: Option<(String, String)>,
+    /// With a `hop` through a table in between: the query from values of this
+    /// table's hop column (`$1`, `int8[]`) to the root column's values they reach,
+    /// as `(value, root value)` pairs.
+    pub via: Option<String>,
     /// With `hop`: the output column equal to the root's column, and the paths
     /// in `data` copying this table's columns, read nowhere else (`(column,
     /// path)`, a column at each path it is copied to): what an UPDATE of it can
@@ -694,32 +709,76 @@ impl QueryGraph {
     }
 
     /// `(column of occ, column of the root)` when `path` is one equality from `occ`
-    /// onto a column of the root other than the key.
+    /// onto a column of the root other than the key, or two through a table in
+    /// between ([`Self::hop_via`]).
     fn root_hop(&self, occ: usize, path: &[usize]) -> Option<(String, String)> {
+        let hop = self.hop_columns(occ, path)?;
+        Some((hop.own.name.clone(), hop.root.name.clone()))
+    }
+
+    /// The columns of a hop from `occ` to a column of the root other than the
+    /// key: the column of `occ`, the root's, and for two equalities the two
+    /// columns of the occurrence in between (joined to `occ`, joined to the root).
+    /// `None` for any other path.
+    fn hop_columns(&self, occ: usize, path: &[usize]) -> Option<HopColumns<'_>> {
         let root = self.root_at(occ, path)?;
         if root.expr.is_some() {
             return None;
         }
-        let [only] = path else { return None };
-        let (x, y) = self.conjuncts[*only].equality.as_ref()?;
-        let (own, other) = if x.occ == occ { (x, y) } else { (y, x) };
-        (other.occ == root.key.occ && *other != root.key)
-            .then(|| (own.name.clone(), other.name.clone()))
+        let sides = |i: usize, from: usize| {
+            let (x, y) = self.conjuncts[i].equality.as_ref()?;
+            if x.occ == from {
+                Some((x, y))
+            } else if y.occ == from {
+                Some((y, x))
+            } else {
+                None
+            }
+        };
+        let (own, other, via) = match path {
+            [only] => {
+                let (own, other) = sides(*only, occ)?;
+                (own, other, None)
+            }
+            [first, last] => {
+                let (own, joined) = sides(*first, occ)?;
+                let between = &self.occurrences[joined.occ];
+                if joined.occ == occ || joined.occ == root.key.occ || between.in_sublink {
+                    return None;
+                }
+                let (to_root, other) = sides(*last, joined.occ)?;
+                (own, other, Some((joined, to_root)))
+            }
+            _ => return None,
+        };
+        (other.occ == root.key.occ && *other != root.key).then_some(HopColumns {
+            own,
+            root: other,
+            between: via,
+        })
     }
 
-    /// The fan-out of a write to `occ`, one equality from a root column: the
+    /// For a hop through a table in between, the query from values of this
+    /// table's hop column (`$1`, `int8[]`) to the root column's values they reach:
+    /// `(value, root value)` pairs, read from that table.
+    fn hop_via(&self, occ: usize, path: &[usize]) -> Option<String> {
+        let (joined, to_root) = self.hop_columns(occ, path)?.between?;
+        let relid = self.occurrences[joined.occ].relid;
+        Some(format!(
+            "SELECT o.{{c:{relid}:{}}}::pg_catalog.int8, o.{{c:{relid}:{}}}::pg_catalog.int8 \
+             FROM {{r:{relid}}} o WHERE o.{{c:{relid}:{}}} = ANY ($1::pg_catalog.int8[])",
+            joined.attnum, to_root.attnum, joined.attnum
+        ))
+    }
+
+    /// The fan-out of a write to `occ`, one equality from a root column (or two,
+    /// through a table in between): the
     /// output column equal to that root column, and the paths in `data` that
     /// copy columns of `occ` read nowhere else. A path is a chain of
     /// `jsonb_build_object` keys (`FraiseQL` nests a joined entity as an object):
     /// the data walk follows nothing else to a field.
     fn fanout(&self, occ: usize, path: &[usize]) -> Option<(String, CopiedPaths)> {
-        let root = self.root_at(occ, path)?;
-        let [only] = path else { return None };
-        let (x, y) = self.conjuncts[*only].equality.as_ref()?;
-        let other = if x.occ == occ { y } else { x };
-        if other.occ != root.key.occ {
-            return None;
-        }
+        let other = self.hop_columns(occ, path)?.root;
         let lookup = self.output_equal_to(std::slice::from_ref(other))?;
         let data = self.data.as_ref()?;
         let fields: CopiedPaths = data
@@ -981,9 +1040,11 @@ impl QueryGraph {
                     [(occ, path)] if kind == TableKind::Mapped => self.root_hop(*occ, path),
                     _ => None,
                 };
-                let fanout = match paths.as_slice() {
-                    [(occ, path)] if hop.is_some() => self.fanout(*occ, path),
-                    _ => None,
+                let (fanout, via) = match paths.as_slice() {
+                    [(occ, path)] if hop.is_some() => {
+                        (self.fanout(*occ, path), self.hop_via(*occ, path))
+                    }
+                    _ => (None, None),
                 };
                 TableLineage {
                     relid,
@@ -997,6 +1058,7 @@ impl QueryGraph {
                     lookups,
                     index_hints,
                     hop,
+                    via,
                     fanout,
                     virtual_reads: Vec::new(),
                     matview: o.matview,
