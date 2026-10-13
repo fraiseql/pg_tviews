@@ -129,6 +129,9 @@ pub fn record(recorded: Recorded) {
         c.borrow_mut()
             .insert((recorded.entity.clone(), recorded.pk.clone()))
     });
+    if let Some(publish) = crate::config::publish_changes() {
+        super::published::add(publish, &recorded);
+    }
     let cap = crate::config::report_max_tracked();
     if cap == 0 {
         return;

@@ -28,6 +28,17 @@ pub enum Limit {
     },
 }
 
+/// Why a transaction cannot be prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareRefusal {
+    /// It claimed the refill of the reset UNLOGGED TVIEW `table`: every writer of
+    /// it would wait for `COMMIT PREPARED`.
+    Refill { table: String },
+    /// It changed TVIEW rows while `pg_tviews.publish_changes` is on: PostgreSQL
+    /// cannot carry a notification through PREPARE (ADR 0231).
+    Publish,
+}
+
 /// An error `pg_tviews` raises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
@@ -93,9 +104,9 @@ pub enum TViewError {
         key: String,
     },
 
-    /// PREPARE TRANSACTION of a transaction that claimed the refill of a reset
-    /// UNLOGGED TVIEW: every writer of it would wait for `COMMIT PREPARED`.
-    PrepareHoldsRefill { table: String },
+    /// PREPARE TRANSACTION of a transaction that must not wait for
+    /// `COMMIT PREPARED`.
+    PrepareRefused { reason: PrepareRefusal },
 
     /// Reading or writing the catalog failed (internal).
     CatalogError { operation: String, pg_error: String },
@@ -127,7 +138,7 @@ impl TViewError {
             Self::JsonbDeltaMissing => PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
             Self::RefreshLimit { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
-            Self::PrepareHoldsRefill { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
+            Self::PrepareRefused { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
             Self::DuplicateKey { .. } => PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
             Self::CatalogError { .. } | Self::SpiError { .. } | Self::SerializationError { .. } => {
                 PgSqlErrorCode::ERRCODE_INTERNAL_ERROR
@@ -202,9 +213,18 @@ impl TViewError {
                  keep one row per key with DISTINCT ON over the UNION, ordered by preference."
                     .into(),
             ),
-            Self::PrepareHoldsRefill { .. } => Some(
+            Self::PrepareRefused {
+                reason: PrepareRefusal::Refill { .. },
+            } => Some(
                 "Refill it in a transaction of its own first (any write to a table it reads), \
                  then run the work to prepare."
+                    .into(),
+            ),
+            Self::PrepareRefused {
+                reason: PrepareRefusal::Publish,
+            } => Some(
+                "Commit it without two-phase commit, or have a superuser turn publishing off \
+                 for the role that prepares (ALTER ROLE … SET pg_tviews.publish_changes = off)."
                     .into(),
             ),
             Self::CatalogError { .. } | Self::SerializationError { .. } => {
@@ -325,10 +345,19 @@ impl fmt::Display for TViewError {
                 f,
                 "TVIEW {tview}: its backing view returned multiple rows for {key_column}={key}"
             ),
-            Self::PrepareHoldsRefill { table } => write!(
+            Self::PrepareRefused {
+                reason: PrepareRefusal::Refill { table },
+            } => write!(
                 f,
                 "cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW {table}, \
                  and every writer of it would wait for COMMIT PREPARED"
+            ),
+            Self::PrepareRefused {
+                reason: PrepareRefusal::Publish,
+            } => write!(
+                f,
+                "cannot PREPARE TRANSACTION: it changed TVIEW rows while \
+                 pg_tviews.publish_changes is on, and a prepared transaction cannot publish them"
             ),
             Self::RefreshLimit {
                 limit: Limit::Queue { size, max },
@@ -431,7 +460,9 @@ mod tests {
                 limit: Limit::Queue { size: 1, max: 1 },
             },
             TViewError::WrongState { reason: s() },
-            TViewError::PrepareHoldsRefill { table: s() },
+            TViewError::PrepareRefused {
+                reason: PrepareRefusal::Publish,
+            },
             TViewError::DuplicateKey {
                 tview: s(),
                 key_column: s(),
@@ -465,7 +496,7 @@ mod tests {
                 | TViewError::JsonbDeltaMissing
                 | TViewError::RefreshLimit { .. }
                 | TViewError::WrongState { .. }
-                | TViewError::PrepareHoldsRefill { .. }
+                | TViewError::PrepareRefused { .. }
                 | TViewError::DuplicateKey { .. }
                 | TViewError::CatalogError { .. }
                 | TViewError::SpiError { .. }
@@ -612,8 +643,10 @@ mod tests {
             "55000"
         );
         assert_eq!(
-            code(TViewError::PrepareHoldsRefill {
-                table: String::new()
+            code(TViewError::PrepareRefused {
+                reason: PrepareRefusal::Refill {
+                    table: String::new()
+                }
             }),
             "25000"
         );

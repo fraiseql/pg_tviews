@@ -141,9 +141,11 @@ pub mod validity {
         let Some(table) = CLAIMS.with_borrow(|claims| claims.first().map(|&(t, _)| t)) else {
             return;
         };
-        crate::TViewError::PrepareHoldsRefill {
-            table: crate::utils::qualified_relname_from_oid(table)
-                .unwrap_or_else(|_| format!("with OID {}", table.to_u32())),
+        crate::TViewError::PrepareRefused {
+            reason: crate::error::PrepareRefusal::Refill {
+                table: crate::utils::qualified_relname_from_oid(table)
+                    .unwrap_or_else(|_| format!("with OID {}", table.to_u32())),
+            },
         }
         .raise();
     }

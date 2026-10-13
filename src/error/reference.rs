@@ -7,7 +7,7 @@
 //! UPDATE_ERROR_REFERENCE=1 cargo test --lib --no-default-features --features pg18 error_reference
 //! ```
 
-use super::{Limit, TViewError, sqlstate_text};
+use super::{Limit, PrepareRefusal, TViewError, sqlstate_text};
 use pgrx::PgSqlErrorCode;
 use std::fmt::Write as _;
 
@@ -32,7 +32,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::JsonbDeltaMissing => "JsonbDeltaMissing",
         TViewError::RefreshLimit { .. } => "RefreshLimit",
         TViewError::WrongState { .. } => "WrongState",
-        TViewError::PrepareHoldsRefill { .. } => "PrepareHoldsRefill",
+        TViewError::PrepareRefused { .. } => "PrepareRefused",
         TViewError::DuplicateKey { .. } => "DuplicateKey",
         TViewError::CatalogError { .. } => "CatalogError",
         TViewError::SpiError { .. } => "SpiError",
@@ -96,7 +96,9 @@ fn examples() -> Vec<TViewError> {
         TViewError::WrongState {
             reason: p("reason"),
         },
-        TViewError::PrepareHoldsRefill { table: p("table") },
+        TViewError::PrepareRefused {
+            reason: PrepareRefusal::Refill { table: p("table") },
+        },
         TViewError::DuplicateKey {
             tview: p("table"),
             key_column: p("key column"),

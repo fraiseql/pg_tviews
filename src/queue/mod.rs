@@ -6,6 +6,7 @@ pub mod affected;
 pub mod key;
 pub(crate) mod ops;
 pub mod patch;
+pub mod published;
 pub(crate) mod state;
 
 pub use key::RefreshKey;

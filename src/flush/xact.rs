@@ -9,7 +9,7 @@ use std::os::raw::c_void;
 /// What the end of a transaction resets, however it ends: the refresh work, the
 /// savepoints, the value locks held, the running queries, the flush, the
 /// audit buffer, the metrics, the affected-rows
-/// report and the refill claims; the transaction's statistics are merged into
+/// report, the rows to publish and the refill claims; the transaction's statistics are merged into
 /// `tviews.stats`.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
@@ -20,6 +20,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::audit::clear_audit_buffer,
     crate::metrics::metrics_api::reset_metrics,
     crate::queue::affected::clear,
+    crate::queue::published::clear,
     crate::lifecycle::validity::forget_claims,
     crate::stats::merge,
 ];
@@ -128,6 +129,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // transaction's snapshot, and dropping it would leave TVIEWs stale.
             if xact_event == XactEvent::PreCommit {
                 fail_unflushed();
+                crate::publish::at_pre_commit();
             }
             // Suspended without resuming: the hook caught up before an explicit
             // COMMIT; an implicit commit ends here, where no SPI is allowed.
@@ -150,7 +152,10 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             run(RESET_AT_END);
         }
         // Still able to fail: a claimed refill must not outlive this backend.
-        XactEvent::PrePrepare => crate::lifecycle::validity::refuse_prepare_with_claims(),
+        XactEvent::PrePrepare => {
+            crate::lifecycle::validity::refuse_prepare_with_claims();
+            crate::publish::refuse_prepare();
+        }
         XactEvent::Prepare => {
             // The ProcessUtility hook flushed the queue before PREPARE TRANSACTION, so
             // the refresh writes are part of the prepared transaction. This backend's

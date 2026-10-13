@@ -46,6 +46,7 @@ mod lineage;
 mod metrics;
 mod owner;
 mod propagate;
+mod publish;
 mod queue;
 mod rebuild_worker;
 mod refresh;

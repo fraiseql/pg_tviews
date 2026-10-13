@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Changed TVIEW rows are published at commit** (#231, ADR 0231): with
+  `pg_tviews.publish_changes = rows` (superuser; `off` by default), a committed
+  transaction that changed TVIEW rows sends them on channel `tviews_changes` as
+  `{"v":1,"u":{"User":[ids]},"d":{…},"t":[types]}`: net changes by GraphQL type,
+  inserted or updated in `u`, deleted in `d`, ids as JSON. At most 8 messages
+  under 8,000 bytes per transaction; types whose ids don't fit, and TVIEWs
+  without an `id` column, are named in `t`. `types` sends the changed types only.
+  Nothing is sent for a rolled-back transaction or savepoint. Above 90 % NOTIFY
+  queue usage a transaction commits unpublished, with a WARNING, counted in
+  `pg_tviews_queue_stats()->'publish_skipped'` (per session).
 - **`pg_tviews.max_refresh_rows` caps the TVIEW rows one statement's refresh
   writes** (#233, ADR 0233): `0` (the default) is no limit; superuser. Above it the
   statement fails with `54000` before writing them, naming the TVIEW, how it would
@@ -32,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`QueueFull` is `RefreshLimit`**: the same `54000`, message and hint for the
   queue limit, now one variant with the rows limit.
+- **PREPARE TRANSACTION is refused while there are changes to publish**
+  (`25000`): PostgreSQL cannot carry a notification through PREPARE. Commit
+  without two-phase commit, or turn publishing off for that role.
+  `PrepareHoldsRefill` is `PrepareRefused` (same SQLSTATE, message and hint).
 
 - **`pg_tviews_rebuild_all()` reports the rows it inserted** (#236): its second
   column is `rows_inserted` (was `rows`, the table's size after the fill). A

@@ -17,3 +17,4 @@ test: rr-new-parent-vs-write
 test: escalated-vs-value
 test: value-lock-deadlock
 test: bulk-delete-vs-reinsert
+test: publish-changes
