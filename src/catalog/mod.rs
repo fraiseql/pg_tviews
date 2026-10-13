@@ -429,8 +429,35 @@ impl Default for TviewMeta {
     }
 }
 
+/// The GraphQL type name of `entity`'s rows: the `typename` option when declared,
+/// else the entity in Pascal case (`blog_post` → `BlogPost`). The name
+/// `pg_tviews_flush_and_report()` emits and its `types` argument takes.
+#[must_use]
+pub fn typename(entity: &str, declared: Option<String>) -> String {
+    declared.unwrap_or_else(|| {
+        entity
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().collect::<String>() + chars.as_str()
+                })
+            })
+            .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typename_is_the_option_or_the_pascal_case_of_the_entity() {
+        assert_eq!(super::typename("post", None), "Post");
+        assert_eq!(super::typename("blog_post", None), "BlogPost");
+        assert_eq!(super::typename("order_line_item", None), "OrderLineItem");
+        assert_eq!(super::typename("post", Some("Article".into())), "Article");
+    }
+
     use super::*;
 
     #[test]

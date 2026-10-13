@@ -299,3 +299,15 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- #230: pg_tviews_flush_and_report(types) reports only the requested types. An
+-- argument added to a function is a new function: dropped and created again.
+DROP FUNCTION @extschema@.pg_tviews_flush_and_report(INT, bool, bool);
+CREATE  FUNCTION @extschema@."pg_tviews_flush_and_report"(
+	"max_entities" INT DEFAULT 500, /* i32 */
+	"include_data" bool DEFAULT true, /* bool */
+	"reset" bool DEFAULT true, /* bool */
+	"types" TEXT[] DEFAULT NULL /* core::option::Option<alloc::vec::Vec<alloc::string::String>> */
+) RETURNS jsonb /* core::result::Result<pgrx::datum::json::JsonB, pgrx_pg_sys::submodules::panic::ErrorReport> */
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_flush_and_report_wrapper';

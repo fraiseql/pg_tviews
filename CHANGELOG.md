@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (counted through the lookup index, only while the guard is on) and a full
   refresh's rows are charged; explicit rebuilds, including the catch-up of a
   suspended transaction, are not.
+- **`pg_tviews_flush_and_report(types)` reports only the requested types** (#230):
+  `types text[] DEFAULT NULL` takes GraphQL type names (the `typename` option, else
+  the entity in Pascal case). Rows of other types are flushed and journaled as before
+  but left out of the report, not counted against `max_entities`, and listed by type
+  in `omitted_types` (present only with `types`); `reset` clears them too. An unknown
+  name fails with `22023` before anything is reported or reset.
 - **`pg_tviews_profile()` projects what each fan-out costs per write** (#233):
   `fanout` gains `p99_ms_per_write` and `p99_wal_bytes_per_write` per lookup column,
   from the measured model (ADR 0233) and the TVIEW's bytes per row, and the fan-out

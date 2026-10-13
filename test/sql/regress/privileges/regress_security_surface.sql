@@ -107,7 +107,7 @@ BEGIN
            'tviews.pg_tviews_read_set_queries(text,oid)',
            'tviews.pg_tviews_show_cascade_path(text)', 'tviews.pg_tviews_defines_view(oid,text)',
            -- the caller's session
-           'tviews.pg_tviews_flush_and_report(integer,boolean,boolean)',
+           'tviews.pg_tviews_flush_and_report(integer,boolean,boolean,text[])',
            'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',
            'tviews.pg_tviews_is_suspended()', 'tviews.pg_tviews_suspended_entities()',
            -- one TVIEW, owner checked (creation: the schema's CREATE privilege)

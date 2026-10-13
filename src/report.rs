@@ -25,31 +25,62 @@ use std::collections::{BTreeSet, HashMap};
 /// `invalidated_types` lists the types of the rows left out. With `reset` (the
 /// default) the next call reports only what changed after this one.
 ///
+/// With `types` (GraphQL type names, [`crate::catalog::typename`]), only rows of
+/// those types are reported and counted against `max_entities`; the others are
+/// left out and their types listed in `omitted_types` (#230). `reset` clears them
+/// too: they were seen, just not asked for.
+///
 /// # Errors
-/// Returns an error if the flush or a catalog/TVIEW read fails.
+/// `InvalidInput` (22023) for a type name no TVIEW has, before anything is
+/// flushed or reset; otherwise an error if the flush or a catalog/TVIEW read fails.
 pub(crate) fn flush_and_report(
     max_entities: i32,
     include_data: bool,
     reset: bool,
+    types: Option<Vec<String>>,
 ) -> TViewResult<Value> {
+    let wanted = types.map(requested_types).transpose()?;
     crate::flush::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
-    build_report(&changes, &overflow, limit, include_data)
+    build_report(&changes, &overflow, limit, include_data, wanted.as_ref())
 }
 
-/// `blog_post` → `BlogPost`.
-fn pascal_case(entity: &str) -> String {
-    entity
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
-        .collect()
+/// How many known type names an unknown-type error lists.
+const KNOWN_TYPES_LISTED: usize = 20;
+
+/// `types` as a set, once each is known to be a TVIEW's type name.
+fn requested_types(types: Vec<String>) -> TViewResult<BTreeSet<String>> {
+    let known: BTreeSet<String> = crate::catalog::row::typenames()?
+        .into_iter()
+        .map(|(_, typename)| typename)
+        .collect();
+    let unknown: Vec<&str> = types
+        .iter()
+        .filter(|t| !known.contains(*t))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        let listed: Vec<&str> = known
+            .iter()
+            .take(KNOWN_TYPES_LISTED)
+            .map(String::as_str)
+            .collect();
+        let more = if known.len() > KNOWN_TYPES_LISTED {
+            ", …"
+        } else {
+            ""
+        };
+        return Err(TViewError::InvalidInput {
+            parameter: "types".to_string(),
+            reason: format!(
+                "unknown type(s) {}; known: {}{more}",
+                unknown.join(", "),
+                listed.join(", ")
+            ),
+        });
+    }
+    Ok(types.into_iter().collect())
 }
 
 /// Per-entity type name and qualified TVIEW table.
@@ -82,7 +113,7 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
             out.insert(
                 entity.clone(),
                 EntityInfo {
-                    typename: typename.unwrap_or_else(|| pascal_case(&entity)),
+                    typename: crate::catalog::typename(&entity, typename),
                     table,
                 },
             );
@@ -131,6 +162,7 @@ fn build_report(
     overflow: &BTreeSet<String>,
     max_entities: usize,
     include_data: bool,
+    wanted: Option<&BTreeSet<String>>,
 ) -> TViewResult<Value> {
     let entities: BTreeSet<&str> = changes
         .iter()
@@ -139,13 +171,29 @@ fn build_report(
         .collect();
     let info = entity_info(&entities)?;
     let typename = |entity: &str| {
-        info.get(entity)
-            .map_or_else(|| pascal_case(entity), |i| i.typename.clone())
+        info.get(entity).map_or_else(
+            || crate::catalog::typename(entity, None),
+            |i| i.typename.clone(),
+        )
     };
+    let asked = |entity: &str| wanted.is_none_or(|w| w.contains(&typename(entity)));
+
+    // Rows of the types not asked for are left out before the limit applies.
+    let omitted: BTreeSet<String> = changes
+        .iter()
+        .map(|c| c.entity.as_str())
+        .chain(overflow.iter().map(String::as_str))
+        .filter(|entity| !asked(entity))
+        .map(typename)
+        .collect();
 
     // Flush order is not deterministic across runs, so report in a fixed order:
     // entity, then key (numerically when the keys are integers).
-    let mut changes = changes.to_vec();
+    let mut changes: Vec<NetChange> = changes
+        .iter()
+        .filter(|c| asked(&c.entity))
+        .cloned()
+        .collect();
     changes.sort_by(|a, b| {
         a.entity
             .cmp(&b.entity)
@@ -208,25 +256,17 @@ fn build_report(
     let invalidated: BTreeSet<String> = left_out
         .iter()
         .map(|c| c.entity.as_str())
-        .chain(overflow.iter().map(String::as_str))
+        .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
         .collect();
-    Ok(json!({
+    let mut report = json!({
         "updated": updated,
         "deleted": deleted,
         "truncated": !invalidated.is_empty(),
         "invalidated_types": invalidated.into_iter().collect::<Vec<_>>(),
-    }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pascal_case;
-
-    #[test]
-    fn pascal_case_joins_snake_parts() {
-        assert_eq!(pascal_case("post"), "Post");
-        assert_eq!(pascal_case("blog_post"), "BlogPost");
-        assert_eq!(pascal_case("order_line_item"), "OrderLineItem");
+    });
+    if wanted.is_some() {
+        report["omitted_types"] = json!(omitted.into_iter().collect::<Vec<_>>());
     }
+    Ok(report)
 }

@@ -71,7 +71,8 @@ The `cascade` part has this shape:
 tviews.pg_tviews_flush_and_report(
     max_entities integer DEFAULT 500,  -- entries reported before truncating
     include_data boolean DEFAULT true, -- include each row's fresh data
-    reset        boolean DEFAULT true  -- the next call reports only later changes
+    reset        boolean DEFAULT true, -- the next call reports only later changes
+    types        text[]  DEFAULT NULL  -- report only these types (NULL: all)
 ) RETURNS jsonb
 ```
 
@@ -96,6 +97,13 @@ tviews.pg_tviews_flush_and_report(
   with the `typename` option, declared with the TVIEW (`pg_tviews_create(…, options)`
   or `pg_tviews_create_or_replace(…, options)`). The options passed are the whole
   declaration: a replace that leaves `typename` out puts the default back.
+- **Only the types asked for**: `types` names the GraphQL types the response selects
+  (`__typename` values). Rows of other types are left out before `max_entities` applies,
+  and their types are listed in `omitted_types` (present only when `types` is given),
+  apart from `invalidated_types`. They were still refreshed, and `reset` clears them too.
+  `'{}'` reports nothing and omits every changed type. A name no TVIEW has fails with
+  `22023`, before anything is reported or reset. `types` filters the report only, never
+  the change feed ([ADR 0231](../adr/0231-publish-changes.md)): a cache elsewhere needs every change.
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
   kept per transaction, not counting reported ones (kept only until the
   subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
@@ -110,6 +118,12 @@ $$, options => '{"typename": "Author"}');
 BEGIN;
 UPDATE tb_user SET name = 'Alicia' WHERE pk_user = 1;  -- refreshes tv_user and tv_post
 SELECT jsonb_pretty(tviews.pg_tviews_flush_and_report(include_data => false));
+COMMIT;
+
+BEGIN;
+UPDATE tb_user SET name = 'Alice' WHERE pk_user = 1;
+-- The mutation selects authors only: Post rows are left out, "omitted_types": ["Post"].
+SELECT jsonb_pretty(tviews.pg_tviews_flush_and_report(types => '{Author}'));
 COMMIT;
 ```
 

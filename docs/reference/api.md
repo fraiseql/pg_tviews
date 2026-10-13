@@ -49,7 +49,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_resume_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
 | [`pg_tviews_is_suspended()`](#suspending-refresh) | `boolean` | anyone |
 | [`pg_tviews_suspended_entities()`](#suspending-refresh) | `text[]` | anyone |
-| [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
+| [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true, types text[] DEFAULT NULL)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
 | [`pg_tviews_replication_status()`](#storage-replication-and-recovery) | `TABLE(entity text, persistence text, replica_readable boolean, is_empty boolean, needs_rebuild boolean)` | anyone |
 | [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows_inserted bigint)` | operator |
 | [`pg_tviews_health_check()`](#pg_tviews_health_check) | `TABLE(status text, component text, message text, severity text)` | anyone |
@@ -426,7 +426,8 @@ COMMIT;
 ```text
 tviews.pg_tviews_flush_and_report(max_entities integer DEFAULT 500,
                                   include_data boolean DEFAULT true,
-                                  reset boolean DEFAULT true) RETURNS jsonb
+                                  reset boolean DEFAULT true,
+                                  types text[] DEFAULT NULL) RETURNS jsonb
 ```
 
 Flushes the queue, then reports the TVIEW rows this transaction changed, for a GraphQL
@@ -435,7 +436,10 @@ row's `data`; a deleted entry is `{"__typename", "id"}`. The type name is the TV
 `typename` option, or the PascalCase of its entity. Past `max_entities` entries,
 or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
 `invalidated_types` lists the types left out. With `reset`, the next call reports only
-later changes; a reset made in a subtransaction that rolls back is undone. See [GraphQL cascade](../user-guides/graphql-cascade.md).
+later changes; a reset made in a subtransaction that rolls back is undone. With `types`
+(type names), only rows of those types are reported and counted against
+`max_entities`; the other changed types are listed in `omitted_types`; an unknown name
+fails with `22023`. See [GraphQL cascade](../user-guides/graphql-cascade.md).
 
 ```sql
 BEGIN;

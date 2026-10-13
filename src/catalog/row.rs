@@ -77,6 +77,27 @@ pub fn typename(entity: &str) -> TViewResult<Option<String>> {
     .map_err(|e| read_error("GraphQL type name", entity, &e))
 }
 
+/// Every TVIEW's entity and GraphQL type name ([`super::typename`]), by entity.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn typenames() -> TViewResult<Vec<(String, String)>> {
+    let sql = format!(
+        "SELECT entity, graphql_typename FROM {} ORDER BY entity",
+        super::meta_table()
+    );
+    crate::utils::spi::rows(&sql, &[], |row| {
+        let entity: String = row
+            .get(1)
+            .map_err(|e| crate::utils::spi::error(&sql, &e))?
+            .unwrap_or_default();
+        let declared: Option<String> =
+            row.get(2).map_err(|e| crate::utils::spi::error(&sql, &e))?;
+        let typename = super::typename(&entity, declared);
+        Ok((entity, typename))
+    })
+}
+
 /// Store the GraphQL type name of `entity`'s TVIEW (`None`: `PascalCase(entity)`).
 ///
 /// # Errors
