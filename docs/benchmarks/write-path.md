@@ -76,6 +76,13 @@ planned depends on what it looks rows up by:
 - **Several keys**: the statement takes them as an array and is planned at each
   execution, for their count (about 30 µs).
 
+The statements that read a backing view or lock rows by identity (the recompute, the
+row locks, the delete of rows gone from the view, and the parent lookup outside
+REPEATABLE READ) are kept too, but planned by PostgreSQL's own rule
+(`plan_cache_mode = auto`): for their arguments at their first five executions, then
+from the generic plan when it costs no more than those did. A recompute of one row
+settles on the generic plan (six plans over 2,000 writes on stock 18.4).
+
 A generic plan of an array can't count its keys: PostgreSQL assumes ten, each matching
 the column's average number of rows. On a TVIEW whose lookup column has few distinct
 values (categories, statuses, tenants) that estimate is a large share of the table,
