@@ -14,7 +14,7 @@ after the commit.
 
 A superuser setting: a writing session cannot turn it off.
 
-```sql
+```text
 ALTER DATABASE app SET pg_tviews.publish_changes = 'rows';  -- or 'types', or 'off' (the default)
 ```
 
