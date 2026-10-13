@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refresh of several keys reads the backing view once** (#237): the delete of
+  the keys gone from the view used them as the upsert's source produced them,
+  instead of asking the view again. That second evaluation couldn't push the keys
+  below a GROUP BY, so a multi-key write to an aggregate TVIEW computed every one of
+  its groups. A batch whose keys all produced a row deletes nothing and runs no
+  delete.
+
 ## [0.1.0-beta.28] - not yet released
 
 ### Changed (breaking)

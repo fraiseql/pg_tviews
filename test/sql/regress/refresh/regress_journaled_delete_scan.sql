@@ -13,7 +13,6 @@
 -- counted in pg_stat_xact_user_tables inside the write's own transaction.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_journaled_delete_scan.sql
--- known-failing: #237
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;

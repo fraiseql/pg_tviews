@@ -64,13 +64,19 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
     crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
-    let (produced, written) = write_row(meta, key)?;
-    let deleted = if produced == 0 {
+    let produced = write_row(meta, key)?;
+    let deleted = if produced.keys.is_empty() {
         delete_tview_row(meta, key)?
     } else {
         Vec::new()
     };
-    Ok(super::touched(meta, keys, before, written, deleted))
+    Ok(super::touched(
+        meta,
+        keys,
+        before,
+        produced.written,
+        deleted,
+    ))
 }
 
 /// Delete the tview row of a key whose backing-view row has disappeared, and
@@ -98,14 +104,14 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
 /// Write the row `key` of `meta`'s TVIEW from its backing view, its document
 /// replaced whole: the view computed all of it, and a merge into the stored
 /// document would keep keys the view no longer produces, or a NULL it replaced.
-/// Returns the rows the view produced and what was written.
+/// Returns what the view produced and what was written.
 ///
 /// Without `jsonb_delta`, writes still refresh every TVIEW, but none is patched
 /// in place: said once per backend, in the server log.
 ///
 /// # Errors
 /// What the upsert returns.
-fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, super::Written)> {
+fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Produced> {
     if jsonb_delta_schema().is_none() {
         crate::utils::log_once(
             crate::jsonb_delta::JSONB_DELTA_MISSING,
@@ -134,6 +140,7 @@ fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<(i64, super
         &meta.entity_name,
         &qi_tv,
         &col_list,
+        key_col,
         &format!(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
             super::key_cast(&key_type, "$1", false)
