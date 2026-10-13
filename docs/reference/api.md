@@ -672,7 +672,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | propagation or view nesting deeper than `pg_tviews.max_propagation_depth` / `max_dependency_depth` |
-| `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`) |
+| `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
 | `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
@@ -716,7 +716,7 @@ The settings are listed, with types and defaults, in the
 [README's configuration table](../../README.md#configuration). None changes what a
 TVIEW is: that comes only from its definition and its [options](#options). The
 settings that decide whether a write or a creation succeeds
-(`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`,
+(`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `max_refresh_rows`,
 `lock_escalation_threshold`) and `pg_tviews.audit_enabled` are a superuser's.
 `batch_size`, `cache_size` and `report_max_tracked` apply to each session.
 `pg_tviews.auto_rebuild_databases` is read at server start. Diagnostics are `DEBUG1`

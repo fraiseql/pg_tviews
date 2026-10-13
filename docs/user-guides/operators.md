@@ -66,6 +66,7 @@ that matter in operations:
 |---|---|---|---|
 | `pg_tviews.auto_rebuild_databases` | `*` | postmaster | `*` refills the reset UNLOGGED TVIEWs of every database after a crash restart or promotion; a list restricts it to those databases; empty disables it (restart required) |
 | `pg_tviews.max_queue_size` | `1000000` | superuser | raise for transactions that queue more refreshes (else `54000`) |
+| `pg_tviews.max_refresh_rows` | `0` (off) | superuser | cap on the TVIEW rows one statement's refresh writes (else `54000` before writing); see [fan-out](architects.md#fan-out) |
 | `pg_tviews.max_propagation_depth` | `100` | superuser | raise for very deep embed chains (else `54001`) |
 | `pg_tviews.max_dependency_depth` | `10` | superuser | raise for deeper view-on-view hierarchies |
 | `pg_tviews.lock_escalation_threshold` | `64` | superuser | value locks per relation before a transaction locks the relation instead |
@@ -184,6 +185,7 @@ large tables run the reported statements with `CREATE INDEX CONCURRENTLY` instea
 | A write fails naming a TVIEW, hint `pg_tviews_reregister` | its stored plan does not decode or no longer matches the tables | `SELECT tviews.pg_tviews_reregister('<entity>');` |
 | `COMMIT` fails with `55000`, refresh work still queued | a missing or disabled flush trigger | `pg_tviews_reregister`, then check `pg_tviews_health_check()` |
 | `54000` refresh queue full | one transaction queued more than `pg_tviews.max_queue_size` | raise it, or write in smaller transactions |
+| `54000` refreshing … would write N rows | one statement's refresh exceeds `pg_tviews.max_refresh_rows` | don't embed that entity, batch offline, or suspend triggers for the change ([fan-out](architects.md#fan-out)) |
 | `42501` must be owner of TVIEW | the role does not own the TVIEW | run as its owner (see below) |
 | An UNLOGGED TVIEW is empty | crash restart, promotion or restore | `pg_tviews_rebuild_all()` |
 

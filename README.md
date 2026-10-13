@@ -346,6 +346,7 @@ no setting changes what it is. The settings tune limits and sessions:
 | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
 | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
 | `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
+| `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write; 0 = no limit ([ADR 0233](docs/adr/0233-fanout-cost-and-guard.md)) |
 | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
 | `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
