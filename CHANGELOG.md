@@ -64,6 +64,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `only_empty => false` inserts, and reports, every row of the view. The upgrade
   keeps the `EXECUTE` grants given on it.
 
+### Changed
+
+- **The report takes ids from the refresh writes**: every write returns the public
+  `id` of the rows it changes, so `pg_tviews_flush_and_report(include_data => false)`
+  reads no TVIEW. Writes changing a thousand rows cost about 2 % more for it.
+
+### Documentation
+
+- ADR 0231 (publishing changes at commit), ADR 0232 (where pg_tviews runs: self-hosted
+  and Kubernetes; FraiseQL's `v_*` mode on managed services), ADR 0233 (fan-out cost
+  model and the refresh guard).
+- New guide: [the change feed](docs/user-guides/change-feed.md), with Python and Rust
+  listeners. The architects guide gains a fan-out section with the cost model.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE`, then `SELECT * FROM tviews.pg_tviews_reregister_all();`:
+  registration now derives fan-out patches two joins away (`registry.needs_reregister`
+  lists the TVIEWs to re-register; until then they refresh as before).
+- `pg_tviews_rebuild_all()` returns `rows_inserted` instead of `rows`: callers selecting
+  the column by name change (fraiseql/fraisier#472). `EXECUTE` grants on it are kept.
+- `pg_tviews_flush_and_report()` gains a fourth argument; calls with three arguments, by
+  position or name, are unchanged.
+- Existing UNLOGGED validity rows are converted; nothing is refilled by the upgrade.
+
 ### Fixed
 
 - **An UNLOGGED TVIEW restored with its rows is trusted** (#236): its validity
