@@ -218,10 +218,15 @@ fn write_fanout(
             "f.v",
         ),
     };
-    let (patched, changes) = fanout_patch(paths.len(), value);
+    let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
+        format!(
+            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], {value} -> {i})",
+            i + 3
+        )
+    });
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
-         WHERE {filter} AND ({changes}) \
+         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
          RETURNING t.{qi_pk}::pg_catalog.int8"
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
@@ -237,34 +242,6 @@ fn write_fanout(
         .into_iter()
         .filter_map(|row| row.first()?.as_deref()?.parse().ok())
         .collect())
-}
-
-/// The new document of a fan-out UPDATE writing `value -> i` at the path bound as
-/// `$(i + 3)`, for each of `paths` paths, and the guard that selects the rows it
-/// changes: those holding another value at one of the paths.
-///
-/// The guard compares values, not documents: comparing `t.data` with the new
-/// document built that document twice per row, in the filter and in SET (#238).
-/// Both agree because a fan-out path always names an object the view builds
-/// (`jsonb_build_object` all the way down; any other embed is recomputed), so
-/// `jsonb_set` never leaves a document unchanged for a missing parent.
-fn fanout_patch(paths: usize, value: &str) -> (String, String) {
-    let patched = (0..paths).fold("t.data".to_string(), |data, i| {
-        format!(
-            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], {value} -> {i})",
-            i + 3
-        )
-    });
-    let changes = (0..paths)
-        .map(|i| {
-            format!(
-                "t.data #> ${}::pg_catalog.text[] IS DISTINCT FROM {value} -> {i}",
-                i + 3
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    (patched, changes)
 }
 
 /// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
@@ -359,22 +336,6 @@ mod tests {
         let mut m = Map::new();
         m.insert(k.to_string(), Value::String(v.to_string()));
         (prefix.iter().map(|s| (*s).to_string()).collect(), m)
-    }
-
-    #[test]
-    fn fanout_patch_builds_the_document_once_and_guards_on_values() {
-        let (patched, changes) = fanout_patch(2, "f.v");
-        assert_eq!(
-            patched,
-            "pg_catalog.jsonb_set(pg_catalog.jsonb_set(t.data, $3::pg_catalog.text[], f.v -> 0), \
-             $4::pg_catalog.text[], f.v -> 1)"
-        );
-        assert_eq!(
-            changes,
-            "t.data #> $3::pg_catalog.text[] IS DISTINCT FROM f.v -> 0 \
-             OR t.data #> $4::pg_catalog.text[] IS DISTINCT FROM f.v -> 1"
-        );
-        assert!(!changes.contains("jsonb_set"));
     }
 
     #[test]

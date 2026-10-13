@@ -1,18 +1,20 @@
--- Regression test (#238): the fan-out UPDATE builds each patched document once.
+-- Characterization (#238): the fan-out UPDATE and its no-op guard.
 --
 -- A write to a column that child TVIEWs copy (tb_cat.name into every tv_item
 -- row of the category) patches the children in place: one UPDATE setting
--- `data = jsonb_set(t.data, path, value)`. Its guard, which leaves alone the
--- rows already holding the value, compared the documents:
--- `t.data IS DISTINCT FROM jsonb_set(t.data, path, value)`, so every row built
--- its new document twice, once in the filter and once in SET, each a full copy
--- of the document. The guard compares the values at the paths instead.
+-- `data = jsonb_set(t.data, path, value)`, guarded by
+-- `t.data IS DISTINCT FROM jsonb_set(t.data, path, value)` so that rows already
+-- holding the value are neither written nor journaled. The guard builds the new
+-- document a second time; comparing the values at the paths instead was
+-- measured (#238) and saves nothing on TOASTed documents, where detoasting the
+-- stored document dominates, so the guard stays.
 --
--- The plans are read through auto_explain (VERBOSE, nested statements) in a
--- second session on this database: `jsonb_set` must appear in the patched
--- rows' new values only, never in a filter.
+-- What is pinned: both statement shapes write what the view computes, the
+-- counts of a mixed move + rename, the rows journaled, and that a fan-out path
+-- always names an object the view builds (other embeds are recomputed), so the
+-- guard never skips a row jsonb_set could not patch.
 --
---   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_fanout_single_eval.sql
+--   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_fanout_guard.sql
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -25,7 +27,7 @@ CREATE EXTENSION pg_tviews;
 \ir ../../lib/assert_fresh.sql
 
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#238 FAIL: %', what; END IF; END $$;
+BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'fanout_guard FAIL: %', what; END IF; END $$;
 
 CREATE TABLE tb_cat (pk_cat int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                      name text NOT NULL, code text NOT NULL DEFAULT 'c');
@@ -40,15 +42,11 @@ SELECT tviews.pg_tviews_create('tv_item', $$
                               'category', jsonb_build_object('name', c.name, 'code', c.code)) AS data
     FROM tb_item i JOIN tb_cat c ON c.pk_cat = i.fk_cat $$);
 
--- 1. Both statement shapes (one key: `= $1`; several: joined from the arrays),
---    one path and two, planned in another session with auto_explain.
-\setenv PGTV_DB :DBNAME
-\set plans `psql -X -q -d "$PGTV_DB" -c "LOAD 'auto_explain'" -c "SET auto_explain.log_min_duration = 0" -c "SET auto_explain.log_nested_statements = on" -c "SET auto_explain.log_verbose = on" -c "SET auto_explain.log_level = notice" -c "UPDATE tb_cat SET name = 'one' WHERE pk_cat = 2" -c "UPDATE tb_cat SET name = 'two', code = 'z' WHERE pk_cat IN (3, 4)" 2>&1 | grep -E 'Filter:|Output:' | grep -F 'jsonb_set(' | sed -E 's/^ *([A-Za-z ]*Filter|Output).*/\1/' | sort | uniq -c | tr -s ' \n' '  '`
-SELECT :'plans' AS plans \gset
-SELECT must(:'plans' LIKE '%Output%', 'auto_explain showed no fan-out UPDATE: ' || :'plans');
-SELECT must(:'plans' NOT LIKE '%Filter%',
-            'a fan-out UPDATE builds the patched document in its filter: ' || :'plans');
-SELECT assert_fresh('tv_item', 'pk_item', 'the planned writes');
+-- 1. Both statement shapes (one key: `= $1`; several: joined from the
+--    arrays), one path and two.
+UPDATE tb_cat SET name = 'one' WHERE pk_cat = 2;
+UPDATE tb_cat SET name = 'two', code = 'z' WHERE pk_cat IN (3, 4);
+SELECT assert_fresh('tv_item', 'pk_item', 'one key, then two keys with two paths');
 SELECT must((SELECT count(*) FROM tv_item WHERE data #>> '{category,name}' = 'two'
                                              AND data #>> '{category,code}' = 'z') = 20,
             'the two-path write reached 20 children');
@@ -109,4 +107,4 @@ SELECT make_maybe($$jsonb_build_object('category',
 UPDATE tb_cat SET name = name || '+' WHERE pk_cat = 5;
 SELECT recomputed('COALESCE');
 
-\echo 'fan-out single evaluation (#238): PASS'
+\echo 'fan-out guard: PASS'
