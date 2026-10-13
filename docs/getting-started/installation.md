@@ -2,6 +2,22 @@
 
 Building pg_tviews from source, enabling it in a database, upgrading and removing it.
 
+## Where it runs
+
+pg_tviews is a compiled extension that PostgreSQL must preload
+(`shared_preload_libraries`). It runs where you install the server software yourself:
+
+- **self-hosted PostgreSQL** 16, 17 or 18 (build from source, or the release tarball);
+- **Kubernetes**: the operator mounts the extension's files into the PostgreSQL image
+  (CloudNativePG 1.27+ image-volume extensions on PostgreSQL 18, with
+  `extension_control_path`; a custom operand image otherwise) and preloads the library.
+
+Managed services (Amazon RDS and Aurora, Cloud SQL, AlloyDB, Azure Database for
+PostgreSQL, Supabase, Neon, Crunchy Bridge) install extensions from their own lists, and
+pg_tviews is on none of them. On those, use FraiseQL's `v_*` mode: the same
+queries over plain views. Why, and what a SQL-only edition would cost:
+[ADR 0232](../adr/0232-distribution.md).
+
 ## Requirements
 
 - **PostgreSQL** 16, 17 or 18, with its server development files (`pg_config`);

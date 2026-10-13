@@ -54,3 +54,7 @@ release package on a stock PostgreSQL.
 
 The fan-out runs write a lot of WAL (4 KB documents at N = 1,000 write ~5 MB per
 write): keep the cluster off a small tmpfs.
+
+`portable/bio_trigger.sql` is research for [ADR 0232](../../../docs/adr/0232-distribution.md):
+the `bio` write kept fresh by a PL/pgSQL statement trigger, on a database without
+pg_tviews. Run `writes/bio.sql` against it, as against the extension.

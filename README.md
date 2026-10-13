@@ -29,6 +29,12 @@ By Lionel Hamayon • Part of the FraiseQL framework
 
 </div>
 
+> **Where it runs.** pg_tviews is a compiled extension loaded with
+> `shared_preload_libraries`: it runs on PostgreSQL you install or operate yourself,
+> including on Kubernetes (operator image). Managed services (RDS, Cloud SQL, Azure,
+> Supabase, Neon, …) only install extensions from their own allow-lists; there, use
+> FraiseQL's `v_*` mode. See [ADR 0232](docs/adr/0232-distribution.md).
+
 ---
 
 ## 🍓 Part of the FraiseQL Ecosystem
