@@ -381,6 +381,15 @@ pub enum Plan {
 }
 
 impl Plan {
+    /// The plan of a statement holding lookups planned `self` and `other`.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Generic, Self::Generic) => Self::Generic,
+            _ => Self::PerExecution,
+        }
+    }
+
     /// The cursor option `SPI_prepare_cursor` takes for this plan.
     const fn cursor_option(self) -> u32 {
         match self {

@@ -136,7 +136,21 @@ SELECT check_write('one key, REPEATABLE READ',
                    $$UPDATE tb_cat SET name = 'three' WHERE pk_cat = 2$$);
 COMMIT;
 
--- 5. Control: with 1,000 categories of 2 items the lookup column is selective
+-- 5. tv_item embedding tv_cat's document: parent discovery by fk_cat, cross-checked
+--    at REPEATABLE READ, with and without direct patches.
+SELECT build(20, 50, true);
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT check_write('embedded TVIEW, REPEATABLE READ, patched',
+                   $$UPDATE tb_cat SET name = 'four' WHERE pk_cat = 2$$);
+COMMIT;
+SET pg_tviews.direct_patch_enabled = off;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT check_write('embedded TVIEW, REPEATABLE READ, recomputed',
+                   $$UPDATE tb_cat SET name = 'five' WHERE pk_cat = 3$$);
+COMMIT;
+RESET pg_tviews.direct_patch_enabled;
+
+-- 6. Control: with 1,000 categories of 2 items the lookup column is selective
 --    enough for any plan, so a scan here would be the test's, not the write's.
 SELECT build(1000, 2, false);
 SELECT check_write('control, 1,000 categories', $$UPDATE tb_cat SET name = 'six' WHERE pk_cat = 2$$);
