@@ -128,7 +128,15 @@ SELECT must(count(*) = 60, 'two keys: the children moved to them hold their new 
 FROM tv_item WHERE fk_cat IN (11, 12) AND data #>> '{category,name}' = 'moved too';
 SELECT must(fresh(), 'moved children: tv_item is stale');
 
--- 4. Control: with 1,000 categories of 2 items the lookup column is selective
+-- 4. One category at REPEATABLE READ: the fan-out and its cross-check, which
+--    looks the children up again under the transaction's and the latest snapshot.
+SELECT build(20, 50, false);
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT check_write('one key, REPEATABLE READ',
+                   $$UPDATE tb_cat SET name = 'three' WHERE pk_cat = 2$$);
+COMMIT;
+
+-- 5. Control: with 1,000 categories of 2 items the lookup column is selective
 --    enough for any plan, so a scan here would be the test's, not the write's.
 SELECT build(1000, 2, false);
 SELECT check_write('control, 1,000 categories', $$UPDATE tb_cat SET name = 'six' WHERE pk_cat = 2$$);

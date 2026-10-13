@@ -151,24 +151,20 @@ pub fn apply_fanout_patch(
 
     // REPEATABLE READ: the patch reached every row the latest snapshot holds
     // with these values (a row it couldn't see would keep the old value).
-    if crate::concurrency::crosscheck::enabled() {
+    if crate::concurrency::crosscheck::enabled()
+        && let Some(keys) = LookupKeys::of(rows.iter().map(|(key, _)| *key).collect())
+    {
         let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
         let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
         let qi_lookup = crate::utils::ident::quoted(lookup_col);
-        let keys: Vec<i64> = rows.iter().map(|(key, _)| *key).collect();
         let lookup = format!(
-            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t \
-             WHERE t.{qi_lookup} = ANY ($1::pg_catalog.int8[])"
+            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t WHERE {}",
+            keys.predicate(&format!("t.{qi_lookup}"), 1)
         );
-        let args = [crate::utils::spi::int8_array(keys)];
+        let args = [keys.arg()];
         // Read-write, as the patch: its snapshot sees this flush's own writes.
-        let found = crate::utils::spi::kept_rows(&lookup, &args, crate::utils::spi::Plan::Generic)?;
-        crate::concurrency::crosscheck::discovered_by(
-            &lookup,
-            &args,
-            crate::utils::spi::Plan::Generic,
-            &found,
-        )?;
+        let found = crate::utils::spi::kept_rows(&lookup, &args, keys.plan())?;
+        crate::concurrency::crosscheck::discovered_by(&lookup, &args, keys.plan(), &found)?;
     }
     crate::metrics::metrics_api::record_direct_patches_applied(
         &meta.entity_name,
