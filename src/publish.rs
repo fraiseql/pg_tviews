@@ -23,9 +23,9 @@ use std::collections::BTreeSet;
 pub const MAX_MESSAGES: usize = 8;
 
 /// The bytes one message carries at most: under PostgreSQL's
-/// `NOTIFY_PAYLOAD_MAX_LENGTH` (`BLCKSZ - NAMEDATALEN - 128` = 7,999 with the
+/// `NOTIFY_PAYLOAD_MAX_LENGTH` (`BLCKSZ - NAMEDATALEN - 128`: 7,999 with the
 /// default 8 kB blocks), with room to spare.
-pub const MESSAGE_BYTES: usize = 7_900;
+pub const MESSAGE_BYTES: usize = pg_sys::BLCKSZ as usize - pg_sys::NAMEDATALEN as usize - 128 - 99;
 
 /// The channel every message goes to.
 pub const CHANNEL: &std::ffi::CStr = c"tviews_changes";
@@ -221,6 +221,11 @@ pub fn encode(folded: &Folded<'_>, publish: Publish) -> Vec<String> {
             continue;
         }
         for id in ids {
+            // An id no message can carry: its type goes by name.
+            if Message::new().cost(deleted, typename, id) > MESSAGE_BYTES - reserve {
+                left.insert(typename);
+                continue 'rows;
+            }
             let count = messages.len();
             let budget = if count == MAX_MESSAGES {
                 MESSAGE_BYTES - reserve
@@ -344,6 +349,16 @@ mod tests {
             assert!(m.len() <= MESSAGE_BYTES, "{} bytes", m.len());
             json(m);
         }
+    }
+
+    #[test]
+    fn an_id_too_long_for_any_message_names_its_type() {
+        let long = format!("\"{}\"", "x".repeat(MESSAGE_BYTES));
+        let messages = encode(
+            &folded(&[("Doc", &[long.as_str()]), ("User", &["\"u\""])], &[], &[]),
+            Publish::Rows,
+        );
+        assert_eq!(messages, [r#"{"v":1,"u":{"User":["u"]},"t":["Doc"]}"#]);
     }
 
     #[test]
