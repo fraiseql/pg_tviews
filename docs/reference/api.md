@@ -51,7 +51,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_suspended_entities()`](#suspending-refresh) | `text[]` | anyone |
 | [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
 | [`pg_tviews_replication_status()`](#storage-replication-and-recovery) | `TABLE(entity text, persistence text, replica_readable boolean, is_empty boolean, needs_rebuild boolean)` | anyone |
-| [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows bigint)` | operator |
+| [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows_inserted bigint)` | operator |
 | [`pg_tviews_health_check()`](#pg_tviews_health_check) | `TABLE(status text, component text, message text, severity text)` | anyone |
 | [`pg_tviews_stats_reset(tview text DEFAULT NULL)`](#tviewsstats-and-pg_tviews_stats_reset) | `void` | operator |
 | [`pg_tviews_queue_stats()`](#pg_tviews_queue_stats) | `jsonb` | anyone |
@@ -450,7 +450,7 @@ COMMIT;
 tviews.pg_tviews_replication_status()
     RETURNS TABLE(entity text, persistence text, replica_readable boolean,
                   is_empty boolean, needs_rebuild boolean)
-tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(entity text, rows bigint)
+tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(entity text, rows_inserted bigint)
 ```
 
 - TVIEWs are LOGGED unless declared `logged: false`. Switch one with the `logged`
@@ -459,7 +459,8 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   LOGGED one, and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
-  dependencies first, each as its owner, and counts their rows; it refuses to run
+  dependencies first, each as its owner, and reports the rows each one inserted
+  (`rows_inserted`: a full rebuild inserts every row of the view); it refuses to run
   during recovery. A TVIEW that is merely empty is not a reset one. Operator
   function: the caller needs no privilege on the `tv_*` tables.
 - After a crash restart or a promotion, a background worker does the same in every
@@ -467,7 +468,7 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   reset TVIEW not yet refilled is filled by its first write.
 - `needs_rebuild` is true for an UNLOGGED TVIEW missing from `tviews.pg_tview_valid`,
   the UNLOGGED table that a reset empties together with the TVIEWs
-  ([Replication](../operations/replication.md#rebuilding-after-promotion-a-crash-or-a-restore)).
+  ([Replication](../operations/replication.md#refilling-after-promotion-a-crash-or-a-restore)).
 
 ```sql
 SELECT * FROM tviews.pg_tviews_replication_status();

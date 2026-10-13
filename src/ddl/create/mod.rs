@@ -312,7 +312,7 @@ fn finish(
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
     // UNLOGGED table's rows can be trusted until a reset.
-    crate::lifecycle::validity::mark(table_oid)?;
+    crate::lifecycle::validity::mark(entity, table_oid)?;
     // Triggers on the tables it reads, as their lineage needs them: base tables,
     // and other TVIEWs' tables it maps like them.
     crate::dependency::install_triggers(

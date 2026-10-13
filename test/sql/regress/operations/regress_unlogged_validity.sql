@@ -66,7 +66,7 @@ FROM pg_tviews_replication_status();
 TRUNCATE tv_post;
 SELECT must(NOT EXISTS (SELECT 1 FROM pg_tviews_rebuild_all()), 'rebuilt a trusted TVIEW');
 DELETE FROM tviews.pg_tview_valid
- WHERE table_oid = 'tv_post'::regclass;
+ WHERE entity = 'post';
 SELECT must((SELECT array_agg(entity) FROM pg_tviews_rebuild_all()) = '{post}',
             'a reset TVIEW was not rebuilt');
 SELECT must(NOT EXISTS (SELECT 1 FROM pg_tviews_rebuild_all()), 'rebuilt twice');
@@ -74,7 +74,7 @@ SELECT assert_fresh('tv_post', 'pk_post', 'tv_post after rebuild_all');
 
 -- 4. pg_tviews_rebuild_all() fills the reset TVIEWs only, dependencies first.
 TRUNCATE tv_user, tv_post;
-DELETE FROM tviews.pg_tview_valid WHERE table_oid = 'tv_user'::regclass;
+DELETE FROM tviews.pg_tview_valid WHERE entity = 'user';
 SELECT must((SELECT array_agg(entity) FROM pg_tviews_rebuild_all()) = '{user}',
             'rebuild_all() did not fill exactly the reset tv_user');
 SELECT must((SELECT count(*) FROM tv_post) = 0, 'rebuild_all() refilled the trusted tv_post');
@@ -84,13 +84,13 @@ SELECT pg_tviews_refresh('post');
 -- 5. A LOGGED TVIEW has no row and is never refilled; switching persistence
 --    keeps the rows right, and switching a reset TVIEW to LOGGED fills it first.
 ALTER TABLE tv_user SET LOGGED;
-SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_user'::regclass),
+SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'user'),
             'a LOGGED TVIEW kept its row');
 ALTER TABLE tv_user SET UNLOGGED;
-SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_user'::regclass),
+SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'user'),
             'a TVIEW switched to UNLOGGED has no row');
 TRUNCATE tv_post;
-DELETE FROM tviews.pg_tview_valid WHERE table_oid = 'tv_post'::regclass;
+DELETE FROM tviews.pg_tview_valid WHERE entity = 'post';
 ALTER TABLE tv_post SET LOGGED;
 SELECT assert_fresh('tv_post', 'pk_post', 'a reset TVIEW switched to LOGGED');
 ALTER TABLE tv_post SET UNLOGGED;

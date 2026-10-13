@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`pg_tviews_rebuild_all()` reports the rows it inserted** (#236): its second
+  column is `rows_inserted` (was `rows`, the table's size after the fill). A
+  refill of a reset TVIEW reports the rows it wrote; a rebuild with
+  `only_empty => false` inserts, and reports, every row of the view. The upgrade
+  keeps the `EXECUTE` grants given on it.
+
 ### Fixed
+
+- **An UNLOGGED TVIEW restored with its rows is trusted** (#236): its validity
+  (`tviews.pg_tview_valid`, now keyed by entity) is dumped as extension
+  configuration, and `pg_dump` writes it exactly when it writes UNLOGGED tables'
+  rows. A plain `pg_dump`/`pg_restore` no longer refills every UNLOGGED TVIEW; a
+  dump with `--no-unlogged-table-data` restores them empty and untrusted, and they
+  are refilled once, as before. The upgrade converts the existing rows.
 
 - **A refresh of several keys reads the backing view once** (#237): the delete of
   the keys gone from the view used them as the upsert's source produced them,

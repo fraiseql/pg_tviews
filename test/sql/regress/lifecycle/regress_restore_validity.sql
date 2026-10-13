@@ -12,7 +12,6 @@
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/lifecycle/regress_restore_validity.sql
 -- expect-output: restore_validity: PASS
--- known-failing: #236
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -85,10 +84,13 @@ SELECT must(array_agg(r.entity || ':' || r.rows_inserted ORDER BY r.entity) = '{
 FROM tviews.pg_tviews_rebuild_all(only_empty => false) r;
 
 -- Validity is keyed by entity, so it survives a rename of the table. A reset
--- (its row deleted, the table emptied) is refilled under the new name.
+-- (its row deleted, the table emptied, and a new backend: a reset ends them all)
+-- is refilled under the new name.
 ALTER TABLE tv_user RENAME TO tv_user_archive;
 TRUNCATE tv_user_archive;
 DELETE FROM tviews.pg_tview_valid;
+\c
+SET client_min_messages TO WARNING;
 UPDATE tb_user SET name = 'u2!' WHERE pk_user = 2;
 SELECT must((SELECT count(*) FROM tv_user_archive) = 3, 'the renamed TVIEW was not refilled');
 SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'user'),

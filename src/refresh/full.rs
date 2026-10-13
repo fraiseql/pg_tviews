@@ -16,9 +16,11 @@ use pgrx::spi;
 /// as the caller would run the owner's view code with the caller's privileges
 /// (a superuser's, after a migration).
 ///
+/// Returns the rows inserted: every row of the view.
+///
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
-pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         // Every row changes: refreshes of any of them wait, and are waited for,
@@ -32,7 +34,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
-    Spi::run(&insert)?;
+    let inserted = crate::utils::spi::run_counted(&insert)?;
     drop(owner);
     // Rebuilt from its view: its rows can be trusted again.
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
@@ -40,18 +42,18 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
             name: entity.to_string(),
         }
     })?;
-    crate::lifecycle::validity::mark(meta.tview_oid)?;
-    Ok(())
+    crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
+    Ok(inserted)
 }
 
 /// Replace every row of `tv_<entity>` with its backing view's, without `TRUNCATE`
 /// (readers are never blocked), as its owner: the fill of a TVIEW whose rows
 /// can't be trusted ([`crate::lifecycle::validity`]). Rows a concurrent writer
-/// committed meanwhile are kept.
+/// committed meanwhile are kept. Returns the rows inserted.
 ///
 /// # Errors
 /// Returns error if the entity is not registered or the delete/insert fails.
-pub fn refill(entity: &str) -> TViewResult<()> {
+pub fn refill(entity: &str) -> TViewResult<u64> {
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
@@ -59,8 +61,7 @@ pub fn refill(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("DELETE FROM {qi_tv}"))?;
-    Spi::run(&format!("{insert} ON CONFLICT DO NOTHING"))?;
-    Ok(())
+    crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))
 }
 
 /// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,

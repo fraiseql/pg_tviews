@@ -169,16 +169,19 @@ extension_sql!(
     -- extension owner writes it.
     GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
 
-    -- The UNLOGGED TVIEW tables whose rows can be trusted. UNLOGGED itself: a crash
-    -- restart or a promotion empties it together with them, and a table missing here
-    -- is filled from its view by the next write. Not dumped: a restored TVIEW is
-    -- filled once.
+    -- The UNLOGGED TVIEWs whose rows can be trusted, by entity. UNLOGGED itself: a
+    -- crash restart or a promotion empties it together with them, and a TVIEW
+    -- missing here is filled from its view by the next write. Dumped as extension
+    -- configuration: pg_dump writes its rows exactly when it writes UNLOGGED tables'
+    -- rows (not with --no-unlogged-table-data), so a restore brings back both or
+    -- neither. No foreign key: the two configuration tables restore in any order.
     CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
-        table_oid OID NOT NULL PRIMARY KEY
+        entity TEXT NOT NULL PRIMARY KEY
     );
     COMMENT ON TABLE @extschema@.pg_tview_valid IS
-        'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
+        'Internal: UNLOGGED TVIEWs whose rows can be trusted; may change in any release';
     GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_valid', '');
 
     -- Revision of this catalog. The library refuses to work against a
     -- catalog of another revision; an upgrade script that changes the extension SQL
@@ -186,7 +189,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 6';
+    AS 'SELECT 7';
     ",
     name = "create_metadata_tables",
 );

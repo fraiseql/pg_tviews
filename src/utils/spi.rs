@@ -205,6 +205,15 @@ pub fn run(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<()> {
     Spi::run_with_args(sql, args).map_err(|e| error(sql, &e))
 }
 
+/// Run a data-modifying statement without RETURNING; the rows it processed.
+///
+/// # Errors
+/// Returns the statement's error.
+pub fn run_counted(sql: &str) -> TViewResult<u64> {
+    Spi::connect_mut(|client| client.update(sql, None, &[]).map(|done| done.len() as u64))
+        .map_err(|e| error(sql, &e))
+}
+
 /// Each row of `sql`, read by `read`.
 ///
 /// # Errors

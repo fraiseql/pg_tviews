@@ -66,7 +66,7 @@ SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid), 'a LOGGED TVIEW ke
 
 -- 3. A raw SET UNLOGGED records its rows as trusted.
 ALTER TABLE tv_item SET UNLOGGED;
-SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_item'::regclass),
+SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'item'),
             'a TVIEW switched to UNLOGGED by ALTER TABLE has no row');
 
 -- 4. The `logged` option does the same as the raw statement.
@@ -79,7 +79,7 @@ SELECT assert_fresh('tv_item', 'pk_item', 'a reset TVIEW switched to LOGGED by t
 SELECT tviews.pg_tviews_create_or_replace('tv_item',
     $$SELECT pk_item, id, jsonb_build_object('name', name) AS data FROM tb_item$$,
     '{"logged": false}');
-SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE table_oid = 'tv_item'::regclass),
+SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'item'),
             'a TVIEW switched to UNLOGGED by the option has no row');
 
 \echo 'unlogged_persistence: PASS'

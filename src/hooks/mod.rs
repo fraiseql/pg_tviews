@@ -543,8 +543,9 @@ impl FollowUps {
         {
             e.raise_in("pg_tviews: could not record the indexes of a TVIEW's table");
         }
-        if let Some((_, table, logged)) = self.persistence_change
-            && let Err(e) = crate::lifecycle::validity::after_persistence_change(table, logged)
+        if let Some((entity, table, logged)) = self.persistence_change
+            && let Err(e) =
+                crate::lifecycle::validity::after_persistence_change(&entity, table, logged)
         {
             e.raise_in("pg_tviews: could not record the persistence of a TVIEW's table");
         }
