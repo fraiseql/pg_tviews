@@ -136,8 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a column a parent TVIEW copies into a nested object (`'author',
     jsonb_build_object('bio', u.bio)`) is written into the parent rows in place,
     in one statement, instead of recomputing each through its view;
-  - the statements a write runs are planned once per backend, the patches with
-    generic plans;
+  - the statements a write runs are kept for the backend: one looking rows up by a
+    unique key, or by a single key of a column such as `fk_<entity>`, is never
+    planned again; one looking up several keys is planned for their count, so a
+    lookup column with few distinct values is still read through its index;
   - a statement trigger whose TVIEW reads none of the changed columns returns
     before any query;
   - the tables a write reaches are kept for the backend, cached catalog rows are
