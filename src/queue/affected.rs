@@ -33,17 +33,17 @@ pub enum Change {
 pub struct Recorded {
     pub entity: String,
     /// The GraphQL type name of the row ([`crate::catalog::typename`]).
-    pub typename: String,
+    pub typename: std::rc::Rc<str>,
     /// `pk_<entity>`, as text.
     pub pk: String,
-    /// The row's public `id` as JSON text (`"…"` for a uuid); `None` for a TVIEW
-    /// without an `id` column.
-    pub id: Option<String>,
+    /// The row's public `id`; `None` for a TVIEW without an `id` column.
+    pub id: Option<crate::catalog::RowId>,
     pub change: Change,
 }
 
 impl Recorded {
-    /// `meta`'s row `pk`, with public `id`, changed by `change`.
+    /// `meta`'s row `pk`, with public `id` as the write returned it
+    /// ([`crate::catalog::TviewMeta::id_text`]), changed by `change`.
     #[must_use]
     pub fn of(
         meta: &crate::catalog::TviewMeta,
@@ -53,9 +53,9 @@ impl Recorded {
     ) -> Self {
         Self {
             entity: meta.entity_name.clone(),
-            typename: meta.typename.clone(),
+            typename: std::rc::Rc::clone(&meta.typename),
             pk,
-            id,
+            id: id.map(|text| meta.row_id(text)),
             change,
         }
     }
@@ -204,11 +204,22 @@ pub fn summarize(reset: bool) -> (Vec<NetChange>, BTreeSet<String>) {
     })
 }
 
+/// A row's net change once `next` follows `prev` (`None`: no change so far, or
+/// none left). Inserted then deleted leaves nothing; deleted then inserted is an
+/// update; an insert stays an insert across later updates.
+#[must_use]
+pub const fn fold_change(prev: Option<Change>, next: Change) -> Option<Change> {
+    match (prev, next) {
+        (None, c) => Some(c),
+        (Some(Change::Inserted), Change::Deleted) => None,
+        (Some(Change::Inserted), _) => Some(Change::Inserted),
+        (Some(Change::Deleted), Change::Inserted | Change::Updated) => Some(Change::Updated),
+        (Some(_), c) => Some(c),
+    }
+}
+
 /// Fold journal entries into one net change per `(entity, pk)`, carrying the last
-/// id seen for the row.
-///
-/// Inserted then deleted in the same span leaves nothing; deleted then inserted is
-/// an update; an insert stays an insert across later updates.
+/// id seen for the row ([`fold_change`]).
 pub fn net_changes(entries: &[Recorded]) -> Vec<NetChange> {
     let mut order: Vec<(String, String)> = Vec::new();
     let mut state: HashMap<(String, String), (Option<Change>, &Recorded)> = HashMap::new();
@@ -220,13 +231,7 @@ pub fn net_changes(entries: &[Recorded]) -> Vec<NetChange> {
             order.push(key.clone());
             None
         };
-        let next = match (prev, entry.change) {
-            (None, c) => Some(c),
-            (Some(Change::Inserted), Change::Deleted) => None,
-            (Some(Change::Inserted), _) => Some(Change::Inserted),
-            (Some(Change::Deleted), Change::Inserted | Change::Updated) => Some(Change::Updated),
-            (Some(_), c) => Some(c),
-        };
+        let next = fold_change(prev, entry.change);
         let last = match state.get(&key) {
             Some((_, last)) if entry.id.is_none() => last,
             _ => entry,
@@ -305,9 +310,12 @@ mod tests {
     fn with_id(entity: &str, pk: &str, id: Option<&str>, change: Change) -> Recorded {
         Recorded {
             entity: entity.to_string(),
-            typename: entity.to_uppercase(),
+            typename: entity.to_uppercase().into(),
             pk: pk.to_string(),
-            id: id.map(str::to_string),
+            id: id.map(|text| crate::catalog::RowId {
+                text: text.to_string(),
+                kind: crate::catalog::PublicId::String,
+            }),
             change,
         }
     }
@@ -326,7 +334,7 @@ mod tests {
     fn ids(entries: &[Recorded]) -> Vec<(String, Option<String>, Change)> {
         net_changes(entries)
             .into_iter()
-            .map(|n| (n.pk, n.id, n.change))
+            .map(|n| (n.pk, n.id.map(|id| id.text), n.change))
             .collect()
     }
 
@@ -342,9 +350,9 @@ mod tests {
             got.iter()
                 .map(|n| (
                     n.pk.as_str(),
-                    n.id.as_deref(),
+                    n.id.as_ref().map(|id| id.text.as_str()),
                     n.change,
-                    n.typename.as_str()
+                    &*n.typename
                 ))
                 .collect::<Vec<_>>(),
             [

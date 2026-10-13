@@ -71,7 +71,7 @@ pub fn at_pre_commit() {
         return;
     }
     let channel = CHANNEL.to_string_lossy();
-    for message in encode(&published::fold(), publish) {
+    for message in published::with_folded(|folded| encode(folded, publish)) {
         // SAFETY: pg_notify(text, text), with two non-null text datums, called in
         // a transaction that is not a parallel worker's (the callback ignores
         // those events). The message is under NOTIFY's payload limit.
@@ -98,10 +98,10 @@ pub fn refuse_prepare() {
 
 /// One message being filled, its rendered length kept exactly.
 #[derive(Default)]
-struct Message {
-    upserted: Vec<(String, Vec<String>)>,
-    deleted: Vec<(String, Vec<String>)>,
-    types: BTreeSet<String>,
+struct Message<'a> {
+    upserted: Vec<(&'a str, Vec<&'a str>)>,
+    deleted: Vec<(&'a str, Vec<&'a str>)>,
+    types: BTreeSet<&'a str>,
     len: usize,
 }
 
@@ -113,14 +113,14 @@ fn json_string(s: &str) -> String {
 }
 
 /// The bytes of `,"t":[…]` listing `types`.
-fn types_len(types: &BTreeSet<String>) -> usize {
+fn types_len(types: &BTreeSet<&str>) -> usize {
     if types.is_empty() {
         return 0;
     }
     r#","t":[]"#.len() + types.iter().map(|t| json_string(t).len()).sum::<usize>() + types.len() - 1
 }
 
-impl Message {
+impl<'a> Message<'a> {
     fn new() -> Self {
         Self {
             len: EMPTY_LEN,
@@ -137,13 +137,13 @@ impl Message {
             &self.upserted
         };
         match section.last() {
-            Some((t, _)) if t == typename => 1 + id.len(),
+            Some((t, _)) if *t == typename => 1 + id.len(),
             Some(_) => 1 + json_string(typename).len() + 3 + id.len(),
             None => r#","u":{}"#.len() + json_string(typename).len() + 3 + id.len(),
         }
     }
 
-    fn push(&mut self, deleted: bool, typename: &str, id: &str) {
+    fn push(&mut self, deleted: bool, typename: &'a str, id: &'a str) {
         self.len += self.cost(deleted, typename, id);
         let section = if deleted {
             &mut self.deleted
@@ -151,33 +151,40 @@ impl Message {
             &mut self.upserted
         };
         match section.last_mut() {
-            Some((t, ids)) if t == typename => ids.push(id.to_string()),
-            _ => section.push((typename.to_string(), vec![id.to_string()])),
+            Some((t, ids)) if *t == typename => ids.push(id),
+            _ => section.push((typename, vec![id])),
         }
     }
 
     fn render(&self) -> String {
-        let section = |name: &str, rows: &[(String, Vec<String>)]| {
+        let mut out = String::with_capacity(self.len);
+        out.push_str(r#"{"v":1"#);
+        for (name, rows) in [("u", &self.upserted), ("d", &self.deleted)] {
             if rows.is_empty() {
-                return String::new();
+                continue;
             }
-            let entries: Vec<String> = rows
-                .iter()
-                .map(|(t, ids)| format!("{}:[{}]", json_string(t), ids.join(",")))
-                .collect();
-            format!(",\"{name}\":{{{}}}", entries.join(","))
-        };
-        let types = if self.types.is_empty() {
-            String::new()
-        } else {
+            out.push_str(",\"");
+            out.push_str(name);
+            out.push_str("\":{");
+            for (n, (typename, ids)) in rows.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_string(typename));
+                out.push_str(":[");
+                out.push_str(&ids.join(","));
+                out.push(']');
+            }
+            out.push('}');
+        }
+        if !self.types.is_empty() {
             let names: Vec<String> = self.types.iter().map(|t| json_string(t)).collect();
-            format!(",\"t\":[{}]", names.join(","))
-        };
-        format!(
-            "{{\"v\":1{}{}{types}}}",
-            section("u", &self.upserted),
-            section("d", &self.deleted)
-        )
+            out.push_str(",\"t\":[");
+            out.push_str(&names.join(","));
+            out.push(']');
+        }
+        out.push('}');
+        out
     }
 }
 
@@ -185,13 +192,13 @@ impl Message {
 /// [`MAX_MESSAGES`] carrying ids. Types whose ids don't fit are listed in `t` of
 /// the last message; `types` mode lists every type there. Total: it never fails.
 #[must_use]
-pub fn encode(folded: &Folded, publish: Publish) -> Vec<String> {
-    let all_types: BTreeSet<String> = folded
+pub fn encode(folded: &Folded<'_>, publish: Publish) -> Vec<String> {
+    let all_types: BTreeSet<&str> = folded
         .upserted
         .iter()
         .chain(&folded.deleted)
-        .map(|(t, _)| t.clone())
-        .chain(folded.types.iter().cloned())
+        .map(|(t, _)| *t)
+        .chain(folded.types.iter().copied())
         .collect();
     if all_types.is_empty() {
         return Vec::new();
@@ -203,29 +210,27 @@ pub fn encode(folded: &Folded, publish: Publish) -> Vec<String> {
     }
 
     let mut messages = vec![Message::new()];
-    let mut left: BTreeSet<String> = folded.types.clone();
+    let mut left: BTreeSet<&str> = folded.types.clone();
     let rows = folded
         .upserted
         .iter()
-        .map(|(t, ids)| (false, t, ids))
-        .chain(folded.deleted.iter().map(|(t, ids)| (true, t, ids)));
+        .map(|(t, ids)| (false, *t, ids))
+        .chain(folded.deleted.iter().map(|(t, ids)| (true, *t, ids)));
     'rows: for (deleted, typename, ids) in rows {
         if left.contains(typename) {
             continue;
         }
         for id in ids {
-            let budget = |n: usize| {
-                if n == MAX_MESSAGES {
-                    MESSAGE_BYTES - reserve
-                } else {
-                    MESSAGE_BYTES
-                }
+            let count = messages.len();
+            let budget = if count == MAX_MESSAGES {
+                MESSAGE_BYTES - reserve
+            } else {
+                MESSAGE_BYTES
             };
-            let last = messages.len();
-            let fits = |m: &Message| m.len + m.cost(deleted, typename, id) <= budget(last);
+            let fits = |m: &Message| m.len + m.cost(deleted, typename, id) <= budget;
             if !messages.last().is_some_and(fits) {
-                if last == MAX_MESSAGES {
-                    left.insert(typename.clone());
+                if count == MAX_MESSAGES {
+                    left.insert(typename);
                     continue 'rows;
                 }
                 messages.push(Message::new());
@@ -254,16 +259,16 @@ pub fn encode(folded: &Folded, publish: Publish) -> Vec<String> {
 }
 
 /// `{"v":1,"t":[…]}` messages naming `types`, as few as fit.
-fn types_only(types: &BTreeSet<String>) -> Vec<String> {
+fn types_only(types: &BTreeSet<&str>) -> Vec<String> {
     let mut messages = vec![Message::new()];
     for typename in types {
         let mut with = messages.last().map(|m| m.types.clone()).unwrap_or_default();
-        with.insert(typename.clone());
+        with.insert(typename);
         if EMPTY_LEN + types_len(&with) > MESSAGE_BYTES {
             messages.push(Message::new());
         }
         if let Some(message) = messages.last_mut() {
-            message.types.insert(typename.clone());
+            message.types.insert(typename);
         }
     }
     messages.iter().map(Message::render).collect()
@@ -273,21 +278,17 @@ fn types_only(types: &BTreeSet<String>) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn folded(upserted: &[(&str, &[&str])], deleted: &[(&str, &[&str])], types: &[&str]) -> Folded {
-        let lists = |l: &[(&str, &[&str])]| {
-            l.iter()
-                .map(|(t, ids)| {
-                    (
-                        (*t).to_string(),
-                        ids.iter().map(|i| (*i).to_string()).collect(),
-                    )
-                })
-                .collect()
-        };
+    fn folded<'a>(
+        upserted: &[(&'a str, &[&'a str])],
+        deleted: &[(&'a str, &[&'a str])],
+        types: &[&'a str],
+    ) -> Folded<'a> {
+        let lists =
+            |l: &[(&'a str, &[&'a str])]| l.iter().map(|(t, ids)| (*t, ids.to_vec())).collect();
         Folded {
             upserted: lists(upserted),
             deleted: lists(deleted),
-            types: types.iter().map(|t| (*t).to_string()).collect(),
+            types: types.iter().copied().collect(),
         }
     }
 

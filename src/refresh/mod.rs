@@ -353,7 +353,7 @@ pub(crate) fn run_counted_upsert(
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
                 (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted)) \
                  FROM written)",
-        meta.id_json(qi_tv)
+        meta.id_text(qi_tv)
     );
     let (keys, rows) = Spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
@@ -462,8 +462,8 @@ pub(crate) fn lock_rows(
     Ok(pks)
 }
 
-/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text, <id as JSON>`
-/// ([`crate::catalog::TviewMeta::id_json`]), journal each row it returns as
+/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text, id::text`
+/// ([`crate::catalog::TviewMeta::id_text`]), journal each row it returns as
 /// `change`, and return their `pk_<entity>`, as text.
 pub(crate) fn run_journaled(
     meta: &crate::catalog::TviewMeta,

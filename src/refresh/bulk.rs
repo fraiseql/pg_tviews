@@ -82,7 +82,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
          RETURNING t.{qi_pk}::text, {}",
         super::key_cast(&key_type, "$2", true),
-        meta.id_json("t")
+        meta.id_text("t")
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a

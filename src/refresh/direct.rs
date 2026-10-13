@@ -88,7 +88,7 @@ fn apply_direct_patch(
              RETURNING t.{qi_pk}) \
          SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed), {} \
          FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)",
-        meta.id_json("t")
+        meta.id_text("t")
     );
 
     let pks: Vec<i64> = rows.iter().map(|(pk, _)| *pk).collect();
@@ -258,7 +258,7 @@ fn write_fanout(
         "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
          WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
          RETURNING t.{qi_pk}::pg_catalog.int8, {}",
-        meta.id_json("t")
+        meta.id_text("t")
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
     for key in paths {

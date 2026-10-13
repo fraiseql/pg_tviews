@@ -93,7 +93,7 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::text, {}",
         super::key_cast(&key_type, "$1", false),
-        meta.id_json(&qi_tv)
+        meta.id_text(&qi_tv)
     );
     super::run_journaled_delete(meta, &sql, &[super::key_scalar(&key_type, key)?])
 }

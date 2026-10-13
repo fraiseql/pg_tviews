@@ -156,7 +156,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     );
     let pk = ident::quoted(&format!("pk_{entity}"));
 
-    let id = meta.id_json("t");
+    let id = meta.id_text("t");
     let mut changed = crate::refresh::run_journaled(
         meta,
         &format!(

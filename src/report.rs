@@ -229,9 +229,8 @@ fn build_report(
         item.insert("__typename".into(), Value::String(typename(&c.entity)));
         item.insert(
             "id".into(),
-            c.id.as_deref()
-                .and_then(|id| serde_json::from_str(id).ok())
-                .unwrap_or(Value::Null),
+            c.id.as_ref()
+                .map_or(Value::Null, crate::catalog::RowId::value),
         );
         if c.change == Change::Deleted {
             deleted.push(Value::Object(item));
