@@ -174,7 +174,9 @@ what the run-time paths read, not the whole analysis above:
   that carries a single-column `FOREIGN KEY`, with the referenced table and column, the
   constraint, and whether the column is unique and nullable. They are what a reader
   composes by: `tviews.registry.references` publishes those whose referenced column is
-  the source of another TVIEW's identity, and each gets a managed index.
+  the source of another TVIEW's identity, and each gets a managed index. A version 1
+  plan reads as one without references (upgrade scripts of earlier releases write
+  `{"version": 1}` before they re-derive).
 
 The output columns and the identity are not in the plan: the backing view and
 `pg_tview_meta.identity` hold them. A plan that does not decode, or names a mapped

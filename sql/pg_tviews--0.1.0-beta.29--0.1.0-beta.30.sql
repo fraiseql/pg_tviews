@@ -154,11 +154,8 @@ LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
 
 -- Plan version 2 records the references of each TVIEW: its output columns a
 -- foreign key of its root table proves to hold another table's key. A version 1
--- plan is a version 2 plan without them: stamp it so, then re-derive every TVIEW,
--- dependencies first, which finds them (and indexes each reference column).
-UPDATE @extschema@.pg_tview_meta
-   SET plan = plan || '{"version": 2}'
- WHERE plan->>'version' = '1';
+-- plan reads as one without them: re-derive every TVIEW, dependencies first,
+-- which finds them (and indexes each reference column).
 DO $$
 DECLARE
     failed TEXT;

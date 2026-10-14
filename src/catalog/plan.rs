@@ -6,9 +6,14 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::Oid;
 use serde::{Deserialize, Serialize};
 
-/// The version this library writes and reads. A plan of another version is
-/// re-derived by `ALTER EXTENSION pg_tviews UPDATE`, never read.
+/// The version this library writes. It also reads version 1, a plan without
+/// references (what the upgrade scripts of earlier releases write before they
+/// re-derive); a plan of any other version is re-derived by `ALTER EXTENSION
+/// pg_tviews UPDATE`, never read.
 pub const PLAN_VERSION: u32 = 2;
+
+/// The oldest version this library reads.
+const OLDEST_READ: u32 = 1;
 
 /// What a TVIEW's definition says about propagating writes to its rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,7 +127,7 @@ impl TviewPlan {
             operation: format!("Read the propagation plan of tv_{entity}"),
             pg_error: e.to_string(),
         })?;
-        if plan.version != PLAN_VERSION {
+        if !(OLDEST_READ..=PLAN_VERSION).contains(&plan.version) {
             return Err(TViewError::CatalogError {
                 operation: format!("Read the propagation plan of tv_{entity}"),
                 pg_error: format!(
@@ -250,9 +255,12 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_plan_is_re_derived_not_read() {
-        let err = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap_err();
-        assert!(err.to_string().contains("plan version 1 is not 2"), "{err}");
+    fn a_version_1_plan_reads_as_one_without_references() {
+        // What upgrade scripts of earlier releases write before re-deriving.
+        let plan = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap();
+        assert!(plan.references.is_empty());
+        let err = TviewPlan::decode("post", serde_json::json!({"version": 3})).unwrap_err();
+        assert!(err.to_string().contains("plan version 3 is not 2"), "{err}");
     }
 
     #[test]

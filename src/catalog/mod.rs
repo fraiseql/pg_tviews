@@ -161,7 +161,17 @@ impl RowIdentity {
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
 /// out of sync as catalog columns are added.
+///
+/// Inside the extension's own script (an upgrade re-registering TVIEWs between two
+/// scripts) the catalog can be an earlier release's, without the view the
+/// collections are read from: they are left out, and nothing loaded then is
+/// cached ([`remember`]).
 pub(crate) fn meta_select() -> String {
+    let collections = if crate::revision::in_own_script() {
+        "NULL::pg_catalog.jsonb AS collections".to_string()
+    } else {
+        collections::collections_sql()
+    };
     format!(
         "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, plan, \
          uncascaded_policy, identity, \
@@ -175,9 +185,8 @@ pub(crate) fn meta_select() -> String {
                                 'pg_catalog.numeric'::pg_catalog.regtype) \
           FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number, \
-         {} \
+         {collections} \
          FROM {}",
-        collections::collections_sql(),
         crate::catalog::meta_table()
     )
 }
@@ -197,10 +206,14 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     meta
 }
 
-/// Count the catalog query just made and cache its result.
+/// Count the catalog query just made and cache its result, unless the extension's
+/// own script is running ([`meta_select`]).
 fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
     crate::metrics::metrics_api::record_catalog_lookup();
     let loaded = loaded.map(Rc::new);
+    if crate::revision::in_own_script() {
+        return loaded;
+    }
     if let Some(meta) = &loaded {
         crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
         // A parent's `id` column is part of how the collections are named.

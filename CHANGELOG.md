@@ -39,11 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Change feed payload version 2**: every message is `{"v":2,…}`, with the optional `c`
   section. A listener that only knows version 1 evicts everything on a `v: 2` message, as
   the consumer contract says, which is safe; update it to read `c`.
-- **The propagation plan is version 2** (references): a version 1 plan no longer reads.
-  The upgrade re-derives every TVIEW. Catalog revision 8.
 
 ### Changed
 
+- **The propagation plan is version 2** (references). The upgrade re-derives every
+  TVIEW; a version 1 plan reads as one without references. Catalog revision 8.
 - **`rows` publishing costs more on TVIEWs with references**: an index probe per
   reference of each recomputed row, and the parents' ids in the payload. Server-side,
   per committed write against publishing `off`: a rename fanned out to 60 rows +30 %
