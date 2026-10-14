@@ -389,7 +389,17 @@ SELECT
                     'order', pg_catalog.to_jsonb(x.order_by)))
          FROM @extschema@.pg_tview_references x
          WHERE x.entity = m.entity AND x.chosen),
-        '{}') AS references
+        '{}') AS references,
+    -- The type name the report and the change feed use, as crate::catalog::typename
+    -- derives it: the typename option, else the PascalCase of the entity.
+    COALESCE(m.graphql_typename,
+             (SELECT pg_catalog.string_agg(
+                         pg_catalog.upper(pg_catalog.left(p.part, 1)) || pg_catalog.substr(p.part, 2),
+                         '' ORDER BY p.n)
+              FROM pg_catalog.unnest(pg_catalog.string_to_array(m.entity, '_'))
+                   WITH ORDINALITY AS p(part, n)
+              WHERE p.part <> ''),
+             '') AS typename
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

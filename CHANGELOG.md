@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same key, the one whose identity column has the referenced column's name is the
   parent, else the first by entity; the change feed names the same one. The registry
   stays plain SQL. `references` is a reserved word: qualify the column (`r.references`).
+- **`tviews.registry.typename`** (read contract 2, appended): the GraphQL type name of a
+  TVIEW's rows, as `pg_tviews_flush_and_report()` and the change feed name them (the
+  `typename` option, else the PascalCase of the entity), so a reader builds a collection
+  key, `<typename>.<reference column>`, from the registry alone.
 - **Every reference column gets a managed `(column, identity)` index**, whatever its
   name, also one whose foreign key leads to a table no TVIEW reads yet (a parent
   registered later finds it indexed): each list composed by it is one index range scan

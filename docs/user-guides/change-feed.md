@@ -83,8 +83,9 @@ and the new comment's id was never in P's result. Tag such a result with a **col
 key** for each parent it composes:
 
 - the parent's row tag, as for any result: `Post:<P's id>`;
-- the collection: `Comment.fk_post:<P's id>`, the child type, a dot, the reference column
-  (`tviews.registry.references` of `tv_comment`), a colon and the parent's id.
+- the collection: `Comment.fk_post:<P's id>`, the child type (`tviews.registry.typename`
+  of `tv_comment`), a dot, the reference column (its `tviews.registry.references`), a
+  colon and the parent's id. Both come from the registry: nothing to spell by hand.
 
 A page of 20 posts carries both tags for each of its 20 posts.
 

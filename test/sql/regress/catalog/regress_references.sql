@@ -191,4 +191,32 @@ SELECT must((SELECT array_agg(parent) FROM tviews.pg_tview_references
             = ARRAY[refs('post')->'fk_author'->>'entity'],
             'not exactly one candidate chosen, the one the registry names');
 
+-- 11. registry.typename is the type name the report and the change feed use, so a
+--     reader names a collection (`Comment.fk_post`) from the registry alone: the
+--     typename option, else the PascalCase of the entity.
+CREATE TABLE tb_blog_entry (pk_blog_entry int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                            title text NOT NULL);
+CREATE TABLE "tb_été" (pk_été int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       title text NOT NULL);
+SELECT tviews.pg_tviews_create('tv_blog_entry', $$
+    SELECT e.pk_blog_entry, e.id, jsonb_build_object('title', e.title) AS data FROM tb_blog_entry e $$);
+SELECT tviews.pg_tviews_create('"tv_été"', $$
+    SELECT e.pk_été, e.id, jsonb_build_object('title', e.title) AS data FROM "tb_été" e $$);
+SELECT tviews.pg_tviews_create('tv_note', $$
+    SELECT e.pk_blog_entry AS pk_note, e.id, jsonb_build_object('title', e.title) AS data
+    FROM tb_blog_entry e $$, '{"typename": "Article"}');
+BEGIN;
+INSERT INTO tb_blog_entry (pk_blog_entry, title) VALUES (1, 'a');
+INSERT INTO "tb_été" (pk_été, title) VALUES (1, 'a');
+SELECT tviews.pg_tviews_flush_and_report(include_data => false) AS r \gset
+SELECT must((SELECT array_agg(DISTINCT e->>'__typename' ORDER BY e->>'__typename')
+             FROM jsonb_array_elements((:'r'::jsonb)->'updated') e)
+            = (SELECT array_agg(typename ORDER BY typename) FROM tviews.registry
+               WHERE entity IN ('blog_entry', 'été', 'note')),
+            'registry.typename is not what the report names: ' || :'r');
+COMMIT;
+SELECT must((SELECT typename FROM tviews.registry WHERE entity = 'blog_entry') = 'BlogEntry'
+            AND (SELECT typename FROM tviews.registry WHERE entity = 'note') = 'Article',
+            'typename: PascalCase of the entity, else the option');
+
 \echo 'references: PASS'
