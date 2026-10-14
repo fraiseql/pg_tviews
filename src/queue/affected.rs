@@ -39,17 +39,26 @@ pub struct Recorded {
     /// The row's public `id`; `None` for a TVIEW without an `id` column.
     pub id: Option<crate::catalog::RowId>,
     pub change: Change,
+    /// The collections the row belongs to, or belonged to before the write, each
+    /// with the parent's key as text: what the change feed publishes in `c`.
+    pub parents: Vec<(
+        std::rc::Rc<crate::catalog::Collection>,
+        crate::catalog::collections::ParentRef,
+    )>,
 }
 
 impl Recorded {
-    /// `meta`'s row `pk`, with public `id` as the write returned it
-    /// ([`crate::catalog::TviewMeta::id_text`]), changed by `change`.
+    /// `meta`'s row `pk`, with public `id` and reference values as the write
+    /// returned them ([`crate::catalog::TviewMeta::returned`]) and the reference
+    /// keys it held when it was locked (`old`), changed by `change`.
     #[must_use]
     pub fn of(
         meta: &crate::catalog::TviewMeta,
         pk: String,
         id: Option<String>,
         change: Change,
+        references: &[Option<String>],
+        old: Option<&[Option<String>]>,
     ) -> Self {
         Self {
             entity: meta.entity_name.clone(),
@@ -57,6 +66,7 @@ impl Recorded {
             pk,
             id: id.map(|text| meta.row_id(text)),
             change,
+            parents: meta.parents(references, old),
         }
     }
 }
@@ -335,6 +345,7 @@ mod tests {
                 kind: crate::catalog::PublicId::String,
             }),
             change,
+            parents: Vec::new(),
         }
     }
 

@@ -3,6 +3,7 @@
 - Status: Accepted
 - Related: [ADR 0220](0220-settings.md) (who may set what), [ADR 0221](0221-observability.md),
   #231, #230, fraiseql/fraiseql#1576, #1577
+- Amended: payload version 2 adds collection keys (`c`, §8)
 
 ## Context
 
@@ -52,21 +53,26 @@ is looked up at PRE_COMMIT.
 must not be able to turn it off (ADR 0220 §3). `off` keeps no set and costs one comparison
 per journaled row.
 
-### 3. Payload, version 1
+### 3. Payload, version 2
 
 ```json
-{"v":1,"u":{"User":["8f…","1c…"],"Post":["…"]},"d":{"Comment":["…"]},"t":["Tag"]}
+{"v":2,"u":{"User":["8f…","1c…"],"Post":["…"]},"d":{"Comment":["…"]},
+ "c":{"Comment.fk_post":["9a…"]},"t":["Tag"]}
 ```
 
 - keys of `u` and `d`: GraphQL type names, as `flush_and_report` emits them (the `typename`
   option, else the PascalCase of the entity);
 - `u`: rows inserted or updated, `d`: rows deleted, by public `id` as text, net for the
   transaction (inserted then deleted: absent; deleted then inserted: in `u`);
-- `t`: types that changed and whose ids are not listed: past the cap, or a TVIEW without an
-  `id` column;
-- every key but `v` may be absent; `types` mode sends `{"v":1,"t":[…]}`;
+- `c`: collection keys (§8), each the public ids of the parents whose child rows changed;
+- `t`: types that changed and whose ids are not listed: past the cap, a TVIEW without an
+  `id` column, or the child type of a collection whose parents are not listed. A type in
+  `t` stands for its rows and for its collections;
+- every key but `v` may be absent; `types` mode sends `{"v":2,"t":[…]}`;
 - each message is under 8,000 bytes; a transaction sends at most **8 messages** (≈ 1,500
   UUIDs). Past that, the remaining types go to `t` of the last message.
+
+Version 1 had no `c`. A listener that does not know a version evicts everything.
 
 The grammar, examples and listener code live in the
 [change feed guide](../user-guides/change-feed.md), the one source for consumers.
@@ -104,10 +110,41 @@ and type names of changed rows, and the timing of writes, including rows the rol
 SELECT (other tenants', under RLS). Publishing stays a superuser decision. Use `types` where
 ids are sensitive.
 
+### 8. Collection keys
+
+A reader that composes a child list at read time (the comments of a post, read from
+`tv_comment` by `fk_post`) caches a result no row tag can keep fresh: adding a comment to
+post P, or moving one into it, changes no `tv_post` row, and the new comment's id was never
+in P's result. Such a result is tagged with a **collection key**, `<child type>.<reference
+column>:<parent id>` (`Comment.fk_post:<P's id>`), one per composed parent, besides the
+parent's row tag.
+
+- Every published row of a TVIEW with references (`tviews.registry.references`) names, in
+  `c`, the parents of each reference before and after the write: the post a comment was
+  inserted into, moved out of and into, edited in, or deleted from. Parents are listed
+  once per transaction, new before old.
+- The refresh write returns them. A recompute, an insert or a delete returns, per
+  reference, the parent's key and its public id, read by an index probe in `RETURNING`.
+  The keys the row held before come from the read that locks the rows before the
+  recompute (`FOR UPDATE` under READ COMMITTED, so they are what a concurrent writer
+  committed); where that read is skipped (REPEATABLE READ without key locks), a subquery
+  in `RETURNING` reads them, since the statement's snapshot does not see the row version
+  being written. A patch of `data` (direct or fan-out) changes no reference: it returns
+  the keys only, over rows that can be many.
+- At the end of the flush, while SPI is available, the keys left unresolved are resolved
+  from the rows the transaction itself wrote (a fan-out from a renamed author has written
+  the posts and the user), the others with one query for every parent TVIEW. A parent no
+  row of its TVIEW holds names nothing: the transaction deleted it (its row tag evicts
+  it) or it was never one of its rows. A key left unresolved at commit, and a parent
+  TVIEW without an `id` column, publish the child type in `t`.
+- Every reference is published (no declaration selects them); the parents and the budget
+  are those of `u`.
+
 ## Consequences
 
 - A cache stays fresh across processes and replicas without polling. It evicts by id where
-  it can, and by type past the cap or after a reconnect.
+  it can, by collection for results composed at read time, and by type past the cap or after
+  a reconnect.
 - Off by default: nothing changes for a database that doesn't opt in.
 - A write's commit can't fail because of publishing, except in the documented queue race.
 - Two-phase commit and publishing exclude each other, loudly.

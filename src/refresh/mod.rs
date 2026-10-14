@@ -333,7 +333,8 @@ pub(crate) struct Produced {
 /// The source runs once, in a CTE; the statement returns the identities
 /// (`key_col`) of the rows the source produced and the `pk_<entity>` of each row
 /// written, split into inserted (`xmax = 0`) and updated. The skipped count is
-/// added to `refresh_noop_skipped`.
+/// added to `refresh_noop_skipped`. `old` holds the reference keys of the rows
+/// [`lock_rows`] read; without it the statement reads them itself (a pre-image).
 pub(crate) fn run_counted_upsert(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
@@ -341,6 +342,7 @@ pub(crate) fn run_counted_upsert(
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
+    old: Option<&crate::catalog::collections::OldKeys>,
 ) -> crate::TViewResult<Produced> {
     use crate::queue::affected::{Change, Recorded, record};
     let entity = &meta.entity_name;
@@ -349,11 +351,13 @@ pub(crate) fn run_counted_upsert(
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
-                     {conflict} RETURNING {qi_pk}::text AS k, {} AS i, xmax = 0 AS inserted) \
+                     {conflict} RETURNING {qi_pk}::text AS k, {} AS i, {} AS r, \
+                                          xmax = 0 AS inserted) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
-                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted)) \
+                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r)) \
                  FROM written)",
-        meta.id_text(qi_tv)
+        meta.id_text(qi_tv),
+        meta.reference_values(qi_tv, old.is_none())
     );
     let (keys, rows) = Spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
@@ -389,7 +393,17 @@ pub(crate) fn run_counted_upsert(
         } else {
             Change::Updated
         };
-        record(Recorded::of(meta, pk, id, change));
+        let references: Vec<Option<String>> = row[3]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let held = old.and_then(|o| o.get(&pk)).map(Vec::as_slice);
+        record(Recorded::of(meta, pk, id, change, &references, held));
     }
     Ok(Produced { keys, written })
 }
@@ -408,14 +422,14 @@ pub(crate) fn lock_rows(
     qi_tv: &str,
     keys: &[KeyValue],
     with_pks: bool,
-) -> crate::TViewResult<Vec<i64>> {
+) -> crate::TViewResult<Locked> {
     use crate::concurrency::Policy;
     // SAFETY: reads the backend's isolation level.
     let transaction_snapshot =
         unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
     let key_locks = Policy::current() != Policy::Skip;
     if keys.is_empty() || (transaction_snapshot && !with_pks && !key_locks) {
-        return Ok(Vec::new());
+        return Ok(Locked::default());
     }
     let key_type = meta.key_type()?;
     let qi_key = ident::quoted(&meta.identity.column);
@@ -425,23 +439,34 @@ pub(crate) fn lock_rows(
     } else {
         " FOR UPDATE"
     };
+    // The reference keys the rows hold before the recompute: what the change
+    // feed names as the collections a row leaves.
+    let references = meta.publishes_collections();
     let sql = format!(
-        "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key \
+        "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
          FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
+        meta.reference_keys("t"),
         key_cast(&key_type, "$1", true)
     );
     let args = [key_array(&key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    let (pks, held) = Spi::connect_mut(|client| {
+    let (pks, held, old) = Spi::connect_mut(|client| {
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
+        let mut old = crate::catalog::collections::OldKeys::new();
         for row in crate::utils::spi::kept_update(client, &sql, &args)? {
             if let Some(pk) = row.get::<i64>(1)? {
+                if references {
+                    old.insert(
+                        pk.to_string(),
+                        row.get::<Vec<Option<String>>>(3)?.unwrap_or_default(),
+                    );
+                }
                 pks.push(pk);
             }
             held.extend(row.get::<String>(2)?);
         }
-        Ok::<_, spi::Error>((pks, held))
+        Ok::<_, spi::Error>((pks, held, old))
     })?;
     if key_locks {
         // As the identity's type writes them, as the rows found are compared:
@@ -459,11 +484,25 @@ pub(crate) fn lock_rows(
         let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
         crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
     }
-    Ok(pks)
+    Ok(Locked {
+        pks,
+        old: Some(old),
+    })
 }
 
-/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text, id::text`
-/// ([`crate::catalog::TviewMeta::id_text`]), journal each row it returns as
+/// What [`lock_rows`] read of the rows it locked.
+#[derive(Debug, Default)]
+pub(crate) struct Locked {
+    /// The existing rows' `pk_<entity>`.
+    pub pks: Vec<i64>,
+    /// Their reference keys, when the change feed names collections (empty
+    /// otherwise); `None` when the rows were not read (REPEATABLE READ without
+    /// key locks), so a recompute reads them itself.
+    pub old: Option<crate::catalog::collections::OldKeys>,
+}
+
+/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text` and what
+/// [`crate::catalog::TviewMeta::returned`] lists, journal each row it returns as
 /// `change`, and return their `pk_<entity>`, as text.
 pub(crate) fn run_journaled(
     meta: &crate::catalog::TviewMeta,
@@ -476,20 +515,23 @@ pub(crate) fn run_journaled(
         for row in crate::utils::spi::kept_update(client, sql, args)? {
             let pk: Option<String> = row.get(1)?;
             let id: Option<String> = row.get(2)?;
+            let references: Option<Vec<Option<String>>> = row.get(3)?;
             if let Some(pk) = pk {
-                out.push((pk, id));
+                out.push((pk, id, references.unwrap_or_default()));
             }
         }
         Ok::<_, spi::Error>(out)
     })?;
     Ok(written
         .into_iter()
-        .map(|(pk, id)| {
+        .map(|(pk, id, references)| {
             crate::queue::affected::record(crate::queue::affected::Recorded::of(
                 meta,
                 pk.clone(),
                 id,
                 change,
+                &references,
+                None,
             ));
             pk
         })

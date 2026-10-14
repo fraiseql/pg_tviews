@@ -48,8 +48,8 @@ SELECT tviews.pg_tviews_create('tv_tag', $$
 CREATE TEMP TABLE notes AS
 SELECT n AS payload FROM regexp_split_to_table(:'notes', E'\n') n WHERE n <> '';
 SELECT must((SELECT count(*) FROM notes) = 8, (SELECT count(*) FROM notes) || ' messages');
-SELECT must(bool_and(octet_length(payload) < 8000 AND (payload::jsonb->>'v') = '1'),
-            'a message over the limit or not v1')
+SELECT must(bool_and(octet_length(payload) < 8000 AND (payload::jsonb->>'v') = '2'),
+            'a message over the limit or not v2')
 FROM notes;
 SELECT must((SELECT count(*) FROM notes, jsonb_array_elements_text(payload::jsonb->'u'->'Item')) > 1000
             AND (SELECT count(*) FROM notes WHERE payload::jsonb->'t' = '["Item"]') = 1,
@@ -57,12 +57,12 @@ SELECT must((SELECT count(*) FROM notes, jsonb_array_elements_text(payload::json
 
 -- 2. `types` mode: the types only.
 \set notes `psql -X -q -d "$PGTV_DB" -c "LISTEN tviews_changes" -c "SET pg_tviews.publish_changes = types" -c "UPDATE tb_item SET n = n + 1 WHERE pk_item <= 3" -c "UPDATE tb_tag SET label = 'y'" -c "SELECT 1" 2>&1 | grep 'Asynchronous notification' | sed -E 's/.*with payload "(.*)" received from.*/\1/' | paste -sd '|'`
-SELECT must(:'notes' = '{"v":1,"t":["Item"]}|{"v":1,"t":["Tag"]}', 'types mode: ' || :'notes');
+SELECT must(:'notes' = '{"v":2,"t":["Item"]}|{"v":2,"t":["Tag"]}', 'types mode: ' || :'notes');
 
 -- 2b. A bulk change made with triggers suspended is rebuilt at resume, rows not
 --     listed: its type is published by name. So is a pg_tviews_refresh().
 \set notes `psql -X -q -d "$PGTV_DB" -c "LISTEN tviews_changes" -c "SET pg_tviews.publish_changes = rows" -c "BEGIN" -c "SELECT tviews.pg_tviews_suspend_triggers()" -c "UPDATE tb_item SET n = n + 1" -c "SELECT tviews.pg_tviews_resume_triggers()" -c "COMMIT" -c "SELECT tviews.pg_tviews_refresh('tv_item')" -c "SELECT 1" 2>&1 | grep 'Asynchronous notification' | sed -E 's/.*with payload "(.*)" received from.*/\1/' | paste -sd '|'`
-SELECT must(:'notes' = '{"v":1,"t":["Item"]}|{"v":1,"t":["Item"]}', 'rebuilds: ' || :'notes');
+SELECT must(:'notes' = '{"v":2,"t":["Item"]}|{"v":2,"t":["Item"]}', 'rebuilds: ' || :'notes');
 
 -- 3. PREPARE TRANSACTION with changes to publish is refused; without changes, or
 --    with publishing off, it prepares.

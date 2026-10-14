@@ -13,10 +13,20 @@
 //! further rows are not kept and the type is published by name only. A row
 //! without an id (a TVIEW without an `id` column) is published by its type too.
 //! In `types` mode no id is kept at all. Type names are shared, not copied.
+//!
+//! A written row of a TVIEW that references others also names the collections
+//! it belongs to, before and after the write: `Comment.fk_post` and the post.
+//! A recompute returns the parent's public id; a patch returns its key, which the
+//! flush resolves ([`resolve`]) while SPI is available, from the rows the
+//! transaction wrote or by query. A key still unresolved at commit (a write
+//! outside a flush) publishes the child type by name, and so does a parent
+//! without an `id` column. A parent the flush no longer finds (deleted, or never
+//! a row of its TVIEW) names nothing: its own row is published, or no cached
+//! result holds it. Each collection's parents are kept once.
 
 use super::affected::{Change, Recorded, fold_change};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// The bytes of ids a transaction keeps for publishing: twice what the messages
@@ -39,16 +49,43 @@ struct Entry {
     typename: Rc<str>,
     /// The row's id as JSON text.
     id: String,
+    /// Its `pk_<entity>`: a child naming it as a parent finds its id here.
+    pk: String,
     change: Change,
+}
+
+/// A collection a written row belongs to, and its parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Member {
+    collection: Rc<crate::catalog::Collection>,
+    /// The parent's key.
+    key: String,
+    parent: Parent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Parent {
+    /// Not resolved yet: the write returned the parent's key only.
+    Key,
+    /// The parent's public id as JSON text.
+    Id(String),
+    /// No row of the parent TVIEW holds the key.
+    Gone,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Set {
     entries: Vec<Entry>,
-    /// The bytes of the ids in `entries`.
+    /// The bytes of the ids in `entries` and of the keys and ids in `members`.
     bytes: usize,
     /// Types published by name only.
     types: BTreeSet<Rc<str>>,
+    /// Each collection's parents once: a parent named again is not kept twice.
+    members: Vec<Member>,
+    /// `members` before this position are resolved.
+    resolved: usize,
+    /// `(collection key, parent key)` of every member.
+    seen: HashSet<(Rc<str>, String)>,
 }
 
 thread_local! {
@@ -61,6 +98,7 @@ pub struct Mark {
     position: usize,
     bytes: usize,
     types: BTreeSet<Rc<str>>,
+    members: usize,
 }
 
 /// Keep a write for publishing, as `publish` asks.
@@ -79,13 +117,220 @@ pub fn add(publish: Publish, recorded: &Recorded) {
                 set.entries.push(Entry {
                     typename: Rc::clone(&recorded.typename),
                     id,
+                    pk: recorded.pk.clone(),
                     change: recorded.change,
                 });
             }
             _ => {
                 set.types.insert(Rc::clone(&recorded.typename));
+                return;
             }
         }
+        for (collection, parent) in &recorded.parents {
+            let child = &collection.child_type;
+            if set.types.contains(child) {
+                continue;
+            }
+            let Some(kind) = collection.parent_id else {
+                set.types.insert(Rc::clone(child));
+                continue;
+            };
+            let resolved = parent.id.as_ref().map(|id| {
+                crate::catalog::RowId {
+                    text: id.clone(),
+                    kind,
+                }
+                .json()
+            });
+            let bytes = parent.key.len() + resolved.as_ref().map_or(0, String::len);
+            if set.bytes + bytes > KEPT_BYTES {
+                set.types.insert(Rc::clone(child));
+                continue;
+            }
+            if !set
+                .seen
+                .insert((Rc::clone(&collection.key), parent.key.clone()))
+            {
+                continue;
+            }
+            set.bytes += bytes;
+            set.members.push(Member {
+                collection: Rc::clone(collection),
+                key: parent.key.clone(),
+                parent: resolved.map_or(Parent::Key, Parent::Id),
+            });
+        }
+    });
+}
+
+/// Resolve the parents' keys the writes since the last call returned to their
+/// public ids: those the transaction wrote itself from its own rows, the others
+/// with one query for every parent TVIEW. Runs at the end of a flush.
+///
+/// # Errors
+/// What the query returns.
+pub fn resolve() -> crate::TViewResult<()> {
+    let pending = SET.with_borrow_mut(|set| {
+        let pending = set.members[set.resolved..]
+            .iter()
+            .any(|m| m.parent == Parent::Key);
+        if !pending {
+            set.resolved = set.members.len();
+        }
+        pending
+    });
+    if !pending {
+        return Ok(());
+    }
+    let lookups = SET.with_borrow(|set| {
+        let written = written_ids(set);
+        let mut lookups: Vec<(Rc<crate::catalog::Collection>, Vec<String>)> = Vec::new();
+        for member in &set.members[set.resolved..] {
+            let c = &member.collection;
+            if member.parent != Parent::Key || own_id(&written, c, &member.key).is_some() {
+                continue;
+            }
+            let at = lookups
+                .iter()
+                .position(|(other, _)| other.parent_table == c.parent_table)
+                .unwrap_or_else(|| {
+                    lookups.push((Rc::clone(c), Vec::new()));
+                    lookups.len() - 1
+                });
+            if !lookups[at].1.contains(&member.key) {
+                lookups[at].1.push(member.key.clone());
+            }
+        }
+        lookups
+    });
+    let found = if lookups.is_empty() {
+        HashMap::new()
+    } else {
+        parent_ids(&lookups)?
+    };
+    settle(&|collection, key| {
+        found
+            .get(&(collection.parent_table.clone(), key.to_string()))
+            .cloned()
+    });
+    Ok(())
+}
+
+/// The public ids, as JSON text, of the rows the transaction published, by
+/// `(type, pk_<entity>)`.
+fn written_ids(set: &Set) -> HashMap<(&str, &str), &str> {
+    set.entries
+        .iter()
+        .map(|e| ((&*e.typename, e.pk.as_str()), e.id.as_str()))
+        .collect()
+}
+
+/// The id of parent `key` of `collection` among the rows the transaction wrote.
+fn own_id<'a>(
+    written: &HashMap<(&str, &str), &'a str>,
+    collection: &crate::catalog::Collection,
+    key: &str,
+) -> Option<&'a str> {
+    if !collection.parent_keyed_by_pk {
+        return None;
+    }
+    written
+        .get(&(&*collection.parent_typename, key))
+        .copied()
+}
+
+/// The public ids, as JSON text, of the parents of `lookups` by
+/// `(parent table, key)`: one statement, a branch per parent TVIEW.
+fn parent_ids(
+    lookups: &[(Rc<crate::catalog::Collection>, Vec<String>)],
+) -> crate::TViewResult<HashMap<(String, String), String>> {
+    use crate::utils::ident::quoted;
+    // An integer key is bound as int8[]; any other as text, cast to its type.
+    let integer = |c: &crate::catalog::Collection| {
+        matches!(c.parent_type.as_str(), "smallint" | "integer" | "bigint")
+    };
+    let branches: Vec<String> = lookups
+        .iter()
+        .enumerate()
+        .map(|(i, (c, _))| {
+            let key = quoted(&c.parent_column);
+            let keys = if integer(c) {
+                format!("${}::pg_catalog.int8[]", i + 1)
+            } else {
+                format!("${}::pg_catalog.text[]::{}[]", i + 1, c.parent_type)
+            };
+            format!(
+                "SELECT {i}, p.{key}::pg_catalog.text, p.\"id\"::pg_catalog.text FROM {} p \
+                 WHERE p.{key} OPERATOR(pg_catalog.=) ANY ({keys})",
+                c.parent_table
+            )
+        })
+        .collect();
+    let args: Vec<pgrx::datum::DatumWithOid> = lookups
+        .iter()
+        .map(|(c, keys)| {
+            if integer(c) {
+                crate::utils::spi::int8_array(keys.iter().filter_map(|k| k.parse().ok()).collect())
+            } else {
+                crate::utils::spi::text_array(keys.clone())
+            }
+        })
+        .collect();
+    let mut found = HashMap::new();
+    for row in crate::utils::spi::kept_rows(
+        &branches.join(" UNION ALL "),
+        &args,
+        crate::utils::spi::Plan::Generic,
+    )? {
+        let [Some(i), Some(key), Some(id)] = &row[..] else {
+            continue;
+        };
+        let Some((c, _)) = i.parse::<usize>().ok().and_then(|i| lookups.get(i)) else {
+            continue;
+        };
+        let id = crate::catalog::RowId {
+            text: id.clone(),
+            kind: c.parent_id.unwrap_or(crate::catalog::PublicId::String),
+        };
+        found.insert((c.parent_table.clone(), key.clone()), id.json());
+    }
+    Ok(found)
+}
+
+/// Resolve every unresolved parent key: from the rows the transaction wrote, else
+/// with `found`, `(collection, key)` → its public id as JSON text, `None` when no
+/// parent row holds the key.
+fn settle(found: &dyn Fn(&crate::catalog::Collection, &str) -> Option<String>) {
+    SET.with_borrow_mut(|set| {
+        let resolved: Vec<(usize, Option<String>)> = {
+            let written = written_ids(set);
+            set.members[set.resolved..]
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.parent == Parent::Key)
+                .map(|(i, m)| {
+                    let id = own_id(&written, &m.collection, &m.key)
+                        .map(str::to_string)
+                        .or_else(|| found(&m.collection, &m.key));
+                    (set.resolved + i, id)
+                })
+                .collect()
+        };
+        for (at, id) in resolved {
+            let member = &mut set.members[at];
+            member.parent = match id {
+                Some(id) if set.bytes + id.len() <= KEPT_BYTES => {
+                    set.bytes += id.len();
+                    Parent::Id(id)
+                }
+                Some(_) => {
+                    set.types.insert(Rc::clone(&member.collection.child_type));
+                    Parent::Gone
+                }
+                None => Parent::Gone,
+            };
+        }
+        set.resolved = set.members.len();
     });
 }
 
@@ -102,6 +347,7 @@ pub fn mark() -> Mark {
         position: set.entries.len(),
         bytes: set.bytes,
         types: set.types.clone(),
+        members: set.members.len(),
     })
 }
 
@@ -109,6 +355,13 @@ pub fn mark() -> Mark {
 pub fn rollback(mark: Mark) {
     SET.with_borrow_mut(|set| {
         set.entries.truncate(mark.position);
+        set.members.truncate(mark.members);
+        set.resolved = set.resolved.min(mark.members);
+        set.seen = set
+            .members
+            .iter()
+            .map(|m| (Rc::clone(&m.collection.key), m.key.clone()))
+            .collect();
         set.bytes = mark.bytes;
         set.types = mark.types;
     });
@@ -121,7 +374,7 @@ pub fn clear() {
 
 /// Whether the transaction has anything to publish.
 pub fn is_empty() -> bool {
-    SET.with_borrow(|set| set.entries.is_empty() && set.types.is_empty())
+    SET.with_borrow(|set| set.entries.is_empty() && set.types.is_empty() && set.members.is_empty())
 }
 
 /// The transaction's changes, folded: what commit publishes, borrowed from the set.
@@ -134,6 +387,9 @@ pub struct Folded<'a> {
     pub deleted: Vec<(&'a str, Vec<&'a str>)>,
     /// Types published by name only.
     pub types: BTreeSet<&'a str>,
+    /// The collections changed, as `(collection key, child type, parent ids)`,
+    /// keys in name order, ids in the order first named.
+    pub collections: Vec<(&'a str, &'a str, Vec<&'a str>)>,
 }
 
 /// `f` of the set, folded into one net change per row.
@@ -142,7 +398,14 @@ pub fn with_folded<T>(f: impl FnOnce(&Folded) -> T) -> T {
 }
 
 fn fold(set: &Set) -> Folded<'_> {
-    let types: BTreeSet<&str> = set.types.iter().map(|t| &**t).collect();
+    let mut types: BTreeSet<&str> = set.types.iter().map(|t| &**t).collect();
+    // A parent never resolved cannot be named: its child type is.
+    types.extend(
+        set.members
+            .iter()
+            .filter(|m| m.parent == Parent::Key)
+            .map(|m| &*m.collection.child_type),
+    );
     let mut order: Vec<(&str, &str)> = Vec::new();
     let mut net: HashMap<(&str, &str), Option<Change>> = HashMap::new();
     for entry in &set.entries {
@@ -179,6 +442,22 @@ fn fold(set: &Set) -> Folded<'_> {
     }
     folded.upserted.sort_by_key(|(t, _)| *t);
     folded.deleted.sort_by_key(|(t, _)| *t);
+    for member in &set.members {
+        let (Parent::Id(id), c) = (&member.parent, &member.collection) else {
+            continue;
+        };
+        if folded.types.contains(&*c.child_type) {
+            continue;
+        }
+        match folded.collections.iter_mut().find(|(k, ..)| *k == &*c.key) {
+            Some((.., ids)) if ids.contains(&id.as_str()) => {}
+            Some((.., ids)) => ids.push(id),
+            None => folded
+                .collections
+                .push((&*c.key, &*c.child_type, vec![id.as_str()])),
+        }
+    }
+    folded.collections.sort_by_key(|(k, ..)| *k);
     folded
 }
 
@@ -197,6 +476,7 @@ mod tests {
                 kind: crate::catalog::PublicId::Number,
             }),
             change,
+            parents: Vec::new(),
         }
     }
 
@@ -344,5 +624,186 @@ mod tests {
         assert!(!is_empty());
         clear();
         assert!(is_empty());
+    }
+
+    fn collection(
+        child: &str,
+        column: &str,
+        parent_id: bool,
+    ) -> std::rc::Rc<crate::catalog::Collection> {
+        std::rc::Rc::new(crate::catalog::Collection {
+            key: format!("{child}.{column}").into(),
+            child_type: child.into(),
+            column: column.to_string(),
+            parent_table: "public.tv_post".to_string(),
+            parent_table_oid: pgrx::pg_sys::Oid::from(1),
+            parent_column: "pk_post".to_string(),
+            parent_type: "integer".to_string(),
+            parent_id: parent_id.then_some(crate::catalog::PublicId::String),
+            parent_typename: "Post".into(),
+            parent_keyed_by_pk: true,
+        })
+    }
+
+    /// A written child row naming `parents`, `(collection, key, id read by the
+    /// write)`.
+    fn child(
+        pk: &str,
+        change: Change,
+        parents: &[(&std::rc::Rc<crate::catalog::Collection>, &str, Option<&str>)],
+    ) -> Recorded {
+        let mut recorded = r("Comment", pk, Some(&format!("\"c{pk}\"")), change);
+        recorded.parents = parents
+            .iter()
+            .map(|(c, key, id)| {
+                (
+                    std::rc::Rc::clone(c),
+                    crate::catalog::collections::ParentRef {
+                        key: (*key).to_string(),
+                        id: id.map(str::to_string),
+                    },
+                )
+            })
+            .collect();
+        recorded
+    }
+
+    /// Post `key` has public id `p<key>`; post 9 is not in `tv_post`.
+    fn settle_posts() {
+        settle(&|_, key| (key != "9").then(|| format!("\"p{key}\"")));
+    }
+
+    /// Settle with nothing found by query.
+    fn settle_none() {
+        settle(&|_, _| None);
+    }
+
+    fn collections() -> Vec<(String, String, Vec<String>)> {
+        with_folded(|f| {
+            f.collections
+                .iter()
+                .map(|(k, t, ids)| {
+                    (
+                        (*k).to_string(),
+                        (*t).to_string(),
+                        ids.iter().map(|i| (*i).to_string()).collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    #[test]
+    fn collection_keys_name_each_parent_once() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(Publish::Rows, &child("1", Change::Inserted, &[(&post, "1", None)]));
+        // Moved from post 1 to post 2: both.
+        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None), (&post, "1", None)]));
+        settle_posts();
+        assert_eq!(
+            collections(),
+            [(
+                "Comment.fk_post".to_string(),
+                "Comment".to_string(),
+                vec!["\"p1\"".to_string(), "\"p2\"".to_string()]
+            )]
+        );
+        clear();
+    }
+
+    #[test]
+    fn a_parent_not_found_names_nothing_and_one_unresolved_names_the_type() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(Publish::Rows, &child("1", Change::Deleted, &[(&post, "9", None)]));
+        settle_posts();
+        assert!(collections().is_empty());
+        assert!(snapshot().2.is_empty(), "a parent that is gone is no type");
+        // Written outside a flush, never resolved: the child type by name.
+        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None)]));
+        assert!(collections().is_empty());
+        assert_eq!(snapshot().2, ["Comment"]);
+        clear();
+    }
+
+    #[test]
+    fn a_parent_without_id_names_the_child_type() {
+        clear();
+        let tag = collection("Comment", "fk_tag", false);
+        add(Publish::Rows, &child("1", Change::Updated, &[(&tag, "1", None)]));
+        settle_posts();
+        assert!(collections().is_empty());
+        assert_eq!(snapshot().2, ["Comment"]);
+        clear();
+    }
+
+    #[test]
+    fn types_mode_keeps_no_collection() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(Publish::Types, &child("1", Change::Updated, &[(&post, "1", None)]));
+        settle_posts();
+        assert!(collections().is_empty());
+        clear();
+    }
+
+    #[test]
+    fn a_parent_named_by_many_rows_is_kept_once() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        for pk in 0..100 {
+            add(Publish::Rows, &child(&pk.to_string(), Change::Inserted, &[(&post, "1", None)]));
+        }
+        settle_posts();
+        add(Publish::Rows, &child("100", Change::Inserted, &[(&post, "1", None)]));
+        settle_posts();
+        SET.with_borrow(|set| {
+            let ids = set.members.iter().filter(|m| matches!(m.parent, Parent::Id(_))).count();
+            assert_eq!(ids, 1, "one member per parent");
+        });
+        assert_eq!(collections()[0].2, ["\"p1\""]);
+        clear();
+    }
+
+    #[test]
+    fn an_id_the_write_read_needs_no_resolution() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(
+            Publish::Rows,
+            &child("1", Change::Inserted, &[(&post, "1", Some("p1"))]),
+        );
+        settle_none();
+        assert_eq!(collections()[0].2, ["\"p1\""]);
+        clear();
+    }
+
+    #[test]
+    fn a_parent_the_transaction_wrote_is_resolved_from_its_row() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(
+            Publish::Rows,
+            &r("Post", "4", Some("\"p4\""), Change::Updated),
+        );
+        add(Publish::Rows, &child("1", Change::Updated, &[(&post, "4", None)]));
+        settle_none();
+        assert_eq!(collections()[0].2, ["\"p4\""]);
+        clear();
+    }
+
+    #[test]
+    fn a_rollback_forgets_collection_keys() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        add(Publish::Rows, &child("1", Change::Updated, &[(&post, "1", None)]));
+        settle_posts();
+        let m = mark();
+        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None)]));
+        settle_posts();
+        rollback(m);
+        assert_eq!(collections()[0].2, ["\"p1\""]);
+        clear();
     }
 }

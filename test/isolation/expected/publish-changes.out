@@ -8,7 +8,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
 
 starting permutation: w_begin w_rename_ann w_rename_both l_poll w_commit l_poll
 step w_begin: BEGIN;
@@ -27,7 +27,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002"]}}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"User":["00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002"]}}" from w
 
 starting permutation: w_begin w_rename_ann w_rollback l_poll
 step w_begin: BEGIN;
@@ -53,7 +53,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
 
 starting permutation: w_function l_poll
 step w_function: SELECT rename_user(1, 'ann4');
@@ -68,7 +68,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
 
 starting permutation: w_begin w_insert w_delete_new w_delete_bob w_commit l_poll
 step w_begin: BEGIN;
@@ -82,7 +82,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"d":{"User":["00000000-0000-0000-0000-000000000002"]}}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"d":{"User":["00000000-0000-0000-0000-000000000002"]}}" from w
 
 starting permutation: w_tag l_poll
 step w_tag: UPDATE tb_tag SET label = 'y' WHERE pk_tag = 1;
@@ -92,7 +92,7 @@ polled
      1
 (1 row)
 
-l: NOTIFY "tviews_changes" with payload "{"v":1,"t":["Tag"]}" from w
+l: NOTIFY "tviews_changes" with payload "{"v":2,"t":["Tag"]}" from w
 
 starting permutation: w_off w_autocommit l_poll
 step w_off: SET pg_tviews.publish_changes = off;

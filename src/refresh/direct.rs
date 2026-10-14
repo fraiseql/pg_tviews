@@ -13,6 +13,10 @@ use pgrx::datum::DatumWithOid;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
+
+/// What a patch returns of a row it wrote: its public id and reference keys
+/// ([`TviewMeta::returned_keys`]).
+type Patched = (Option<String>, Vec<Option<String>>);
 /// Derive a parent's patch chain from a patched child's chain.
 ///
 /// When `parent_meta`'s plan embeds `child_entity`'s document at a concrete path
@@ -58,7 +62,8 @@ pub fn derive_parent_chain(
 /// element per entry), guarded by `data IS DISTINCT FROM <patched>` so a patch
 /// that changes nothing writes nothing. Nothing is interpolated.
 ///
-/// Returns `(pk, changed, id)` for every **materialised** row among the pks: the
+/// Returns `(pk, changed, id, reference values)` for every **materialised** row
+/// among the pks (a patch of `data` changes no reference column): the
 /// guarded UPDATE runs in a data-modifying CTE and the outer SELECT reads the
 /// statement snapshot, so unchanged rows are still reported as present. The
 /// caller diffs these against the input to find rows that must recompute (not
@@ -66,7 +71,7 @@ pub fn derive_parent_chain(
 fn apply_direct_patch(
     meta: &TviewMeta,
     rows: &[(i64, Vec<PatchEntry>)],
-) -> TViewResult<Vec<(i64, bool, Option<String>)>> {
+) -> TViewResult<Vec<(i64, bool, Patched)>> {
     let Some((_, shape)) = rows.first() else {
         return Ok(Vec::new());
     };
@@ -88,7 +93,7 @@ fn apply_direct_patch(
              RETURNING t.{qi_pk}) \
          SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed), {} \
          FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)",
-        meta.id_text("t")
+        meta.returned_keys("t")
     );
 
     let pks: Vec<i64> = rows.iter().map(|(pk, _)| *pk).collect();
@@ -114,9 +119,11 @@ fn apply_direct_patch(
         crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)?
             .into_iter()
             .filter_map(|row| match &row[..] {
-                [Some(pk), Some(changed), id] => {
-                    Some((pk.parse().ok()?, changed == "t", id.clone()))
-                }
+                [Some(pk), Some(changed), id, keys @ ..] => Some((
+                    pk.parse().ok()?,
+                    changed == "t",
+                    (id.clone(), crate::catalog::collections::key_values(keys)),
+                )),
                 _ => None,
             })
             .collect(),
@@ -175,12 +182,14 @@ pub fn apply_fanout_patch(
     );
     Ok(changed
         .into_iter()
-        .map(|(pk, id)| {
+        .map(|(pk, (id, references))| {
             crate::queue::affected::record(crate::queue::affected::Recorded::of(
                 meta,
                 pk.to_string(),
                 id,
                 crate::queue::affected::Change::Updated,
+                &references,
+                None,
             ));
             pk
         })
@@ -212,7 +221,7 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
 /// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
 /// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
 /// at each path, the paths bound as parameters. The pks written, with their
-/// public ids.
+/// public ids and reference values.
 ///
 /// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
 /// a generic plan of a join with an array assumes ten keys, each matching
@@ -227,7 +236,7 @@ fn write_fanout(
     paths: &[String],
     keys: Vec<i64>,
     values: Vec<pgrx::JsonB>,
-) -> TViewResult<Vec<(i64, Option<String>)>> {
+) -> TViewResult<Vec<(i64, Patched)>> {
     let Some(lookup) = LookupKeys::of(keys) else {
         return Ok(Vec::new());
     };
@@ -258,7 +267,7 @@ fn write_fanout(
         "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
          WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
          RETURNING t.{qi_pk}::pg_catalog.int8, {}",
-        meta.id_text("t")
+        meta.returned_keys("t")
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
     for key in paths {
@@ -273,7 +282,8 @@ fn write_fanout(
         .into_iter()
         .filter_map(|mut row| {
             let id = row.get_mut(1).and_then(Option::take);
-            Some((row.first()?.as_deref()?.parse().ok()?, id))
+            let keys = crate::catalog::collections::key_values(row.get(2..).unwrap_or_default());
+            Some((row.first()?.as_deref()?.parse().ok()?, (id, keys)))
         })
         .collect())
 }
@@ -311,12 +321,14 @@ pub fn apply_entity_patches(
                 &meta.entity_name,
                 materialised.len() as u64 - changed,
             );
-            for (pk, _, id) in materialised.into_iter().filter(|&(_, c, _)| c) {
+            for (pk, _, (id, references)) in materialised.into_iter().filter(|&(_, c, _)| c) {
                 crate::queue::affected::record(crate::queue::affected::Recorded::of(
                     meta,
                     pk.to_string(),
                     id,
                     crate::queue::affected::Change::Updated,
+                    &references,
+                    None,
                 ));
             }
             for (pk, _) in chunk {

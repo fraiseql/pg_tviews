@@ -1,0 +1,23 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_begin a_move b_begin b_move a_commit b_commit l_poll
+pg_tviews_create               
+-------------------------------
+TVIEW public.tv_comment created
+(1 row)
+
+step a_begin: BEGIN;
+step a_move: UPDATE tb_comment SET fk_post = 2 WHERE pk_comment = 1;
+step b_begin: BEGIN;
+step b_move: UPDATE tb_comment SET fk_post = 3 WHERE pk_comment = 1; <waiting ...>
+step a_commit: COMMIT;
+step b_move: <... completed>
+step b_commit: COMMIT;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"Comment":["00000000-0000-0000-0000-0000000000c1"]},"c":{"Comment.fk_post":["00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000001"]}}" from a
+l: NOTIFY "tviews_changes" with payload "{"v":2,"u":{"Comment":["00000000-0000-0000-0000-0000000000c1"]},"c":{"Comment.fk_post":["00000000-0000-0000-0000-000000000003","00000000-0000-0000-0000-000000000002"]}}" from b

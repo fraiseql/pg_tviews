@@ -41,7 +41,10 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let Some(_flushing) = Flushing::enter() else {
         return Ok(());
     };
-    drain::flush_pending()
+    drain::flush_pending()?;
+    // The collections the written rows belong to, named by their parents'
+    // public ids while SPI is available (the commit callback has none).
+    crate::queue::published::resolve()
 }
 
 thread_local! {

@@ -82,7 +82,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
          RETURNING t.{qi_pk}::text, {}",
         super::key_cast(&key_type, "$2", true),
-        meta.id_text("t")
+        meta.returned("t", false)
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
@@ -93,7 +93,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let mut touched = super::Touched::default();
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
-        let before = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
+        let locked = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
         // A key names one row: a UNION view returning several for one is refused.
         super::refuse_duplicate_keys(
             &meta,
@@ -107,6 +107,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &source_sql,
             &conflict,
             &[super::key_array(&key_type, chunk)?],
+            locked.old.as_ref(),
         )?;
         // A key produces at most one row (duplicates were refused above): as many
         // rows as keys means none is gone.
@@ -125,7 +126,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         touched.extend(super::touched(
             &meta,
             chunk,
-            before,
+            locked.pks,
             produced.written,
             deleted,
         ));

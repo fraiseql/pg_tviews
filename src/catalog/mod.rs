@@ -1,3 +1,4 @@
+pub mod collections;
 pub mod graph;
 pub(crate) mod indexes;
 pub mod plan;
@@ -7,6 +8,7 @@ pub mod registered;
 pub mod resolve;
 pub mod row;
 
+pub use collections::Collection;
 pub use graph::EntityDepGraph;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -55,6 +57,9 @@ pub struct TviewMeta {
     /// How its table's `id` column, the rows' public id that the journal carries,
     /// is written in JSON; `None` without such a column.
     pub public_id: Option<PublicId>,
+    /// Its references to other TVIEWs, as the change feed names the collections
+    /// its rows belong to.
+    pub collections: Vec<Rc<Collection>>,
 }
 
 /// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
@@ -169,8 +174,10 @@ pub(crate) fn meta_select() -> String {
                                 'pg_catalog.int8'::pg_catalog.regtype, \
                                 'pg_catalog.numeric'::pg_catalog.regtype) \
           FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
-          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number \
+          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number, \
+         {} \
          FROM {}",
+        collections::collections_sql(),
         crate::catalog::meta_table()
     )
 }
@@ -196,6 +203,9 @@ fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
     let loaded = loaded.map(Rc::new);
     if let Some(meta) = &loaded {
         crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
+        // A parent's `id` column is part of how the collections are named.
+        let parents: Vec<Oid> = meta.collections.iter().map(|c| c.parent_table_oid).collect();
+        crate::cache::watch(&parents);
         crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
     }
     loaded
@@ -446,7 +456,15 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
-        let typename = typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
+        let typename: Rc<str> =
+            typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
+        let collections = collections::decode(
+            &typename,
+            row["collections"]
+                .value::<pgrx::JsonB>()?
+                .map(|j| j.0)
+                .as_ref(),
+        );
         Ok(Self {
             tview_oid: row["tview_oid"]
                 .value()?
@@ -479,6 +497,7 @@ impl TviewMeta {
                     PublicId::String
                 }
             }),
+            collections,
         })
     }
 }
@@ -509,6 +528,7 @@ impl Default for TviewMeta {
             identity: RowIdentity::unknown(),
             typename: "".into(),
             public_id: None,
+            collections: Vec::new(),
         }
     }
 }
