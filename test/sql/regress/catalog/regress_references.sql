@@ -186,5 +186,9 @@ SELECT must(refs('post')->'fk_author'->>'entity' = 'account',
 SELECT must((SELECT count(*) FROM tviews.pg_tview_references
              WHERE entity = 'post' AND column_name = 'fk_author') = 2,
             'the candidates are not both listed');
+SELECT must((SELECT array_agg(parent) FROM tviews.pg_tview_references
+             WHERE entity = 'post' AND column_name = 'fk_author' AND chosen)
+            = ARRAY[refs('post')->'fk_author'->>'entity'],
+            'not exactly one candidate chosen, the one the registry names');
 
 \echo 'references: PASS'

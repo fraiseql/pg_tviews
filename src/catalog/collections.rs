@@ -53,7 +53,7 @@ pub type OldKeys = std::collections::HashMap<String, Vec<Option<String>>>;
 /// SQL over the catalog row of [`super::meta_select`]: the TVIEW's collections, a
 /// `jsonb` array of `[column, parent table, parent oid, parent column, its type,
 /// id kind, parent entity, parent typename option]`, the parent of each reference
-/// chosen as `tviews.registry` does.
+/// the one `tviews.pg_tview_references` marks `chosen`, as `tviews.registry` publishes.
 pub(super) fn collections_sql() -> String {
     let schema = crate::utils::ext_schema();
     format!(
@@ -71,14 +71,13 @@ pub(super) fn collections_sql() -> String {
                         AND ia.attnum > 0 AND NOT ia.attisdropped), \
                      x.parent, pm.graphql_typename) \
                  ORDER BY x.column_name) \
-          FROM (SELECT DISTINCT ON (r.column_name) r.* FROM {schema}.pg_tview_references r \
-                WHERE r.entity = pg_tview_meta.entity \
-                ORDER BY r.column_name, r.preferred DESC, r.parent) x \
+          FROM {schema}.pg_tview_references x \
           JOIN {schema}.pg_tview_meta pm ON pm.entity = x.parent \
           JOIN pg_catalog.pg_class pc ON pc.oid = x.parent_table \
           JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace \
           JOIN pg_catalog.pg_attribute pa \
-            ON pa.attrelid = x.parent_table AND pa.attname = x.parent_column) AS collections"
+            ON pa.attrelid = x.parent_table AND pa.attname = x.parent_column \
+          WHERE x.entity = pg_tview_meta.entity AND x.chosen) AS collections"
     )
 }
 
