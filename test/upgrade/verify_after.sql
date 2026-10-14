@@ -133,11 +133,11 @@ END $$;
 -- Every TVIEW was re-derived into one versioned plan (ADR 0203) by the update.
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta
-               WHERE plan->>'version' IS DISTINCT FROM '1'
+               WHERE plan->>'version' IS DISTINCT FROM '2'
                   OR pg_catalog.jsonb_array_length(plan->'tables') = 0) THEN
         RAISE EXCEPTION 'upgrade check: a TVIEW has no plan: %',
             (SELECT pg_catalog.string_agg(entity, ', ') FROM tviews.pg_tview_meta
-             WHERE plan->>'version' IS DISTINCT FROM '1'
+             WHERE plan->>'version' IS DISTINCT FROM '2'
                 OR pg_catalog.jsonb_array_length(plan->'tables') = 0);
     END IF;
 END $$;

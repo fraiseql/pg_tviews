@@ -34,6 +34,9 @@ pub struct Lineage {
     pub keyed_otherwise: BTreeSet<String>,
     /// The shape of its `data` output.
     pub data: Option<DataShape>,
+    /// The output columns a foreign key of the root table proves to hold another
+    /// table's key.
+    pub references: Vec<super::Reference>,
 }
 
 /// How a TVIEW embeds another one's rows.
@@ -407,6 +410,12 @@ pub fn analyze(
             explain(entity, table, sql)?;
         }
     }
+    let references = match graph.root_columns() {
+        Some((relid, columns)) if !columns.is_empty() => {
+            super::references(&columns, &super::root_constraints(relid)?)
+        }
+        _ => Vec::new(),
+    };
     let unread = graph
         .unread_tables
         .iter()
@@ -426,6 +435,7 @@ pub fn analyze(
         tview_reads,
         keyed_otherwise,
         data: graph.data,
+        references,
     })
 }
 

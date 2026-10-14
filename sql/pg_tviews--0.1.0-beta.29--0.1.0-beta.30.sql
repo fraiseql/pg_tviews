@@ -3,3 +3,26 @@
 -- Pending upgrade script: a pull request that changes the extension SQL adds its
 -- statements here (docs/development/extension-versioning.md). Released scripts are
 -- never edited.
+
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
+RETURNS integer
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS 'SELECT 8';
+
+-- Plan version 2 records the references of each TVIEW: its output columns a
+-- foreign key of its root table proves to hold another table's key. A version 1
+-- plan no longer reads: re-derive every TVIEW, dependencies first.
+DO $$
+DECLARE
+    failed TEXT;
+BEGIN
+    SELECT pg_catalog.string_agg(pg_catalog.format('tv_%s: %s', r.entity, r.status), '; ')
+      INTO failed
+      FROM @extschema@.pg_tviews_reregister_all() r
+     WHERE r.status <> 'reregistered';
+    IF failed IS NOT NULL THEN
+        RAISE EXCEPTION 'pg_tviews: these TVIEWs could not be re-derived: %', failed
+            USING HINT = 'Fix or drop them on the previous release, then update again.';
+    END IF;
+END
+$$;

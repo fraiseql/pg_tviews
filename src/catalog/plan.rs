@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// The version this library writes and reads. A plan of another version is
 /// re-derived by `ALTER EXTENSION pg_tviews UPDATE`, never read.
-pub const PLAN_VERSION: u32 = 1;
+pub const PLAN_VERSION: u32 = 2;
 
 /// What a TVIEW's definition says about propagating writes to its rows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,10 @@ pub struct TviewPlan {
     /// The tables whose rows carry the key: what the row trigger reads.
     #[serde(default)]
     pub paths: Vec<LocalPath>,
+    /// The output columns a foreign key of the root table proves to hold another
+    /// table's key (`tviews.registry.references` publishes those naming a TVIEW).
+    #[serde(default)]
+    pub references: Vec<crate::lineage::Reference>,
 }
 
 /// Another TVIEW this one embeds.
@@ -145,8 +149,8 @@ impl TviewPlan {
     }
 
     /// The columns of the TVIEW's table its rows are looked up by: those holding
-    /// an embedded TVIEW's key, and those a fan-out patch writes through. Each
-    /// needs an index leading with it.
+    /// an embedded TVIEW's key, those a fan-out patch writes through, and its
+    /// references, which a reader composes by. Each needs an index leading with it.
     #[must_use]
     pub fn lookup_columns(&self) -> std::collections::BTreeSet<&str> {
         self.embeds
@@ -157,6 +161,7 @@ impl TviewPlan {
                     .iter()
                     .filter_map(|t| t.fanout.as_ref().map(|f| f.lookup_col.as_str())),
             )
+            .chain(self.references.iter().map(|r| r.column.as_str()))
             .collect()
     }
 
@@ -193,6 +198,15 @@ mod tests {
                 root: true,
                 initial_attnum: Some(1),
             }],
+            references: vec![crate::lineage::Reference {
+                column: "fk_author".into(),
+                source: "fk_author".into(),
+                table: "public.tb_user".into(),
+                key: "pk_user".into(),
+                constraint: "tb_post_fk_author_fkey".into(),
+                unique: false,
+                nullable: false,
+            }],
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);
@@ -215,6 +229,30 @@ mod tests {
             plan.lookup_columns().into_iter().collect::<Vec<_>>(),
             ["author_pk", "editor_pk", "tag_pk"]
         );
+    }
+
+    #[test]
+    fn reference_columns_are_lookup_columns() {
+        let plan = TviewPlan::decode(
+            "comment",
+            serde_json::json!({
+                "version": PLAN_VERSION,
+                "references": [{"column": "author_ref", "source": "author_ref",
+                                "table": "public.tb_user", "key": "pk_user",
+                                "constraint": "c", "unique": false, "nullable": true}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.lookup_columns().into_iter().collect::<Vec<_>>(),
+            ["author_ref"]
+        );
+    }
+
+    #[test]
+    fn a_version_1_plan_is_re_derived_not_read() {
+        let err = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap_err();
+        assert!(err.to_string().contains("plan version 1 is not 2"), "{err}");
     }
 
     #[test]

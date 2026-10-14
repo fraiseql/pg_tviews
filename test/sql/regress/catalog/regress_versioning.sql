@@ -184,7 +184,7 @@ CREATE TABLE triggers_at_create AS
     SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger
     WHERE tgfoid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'tviews'::regnamespace);
 UPDATE tviews.pg_tview_meta
-   SET plan = '{"version": 1}', needs_reregister = true
+   SET plan = '{"version": 2}', needs_reregister = true
  WHERE entity IN ('post', 'user_orders');
 DO $$
 DECLARE t record;

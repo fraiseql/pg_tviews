@@ -27,12 +27,14 @@
 mod analyze;
 mod graph;
 mod identity;
+mod references;
 mod template;
 pub mod walk;
 
 pub use analyze::*;
 pub use graph::*;
 pub use identity::*;
+pub use references::*;
 pub use template::*;
 
 #[cfg(test)]
