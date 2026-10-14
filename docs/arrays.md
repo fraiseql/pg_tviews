@@ -54,12 +54,20 @@ SELECT comment_ids, data->'comments' FROM tv_article;   -- one comment, 'Second'
 ```
 
 The row is recomputed from the backing view as a whole; there is no element-by-element
-patch of an array. Writing the same subquery with a `LEFT JOIN … GROUP BY` works the
-same way.
+patch of an array, and there will be none: a list of entities is composed at read time
+instead ([Embed or compose](user-guides/embed-or-compose.md)). Writing the same subquery
+with a `LEFT JOIN … GROUP BY` works the same way.
+
+The comments here are entities (they have ids, and an application has queries of its
+own for them): the example shows the mechanism, not the design to choose. Give them a
+`tv_comment` and compose `Article.comments` from it by `fk_article`, which
+`tviews.registry.references` publishes. Embed a list when its elements are values the
+parent owns: tags, address lines, frozen line items.
 
 Embedding the rows of another TVIEW (`jsonb_agg(c.data …) FROM tv_comment c`) reads its
 table: a refresh of the child TVIEW then refreshes the parents it maps to, in the same
 flush ([FraiseQL Integration](getting-started/fraiseql-integration.md#embedding-a-list)).
+Each refresh of a child recomputes every parent array it is in.
 
 ## Joining on an array of keys
 

@@ -103,34 +103,33 @@ JOIN tv_user u ON u.pk_user = p.fk_user;
 refreshes `tv_user`, and that refresh refreshes the posts embedding the user, in the
 same flush.
 
-### Embedding a list
+### A list of entities: compose it
+
+A post's comments are entities with a TVIEW of their own. Do not copy them into
+`tv_post`: compose `Post.comments` from `tv_comment` at read time ([Embed or
+compose](../user-guides/embed-or-compose.md)).
 
 ```sql
 CREATE TABLE tv_comment AS
 SELECT c.pk_comment, c.id, c.fk_post,
        jsonb_build_object('id', c.id, 'body', c.body) AS data
 FROM tb_comment c;
-
-SELECT pg_tviews_create_or_replace('tv_post', $$
-SELECT
-    p.pk_post, p.id, p.identifier, p.fk_user, u.id AS user_id,
-    jsonb_build_object(
-        'id', p.id,
-        'identifier', p.identifier,
-        'title', p.title,
-        'author', u.data,
-        'comments', COALESCE(
-            (SELECT jsonb_agg(c.data ORDER BY c.pk_comment)
-             FROM tv_comment c WHERE c.fk_post = p.pk_post),
-            '[]'::jsonb)
-    ) AS data
-FROM tb_post p
-JOIN tv_user u ON u.pk_user = p.fk_user
-$$);
 ```
 
-`pg_tviews_create_or_replace()` changed the definition in place (`replaced`: same
-columns). A comment written, changed or deleted refreshes its post.
+`tb_comment.fk_post REFERENCES tb_post` makes `tv_comment.fk_post` a reference to
+`tv_post`, published in `tviews.registry.references` with its managed index: what the
+GraphQL layer composes by, with no configuration.
+
+```sql
+SELECT ref.key AS column_name, ref.value->>'entity' AS parent
+FROM tviews.registry r, jsonb_each(r.references) ref
+WHERE r.entity = 'comment';   -- fk_post | post
+```
+
+A comment written, changed or deleted refreshes its `tv_comment` row, and the change
+feed names the post whose comments changed ([collection
+keys](../user-guides/change-feed.md#collection-keys)). Embed a list (`jsonb_agg` in the
+parent's definition) only when its elements are values the parent owns.
 
 ## Writes and reads
 
@@ -141,7 +140,10 @@ same transaction, at the end of each statement, so the mutation can return them:
 BEGIN;
 INSERT INTO tb_comment (body, fk_post) VALUES ('Nice post', 1);
 UPDATE tb_user SET name = 'Alice Martin' WHERE identifier = 'alice';
-SELECT data FROM tv_post WHERE identifier = 'hello';   -- both changes, already
+SELECT p.data || jsonb_build_object('comments',
+           (SELECT jsonb_agg(c.data ORDER BY c.pk_comment)
+            FROM tv_comment c WHERE c.fk_post = p.pk_post))
+FROM tv_post p WHERE p.identifier = 'hello';   -- both changes, already
 COMMIT;
 ```
 

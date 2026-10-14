@@ -715,6 +715,8 @@ COMMIT;
 - **[For Developers](docs/user-guides/developers.md)** - Application integration patterns
 - **[For Operators](docs/user-guides/operators.md)** - Production deployment guide
 - **[For Architects](docs/user-guides/architects.md)** - CQRS design decisions
+- **[Embed or Compose](docs/user-guides/embed-or-compose.md)** - Embed a list in the parent's document, or compose it at read time
+- **[Change Feed](docs/user-guides/change-feed.md)** - Cache invalidation across processes (`tviews_changes`)
 
 ### Reference
 - **[API Reference](docs/reference/api.md)** - Complete function reference

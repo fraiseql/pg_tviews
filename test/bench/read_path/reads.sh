@@ -38,7 +38,7 @@ compose_of() {
   local agg="FROM bench.tv_comment c WHERE c.fk_post = p.pk_post"
   case "$1" in
     lateral) echo "(p.data || jsonb_build_object('comments', COALESCE((SELECT jsonb_agg(c.data ORDER BY c.pk_comment) $agg), '[]'::jsonb)))::text";;
-    lateral_text) echo "rtrim(p.data::text, '}') || ', \"comments\": ' || COALESCE((SELECT json_agg(c.data ORDER BY c.pk_comment) $agg)::text, '[]') || '}'";;
+    lateral_text) echo "left(p.data::text, -1) || ', \"comments\": ' || COALESCE((SELECT json_agg(c.data ORDER BY c.pk_comment) $agg)::text, '[]') || '}'";;
     fraiseql|fraiseql_key)
       local corr="fk_post = p.pk_post"; [[ "$1" == fraiseql_key ]] && corr="(data->>'fk_post')::int = p.pk_post"
       echo "jsonb_build_object('d', p.data, 'e', jsonb_build_object('comments', (SELECT COALESCE(jsonb_agg(_c.data ORDER BY _c._o), '[]'::jsonb) FROM (SELECT data, row_number() OVER (ORDER BY pk_comment) AS _o FROM bench.tv_comment WHERE $corr ORDER BY _o) _c)))::text";;

@@ -89,9 +89,32 @@ definition.
 
 A TVIEW named `tv_<entity>` needs one column naming its rows, `pk_<entity>`, and usually a
 `data` JSONB document shaped like the GraphQL type. Add plain columns for the filters
-resolvers use (`id`, `user_id`):
+resolvers use (`id`, `user_id`) and the foreign keys a reader joins on (`fk_post`).
+
+Every entity with queries of its own gets a TVIEW. A list of other entities, here a post's
+comments, is not copied into the parent: the reader composes it at read time from the
+child's TVIEW ([Embed or compose](embed-or-compose.md)).
 
 ```sql
+CREATE TABLE tv_user AS
+SELECT u.pk_user, u.id, u.identifier,
+       jsonb_build_object('id', u.id, 'name', u.name) AS data
+FROM tb_user u;
+
+CREATE TABLE tv_comment AS
+SELECT
+    c.pk_comment,          -- row identity of tv_comment
+    c.id,                  -- GraphQL ID
+    c.fk_post,             -- the post it belongs to: what a reader composes by
+    jsonb_build_object(
+        'id', c.id,
+        'text', c.text,
+        'createdAt', c.created_at,
+        'author', jsonb_build_object('id', u.id, 'name', u.name)
+    ) AS data
+FROM tb_comment c
+JOIN tb_user u ON u.pk_user = c.fk_user;
+
 CREATE TABLE tv_post AS
 SELECT
     p.pk_post,             -- row identity of tv_post
@@ -104,31 +127,40 @@ SELECT
         'title', p.title,
         'content', p.content,
         'createdAt', p.created_at,
-        'author', jsonb_build_object('id', u.id, 'name', u.name),
-        'comments', COALESCE((
-            SELECT jsonb_agg(
-                       jsonb_build_object(
-                           'id', c.id,
-                           'text', c.text,
-                           'author', jsonb_build_object('id', cu.id, 'name', cu.name))
-                       ORDER BY c.created_at, c.pk_comment)
-            FROM tb_comment c
-            JOIN tb_user cu ON cu.pk_user = c.fk_user
-            WHERE c.fk_post = p.pk_post
-        ), '[]'::jsonb)
+        'author', jsonb_build_object('id', u.id, 'name', u.name)
     ) AS data
 FROM tb_post p
 JOIN tb_user u ON u.pk_user = p.fk_user;
 ```
 
-Every table the definition reads gets a trigger: a write to `tb_post`, `tb_user` or
-`tb_comment` refreshes the posts it reaches. Renaming Bob refreshes the post he commented
-on:
+Every table a definition reads gets a trigger: a write to `tb_comment` or `tb_user`
+refreshes the comments it reaches. Renaming Bob refreshes the comment he wrote:
 
 ```sql
 UPDATE tb_user SET name = 'Robert' WHERE identifier = 'bob';
 
-SELECT data->'comments'->0->'author'->>'name' AS commenter FROM tv_post;
+SELECT data->'author'->>'name' AS commenter FROM tv_comment;
+```
+
+The foreign key `tb_comment.fk_post REFERENCES tb_post` makes `tv_comment.fk_post` a
+reference to `tv_post`: pg_tviews indexes it, `(fk_post, pk_comment)`, and publishes it
+in `tviews.registry`, which is where a GraphQL layer learns that `Post.comments` reads
+`tv_comment` by `fk_post`:
+
+```sql
+SELECT r.entity, ref.key AS column_name, ref.value->>'entity' AS parent, ref.value->>'index' AS index
+FROM tviews.registry r, jsonb_each(r.references) ref
+ORDER BY 1, 2;
+```
+
+A post with its comments is one statement, in comment order, read through that index:
+
+```sql
+SELECT p.data || jsonb_build_object('comments', COALESCE(
+           (SELECT jsonb_agg(c.data ORDER BY c.pk_comment)
+            FROM tv_comment c WHERE c.fk_post = p.pk_post), '[]'::jsonb)) AS post
+FROM tv_post p
+WHERE p.identifier = 'hello-world';
 ```
 
 A definition pg_tviews cannot keep up to date (a read it cannot trace back to rows of
@@ -351,6 +383,8 @@ A write that is slow usually reaches many TVIEW rows (a user embedded in every p
 
 - Shape each TVIEW's `data` like its GraphQL type, and project the filter columns the
   resolvers use.
+- Give every entity with queries of its own a TVIEW, and compose lists of them at read
+  time; embed only value arrays ([Embed or compose](embed-or-compose.md)).
 - Index for the queries you run, not for every field.
 - Write only to the write tables; do not refresh TVIEWs by hand after writes.
 - Keep chains of TVIEWs embedding TVIEWs short: each level adds a refresh on writes.
@@ -360,6 +394,7 @@ A write that is slow usually reaches many TVIEW rows (a user embedded in every p
 - [FraiseQL Integration Guide](../getting-started/fraiseql-integration.md)
 - [API Reference](../reference/api.md)
 - [GraphQL Cascade](graphql-cascade.md)
+- [Embed or compose](embed-or-compose.md)
 - [Aggregate TVIEWs](aggregate-tviews.md)
 - [Performance Tuning](../operations/performance-tuning.md)
 - [Troubleshooting Guide](../operations/troubleshooting.md)

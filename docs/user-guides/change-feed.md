@@ -21,26 +21,39 @@ ALTER DATABASE app SET pg_tviews.publish_changes = 'rows';  -- or 'types', or 'o
 | value | sends |
 |---|---|
 | `off` | nothing, and keeps nothing: no cost |
-| `types` | the GraphQL types that changed: `{"v":1,"t":["Post","User"]}` |
-| `rows` | the rows that changed, by type and id, and types past the cap |
+| `types` | the GraphQL types that changed: `{"v":2,"t":["Post","User"]}` |
+| `rows` | the rows that changed, by type and id, the collections they left or joined, and types past the cap |
 
-`rows` costs about 2-3 % on a write that changes 60 TVIEW rows (stock PostgreSQL 18.4,
-`test/bench/write_path`, `username`); `types` and `off` cost nothing measurable.
+What `rows` costs, measured server-side on stock PostgreSQL 18.4 (`test/bench/write_path`,
+one write per transaction, `synchronous_commit = off`, no client round trip), against
+the same build with publishing `off`:
 
-## Payload, version 1
+| write | `rows`, without collection keys (0.1.0-beta.29) | `rows` |
+|---|---:|---:|
+| `username`: a rename fanned out to 60 rows of three TVIEWs with references | +14 % | +30 % |
+| `comment_insert`: one `tv_comment` row with two references | +14 % | +36 % |
+
+The collection keys cost an index probe per reference of each recomputed row (its
+parent's id), and the parents' ids in the payload. End to end, with client round trips
+(pgbench), `rows` cost 2-3 % on the rename before collection keys existed. `types` and
+`off` cost nothing measurable.
+
+## Payload, version 2
 
 One JSON object per message, under 8,000 bytes:
 
 ```json
-{"v":1,"u":{"User":["8f6a…"],"Post":["1c2b…","77d0…"]},"d":{"Comment":["e5f1…"]},"t":["Tag"]}
+{"v":2,"u":{"User":["8f6a…"],"Comment":["1c2b…","77d0…"]},"d":{"Tag":["e5f1…"]},
+ "c":{"Comment.fk_author":["8f6a…"],"Comment.fk_post":["9a03…"]},"t":["Audit"]}
 ```
 
 | key | meaning |
 |---|---|
-| `v` | payload version: `1`. Ignore messages of a version you don't know, and evict every type |
+| `v` | payload version: `2`. Ignore messages of a version you don't know, and evict every type |
 | `u` | rows inserted or updated, by type: `{"Type": [id, …]}` |
 | `d` | rows deleted, by type |
-| `t` | types that changed whose rows are not listed: evict the whole type |
+| `c` | collections that changed, by collection key: `{"Child.column": [parent id, …]}` ([below](#collection-keys)) |
+| `t` | types that changed whose rows or collections are not listed: evict the whole type and its collections |
 
 - **Types** are GraphQL type names, as `pg_tviews_flush_and_report()` reports them: the
   TVIEW's `typename` option, else its entity in Pascal case (`blog_post` → `BlogPost`).
@@ -48,14 +61,56 @@ One JSON object per message, under 8,000 bytes:
   number.
 - **Net changes**: a row inserted and deleted in the same transaction is not listed;
   deleted and inserted again, it is in `u`; written twice, it is listed once.
-- **`t`** lists a type when its ids did not fit (see below), or when its TVIEW has no `id`
-  column. A type in `t` may also have some of its ids in `u` or `d`: evicting the type
-  covers them.
+- **`t`** lists a type when its ids did not fit (see below), when its TVIEW has no `id`
+  column, or when the parents of one of its collections cannot be listed. A type in `t`
+  may also have some of its ids in `u` or `d`: evicting the type covers them.
 - Every key but `v` may be absent.
 
 A transaction sends at most 8 messages with ids (about 1,500 uuids). The remaining types
 go to `t` of the last message. A large transaction is therefore always fully described.
 Past a point, it is described by type instead of by id.
+
+Version 1, before collection keys, had no `c`.
+
+## Collection keys
+
+A GraphQL layer that composes a list at read time ([Embed or
+compose](embed-or-compose.md)), the comments of a post read from `tv_comment`, caches a
+result that no row tag keeps fresh: adding a comment to post P changes no `tv_post` row,
+and the new comment's id was never in P's result. Tag such a result with a **collection
+key** for each parent it composes:
+
+- the parent's row tag, as for any result: `Post:<P's id>`;
+- the collection: `Comment.fk_post:<P's id>`, the child type, a dot, the reference column
+  (`tviews.registry.references` of `tv_comment`), a colon and the parent's id.
+
+A page of 20 posts carries both tags for each of its 20 posts.
+
+Every published row of a TVIEW with references names, in `c`, the parents of each of its
+references, before and after the write, each once per transaction:
+
+| event | feed | evicts |
+|---|---|---|
+| comment added to P | `u:{Comment:[c]}`, `c:{Comment.fk_post:[P]}` | P's composed results |
+| comment moved from P to Q | `u:{Comment:[c]}`, `c:{Comment.fk_post:[Q,P]}` | both |
+| comment edited | `u:{Comment:[c]}`, `c:{Comment.fk_post:[P]}` | P's |
+| author renamed (50 comments on 10 posts) | `u:{User:[a], Comment:[…]}`, `c:{Comment.fk_post:[…10 posts], Comment.fk_author:[a]}` | those posts', and the user's comment lists |
+| comment deleted | `d:{Comment:[c]}`, `c:{Comment.fk_post:[P]}` | P's |
+| post deleted | `d:{Post:[P]}` | P's, through its row tag |
+
+Eviction:
+
+- `u` and `d` evict row tags; `c` evicts collection tags;
+- a type in `t` evicts its rows and every collection tag of that type (`Comment.*`): keep
+  an index from child type to its collection tags;
+- the reconnect rule (evict everything) is unchanged.
+
+A parent the transaction deleted names no collection: its own row tag evicts its results.
+A new row in a list query (a new post on page 1) follows the cache's rule for new rows of a
+type, unchanged.
+
+**Before payload version 2** (a cache that does not tag collections), the rule is coarse:
+any `Comment` row in `u` or `d` evicts every result that composes `Comment` children.
 
 ## Delivery
 
@@ -99,14 +154,16 @@ def listen(dsn: str, cache) -> None:
                 cache.evict_all()
                 for note in conn.notifies():
                     change = json.loads(note.payload)
-                    if change.get("v") != 1:
+                    if change.get("v") != 2:
                         cache.evict_all()
                         continue
                     for section in ("u", "d"):
                         for typename, ids in change.get(section, {}).items():
                             cache.evict_rows(typename, ids)
+                    for key, parent_ids in change.get("c", {}).items():
+                        cache.evict_collections(key, parent_ids)
                     for typename in change.get("t", []):
-                        cache.evict_type(typename)
+                        cache.evict_type(typename)  # its rows and its collections
         except psycopg.OperationalError:
             time.sleep(1)
 ```
@@ -134,7 +191,7 @@ async fn listen(dsn: &str, cache: &Cache) -> Result<(), tokio_postgres::Error> {
     while let Some(note) = rx.recv().await {
         let change: serde_json::Value =
             serde_json::from_str(note.payload()).unwrap_or_default();
-        if change["v"] != 1 {
+        if change["v"] != 2 {
             cache.evict_all();
             continue;
         }
@@ -143,7 +200,11 @@ async fn listen(dsn: &str, cache: &Cache) -> Result<(), tokio_postgres::Error> {
                 cache.evict_rows(typename, ids.as_array().into_iter().flatten());
             }
         }
+        for (key, parent_ids) in change["c"].as_object().into_iter().flatten() {
+            cache.evict_collections(key, parent_ids.as_array().into_iter().flatten());
+        }
         for typename in change["t"].as_array().into_iter().flatten() {
+            // Its rows and its collections.
             cache.evict_type(typename.as_str().unwrap_or_default());
         }
     }
@@ -180,6 +241,6 @@ any pool mode.
 ## Who can read it
 
 LISTEN has no privilege. Any role that can connect to the database receives every
-message: the type names and ids of changed rows, and when writes happen, including rows
-the role cannot SELECT (other tenants' rows, under row-level security). Where ids are
-sensitive, publish `types` only.
+message: the type names and ids of changed rows, the ids of their parents in `c`, and when
+writes happen, including rows the role cannot SELECT (other tenants' rows, under
+row-level security). Where ids are sensitive, publish `types` only.

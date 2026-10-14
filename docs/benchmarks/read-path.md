@@ -3,7 +3,8 @@
 What a reader pays for a child list embedded in the parent's document
 (`tv_post.data.comments[]`) against the same list composed at read time from the child's
 own TVIEW (`tv_comment`), and what each design costs on the write path. The harness is
-[`test/bench/read_path/`](../../test/bench/read_path/README.md).
+[`test/bench/read_path/`](../../test/bench/read_path/README.md). The rule these numbers
+support is in the user guide: [Embed or compose](../user-guides/embed-or-compose.md).
 
 ## Setup
 
@@ -86,7 +87,8 @@ Read-heavy GraphQL traffic, 10–100 page reads per child write, sits above thes
 with no cache, embedding wins on CPU for this shape. What moves the decision is
 elsewhere: nested pagination, filters and ordering, child row security, unbounded lists,
 writes that fan out from other entities, and a result cache that evicts composed results
-precisely, which pays the read overhead only on a miss.
+precisely ([collection keys](../user-guides/change-feed.md#collection-keys)), which pays
+the read overhead only on a miss.
 
 ## 50 comments per post
 
