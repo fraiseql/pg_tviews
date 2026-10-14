@@ -16,6 +16,7 @@ figures from a measured run are in [results.md](results.md).
 - **[jsonb_delta Integration](jsonb-ivm-integration.md)** — jsonb_delta's role and the parity finding
 - **[Array fast-path GO/NO-GO](array-fastpath-go-no-go.md)** — surgical array patching: measured, deferred
 - **[Write path](write-path.md)** — what a write costs on FraiseQL-shaped TVIEWs, against the same write without triggers
+- **[Read path](read-path.md)** — a child list embedded in the parent against composed at read time: reads, writes, break-even
 
 ## What is measured
 
