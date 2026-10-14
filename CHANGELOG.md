@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`tviews.registry.references`** (read contract 2, appended): the relationships a
+  reader composes by. For each TVIEW, every output column traced to a column of its own
+  root table that a single-column `FOREIGN KEY` proves to hold another TVIEW's identity
+  → that TVIEW, its identity column, whether the column is unique (one-to-one) and
+  nullable, its index and the index order:
+  `{"fk_post": {"entity": "post", "column": "pk_post", "unique": false, "nullable": false,
+  "index": "public.idx_tv_comment_fk_post_pk_comment", "order": ["pk_comment"]}}`.
+  Names are never matched: a role-named key (`fk_author → tb_user`) is found through its
+  constraint, and a column without one is no reference. The parent is resolved when the
+  registry is read, so one registered after its child is found. The registry stays plain
+  SQL. `references` is a reserved word: qualify the column (`r.references`).
+- **Every reference column gets a managed `(column, identity)` index**, whatever its
+  name: each list composed by it is one index range scan in identity order.
+- **The change feed names the collections a row left or joined** (payload `v: 2`,
+  ADR 0231 §8): every published row of a TVIEW with references lists, in `c`, the public
+  ids of the parents of each reference before and after the write:
+  `"c": {"Comment.fk_post": [<new post>, <old post>]}`. A cache tags a result that
+  composes the comments of post P with `Comment.fk_post:<P>` and evicts it on a comment
+  insert, move, edit or delete, which no row tag can do for an insert or a move in. Same
+  budget and cap as the ids; a collection that does not fit, or whose parent TVIEW has no
+  `id` column, names its child type in `t`.
+- **Read-path benchmark** (`test/bench/read_path/`, [results](docs/benchmarks/read-path.md)):
+  a child list embedded in the parent against composed at read time, reads, writes and
+  break-even, with both designs holding the same documents.
+
+### Changed (breaking)
+
+- **Change feed payload version 2**: every message is `{"v":2,…}`, with the optional `c`
+  section. A listener that only knows version 1 evicts everything on a `v: 2` message, as
+  the consumer contract says, which is safe; update it to read `c`.
+- **The propagation plan is version 2** (references): a version 1 plan no longer reads.
+  The upgrade re-derives every TVIEW. Catalog revision 8.
+
+### Changed
+
+- **`rows` publishing costs more on TVIEWs with references**: an index probe per
+  reference of each recomputed row, and the parents' ids in the payload. Server-side,
+  per committed write against publishing `off`: a rename fanned out to 60 rows +30 %
+  (+14 % before), a one-row comment insert +36 % (+14 % before). `off` and `types` are
+  unchanged.
+
+### Documentation
+
+- New guide: [Embed or compose](docs/user-guides/embed-or-compose.md), the rule "has a
+  `tv_`? reference it, otherwise embed it", with the numbers. The developers guide and
+  the FraiseQL integration page compose `Post.comments` from `tv_comment`; the change
+  feed guide documents collection keys; arrays.md says lists of entities are composed,
+  not patched (#228: the array part is closed in favour of composition).
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW (plan version 2), appends
+  `tviews.registry.references` and creates the index of each reference column not
+  indexed yet. An `fk_*` column has had its index since its TVIEW was created; a
+  reference column named otherwise on a large TVIEW gets its index built during the
+  update.
+- Listeners of `tviews_changes` see `v: 2`: read `c`, or keep evicting everything on an
+  unknown version.
+
 ## [0.1.0-beta.29] - not yet released
 
 ### Added
