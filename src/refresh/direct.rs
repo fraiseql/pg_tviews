@@ -13,7 +13,6 @@ use pgrx::datum::DatumWithOid;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
-
 /// What a patch returns of a row it wrote: its public id and reference keys
 /// ([`TviewMeta::returned_keys`]).
 type Patched = (Option<String>, Vec<Option<String>>);

@@ -204,7 +204,11 @@ fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
     if let Some(meta) = &loaded {
         crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
         // A parent's `id` column is part of how the collections are named.
-        let parents: Vec<Oid> = meta.collections.iter().map(|c| c.parent_table_oid).collect();
+        let parents: Vec<Oid> = meta
+            .collections
+            .iter()
+            .map(|c| c.parent_table_oid)
+            .collect();
         crate::cache::watch(&parents);
         crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
     }

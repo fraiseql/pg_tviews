@@ -83,7 +83,10 @@ pub(super) fn collections_sql() -> String {
 }
 
 /// Decode [`collections_sql`] for the TVIEW of type `child_type`.
-pub(super) fn decode(child_type: &Rc<str>, json: Option<&serde_json::Value>) -> Vec<Rc<Collection>> {
+pub(super) fn decode(
+    child_type: &Rc<str>,
+    json: Option<&serde_json::Value>,
+) -> Vec<Rc<Collection>> {
     let Some(serde_json::Value::Array(rows)) = json else {
         return Vec::new();
     };
@@ -281,9 +284,36 @@ mod tests {
         decode(
             &Rc::from("Comment"),
             Some(&serde_json::json!([
-                ["fk_author", "public.tv_user", 16400, "pk_user", "integer", "string", "user", null],
-                ["fk_post", "public.tv_post", 16410, "pk_post", "integer", null, "post", "Article"],
-                ["fk_doc", "public.tv_doc", 16420, "id", "uuid", "string", "doc", null]
+                [
+                    "fk_author",
+                    "public.tv_user",
+                    16400,
+                    "pk_user",
+                    "integer",
+                    "string",
+                    "user",
+                    null
+                ],
+                [
+                    "fk_post",
+                    "public.tv_post",
+                    16410,
+                    "pk_post",
+                    "integer",
+                    null,
+                    "post",
+                    "Article"
+                ],
+                [
+                    "fk_doc",
+                    "public.tv_doc",
+                    16420,
+                    "id",
+                    "uuid",
+                    "string",
+                    "doc",
+                    null
+                ]
             ])),
         )
     }

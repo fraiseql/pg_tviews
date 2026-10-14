@@ -220,8 +220,18 @@ mod tests {
         let refs = references(
             &columns(),
             &comment(vec![
-                fk("tb_comment_fk_author_fkey", &[3], "public.tb_user", &["pk_user"]),
-                fk("tb_comment_fk_post_fkey", &[2], "public.tb_post", &["pk_post"]),
+                fk(
+                    "tb_comment_fk_author_fkey",
+                    &[3],
+                    "public.tb_user",
+                    &["pk_user"],
+                ),
+                fk(
+                    "tb_comment_fk_post_fkey",
+                    &[2],
+                    "public.tb_post",
+                    &["pk_post"],
+                ),
             ]),
         );
         assert_eq!(

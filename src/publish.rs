@@ -468,7 +468,9 @@ mod tests {
         );
         assert_eq!(
             messages,
-            [r#"{"v":2,"u":{"Comment":["c1"]},"c":{"Comment.fk_author":["u1"],"Comment.fk_post":["p1","p2"]}}"#]
+            [
+                r#"{"v":2,"u":{"Comment":["c1"]},"c":{"Comment.fk_author":["u1"],"Comment.fk_post":["p1","p2"]}}"#
+            ]
         );
     }
 

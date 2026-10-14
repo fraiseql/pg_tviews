@@ -234,9 +234,7 @@ fn own_id<'a>(
     if !collection.parent_keyed_by_pk {
         return None;
     }
-    written
-        .get(&(&*collection.parent_typename, key))
-        .copied()
+    written.get(&(&*collection.parent_typename, key)).copied()
 }
 
 /// The public ids, as JSON text, of the parents of `lookups` by
@@ -697,9 +695,19 @@ mod tests {
     fn collection_keys_name_each_parent_once() {
         clear();
         let post = collection("Comment", "fk_post", true);
-        add(Publish::Rows, &child("1", Change::Inserted, &[(&post, "1", None)]));
+        add(
+            Publish::Rows,
+            &child("1", Change::Inserted, &[(&post, "1", None)]),
+        );
         // Moved from post 1 to post 2: both.
-        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None), (&post, "1", None)]));
+        add(
+            Publish::Rows,
+            &child(
+                "2",
+                Change::Updated,
+                &[(&post, "2", None), (&post, "1", None)],
+            ),
+        );
         settle_posts();
         assert_eq!(
             collections(),
@@ -716,12 +724,18 @@ mod tests {
     fn a_parent_not_found_names_nothing_and_one_unresolved_names_the_type() {
         clear();
         let post = collection("Comment", "fk_post", true);
-        add(Publish::Rows, &child("1", Change::Deleted, &[(&post, "9", None)]));
+        add(
+            Publish::Rows,
+            &child("1", Change::Deleted, &[(&post, "9", None)]),
+        );
         settle_posts();
         assert!(collections().is_empty());
         assert!(snapshot().2.is_empty(), "a parent that is gone is no type");
         // Written outside a flush, never resolved: the child type by name.
-        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None)]));
+        add(
+            Publish::Rows,
+            &child("2", Change::Updated, &[(&post, "2", None)]),
+        );
         assert!(collections().is_empty());
         assert_eq!(snapshot().2, ["Comment"]);
         clear();
@@ -731,7 +745,10 @@ mod tests {
     fn a_parent_without_id_names_the_child_type() {
         clear();
         let tag = collection("Comment", "fk_tag", false);
-        add(Publish::Rows, &child("1", Change::Updated, &[(&tag, "1", None)]));
+        add(
+            Publish::Rows,
+            &child("1", Change::Updated, &[(&tag, "1", None)]),
+        );
         settle_posts();
         assert!(collections().is_empty());
         assert_eq!(snapshot().2, ["Comment"]);
@@ -742,7 +759,10 @@ mod tests {
     fn types_mode_keeps_no_collection() {
         clear();
         let post = collection("Comment", "fk_post", true);
-        add(Publish::Types, &child("1", Change::Updated, &[(&post, "1", None)]));
+        add(
+            Publish::Types,
+            &child("1", Change::Updated, &[(&post, "1", None)]),
+        );
         settle_posts();
         assert!(collections().is_empty());
         clear();
@@ -753,13 +773,23 @@ mod tests {
         clear();
         let post = collection("Comment", "fk_post", true);
         for pk in 0..100 {
-            add(Publish::Rows, &child(&pk.to_string(), Change::Inserted, &[(&post, "1", None)]));
+            add(
+                Publish::Rows,
+                &child(&pk.to_string(), Change::Inserted, &[(&post, "1", None)]),
+            );
         }
         settle_posts();
-        add(Publish::Rows, &child("100", Change::Inserted, &[(&post, "1", None)]));
+        add(
+            Publish::Rows,
+            &child("100", Change::Inserted, &[(&post, "1", None)]),
+        );
         settle_posts();
         SET.with_borrow(|set| {
-            let ids = set.members.iter().filter(|m| matches!(m.parent, Parent::Id(_))).count();
+            let ids = set
+                .members
+                .iter()
+                .filter(|m| matches!(m.parent, Parent::Id(_)))
+                .count();
             assert_eq!(ids, 1, "one member per parent");
         });
         assert_eq!(collections()[0].2, ["\"p1\""]);
@@ -787,7 +817,10 @@ mod tests {
             Publish::Rows,
             &r("Post", "4", Some("\"p4\""), Change::Updated),
         );
-        add(Publish::Rows, &child("1", Change::Updated, &[(&post, "4", None)]));
+        add(
+            Publish::Rows,
+            &child("1", Change::Updated, &[(&post, "4", None)]),
+        );
         settle_none();
         assert_eq!(collections()[0].2, ["\"p4\""]);
         clear();
@@ -797,10 +830,16 @@ mod tests {
     fn a_rollback_forgets_collection_keys() {
         clear();
         let post = collection("Comment", "fk_post", true);
-        add(Publish::Rows, &child("1", Change::Updated, &[(&post, "1", None)]));
+        add(
+            Publish::Rows,
+            &child("1", Change::Updated, &[(&post, "1", None)]),
+        );
         settle_posts();
         let m = mark();
-        add(Publish::Rows, &child("2", Change::Updated, &[(&post, "2", None)]));
+        add(
+            Publish::Rows,
+            &child("2", Change::Updated, &[(&post, "2", None)]),
+        );
         settle_posts();
         rollback(m);
         assert_eq!(collections()[0].2, ["\"p1\""]);
