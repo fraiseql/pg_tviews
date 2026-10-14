@@ -93,11 +93,24 @@ SELECT must((SELECT 'public.idx_tv_comment_reviewed_by_pk_comment'::regclass = A
              FROM tviews.registry WHERE entity = 'comment'),
             'reviewed_by has no managed index');
 
+--    So does one to a table no TVIEW reads: a parent registered later finds it
+--    indexed.
+CREATE TABLE tb_shelf (pk_shelf int PRIMARY KEY);
+CREATE TABLE tb_book (pk_book int PRIMARY KEY, shelf int REFERENCES tb_shelf);
+SELECT tviews.pg_tviews_create('tv_book', $$
+    SELECT b.pk_book, b.shelf, jsonb_build_object('book', b.pk_book) AS data FROM tb_book b $$);
+SELECT must(refs('book') = '{}', 'a reference without a parent TVIEW: ' || refs('book')::text);
+SELECT must((SELECT 'public.idx_tv_book_shelf_pk_book'::regclass = ANY (managed_indexes)
+             FROM tviews.registry WHERE entity = 'book'),
+            'a foreign key column without a parent TVIEW has no managed index');
+
 -- 3. A parent registered later is found; one dropped is no longer referenced.
 SELECT tviews.pg_tviews_create('tv_category', $$
     SELECT c.pk_category, jsonb_build_object('label', c.label) AS data FROM tb_category c $$);
 SELECT must(refs('comment')->'fk_category'->>'entity' = 'category',
             'a parent registered after the child: ' || refs('comment')::text);
+SELECT must(refs('comment')->'fk_category'->>'index' = 'public.idx_tv_comment_fk_category_pk_comment',
+            'a parent registered later does not find the column indexed: ' || refs('comment')::text);
 SELECT tviews.pg_tviews_drop('tv_category');
 SELECT must(NOT refs('comment') ? 'fk_category', 'a dropped parent is still referenced');
 
@@ -158,5 +171,20 @@ SELECT must(NOT EXISTS (
                                          'tviews.pg_tview_references'::regclass))
       AND p.prolang = (SELECT oid FROM pg_language WHERE lanname = 'c')),
     'the references call a C function');
+
+-- 10. Two TVIEWs named by one key: the parent is the one whose identity has the
+--     referenced column's name, else the first by entity. One parent per column.
+SELECT tviews.pg_tviews_create('tv_account', $$
+    SELECT u.pk_user AS pk_account, jsonb_build_object('name', u.name) AS data FROM tb_user u $$);
+SELECT must(refs('post')->'fk_author'->>'entity' = 'user',
+            'the parent named like the key is not preferred: ' || refs('post')::text);
+SELECT tviews.pg_tviews_create('tv_member', $$
+    SELECT u.pk_user AS pk_member, jsonb_build_object('name', u.name) AS data FROM tb_user u $$);
+SELECT tviews.pg_tviews_drop('tv_user');
+SELECT must(refs('post')->'fk_author'->>'entity' = 'account',
+            'without one named like the key, not the first by entity: ' || refs('post')::text);
+SELECT must((SELECT count(*) FROM tviews.pg_tview_references
+             WHERE entity = 'post' AND column_name = 'fk_author') = 2,
+            'the candidates are not both listed');
 
 \echo 'references: PASS'

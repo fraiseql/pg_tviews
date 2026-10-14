@@ -125,4 +125,13 @@ SELECT must(NOT EXISTS (SELECT 1 FROM notes, jsonb_object_keys(COALESCE(payload-
                         WHERE k LIKE 'Comment.%'),
             'collections of a type named by name');
 
+-- 11. Two TVIEWs named by tb_user.pk_user: the collection's parent is the one the
+--     registry lists (identity named like the key), here the one with an id.
+SELECT tviews.pg_tviews_create('tv_account', $$
+    SELECT u.pk_user AS pk_account, jsonb_build_object('username', u.username) AS data
+    FROM tb_user u $$);
+\set notes `psql -X -q -d "$PGTV_DB" -c "LISTEN tviews_changes" -c "SET pg_tviews.publish_changes = rows" -c "UPDATE tb_comment SET content = 'tie' WHERE pk_comment = 3" -c "SELECT 1" 2>&1 | grep 'Asynchronous notification' | sed -E 's/.*with payload "(.*)" received from.*/\1/' | paste -sd '|'`
+SELECT must(:'notes' = expand('{"v":2,"u":{"Comment":["c3"]},"c":{"Comment.fk_author":["u1"],"Comment.fk_post":["p1"]}}'),
+            'tie-break: ' || :'notes');
+
 \echo 'publish collections: PASS'
