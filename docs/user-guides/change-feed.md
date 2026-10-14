@@ -36,7 +36,9 @@ the same build with publishing `off`:
 The collection keys cost an index probe per reference of each recomputed row (its
 parent's id), and the parents' ids in the payload. End to end, with client round trips
 (pgbench), `rows` cost 2-3 % on the rename before collection keys existed. `types` and
-`off` cost nothing measurable.
+`off` cost nothing measurable. Publishing internal keys instead of ids would save 6–9
+points of it, but would put them on a channel any connected role can read
+([ADR 0231](../adr/0231-publish-changes.md) §8).
 
 ## Payload, version 2
 

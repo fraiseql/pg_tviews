@@ -139,6 +139,20 @@ parent's row tag.
   TVIEW without an `id` column, publish the child type in `t`.
 - Every reference is published (no declaration selects them); the parents and the budget
   are those of `u`.
+- A collection's parent is the TVIEW `tviews.registry.references` names: of two TVIEWs
+  named by the same key, the one whose identity column has the referenced column's name,
+  else the first by entity. One parent per reference keeps one key per composed list,
+  and the rule follows the naming convention, with nothing to declare.
+- The cost is accepted. Against `rows` without collection keys (0.1.0-beta.29), on
+  TVIEWs with references, a fanned-out rename costs +15–17 % and a comment insert
+  +20–21 % server-side (`test/bench/write_path`, stock 18.4; `off` and `types` within
+  ±1.5 %). It is paid only where a superuser turned `rows` on, and it buys the one
+  eviction a composed list cannot do without. Two cheaper designs were rejected:
+  publishing the parents' internal keys (`pk_*`) instead of their ids saves 6–9 points
+  but puts internal keys on a channel any connected role can read and makes caches tag
+  by them; publishing only the references a declaration marks is configuration a
+  generated schema should not need, and a forgotten declaration leaves lists stale
+  silently.
 
 ## Consequences
 

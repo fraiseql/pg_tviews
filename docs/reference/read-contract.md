@@ -152,10 +152,13 @@ role-named key (`fk_author` → `tb_user`) is found, and a column without a cons
 not a reference, whatever its name. A composite foreign key, a TVIEW whose rows come
 from a `UNION`, and a referenced TVIEW of a `UNION` have none. The referenced TVIEW is
 resolved when the registry is read, so one registered after this TVIEW is found and a
-dropped one disappears; when two TVIEWs are named by the same key, the one whose identity
-column has the referenced column's name is listed. Every reference column gets a managed
-index, whatever its name. The reverse direction (a post has many comments) is not
-listed: invert the references.
+dropped one disappears. A reference names one TVIEW: when two are named by the same key
+(`tv_user` and `tv_user_card` both over `tb_user.pk_user`), the one whose identity column
+has the referenced column's name (`pk_user`, the convention's), else the first by entity;
+the change feed's collection keys name the same one. Every column with a single-column
+foreign key gets a managed index, whatever its name, also one to a table no TVIEW reads
+yet, so a parent registered later finds it indexed. The reverse direction (a post has many
+comments) is not listed: invert the references.
 
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
 registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's

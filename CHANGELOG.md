@@ -18,10 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "index": "public.idx_tv_comment_fk_post_pk_comment", "order": ["pk_comment"]}}`.
   Names are never matched: a role-named key (`fk_author → tb_user`) is found through its
   constraint, and a column without one is no reference. The parent is resolved when the
-  registry is read, so one registered after its child is found. The registry stays plain
-  SQL. `references` is a reserved word: qualify the column (`r.references`).
+  registry is read, so one registered after its child is found. Of two TVIEWs named by
+  the same key, the one whose identity column has the referenced column's name is the
+  parent, else the first by entity; the change feed names the same one. The registry
+  stays plain SQL. `references` is a reserved word: qualify the column (`r.references`).
 - **Every reference column gets a managed `(column, identity)` index**, whatever its
-  name: each list composed by it is one index range scan in identity order.
+  name, also one whose foreign key leads to a table no TVIEW reads yet (a parent
+  registered later finds it indexed): each list composed by it is one index range scan
+  in identity order.
 - **The change feed names the collections a row left or joined** (payload `v: 2`,
   ADR 0231 §8): every published row of a TVIEW with references lists, in `c`, the public
   ids of the parents of each reference before and after the write:
@@ -47,8 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`rows` publishing costs more on TVIEWs with references**: an index probe per
   reference of each recomputed row, and the parents' ids in the payload. Server-side,
   per committed write against publishing `off`: a rename fanned out to 60 rows +30 %
-  (+14 % before), a one-row comment insert +36 % (+14 % before). `off` and `types` are
-  unchanged.
+  (+14 % before), a one-row comment insert +36 % (+14 % before); against `rows` in
+  0.1.0-beta.29, +15–17 % and +20–21 %. `off` and `types` are unchanged. The feed
+  publishes the parents' public ids, not their internal keys, and every reference, with
+  nothing to declare (ADR 0231 §8).
 
 ### Documentation
 
