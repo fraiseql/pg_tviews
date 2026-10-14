@@ -64,15 +64,40 @@ COMMIT;
 -- 2. A user changed, which fans out to ten posts: two TVIEWs, read by key.
 BEGIN;
 UPDATE tb_user SET name = 'renamed again' WHERE pk_user = 7;
-SELECT seq_rows() AS seq_before \gset
+SELECT seq_rows() AS seq_before, idx_scans() AS idx_before \gset
 SELECT tviews.pg_tviews_flush_and_report() AS r \gset
 SELECT must(seq_rows() = :seq_before,
             (seq_rows() - :seq_before) || ' row(s) of the TVIEWs read by seq scan');
+SELECT must(idx_scans() > :idx_before, 'the fan-out report read no row by index');
 SELECT must((SELECT count(*) FROM jsonb_array_elements((:'r'::jsonb)->'updated') e
              WHERE e->'data'->'author'->>'name' = 'renamed again') = 10, 'fan-out: ' || :'r');
 SELECT must((SELECT count(*) FROM jsonb_array_elements((:'r'::jsonb)->'updated') e
              WHERE e->>'__typename' = 'User' AND e->'data'->>'name' = 'renamed again') = 1,
             'user: ' || :'r');
+COMMIT;
+
+-- 3. A TVIEW named by another key (DISTINCT ON, ADR 0169): its primary key is on the
+--    DISTINCT ON column, and the report reads its rows by pk_<entity>, which gets an
+--    index of its own.
+CREATE TABLE tb_line (pk_line int PRIMARY KEY, fk_post int NOT NULL REFERENCES tb_post,
+                      amount int NOT NULL);
+INSERT INTO tb_line SELECT g, 1 + g % 5000, g FROM generate_series(1, 10000) g;
+SELECT tviews.pg_tviews_create('tv_latest', $$
+    SELECT DISTINCT ON (l.fk_post) l.fk_post, l.pk_line AS pk_latest,
+           jsonb_build_object('amount', l.amount) AS data
+    FROM tb_line l ORDER BY l.fk_post, l.pk_line DESC $$);
+ANALYZE tv_latest;
+CREATE FUNCTION latest_seq_rows() RETURNS bigint LANGUAGE sql AS $$
+    SELECT seq_tup_read FROM pg_stat_xact_user_tables WHERE relname = 'tv_latest' $$;
+BEGIN;
+INSERT INTO tb_line VALUES (10001, 42, 7);
+SELECT latest_seq_rows() AS seq_before \gset
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(latest_seq_rows() = :seq_before,
+            (latest_seq_rows() - :seq_before) || ' row(s) of tv_latest read by seq scan');
+SELECT must((SELECT count(*) FROM jsonb_array_elements((:'r'::jsonb)->'updated') e
+             WHERE e->>'__typename' = 'Latest' AND (e->'data'->>'amount')::int = 7) = 1,
+            'latest: ' || :'r');
 COMMIT;
 
 \echo 'report reads by key: PASS'

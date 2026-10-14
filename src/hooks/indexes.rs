@@ -92,6 +92,7 @@ impl Tview {
                 .iter()
                 .map(|column| ManagedIndex::propagation(&tview, column, key)),
         );
+        candidates.extend(crate::ddl::create::key_index(&tview, &columns, key));
         candidates.extend(
             crate::ddl::create::declared_json_indexes(&self.entity)?
                 .iter()

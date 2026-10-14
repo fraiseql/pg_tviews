@@ -65,7 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pg_tviews_flush_and_report(include_data => true)` reads the reported rows by key**
   (#240): it compared `pk_<entity>::text`, which no index serves, so each report scanned
   every reported TVIEW in full and its cost grew with the TVIEWs, not with the changed
-  rows. It now compares the key column itself: one index probe per reported row.
+  rows. It now compares the key column itself, bound as `int8` from a kept plan: one
+  index probe per reported row. A TVIEW named by another key (`DISTINCT ON`, whose
+  primary key is that key) gets a managed index on `pk_<entity>` for it; the upgrade's
+  re-registration creates it.
 
 ### Documentation
 

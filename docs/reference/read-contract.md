@@ -98,7 +98,8 @@ or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME
 ([DDL](ddl.md#time-dependent-tviews)).
 
 **`managed_indexes`** are the indexes pg_tviews created on the TVIEW's table: on `id`
-and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, the GIN index
+and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, the one on
+`pk_<entity>` of a TVIEW named by another key (`DISTINCT ON`), the GIN index
 on `data` of the `data_gin_index` option, and the JSON-path indexes of the `indexes`
 option. pg_tviews records each when it creates it
 (nothing when a relation already holds the name) and follows `ALTER INDEX … RENAME`

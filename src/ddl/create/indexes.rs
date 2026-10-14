@@ -265,6 +265,23 @@ pub(crate) fn tview_index_ddl(
         .collect()
 }
 
+/// The index on `pk_<entity>` of a TVIEW whose rows are named by another column (a
+/// DISTINCT ON key, ADR 0169), whose primary key does not cover it: the journal,
+/// `pg_tviews_flush_and_report()` and the change feed read rows back by `pk_<entity>`
+/// (#240). `None` when `pk_<entity>` is the identity, or absent.
+pub(crate) fn key_index(
+    tview_name: &str,
+    schema: &ViewColumns,
+    identity: &str,
+) -> Option<ManagedIndex> {
+    let pk = schema.pk.as_ref().filter(|pk| pk.as_str() != identity)?;
+    Some(ManagedIndex::btree(
+        tview_name,
+        pk.clone(),
+        vec![pk.clone()],
+    ))
+}
+
 /// The embed lookup columns that need an index of their own: neither the TVIEW's
 /// primary key nor an `fk_*` column, which has its propagation index already.
 fn embed_lookup_columns<'a>(
