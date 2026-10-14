@@ -97,7 +97,9 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
         .collect())
 }
 
-/// The current `data` of `entity`'s rows `pks`, keyed by pk text.
+/// The current `data` of `entity`'s rows `pks`, keyed by pk text. The keys are
+/// compared as the column's own type (`pk_<entity>` is BIGINT), so the read is an
+/// index scan of those rows, not a scan of the table (#240).
 fn current_data(
     entity: &str,
     table: &str,
@@ -106,7 +108,7 @@ fn current_data(
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
         "SELECT t.{qi_pk}::text AS k, t.data AS d FROM {table} t \
-         WHERE t.{qi_pk}::text = ANY($1)"
+         WHERE t.{qi_pk} = ANY ($1::pg_catalog.text[]::pg_catalog.int8[])"
     );
     Spi::connect(|client| {
         let args = [crate::utils::spi::text_array(pks)];
