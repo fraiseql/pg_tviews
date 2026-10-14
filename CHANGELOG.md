@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.29] - not yet released
+
 ### Added
 
 - **Changed TVIEW rows are published at commit** (#231, ADR 0231): with
