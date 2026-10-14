@@ -246,6 +246,50 @@ AS 'SELECT 2';
 COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
 
+-- The references of each TVIEW (plan version 2) that name another registered
+-- TVIEW: the referenced column is the source of that TVIEW's identity, a column of
+-- its root table. Resolved live, so a parent registered after its child is found.
+-- One row per reference and parent; `preferred` marks the parent whose identity
+-- column has the referenced column's name, for two TVIEWs named by one key.
+-- `index_name` is the managed index (or a constraint's) leading with the column.
+CREATE VIEW @extschema@.pg_tview_references AS
+SELECT m.entity,
+       r.value->>'column' AS column_name,
+       p.entity AS parent,
+       p.identity->'columns'->0->>'name' AS parent_column,
+       p.table_oid::pg_catalog.oid AS parent_table,
+       (r.value->>'unique')::boolean AS is_unique,
+       (r.value->>'nullable')::boolean AS is_nullable,
+       (SELECT pg_catalog.format('%I.%I', inn.nspname, ic.relname)
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+        JOIN pg_catalog.pg_namespace inn ON inn.oid = ic.relnamespace
+        JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+        WHERE i.indrelid = m.table_oid::pg_catalog.oid AND a.attname = r.value->>'column'
+          AND i.indisvalid AND i.indpred IS NULL
+          AND (ic.relname = ANY (m.managed_index_names)
+               OR EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                          WHERE k.conindid = i.indexrelid))
+        ORDER BY ic.relname = ANY (m.managed_index_names) DESC, ic.relname
+        LIMIT 1) AS index_name,
+       ARRAY(SELECT c->>'name'
+             FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) AS order_by,
+       p.identity->'columns'->0->>'name' = r.value->>'key' AS preferred
+FROM @extschema@.pg_tview_meta m
+CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(
+    COALESCE(m.plan->'references', '[]'::pg_catalog.jsonb)) r
+JOIN @extschema@.pg_tview_meta p
+  ON NOT COALESCE((p.plan->>'set_operation')::boolean, false)
+ AND EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(p.plan->'paths') pp
+             WHERE COALESCE((pp->>'root')::boolean, false)
+               AND (pp->>'source_oid')::pg_catalog.oid
+                   = pg_catalog.to_regclass(r.value->>'table')::pg_catalog.oid
+               AND pp->>'initial_col' = r.value->>'key');
+
+COMMENT ON VIEW @extschema@.pg_tview_references IS
+'Internal: the references tviews.registry publishes; may change in any release';
+GRANT SELECT ON @extschema@.pg_tview_references TO PUBLIC;
+
 -- A registration whose table is gone stays visible, with NULL for what the table
 -- would tell; `view` is NULL once the view is gone. managed_indexes are the
 -- recorded indexes still on the table, but not one backing a constraint;
@@ -332,7 +376,17 @@ SELECT
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                           WHERE k.conindid = i.indexrelid)
         ORDER BY ic.relname) END AS managed_indexes,
-    m.needs_reregister
+    m.needs_reregister,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(x.column_name, pg_catalog.jsonb_build_object(
+                    'entity', x.parent, 'column', x.parent_column, 'unique', x.is_unique,
+                    'nullable', x.is_nullable, 'index', x.index_name,
+                    'order', pg_catalog.to_jsonb(x.order_by)))
+         FROM (SELECT DISTINCT ON (r.column_name) r.*
+               FROM @extschema@.pg_tview_references r
+               WHERE r.entity = m.entity
+               ORDER BY r.column_name, r.preferred DESC, r.parent) x),
+        '{}') AS references
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
