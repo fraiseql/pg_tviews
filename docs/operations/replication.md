@@ -71,11 +71,26 @@ A client that routes reads to replicas (FraiseQL's `read_replica_urls`) can call
 
 PostgreSQL leaves no trace of the reset beyond the emptied tables, so pg_tviews
 keeps one: `tviews.pg_tview_valid`, itself UNLOGGED, holds a row per UNLOGGED
-TVIEW whose rows can be trusted, and the reset empties it together with the
-TVIEWs. A TVIEW missing from it is reported with `needs_rebuild = true`. A TVIEW
-that is merely empty (its base tables have no rows, or someone ran `TRUNCATE`)
-keeps its row and is never refilled behind your back. The rows are not dumped:
-after a restore, each UNLOGGED TVIEW is refilled once.
+TVIEW whose rows can be trusted (by entity), and the reset empties it together
+with the TVIEWs. A TVIEW missing from it is reported with `needs_rebuild = true`.
+A TVIEW that is merely empty (its base tables have no rows, or someone ran
+`TRUNCATE`) keeps its row and is never refilled behind your back.
+
+A logical restore keeps the two together too. `pg_tview_valid` is dumped as the
+extension's configuration, and `pg_dump` writes its rows exactly when it writes
+UNLOGGED tables' rows:
+
+| Restore | UNLOGGED TVIEWs |
+|---|---|
+| `pg_dump` / `pg_restore`, default | restored with their rows, trusted: nothing is refilled |
+| `pg_dump --no-unlogged-table-data` | restored empty, untrusted: refilled once |
+| physical (base backup, pgBackRest), or a crash | reset with the table: refilled once |
+
+`pg_dump` decides about the extension's configuration separately from your tables: a dump
+that leaves out an UNLOGGED TVIEW's rows by name (`--exclude-table-data='tv_*'`, `-T`, a
+selective `pg_restore -L`) still carries its validity row, and the TVIEW comes back empty
+but trusted. Leave `tviews.pg_tview_valid` out too (`--exclude-table-data=tviews.pg_tview_valid`),
+or refill after the restore with `SELECT * FROM pg_tviews_rebuild_all(only_empty => false);`.
 
 ### The launcher
 
@@ -115,8 +130,10 @@ SELECT * FROM pg_tviews_rebuild_all();                    -- only reset UNLOGGED
 SELECT * FROM pg_tviews_rebuild_all(only_empty => false); -- every TVIEW
 ```
 
-It returns each rebuilt entity with its row count, in rebuild order: a TVIEW whose
-backing view reads another TVIEW comes after it. It refuses to run during recovery.
+It returns each rebuilt entity with the rows it inserted (`rows_inserted`), in
+rebuild order: a TVIEW whose backing view reads another TVIEW comes after it. A
+TVIEW left alone is not listed; a rebuild with `only_empty => false` inserts every
+row of its view again. It refuses to run during recovery.
 Its `EXECUTE` is revoked from `PUBLIC`.
 
 ### Cost of the first write after a reset

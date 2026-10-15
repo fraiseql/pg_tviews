@@ -26,35 +26,16 @@ pub struct TviewRelation {
 impl TviewRelation {
     /// Every registered TVIEW (or only `entity`), ordered by entity.
     pub fn load(entity: Option<&str>) -> TViewResult<Vec<Self>> {
-        let query = format!(
-            "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
-                    t.relpersistence = 'u' AS unlogged, \
-                    m.table_oid::oid AS table_oid \
-             FROM {} m \
-             JOIN pg_class t ON t.oid = m.table_oid \
-             JOIN pg_namespace n ON n.oid = t.relnamespace \
-             WHERE $1::text IS NULL OR m.entity = $1 \
-             ORDER BY m.entity",
-            crate::catalog::meta_table()
-        );
-        Spi::connect(|client| {
-            let args = [crate::utils::spi::text(entity)];
-            let mut out = Vec::new();
-            for row in client.select(&query, None, &args)? {
-                out.push(Self {
-                    entity: row["entity"].value()?.unwrap_or_default(),
-                    schema: row["schema"].value()?.unwrap_or_default(),
-                    table: row["tbl"].value()?.unwrap_or_default(),
-                    unlogged: row["unlogged"].value()?.unwrap_or(false),
-                    table_oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
-                });
-            }
-            Ok::<_, spi::Error>(out)
-        })
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Load TVIEW relations".to_string(),
-            pg_error: e.to_string(),
-        })
+        Ok(crate::catalog::queries::tables(entity)?
+            .into_iter()
+            .map(|t| Self {
+                entity: t.entity,
+                schema: t.schema,
+                table: t.name,
+                unlogged: t.unlogged,
+                table_oid: t.oid,
+            })
+            .collect())
     }
 
     fn qualified(&self, name: &str) -> String {
@@ -69,7 +50,7 @@ impl TviewRelation {
     /// Whether the table is an UNLOGGED TVIEW that PostgreSQL reset (after
     /// promotion or a crash restart) and nothing filled since.
     pub fn needs_rebuild(&self) -> TViewResult<bool> {
-        crate::lifecycle::validity::needs_fill(self.table_oid)
+        crate::lifecycle::validity::needs_fill(&self.entity, self.table_oid)
     }
 }
 
@@ -132,8 +113,9 @@ pub(crate) fn replication_status()
 }
 
 /// Rebuild TVIEWs from their backing views, dependencies first, and return each
-/// rebuilt entity with its row count, in rebuild order: only the UNLOGGED TVIEWs
-/// PostgreSQL reset with `only_empty`, every TVIEW otherwise.
+/// rebuilt entity with the rows it inserted, in rebuild order: only the UNLOGGED
+/// TVIEWs PostgreSQL reset with `only_empty`, every TVIEW otherwise (a rebuild
+/// inserts every row of its view).
 ///
 /// # Errors
 /// Returns an error during recovery, or if a catalog query or a refresh fails.
@@ -160,26 +142,18 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     let mut rebuilt = Vec::new();
     for rel in targets {
-        if only_empty {
+        let inserted = if only_empty {
             // Filled without TRUNCATE, so readers are not blocked; one another
             // transaction claimed is left to it.
-            if !crate::lifecycle::validity::fill_if_reset(&rel.entity)? {
-                continue;
+            match crate::lifecycle::validity::fill_if_reset(&rel.entity)? {
+                Some(inserted) => inserted,
+                None => continue,
             }
         } else {
             // Every target is rebuilt, dependencies first: no cascade needed.
-            crate::refresh::full::rebuild_one(&rel.entity)?;
-        }
-        // Counted as its owner, as it was rebuilt: the caller may not read it.
-        let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
-        let count_sql = format!("SELECT count(*) FROM {}", rel.qualified(&rel.table));
-        let rows = Spi::get_one::<i64>(&count_sql)
-            .map_err(|e| TViewError::SpiError {
-                query: count_sql,
-                error: e.to_string(),
-            })?
-            .unwrap_or(0);
-        rebuilt.push((rel.entity, rows));
+            crate::refresh::full::rebuild_one(&rel.entity)?
+        };
+        rebuilt.push((rel.entity, i64::try_from(inserted).unwrap_or(i64::MAX)));
     }
     if rebuilt.is_empty() {
         return Ok(rebuilt);

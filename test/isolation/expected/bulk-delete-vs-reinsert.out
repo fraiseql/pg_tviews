@@ -1,0 +1,51 @@
+Parsed test spec with 2 sessions
+
+starting permutation: d_begin d_delete i_begin i_insert d_commit i_commit i_check
+pg_tviews_create                 
+---------------------------------
+TVIEW public.tv_post_tags created
+(1 row)
+
+step d_begin: BEGIN;
+step d_delete: DELETE FROM tb_tag WHERE fk_post IN (1, 2);
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_tag (pk_tag, fk_post, name) VALUES (5, 1, 'e'); <waiting ...>
+step d_commit: COMMIT;
+step i_insert: <... completed>
+step i_commit: COMMIT;
+step i_check: 
+  SELECT pk_post_tags, t.data, v.data AS view_data, t.data IS NOT DISTINCT FROM v.data AS fresh
+  FROM tv_post_tags t FULL JOIN tviews.public__tv_post_tags v USING (pk_post_tags)
+  ORDER BY 1;
+
+pk_post_tags|data           |view_data      |fresh
+------------+---------------+---------------+-----
+           1|{"tags": ["e"]}|{"tags": ["e"]}|t    
+           3|{"tags": ["d"]}|{"tags": ["d"]}|t    
+(2 rows)
+
+
+starting permutation: i_begin i_insert d_begin d_delete i_commit d_commit i_check
+pg_tviews_create                 
+---------------------------------
+TVIEW public.tv_post_tags created
+(1 row)
+
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_tag (pk_tag, fk_post, name) VALUES (5, 1, 'e');
+step d_begin: BEGIN;
+step d_delete: DELETE FROM tb_tag WHERE fk_post IN (1, 2); <waiting ...>
+step i_commit: COMMIT;
+step d_delete: <... completed>
+step d_commit: COMMIT;
+step i_check: 
+  SELECT pk_post_tags, t.data, v.data AS view_data, t.data IS NOT DISTINCT FROM v.data AS fresh
+  FROM tv_post_tags t FULL JOIN tviews.public__tv_post_tags v USING (pk_post_tags)
+  ORDER BY 1;
+
+pk_post_tags|data           |view_data      |fresh
+------------+---------------+---------------+-----
+           1|{"tags": ["e"]}|{"tags": ["e"]}|t    
+           3|{"tags": ["d"]}|{"tags": ["d"]}|t    
+(2 rows)
+

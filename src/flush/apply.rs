@@ -21,6 +21,10 @@ pub(super) struct Flush {
     pub(super) iteration: usize,
     /// The catalog rows read in this flush, by entity (`None`: not a TVIEW).
     metas: HashMap<String, Option<std::rc::Rc<TviewMeta>>>,
+    /// The TVIEW rows this flush may write (`pg_tviews.max_refresh_rows`), and
+    /// those charged so far: one flush is one statement's refresh (ADR 0233).
+    max_rows: Option<u64>,
+    charged: u64,
 }
 
 impl Flush {
@@ -37,7 +41,34 @@ impl Flush {
             processed,
             iteration: 1,
             metas: HashMap::new(),
+            max_rows: crate::config::max_refresh_rows(),
+            charged: 0,
         }
+    }
+
+    /// Charge `rows` rows of `meta`'s TVIEW, written `how`, against the
+    /// statement's limit, before they are written.
+    ///
+    /// # Errors
+    /// `RefreshLimit` when the statement's refresh would then write more rows than
+    /// `pg_tviews.max_refresh_rows`.
+    fn charge(&mut self, meta: &TviewMeta, how: &str, rows: u64) -> TViewResult<()> {
+        let Some(max) = self.max_rows else {
+            return Ok(());
+        };
+        let count = self.charged + rows;
+        if count > max {
+            return Err(crate::TViewError::RefreshLimit {
+                limit: crate::error::Limit::Rows {
+                    tview: crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+                    how: how.to_string(),
+                    count,
+                    max,
+                },
+            });
+        }
+        self.charged = count;
+        Ok(())
     }
 
     /// Bring `entity`'s rows named by `keys` to what its view computes, then queue
@@ -51,6 +82,8 @@ impl Flush {
         if keys.iter().any(RefreshKey::is_all) {
             return self.refresh_all(entity);
         }
+        let meta = self.meta(entity)?;
+        self.charge(&meta, "by key", keys.len() as u64)?;
         // Writers of what these rows read meet them on its values (ADR 0207):
         // locked before the rows are locked and computed.
         let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
@@ -96,6 +129,10 @@ impl Flush {
     /// of the entity, and queue the parents of the rows that changed.
     fn refresh_all(&mut self, entity: &str) -> TViewResult<()> {
         let meta = self.meta(entity)?;
+        if self.max_rows.is_some() {
+            let rows = crate::utils::spi::count_rows(meta.tview_oid)?;
+            self.charge(&meta, "by a full refresh", rows)?;
+        }
         // Every row may change: refreshes of any of them wait, and are waited for.
         crate::concurrency::lock_relation(
             meta.tview_oid.to_u32(),
@@ -194,6 +231,11 @@ impl Flush {
         for ((entity, lookup_col), rows) in groups {
             let meta = self.meta(&entity)?;
             let owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
+            if self.max_rows.is_some() {
+                let keys = rows.iter().map(|(key, _)| *key).collect();
+                let children = crate::refresh::direct::count_fanout(&meta, &lookup_col, keys)?;
+                self.charge(&meta, &format!("via {lookup_col}"), children)?;
+            }
             let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
             drop(owner);
             self.queue_parents_to_recompute(&entity, &changed, &[])?;

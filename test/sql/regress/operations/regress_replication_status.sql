@@ -92,10 +92,10 @@ CREATE TEMP TABLE rebuilt AS
 SELECT row_number() OVER () AS step, * FROM pg_tviews_rebuild_all();
 
 DO $$ BEGIN
-  IF (SELECT array_agg(entity || ':' || rows ORDER BY step) FROM rebuilt)
+  IF (SELECT array_agg(entity || ':' || rows_inserted ORDER BY step) FROM rebuilt)
      IS DISTINCT FROM ARRAY['user:2', 'post:3'] THEN
     RAISE EXCEPTION '#75 FAIL: rebuild_all returned %',
-      (SELECT array_agg(entity || ':' || rows ORDER BY step) FROM rebuilt);
+      (SELECT array_agg(entity || ':' || rows_inserted ORDER BY step) FROM rebuilt);
   END IF;
   IF (SELECT count(*) FROM tv_post) <> 3
      OR (SELECT data->'user'->>'name' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'ann' THEN

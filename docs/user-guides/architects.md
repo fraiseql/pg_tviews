@@ -180,8 +180,8 @@ comes only from its definition and its options, never from a setting. See the
 Each write costs the rows it reaches. Two dimensions drive it:
 
 - **Fan-out**: a row embedded in many rows (a category in every product) refreshes all of
-  them on every write to it. `tviews.pg_tviews_profile()` reports the fan-out of each lookup
-  column and warns above a threshold.
+  them on every write to it ([below](#fan-out)). `tviews.pg_tviews_profile()` reports the
+  fan-out of each lookup column, projects its cost per write and warns above a threshold.
 - **Depth**: each level of TVIEW embedding TVIEW adds a round of refreshes. Keep chains
   short; `pg_tviews.max_propagation_depth` (default 100) stops a runaway chain.
 
@@ -192,6 +192,56 @@ several transactions, or suspend triggers for it (below).
 ```sql
 SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile();
 ```
+
+### Fan-out
+
+A write to a column that N TVIEW rows embed rewrites those N documents in the writer's
+statement, and their rows stay locked until its transaction ends. pg_tviews patches them in
+place (`jsonb_set` at the embedded path) when it can, and recomputes them from their view
+otherwise. What it costs ([ADR 0233](../adr/0233-fanout-cost-and-guard.md), stock
+PostgreSQL 18.4 release package, one client):
+
+| documents | path | per write | per embedding row | WAL per row |
+|---|---|---:|---:|---:|
+| ~1 KB, inline | patch | ~0.15 ms | ~2.8-3.7 µs | ~0.7-0.9 KB |
+| ~1 KB, inline | recompute | ~0.2 ms | ~8 µs | ~0.8-1 KB |
+| ~4 KB, TOASTed | patch or recompute | ~0.25 ms | ~21-30 µs | ~5-6 KB |
+
+A TOASTed document is rewritten whole, so the patch saves nothing there. The patch reaches
+an embed one join away (`tb_post.fk_author → tb_user`) or two (`tb_comment → tb_post →
+tb_user`, found through the table in between); arrays of embedded rows (`jsonb_agg`) and
+embeds three joins away are recomputed. With ~1 KB documents:
+
+| fan-out N | per write | WAL per write | at 10 writes/s | at 100 writes/s |
+|---:|---:|---:|---|---|
+| 10 | 0.18 ms | 7 KB | 0.2 % of a core, 70 KB/s | 2 % of a core, 0.7 MB/s |
+| 100 | 0.43 ms | 69 KB | 0.4 % of a core, 0.7 MB/s | 4 % of a core, 6.9 MB/s |
+| 1,000 | 3.1 ms | 0.69 MB | 3 % of a core, 6.9 MB/s | 31 % of a core, 69 MB/s |
+| 10,000 | 28 ms | 6.9 MB | 28 % of a core, 69 MB/s | 2.8 cores, 690 MB/s |
+| 1,000,000 | ~2.8 s | ~690 MB | | |
+
+With ~4 KB TOASTed documents, multiply both by about 7.
+
+**Rule.** Above ~1,000 embedding rows per write at a sustained write rate, or ~100,000 at
+all, don't embed. Reference the id instead and resolve it at read time, or make the change
+in an offline batch. `tviews.pg_tviews_profile()` shows each lookup column's p99 fan-out
+with its projected `p99_ms_per_write` and `p99_wal_bytes_per_write`, from the same model and
+the TVIEW's bytes per row.
+
+**Remedies** for the writes that remain large:
+
+- `pg_tviews.max_refresh_rows` (superuser, `0` = off) caps the rows one statement's refresh
+  writes: above it the statement fails with `54000` before writing them, naming the TVIEW,
+  the lookup column, the count and the limit. Set it database-wide so that no single write
+  can hold a million rows' locks by accident.
+- A bulk rename: `tviews.pg_tviews_suspend_triggers()`, the change, then
+  `pg_tviews_resume_triggers()` or the commit rebuilds each TVIEW it changed once. These
+  rebuilds are not charged against `max_refresh_rows`.
+- There is no deferred (asynchronous) refresh: a committed write is visible in every TVIEW
+  when the commit returns, and pg_tviews keeps that contract.
+
+To re-measure on your hardware: `test/bench/write_path/fanout.sh [seconds] [doc_bytes]`
+on a release build.
 
 ## Performance architecture
 

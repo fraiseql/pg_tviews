@@ -519,6 +519,7 @@ fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
         lookups: vec![],
         index_hints: vec![],
         hop: None,
+        via: None,
         fanout: None,
         root: false,
         virtual_reads: vec![],

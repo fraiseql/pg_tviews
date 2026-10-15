@@ -42,12 +42,14 @@ fn pg_tviews_flush_and_report(
     max_entities: default!(i32, 500),
     include_data: default!(bool, true),
     reset: default!(bool, true),
+    types: default!(Option<Vec<String>>, "NULL"),
 ) -> Result<pgrx::JsonB, ErrorReport> {
     crate::revision::check();
     Ok(pgrx::JsonB(crate::report::flush_and_report(
         max_entities,
         include_data,
         reset,
+        types,
     )?))
 }
 

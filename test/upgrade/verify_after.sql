@@ -40,7 +40,7 @@ BEGIN
     FOR t IN SELECT c.oid FROM tviews.pg_tview_meta m
              JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid
              WHERE c.relpersistence = 'u'
-               AND NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid v WHERE v.table_oid = c.oid)
+               AND NOT EXISTS (SELECT 1 FROM tviews.pg_tview_valid v WHERE v.entity = m.entity)
     LOOP
         EXECUTE pg_catalog.format('SELECT EXISTS (SELECT 1 FROM %s)', t) INTO filled;
         IF filled THEN

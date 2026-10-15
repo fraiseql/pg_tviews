@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Changed TVIEW rows are published at commit** (#231, ADR 0231): with
+  `pg_tviews.publish_changes = rows` (superuser; `off` by default), a committed
+  transaction that changed TVIEW rows sends them on channel `tviews_changes` as
+  `{"v":1,"u":{"User":[ids]},"d":{…},"t":[types]}`: net changes by GraphQL type,
+  inserted or updated in `u`, deleted in `d`, ids as JSON. At most 8 messages
+  under 8,000 bytes per transaction; types whose ids don't fit, and TVIEWs
+  without an `id` column, are named in `t`. `types` sends the changed types only.
+  Nothing is sent for a rolled-back transaction or savepoint. Above 90 % NOTIFY
+  queue usage a transaction commits unpublished, with a WARNING, counted in
+  `pg_tviews_queue_stats()->'publish_skipped'` (per session).
+- **`pg_tviews.max_refresh_rows` caps the TVIEW rows one statement's refresh
+  writes** (#233, ADR 0233): `0` (the default) is no limit; superuser. Above it the
+  statement fails with `54000` before writing them, naming the TVIEW, how it would
+  be written (`via fk_cat`, `by key`, `by a full refresh`), the count and the limit;
+  its write rolls back with it. Recomputed keys, patched rows, fan-out children
+  (counted through the lookup index, only while the guard is on) and a full
+  refresh's rows are charged; explicit rebuilds, including the catch-up of a
+  suspended transaction, are not.
+- **`pg_tviews_flush_and_report(types)` reports only the requested types** (#230):
+  `types text[] DEFAULT NULL` takes GraphQL type names (the `typename` option, else
+  the entity in Pascal case). Rows of other types are flushed and journaled as before
+  but left out of the report, not counted against `max_entities`, and listed by type
+  in `omitted_types` (present only with `types`); `reset` clears them too. An unknown
+  name fails with `22023` before anything is reported or reset.
+- **A TVIEW rebuilt whole is reported and published by type**: `pg_tviews_refresh()`,
+  the catch-up of a suspended transaction, the refill of a reset UNLOGGED TVIEW and
+  `pg_tviews_rebuild_all()` list the type in the report's `invalidated_types` and in
+  the change feed's `t`, since their rows are not journaled one by one.
+- **A column copied two joins away is patched in place** (#228): a write to
+  `tb_user.username` copied into `tv_comment.post.author.username` (comment →
+  post → user) finds the comments through the table in between (the user's
+  posts) and writes the name into them in one statement, instead of recomputing
+  each comment: 3.9× less refresh work for 50 comments. Three joins and more are
+  recomputed, as before. Re-register existing TVIEWs to derive the new fan-outs
+  (`pg_tviews_reregister_all()`; `registry.needs_reregister` says which).
+- **`pg_tviews_profile()` projects what each fan-out costs per write** (#233):
+  `fanout` gains `p99_ms_per_write` and `p99_wal_bytes_per_write` per lookup column,
+  from the measured model (ADR 0233) and the TVIEW's bytes per row, and the fan-out
+  warning says them and points to the architects guide's fan-out section.
+
+### Changed (breaking)
+
+- **`QueueFull` is `RefreshLimit`**: the same `54000`, message and hint for the
+  queue limit, now one variant with the rows limit.
+- **PREPARE TRANSACTION is refused while there are changes to publish**
+  (`25000`): PostgreSQL cannot carry a notification through PREPARE. Commit
+  without two-phase commit, or turn publishing off for that role.
+  `PrepareHoldsRefill` is `PrepareRefused` (same SQLSTATE, message and hint).
+
+- **`pg_tviews_rebuild_all()` reports the rows it inserted** (#236): its second
+  column is `rows_inserted` (was `rows`, the table's size after the fill). A
+  refill of a reset TVIEW reports the rows it wrote; a rebuild with
+  `only_empty => false` inserts, and reports, every row of the view. The upgrade
+  keeps the `EXECUTE` grants given on it.
+
+### Changed
+
+- **The report takes ids from the refresh writes**: every write returns the public
+  `id` of the rows it changes, so `pg_tviews_flush_and_report(include_data => false)`
+  reads no TVIEW. Writes changing a thousand rows cost about 2 % more for it.
+
+### Documentation
+
+- ADR 0231 (publishing changes at commit), ADR 0232 (where pg_tviews runs: self-hosted
+  and Kubernetes; FraiseQL's `v_*` mode on managed services), ADR 0233 (fan-out cost
+  model and the refresh guard).
+- New guide: [the change feed](docs/user-guides/change-feed.md), with Python and Rust
+  listeners. The architects guide gains a fan-out section with the cost model.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE`, then `SELECT * FROM tviews.pg_tviews_reregister_all();`:
+  registration now derives fan-out patches two joins away (`registry.needs_reregister`
+  lists the TVIEWs to re-register; until then they refresh as before).
+- `pg_tviews_rebuild_all()` returns `rows_inserted` instead of `rows`: callers selecting
+  the column by name change (fraiseql/fraisier#472). `EXECUTE` grants on it are kept.
+- `pg_tviews_flush_and_report()` gains a fourth argument; calls with three arguments, by
+  position or name, are unchanged.
+- Existing UNLOGGED validity rows are converted; nothing is refilled by the upgrade.
+
+### Fixed
+
+- **An UNLOGGED TVIEW restored with its rows is trusted** (#236): its validity
+  (`tviews.pg_tview_valid`, now keyed by entity) is dumped as extension
+  configuration, and `pg_dump` writes it exactly when it writes UNLOGGED tables'
+  rows. A plain `pg_dump`/`pg_restore` no longer refills every UNLOGGED TVIEW; a
+  dump with `--no-unlogged-table-data` restores them empty and untrusted, and they
+  are refilled once, as before. The upgrade converts the existing rows.
+
+- **A refresh of several keys reads the backing view once** (#237): the delete of
+  the keys gone from the view used them as the upsert's source produced them,
+  instead of asking the view again. That second evaluation couldn't push the keys
+  below a GROUP BY, so a multi-key write to an aggregate TVIEW computed every one of
+  its groups. A batch whose keys all produced a row deletes nothing and runs no
+  delete.
+
+## [0.1.0-beta.28] - not yet released
+
 ### Changed (breaking)
 
 - **`data` is stored compressed and inline by default** (#225): a new TVIEW's `data`

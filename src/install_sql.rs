@@ -169,16 +169,19 @@ extension_sql!(
     -- extension owner writes it.
     GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
 
-    -- The UNLOGGED TVIEW tables whose rows can be trusted. UNLOGGED itself: a crash
-    -- restart or a promotion empties it together with them, and a table missing here
-    -- is filled from its view by the next write. Not dumped: a restored TVIEW is
-    -- filled once.
+    -- The UNLOGGED TVIEWs whose rows can be trusted, by entity. UNLOGGED itself: a
+    -- crash restart or a promotion empties it together with them, and a TVIEW
+    -- missing here is filled from its view by the next write. Dumped as extension
+    -- configuration: pg_dump writes its rows exactly when it writes UNLOGGED tables'
+    -- rows (not with --no-unlogged-table-data), so a restore brings back both or
+    -- neither. No foreign key: the two configuration tables restore in any order.
     CREATE UNLOGGED TABLE @extschema@.pg_tview_valid (
-        table_oid OID NOT NULL PRIMARY KEY
+        entity TEXT NOT NULL PRIMARY KEY
     );
     COMMENT ON TABLE @extschema@.pg_tview_valid IS
-        'Internal: UNLOGGED TVIEW tables whose rows can be trusted; may change in any release';
+        'Internal: UNLOGGED TVIEWs whose rows can be trusted; may change in any release';
     GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_valid', '');
 
     -- Revision of this catalog. The library refuses to work against a
     -- catalog of another revision; an upgrade script that changes the extension SQL
@@ -186,7 +189,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 6';
+    AS 'SELECT 7';
     ",
     name = "create_metadata_tables",
 );
@@ -661,6 +664,18 @@ DECLARE
                                  WHERE d.datname = current_database());
     chosen       TEXT;
     qualified    TEXT;
+    doc_bytes    FLOAT8;
+    -- The fan-out cost model (ADR 0233), measured 2026-10-13 on the stock
+    -- PostgreSQL 18.4 release package: a write costs a fixed part plus a part per
+    -- embedding row it patches, and writes WAL per row in proportion to the
+    -- document. Documents over toasted_doc bytes are stored out of line and
+    -- rewritten whole.
+    fixed_ms       CONSTANT FLOAT8 := 0.15;
+    inline_row_ms  CONSTANT FLOAT8 := 0.0028;
+    toasted_row_ms CONSTANT FLOAT8 := 0.021;
+    inline_wal     CONSTANT FLOAT8 := 0.7;
+    toasted_wal    CONSTANT FLOAT8 := 1.2;
+    toasted_doc    CONSTANT FLOAT8 := 2000;
 BEGIN
     -- The TVIEW named as every function names one (ADR 0211).
     IF tview IS NOT NULL THEN
@@ -766,6 +781,19 @@ BEGIN
                   WHERE s.schemaname = r.nsp AND s.tablename = r.tbl
                     AND s.attname = ANY (r.lookups) AND r.reltuples > 0) x);
 
+        -- What one parent change costs at that p99, by the model: its documents
+        -- are the table's bytes per row.
+        doc_bytes := (heap_bytes + toast_bytes) / greatest(r.reltuples, 1);
+        fanout := (
+            SELECT jsonb_object_agg(e.key, e.value || jsonb_build_object(
+                       'p99_ms_per_write', round((fixed_ms + (e.value->>'p99')::FLOAT8 *
+                           CASE WHEN doc_bytes > toasted_doc THEN toasted_row_ms
+                                ELSE inline_row_ms END)::NUMERIC, 2),
+                       'p99_wal_bytes_per_write', round((e.value->>'p99')::FLOAT8 * doc_bytes *
+                           CASE WHEN doc_bytes > toasted_doc THEN toasted_wal
+                                ELSE inline_wal END)))
+            FROM jsonb_each(fanout) e);
+
         warnings := ARRAY[]::TEXT[];
         FOREACH col IN ARRAY missing_propagation_indexes LOOP
             warnings := warnings || format(
@@ -808,11 +836,13 @@ BEGIN
                 '%s%% of the table is TOAST: each refresh rewrites whole data documents (see docs/adr/0094-large-document-refresh.md)',
                 round(100.0 * toast_bytes / (heap_bytes + toast_bytes)));
         END IF;
-        FOR f IN SELECT key, (value->>'p99')::BIGINT AS p99 FROM jsonb_each(fanout) ORDER BY key LOOP
+        FOR f IN SELECT key, (value->>'p99')::BIGINT AS p99, value->>'p99_ms_per_write' AS ms,
+                        (value->>'p99_wal_bytes_per_write')::BIGINT AS wal
+                 FROM jsonb_each(fanout) ORDER BY key LOOP
             IF f.p99 > fanout_warn THEN
                 warnings := warnings || format(
-                    'p99 fan-out through %s is about %s rows per key: one parent change refreshes that many rows',
-                    f.key, f.p99);
+                    'p99 fan-out through %s is about %s rows per key: one parent change refreshes that many rows, about %s ms and %s of WAL per write (see docs/user-guides/architects.md#fan-out)',
+                    f.key, f.p99, f.ms, pg_size_pretty(f.wal));
             END IF;
         END LOOP;
         IF r.pers = 'u' THEN
@@ -836,4 +866,61 @@ COMMENT ON FUNCTION @extschema@.pg_tviews_profile(TEXT, BIGINT) IS
     ",
     name = "profile_function",
     requires = ["create_metadata_tables"]
+);
+
+// pg_tviews_reregister_all(): an operator's, like the functions in
+// `crate::api::maintenance`. Every TVIEW, dependencies first: an entity comes after every TVIEW its backing
+// view reads, through views. Each runs in its own subtransaction, so a failure
+// becomes that entity's status and the others go on; `strict` raises at the end.
+extension_sql!(
+    r"
+CREATE FUNCTION @extschema@.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
+RETURNS TABLE (entity TEXT, status TEXT)
+LANGUAGE plpgsql
+AS $$
+#variable_conflict use_column
+DECLARE
+    next_entity TEXT;
+    failures INTEGER := 0;
+BEGIN
+    FOR next_entity IN
+        WITH RECURSIVE edges(entity, dependency) AS (
+            SELECT DISTINCT r.entity, m.entity
+            FROM @extschema@.pg_tview_reads r
+            JOIN @extschema@.pg_tview_meta m
+              ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
+            WHERE m.entity <> r.entity
+        ),
+        depth(entity, level) AS (
+            SELECT m.entity, 0 FROM @extschema@.pg_tview_meta m
+          UNION
+            SELECT e.entity, d.level + 1
+            FROM depth d JOIN edges e ON e.dependency = d.entity
+            WHERE d.level < 100
+        )
+        SELECT d.entity FROM depth d GROUP BY d.entity ORDER BY max(d.level), d.entity
+    LOOP
+        entity := next_entity;
+        BEGIN
+            PERFORM @extschema@.pg_tviews_reregister(next_entity);
+            status := 'reregistered';
+        EXCEPTION WHEN OTHERS THEN
+            status := SQLERRM;
+            failures := failures + 1;
+        END;
+        RETURN NEXT;
+    END LOOP;
+    IF strict AND failures > 0 THEN
+        RAISE EXCEPTION 'pg_tviews: % TVIEW(s) could not be re-registered', failures
+            USING HINT = 'SELECT * FROM tviews.pg_tviews_reregister_all() lists them';
+    END IF;
+END;
+$$;
+    ",
+    name = "reregister_all",
+    requires = [
+        pg_tviews_reregister,
+        "create_metadata_tables",
+        "tview_reads"
+    ],
 );

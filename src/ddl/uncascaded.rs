@@ -141,39 +141,31 @@ impl Declarations {
     /// Store them for `entity`, as the extension's owner (the caller's right to
     /// change the TVIEW was checked).
     pub(crate) fn store(&self, entity: &str) -> TViewResult<()> {
-        let _owner = crate::owner::AsOwner::of_extension()?;
-        let oids: Vec<Oid> = self.tables.iter().map(|(oid, _)| *oid).collect();
-        let policies: Vec<String> = self
+        crate::catalog::queries::store_declared(
+            entity,
+            self.catalog_row(self.time_refresh.stored()),
+        )
+    }
+
+    /// The columns the catalog stores them in, with `time_refresh` as stored.
+    pub(crate) fn catalog_row(
+        &self,
+        time_refresh: Option<&'static str>,
+    ) -> crate::catalog::queries::Declared<'static> {
+        let (table_oids, table_policies): (Vec<Oid>, Vec<String>) = self
             .tables
             .iter()
-            .map(|(_, policy)| policy.as_str().to_string())
-            .collect();
-        let (functions, function_tables) = self.function_read_pairs();
-        let args = [
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(self.policy.as_str()),
-            crate::utils::spi::oid_array(oids),
-            crate::utils::spi::text_array(policies),
-            crate::utils::spi::text_array(functions),
-            crate::utils::spi::oid_array(function_tables),
-            crate::utils::spi::text(self.time_refresh.stored()),
-        ];
-        Spi::run_with_args(
-            &format!(
-                "UPDATE {} SET uncascaded_policy = $2, \
-                     uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
-                     uncascaded_table_policies = $4, function_read_functions = $5, \
-                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
-                     time_refresh = $7 \
-                 WHERE entity = $1",
-                crate::catalog::meta_table()
-            ),
-            &args,
-        )
-        .map_err(|e| TViewError::CatalogError {
-            operation: "Store the uncascaded policies".to_string(),
-            pg_error: e.to_string(),
-        })
+            .map(|(oid, policy)| (*oid, policy.as_str().to_string()))
+            .unzip();
+        let (function_read_functions, function_read_tables) = self.function_read_pairs();
+        crate::catalog::queries::Declared {
+            policy: self.policy.as_str(),
+            table_oids,
+            table_policies,
+            function_read_functions,
+            function_read_tables,
+            time_refresh,
+        }
     }
 }
 
@@ -337,25 +329,7 @@ pub(crate) fn apply_function_reads(
 
 /// Table `table`, read inside `function`, as the lineage records it.
 fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::FunctionRead> {
-    let (relname, relkind, tview) = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT c.relname::text, c.relkind::text, \
-                            (SELECT m.entity::text FROM {} m WHERE m.table_oid::pg_catalog.oid = c.oid) \
-                     FROM pg_catalog.pg_class c WHERE c.oid = $1",
-                    crate::catalog::meta_table()
-                ),
-                None,
-                &[crate::utils::spi::oid(table)],
-            )?
-            .first()
-            .get_three::<String, String, String>()
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Read a table a function reads".to_string(),
-        pg_error: e.to_string(),
-    })?;
+    let (relname, relkind, tview) = crate::catalog::queries::function_read_relation(table)?;
     Ok(crate::lineage::FunctionRead {
         function: function.to_string(),
         relid: table.to_u32(),
@@ -500,30 +474,7 @@ pub(crate) fn check_declared(
 /// # Errors
 /// Returns an error if the catalog cannot be read or a refresh fails.
 pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
-    let args = [crate::utils::spi::oid(matview)];
-    let entities: Vec<String> = Spi::connect(|client| {
-        client
-            .select(
-                &format!(
-                    "SELECT entity::text FROM {} \
-                     WHERE $1::pg_catalog.regclass = ANY (uncascaded_oids) \
-                       AND COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
-                               uncascaded_table_oids, $1::pg_catalog.regclass)], \
-                           uncascaded_policy) = 'full_refresh' \
-                     ORDER BY entity",
-                    crate::catalog::meta_table()
-                ),
-                None,
-                &args,
-            )?
-            .map(|row| row.get::<String>(1))
-            .collect::<Result<Vec<_>, _>>()
-            .map(|entities| entities.into_iter().flatten().collect())
-    })
-    .map_err(|e| crate::TViewError::CatalogError {
-        operation: "Find the TVIEWs reading a refreshed materialized view".to_string(),
-        pg_error: e.to_string(),
-    })?;
+    let entities = crate::catalog::queries::full_refresh_readers_of(matview)?;
     if entities.is_empty() {
         return Ok(());
     }

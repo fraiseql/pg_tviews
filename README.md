@@ -29,6 +29,12 @@ By Lionel Hamayon • Part of the FraiseQL framework
 
 </div>
 
+> **Where it runs.** pg_tviews is a compiled extension loaded with
+> `shared_preload_libraries`: it runs on PostgreSQL you install or operate yourself,
+> including on Kubernetes (operator image). Managed services (RDS, Cloud SQL, Azure,
+> Supabase, Neon, …) only install extensions from their own allow-lists; there, use
+> FraiseQL's `v_*` mode. See [ADR 0232](docs/adr/0232-distribution.md).
+
 ---
 
 ## 🍓 Part of the FraiseQL Ecosystem
@@ -346,6 +352,8 @@ no setting changes what it is. The settings tune limits and sessions:
 | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
 | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
 | `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
+| `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` ([change feed](docs/user-guides/change-feed.md)) |
+| `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write; 0 = no limit ([ADR 0233](docs/adr/0233-fanout-cost-and-guard.md)) |
 | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
 | `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |

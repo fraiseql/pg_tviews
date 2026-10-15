@@ -80,3 +80,21 @@ pub fn mapping_kind_sql(meta: &str, relid: &str) -> String {
           WHERE (e->>'relid')::pg_catalog.oid = {relid} LIMIT 1)"
     )
 }
+
+/// SQL selecting, for each TVIEW, the ordinary and partitioned tables it reads
+/// (`pg_tview_reads`) as `(entity, relid, relkind, tview, kind)`: `tview` when
+/// the table is a TVIEW's, `kind` its mapping kind ([`mapping_kind_sql`]).
+#[must_use]
+pub fn reads_with_kind_sql() -> String {
+    let kind = mapping_kind_sql("m", "r.relid");
+    format!(
+        "SELECT DISTINCT r.entity, r.relid, c.relkind, \
+                    r.relid IN (SELECT table_oid::oid FROM {meta}) AS tview, \
+                    {kind} AS kind \
+             FROM {schema}.pg_tview_reads r \
+             JOIN {meta} m ON m.entity = r.entity \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p')",
+        meta = crate::catalog::meta_table(),
+        schema = crate::utils::ext_schema(),
+    )
+}

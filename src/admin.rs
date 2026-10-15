@@ -9,15 +9,7 @@ use crate::TViewResult;
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catalog::TviewMeta>>> {
-    let entities = crate::utils::spi::strings(
-        &format!(
-            "SELECT m.entity::text FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
-             WHERE m.time_dependent AND pg_catalog.pg_has_role(c.relowner, 'USAGE') \
-             ORDER BY m.entity",
-            crate::catalog::meta_table()
-        ),
-        &[],
-    )?;
+    let entities = crate::catalog::queries::owned_time_dependent()?;
     let mut metas = Vec::new();
     for entity in entities {
         if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(&entity)? {

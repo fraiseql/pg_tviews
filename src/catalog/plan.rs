@@ -79,6 +79,11 @@ pub struct FanoutPatch {
     /// to several paths has a pair for each.
     #[serde(deserialize_with = "fanout_fields")]
     pub fields: Vec<(String, Vec<String>)>,
+    /// For a table two equalities away, through a table in between: the query
+    /// template from the changed rows' key values (`$1`, `int8[]`) to the
+    /// `lookup_col` values they reach, as `(key, lookup value)` pairs (#228).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// The fields of a fan-out patch. A plan written before nested paths holds a

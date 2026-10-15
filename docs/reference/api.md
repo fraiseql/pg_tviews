@@ -49,9 +49,9 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_resume_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
 | [`pg_tviews_is_suspended()`](#suspending-refresh) | `boolean` | anyone |
 | [`pg_tviews_suspended_entities()`](#suspending-refresh) | `text[]` | anyone |
-| [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
+| [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true, types text[] DEFAULT NULL)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
 | [`pg_tviews_replication_status()`](#storage-replication-and-recovery) | `TABLE(entity text, persistence text, replica_readable boolean, is_empty boolean, needs_rebuild boolean)` | anyone |
-| [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows bigint)` | operator |
+| [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows_inserted bigint)` | operator |
 | [`pg_tviews_health_check()`](#pg_tviews_health_check) | `TABLE(status text, component text, message text, severity text)` | anyone |
 | [`pg_tviews_stats_reset(tview text DEFAULT NULL)`](#tviewsstats-and-pg_tviews_stats_reset) | `void` | operator |
 | [`pg_tviews_queue_stats()`](#pg_tviews_queue_stats) | `jsonb` | anyone |
@@ -426,7 +426,8 @@ COMMIT;
 ```text
 tviews.pg_tviews_flush_and_report(max_entities integer DEFAULT 500,
                                   include_data boolean DEFAULT true,
-                                  reset boolean DEFAULT true) RETURNS jsonb
+                                  reset boolean DEFAULT true,
+                                  types text[] DEFAULT NULL) RETURNS jsonb
 ```
 
 Flushes the queue, then reports the TVIEW rows this transaction changed, for a GraphQL
@@ -435,7 +436,10 @@ row's `data`; a deleted entry is `{"__typename", "id"}`. The type name is the TV
 `typename` option, or the PascalCase of its entity. Past `max_entities` entries,
 or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
 `invalidated_types` lists the types left out. With `reset`, the next call reports only
-later changes; a reset made in a subtransaction that rolls back is undone. See [GraphQL cascade](../user-guides/graphql-cascade.md).
+later changes; a reset made in a subtransaction that rolls back is undone. With `types`
+(type names), only rows of those types are reported and counted against
+`max_entities`; the other changed types are listed in `omitted_types`; an unknown name
+fails with `22023`. See [GraphQL cascade](../user-guides/graphql-cascade.md).
 
 ```sql
 BEGIN;
@@ -450,7 +454,7 @@ COMMIT;
 tviews.pg_tviews_replication_status()
     RETURNS TABLE(entity text, persistence text, replica_readable boolean,
                   is_empty boolean, needs_rebuild boolean)
-tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(entity text, rows bigint)
+tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(entity text, rows_inserted bigint)
 ```
 
 - TVIEWs are LOGGED unless declared `logged: false`. Switch one with the `logged`
@@ -459,7 +463,8 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   LOGGED one, and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
-  dependencies first, each as its owner, and counts their rows; it refuses to run
+  dependencies first, each as its owner, and reports the rows each one inserted
+  (`rows_inserted`: a full rebuild inserts every row of the view); it refuses to run
   during recovery. A TVIEW that is merely empty is not a reset one. Operator
   function: the caller needs no privilege on the `tv_*` tables.
 - After a crash restart or a promotion, a background worker does the same in every
@@ -467,7 +472,7 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   reset TVIEW not yet refilled is filled by its first write.
 - `needs_rebuild` is true for an UNLOGGED TVIEW missing from `tviews.pg_tview_valid`,
   the UNLOGGED table that a reset empties together with the TVIEWs
-  ([Replication](../operations/replication.md#rebuilding-after-promotion-a-crash-or-a-restore)).
+  ([Replication](../operations/replication.md#refilling-after-promotion-a-crash-or-a-restore)).
 
 ```sql
 SELECT * FROM tviews.pg_tviews_replication_status();
@@ -671,9 +676,9 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | propagation or view nesting deeper than `pg_tviews.max_propagation_depth` / `max_dependency_depth` |
-| `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`) |
+| `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
 | `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued |
-| `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW |
+| `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
 | `22023` | `invalid_parameter_value` | an invalid argument or option |
 | `21000` | `cardinality_violation` | two rows for one key of a UNION TVIEW (ADR 0216) |
@@ -715,8 +720,9 @@ The settings are listed, with types and defaults, in the
 [README's configuration table](../../README.md#configuration). None changes what a
 TVIEW is: that comes only from its definition and its [options](#options). The
 settings that decide whether a write or a creation succeeds
-(`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`,
-`lock_escalation_threshold`) and `pg_tviews.audit_enabled` are a superuser's.
+(`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `max_refresh_rows`,
+`lock_escalation_threshold`), `pg_tviews.audit_enabled` and `pg_tviews.publish_changes`
+(what other sessions observe, [change feed](../user-guides/change-feed.md)) are a superuser's.
 `batch_size`, `cache_size` and `report_max_tracked` apply to each session.
 `pg_tviews.auto_rebuild_databases` is read at server start. Diagnostics are `DEBUG1`
 messages: `SET client_min_messages = debug1` shows them.
@@ -730,8 +736,9 @@ SHOW pg_tviews.max_propagation_depth;
 pg_tviews refreshes the TVIEWs before `PREPARE TRANSACTION`, so the refresh writes
 belong to the prepared transaction: `COMMIT PREPARED` applies them and
 `ROLLBACK PREPARED` discards them. Prepared transactions require
-`max_prepared_transactions > 0`. A transaction that refilled a reset UNLOGGED TVIEW
-cannot be prepared (`25000`).
+`max_prepared_transactions > 0`. A transaction that refilled a reset UNLOGGED TVIEW, or
+that has TVIEW changes to publish ([change feed](../user-guides/change-feed.md)), cannot
+be prepared (`25000`).
 
 ```text
 BEGIN;

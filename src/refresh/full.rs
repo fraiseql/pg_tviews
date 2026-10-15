@@ -7,7 +7,6 @@ use crate::catalog::TviewMeta;
 use crate::error::{TViewError, TViewResult};
 use crate::utils::ident;
 use pgrx::prelude::*;
-use pgrx::spi;
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
 /// its owner, and nothing that reads it.
@@ -16,9 +15,11 @@ use pgrx::spi;
 /// as the caller would run the owner's view code with the caller's privileges
 /// (a superuser's, after a migration).
 ///
+/// Returns the rows inserted: every row of the view.
+///
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
-pub fn rebuild_one(entity: &str) -> TViewResult<()> {
+pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         // Every row changes: refreshes of any of them wait, and are waited for,
@@ -32,7 +33,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("TRUNCATE {qi_tv}"))?;
-    Spi::run(&insert)?;
+    let inserted = crate::utils::spi::run_counted(&insert)?;
     drop(owner);
     // Rebuilt from its view: its rows can be trusted again.
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
@@ -40,18 +41,19 @@ pub fn rebuild_one(entity: &str) -> TViewResult<()> {
             name: entity.to_string(),
         }
     })?;
-    crate::lifecycle::validity::mark(meta.tview_oid)?;
-    Ok(())
+    crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
+    crate::queue::affected::record_rebuilt(entity)?;
+    Ok(inserted)
 }
 
 /// Replace every row of `tv_<entity>` with its backing view's, without `TRUNCATE`
 /// (readers are never blocked), as its owner: the fill of a TVIEW whose rows
 /// can't be trusted ([`crate::lifecycle::validity`]). Rows a concurrent writer
-/// committed meanwhile are kept.
+/// committed meanwhile are kept. Returns the rows inserted.
 ///
 /// # Errors
 /// Returns error if the entity is not registered or the delete/insert fails.
-pub fn refill(entity: &str) -> TViewResult<()> {
+pub fn refill(entity: &str) -> TViewResult<u64> {
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
@@ -59,8 +61,9 @@ pub fn refill(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&format!("DELETE FROM {qi_tv}"))?;
-    Spi::run(&format!("{insert} ON CONFLICT DO NOTHING"))?;
-    Ok(())
+    let inserted = crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))?;
+    crate::queue::affected::record_rebuilt(entity)?;
+    Ok(inserted)
 }
 
 /// Populate an **empty** `tv_<entity>` from its backing view without `TRUNCATE`,
@@ -76,7 +79,7 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (_, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&insert)?;
-    Ok(())
+    crate::queue::affected::record_rebuilt(entity)
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
@@ -120,7 +123,7 @@ fn rebuild_statements(
 /// that leave go first, so a unique index holds throughout. Returns the
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
-    use crate::queue::affected::{Change, record};
+    use crate::queue::affected::Change;
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     let _pin = crate::owner::RenderPin::new();
     // Every row is computed: writers of anything they read wait, and are waited for.
@@ -156,30 +159,17 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     );
     let pk = ident::quoted(&format!("pk_{entity}"));
 
-    let deleted = Spi::connect_mut(|client| {
-        let mut rows = Vec::new();
-        for row in client.update(
-            &format!(
-                "DELETE FROM {qualified_tv} t \
-                 WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
-                 RETURNING t.{pk}::text, pg_catalog.to_jsonb(t.*)->>'id'"
-            ),
-            None,
-            &[],
-        )? {
-            if let Some(key) = row.get::<String>(1)? {
-                rows.push((key, row.get::<String>(2)?));
-            }
-        }
-        Ok::<_, spi::Error>(rows)
-    })
-    .map_err(|e| {
-        crate::utils::spi::catalog_error("Delete the rows the new definition drops", &e)
-    })?;
-    let mut changed: Vec<String> = deleted.iter().map(|(key, _)| key.clone()).collect();
-    for (key, id) in deleted {
-        record(entity, key, Change::Deleted(id));
-    }
+    let id = meta.id_text("t");
+    let mut changed = crate::refresh::run_journaled(
+        meta,
+        &format!(
+            "DELETE FROM {qualified_tv} t \
+             WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
+             RETURNING t.{pk}::text, {id}"
+        ),
+        &[],
+        Change::Deleted,
+    )?;
     if !value_columns.is_empty() {
         // A stored column can have another type than the view's (an unmapped user type
         // is stored as text): compare against the value the UPDATE would assign.
@@ -207,32 +197,30 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             .map(|c| format!("{0} = v.{0}", ident::quoted(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        for key in crate::utils::spi::strings(
+        changed.extend(crate::refresh::run_journaled(
+            meta,
             &format!(
                 "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
                  FROM {qualified_view} v \
                  WHERE {same_key} AND {} \
-                 RETURNING t.{pk}::text",
+                 RETURNING t.{pk}::text, {id}",
                 crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh)
             ),
             &[],
-        )? {
-            changed.push(key.clone());
-            record(entity, key, Change::Updated);
-        }
+            Change::Updated,
+        )?);
     }
-    for key in crate::utils::spi::strings(
+    changed.extend(crate::refresh::run_journaled(
+        meta,
         &format!(
-            "INSERT INTO {qualified_tv} ({columns}) \
+            "INSERT INTO {qualified_tv} AS t ({columns}) \
              SELECT {columns} FROM {qualified_view} v \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
-             RETURNING {pk}::text",
+             RETURNING t.{pk}::text, {id}",
             columns = list(&all_columns, "")
         ),
         &[],
-    )? {
-        changed.push(key.clone());
-        record(entity, key, Change::Inserted);
-    }
+        Change::Inserted,
+    )?);
     Ok(changed)
 }

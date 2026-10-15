@@ -27,9 +27,9 @@ Placeholders stand for the values each message carries.
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |
 | `42703` | `undefined_column` | `RequiredColumnMissing` | Required column '&lt;column&gt;' missing in &lt;context&gt; |  |
 | `42883` | `undefined_function` | `JsonbDeltaMissing` | Required extension 'jsonb_delta' is not installed | CREATE EXTENSION jsonb_delta; |
-| `54000` | `program_limit_exceeded` | `QueueFull` | refresh queue backpressure: queue size (10001) would exceed max_queue_size (10000) | Raise pg_tviews.max_queue_size, or write in smaller transactions. |
+| `54000` | `program_limit_exceeded` | `RefreshLimit` | refreshing &lt;table&gt; &lt;how&gt; would write 10001 rows in one statement (max_refresh_rows = 10000) | Don't embed this entity in &lt;table&gt;, batch the change offline, or make it after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt once, at resume or commit. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
-| `25000` | `invalid_transaction_state` | `PrepareHoldsRefill` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
+| `25000` | `invalid_transaction_state` | `PrepareRefused` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
 | `21000` | `cardinality_violation` | `DuplicateKey` | TVIEW &lt;table&gt;: its backing view returned multiple rows for &lt;key column&gt;=&lt;key&gt; | Make the UNION branches' keys disjoint (a sign or an offset per branch), or keep one row per key with DISTINCT ON over the UNION, ordered by preference. |
 | `XX000` | `internal_error` | `CatalogError` | Catalog operation '&lt;operation&gt;' failed: &lt;error&gt; | tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata. |
 | `XX000` | `internal_error` | `SpiError` | SPI query failed: &lt;error&gt; |  |

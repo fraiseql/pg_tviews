@@ -205,6 +205,28 @@ pub fn run(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<()> {
     Spi::run_with_args(sql, args).map_err(|e| error(sql, &e))
 }
 
+/// The rows of the table `table_oid`.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn count_rows(table_oid: Oid) -> TViewResult<u64> {
+    let sql = format!(
+        "SELECT pg_catalog.count(*) FROM {}",
+        crate::utils::qualified_relname_from_oid(table_oid)?
+    );
+    let count = Spi::get_one::<i64>(&sql).map_err(|e| error(&sql, &e))?;
+    Ok(count.unwrap_or(0).unsigned_abs())
+}
+
+/// Run a data-modifying statement without RETURNING; the rows it processed.
+///
+/// # Errors
+/// Returns the statement's error.
+pub fn run_counted(sql: &str) -> TViewResult<u64> {
+    Spi::connect_mut(|client| client.update(sql, None, &[]).map(|done| done.len() as u64))
+        .map_err(|e| error(sql, &e))
+}
+
 /// Each row of `sql`, read by `read`.
 ///
 /// # Errors

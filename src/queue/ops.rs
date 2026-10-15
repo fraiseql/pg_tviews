@@ -1,13 +1,12 @@
 use super::key::{KeyValue, RefreshKey};
 use super::state;
 
-/// `QueueFull` when one more entry would take the queue past `limit`.
+/// `RefreshLimit` when one more entry would take the queue past `limit`.
 fn check_queue_backpressure(limit: usize) -> crate::TViewResult<()> {
     let size = state::get_queue_size();
     if size >= limit {
-        return Err(crate::TViewError::QueueFull {
-            size,
-            max_size: limit,
+        return Err(crate::TViewError::RefreshLimit {
+            limit: crate::error::Limit::Queue { size, max: limit },
         });
     }
     Ok(())

@@ -58,7 +58,7 @@ pub fn derive_parent_chain(
 /// element per entry), guarded by `data IS DISTINCT FROM <patched>` so a patch
 /// that changes nothing writes nothing. Nothing is interpolated.
 ///
-/// Returns `(pk, changed)` for every **materialised** row among the pks: the
+/// Returns `(pk, changed, id)` for every **materialised** row among the pks: the
 /// guarded UPDATE runs in a data-modifying CTE and the outer SELECT reads the
 /// statement snapshot, so unchanged rows are still reported as present. The
 /// caller diffs these against the input to find rows that must recompute (not
@@ -66,7 +66,7 @@ pub fn derive_parent_chain(
 fn apply_direct_patch(
     meta: &TviewMeta,
     rows: &[(i64, Vec<PatchEntry>)],
-) -> TViewResult<Vec<(i64, bool)>> {
+) -> TViewResult<Vec<(i64, bool, Option<String>)>> {
     let Some((_, shape)) = rows.first() else {
         return Ok(Vec::new());
     };
@@ -86,8 +86,9 @@ fn apply_direct_patch(
              UPDATE {qi_tv} t SET data = {patch_expr}, updated_at = pg_catalog.now() FROM f \
              WHERE t.{qi_pk} = f.pk AND t.data IS DISTINCT FROM {patch_expr} \
              RETURNING t.{qi_pk}) \
-         SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed) \
-         FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)"
+         SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed), {} \
+         FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)",
+        meta.id_text("t")
     );
 
     let pks: Vec<i64> = rows.iter().map(|(pk, _)| *pk).collect();
@@ -113,7 +114,9 @@ fn apply_direct_patch(
         crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)?
             .into_iter()
             .filter_map(|row| match &row[..] {
-                [Some(pk), Some(changed)] => Some((pk.parse().ok()?, changed == "t")),
+                [Some(pk), Some(changed), id] => {
+                    Some((pk.parse().ok()?, changed == "t", id.clone()))
+                }
                 _ => None,
             })
             .collect(),
@@ -170,19 +173,46 @@ pub fn apply_fanout_patch(
         &meta.entity_name,
         changed.len() as u64,
     );
-    for &pk in &changed {
-        crate::queue::affected::record(
-            &meta.entity_name,
-            pk.to_string(),
-            crate::queue::affected::Change::Updated,
-        );
-    }
-    Ok(changed)
+    Ok(changed
+        .into_iter()
+        .map(|(pk, id)| {
+            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+                meta,
+                pk.to_string(),
+                id,
+                crate::queue::affected::Change::Updated,
+            ));
+            pk
+        })
+        .collect())
+}
+
+/// The rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`: the children a
+/// fan-out of those keys writes, counted through the lookup index with the
+/// statement shapes [`write_fanout`] uses.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TViewResult<u64> {
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(0);
+    };
+    let sql = format!(
+        "SELECT pg_catalog.count(*) FROM {} t WHERE {}",
+        crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
+    );
+    let rows = crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?;
+    Ok(rows
+        .first()
+        .and_then(|row| row.first()?.as_deref()?.parse().ok())
+        .unwrap_or(0))
 }
 
 /// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
 /// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
-/// at each path, the paths bound as parameters. The pks written.
+/// at each path, the paths bound as parameters. The pks written, with their
+/// public ids.
 ///
 /// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
 /// a generic plan of a join with an array assumes ten keys, each matching
@@ -197,7 +227,7 @@ fn write_fanout(
     paths: &[String],
     keys: Vec<i64>,
     values: Vec<pgrx::JsonB>,
-) -> TViewResult<Vec<i64>> {
+) -> TViewResult<Vec<(i64, Option<String>)>> {
     let Some(lookup) = LookupKeys::of(keys) else {
         return Ok(Vec::new());
     };
@@ -227,7 +257,8 @@ fn write_fanout(
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
          WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
-         RETURNING t.{qi_pk}::pg_catalog.int8"
+         RETURNING t.{qi_pk}::pg_catalog.int8, {}",
+        meta.id_text("t")
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
     for key in paths {
@@ -240,7 +271,10 @@ fn write_fanout(
     }
     Ok(crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?
         .into_iter()
-        .filter_map(|row| row.first()?.as_deref()?.parse().ok())
+        .filter_map(|mut row| {
+            let id = row.get_mut(1).and_then(Option::take);
+            Some((row.first()?.as_deref()?.parse().ok()?, id))
+        })
         .collect())
 }
 
@@ -269,20 +303,21 @@ pub fn apply_entity_patches(
     for rows in groups.into_values() {
         for chunk in rows.chunks(batch) {
             let materialised = apply_direct_patch(meta, chunk)?;
-            let present: HashSet<i64> = materialised.iter().map(|&(pk, _)| pk).collect();
-            let changed = materialised.iter().filter(|&&(_, c)| c).count() as u64;
+            let present: HashSet<i64> = materialised.iter().map(|&(pk, ..)| pk).collect();
+            let changed = materialised.iter().filter(|&&(_, c, _)| c).count() as u64;
 
             crate::metrics::metrics_api::record_direct_patches_applied(&meta.entity_name, changed);
             crate::metrics::metrics_api::record_noop_skipped(
                 &meta.entity_name,
                 materialised.len() as u64 - changed,
             );
-            for &(pk, _) in materialised.iter().filter(|&&(_, c)| c) {
-                crate::queue::affected::record(
-                    &meta.entity_name,
+            for (pk, _, id) in materialised.into_iter().filter(|&(_, c, _)| c) {
+                crate::queue::affected::record(crate::queue::affected::Recorded::of(
+                    meta,
                     pk.to_string(),
+                    id,
                     crate::queue::affected::Change::Updated,
-                );
+                ));
             }
             for (pk, _) in chunk {
                 if !present.contains(pk) {

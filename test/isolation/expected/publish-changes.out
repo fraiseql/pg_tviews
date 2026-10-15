@@ -1,0 +1,105 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_autocommit l_poll
+step w_autocommit: UPDATE tb_user SET name = 'ann2' WHERE pk_user = 1;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+
+starting permutation: w_begin w_rename_ann w_rename_both l_poll w_commit l_poll
+step w_begin: BEGIN;
+step w_rename_ann: UPDATE tb_user SET name = 'ann3' WHERE pk_user = 1;
+step w_rename_both: UPDATE tb_user SET name = name || '!';
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+step w_commit: COMMIT;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002"]}}" from w
+
+starting permutation: w_begin w_rename_ann w_rollback l_poll
+step w_begin: BEGIN;
+step w_rename_ann: UPDATE tb_user SET name = 'ann3' WHERE pk_user = 1;
+step w_rollback: ROLLBACK;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+
+starting permutation: w_begin w_rename_ann w_savepoint w_delete_bob w_rollback_to w_commit l_poll
+step w_begin: BEGIN;
+step w_rename_ann: UPDATE tb_user SET name = 'ann3' WHERE pk_user = 1;
+step w_savepoint: SAVEPOINT s;
+step w_delete_bob: DELETE FROM tb_user WHERE pk_user = 2;
+step w_rollback_to: ROLLBACK TO SAVEPOINT s;
+step w_commit: COMMIT;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+
+starting permutation: w_function l_poll
+step w_function: SELECT rename_user(1, 'ann4');
+rename_user
+-----------
+           
+(1 row)
+
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"u":{"User":["00000000-0000-0000-0000-000000000001"]}}" from w
+
+starting permutation: w_begin w_insert w_delete_new w_delete_bob w_commit l_poll
+step w_begin: BEGIN;
+step w_insert: INSERT INTO tb_user VALUES (3, '00000000-0000-0000-0000-000000000003', 'cy');
+step w_delete_new: DELETE FROM tb_user WHERE pk_user = 3;
+step w_delete_bob: DELETE FROM tb_user WHERE pk_user = 2;
+step w_commit: COMMIT;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"d":{"User":["00000000-0000-0000-0000-000000000002"]}}" from w
+
+starting permutation: w_tag l_poll
+step w_tag: UPDATE tb_tag SET label = 'y' WHERE pk_tag = 1;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+
+l: NOTIFY "tviews_changes" with payload "{"v":1,"t":["Tag"]}" from w
+
+starting permutation: w_off w_autocommit l_poll
+step w_off: SET pg_tviews.publish_changes = off;
+step w_autocommit: UPDATE tb_user SET name = 'ann2' WHERE pk_user = 1;
+step l_poll: SELECT 1 AS polled;
+polled
+------
+     1
+(1 row)
+

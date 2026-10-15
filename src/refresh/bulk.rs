@@ -69,13 +69,20 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         super::upsert_conflict_action(&qi_tv, &col_names, key_col)
     );
 
-    // DELETE tview rows whose backing-view row has disappeared (deleted base rows).
-    // The old UPDATE-only path left these stale.
+    // DELETE the rows of the keys the upsert's source no longer produced (deleted
+    // base rows), by their identities: the view is not read again. Asking it
+    // (`NOT EXISTS (SELECT 1 FROM view v WHERE v.key = t.key)`) evaluated it a
+    // second time, and the correlation does not reach below a GROUP BY: an
+    // aggregate TVIEW computed every group (#237). Nothing changes these keys'
+    // rows in between: `lock_rows` locked the existing ones (FOR UPDATE under READ
+    // COMMITTED) and the missing keys, so another refresh of them waits for this
+    // transaction; under REPEATABLE READ both statements share its snapshot.
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
-         WHERE t.{qi_key} = {any_key} \
-           AND NOT EXISTS (SELECT 1 FROM {qi_view} v WHERE v.{qi_key} = t.{qi_key}) \
-         RETURNING t.{qi_pk}::text, to_jsonb(t.*)->>'id'"
+         WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
+         RETURNING t.{qi_pk}::text, {}",
+        super::key_cast(&key_type, "$2", true),
+        meta.id_text("t")
     );
 
     // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
@@ -93,20 +100,35 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &format!("{qi_key} = {any_key}"),
             &[super::key_array(&key_type, chunk)?],
         )?;
-        let (_, written) = super::run_counted_upsert(
-            entity,
+        let produced = super::run_counted_upsert(
+            &meta,
             &qi_tv,
             &col_list,
             &source_sql,
             &conflict,
             &[super::key_array(&key_type, chunk)?],
         )?;
-        let deleted = super::run_journaled_delete(
-            entity,
-            &delete_sql,
-            &[super::key_array(&key_type, chunk)?],
-        )?;
-        touched.extend(super::touched(&meta, chunk, before, written, deleted));
+        // A key produces at most one row (duplicates were refused above): as many
+        // rows as keys means none is gone.
+        let deleted = if produced.keys.len() == chunk.len() {
+            Vec::new()
+        } else {
+            super::run_journaled_delete(
+                &meta,
+                &delete_sql,
+                &[
+                    super::key_array(&key_type, chunk)?,
+                    super::produced_keys(&key_type, produced.keys)?,
+                ],
+            )?
+        };
+        touched.extend(super::touched(
+            &meta,
+            chunk,
+            before,
+            produced.written,
+            deleted,
+        ));
     }
 
     Ok(touched)

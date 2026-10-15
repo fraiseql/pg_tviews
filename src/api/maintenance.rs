@@ -27,15 +27,17 @@ fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
 }
 
 /// Rebuild TVIEWs from their backing views, dependencies first, and return each
-/// rebuilt entity with its row count, in rebuild order. With `only_empty` (the
-/// default) only the UNLOGGED TVIEWs PostgreSQL reset are filled: run it after a
-/// promotion, a crash restart or a restore. With `only_empty => false` every TVIEW
-/// is rebuilt.
+/// rebuilt entity with the rows it inserted (`rows_inserted`), in rebuild order.
+/// With `only_empty` (the default) only the UNLOGGED TVIEWs PostgreSQL reset are
+/// filled: run it after a promotion, a crash restart or a restore. With
+/// `only_empty => false` every TVIEW is rebuilt: every row of its view is
+/// inserted again.
 #[pg_extern]
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_rebuild_all(
     only_empty: default!(bool, true),
-) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, ErrorReport> {
+) -> Result<TableIterator<'static, (name!(entity, String), name!(rows_inserted, i64))>, ErrorReport>
+{
     crate::revision::check();
     Ok(TableIterator::new(crate::replication::rebuild_all(
         only_empty,

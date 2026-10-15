@@ -61,6 +61,27 @@ pub(crate) fn key_array(
     })
 }
 
+/// The identities an upsert's source produced ([`Produced::keys`], as text), as
+/// one array parameter for `key_cast(…, true)`.
+pub(crate) fn produced_keys(
+    key_type: &KeyType,
+    keys: Vec<String>,
+) -> crate::TViewResult<DatumWithOid<'static>> {
+    Ok(match key_type {
+        KeyType::Int => crate::utils::spi::int8_array(
+            keys.iter()
+                .map(|k| {
+                    k.parse().map_err(|_| crate::TViewError::InvalidInput {
+                        parameter: "key".to_string(),
+                        reason: format!("{k} is not a value of an integer identity"),
+                    })
+                })
+                .collect::<crate::TViewResult<_>>()?,
+        ),
+        KeyType::Text(_) => crate::utils::spi::text_array(keys),
+    })
+}
+
 /// One key as a parameter, for `key_cast(…, false)`.
 pub(crate) fn key_scalar(
     key_type: &KeyType,
@@ -295,59 +316,82 @@ pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
     )
 }
 
+/// What a refresh upsert's source produced, and what it wrote.
+#[derive(Debug, Default)]
+pub(crate) struct Produced {
+    /// The identities of the rows the source produced, as text (none: the keys
+    /// are gone from the view).
+    pub keys: Vec<String>,
+    /// The rows written.
+    pub written: Written,
+}
+
 /// Run `INSERT INTO qi_tv (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
 /// record the rows its no-op guard skipped and journal the
 /// rows it inserted or updated.
 ///
-/// The source runs once, in a CTE; the statement returns how many rows the source
-/// produced and the `pk_<entity>` of each row written, split into inserted
-/// (`xmax = 0`) and updated. The skipped count is added to `refresh_noop_skipped`.
-/// Returns how many source rows there were (0: the row is gone from the view), and
-/// the rows written.
+/// The source runs once, in a CTE; the statement returns the identities
+/// (`key_col`) of the rows the source produced and the `pk_<entity>` of each row
+/// written, split into inserted (`xmax = 0`) and updated. The skipped count is
+/// added to `refresh_noop_skipped`.
 pub(crate) fn run_counted_upsert(
-    entity: &str,
+    meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     col_list: &str,
     source_sql: &str,
     conflict: &str,
     args: &[DatumWithOid],
-) -> crate::TViewResult<(i64, Written)> {
+) -> crate::TViewResult<Produced> {
+    use crate::queue::affected::{Change, Recorded, record};
+    let entity = &meta.entity_name;
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
+    let qi_key = ident::quoted(&meta.identity.column);
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
-                     {conflict} RETURNING {qi_pk}::text AS k, xmax = 0 AS inserted) \
-         SELECT (SELECT count(*) FROM src), \
-                (SELECT array_agg(k) FROM written WHERE inserted), \
-                (SELECT array_agg(k) FROM written WHERE NOT inserted)"
+                     {conflict} RETURNING {qi_pk}::text AS k, {} AS i, xmax = 0 AS inserted) \
+         SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
+                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted)) \
+                 FROM written)",
+        meta.id_text(qi_tv)
     );
-    let (produced, inserted, updated) = Spi::connect_mut(|client| {
+    let (keys, rows) = Spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
-        Ok::<_, spi::Error>((
-            row.get::<i64>(1)?,
-            row.get::<Vec<String>>(2)?,
-            row.get::<Vec<String>>(3)?,
-        ))
+        Ok::<_, spi::Error>((row.get::<Vec<String>>(1)?, row.get::<pgrx::JsonB>(2)?))
     })?;
-    let inserted = inserted.unwrap_or_default();
-    let updated = updated.unwrap_or_default();
-    let written = (inserted.len() + updated.len()) as u64;
+    let keys = keys.unwrap_or_default();
+    let rows = match rows {
+        Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
+        _ => Vec::new(),
+    };
     crate::metrics::metrics_api::record_noop_skipped(
         entity,
-        produced.unwrap_or(0).unsigned_abs().saturating_sub(written),
+        keys.len().saturating_sub(rows.len()) as u64,
     );
-    let parse = |pks: &[String]| pks.iter().filter_map(|pk| pk.parse().ok()).collect();
-    let written = Written {
-        inserted: parse(&inserted),
-        updated: parse(&updated),
-    };
-    for pk in inserted {
-        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Inserted);
+    let mut written = Written::default();
+    for row in rows {
+        let (Some(pk), id, Some(inserted)) = (
+            row[0].as_str().map(str::to_string),
+            row[1].as_str().map(str::to_string),
+            row[2].as_bool(),
+        ) else {
+            continue;
+        };
+        if let Ok(value) = pk.parse() {
+            if inserted {
+                written.inserted.push(value);
+            } else {
+                written.updated.push(value);
+            }
+        }
+        let change = if inserted {
+            Change::Inserted
+        } else {
+            Change::Updated
+        };
+        record(Recorded::of(meta, pk, id, change));
     }
-    for pk in updated {
-        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Updated);
-    }
-    Ok((produced.unwrap_or(0), written))
+    Ok(Produced { keys, written })
 }
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before
@@ -418,14 +462,16 @@ pub(crate) fn lock_rows(
     Ok(pks)
 }
 
-/// Journal the rows a `DELETE … RETURNING pk_<entity>::text, id::text` removed,
-/// and return their `pk_<entity>`.
-pub(crate) fn run_journaled_delete(
-    entity: &str,
+/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text, id::text`
+/// ([`crate::catalog::TviewMeta::id_text`]), journal each row it returns as
+/// `change`, and return their `pk_<entity>`, as text.
+pub(crate) fn run_journaled(
+    meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
-) -> crate::TViewResult<Vec<i64>> {
-    let deleted = Spi::connect_mut(|client| {
+    change: crate::queue::affected::Change,
+) -> crate::TViewResult<Vec<String>> {
+    let written = Spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in crate::utils::spi::kept_update(client, sql, args)? {
             let pk: Option<String> = row.get(1)?;
@@ -436,14 +482,32 @@ pub(crate) fn run_journaled_delete(
         }
         Ok::<_, spi::Error>(out)
     })?;
-    let pks = deleted
-        .iter()
-        .filter_map(|(pk, _)| pk.parse().ok())
-        .collect();
-    for (pk, id) in deleted {
-        crate::queue::affected::record(entity, pk, crate::queue::affected::Change::Deleted(id));
-    }
-    Ok(pks)
+    Ok(written
+        .into_iter()
+        .map(|(pk, id)| {
+            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+                meta,
+                pk.clone(),
+                id,
+                change,
+            ));
+            pk
+        })
+        .collect())
+}
+
+/// [`run_journaled`] for a DELETE: the `pk_<entity>` of the rows it removed.
+pub(crate) fn run_journaled_delete(
+    meta: &crate::catalog::TviewMeta,
+    sql: &str,
+    args: &[DatumWithOid],
+) -> crate::TViewResult<Vec<i64>> {
+    Ok(
+        run_journaled(meta, sql, args, crate::queue::affected::Change::Deleted)?
+            .into_iter()
+            .filter_map(|pk| pk.parse().ok())
+            .collect(),
+    )
 }
 
 #[cfg(test)]

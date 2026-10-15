@@ -10,6 +10,8 @@
 //! | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations |
 //! | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
 //! | `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
+//! | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` (ADR 0231) |
+//! | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write (0 = no limit, ADR 0233) |
 //! | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks per relation before a transaction locks the relation (ADR 0207) |
 //! | `pg_tviews.audit_enabled` | bool | false | superuser | Audit logging (opt-in) |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | superuser, hidden | Cache dependency graphs |
@@ -64,6 +66,20 @@ impl UncascadedPolicy {
 static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
 static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000_000);
+static MAX_REFRESH_ROWS_GUC: GucSetting<i32> = GucSetting::<i32>::new(0);
+static PUBLISH_CHANGES_GUC: GucSetting<PublishChanges> =
+    GucSetting::<PublishChanges>::new(PublishChanges::Off);
+
+/// `pg_tviews.publish_changes`.
+#[derive(pgrx::PostgresGucEnum, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PublishChanges {
+    #[name = c"off"]
+    Off,
+    #[name = c"types"]
+    Types,
+    #[name = c"rows"]
+    Rows,
+}
 static LOCK_ESCALATION_THRESHOLD_GUC: GucSetting<i32> = GucSetting::<i32>::new(64);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
@@ -124,6 +140,27 @@ fn register_limits() {
         &MAX_QUEUE_SIZE_GUC,
         1,        // min
         i32::MAX, // max
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_enum_guc(
+        c"pg_tviews.publish_changes",
+        c"Publish the TVIEW rows each transaction changed, at commit, on channel tviews_changes.",
+        c"off: nothing. types: the changed GraphQL types. rows: the changed rows' ids, by type \
+          (types past a cap). See ADR 0231.",
+        &PUBLISH_CHANGES_GUC,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_refresh_rows",
+        c"Maximum TVIEW rows one statement's refresh may write (0: no limit).",
+        c"A statement whose refresh would write more fails with 54000 before writing them. \
+          Recomputed keys, patched rows, fan-out children and a full refresh's rows are \
+          counted; explicit rebuilds are not.",
+        &MAX_REFRESH_ROWS_GUC,
+        0,
+        i32::MAX,
         GucContext::Suset,
         GucFlags::default(),
     );
@@ -267,6 +304,26 @@ pub fn max_dependency_depth() -> usize {
 #[must_use]
 pub fn max_queue_size() -> usize {
     MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
+}
+
+/// What commit publishes (`pg_tviews.publish_changes`); `None` when off.
+#[must_use]
+pub fn publish_changes() -> Option<crate::queue::published::Publish> {
+    match PUBLISH_CHANGES_GUC.get() {
+        PublishChanges::Off => None,
+        PublishChanges::Types => Some(crate::queue::published::Publish::Types),
+        PublishChanges::Rows => Some(crate::queue::published::Publish::Rows),
+    }
+}
+
+/// TVIEW rows one statement's refresh may write (`pg_tviews.max_refresh_rows`);
+/// `None` when unlimited.
+#[must_use]
+pub fn max_refresh_rows() -> Option<u64> {
+    match MAX_REFRESH_ROWS_GUC.get() {
+        0 => None,
+        max => Some(u64::from(max.unsigned_abs())),
+    }
 }
 
 /// Value locks per relation and side before a transaction locks the relation

@@ -40,6 +40,30 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.29 against 0.1.0-beta.28
+
+Stock PostgreSQL 18.4 (Arch), release builds, data directory on NVMe with `fsync` on (a
+plain write costs ~0.5 ms here, mostly the commit), pgbench one client, 10 s per run, a
+fresh copy of the seeded database per run, three interleaved rounds, ms per write;
+`publish_changes` and `max_refresh_rows` at their defaults (off). "beta.28" is 0f010972.
+
+| write | beta.28 | beta.29 | | WAL B, beta.28 | WAL B, beta.29 |
+|---|---:|---:|---:|---:|---:|
+| `bio` | 0.574 / 0.556 / 0.569 | 0.574 / 0.560 / 0.550 | −0.9 % | 14,779 | 14,751 |
+| `title` | 0.552 / 0.561 / 0.542 | 0.553 / 0.543 / 0.560 | +0.1 % | 11,382 | 11,390 |
+| `username` | 0.858 / 0.860 / 0.869 | 0.857 / 0.860 / 0.865 | −0.2 % | 44,011 | 44,069 |
+| `comment_insert` | 0.526 / 0.537 / 0.528 | 0.540 / 0.518 / 0.517 | −1.0 % | 6,080 | 6,016 |
+| `bio_bulk100` | 6.722 / 6.736 / 6.748 | 6.882 / 6.912 / 6.927 | +2.5 % | 1,412,717 | 1,417,250 |
+| fan-out 1 (`fanout.sql`) | 0.513 / 0.521 / 0.529 | 0.534 / 0.525 / 0.533 | +1.9 % | 1,168 | 1,170 |
+| fan-out 1,000 | 4.038 / 4.044 / 4.061 | 4.139 / 4.142 / 4.121 | +2.1 % | 884,827 | 896,980 |
+| `username_two_hop` (`shapes.sql`) | 1.364 / 1.360 / 1.365 | 0.749 / 0.752 / 0.747 | −45 % | 28,754 | 22,067 |
+
+Writes that change a thousand TVIEW rows cost about 2 % more: each refresh write now
+returns the rows' public ids, so that `pg_tviews_flush_and_report()` and the change feed
+never look rows up again. A multi-key refresh of an aggregate TVIEW no longer evaluates its
+view a second time (fraiseql/pg_tviews#237, not in this table: 17× on 100 keys, 140× on
+2 keys of a 5,000-group aggregate).
+
 ## Where the time went
 
 Before, a `bio` write cost ~1.3 ms more than the plain write
@@ -59,8 +83,26 @@ from a statement trigger before any query when the TVIEW reads none of the chang
 columns, and keeps and shares its catalog caches for the backend. What remains is the
 work itself: the patch of the TVIEW rows, the value locks, and the trigger calls.
 
-Still recomputed: arrays of embedded rows (`jsonb_agg`) and embeds two joins away
-(fraiseql/pg_tviews#228).
+Embeds two joins away are patched in place since 0.1.0-beta.29; arrays of embedded
+rows (`jsonb_agg`) are still recomputed (fraiseql/pg_tviews#228, below).
+
+## Arrays of embedded rows and two-hop embeds
+
+`shapes.sh` measures the two shapes #228 names on the same seed, one TVIEW per database
+(`shapes.sql`): a username copied into `tv_post.comments[].author` (the 10 posts a user
+commented on) and into `tv_comment.post.author` (the 50 comments on a user's posts).
+`*.manual.sql` is the patch pg_tviews would generate, written by hand. Server-side time of
+200 username writes in one transaction (no round trips, no commit), stock PostgreSQL
+18.4, three rounds, ms per write:
+
+| shape | rows | recompute | pg_tviews patch | hand-written patch | plain write |
+|---|---:|---:|---:|---:|---:|
+| array of embedded rows | 10 posts | 0.53 / 0.55 / 0.56 | (recomputes) | 0.25 / 0.25 / 0.21 | 0.01-0.02 |
+| two hops | 50 comments | 1.01 / 1.03 / 1.02 | 0.47 / 0.47 / 0.47 | 0.28 / 0.25 / 0.24 | 0.01-0.04 |
+
+Two hops: 2.2× less work per write. Arrays: the hand-written patch is 2.4× cheaper than the
+recompute, and a pg_tviews patch path would add its own overhead (0.05-0.1 ms at this
+fan-out), leaving about 1.8×, so they stay recomputed.
 
 ## How pg_tviews plans its statements
 

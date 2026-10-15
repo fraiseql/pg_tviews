@@ -312,7 +312,7 @@ fn finish(
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
     // UNLOGGED table's rows can be trusted until a reset.
-    crate::lifecycle::validity::mark(table_oid)?;
+    crate::lifecycle::validity::mark(entity, table_oid)?;
     // Triggers on the tables it reads, as their lineage needs them: base tables,
     // and other TVIEWs' tables it maps like them.
     crate::dependency::install_triggers(
@@ -401,28 +401,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
     super::lock_entity(entity)?;
-    let (definition, schema_name) = Spi::connect(|client| {
-        let args = [crate::utils::spi::text(entity)];
-        client
-            .select(
-                &format!(
-                    "SELECT m.definition, n.nspname::text \
-                     FROM {} m \
-                     JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
-                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE m.entity = $1",
-                    crate::catalog::meta_table()
-                ),
-                None,
-                &args,
-            )?
-            .first()
-            .get_two::<String, String>()
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Read the definition of TVIEW {entity}"),
-        pg_error: e.to_string(),
-    })?;
+    let (definition, schema_name) = crate::catalog::row::definition_and_schema(entity)?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
         return Err(TViewError::TviewNotFound {
             name: entity.to_string(),

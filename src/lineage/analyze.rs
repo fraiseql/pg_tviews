@@ -178,6 +178,7 @@ impl Lineage {
                     table.kind = TableKind::AllKeys(kind);
                     table.sql = sql;
                     table.hop = None;
+                    table.via = None;
                     table.fanout = None;
                 }
                 None => self.tables.push(TableLineage {
@@ -192,6 +193,7 @@ impl Lineage {
                     lookups: Vec::new(),
                     index_hints: Vec::new(),
                     hop: None,
+                    via: None,
                     fanout: None,
                     root: false,
                     virtual_reads: Vec::new(),

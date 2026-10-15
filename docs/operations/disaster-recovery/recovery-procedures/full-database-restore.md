@@ -167,7 +167,9 @@ The installed library is a different release from the restored extension catalog
 
 ### A TVIEW is empty after the restore
 It is UNLOGGED and the restore did not carry its rows (physical restore, crash, or
-`--no-unlogged-table-data`). Run `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
+`--no-unlogged-table-data`). Run `SELECT * FROM tviews.pg_tviews_rebuild_all();`
+(the startup worker or the first write does it too). A default `pg_dump` carries
+the rows and their validity: nothing is refilled.
 
 ### A TVIEW is not in `tviews.registry`
 The restore did not include the rows of `tviews.pg_tview_meta`, for example a

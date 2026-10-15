@@ -74,6 +74,16 @@ SELECT must((SELECT (fanout->'fk_user'->>'max')::bigint BETWEEN 2000 AND 4000
              FROM pg_tviews_profile('post')), 'fan-out max near the 3000-post user');
 SELECT must(warned('post', 'p99 fan-out through fk_user%', 100), 'W6 above the threshold');
 SELECT must(NOT warned('post', 'p99 fan-out%', 100000), 'W6 below the threshold');
+-- #233: each fan-out projects what one parent change costs at its p99, from the
+-- measured model (ADR 0233): small inline documents, so the inline figures.
+SELECT must(coalesce((SELECT (f->>'p99_ms_per_write')::numeric > 0.15
+                    AND (f->>'p99_ms_per_write')::numeric
+                        = round(0.15 + (f->>'p99')::numeric * 0.0028, 2)
+                    AND (f->>'p99_wal_bytes_per_write')::bigint > (f->>'p99')::bigint * 10
+             FROM pg_tviews_profile('post'), LATERAL (SELECT fanout->'fk_user' AS f) x), false),
+            'fan-out projection: ' || (SELECT fanout::text FROM pg_tviews_profile('post')));
+SELECT must(warned('post', 'p99 fan-out through fk_user%ms%WAL per write%architects.md%', 100),
+            'W6 names the projected cost and the guide');
 
 -- ========================================================================
 -- W1 missing propagation index

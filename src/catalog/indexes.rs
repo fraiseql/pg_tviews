@@ -117,3 +117,17 @@ pub(crate) fn declare(entity: &str, indexes: serde_json::Value) -> TViewResult<(
         ],
     )
 }
+
+/// `WHERE` conditions over `pg_index i` / `pg_class ic` that select the indexes a
+/// user added to the TVIEW's table `$1`: every index that backs no constraint and
+/// that `pg_tviews` did not create.
+pub(crate) fn user_index_filter() -> String {
+    format!(
+        "i.indrelid = $1 \
+         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
+                         WHERE k.conindid = i.indexrelid) \
+         AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
+                                FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
+        crate::catalog::meta_table()
+    )
+}

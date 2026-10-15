@@ -33,7 +33,7 @@ existing ones are never renamed or retyped. Warning texts may be reworded.
 | `all_visible_fraction` | double precision | from `pg_visibility_map_summary()` when the `pg_visibility` extension is installed, else NULL |
 | `unused_indexes` | text[] | never-scanned indexes, excluding the primary key, unique indexes and propagation indexes |
 | `missing_propagation_indexes` | text[] | integer `fk_*` columns no index leads with |
-| `fanout` | jsonb | per `fk_*` column, estimated rows per key: `{"fk_user": {"p50", "p99", "max"}}`, from planner statistics (run ANALYZE) |
+| `fanout` | jsonb | per lookup column, estimated rows per key and what one parent change costs at the p99: `{"fk_user": {"p50", "p99", "max", "p99_ms_per_write", "p99_wal_bytes_per_write"}}`, from planner statistics (run ANALYZE) and the fan-out cost model ([ADR 0233](../adr/0233-fanout-cost-and-guard.md); documents over 2 KB per row use the TOASTed figures) |
 | `warnings` | text[] | advice, below |
 
 ## Warnings
@@ -45,7 +45,7 @@ existing ones are never renamed or retyped. Warning texts may be reworded.
 | a GIN index on `data` never scanned since the statistics reset | it costs every refresh for no reader |
 | fillfactor 100 and more updates than rows | refreshed rows cannot stay on their page (option `fillfactor`, default 85) |
 | TOAST data over 30% of the table | each refresh rewrites whole documents ([ADR 0094](../adr/0094-large-document-refresh.md)) |
-| estimated p99 fan-out of an `fk_*` over `fanout_warn` (default 1000) | one parent change refreshes that many rows |
+| estimated p99 fan-out of an `fk_*` over `fanout_warn` (default 1000) | one parent change refreshes that many rows, with the projected ms and WAL per write ([fan-out](../user-guides/architects.md#fan-out)) |
 | UNLOGGED | not readable on standbys, empty after promotion or a crash restart (option `logged`, [replication](../operations/replication.md)) |
 | dead tuples over 20% of the rows | autovacuum is behind |
 

@@ -25,31 +25,62 @@ use std::collections::{BTreeSet, HashMap};
 /// `invalidated_types` lists the types of the rows left out. With `reset` (the
 /// default) the next call reports only what changed after this one.
 ///
+/// With `types` (GraphQL type names, [`crate::catalog::typename`]), only rows of
+/// those types are reported and counted against `max_entities`; the others are
+/// left out and their types listed in `omitted_types` (#230). `reset` clears them
+/// too: they were seen, just not asked for.
+///
 /// # Errors
-/// Returns an error if the flush or a catalog/TVIEW read fails.
+/// `InvalidInput` (22023) for a type name no TVIEW has, before anything is
+/// flushed or reset; otherwise an error if the flush or a catalog/TVIEW read fails.
 pub(crate) fn flush_and_report(
     max_entities: i32,
     include_data: bool,
     reset: bool,
+    types: Option<Vec<String>>,
 ) -> TViewResult<Value> {
+    let wanted = types.map(requested_types).transpose()?;
     crate::flush::flush_refresh_queue()?;
     let (changes, overflow) = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
-    build_report(&changes, &overflow, limit, include_data)
+    build_report(&changes, &overflow, limit, include_data, wanted.as_ref())
 }
 
-/// `blog_post` → `BlogPost`.
-fn pascal_case(entity: &str) -> String {
-    entity
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
-        .collect()
+/// How many known type names an unknown-type error lists.
+const KNOWN_TYPES_LISTED: usize = 20;
+
+/// `types` as a set, once each is known to be a TVIEW's type name.
+fn requested_types(types: Vec<String>) -> TViewResult<BTreeSet<String>> {
+    let known: BTreeSet<String> = crate::catalog::row::typenames()?
+        .into_iter()
+        .map(|(_, typename)| typename)
+        .collect();
+    let unknown: Vec<&str> = types
+        .iter()
+        .filter(|t| !known.contains(*t))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        let listed: Vec<&str> = known
+            .iter()
+            .take(KNOWN_TYPES_LISTED)
+            .map(String::as_str)
+            .collect();
+        let more = if known.len() > KNOWN_TYPES_LISTED {
+            ", …"
+        } else {
+            ""
+        };
+        return Err(TViewError::InvalidInput {
+            parameter: "types".to_string(),
+            reason: format!(
+                "unknown type(s) {}; known: {}{more}",
+                unknown.join(", "),
+                listed.join(", ")
+            ),
+        });
+    }
+    Ok(types.into_iter().collect())
 }
 
 /// Per-entity type name and qualified TVIEW table.
@@ -60,50 +91,21 @@ struct EntityInfo {
 
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
-    Spi::connect(|client| {
-        let args = [crate::utils::spi::text_array(names)];
-        let mut out = HashMap::new();
-        for row in client.select(
-            &format!(
-                "SELECT m.entity, m.graphql_typename, \
-                        quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
-                 FROM {} m \
-                 JOIN pg_class c ON c.oid = m.table_oid \
-                 JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE m.entity = ANY($1)",
-                crate::catalog::meta_table()
-            ),
-            None,
-            &args,
-        )? {
-            let entity: String = row["entity"].value()?.unwrap_or_default();
-            let typename: Option<String> = row["graphql_typename"].value()?;
-            let table: String = row["tbl"].value()?.unwrap_or_default();
-            out.insert(
-                entity.clone(),
-                EntityInfo {
-                    typename: typename.unwrap_or_else(|| pascal_case(&entity)),
-                    table,
-                },
-            );
-        }
-        Ok::<_, spi::Error>(out)
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Load TVIEWs for the report".to_string(),
-        pg_error: e.to_string(),
-    })
+    Ok(crate::catalog::queries::typenames_and_tables(names)?
+        .into_iter()
+        .map(|(entity, typename, table)| (entity, EntityInfo { typename, table }))
+        .collect())
 }
 
-/// Current `id` and `data` of `entity`'s rows `pks`, keyed by pk text.
-fn current_rows(
+/// The current `data` of `entity`'s rows `pks`, keyed by pk text.
+fn current_data(
     entity: &str,
     table: &str,
     pks: Vec<String>,
-) -> TViewResult<HashMap<String, (Value, Value)>> {
+) -> TViewResult<HashMap<String, Value>> {
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
-        "SELECT t.{qi_pk}::text AS k, to_jsonb(t.*) AS r FROM {table} t \
+        "SELECT t.{qi_pk}::text AS k, t.data AS d FROM {table} t \
          WHERE t.{qi_pk}::text = ANY($1)"
     );
     Spi::connect(|client| {
@@ -111,11 +113,9 @@ fn current_rows(
         let mut out = HashMap::new();
         for row in client.select(&sql, None, &args)? {
             let key: Option<String> = row["k"].value()?;
-            let rec: Option<JsonB> = row["r"].value()?;
-            if let (Some(key), Some(JsonB(Value::Object(mut rec)))) = (key, rec) {
-                let id = rec.remove("id").unwrap_or(Value::Null);
-                let data = rec.remove("data").unwrap_or(Value::Null);
-                out.insert(key, (id, data));
+            let data: Option<JsonB> = row["d"].value()?;
+            if let Some(key) = key {
+                out.insert(key, data.map_or(Value::Null, |JsonB(d)| d));
             }
         }
         Ok::<_, spi::Error>(out)
@@ -131,6 +131,7 @@ fn build_report(
     overflow: &BTreeSet<String>,
     max_entities: usize,
     include_data: bool,
+    wanted: Option<&BTreeSet<String>>,
 ) -> TViewResult<Value> {
     let entities: BTreeSet<&str> = changes
         .iter()
@@ -139,13 +140,29 @@ fn build_report(
         .collect();
     let info = entity_info(&entities)?;
     let typename = |entity: &str| {
-        info.get(entity)
-            .map_or_else(|| pascal_case(entity), |i| i.typename.clone())
+        info.get(entity).map_or_else(
+            || crate::catalog::typename(entity, None),
+            |i| i.typename.clone(),
+        )
     };
+    let asked = |entity: &str| wanted.is_none_or(|w| w.contains(&typename(entity)));
+
+    // Rows of the types not asked for are left out before the limit applies.
+    let omitted: BTreeSet<String> = changes
+        .iter()
+        .map(|c| c.entity.as_str())
+        .chain(overflow.iter().map(String::as_str))
+        .filter(|entity| !asked(entity))
+        .map(typename)
+        .collect();
 
     // Flush order is not deterministic across runs, so report in a fixed order:
     // entity, then key (numerically when the keys are integers).
-    let mut changes = changes.to_vec();
+    let mut changes: Vec<NetChange> = changes
+        .iter()
+        .filter(|c| asked(&c.entity))
+        .cloned()
+        .collect();
     changes.sort_by(|a, b| {
         a.entity
             .cmp(&b.entity)
@@ -156,21 +173,22 @@ fn build_report(
     });
     let (reported, left_out) = changes.split_at(changes.len().min(max_entities));
 
-    // One read per entity for the rows still present.
-    let mut pks_by_entity: HashMap<&str, Vec<String>> = HashMap::new();
-    for c in reported {
-        if !matches!(c.change, Change::Deleted(_)) {
+    // The fresh documents, one read per entity, only when asked for: the ids
+    // come from the journal.
+    let mut rows: HashMap<(String, String), Value> = HashMap::new();
+    if include_data {
+        let mut pks_by_entity: HashMap<&str, Vec<String>> = HashMap::new();
+        for c in reported.iter().filter(|c| c.change != Change::Deleted) {
             pks_by_entity
                 .entry(&c.entity)
                 .or_default()
                 .push(c.pk.clone());
         }
-    }
-    let mut rows: HashMap<(String, String), (Value, Value)> = HashMap::new();
-    for (entity, pks) in pks_by_entity {
-        if let Some(i) = info.get(entity) {
-            for (pk, row) in current_rows(entity, &i.table, pks)? {
-                rows.insert((entity.to_string(), pk), row);
+        for (entity, pks) in pks_by_entity {
+            if let Some(i) = info.get(entity) {
+                for (pk, data) in current_data(entity, &i.table, pks)? {
+                    rows.insert((entity.to_string(), pk), data);
+                }
             }
         }
     }
@@ -180,53 +198,45 @@ fn build_report(
     for c in reported {
         let mut item = Map::new();
         item.insert("__typename".into(), Value::String(typename(&c.entity)));
-        match &c.change {
-            Change::Deleted(id) => {
-                item.insert("id".into(), id.clone().map_or(Value::Null, Value::String));
-                deleted.push(Value::Object(item));
-            }
-            change => {
-                // A row written then removed by a later, unjournaled path is skipped.
-                let Some((id, data)) = rows.remove(&(c.entity.clone(), c.pk.clone())) else {
-                    continue;
-                };
-                let op = if *change == Change::Inserted {
-                    "CREATED"
-                } else {
-                    "UPDATED"
-                };
-                item.insert("id".into(), id);
-                item.insert("operation".into(), Value::String(op.into()));
-                if include_data {
-                    item.insert("data".into(), data);
-                }
-                updated.push(Value::Object(item));
-            }
+        item.insert(
+            "id".into(),
+            c.id.as_ref()
+                .map_or(Value::Null, crate::catalog::RowId::value),
+        );
+        if c.change == Change::Deleted {
+            deleted.push(Value::Object(item));
+            continue;
         }
+        let op = if c.change == Change::Inserted {
+            "CREATED"
+        } else {
+            "UPDATED"
+        };
+        item.insert("operation".into(), Value::String(op.into()));
+        if include_data {
+            // A row written then removed by a later, unjournaled path is skipped.
+            let Some(data) = rows.remove(&(c.entity.clone(), c.pk.clone())) else {
+                continue;
+            };
+            item.insert("data".into(), data);
+        }
+        updated.push(Value::Object(item));
     }
 
     let invalidated: BTreeSet<String> = left_out
         .iter()
         .map(|c| c.entity.as_str())
-        .chain(overflow.iter().map(String::as_str))
+        .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
         .collect();
-    Ok(json!({
+    let mut report = json!({
         "updated": updated,
         "deleted": deleted,
         "truncated": !invalidated.is_empty(),
         "invalidated_types": invalidated.into_iter().collect::<Vec<_>>(),
-    }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pascal_case;
-
-    #[test]
-    fn pascal_case_joins_snake_parts() {
-        assert_eq!(pascal_case("post"), "Post");
-        assert_eq!(pascal_case("blog_post"), "BlogPost");
-        assert_eq!(pascal_case("order_line_item"), "OrderLineItem");
+    });
+    if wanted.is_some() {
+        report["omitted_types"] = json!(omitted.into_iter().collect::<Vec<_>>());
     }
+    Ok(report)
 }

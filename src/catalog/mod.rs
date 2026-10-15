@@ -1,6 +1,7 @@
 pub mod graph;
 pub(crate) mod indexes;
 pub mod plan;
+pub mod queries;
 pub mod reads;
 pub mod registered;
 pub mod resolve;
@@ -47,6 +48,52 @@ pub struct TviewMeta {
 
     /// The column that names the TVIEW's rows (ADR 0169).
     pub identity: RowIdentity,
+
+    /// The GraphQL type name of its rows ([`typename`]), shared by every change
+    /// the journal records.
+    pub typename: std::rc::Rc<str>,
+    /// How its table's `id` column, the rows' public id that the journal carries,
+    /// is written in JSON; `None` without such a column.
+    pub public_id: Option<PublicId>,
+}
+
+/// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicId {
+    /// An integer or numeric: its text is the JSON number.
+    Number,
+    /// Anything else (a uuid): a JSON string.
+    String,
+}
+
+/// A row's public id as the write that changed it returned it
+/// ([`TviewMeta::id_text`]): kept as text, written in JSON only where it is
+/// reported or published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowId {
+    pub text: String,
+    pub kind: PublicId,
+}
+
+impl RowId {
+    /// The id as JSON text, as `to_jsonb` writes it.
+    #[must_use]
+    pub fn json(&self) -> String {
+        match self.kind {
+            PublicId::Number => self.text.clone(),
+            PublicId::String => serde_json::Value::String(self.text.clone()).to_string(),
+        }
+    }
+
+    /// The id as a JSON value.
+    #[must_use]
+    pub fn value(&self) -> serde_json::Value {
+        match self.kind {
+            PublicId::Number => serde_json::from_str(&self.text)
+                .unwrap_or_else(|_| serde_json::Value::String(self.text.clone())),
+            PublicId::String => serde_json::Value::String(self.text.clone()),
+        }
+    }
 }
 
 /// The column that names a TVIEW's rows (ADR 0169), as the catalog records it.
@@ -116,7 +163,13 @@ pub(crate) fn meta_select() -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent \
+         time_dependent, graphql_typename, \
+         (SELECT a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
+                                'pg_catalog.int4'::pg_catalog.regtype, \
+                                'pg_catalog.int8'::pg_catalog.regtype, \
+                                'pg_catalog.numeric'::pg_catalog.regtype) \
+          FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
+          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number \
          FROM {}",
         crate::catalog::meta_table()
     )
@@ -149,6 +202,26 @@ fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
 }
 
 impl TviewMeta {
+    /// The rows' public id as text, read from `table`, its table's name or alias
+    /// in a statement; `NULL` for a TVIEW without an `id` column.
+    #[must_use]
+    pub fn id_text(&self, table: &str) -> String {
+        if self.public_id.is_some() {
+            format!("{table}.\"id\"::pg_catalog.text")
+        } else {
+            "NULL::pg_catalog.text".to_string()
+        }
+    }
+
+    /// The public id `text` a write returned ([`Self::id_text`]), with its kind.
+    #[must_use]
+    pub fn row_id(&self, text: String) -> RowId {
+        RowId {
+            text,
+            kind: self.public_id.unwrap_or(PublicId::String),
+        }
+    }
+
     /// How the values of the identity column are bound: the type of the column in
     /// the TVIEW's table (cached per backend).
     ///
@@ -373,6 +446,7 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
+        let typename = typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
         Ok(Self {
             tview_oid: row["tview_oid"]
                 .value()?
@@ -397,6 +471,14 @@ impl TviewMeta {
                 .unwrap_or(false),
             time_dependent: row["time_dependent"].value::<bool>()?.unwrap_or(false),
             identity,
+            typename,
+            public_id: row["public_id_number"].value::<bool>()?.map(|number| {
+                if number {
+                    PublicId::Number
+                } else {
+                    PublicId::String
+                }
+            }),
         })
     }
 }
@@ -425,12 +507,61 @@ impl Default for TviewMeta {
             time_refresh_external: false,
             time_dependent: false,
             identity: RowIdentity::unknown(),
+            typename: "".into(),
+            public_id: None,
         }
     }
 }
 
+/// The GraphQL type name of `entity`'s rows: the `typename` option when declared,
+/// else the entity in Pascal case (`blog_post` → `BlogPost`). The name
+/// `pg_tviews_flush_and_report()` emits and its `types` argument takes.
+#[must_use]
+pub fn typename(entity: &str, declared: Option<String>) -> String {
+    declared.unwrap_or_else(|| {
+        entity
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().collect::<String>() + chars.as_str()
+                })
+            })
+            .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_public_id_is_written_in_json_as_to_jsonb_writes_it() {
+        let meta = |public_id| super::TviewMeta {
+            public_id,
+            ..super::TviewMeta::default()
+        };
+        let number = meta(Some(super::PublicId::Number));
+        let string = meta(Some(super::PublicId::String));
+        assert_eq!(number.row_id("42".into()).json(), "42");
+        assert_eq!(number.row_id("42".into()).value(), serde_json::json!(42));
+        assert_eq!(string.row_id("8f0c".into()).json(), r#""8f0c""#);
+        assert_eq!(string.row_id(r#"a"b\c"#.into()).json(), r#""a\"b\\c""#);
+        assert_eq!(
+            string.row_id("8f0c".into()).value(),
+            serde_json::json!("8f0c")
+        );
+        assert_eq!(meta(None).id_text("t"), "NULL::pg_catalog.text");
+        assert_eq!(string.id_text("t"), r#"t."id"::pg_catalog.text"#);
+    }
+
+    #[test]
+    fn typename_is_the_option_or_the_pascal_case_of_the_entity() {
+        assert_eq!(super::typename("post", None), "Post");
+        assert_eq!(super::typename("blog_post", None), "BlogPost");
+        assert_eq!(super::typename("order_line_item", None), "OrderLineItem");
+        assert_eq!(super::typename("post", Some("Article".into())), "Article");
+    }
+
     use super::*;
 
     #[test]

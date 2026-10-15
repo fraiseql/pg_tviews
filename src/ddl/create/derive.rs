@@ -108,7 +108,8 @@ pub(crate) fn derive(
 }
 
 /// A `mapped` table one equality away from a column of the table holding the
-/// identity, which the TVIEW projects, gets a fan-out patch: an
+/// identity, which the TVIEW projects, or two through a table in between, gets a
+/// fan-out patch: an
 /// UPDATE of its columns copied into `data` is written into every TVIEW row with
 /// that column's value. Not for a DISTINCT ON TVIEW, whose row shows its group's
 /// winner, nor for the virtual generated columns a trigger sees as NULL.
@@ -137,6 +138,7 @@ pub(crate) fn add_fanout_patches(
         let fanout = crate::catalog::plan::FanoutPatch {
             lookup_col: lookup_col.clone(),
             fields,
+            via: table.via.clone(),
         };
         if let Some(entry) = entries
             .iter_mut()

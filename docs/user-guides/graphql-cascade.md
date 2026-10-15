@@ -71,7 +71,8 @@ The `cascade` part has this shape:
 tviews.pg_tviews_flush_and_report(
     max_entities integer DEFAULT 500,  -- entries reported before truncating
     include_data boolean DEFAULT true, -- include each row's fresh data
-    reset        boolean DEFAULT true  -- the next call reports only later changes
+    reset        boolean DEFAULT true, -- the next call reports only later changes
+    types        text[]  DEFAULT NULL  -- report only these types (NULL: all)
 ) RETURNS jsonb
 ```
 
@@ -86,6 +87,9 @@ tviews.pg_tviews_flush_and_report(
 - **`operation`** is `CREATED` for a row first inserted in this span, `UPDATED`
   otherwise. A row inserted and then deleted in the same span is not reported; a row
   deleted and then re-inserted is `UPDATED`.
+- **Rebuilds**: a TVIEW rebuilt whole in the transaction (`pg_tviews_refresh()`, the
+  catch-up at the end of a suspension) lists its type in `invalidated_types`: its rows
+  are not reported one by one.
 - **Order** is by entity, then primary key, so truncation is deterministic. With more
   than `max_entities` entries, the rest are left out, `truncated` is true and
   `invalidated_types` lists their types, so a client can invalidate those types instead.
@@ -96,6 +100,13 @@ tviews.pg_tviews_flush_and_report(
   with the `typename` option, declared with the TVIEW (`pg_tviews_create(…, options)`
   or `pg_tviews_create_or_replace(…, options)`). The options passed are the whole
   declaration: a replace that leaves `typename` out puts the default back.
+- **Only the types asked for**: `types` names the GraphQL types the response selects
+  (`__typename` values). Rows of other types are left out before `max_entities` applies,
+  and their types are listed in `omitted_types` (present only when `types` is given),
+  apart from `invalidated_types`. They were still refreshed, and `reset` clears them too.
+  `'{}'` reports nothing and omits every changed type. A name no TVIEW has fails with
+  `22023`, before anything is reported or reset. `types` filters the report only, never
+  the [change feed](change-feed.md): a cache elsewhere needs every change.
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
   kept per transaction, not counting reported ones (kept only until the
   subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
@@ -111,7 +122,17 @@ BEGIN;
 UPDATE tb_user SET name = 'Alicia' WHERE pk_user = 1;  -- refreshes tv_user and tv_post
 SELECT jsonb_pretty(tviews.pg_tviews_flush_and_report(include_data => false));
 COMMIT;
+
+BEGIN;
+UPDATE tb_user SET name = 'Alice' WHERE pk_user = 1;
+-- The mutation selects authors only: Post rows are left out, "omitted_types": ["Post"].
+SELECT jsonb_pretty(tviews.pg_tviews_flush_and_report(types => '{Author}'));
+COMMIT;
 ```
 
 The report describes what this transaction wrote. Other transactions committing in
 between can change the same rows before yours commits.
+
+The report is for the mutation's own response, inside its transaction. Caches in other
+processes learn what committed transactions changed from the
+[change feed](change-feed.md) (`pg_tviews.publish_changes`).

@@ -568,3 +568,99 @@ fn an_all_keys_table_keeps_the_mapping_of_its_traceable_reads() {
 
 mod identity;
 mod read_sets;
+
+/// `tb_comment c JOIN tb_post p ON p.pk_post = c.fk_post JOIN tb_user u ON
+/// u.pk_user = p.fk_author`, `data` copying `u.username` at `post.author.username`
+/// and the TVIEW projecting `c.fk_post` (#228). With `org`, `tb_user` joins
+/// `tb_org g ON g.pk_org = u.fk_org` and `data` copies `g.name` too.
+fn comment_thread(org: bool) -> QueryGraph {
+    let mut occurrences = vec![occ(1, "tb_comment"), occ(2, "tb_post"), occ(3, "tb_user")];
+    // Distinct attnums on tb_post, so that the lookup's columns can be told apart.
+    let at = |occ: usize, name: &str, attnum: i16| Column {
+        attnum,
+        ..col(occ, name)
+    };
+    let mut conjuncts = vec![
+        eq(at(1, "pk_post", 1), col(0, "fk_post"), true, true),
+        eq(col(2, "pk_user"), at(1, "fk_author", 4), true, true),
+    ];
+    let field = |occ: usize, relid: u32, name: &str, path: &[&str]| DataField {
+        path: path.iter().map(|p| (*p).to_string()).collect(),
+        column: col(occ, name),
+        relid,
+        root: false,
+        only_in_data: true,
+    };
+    let mut fields = vec![field(2, 3, "username", &["post", "author", "username"])];
+    if org {
+        occurrences.push(occ(4, "tb_org"));
+        conjuncts.push(eq(col(3, "pk_org"), col(2, "fk_org"), true, true));
+        fields.push(field(3, 4, "name", &["post", "author", "org"]));
+    }
+    let mut g = graph(occurrences, conjuncts, col(0, "pk_comment"));
+    g.outputs = vec![
+        ("pk_comment".to_string(), Some(col(0, "pk_comment"))),
+        ("fk_post".to_string(), Some(col(0, "fk_post"))),
+    ];
+    g.data = Some(DataShape {
+        fields,
+        embeds: vec![],
+        opaque: false,
+    });
+    g
+}
+
+fn table_of<'a>(tables: &'a [TableLineage], relname: &str) -> &'a TableLineage {
+    tables
+        .iter()
+        .find(|t| t.relname == relname)
+        .expect("the table is read")
+}
+
+#[test]
+fn a_column_two_joins_away_fans_out_through_the_table_between() {
+    let tables = comment_thread(false).tables(NONE);
+    let user = table_of(&tables, "tb_user");
+    assert_eq!(user.kind, TableKind::Mapped);
+    assert_eq!(user.hop, Some(("pk_user".into(), "fk_post".into())));
+    assert_eq!(
+        user.fanout,
+        Some((
+            "fk_post".into(),
+            vec![(
+                "username".into(),
+                vec!["post".into(), "author".into(), "username".into()]
+            )]
+        ))
+    );
+    assert_eq!(
+        user.via.as_deref(),
+        Some(
+            "SELECT o.{c:2:4}::pg_catalog.text, o.{c:2:1}::pg_catalog.text \
+             FROM {r:2} o WHERE o.{c:2:4} = ANY ($1::pg_catalog.int8[])"
+        )
+    );
+    // One join away, the post's own columns fan out as before, by fk_post.
+    let post = table_of(&tables, "tb_post");
+    assert_eq!(post.hop, Some(("pk_post".into(), "fk_post".into())));
+    assert_eq!(post.via, None);
+}
+
+#[test]
+fn three_joins_away_are_recomputed() {
+    let tables = comment_thread(true).tables(NONE);
+    let org = table_of(&tables, "tb_org");
+    assert_eq!(org.kind, TableKind::Mapped);
+    assert_eq!((&org.hop, &org.fanout, &org.via), (&None, &None, &None));
+    // The user, two joins away, still fans out.
+    assert!(table_of(&tables, "tb_user").fanout.is_some());
+}
+
+#[test]
+fn a_table_between_inside_a_subquery_is_no_hop() {
+    let mut g = comment_thread(false);
+    g.occurrences[1].in_sublink = true;
+    let tables = g.tables(NONE);
+    let user = table_of(&tables, "tb_user");
+    assert_eq!((&user.hop, &user.fanout, &user.via), (&None, &None, &None));
+}
