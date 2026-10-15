@@ -68,7 +68,8 @@ SELECT must(
      FROM pg_attribute WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0)
     = 'schema text, name text, entity text, query text, options jsonb, view regclass, '
       'identity text[], base_tables regclass[], cascade_kinds jsonb, uncascaded_tables regclass[], '
-      'time_dependent boolean, managed_indexes regclass[], needs_reregister boolean',
+      'time_dependent boolean, managed_indexes regclass[], needs_reregister boolean, '
+      'references jsonb, typename text',
     'tviews.registry columns differ from contract 2');
 
 -- 2. One row per TVIEW, with catalog truth.

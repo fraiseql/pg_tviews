@@ -34,6 +34,8 @@ Every role can read all three.
 | `time_dependent` | `boolean` | the definition reads the current time (`CURRENT_DATE`, `now()`…): its rows change with no write (below) |
 | `managed_indexes` | `regclass[]` | the indexes pg_tviews created on the table and still owns, sorted by name, not counting one that backs a constraint (the primary key); NULL when the table is gone (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it |
+| `references` | `jsonb` | each output column that holds another TVIEW's key, proven by a `FOREIGN KEY` → that TVIEW and how to read by it (below); `{}` for none. `references` is a reserved word: qualify it (`r.references`) or quote it |
+| `typename` | `text` | the GraphQL type name of the rows, as `pg_tviews_flush_and_report()` and the change feed name them: the `typename` option, else the PascalCase of the entity. A collection key is `<child typename>.<reference column>` |
 
 Columns removed in contract version 2, now `options` keys:
 
@@ -124,6 +126,40 @@ that name (same method and columns or expressions, nothing else): what
 when the upgrade re-registers it: the indexes that are exactly those pg_tviews
 creates, under their names. The upgrade warns about any other index under such a
 name, which stays the user's: rename it, or a dump will not restore it.
+
+**`references`** are the relationships a reader can compose by: the comments of a
+post are the `tv_comment` rows whose `fk_post` holds the post's `pk_post`.
+
+```json
+{"fk_post":   {"entity": "post", "column": "pk_post", "unique": false, "nullable": false,
+               "index": "public.idx_tv_comment_fk_post_pk_comment", "order": ["pk_comment"]},
+ "fk_author": {"entity": "user", "column": "pk_user", "unique": false, "nullable": false,
+               "index": "public.idx_tv_comment_fk_author_pk_comment", "order": ["pk_comment"]}}
+```
+
+| key | meaning |
+|---|---|
+| `entity` | the referenced TVIEW |
+| `column` | its identity column, which the reference column holds |
+| `unique` | a unique index or constraint covers the base column: one row at most per parent (one-to-one) |
+| `nullable` | the base column is not `NOT NULL` |
+| `index` | the index leading with the column, schema-qualified (the managed `(<column>, <identity>)` index); `null` when it was dropped |
+| `order` | this TVIEW's identity: the order of the index after the column |
+
+A column is a reference when it is traced to a column of the TVIEW's own root table (the
+table holding its identity, not a joined one) that carries a single-column `FOREIGN KEY`
+to the column the other TVIEW's identity is traced to. Names are never matched: a
+role-named key (`fk_author` → `tb_user`) is found, and a column without a constraint is
+not a reference, whatever its name. A composite foreign key, a TVIEW whose rows come
+from a `UNION`, and a referenced TVIEW of a `UNION` have none. The referenced TVIEW is
+resolved when the registry is read, so one registered after this TVIEW is found and a
+dropped one disappears. A reference names one TVIEW: when two are named by the same key
+(`tv_user` and `tv_user_card` both over `tb_user.pk_user`), the one whose identity column
+has the referenced column's name (`pk_user`, the convention's), else the first by entity;
+the change feed's collection keys name the same one. Every column with a single-column
+foreign key gets a managed index, whatever its name, also one to a table no TVIEW reads
+yet, so a parent registered later finds it indexed. The reverse direction (a post has many
+comments) is not listed: invert the references.
 
 **`cascade_kinds`** is read from the backing view's query tree when the TVIEW is
 registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's

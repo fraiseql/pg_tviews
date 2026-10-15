@@ -128,11 +128,13 @@ impl MetaRow<'_> {
     }
 }
 
-/// Every column `plan` looks up an embedded TVIEW's rows by.
+/// Every column `plan` looks up an embedded TVIEW's rows by, and its references,
+/// which a reader composes by: each gets an index leading with it.
 fn embed_lookups(plan: &TviewPlan) -> Vec<String> {
     plan.embeds
         .iter()
         .flat_map(|e| e.lookups.iter().cloned())
+        .chain(plan.references.iter().map(|r| r.column.clone()))
         .collect()
 }
 

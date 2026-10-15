@@ -146,11 +146,11 @@ BEGIN
     END IF;
 
     -- dry_run reports the DDL and creates nothing: tv_post.fk_user and
-    -- tv_comment.fk_post hold an embedded TVIEW's key; tv_comment.fk_user holds
-    -- none, so no lookup goes through it.
+    -- tv_comment.fk_post hold an embedded TVIEW's key; tv_comment.fk_user is a
+    -- reference (its FOREIGN KEY to tb_user), which a reader composes by.
     SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes(NULL, true);
-    IF n <> 2 THEN
-        RAISE EXCEPTION 'FAIL #71: dry run reported % statements, expected 2', n;
+    IF n <> 3 THEN
+        RAISE EXCEPTION 'FAIL #71: dry run reported % statements, expected 3', n;
     END IF;
     IF pg_temp.has_fk_pk_index('tv_post', 'fk_user', 'pk_post') THEN
         RAISE EXCEPTION 'FAIL #71: dry run created an index';

@@ -1,3 +1,4 @@
+pub mod collections;
 pub mod graph;
 pub(crate) mod indexes;
 pub mod plan;
@@ -7,6 +8,7 @@ pub mod registered;
 pub mod resolve;
 pub mod row;
 
+pub use collections::Collection;
 pub use graph::EntityDepGraph;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -55,6 +57,9 @@ pub struct TviewMeta {
     /// How its table's `id` column, the rows' public id that the journal carries,
     /// is written in JSON; `None` without such a column.
     pub public_id: Option<PublicId>,
+    /// Its references to other TVIEWs, as the change feed names the collections
+    /// its rows belong to.
+    pub collections: Vec<Rc<Collection>>,
 }
 
 /// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
@@ -156,7 +161,17 @@ impl RowIdentity {
 /// Shared SELECT column list + FROM used by every `TviewMeta` loader. Callers
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
 /// out of sync as catalog columns are added.
+///
+/// Inside the extension's own script (an upgrade re-registering TVIEWs between two
+/// scripts) the catalog can be an earlier release's, without the view the
+/// collections are read from: they are left out, and nothing loaded then is
+/// cached ([`remember`]).
 pub(crate) fn meta_select() -> String {
+    let collections = if crate::revision::in_own_script() {
+        "NULL::pg_catalog.jsonb AS collections".to_string()
+    } else {
+        collections::collections_sql()
+    };
     format!(
         "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, plan, \
          uncascaded_policy, identity, \
@@ -169,7 +184,8 @@ pub(crate) fn meta_select() -> String {
                                 'pg_catalog.int8'::pg_catalog.regtype, \
                                 'pg_catalog.numeric'::pg_catalog.regtype) \
           FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
-          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number \
+          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number, \
+         {collections} \
          FROM {}",
         crate::catalog::meta_table()
     )
@@ -190,12 +206,23 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     meta
 }
 
-/// Count the catalog query just made and cache its result.
+/// Count the catalog query just made and cache its result, unless the extension's
+/// own script is running ([`meta_select`]).
 fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
     crate::metrics::metrics_api::record_catalog_lookup();
     let loaded = loaded.map(Rc::new);
+    if crate::revision::in_own_script() {
+        return loaded;
+    }
     if let Some(meta) = &loaded {
         crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
+        // A parent's `id` column is part of how the collections are named.
+        let parents: Vec<Oid> = meta
+            .collections
+            .iter()
+            .map(|c| c.parent_table_oid)
+            .collect();
+        crate::cache::watch(&parents);
         crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
     }
     loaded
@@ -446,7 +473,15 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
-        let typename = typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
+        let typename: Rc<str> =
+            typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
+        let collections = collections::decode(
+            &typename,
+            row["collections"]
+                .value::<pgrx::JsonB>()?
+                .map(|j| j.0)
+                .as_ref(),
+        );
         Ok(Self {
             tview_oid: row["tview_oid"]
                 .value()?
@@ -479,6 +514,7 @@ impl TviewMeta {
                     PublicId::String
                 }
             }),
+            collections,
         })
     }
 }
@@ -509,13 +545,16 @@ impl Default for TviewMeta {
             identity: RowIdentity::unknown(),
             typename: "".into(),
             public_id: None,
+            collections: Vec::new(),
         }
     }
 }
 
 /// The GraphQL type name of `entity`'s rows: the `typename` option when declared,
-/// else the entity in Pascal case (`blog_post` → `BlogPost`). The name
-/// `pg_tviews_flush_and_report()` emits and its `types` argument takes.
+/// else the entity in Pascal case (`blog_post` → `BlogPost`), capitalising ASCII letters
+/// only (GraphQL names are ASCII), so `tviews.registry.typename` derives the same name in
+/// SQL whatever the database's locale. The name `pg_tviews_flush_and_report()` emits and
+/// its `types` argument takes.
 #[must_use]
 pub fn typename(entity: &str, declared: Option<String>) -> String {
     declared.unwrap_or_else(|| {
@@ -525,7 +564,7 @@ pub fn typename(entity: &str, declared: Option<String>) -> String {
             .map(|part| {
                 let mut chars = part.chars();
                 chars.next().map_or_else(String::new, |first| {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
                 })
             })
             .collect()
@@ -560,6 +599,16 @@ mod tests {
         assert_eq!(super::typename("blog_post", None), "BlogPost");
         assert_eq!(super::typename("order_line_item", None), "OrderLineItem");
         assert_eq!(super::typename("post", Some("Article".into())), "Article");
+    }
+
+    #[test]
+    fn typename_capitalises_ascii_letters_only_whatever_the_locale() {
+        // GraphQL names are ASCII; tviews.registry.typename derives the same name in SQL,
+        // which must not depend on the database's ctype (Turkish dotted I, German sharp s).
+        assert_eq!(super::typename("item", None), "Item");
+        assert_eq!(super::typename("été", None), "été");
+        assert_eq!(super::typename("ßeta_x", None), "ßetaX");
+        assert_eq!(super::typename("_post__line_", None), "PostLine");
     }
 
     use super::*;

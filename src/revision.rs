@@ -15,7 +15,7 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 7;
+pub const CATALOG_REVISION: i32 = 8;
 
 thread_local! {
     /// Whether this backend already found a matching catalog. A mismatch is not
@@ -148,8 +148,9 @@ pub fn installed() -> Installed {
     }
 }
 
-/// Whether the `pg_tviews` install or upgrade script is running.
-fn in_own_script() -> bool {
+/// Whether the `pg_tviews` install or upgrade script is running: the catalog may be
+/// one of an earlier release, between two upgrade scripts.
+pub(crate) fn in_own_script() -> bool {
     // SAFETY: plain backend globals, read on the backend's own thread.
     unsafe {
         pg_sys::creating_extension

@@ -159,13 +159,13 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
     );
     let pk = ident::quoted(&format!("pk_{entity}"));
 
-    let id = meta.id_text("t");
+    let returned = meta.returned("t", false);
     let mut changed = crate::refresh::run_journaled(
         meta,
         &format!(
             "DELETE FROM {qualified_tv} t \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
-             RETURNING t.{pk}::text, {id}"
+             RETURNING t.{pk}::text, {returned}"
         ),
         &[],
         Change::Deleted,
@@ -203,8 +203,9 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
                 "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
                  FROM {qualified_view} v \
                  WHERE {same_key} AND {} \
-                 RETURNING t.{pk}::text, {id}",
-                crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh)
+                 RETURNING t.{pk}::text, {}",
+                crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh),
+                meta.returned("t", true)
             ),
             &[],
             Change::Updated,
@@ -216,7 +217,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             "INSERT INTO {qualified_tv} AS t ({columns}) \
              SELECT {columns} FROM {qualified_view} v \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
-             RETURNING t.{pk}::text, {id}",
+             RETURNING t.{pk}::text, {returned}",
             columns = list(&all_columns, "")
         ),
         &[],

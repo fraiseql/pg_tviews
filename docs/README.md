@@ -57,6 +57,8 @@ Role-specific guidance:
 - **[For Developers](user-guides/developers.md)** - Application integration and API usage
 - **[For Operators](user-guides/operators.md)** - Production deployment and operations
 - **[For Architects](user-guides/architects.md)** - CQRS design patterns and architecture decisions
+- **[Embed or Compose](user-guides/embed-or-compose.md)** - Embed a list in the parent's document, or compose it at read time
+- **[Change Feed](user-guides/change-feed.md)** - Cache invalidation across processes (`tviews_changes`)
 
 ### Reference Documentation
 Technical reference materials:

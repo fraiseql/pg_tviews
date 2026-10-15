@@ -159,7 +159,7 @@ catalog rows older than ADR 0169, `pg_tviews.metrics_enabled`,
 
 ### As implemented
 
-The stored document (`pg_tview_meta.plan`, `src/catalog/plan.rs`, version 1) keeps
+The stored document (`pg_tview_meta.plan`, `src/catalog/plan.rs`, version 2) keeps
 what the run-time paths read, not the whole analysis above:
 
 - `embeds`: per embedded TVIEW, its `lookups` (every output column equal to the
@@ -169,7 +169,14 @@ what the run-time paths read, not the whole analysis above:
   `mapped`, `propagated`, `all_keys`; the mapping query of a `mapped` table, its
   fan-out patch, the TVIEW it belongs to when it is another TVIEW's table);
 - `paths`: the tables whose changed row holds a key (the row trigger's input);
-- `set_operation`: the rows come from a UNION/INTERSECT/EXCEPT.
+- `set_operation`: the rows come from a UNION/INTERSECT/EXCEPT;
+- `references` (version 2): the output columns traced to a column of the root table
+  that carries a single-column `FOREIGN KEY`, with the referenced table and column, the
+  constraint, and whether the column is unique and nullable. They are what a reader
+  composes by: `tviews.registry.references` publishes those whose referenced column is
+  the source of another TVIEW's identity, and each gets a managed index. A version 1
+  plan reads as one without references (upgrade scripts of earlier releases write
+  `{"version": 1}` before they re-derive).
 
 The output columns and the identity are not in the plan: the backing view and
 `pg_tview_meta.identity` hold them. A plan that does not decode, or names a mapped

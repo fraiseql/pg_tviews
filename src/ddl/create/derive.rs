@@ -98,6 +98,7 @@ pub(crate) fn derive(
         direct: lineage.direct_fields(),
         tables,
         paths,
+        references: lineage.references.clone(),
     };
     Ok(Derivation {
         lineage,

@@ -549,6 +549,7 @@ fn a_function_read_is_all_keys_and_keeps_the_traced_reads() {
         tview_reads: BTreeMap::new(),
         keyed_otherwise: BTreeSet::new(),
         data: None,
+        references: vec![],
     };
     let read = |relid: u32| FunctionRead {
         function: "public.f()".into(),

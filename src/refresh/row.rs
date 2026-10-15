@@ -42,7 +42,7 @@ use crate::utils::{ident, qualified_relname_from_oid};
 pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Touched> {
     let keys = std::slice::from_ref(key);
     // Wait for a concurrent writer of this row before reading the view.
-    let before = super::lock_rows(
+    let locked = super::lock_rows(
         meta,
         &qualified_relname_from_oid(meta.tview_oid)?,
         keys,
@@ -64,7 +64,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
     crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
-    let produced = write_row(meta, key)?;
+    let produced = write_row(meta, key, locked.old.as_ref())?;
     let deleted = if produced.keys.is_empty() {
         delete_tview_row(meta, key)?
     } else {
@@ -73,7 +73,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     Ok(super::touched(
         meta,
         keys,
-        before,
+        locked.pks,
         produced.written,
         deleted,
     ))
@@ -93,7 +93,7 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::text, {}",
         super::key_cast(&key_type, "$1", false),
-        meta.id_text(&qi_tv)
+        meta.returned(&qi_tv, false)
     );
     super::run_journaled_delete(meta, &sql, &[super::key_scalar(&key_type, key)?])
 }
@@ -108,7 +108,11 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
 ///
 /// # Errors
 /// What the upsert returns.
-fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Produced> {
+fn write_row(
+    meta: &TviewMeta,
+    key: &KeyValue,
+    old: Option<&crate::catalog::collections::OldKeys>,
+) -> crate::TViewResult<super::Produced> {
     if jsonb_delta_schema().is_none() {
         crate::utils::log_once(
             crate::jsonb_delta::JSONB_DELTA_MISSING,
@@ -146,5 +150,6 @@ fn write_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Prod
             super::upsert_conflict_action(&qi_tv, &col_names, key_col)
         ),
         &[super::key_scalar(&key_type, key)?],
+        old,
     )
 }
