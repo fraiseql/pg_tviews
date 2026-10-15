@@ -25,7 +25,6 @@ pub(crate) mod uncascaded;
 pub use drop::drop_tview;
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 
 /// Schema and name of the backing view of the TVIEW whose table is
@@ -47,20 +46,7 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
 /// Returns an error if the catalog cannot be read, the name is taken, or the
 /// rename fails.
 pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
-    let args = [crate::utils::spi::oid(table)];
-    let view = Spi::get_one_with_args::<pg_sys::Oid>(
-        &format!(
-            "SELECT (SELECT m.view_oid::pg_catalog.oid FROM {} m \
-                     WHERE m.table_oid::pg_catalog.oid = $1)",
-            crate::utils::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Find the TVIEW of a moved table".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    let Some(view) = view else {
+    let Some(view) = crate::catalog::row::view_of_table(table)? else {
         return Ok(());
     };
     let (schema, name) = relation_name(table)?;
@@ -71,8 +57,8 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
     }
     let qualified = format!(
         "{}.{}",
-        crate::utils::quote_identifier(&view_schema),
-        crate::utils::quote_identifier(&wanted)
+        crate::utils::ident::quoted(&view_schema),
+        crate::utils::ident::quoted(&wanted)
     );
     let taken = Spi::get_one_with_args::<bool>(
         "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
@@ -95,7 +81,7 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
     let sql = format!(
         "ALTER VIEW {} RENAME TO {}",
         crate::utils::qualified_relname_from_oid(view)?,
-        crate::utils::quote_identifier(&wanted)
+        crate::utils::ident::quoted(&wanted)
     );
     {
         let _owner = crate::owner::AsOwner::of_table(view)?;
@@ -213,177 +199,3 @@ pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
         pg_error: e.to_string(),
     })
 }
-
-/// SQL function: create a TVIEW. An existing one is an error; use
-/// [`pg_tviews_create_or_replace`] to change it.
-///
-/// Usage: `SELECT tviews.pg_tviews_create('tv_post', 'SELECT pk_post, id, … AS data FROM tb_post');`
-#[pg_extern]
-fn pg_tviews_create(tview_name: &str, select_sql: &str) -> Result<String, ErrorReport> {
-    crate::revision::check();
-    create_reported(tview_name, select_sql, replace::Options::default())
-}
-
-/// SQL function: create an aggregate TVIEW.
-///
-/// Usage:
-/// `SELECT pg_tviews_create_aggregate('tv_user_summary', $$ SELECT o.fk_user AS
-///  pk_user_summary, u.id, jsonb_build_object('orders', count(*)) AS data FROM tb_order o
-///  JOIN tb_user u ON u.pk_user = o.fk_user GROUP BY o.fk_user, u.id $$,
-///  '{"tb_order": "fk_user", "tb_user": "pk_user"}');`
-///
-/// `group_keys` maps each source table to the column whose value is the group key.
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires JsonB by value
-fn pg_tviews_create_aggregate(
-    tview_name: &str,
-    select_sql: &str,
-    group_keys: pgrx::JsonB,
-) -> Result<String, ErrorReport> {
-    crate::revision::check();
-    let keys: aggregate::GroupKeys = serde_json::from_value(group_keys.0)
-        .ok()
-        .filter(|keys: &aggregate::GroupKeys| !keys.is_empty())
-        .ok_or_else(|| TViewError::InvalidInput {
-            parameter: "group_keys".to_string(),
-            reason: "a JSON object mapping source table names to column names is expected, \
-                     e.g. '{\"tb_order\": \"fk_user\"}'"
-                .to_string(),
-        })?;
-    create_reported(tview_name, select_sql, replace::Options::aggregate(keys))
-}
-
-/// `pg_tviews_create[_aggregate]()`: create-only, reported as text.
-fn create_reported(
-    tview_name: &str,
-    select_sql: &str,
-    options: replace::Options,
-) -> Result<String, ErrorReport> {
-    match replace::create_only(tview_name, select_sql, options, false) {
-        Ok(replace::Created::Rows(_) | replace::Created::Skipped) => {
-            Ok(format!("TVIEW '{tview_name}' created successfully"))
-        }
-        Ok(replace::Created::Exists(name)) => Err(TViewError::RelationExists { name }.into()),
-        Err(e) => Err(e.report_in("Failed to create TVIEW")),
-    }
-}
-
-/// Internal: called by the `sql_drop` event trigger for a TVIEW whose backing view
-/// or table was dropped as a dependent (see [`drop::handle_dropped`]).
-#[pg_extern]
-fn pg_tviews_handle_dropped(entity: &str) -> Result<(), ErrorReport> {
-    drop::handle_dropped(entity)
-        .map_err(|e| e.report_in(&format!("Failed to deregister TVIEW '{entity}'")))
-}
-
-/// SQL function: create a TVIEW, or bring an existing one to `query` and
-/// `options` with the smallest change. Returns `created`,
-/// `unchanged`, `altered` or `rebuilt`.
-///
-/// Usage: `SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$SELECT …$$,
-/// options => '{"logged": true, "fillfactor": 85}');`
-#[pg_extern]
-#[allow(clippy::needless_pass_by_value)] // Reason: pgrx #[pg_extern] requires JsonB by value
-fn pg_tviews_create_or_replace(
-    tview_name: &str,
-    query: &str,
-    options: default!(pgrx::JsonB, "'{}'"),
-) -> Result<String, ErrorReport> {
-    crate::revision::check();
-    replace::create_or_replace(tview_name, query, &options.0)
-        .map(str::to_string)
-        .map_err(|e| e.report_in(&format!("Failed to create or replace TVIEW '{tview_name}'")))
-}
-
-/// SQL function: Drop a TVIEW
-///
-/// Usage: SELECT `pg_tviews_drop`('`my_entity`', true);        -- true = IF EXISTS
-///        SELECT `pg_tviews_drop`('`my_entity`', true, true);  -- IF EXISTS + CASCADE
-///        SELECT `pg_tviews_drop`('`app.tv_post`');            -- schema-qualified
-#[pg_extern]
-fn pg_tviews_drop(
-    tview_name: &str,
-    if_exists: default!(bool, false),
-    cascade: default!(bool, false),
-) -> Result<String, ErrorReport> {
-    crate::revision::check();
-    match drop_tview(tview_name, if_exists, cascade) {
-        Ok(true) => Ok(format!("TVIEW '{tview_name}' dropped successfully")),
-        Ok(false) => Ok(format!(
-            "TVIEW '{tview_name}' does not exist, nothing dropped"
-        )),
-        Err(e) => Err(e.report_in("Failed to drop TVIEW")),
-    }
-}
-
-/// SQL function: re-derive a TVIEW's metadata and base-table triggers from its
-/// stored definition with this release's analysis, and clear `needs_reregister`.
-/// The TVIEW's rows are not touched. Requires owning the TVIEW or
-/// the extension.
-///
-/// Usage: `SELECT tviews.pg_tviews_reregister('post');`
-#[pg_extern]
-fn pg_tviews_reregister(tview_name: &str) -> Result<String, ErrorReport> {
-    crate::revision::check();
-    crate::validation::validate_sql_identifier(tview_name, "tview_name")?;
-    let entity = tview_name.strip_prefix("tv_").unwrap_or(tview_name);
-    create::reregister_tview(entity)
-        .map(|()| "reregistered".to_string())
-        .map_err(|e| e.report_in(&format!("Failed to re-register TVIEW '{entity}'")))
-}
-
-// Every TVIEW, dependencies first: an entity comes after every TVIEW its backing
-// view reads, through views. Each runs in its own subtransaction, so a failure
-// becomes that entity's status and the others go on; `strict` raises at the end.
-extension_sql!(
-    r"
-CREATE FUNCTION @extschema@.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
-RETURNS TABLE (entity TEXT, status TEXT)
-LANGUAGE plpgsql
-AS $$
-#variable_conflict use_column
-DECLARE
-    next_entity TEXT;
-    failures INTEGER := 0;
-BEGIN
-    FOR next_entity IN
-        WITH RECURSIVE edges(entity, dependency) AS (
-            SELECT DISTINCT r.entity, m.entity
-            FROM @extschema@.pg_tview_reads r
-            JOIN @extschema@.pg_tview_meta m
-              ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
-            WHERE m.entity <> r.entity
-        ),
-        depth(entity, level) AS (
-            SELECT m.entity, 0 FROM @extschema@.pg_tview_meta m
-          UNION
-            SELECT e.entity, d.level + 1
-            FROM depth d JOIN edges e ON e.dependency = d.entity
-            WHERE d.level < 100
-        )
-        SELECT d.entity FROM depth d GROUP BY d.entity ORDER BY max(d.level), d.entity
-    LOOP
-        entity := next_entity;
-        BEGIN
-            PERFORM @extschema@.pg_tviews_reregister(next_entity);
-            status := 'reregistered';
-        EXCEPTION WHEN OTHERS THEN
-            status := SQLERRM;
-            failures := failures + 1;
-        END;
-        RETURN NEXT;
-    END LOOP;
-    IF strict AND failures > 0 THEN
-        RAISE EXCEPTION 'pg_tviews: % TVIEW(s) could not be re-registered', failures
-            USING HINT = 'SELECT * FROM tviews.pg_tviews_reregister_all() lists them';
-    END IF;
-END;
-$$;
-    ",
-    name = "reregister_all",
-    requires = [
-        pg_tviews_reregister,
-        "create_metadata_tables",
-        "tview_reads"
-    ],
-);

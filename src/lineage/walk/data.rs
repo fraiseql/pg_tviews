@@ -282,9 +282,18 @@ impl Walker<'_> {
                     name: cstr((*tle).resname),
                     junk: (*tle).resjunk,
                     sortgroupref: (*tle).ressortgroupref,
-                    column: match self.resolve_expr((*tle).expr.cast()) {
-                        Resolved::Col(c) => Some(c),
-                        _ => None,
+                    columns: match self.resolve_expr((*tle).expr.cast()) {
+                        Resolved::Col(c) => vec![c],
+                        // A column of a UNION subquery: a column in every branch.
+                        Resolved::Alt(terms, holes) if holes.is_empty() => terms
+                            .into_iter()
+                            .map(|term| match term {
+                                Resolved::Col(c) => Some(c),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>()
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
                     },
                     type_oid: pg_sys::exprType((*tle).expr.cast()).to_u32(),
                 })
@@ -307,7 +316,7 @@ impl Walker<'_> {
                 position: selected.position,
                 type_oid: chosen.type_oid,
                 kind: selected.kind,
-                columns: chosen.column.iter().cloned().collect(),
+                columns: chosen.columns.clone(),
             })
         }
     }

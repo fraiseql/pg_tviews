@@ -6,8 +6,8 @@
 --    written column's type and collation.
 -- 2. Under REPEATABLE READ, the cross-check against the latest snapshot fails
 --    only on a concurrent change, not on what a recompute itself makes of the
---    rows: a UNION view returning two rows for one key (union_duplicate_policy
---    'first' keeps one) refreshes without 40001.
+--    rows: a view combining two branch rows into one row per key (DISTINCT ON
+--    over a UNION) refreshes without 40001.
 --
 -- A prepared transaction holds the writer's locks while this session runs the
 -- other side, with lock_timeout to tell a wait from none.
@@ -90,22 +90,23 @@ DROP TABLE waited;
 INSERT INTO tb_doc VALUES (2, DEFAULT, 'ann', 'd2');
 SELECT assert_fresh('tv_doc', 'pk_doc', 'case-insensitive collation');
 
--- 2. A UNION view with a duplicated key, REPEATABLE READ (two keys in one
---    statement: the bulk refresh keeps one row per key).
+-- 2. A UNION read through DISTINCT ON, a key in both branches, REPEATABLE READ
+--    (two keys in one statement).
 CREATE TABLE tb_task (pk_task integer PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 CREATE TABLE tb_task_copy (pk_task integer PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 INSERT INTO tb_task VALUES (1, DEFAULT, 'a'), (3, DEFAULT, 'c');
 SELECT pg_tviews_create('tv_task', $TV$
-  SELECT pk_task, id, jsonb_build_object('title', title, 'copy', false) AS data FROM tb_task
-  UNION ALL
-  SELECT pk_task, id, jsonb_build_object('title', title, 'copy', true) AS data FROM tb_task_copy
+  SELECT DISTINCT ON (u.pk_task) u.pk_task, u.id, u.data
+  FROM (SELECT pk_task, id, jsonb_build_object('title', title, 'copy', false) AS data, 1 AS pref FROM tb_task
+        UNION ALL
+        SELECT pk_task, id, jsonb_build_object('title', title, 'copy', true) AS data, 2 AS pref FROM tb_task_copy) u
+  ORDER BY u.pk_task, u.pref
 $TV$);
-SET pg_tviews.union_duplicate_policy = 'first';
 INSERT INTO tb_task_copy VALUES (1, DEFAULT, 'a'), (4, DEFAULT, 'd');
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 UPDATE tb_task SET title = title || '!' WHERE pk_task IN (1, 3);
 COMMIT;
 SELECT must((SELECT count(*) FROM tv_task WHERE pk_task = 1) = 1, 'the duplicated key is not one row');
-RESET pg_tviews.union_duplicate_policy;
+SELECT assert_fresh('tv_task', 'pk_task', 'DISTINCT ON over a UNION under REPEATABLE READ');
 
 \echo 'value_locks_edges: PASS'

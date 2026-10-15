@@ -7,15 +7,16 @@ This guide covers tools and techniques for analyzing and optimizing pg_tviews pe
 ## Quick Performance Check
 
 ```sql
--- Get overview of all TVIEWs
-SELECT * FROM pg_tviews_performance_stats();
+-- Physical overview of all TVIEWs
+SELECT entity, persistence, rows_estimate,
+       pg_size_pretty(heap_bytes) AS heap, pg_size_pretty(index_bytes) AS indexes,
+       round(hot_ratio::numeric, 2) AS hot_ratio, fanout, warnings
+FROM pg_tviews_profile();
 
--- Sample output:
---  entity |  table_size | total_size | row_count | index_count
--- --------+-------------+------------+-----------+-------------
---  post   | 50 MB       | 75 MB      |   100000  |     4
---  user   | 10 MB       | 15 MB      |    20000  |     3
---  comment| 80 MB       | 120 MB     |   500000  |     5
+-- Refresh work per TVIEW since the server started (needs shared_preload_libraries)
+SELECT entity, view_recomputes, rows_written, full_refreshes,
+       round(refresh_ms::numeric, 1) AS refresh_ms
+FROM tviews.stats;
 ```
 
 ---
@@ -30,8 +31,8 @@ SELECT * FROM pg_tviews_performance_stats();
 SELECT * FROM pg_tviews_show_cascade_path('user');
 
 -- Sample output:
---  depth | entity_name | depends_on
--- -------+-------------+------------
+--  depth | entity       | depends_on
+-- -------+--------------+------------
 --      0 | user        | user
 --      1 | post        | user
 --      2 | comment     | post
@@ -69,7 +70,7 @@ WITH RECURSIVE cascade AS (
 SELECT
     CASCADE.depth,
     COUNT(*) as entities_at_depth,
-    array_agg(CASCADE.entity) as entity_names
+    array_agg(CASCADE.entity) as entities
 FROM CASCADE
 GROUP BY CASCADE.depth
 ORDER BY CASCADE.depth;
@@ -142,7 +143,7 @@ LIMIT 10;
 -- Find TVIEWs with large JSONB documents
 -- Trinity pattern: All TVIEWs have 'data' column (JSONB)
 SELECT
-    'tv_' || pg_tview_meta.entity as tview_name,
+    'tv_' || pg_tview_meta.entity as tview,
     pg_size_pretty(AVG(pg_column_size(tv.data))) as avg_jsonb_size,
     pg_size_pretty(MAX(pg_column_size(tv.data))) as max_jsonb_size,
     COUNT(*) as row_count
@@ -213,38 +214,16 @@ ORDER BY cache_hit_ratio ASC;
 
 ## Optimization Recommendations
 
-### Based on Performance Stats
+### Based on the Profile
 
 ```sql
--- Get automated recommendations
-DO $$
-DECLARE
-    rec RECORD;
-BEGIN
-    -- Check each TVIEW
-    FOR rec IN
-        SELECT * FROM pg_tviews_performance_stats()
-    LOOP
-        -- Large table without enough indexes
-        IF rec.table_size > '100 MB' AND rec.index_count < 3 THEN
-            RAISE NOTICE 'Entity %: Large table (%) with only % indexes - consider adding indexes',
-                rec.entity, rec.table_size, rec.index_count;
-        END IF;
-
-        -- Very large table
-        IF rec.table_size > '1 GB' THEN
-            RAISE NOTICE 'Entity %: Very large (%) - consider partitioning',
-                rec.entity, rec.table_size;
-        END IF;
-
-        -- High index overhead
-        IF pg_total_relation_size(('tv_' || rec.entity)::regclass) >
-           2 * pg_relation_size(('tv_' || rec.entity)::regclass) THEN
-            RAISE NOTICE 'Entity %: Index size exceeds table size - review unused indexes',
-                rec.entity;
-        END IF;
-    END LOOP;
-END $$;
+-- TVIEWs that call for attention
+SELECT entity, pg_size_pretty(heap_bytes) AS heap, pg_size_pretty(index_bytes) AS indexes,
+       unused_indexes, missing_propagation_indexes, warnings
+FROM pg_tviews_profile()
+WHERE cardinality(warnings) > 0
+   OR cardinality(missing_propagation_indexes) > 0
+   OR index_bytes > heap_bytes;  -- index size exceeds table size: review unused indexes
 ```
 
 ---
@@ -365,8 +344,8 @@ WHERE pg_indexes.tablename LIKE 'tv_%'
 -- Check work_mem
 SHOW work_mem;
 
--- Check cascade size
-SELECT * FROM pg_tviews_performance_stats();
+-- Check TVIEW sizes and fan-out
+SELECT entity, rows_estimate, heap_bytes, fanout FROM pg_tviews_profile();
 ```
 
 **Solutions**:

@@ -31,23 +31,41 @@ intercepted fails, naming the table, instead of leaving a plain table behind. Fo
 pg_tviews cannot turn into a TVIEW (`WITH NO DATA`, a temporary table, a column list,
 `TABLESPACE`, …) fail with SQLSTATE `0A000` ([error reference](../error-reference.md)).
 
+The TVIEW gets the default options, so it is LOGGED. `CREATE UNLOGGED TABLE
+tv_<entity> AS SELECT …` makes an UNLOGGED one (`logged: false`).
+
 ### `pg_tviews_create()` and `pg_tviews_create_or_replace()`
 
 ```sql
-SELECT tviews.pg_tviews_create('tv_<entity>', $$ SELECT … $$);            -- returns text
+SELECT tviews.pg_tviews_create('tv_<entity>', $$ SELECT … $$,
+                               options => '{}');                          -- returns text
 SELECT tviews.pg_tviews_create_or_replace('tv_<entity>', $$ SELECT … $$,
                                           options => '{}');               -- created | unchanged | altered | replaced | rebuilt
 ```
 
 `pg_tviews_create_or_replace()` is the one tools should call: it creates the TVIEW, or
-makes the smallest change to an existing one, and takes the options below
-(`logged`, `fillfactor`, `data_gin_index`, `group_keys`, `uncascaded_policy`,
-`uncascaded_tables`, `function_reads`, `time_refresh`). Its contract is in
+makes the smallest change to an existing one. It is declarative: the options passed
+are the whole declaration, and an option not passed is at its default, also on an
+existing TVIEW. Its contract is in
 [Contract for tools](read-contract.md#tviewspg_tviews_create_or_replace).
-`CREATE TABLE … AS` and `pg_tviews_create()` take no options: they read the settings
-`pg_tviews.uncascaded_policy`, `pg_tviews.time_refresh`,
-`pg_tviews.unlogged_by_default`, `pg_tviews.fillfactor` and
-`pg_tviews.data_gin_index`.
+`pg_tviews_create()` takes the same options; `CREATE TABLE … AS` takes the defaults.
+
+A TVIEW is its definition and its options; no setting changes it
+([ADR 0220](../adr/0220-settings.md)). Every option has one fixed default:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `logged` | `true` | the table is LOGGED (crash-safe, replicated); `false` for UNLOGGED |
+| `fillfactor` | `85` | heap fillfactor (room for HOT updates) |
+| `data_gin_index` | `false` | pg_tviews' GIN index on `data` |
+| `group_keys` | `null` | aggregate TVIEW keys |
+| `uncascaded_policy` | `"error"` | what a write to a table no cascade reaches does ([below](#tables-no-cascade-reaches)) |
+| `uncascaded_tables` | `{}` | a policy per table ([below](#a-policy-per-table)) |
+| `function_reads` | `{}` | tables a non-immutable function reads ([below](#functions-that-read-tables)) |
+| `time_refresh` | `null` | `"external"` for a definition that reads the current time ([below](#time-dependent-tviews)) |
+| `typename` | `null` (the PascalCase of the entity) | the GraphQL type name in `pg_tviews_flush_and_report()` |
+
+`tviews.registry.options` lists every option of a TVIEW, defaults included.
 
 A name that already exists fails with `42P07`; a definition that is not exactly one
 `SELECT` with `42601`.
@@ -127,9 +145,9 @@ is generated, and every column goes into `data` under its own name. With none of
 these, it fails (`no column to key the rows on`, `42601`). `tviews.registry.query`
 shows the definition as stored.
 
-The table is `UNLOGGED` unless `pg_tviews.unlogged_by_default` is off or the
-`logged` option is set; its fillfactor is `pg_tviews.fillfactor` (85) unless the
-`fillfactor` option is set.
+The table is LOGGED unless the `logged` option is `false` (or it was created with
+`CREATE UNLOGGED TABLE … AS`); its fillfactor is 85 unless the `fillfactor` option
+says otherwise.
 
 Because the backing view's columns depend on their types, `DROP TYPE … CASCADE` of a
 type the view returns drops the view, and pg_tviews then drops the whole TVIEW (its
@@ -225,9 +243,12 @@ All of it happens in the caller's transaction: a rollback leaves nothing behind.
   itself or a view it reads (`SELECT v.pk_attachment, … FROM v_attachment v`): a
   write to a branch's table refreshes that branch's keys, and a table joined to
   the union's output refreshes the keys of every branch. Branch keys must be
-  disjoint: overlapping ones fail the create (duplicate key) and, later, the
-  write that makes two rows share a key (`pg_tviews.union_duplicate_policy`,
-  `error` by default). A key computed from two tables (`COALESCE(p.pk_product,
+  disjoint: two rows for one key fail with `21000`, at the create, at the write
+  that makes them share it, and at every refresh ([ADR 0216](../adr/0216-union-keys.md)).
+  To keep one row per key, say which in the definition: `SELECT DISTINCT ON
+  (u.pk_x) u.pk_x, u.id, u.data FROM (<branch> UNION ALL <branch>) u ORDER BY
+  u.pk_x, <preference>`. The `DISTINCT ON` key stands for a column of each
+  branch's table, so a write to either refreshes it. A key computed from two tables (`COALESCE(p.pk_product,
   -l.pk_order_line)` over two outer joins) is no branch table's: put it in the
   branches instead. A key taken from one branch's table through an inner join
   holds only that branch's rows, as the definition says. A branch keyed by an
@@ -273,8 +294,8 @@ All of it happens in the caller's transaction: a rollback leaves nothing behind.
   row of a recursive CTE comes from rows of the step before, so the tables read
   inside it are `all_keys` (`read in a recursive CTE (public.v_category_path)`) and
   the tables read outside it keep their mapping. A small lookup tree read by a large
-  entity view is the usual case: create the TVIEW with `uncascaded_policy =
-  'full_refresh'`, and the entity's own writes stay incremental
+  entity view is the usual case: create the TVIEW with the option
+  `"uncascaded_policy": "full_refresh"`, and the entity's own writes stay incremental
 - **DISTINCT ON**: deduplicated read models, keyed on their `DISTINCT ON` key
   ([ADR 0169](../adr/0169-tview-row-identity.md)): its value names the TVIEW's
   rows, it is the table's primary key, and `tviews.registry.identity` reports it.
@@ -429,9 +450,8 @@ ERROR:  writes to public.tb_flag would not refresh public.tv_report (read in a s
 HINT:  To refresh public.tv_report in full on such writes: pg_tviews_create_or_replace(
        'public.tv_report', <definition>, options => '{"uncascaded_tables":
        {"public.tb_flag": "full_refresh"}}'), or for the whole TVIEW '{"uncascaded_policy":
-       "full_refresh"}'; before CREATE TABLE … AS or pg_tviews_create(): SET
-       pg_tviews.uncascaded_policy = 'full_refresh'. "warn" accepts stale rows instead. Or
-       join the tables on a column pg_tviews can trace.
+       "full_refresh"}' (pg_tviews_create() takes the same options). "warn" accepts stale
+       rows instead. Or join the tables on a column pg_tviews can trace.
 ```
 
 Declare it with the TVIEW:
@@ -441,14 +461,8 @@ SELECT pg_tviews_create_or_replace('tv_report', $$ … $$,
     options => '{"uncascaded_policy": "full_refresh"}');
 ```
 
-`CREATE TABLE … AS` and `pg_tviews_create()` take no options: they read the setting
-`pg_tviews.uncascaded_policy` (default `error`) instead.
-
-```sql
-SET pg_tviews.uncascaded_policy = 'full_refresh';
-CREATE TABLE tv_report AS SELECT …;
-RESET pg_tviews.uncascaded_policy;          -- the TVIEW keeps full_refresh
-```
+`pg_tviews_create()` takes the same options. `CREATE TABLE … AS` creates the TVIEW
+with the default, `error`.
 
 Changing the option of an existing TVIEW with `pg_tviews_create_or_replace()` is an
 `altered` change: the policy is stored and the TVIEW re-registered, with no rebuild.
@@ -474,9 +488,9 @@ A write to a named table follows its policy; any other table no cascade reaches
 follows `uncascaded_policy`, so a later edit of a view that adds an untraced read is
 still refused. A named table the definition does not read, or whose writes it traces
 (`local`, `mapped`, `propagated`), is refused, so the list cannot rot; so is one that
-does not exist. `tviews.registry.uncascaded_table_policies` reports the map. Leaving
-`uncascaded_tables` out of a later `pg_tviews_create_or_replace()` keeps the map;
-passing another one is an `altered` change.
+does not exist. `tviews.registry.options->'uncascaded_tables'` reports the map.
+Leaving `uncascaded_tables` out of a later `pg_tviews_create_or_replace()` puts it back
+to `{}`; passing another one is an `altered` change.
 
 ### Functions that read tables
 
@@ -509,7 +523,7 @@ appear in `base_tables`, `uncascaded_tables` and `cascade_kinds`, and their poli
 decides what a write does. Above, `tb_setting` refreshes the TVIEW in full and any
 other untraced read is still refused. A table the view also reads directly keeps
 mapping the reads of it that can be traced. A declared function the definition does
-not call, or that does not exist, is refused; `tviews.registry.function_reads`
+not call, or that does not exist, is refused; `tviews.registry.options->'function_reads'`
 reports the declarations.
 
 Refreshes run as the TVIEW's owner with `search_path = pg_catalog, pg_temp`: a
@@ -531,12 +545,10 @@ up to date; under `warn` it is created with a WARNING.
 SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
     SELECT pk_contract, id, name, end_date >= CURRENT_DATE AS is_current FROM tb_contract $q$,
     '{"time_refresh": "external"}');
--- CREATE TABLE … AS, pg_tviews_create():
-SET pg_tviews.time_refresh = 'external';
 ```
 
 `tviews.registry.time_dependent` reports such TVIEWs (also one created under `warn`),
-and `time_refresh` the declaration. Writes refresh it as usual; at the boundary,
+and `options->>'time_refresh'` the declaration. Writes refresh it as usual; at the boundary,
 something outside calls
 
 ```sql
@@ -553,8 +565,8 @@ SELECT cron.schedule('tviews-day', '1 0 * * *',
                      'SELECT tviews.pg_tviews_refresh_time_dependent()');
 ```
 
-`time_refresh` on a definition that reads no time is refused; the setting is ignored
-for one. A literal evaluated at run time (`'now'::timestamptz`) is not detected: pass
+`time_refresh` on a definition that reads no time is refused, at creation as when
+changing a TVIEW. A literal evaluated at run time (`'now'::timestamptz`) is not detected: pass
 the date as data, or write `now()`.
 
 ### Rendering
@@ -654,11 +666,16 @@ TVIEW, with a NOTICE, when no TVIEW is registered with it and nothing depends on
 ## Changing a TVIEW
 
 Change a TVIEW's definition or storage with `pg_tviews_create_or_replace()`, which makes
-the smallest change (`unchanged`, `altered`, `replaced` in place, or `rebuilt`):
+the smallest change (`unchanged`, `altered`, `replaced` in place, or `rebuilt`). Pass
+every option the TVIEW should have: one left out goes back to its default.
 
 ```sql
-SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT … $$);
+SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT … $$,
+                                          '{"fillfactor": 90}');
 ```
+
+`ALTER TABLE tv_<entity> SET LOGGED` or `SET UNLOGGED` switches the table like the
+`logged` option; switching a reset UNLOGGED TVIEW to LOGGED fills it first.
 
 A column rename on a table or view the definition reads (`ALTER TABLE tb_post RENAME
 COLUMN title TO headline`) is followed: the stored definition and plan are rewritten

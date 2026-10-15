@@ -23,7 +23,7 @@ CREATE EXTENSION pg_tviews;
 -- a parameterized lookup) and never executed.
 \echo '### Identifier validation'
 SELECT assert_rejects_injection(
-    'pg_tviews_create: tview_name injection',
+    'pg_tviews_create: tview injection',
     $$SELECT pg_tviews_create('tv_x; DROP TABLE tb_x; --', 'SELECT 1')$$
 );
 SELECT assert_rejects_injection(
@@ -33,7 +33,7 @@ SELECT assert_rejects_injection(
 
 \echo '### Drop / convert'
 SELECT assert_rejects_injection(
-    'pg_tviews_drop: tview_name injection',
+    'pg_tviews_drop: tview injection',
     $$SELECT pg_tviews_drop('tv_x''; DROP TABLE y; --')$$
 );
 

@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: i_begin i_repoint r_begin r_rename i_commit r_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step i_begin: BEGIN;
@@ -31,9 +31,9 @@ post| 3|grace |t
 
 
 starting permutation: r_begin r_rename i_begin i_repoint r_commit i_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_note' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
 (1 row)
 
 step r_begin: BEGIN;

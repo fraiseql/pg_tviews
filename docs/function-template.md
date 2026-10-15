@@ -89,18 +89,19 @@ SELECT pg_tviews_version();
 
 **Signature**:
 ```sql
-pg_tviews_create(tview_name TEXT, select_sql TEXT) RETURNS TEXT
+pg_tviews_create(tview TEXT, query TEXT, options JSONB DEFAULT '{}') RETURNS TEXT
 ```
 
 **Description**:
 Creates a new transactional view (TVIEW) from a SELECT statement with automatic incremental refresh capabilities.
 
 **Parameters**:
-- `tview_name` (TEXT): Name of the TVIEW to create, must follow `tv_*` naming convention
-- `select_sql` (TEXT): Valid SELECT statement defining the TVIEW structure
+- `tview` (TEXT): the TVIEW to create, as its entity (`post`), `tv_post` or `schema.tv_post`
+- `query` (TEXT): Valid SELECT statement defining the TVIEW structure
+- `options` (JSONB): the TVIEW's options (`logged`, `fillfactor`, `group_keys`, …); each one not passed is at its default
 
 **Returns**:
-- `TEXT`: Success message or detailed error description
+- `TEXT`: Success message; errors are raised
 
 **Example**:
 ```sql
@@ -119,19 +120,19 @@ SELECT pg_tviews_create('tv_post', '
 
 **Returns**:
 ```text
-TVIEW 'tv_post' created successfully
+TVIEW public.tv_post created
 ```
 
 **Notes**:
-- TVIEW name must start with `tv_` prefix
+- The TVIEW's table is always `tv_<entity>`, `<entity>` taken from the `pk_<entity>` column
 - SELECT statement must include required columns: `pk_<entity>`, `id`, `data`
 - Triggers are automatically installed on source tables
 - Performance: Initial creation time scales with data size
 
 **Errors**:
-- **InvalidTViewName**: TVIEW name doesn't follow `tv_*` convention
-- **InvalidSelectStatement**: SELECT contains unsupported SQL features
-- **TViewAlreadyExists**: A TVIEW with this name already exists
+- **22023**: the name does not match the definition's `pk_<entity>` column, or an option is invalid
+- **0A000**: the SELECT contains features pg_tviews cannot maintain
+- **42P07**: a TVIEW with this name already exists
 
 **See Also**:
 - [DROP TABLE tv_*](reference/ddl.md#drop-table-tv_)

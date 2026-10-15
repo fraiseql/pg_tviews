@@ -99,32 +99,5 @@ fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sy
 /// as base tables for trigger installation — cascade is metadata-driven via
 /// `find_parents_for()`, not trigger-driven.
 fn load_tview_table_oids() -> TViewResult<HashSet<pg_sys::Oid>> {
-    Spi::connect(|client| -> crate::TViewResult<_> {
-        let rows = client.select(
-            &format!(
-                "SELECT table_oid::oid AS table_oid FROM {}",
-                crate::utils::meta_table()
-            ),
-            None,
-            &[],
-        )?;
-        let mut oids = HashSet::new();
-        for row in rows {
-            if let Some(oid) =
-                row["table_oid"]
-                    .value::<pg_sys::Oid>()
-                    .map_err(|e| TViewError::CatalogError {
-                        operation: "load_tview_table_oids".to_string(),
-                        pg_error: e.to_string(),
-                    })?
-            {
-                oids.insert(oid);
-            }
-        }
-        Ok(oids)
-    })
-    .map_err(|e: TViewError| TViewError::CatalogError {
-        operation: "load_tview_table_oids".to_string(),
-        pg_error: e.to_string(),
-    })
+    crate::catalog::row::table_oids()
 }

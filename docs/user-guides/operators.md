@@ -22,8 +22,9 @@ not see fails, naming the fix. Set it in `postgresql.conf` and restart:
 
 ```ini
 shared_preload_libraries = 'pg_tviews'          # add to any existing list
-# Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart to change)
-pg_tviews.auto_rebuild_databases = 'app'
+# Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends
+# ('*', the default: every database; '': none; restart to change)
+#pg_tviews.auto_rebuild_databases = '*'
 ```
 
 Then, in each database:
@@ -54,31 +55,37 @@ SELECT pk_user, id, jsonb_build_object('id', id, 'name', name) AS data FROM tb_u
 
 ## Settings operators tune
 
-Every setting, with its type and default, is in the
+Settings tune the server and sessions; what a TVIEW is (LOGGED or UNLOGGED, fillfactor,
+uncascaded policy, …) comes only from its definition and its options. Every setting,
+with its type and default, is in the
 [README's configuration table](../../README.md#configuration); the
 [API reference](../reference/api.md#configuration) says when each is read. The ones
 that matter in operations:
 
-| Setting | Default | When to change it |
-|---|---|---|
-| `pg_tviews.auto_rebuild_databases` | `''` | list the databases whose UNLOGGED TVIEWs must be refilled after a crash restart or promotion (restart required) |
-| `pg_tviews.unlogged_by_default` | `on` | turn off when TVIEWs are read on standbys: UNLOGGED tables are not replicated |
-| `pg_tviews.fillfactor` | `85` | raise to 100 for append-mostly TVIEWs; lower keeps refreshes HOT |
-| `pg_tviews.uncascaded_policy` | `error` | the policy new TVIEWs get when they declare none |
-| `pg_tviews.max_queue_size` | `10000` | raise for transactions that queue more refreshes (else `54000`) |
-| `pg_tviews.max_propagation_depth` | `100` | raise for very deep embed chains (else `54001`) |
-| `pg_tviews.batch_size` | `1000` | keys per bulk-refresh statement |
-| `pg_tviews.cache_size` | `10000` | entries per in-memory metadata cache, per backend |
-| `pg_tviews.audit_enabled` | `off` | record creates, drops and refreshes in `tviews.pg_tview_audit_log` |
-| `pg_tviews.log_level` | `info` | `debug` shows internal diagnostics as NOTICEs |
+| Setting | Default | Who sets it | When to change it |
+|---|---|---|---|
+| `pg_tviews.auto_rebuild_databases` | `*` | postmaster | `*` refills the reset UNLOGGED TVIEWs of every database after a crash restart or promotion; a list restricts it to those databases; empty disables it (restart required) |
+| `pg_tviews.max_queue_size` | `10000` | superuser | raise for transactions that queue more refreshes (else `54000`) |
+| `pg_tviews.max_propagation_depth` | `100` | superuser | raise for very deep embed chains (else `54001`) |
+| `pg_tviews.max_dependency_depth` | `10` | superuser | raise for deeper view-on-view hierarchies |
+| `pg_tviews.lock_escalation_threshold` | `64` | superuser | value locks per relation before a transaction locks the relation instead |
+| `pg_tviews.audit_enabled` | `off` | superuser | record creates, drops and refreshes in `tviews.pg_tview_audit_log` |
+| `pg_tviews.batch_size` | `1000` | user | keys per bulk-refresh statement |
+| `pg_tviews.cache_size` | `10000` | user | entries per in-memory metadata cache, per backend |
+| `pg_tviews.report_max_tracked` | `10000` | user | changed rows journaled per transaction for `pg_tviews_flush_and_report()` |
 
-All but `auto_rebuild_databases` can be set per session, or per role or database with
-`ALTER ROLE … SET` / `ALTER DATABASE … SET`:
+Superuser settings decide whether a write or a creation succeeds, so they are the same
+for every session unless a superuser changes them: in `postgresql.conf`, with
+`ALTER SYSTEM`, or per role or database with `ALTER ROLE … SET` /
+`ALTER DATABASE … SET`. User settings can be set by any session:
 
 ```sql
-SET pg_tviews.max_queue_size = 50000;
-RESET pg_tviews.max_queue_size;
+SET pg_tviews.batch_size = 5000;
+RESET pg_tviews.batch_size;
 ```
+
+Diagnostics are `DEBUG1` messages: `SET client_min_messages = debug1` shows them in a
+session, `log_min_messages = debug1` in the server log.
 
 ## Connection poolers
 
@@ -86,7 +93,8 @@ pg_tviews keeps its refresh queue per transaction, so PgBouncer and Pgpool-II wo
 transaction pooling mode. Keep a bulk load that suspends refresh
 (`pg_tviews_suspend_triggers()` … `pg_tviews_resume_triggers()`) inside one transaction.
 `pg_tviews_queue_stats()` reports the counters of the backend it runs on: behind a
-pooler, read it in the same transaction as the writes.
+pooler, read it in the same transaction as the writes. `tviews.stats` holds the
+per-TVIEW counters of every session.
 
 ## Monitoring
 
@@ -94,11 +102,13 @@ pooler, read it in the same transaction as the writes.
 -- Anything not OK: catalog, plans, triggers, TVIEWs to re-register
 SELECT component, status, message FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
 
--- Size and row count of each TVIEW, largest first
-SELECT * FROM tviews.pg_tviews_performance_stats();
+-- Refresh work per TVIEW, from any session, cumulative since server start or reset
+SELECT entity, view_recomputes, noop_skipped, rows_written, full_refreshes, refresh_ms
+FROM tviews.stats ORDER BY refresh_ms DESC NULLS LAST;
 
--- Physical health: HOT ratio, bloat, missing propagation indexes, warnings
-SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, warnings
+-- Physical health: size, HOT ratio, bloat, missing propagation indexes, warnings
+SELECT entity, persistence, heap_bytes, hot_ratio, n_dead_tup,
+       missing_propagation_indexes, warnings
 FROM tviews.pg_tviews_profile();
 
 -- TVIEWs a standby cannot serve, or that need a rebuild
@@ -106,18 +116,26 @@ SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild OR NOT r
 ```
 
 Alert on any health row whose `status` is not `OK`, on `needs_rebuild`, and on
-`tviews.registry.needs_reregister`. See [Monitoring](../operations/monitoring.md) for
+`tviews.registry.needs_reregister`. `tviews.stats` needs
+`shared_preload_libraries = 'pg_tviews'`; a TVIEW whose `untracked` is true found the
+shared table (4096 TVIEWs per cluster) full and has NULL counters.
+`tviews.pg_tviews_stats_reset(tview)` zeroes one TVIEW's counters, or every TVIEW's
+without an argument (an operator function, see below). See [Monitoring](../operations/monitoring.md) for
 thresholds and exporters.
 
 ## Backup, replication and recovery
 
 - `pg_dump` dumps the TVIEW registrations with the extension, and the backing views
   after the tables they read; see [Upgrades](../operations/upgrades.md).
-- An UNLOGGED TVIEW is not written to WAL: a standby cannot read it, and a crash
-  restart, a promotion or a physical restore leaves it empty. Make TVIEWs served from
-  standbys LOGGED (`pg_tviews_set_logged(entity, true)` or the `logged` option).
-- Refill emptied TVIEWs with `pg_tviews.auto_rebuild_databases`, or by hand after a
-  failover or restore:
+- TVIEWs are LOGGED by default and replicate like any table. A TVIEW declared
+  `logged: false` (or created with `CREATE UNLOGGED TABLE tv_x AS`) is not written to
+  WAL: a standby cannot read it, and a crash restart, a promotion or a physical
+  restore leaves it empty. Switch one back with the `logged` option of
+  `pg_tviews_create_or_replace()` or `ALTER TABLE tv_x SET LOGGED`; both fill a reset
+  TVIEW first.
+- After a crash restart or a promotion, a launcher worker refills reset UNLOGGED
+  TVIEWs in every database (`pg_tviews.auto_rebuild_databases`). Refill them by hand
+  after a restore, or where the worker is disabled:
 
 ```sql
 SELECT * FROM tviews.pg_tviews_rebuild_all();                     -- emptied UNLOGGED TVIEWs
@@ -198,25 +216,24 @@ the extension's owner and the roles granted them may run them.
 
 | Function | What it does |
 |---|---|
-| `pg_tviews_refresh_all()`, `pg_tviews_refresh_all_entities()` | Rebuild every TVIEW |
+| `pg_tviews_refresh_all()` | Rebuild every TVIEW |
 | `pg_tviews_rebuild_all(only_empty)` | Rebuild every (emptied) TVIEW, e.g. after a restore |
 | `pg_tviews_reregister_all(strict)` | Re-derive every TVIEW's plan and triggers |
-| `pg_tviews_set_logged(entity, logged)` | Switch a TVIEW between LOGGED and UNLOGGED |
-| `pg_tviews_ensure_propagation_indexes(entity, dry_run)` | Create missing propagation indexes |
+| `pg_tviews_ensure_propagation_indexes(tview, dry_run)` | Create missing propagation indexes |
+| `pg_tviews_stats_reset(tview)` | Zero the counters in `tviews.stats` |
 | `pg_tviews_invalidate_caches(relid)` | Internal: invalidate cached metadata |
 
 A deploy or restore tool that runs as a non-superuser role gets them with a grant (the
 extension lives in schema `tviews`). Bulk rebuilds run each TVIEW's backing view as that
 TVIEW's owner, never as the caller, so the grant alone is enough for
-`pg_tviews_refresh_all()` and `pg_tviews_refresh_all_entities()`.
+`pg_tviews_refresh_all()`.
 `pg_tviews_rebuild_all()` also reads each TVIEW as the caller, to find the empty ones
 and count the rows it filled, so the role needs `SELECT` on the `tv_*` tables too.
 
 Every function acting on one TVIEW (`pg_tviews_refresh`, `pg_tviews_reregister`,
-`pg_tviews_set_logged`, `pg_tviews_recover_after_crash`, `pg_tviews_drop`,
-`pg_tviews_create_or_replace`, …) requires owning it, or being a member of its owner
+`pg_tviews_drop`, `pg_tviews_create_or_replace`, …) requires owning it, or being a member of its owner
 or of the extension's owner, whoever may execute it; anyone else gets SQLSTATE `42501`.
-`pg_tviews_reregister_all()`, `pg_tviews_set_logged()` and
+`pg_tviews_reregister_all()` and
 `pg_tviews_ensure_propagation_indexes()` check this for each TVIEW too. A deploy role
 that runs them is simplest made a member of the role owning the TVIEWs.
 
@@ -224,11 +241,10 @@ that runs them is simplest made a member of the role owning the TVIEWs.
 CREATE ROLE ops_doc_deploy;
 GRANT EXECUTE ON FUNCTION
     tviews.pg_tviews_refresh_all(),
-    tviews.pg_tviews_refresh_all_entities(),
     tviews.pg_tviews_rebuild_all(boolean),
     tviews.pg_tviews_reregister_all(boolean),
-    tviews.pg_tviews_set_logged(text, boolean),
-    tviews.pg_tviews_ensure_propagation_indexes(text, boolean)
+    tviews.pg_tviews_ensure_propagation_indexes(text, boolean),
+    tviews.pg_tviews_stats_reset(text)
 TO ops_doc_deploy;
 
 SET ROLE ops_doc_deploy;

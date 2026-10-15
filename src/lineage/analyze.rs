@@ -166,7 +166,7 @@ impl Lineage {
                             reason,
                             Some(format!(
                                 "SELECT DISTINCT {} FROM {DELTA}",
-                                escape_template(&crate::utils::quote_identifier(column))
+                                escape_template(&crate::utils::ident::quoted(column))
                             )),
                         ),
                         (TableKind::Mapped, sql) => (reason, sql),

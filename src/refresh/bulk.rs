@@ -33,12 +33,12 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     }
 
     // Count the backing-view recompute of these rows.
-    crate::metrics::metrics_api::record_view_recomputes(keys.len() as u64);
+    crate::metrics::metrics_api::record_view_recomputes(entity, keys.len() as u64);
 
     // Load metadata once
     let meta =
-        TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
+            name: entity.to_string(),
         })?;
 
     // Resolve the schema-qualified backing view + tview and the authoritative
@@ -60,22 +60,10 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // Rows whose recomputed columns equal the stored ones are left alone.
     // The filter is on the identity, bound with its type, so it reaches the base
     // tables' indexes through the view.
-    let qi_key = crate::utils::quote_identifier(key_col);
-    let qi_pk = crate::utils::quote_identifier(&format!("pk_{entity}"));
+    let qi_key = crate::utils::ident::quoted(key_col);
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{entity}"));
     let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
-    // A UNION view can return several rows for one key: union_duplicate_policy
-    // decides (an error, or the first row), as for a single key.
-    let source_sql = if meta.plan.set_operation {
-        format!(
-            "SELECT DISTINCT ON ({qi_key}) {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}"
-        )
-    } else {
-        format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}")
-    };
-    let duplicate_sql = format!(
-        "SELECT (SELECT {qi_key}::text FROM {qi_view} WHERE {qi_key} = {any_key} \
-                 GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
-    );
+    let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
         super::upsert_conflict_action(&qi_tv, &col_names, key_col)
@@ -99,14 +87,12 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let before = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
-        if meta.plan.set_operation
-            && let Some(key) = pgrx::Spi::get_one_with_args::<String>(
-                &duplicate_sql,
-                &[super::key_array(&key_type, chunk)?],
-            )?
-        {
-            super::row::union_duplicate(&meta, &key);
-        }
+        // A key names one row: a UNION view returning several for one is refused.
+        super::refuse_duplicate_keys(
+            &meta,
+            &format!("{qi_key} = {any_key}"),
+            &[super::key_array(&key_type, chunk)?],
+        )?;
         let (_, written) = super::run_counted_upsert(
             entity,
             &qi_tv,

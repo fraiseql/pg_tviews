@@ -1,7 +1,7 @@
 -- Regression test for issue #58: aggregate / summary TVIEWs.
 --
 -- An entity with no tb_<entity> whose rows are the GROUP BY groups of its source
--- tables was rejected at create time (#49). pg_tviews_create_aggregate() creates
+-- tables was rejected at create time (#49). pg_tviews_create() with the group_keys option creates
 -- one, keyed by pk_<entity>, and keeps each group in sync: a new group is inserted,
 -- a changed one recomputed, an emptied one deleted, and a row that moves between
 -- groups refreshes both.
@@ -41,7 +41,7 @@ BEGIN
 END $$;
 CREATE FUNCTION rejects(sql TEXT, keys JSONB, pattern TEXT) RETURNS BOOLEAN LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM pg_tviews_create_aggregate('tv_bad_summary', sql, keys);
+    PERFORM pg_tviews_create('tv_bad_summary', sql, jsonb_build_object('group_keys', keys));
     RETURN false;
 EXCEPTION WHEN OTHERS THEN
     RETURN SQLERRM LIKE pattern;
@@ -50,12 +50,12 @@ END $$;
 -- ========================================================================
 -- Cycle 1: creation and the first groups
 -- ========================================================================
-SELECT pg_tviews_create_aggregate('tv_user_summary', $$
+SELECT pg_tviews_create('tv_user_summary', $$
     SELECT o.fk_user AS pk_user_summary, u.id,
            jsonb_build_object('name', u.name, 'orders', count(*), 'total', sum(o.total)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id, u.name
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 
 SELECT must((SELECT count(*) FROM tv_user_summary) = 2, 'two groups after creation');
 SELECT must((SELECT data->>'total' FROM tv_user_summary WHERE pk_user_summary = 1) = '30',

@@ -17,8 +17,7 @@ pg_tviews automatically creates, on every new TVIEW:
   older TVIEWs with `pg_tviews_ensure_propagation_indexes()`)
 
 None of them is on a column that refreshes rewrite, so refreshes stay HOT. There is
-**no** index on `data` unless the `data_gin_index` option is on (or
-`pg_tviews.data_gin_index` when the TVIEW is created). See
+**no** index on `data` unless the `data_gin_index` option is on. See
 [HOT Updates and TVIEW Storage](hot-updates.md) before adding any index on `data`.
 
 These indexes are pg_tviews': `tviews.registry.managed_indexes` lists them, and their
@@ -50,9 +49,10 @@ SELECT * FROM pg_tviews_ensure_propagation_indexes();
 
 ```sql
 -- GIN index for JSONB containment queries: pg_tviews' own, through the option
-SELECT tviews.pg_tviews_create_or_replace('public.tv_post',
-    (SELECT query FROM tviews.registry WHERE entity = 'post'),
-    options => '{"data_gin_index": true}');
+-- (the options passed are the whole declaration: start from the current ones)
+SELECT tviews.pg_tviews_create_or_replace(format('%I.%I', schema, name), query,
+    options || '{"data_gin_index": true}')
+FROM tviews.registry WHERE entity = 'post';
 
 -- Specific JSONB path index (PostgreSQL 14+): your own, under a name of yours
 -- Trinity pattern: JSONB keys use snake_case (FraiseQL auto-converts to camelCase)
@@ -232,15 +232,15 @@ REINDEX TABLE tv_your_entity;
 -- Reindex all TVIEWs concurrently (PostgreSQL 12+)
 DO $$
 DECLARE
-    tview_name TEXT;
+    tv_table TEXT;
 BEGIN
-    FOR tview_name IN
+    FOR tv_table IN
         SELECT pg_class.relname
         FROM pg_class
         WHERE pg_class.relname LIKE 'tv_%'
           AND pg_class.relkind = 'r'
     LOOP
-        EXECUTE format('REINDEX TABLE CONCURRENTLY %I', tview_name);
+        EXECUTE format('REINDEX TABLE CONCURRENTLY %I', tv_table);
     END LOOP;
 END $$;
 ```
@@ -270,34 +270,34 @@ Use this function to get index suggestions for your TVIEWs:
 
 ```sql
 -- Trinity pattern: All TVIEWs have pk_{entity} (INT PK), id (UUID), data (JSONB)
-CREATE OR REPLACE FUNCTION suggest_tview_indexes(entity_name TEXT)
+CREATE OR REPLACE FUNCTION suggest_tview_indexes(p_ent TEXT)
 RETURNS TABLE(index_suggestion TEXT, reason TEXT, estimated_benefit TEXT) AS $$
 BEGIN
     -- Check for missing fk_* indexes (foreign keys are integers)
     RETURN QUERY
     SELECT
-        'CREATE INDEX idx_tv_' || entity_name || '_' ||
+        'CREATE INDEX idx_tv_' || p_ent || '_' ||
         information_schema.columns.column_name ||
-        ' ON tv_' || entity_name || '(' ||
+        ' ON tv_' || p_ent || '(' ||
         information_schema.columns.column_name || ')' as index_suggestion,
         'Foreign key column without index (cascade performance)' as reason,
         '10-100× speedup for cascade updates' as estimated_benefit
     FROM information_schema.columns
-    WHERE information_schema.columns.table_name = 'tv_' || entity_name
+    WHERE information_schema.columns.table_name = 'tv_' || p_ent
       AND information_schema.columns.column_name LIKE 'fk_%'
       AND information_schema.columns.column_name NOT IN (
         SELECT pg_attribute.attname
         FROM pg_index
         JOIN pg_attribute ON pg_attribute.attrelid = pg_index.indrelid
           AND pg_attribute.attnum = ANY(pg_index.indkey)
-        WHERE pg_index.indrelid = ('tv_' || entity_name)::regclass
+        WHERE pg_index.indrelid = ('tv_' || p_ent)::regclass
       );
 
     -- Suggest UUID index if missing
     RETURN QUERY
     SELECT
-        'CREATE INDEX idx_tv_' || entity_name || '_id ON tv_' ||
-        entity_name || '(id)' as index_suggestion,
+        'CREATE INDEX idx_tv_' || p_ent || '_id ON tv_' ||
+        p_ent || '(id)' as index_suggestion,
         'UUID column without index (GraphQL/API queries)' as reason,
         '50-500× speedup for ID lookups' as estimated_benefit
     WHERE NOT EXISTS (
@@ -305,24 +305,24 @@ BEGIN
         FROM pg_index
         JOIN pg_attribute ON pg_attribute.attrelid = pg_index.indrelid
           AND pg_attribute.attnum = ANY(pg_index.indkey)
-        WHERE pg_index.indrelid = ('tv_' || entity_name)::regclass
+        WHERE pg_index.indrelid = ('tv_' || p_ent)::regclass
           AND pg_attribute.attname = 'id'
     );
 
     -- Suggest GIN index for large TVIEWs
     RETURN QUERY
     SELECT
-        'CREATE INDEX tv_' || entity_name || '_data_containment ON tv_' ||
-        entity_name || ' USING GIN(data)' as index_suggestion,
+        'CREATE INDEX tv_' || p_ent || '_data_containment ON tv_' ||
+        p_ent || ' USING GIN(data)' as index_suggestion,
         'Large TVIEW without JSONB index (JSONB queries)' as reason,
         '10-100× speedup for JSONB containment queries' as estimated_benefit
-    WHERE pg_relation_size(('tv_' || entity_name)::regclass) > 1024 * 1024 * 10  -- >10MB
+    WHERE pg_relation_size(('tv_' || p_ent)::regclass) > 1024 * 1024 * 10  -- >10MB
       AND NOT EXISTS (
         SELECT 1
         FROM pg_index
         JOIN pg_attribute ON pg_attribute.attrelid = pg_index.indrelid
           AND pg_attribute.attnum = ANY(pg_index.indkey)
-        WHERE pg_index.indrelid = ('tv_' || entity_name)::regclass
+        WHERE pg_index.indrelid = ('tv_' || p_ent)::regclass
           AND pg_attribute.attname = 'data'
       );
 END;

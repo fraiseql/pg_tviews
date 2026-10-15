@@ -10,7 +10,7 @@ database that uses pg_tviews. What pg_tviews adds to an ordinary PostgreSQL rest
   come back registered and keep propagating. Covered by
   `test/sql/regress/catalog/regress_dump_restore.sql`.
 - **Physical backups** (`pg_basebackup`, PITR) and crash restarts: UNLOGGED TVIEW tables
-  (the default) have no WAL and no data in a base backup. They come back **empty** and
+  (declared `logged: false`) have no WAL and no data in a base backup. They come back **empty** and
   must be rebuilt with `tviews.pg_tviews_rebuild_all()` (or automatically, see
   [Replication](../../replication.md)).
 - The restore target needs the same pg_tviews release and the `jsonb_delta` extension
@@ -117,8 +117,8 @@ SELECT * FROM tviews.pg_tviews_replication_status();
 -- Rebuild the emptied ones, then rerun Steps 2-4 above
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
-If `pg_tviews.auto_rebuild_databases` lists the database, the rebuild runs by itself
-when recovery ends; `pg_tviews_replication_status()` then shows `needs_rebuild = false`.
+With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs it in every
+database when recovery ends (`pg_tviews.auto_rebuild_databases`, default `*`); `pg_tviews_replication_status()` then shows `needs_rebuild = false`.
 
 ## Recording Results
 

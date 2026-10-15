@@ -55,4 +55,14 @@ SELECT must((SELECT data->>'name' FROM tv_user WHERE pk_user = 2) = 'BOB', 'rows
 SELECT must(tviews.pg_tviews_create_or_replace('tv_user',
     (SELECT query FROM tviews.registry WHERE entity = 'user')) = 'unchanged', 'round trip');
 
+-- Statistics live in shared memory the library asks for when preloaded: without
+-- it, tviews.stats says so instead of showing zeros.
+DO $$
+BEGIN
+    PERFORM count(*) FROM tviews.stats;
+    PERFORM must(false, 'tviews.stats read without the library preloaded');
+EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    PERFORM must(SQLERRM LIKE '%shared_preload_libraries%', 'stats error: ' || SQLERRM);
+END $$;
+
 SELECT 'no-preload create_or_replace: PASS' AS result;

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%E2%80%9318-blue.svg)](https://www.postgresql.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.98-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.25-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.28-orange.svg)](https://github.com/fraiseql/pg_tviews/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)](https://github.com/fraiseql/pg_tviews/releases)
 
 **CI/CD Status**:
@@ -76,7 +76,7 @@ class Post: ...
 
 ## 📋 Version Status
 
-**Current Version**: `0.1.0-beta.25` (October 2026)
+**Current Version**: `0.1.0-beta.28` (October 2026)
 - **Status**: Public Beta - Feature-complete, API may change
 - **Production Use**: Suitable for evaluation, not mission-critical systems
 - **Support**: Community support via GitHub issues
@@ -192,7 +192,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **💾 Query Plan Caching**: 10× faster with cached prepared statements
 - **📦 Bulk Optimization**: N rows with just 2 queries instead of N queries
 - **🎨 Smart Patching**: 2× performance boost with optional jsonb_delta integration
-- **🚀 UNLOGGED Tables**: 2-3× write performance with automatic crash recovery
+- **🚀 UNLOGGED Tables, opt-in**: faster writes, refilled automatically after a crash
 
 ### Production-Ready
 
@@ -285,19 +285,19 @@ children. Measured with `test/sql/real_benchmark/scalar_cascade_fanout.sh … sc
 ### Kill-switch and observability
 
 ```sql
-SET pg_tviews.direct_patch_enabled = off;   -- force the recompute path everywhere
+SET pg_tviews.direct_patch_enabled = off;   -- superuser: force the recompute path everywhere
 ```
 
-`pg_tviews_queue_stats()` exposes the counters (session-cumulative):
+`tviews.stats` exposes the counters per TVIEW, from any session:
 
 ```sql
-SELECT pg_tviews_queue_stats();
--- { … "direct_patch_captured": N, "direct_patches_applied": N,
---     "direct_patch_fallbacks": N, "view_recomputes": N }
+SELECT entity, patch_captured, patch_applied, patch_fallbacks, view_recomputes
+FROM tviews.stats;
 ```
 
-An eligible update leaves `view_recomputes` unchanged and bumps
-`direct_patches_applied` — proof it skipped the view.
+An eligible update leaves `view_recomputes` unchanged and bumps `patch_applied` —
+proof it skipped the view. `pg_tviews_queue_stats()` shows the same counters for the
+calling session only.
 
 ### Upgrade note
 
@@ -308,87 +308,57 @@ an older release keep working on the recompute path until
 
 ---
 
-## 🚀 UNLOGGED Tables
+## 💾 LOGGED and UNLOGGED TVIEWs
 
-**pg_tviews** automatically creates TVIEWs as **UNLOGGED tables** for maximum write performance.
+TVIEWs are **LOGGED** tables by default: crash-safe, replicated, readable on a hot
+standby. A TVIEW whose rows can be recomputed and that needs the write speed declares
+`logged: false` and becomes an **UNLOGGED** table (no WAL for its refreshes).
 
-### Benefits
+```sql
+SELECT pg_tviews_create_or_replace('tv_post', $$ SELECT … $$, '{"logged": false}');
+CREATE UNLOGGED TABLE tv_tag AS SELECT …;                 -- the same, as DDL
+SELECT * FROM pg_tviews_replication_status();             -- what a standby can serve
+```
 
-- **⚡ 2-3× Faster Writes**: No WAL overhead for TVIEW updates
-- **🔄 Automatic Recovery**: Transparent crash recovery from base tables
-- **💾 I/O Reduction**: Less disk writes for high-frequency updates
-- **🔧 Configurable**: GUC parameter controls default behavior
+`ALTER TABLE tv_post SET LOGGED` switches one back, like the `logged` option.
 
 ### ⚠️ Hot standbys, promotion and crash restarts
 
 An UNLOGGED table is not replicated. **A hot standby cannot read an UNLOGGED
 TVIEW at all** (`ERROR: cannot access temporary or unlogged relations during
-recovery`), and promotion or a crash restart leaves it empty. If reads are
-routed to replicas, make those TVIEWs LOGGED:
-
-```sql
-SET pg_tviews.unlogged_by_default = off;              -- for new TVIEWs
-SELECT pg_tviews_set_logged('post', true);            -- existing TVIEW (rewrites it)
-SELECT * FROM pg_tviews_replication_status();         -- what a standby can serve
-```
-
-To repopulate emptied UNLOGGED TVIEWs as soon as a server leaves recovery, list
-the databases in `pg_tviews.auto_rebuild_databases` (needs a restart), or call
-`SELECT * FROM pg_tviews_rebuild_all();` after a failover or restore. See
+recovery`), and promotion or a crash restart leaves it empty. **pg_tviews** records
+which UNLOGGED TVIEWs it can trust in an UNLOGGED table the reset empties too. After a
+crash restart or a promotion, a background worker refills the reset TVIEWs of every
+database (`pg_tviews.auto_rebuild_databases`, default `*`); a write that reaches a
+reset TVIEW first refills it itself. A TVIEW that is merely empty is never refilled.
+After a restore, call `SELECT * FROM pg_tviews_rebuild_all();`. See
 [docs/operations/replication.md](docs/operations/replication.md).
-
-### Crash Recovery
-
-UNLOGGED tables are truncated on PostgreSQL crash. **pg_tviews** records which
-UNLOGGED TVIEWs it can trust in an UNLOGGED table the crash empties too, and
-refills a reset TVIEW on the first write that touches it; the startup worker above
-refills the configured databases without waiting for a write. A TVIEW that is
-merely empty is never refilled. To check one TVIEW by hand:
-
-```sql
--- Check and recover after potential crash
-SELECT pg_tviews_recover_after_crash('user_summary');
-
--- Returns true if recovery was performed, false if not needed
-```
 
 ### Configuration
 
-All limits and toggles are runtime-tunable GUCs (`SET` per-session or set in
-`postgresql.conf`); none require recompiling:
+A TVIEW is its definition and its options ([DDL reference](docs/reference/ddl.md)):
+no setting changes what it is. The settings tune limits and sessions:
 
-| GUC | Type | Default | Purpose |
-|-----|------|---------|---------|
-| `pg_tviews.max_propagation_depth` | int | 100 | Max cascade iterations before aborting |
-| `pg_tviews.max_dependency_depth` | int | 10 | Max `pg_depend` traversal depth |
-| `pg_tviews.max_queue_size` | int | 10000 | Refresh-queue backpressure limit |
-| `pg_tviews.batch_size` | int | 1000 | Max PKs per bulk-refresh statement (chunking) |
-| `pg_tviews.cache_size` | int | 10000 | Max entries per in-memory metadata cache |
-| `pg_tviews.graph_cache_enabled` | bool | on | Cache dependency graphs |
-| `pg_tviews.table_cache_enabled` | bool | on | Cache table→entity mappings |
-| `pg_tviews.audit_enabled` | bool | off | Audit logging (opt-in) |
-| `pg_tviews.unlogged_by_default` | bool | on | Create TVIEW tables UNLOGGED (not readable on standbys) |
-| `pg_tviews.auto_rebuild_databases` | string | "" | Databases whose emptied UNLOGGED TVIEWs are rebuilt when recovery ends (restart required) |
-| `pg_tviews.data_gin_index` | bool | off | Create a GIN index on `data` for new TVIEWs |
-| `pg_tviews.fillfactor` | int | 85 | Heap fillfactor for new TVIEW tables (keeps refreshes HOT) |
-| `pg_tviews.direct_patch_enabled` | bool | on | Direct-patch fast path (see above) |
-| `pg_tviews.suspend_triggers` | bool | off | Suspend trigger-based refresh (bulk loads) |
-| `pg_tviews.union_duplicate_policy` | string | error | `first` or `error` on duplicate UNION-ALL keys |
-| `pg_tviews.lock_escalation_threshold` | int | 64 | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
-| `pg_tviews.report_max_tracked` | int | 10000 | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
-| `pg_tviews.uncascaded_policy` | enum | error | `error`, `full_refresh` or `warn`: what a new TVIEW does about base tables no cascade reaches, when it declares no `uncascaded_policy` option. Read at create time and stored with the TVIEW; `error` refuses it, `full_refresh` recomputes the whole TVIEW on each write to such a table ([details](docs/reference/ddl.md#tables-no-cascade-reaches)) |
-| `pg_tviews.time_refresh` | enum | none | `none` or `external`: whether a new TVIEW whose definition reads the current time (`CURRENT_DATE`, `now()`…) is accepted, when it declares no `time_refresh` option; `external` means `tviews.pg_tviews_refresh_time_dependent()` is called at the boundary ([details](docs/reference/ddl.md#time-dependent-tviews)) |
-| `pg_tviews.log_level` | string | info | Logging verbosity |
+| GUC | Type | Default | Who sets it | Purpose |
+|-----|------|---------|-------------|---------|
+| `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
+| `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
+| `pg_tviews.max_queue_size` | int | 10000 | superuser | Refresh-queue backpressure limit |
+| `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
+| `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
+| `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
+| `pg_tviews.cache_size` | int | 10000 | any role | Max entries per in-memory metadata cache |
+| `pg_tviews.report_max_tracked` | int | 10000 | any role | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
+| `pg_tviews.auto_rebuild_databases` | string | `*` | `postgresql.conf` (restart) | Databases whose reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion: `*` every one, a list only those, empty none |
+
+The superuser-only diagnostics `pg_tviews.graph_cache_enabled`,
+`pg_tviews.table_cache_enabled` and `pg_tviews.direct_patch_enabled` (all on) are
+hidden from `SHOW ALL`; results are the same either way. Diagnostics are `DEBUG1`
+messages: `SET client_min_messages = debug1` shows them.
 
 ```sql
--- Examples
-SET pg_tviews.unlogged_by_default = true;   -- default UNLOGGED behavior
 SET pg_tviews.batch_size = 5000;            -- larger bulk-refresh chunks
 SET pg_tviews.cache_size = 50000;           -- bigger per-session caches
-
--- Alter existing TVIEWs (each rewrites the table under an exclusive lock)
-SELECT pg_tviews_set_logged('my_view', false);  -- UNLOGGED
-SELECT pg_tviews_set_logged('my_view', true);   -- LOGGED, readable on standbys
 ```
 
 > GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
@@ -406,7 +376,7 @@ reason and how to declare a full refresh instead.
 
 - **✅ Data Recovery**: All TVIEW data reconstructible from base tables
 - **✅ Transparent**: Applications work unchanged
-- **✅ Configurable**: Can disable UNLOGGED for specific use cases
+- **✅ Opt-in**: UNLOGGED only for the TVIEWs that declare it
 - **✅ Only after a reset**: An empty TVIEW is refilled only when PostgreSQL reset it, once, whatever the number of concurrent writers
 - **✅ Tested**: Comprehensive crash simulation and recovery testing
 
@@ -473,10 +443,13 @@ applied again:
 ```sql
 SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title) AS data
-    FROM app.tb_post p $$, options => '{"logged": true, "fillfactor": 85}');
--- created | unchanged | altered (storage only) | replaced (same columns, rows
+    FROM app.tb_post p $$, options => '{"fillfactor": 90}');
+-- created | unchanged | altered (options only) | replaced (same columns, rows
 -- reconciled in place) | rebuilt
 ```
+
+The options passed are the whole declaration: an option left out is at its default
+(`logged: true`, `fillfactor: 85`, …), also on an existing TVIEW.
 
 It runs the DDL as the caller and requires owning an existing TVIEW; a role that owns
 the schema and has `TRIGGER` on the base tables needs no superuser. `CREATE TABLE
@@ -487,8 +460,9 @@ code with create-only semantics. See
 #### Reading what is registered
 
 Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
-query, base tables, options, `needs_reregister`, backing view) and check
-`tviews.contract_version()`. Both follow the stability rules in
+query, every option, base tables, `needs_reregister`, backing view), `tviews.stats`
+(refresh counters per TVIEW) and check `tviews.contract_version()` (2). All three follow the
+stability rules in
 [docs/reference/read-contract.md](docs/reference/read-contract.md);
 `tviews.pg_tview_meta` and the other `pg_tview_*` tables are internal.
 
@@ -574,8 +548,11 @@ SELECT data FROM tv_post;
 -- Monitor system health
 SELECT * FROM pg_tviews_health_check();
 
--- Size, rows and indexes of each TVIEW
-SELECT * FROM pg_tviews_performance_stats();
+-- Size, HOT ratio and missing indexes of each TVIEW
+SELECT * FROM pg_tviews_profile();
+
+-- What each TVIEW's refreshes did, from any session
+SELECT * FROM tviews.stats;
 ```
 
 ---
@@ -610,14 +587,14 @@ embeds it) is rebuilt once, in dependency order.
 
 An explicit `COMMIT` catches up the same way when the transaction is still
 suspended. An implicit commit (an autocommit statement, a `DO` block) cannot: it
-logs a WARNING naming the stale TVIEWs, to be fixed with `pg_tviews_refresh(entity)`
+logs a WARNING naming the stale TVIEWs, to be fixed with `pg_tviews_refresh(tview)`
 or `pg_tviews_refresh_all()`.
 
 ### API Reference
 
 - `pg_tviews_suspend_triggers()` - Start suspension (supports nesting)
 - `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
-- `pg_tviews_refresh(entity)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
+- `pg_tviews_refresh(tview)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
 - `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
 - `pg_tviews_is_suspended()` - Check current suspension state
 - `pg_tviews_suspended_entities()` - List entities that changed during suspension

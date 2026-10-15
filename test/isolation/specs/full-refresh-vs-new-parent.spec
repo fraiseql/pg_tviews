@@ -12,11 +12,12 @@ setup
                         title text);
   INSERT INTO tb_site VALUES ('blog');
   INSERT INTO tb_post (pk_post, title) VALUES (1, 'p1');
-  SET pg_tviews.uncascaded_policy = 'full_refresh';
-  SELECT tviews.pg_tviews_create('tv_post', $$
-      SELECT p.pk_post, p.id, jsonb_build_object('title', p.title, 'site', s.name) AS data
-      FROM tb_post p CROSS JOIN tb_site s $$);
-  RESET pg_tviews.uncascaded_policy;
+  DO $$ BEGIN
+    PERFORM tviews.pg_tviews_create('tv_post', $q$
+        SELECT p.pk_post, p.id, jsonb_build_object('title', p.title, 'site', s.name) AS data
+        FROM tb_post p CROSS JOIN tb_site s $q$,
+        jsonb_build_object('uncascaded_policy', 'full_refresh'));
+  END $$;
 }
 
 teardown

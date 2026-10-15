@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: r_begin r_escalate r_rename i_begin i_insert r_commit i_waited i_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step r_begin: BEGIN;
@@ -32,9 +32,9 @@ pk_post|author|fresh
 
 
 starting permutation: i_begin i_escalate i_insert r_begin r_rename i_commit r_waited r_commit r_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step i_begin: BEGIN;

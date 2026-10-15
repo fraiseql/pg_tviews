@@ -93,14 +93,19 @@ tviews.pg_tviews_flush_and_report(
   and a `reset` made in one is undone with it: after `ROLLBACK TO SAVEPOINT`, or a
   plpgsql `EXCEPTION` handler, the next call reports again what that call had.
 - **`__typename`** is the entity in PascalCase (`blog_post` → `BlogPost`). Override it
-  with `tviews.pg_tviews_set_typename()`; NULL resets it.
+  with the `typename` option, declared with the TVIEW (`pg_tviews_create(…, options)`
+  or `pg_tviews_create_or_replace(…, options)`). The options passed are the whole
+  declaration: a replace that leaves `typename` out puts the default back.
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
   kept per transaction, not counting reported ones (kept only until the
   subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
   `SET pg_tviews.report_max_tracked = 0` turns the journal off.
 
 ```sql
-SELECT tviews.pg_tviews_set_typename('user', 'Author');
+SELECT tviews.pg_tviews_create_or_replace('tv_user', $$
+    SELECT u.pk_user, u.id, jsonb_build_object('id', u.id, 'name', u.name) AS data
+    FROM tb_user u
+$$, options => '{"typename": "Author"}');
 
 BEGIN;
 UPDATE tb_user SET name = 'Alicia' WHERE pk_user = 1;  -- refreshes tv_user and tv_post

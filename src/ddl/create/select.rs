@@ -2,7 +2,7 @@
 //! real types, and the role each column plays in a TVIEW by its name.
 
 use crate::error::{TViewError, TViewResult};
-use crate::utils::{quote_ident, quote_identifier};
+use crate::utils::ident;
 use pgrx::pg_sys;
 use std::ffi::{CStr, CString};
 
@@ -294,7 +294,7 @@ fn expand_star(sql: &str, columns: &ViewColumns) -> Option<String> {
     let list: Vec<String> = columns
         .columns
         .iter()
-        .map(|(c, _)| quote_ident(c))
+        .map(|(c, _)| ident::quote_if_needed(c))
         .collect();
     Some(format!("SELECT {} {rest}", list.join(", ")))
 }
@@ -343,15 +343,15 @@ fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewR
             format!(
                 "{}, source.{}",
                 crate::utils::quote_literal(c),
-                quote_ident(c)
+                ident::quote_if_needed(c)
             )
         })
         .collect();
     Ok(format!(
         "SELECT source.{} AS {}, gen_random_uuid() AS id, jsonb_build_object({}) AS data \
          FROM ({select_sql}) AS source",
-        quote_ident(&key),
-        quote_identifier(&format!("pk_{entity}")),
+        ident::quote_if_needed(&key),
+        ident::quoted(&format!("pk_{entity}")),
         fields.join(", ")
     ))
 }

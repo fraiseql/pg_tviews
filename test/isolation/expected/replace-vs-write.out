@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: x_begin x_replace w_write x_commit w_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step x_begin: BEGIN;
@@ -31,9 +31,9 @@ pk_post|tview               |fresh
 
 
 starting permutation: w_write x_begin x_replace x_commit w_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step w_write: UPDATE tb_post SET title = 'changed' WHERE pk_post = 1;

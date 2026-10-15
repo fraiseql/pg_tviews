@@ -4,7 +4,7 @@ use super::{
     Column, Flags, HashSet, IdentityKind, Level, Link, MAX_DEPTH, Occurrence, Oid, Origin, Piece,
     Resolved, Root, RteInfo, Scope, TViewError, TViewResult, WINDOW_REASON, WalkedIdentity, Walker,
     conjuncts, cstr, elements, in_clause, is_required_sublink, list_len, opaque_reason,
-    output_position, pg_sys, quote_ident, referenced_columns, setop_leaves, sql_occs, tag,
+    output_position, pg_sys, quote_if_needed, referenced_columns, setop_leaves, sql_occs, tag,
     top_opaque_reason, unnest_array, view_query, windows_partitioned,
 };
 
@@ -250,6 +250,26 @@ impl Walker<'_> {
                 self.graph.data = self.data_shape(query, &tles);
             }
 
+            Ok(self.outputs(query, link, opaque, &skipped))
+        }
+    }
+
+    /// What each output column of `query` stands for to the level above: itself
+    /// when it passes through (a column of the GROUP BY, DISTINCT ON and every
+    /// PARTITION BY key, or equal to one), an inbound-only link for the other
+    /// columns of a first-row level, opaque otherwise. `skipped` marks the columns
+    /// nothing above reads.
+    ///
+    /// SAFETY: `query` is the valid Query of the innermost level.
+    unsafe fn outputs(
+        &mut self,
+        query: *mut pg_sys::Query,
+        link: Link,
+        opaque: bool,
+        skipped: &[bool],
+    ) -> Vec<Resolved> {
+        // SAFETY: fields of a valid Query; its target entries belong to it.
+        unsafe {
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
             let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
             // The columns of a GROUP BY or DISTINCT ON key, and whether an output
@@ -280,6 +300,11 @@ impl Walker<'_> {
                         || matches!(self.resolve_expr((*tle).expr.cast()),
                                 Resolved::Col(c) if self.equal_to_key(&c, keys))
                 };
+            // The other columns of a first-row level link inbound only.
+            let first_row = link != Link::Top
+                && !opaque
+                && !grouped
+                && ((*query).hasDistinctOn || !partitions.is_empty());
             let pass_through: Vec<bool> = tles
                 .iter()
                 .zip(skipped.iter().copied())
@@ -295,15 +320,9 @@ impl Walker<'_> {
                                     .all(|(clause, keys)| keyed(tle, *clause, keys))))
                 })
                 .collect();
-            // The other columns of a first-row level link inbound only.
-            let first_row = link != Link::Top
-                && !opaque
-                && !grouped
-                && ((*query).hasDistinctOn || !partitions.is_empty());
-            Ok(tles
-                .iter()
+            tles.iter()
                 .zip(pass_through)
-                .zip(skipped)
+                .zip(skipped.iter().copied())
                 .map(|((&tle, pass), skip)| {
                     if pass {
                         return self.output((*tle).expr.cast());
@@ -315,7 +334,7 @@ impl Walker<'_> {
                         _ => Resolved::Opaque,
                     }
                 })
-                .collect())
+                .collect()
         }
     }
 
@@ -485,7 +504,7 @@ impl Walker<'_> {
             let relkind = pg_sys::get_rel_relkind(relid).cast_unsigned();
             let relname = cstr(pg_sys::get_rel_name(relid));
             let nsp = cstr(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid)));
-            let qualified = format!("{}.{}", quote_ident(&nsp), quote_ident(&relname));
+            let qualified = format!("{}.{}", quote_if_needed(&nsp), quote_if_needed(&relname));
             (relkind, relname, qualified)
         };
         match relkind {

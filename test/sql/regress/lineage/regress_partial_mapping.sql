@@ -16,8 +16,8 @@ DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
--- Tables no cascade reaches are what this file classifies: the TVIEWs accept them.
-SET pg_tviews.uncascaded_policy = 'warn';
+-- Tables no cascade reaches are what this file classifies: the TVIEWs accept
+-- them (option uncascaded_policy "warn", or "full_refresh" at the end).
 
 CREATE TABLE tb_order (pk_order bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                        id uuid NOT NULL DEFAULT gen_random_uuid(), ref text);
@@ -67,7 +67,7 @@ SELECT pg_tviews_create('tv_basket', $$
            'labels', (SELECT jsonb_agg(s.label ORDER BY s.label) FROM tb_line l
                       JOIN tb_sku s ON s.code = l.sku WHERE l.fk_order = o.pk_order),
            'skus', (SELECT count(*) FROM tb_sku)) AS data
-  FROM tb_order o $$);
+  FROM tb_order o $$, '{"uncascaded_policy": "warn"}');
 UPDATE tb_sku SET label = 'A2' WHERE code = 'a';
 DO $$ BEGIN
     IF (SELECT data->'labels' FROM tv_basket WHERE pk_basket = 1)
@@ -80,12 +80,10 @@ END $$;
 
 -- ── full_refresh still refreshes everything ─────────────────────────────────
 DROP TABLE tv_order;
-SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_order', $$
   SELECT o.pk_order, o.id, o.ref,
          jsonb_build_object('ref', o.ref, 'orders', (SELECT count(*) FROM tb_order)) AS data
-  FROM tb_order o $$);
-RESET pg_tviews.uncascaded_policy;
+  FROM tb_order o $$, '{"uncascaded_policy": "full_refresh"}');
 INSERT INTO tb_order (ref) VALUES ('o4');
 DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)

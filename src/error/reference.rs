@@ -17,7 +17,7 @@ const PAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/error-reference.md
 /// is named, and then needs an example in [`examples`].
 const fn variant_name(e: &TViewError) -> &'static str {
     match e {
-        TViewError::MetadataNotFound { .. } => "MetadataNotFound",
+        TViewError::TviewNotFound { .. } => "TviewNotFound",
         TViewError::RelationExists { .. } => "RelationExists",
         TViewError::InvalidInput { .. } => "InvalidInput",
         TViewError::DefinitionRefused { .. } => "DefinitionRefused",
@@ -32,6 +32,8 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::JsonbDeltaMissing => "JsonbDeltaMissing",
         TViewError::QueueFull { .. } => "QueueFull",
         TViewError::WrongState { .. } => "WrongState",
+        TViewError::PrepareHoldsRefill { .. } => "PrepareHoldsRefill",
+        TViewError::DuplicateKey { .. } => "DuplicateKey",
         TViewError::CatalogError { .. } => "CatalogError",
         TViewError::SpiError { .. } => "SpiError",
         TViewError::SerializationError { .. } => "SerializationError",
@@ -42,9 +44,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
 fn examples() -> Vec<TViewError> {
     let p = |s: &str| format!("<{s}>");
     vec![
-        TViewError::MetadataNotFound {
-            entity: p("entity"),
-        },
+        TViewError::TviewNotFound { name: p("tview") },
         TViewError::RelationExists { name: p("name") },
         TViewError::InvalidInput {
             parameter: p("parameter"),
@@ -91,6 +91,12 @@ fn examples() -> Vec<TViewError> {
         },
         TViewError::WrongState {
             reason: p("reason"),
+        },
+        TViewError::PrepareHoldsRefill { table: p("table") },
+        TViewError::DuplicateKey {
+            tview: p("table"),
+            key_column: p("key column"),
+            key: p("key"),
         },
         TViewError::CatalogError {
             operation: p("operation"),
@@ -150,12 +156,6 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
         "src/hooks/ctas.rs",
         PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
         "`CREATE TABLE tv_* AS` names a TVIEW that already exists.",
-    ),
-    (
-        "src/refresh/row.rs",
-        PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
-        "A UNION backing view returns two rows for one key \
-         (`pg_tviews.union_duplicate_policy = 'error'`).",
     ),
     (
         "src/ddl/uncascaded.rs",
@@ -244,7 +244,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 18, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 20, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

@@ -106,9 +106,8 @@ extension_sql!(
         -- TVIEW's keys. regclass, like view_oid: a dump names
         -- them, so a restored row names the restored tables.
         uncascaded_oids REGCLASS[] NOT NULL DEFAULT '{}',
-        -- pg_tviews.uncascaded_policy when the TVIEW was created: what a write to
-        -- one of uncascaded_oids does. The row trigger reads this, never the
-        -- writing session's setting.
+        -- The TVIEW's uncascaded_policy option: what a write to one of
+        -- uncascaded_oids does.
         uncascaded_policy TEXT NOT NULL DEFAULT 'error'
             CHECK (uncascaded_policy IN ('warn', 'error', 'full_refresh')),
         -- The output column that names this TVIEW's rows (ADR 0169), read from the
@@ -184,7 +183,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 5';
+    AS 'SELECT 6';
     ",
     name = "create_metadata_tables",
 );
@@ -225,7 +224,7 @@ GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
     requires = ["create_metadata_tables"],
 );
 
-// The read contract for tools (ADR 0136 Decision 4). Plain SQL over
+// The read contract for tools (ADR 0136 Decision 4; version 2, ADR 0211). Plain SQL over
 // the internal tables and the system catalogs, calling no function of the library,
 // so it can be read without the library, with a mismatched one, and on a standby.
 // contract_version() covers the view's columns, the `options` keys and the
@@ -236,7 +235,7 @@ extension_sql!(
 CREATE FUNCTION @extschema@.contract_version()
 RETURNS integer
 LANGUAGE sql STABLE PARALLEL SAFE
-AS 'SELECT 1';
+AS 'SELECT 2';
 
 COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
@@ -251,14 +250,6 @@ SELECT
     COALESCE(c.relname::text, 'tv_' || m.entity) AS name,
     m.entity,
     m.definition AS query,
-    COALESCE(
-        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
-         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
-               WHERE r.entity = m.entity) x
-         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
-         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
-        '{}') AS base_tables,
-    c.relpersistence = 'p' AS logged,
     CASE WHEN c.oid IS NOT NULL THEN pg_catalog.jsonb_build_object(
         'logged', c.relpersistence = 'p',
         'fillfactor', COALESCE(
@@ -275,38 +266,45 @@ SELECT
               ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
             WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
               AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
-        'group_keys', m.group_keys) END AS options,
-    m.needs_reregister,
+        'group_keys', m.group_keys,
+        'uncascaded_policy', m.uncascaded_policy,
+        'uncascaded_tables', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
+             FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
+                             pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
+            '{}'),
+        'function_reads', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
+             FROM (SELECT r.function,
+                          COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
+                                       FILTER (WHERE r.relation IS NOT NULL),
+                                   '[]') AS tables
+                   FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
+                                   pg_catalog.unnest(m.function_read_tables))
+                        WITH ORDINALITY AS r(function, relation, n)
+                   GROUP BY r.function) f),
+            '{}'),
+        'time_refresh', m.time_refresh,
+        'typename', m.graphql_typename) END AS options,
     v.oid::pg_catalog.regclass AS view,
-    m.uncascaded_oids AS uncascaded_tables,
-    m.uncascaded_policy,
+    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
+         ELSE ARRAY(SELECT c->>'name'
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
+    COALESCE(
+        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
+               WHERE r.entity = m.entity) x
+         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
+         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
+        '{}') AS base_tables,
     COALESCE(
         (SELECT pg_catalog.jsonb_object_agg(
                     (e->>'relid')::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text,
                     e->>'kind')
          FROM pg_catalog.jsonb_array_elements(m.plan->'tables') e),
         '{}') AS cascade_kinds,
-    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
-         ELSE ARRAY(SELECT c->>'name'
-                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
-    COALESCE(
-        (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
-         FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
-                         pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
-        '{}') AS uncascaded_table_policies,
-    COALESCE(
-        (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
-         FROM (SELECT r.function,
-                      COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
-                                   FILTER (WHERE r.relation IS NOT NULL),
-                               '[]') AS tables
-               FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
-                               pg_catalog.unnest(m.function_read_tables))
-                    WITH ORDINALITY AS r(function, relation, n)
-               GROUP BY r.function) f),
-        '{}') AS function_reads,
+    m.uncascaded_oids AS uncascaded_tables,
     m.time_dependent,
-    m.time_refresh,
     CASE WHEN c.oid IS NOT NULL THEN ARRAY(
         SELECT i.indexrelid::pg_catalog.regclass
         FROM pg_catalog.pg_index i
@@ -314,7 +312,8 @@ SELECT
         WHERE i.indrelid = c.oid AND ic.relname = ANY (m.managed_index_names)
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                           WHERE k.conindid = i.indexrelid)
-        ORDER BY ic.relname) END AS managed_indexes
+        ORDER BY ic.relname) END AS managed_indexes,
+    m.needs_reregister
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -548,11 +547,10 @@ CREATE TRIGGER pg_tview_meta_changed
 -- checks that the caller owns it.
 REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_refresh_all(),
-    @extschema@.pg_tviews_refresh_all_entities(),
     @extschema@.pg_tviews_rebuild_all(BOOLEAN),
     @extschema@.pg_tviews_reregister_all(BOOLEAN),
-    @extschema@.pg_tviews_set_logged(TEXT, BOOLEAN),
     @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
+    @extschema@.pg_tviews_stats_reset(TEXT),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
     ",
@@ -605,11 +603,12 @@ REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_audit_write(JSONB) FROM PUBLIC;
 extension_sql!(
     r"
 CREATE FUNCTION @extschema@.pg_tviews_profile(
-    p_entity    TEXT   DEFAULT NULL,
+    tview       TEXT   DEFAULT NULL,
     fanout_warn BIGINT DEFAULT 1000)
 RETURNS TABLE (
     entity                      TEXT,
-    tview                       TEXT,
+    schema                      TEXT,
+    name                        TEXT,
     persistence                 TEXT,
     replica_readable            BOOLEAN,
     rows_estimate               BIGINT,
@@ -644,7 +643,14 @@ DECLARE
     all_visible  BIGINT;
     stats_reset  TIMESTAMPTZ := (SELECT d.stats_reset FROM pg_stat_database d
                                  WHERE d.datname = current_database());
+    chosen       TEXT;
+    qualified    TEXT;
 BEGIN
+    -- The TVIEW named as every function names one (ADR 0211).
+    IF tview IS NOT NULL THEN
+        chosen := @extschema@.pg_tviews_entity_of(tview);
+    END IF;
+
     vis_schema := (SELECT n.nspname FROM pg_extension e
                    JOIN pg_namespace n ON n.oid = e.extnamespace
                    WHERE e.extname = 'pg_visibility');
@@ -664,11 +670,13 @@ BEGIN
         FROM @extschema@.pg_tview_meta m
         JOIN pg_class c ON c.oid = m.table_oid
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE p_entity IS NULL OR m.entity = p_entity
+        WHERE chosen IS NULL OR m.entity = chosen
         ORDER BY m.entity
     LOOP
         entity           := r.ent;
-        tview            := quote_ident(r.nsp) || '.' || quote_ident(r.tbl);
+        schema           := r.nsp;
+        name             := r.tbl;
+        qualified        := quote_ident(r.nsp) || '.' || quote_ident(r.tbl);
         persistence      := CASE r.pers WHEN 'u' THEN 'unlogged' ELSE 'logged' END;
         replica_readable := r.pers = 'p';
         rows_estimate    := CASE WHEN r.reltuples < 0 THEN NULL ELSE r.reltuples::BIGINT END;
@@ -746,7 +754,7 @@ BEGIN
         FOREACH col IN ARRAY missing_propagation_indexes LOOP
             warnings := warnings || format(
                 '%s has no index: a cascade into %s scans the whole table. Run pg_tviews_ensure_propagation_indexes(%L)',
-                col, tview, r.ent);
+                col, qualified, r.ent);
         END LOOP;
         IF n_tup_upd > 1000 AND hot_ratio < 0.5 THEN
             FOR idx IN
@@ -777,7 +785,7 @@ BEGIN
         END LOOP;
         IF fillfactor = 100 AND n_tup_upd > 0 AND n_tup_upd > coalesce(rows_estimate, 0) THEN
             warnings := warnings ||
-                'fillfactor 100 on a frequently updated TVIEW: refreshed rows cannot stay on their page (see pg_tviews.fillfactor)'::TEXT;
+                'fillfactor 100 on a frequently updated TVIEW: refreshed rows cannot stay on their page (option fillfactor, default 85)'::TEXT;
         END IF;
         IF toast_bytes > 0 AND toast_bytes > 0.3 * (heap_bytes + toast_bytes) THEN
             warnings := warnings || format(
@@ -793,7 +801,7 @@ BEGIN
         END LOOP;
         IF r.pers = 'u' THEN
             warnings := warnings ||
-                'UNLOGGED: not readable on hot standbys, empty after promotion or a crash restart (pg_tviews_set_logged)'::TEXT;
+                'UNLOGGED: not readable on hot standbys, empty after promotion or a crash restart (option logged)'::TEXT;
         END IF;
         IF rows_estimate > 0 AND n_dead_tup > 0.2 * rows_estimate THEN
             warnings := warnings || format(

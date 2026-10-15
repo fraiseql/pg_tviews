@@ -186,8 +186,8 @@ a materialized view) is refused unless it declares what a write to that table do
 
 ```sql
 SELECT * FROM pg_tviews_health_check();
-SELECT * FROM pg_tviews_performance_stats();
-SELECT pg_tviews_queue_stats();   -- this session's current transaction
+SELECT * FROM pg_tviews_profile();   -- size, HOT ratio, missing indexes per TVIEW
+SELECT * FROM tviews.stats;          -- refresh counters per TVIEW, from any session
 ```
 
 ## Troubleshooting

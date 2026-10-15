@@ -220,8 +220,8 @@ all, so no policy saw it and `REFRESH MATERIALIZED VIEW` left the TVIEW stale (#
   a read outside every UNION maps to the roots of all branches (one mapping query
   each, combined), and a read that can meet a branch without a root is `all_keys`.
   Such a TVIEW is a union like a set-operation definition: rows are recomputed, and
-  a key returned twice is refused by `union_duplicate_policy`, on the bulk refresh
-  path too, as an ERROR that fails the write.
+  a key returned twice fails the write, on every path (`21000`,
+  [ADR 0216](0216-union-keys.md)).
 - **Materialized views.** A matview read is an occurrence (and a base table) that is
   always `all_keys`: no trigger can see its rows. The policy decides at create;
   under `full_refresh` the `ProcessUtility` hook refreshes the TVIEWs listing the

@@ -1,6 +1,6 @@
 //! Physical replication and UNLOGGED TVIEWs.
 //!
-//! An UNLOGGED `tv_*` table (the default, `pg_tviews.unlogged_by_default`) is
+//! An UNLOGGED `tv_*` table (option `logged: false`) is
 //! not WAL-logged: a hot standby refuses to read it, and promotion or a crash
 //! restart resets it to its empty init fork. These functions let clients see
 //! which TVIEWs a standby can serve, let deploy tooling rebuild the emptied
@@ -9,8 +9,7 @@
 //! [`pg_tviews_rebuild_all`] once recovery has finished.
 
 use crate::error::{TViewError, TViewResult};
-use crate::utils::quote_identifier;
-use pgrx::pg_sys::panic::ErrorReport;
+use crate::utils::ident;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +35,7 @@ impl TviewRelation {
              JOIN pg_namespace n ON n.oid = t.relnamespace \
              WHERE $1::text IS NULL OR m.entity = $1 \
              ORDER BY m.entity",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         );
         Spi::connect(|client| {
             let args = [crate::utils::spi::text(entity)];
@@ -59,11 +58,7 @@ impl TviewRelation {
     }
 
     fn qualified(&self, name: &str) -> String {
-        format!(
-            "{}.{}",
-            quote_identifier(&self.schema),
-            quote_identifier(name)
-        )
+        format!("{}.{}", ident::quoted(&self.schema), ident::quoted(name))
     }
 
     /// Whether the `tv_*` table has no rows.
@@ -98,18 +93,6 @@ fn in_recovery() -> bool {
     unsafe { pg_sys::RecoveryInProgress() }
 }
 
-/// Whether a hot standby can read `tv_<entity>`: true for a LOGGED table, false
-/// for an UNLOGGED one, NULL for an unknown entity.
-///
-/// # Errors
-/// Returns an error if the catalog query fails.
-#[pg_extern]
-fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorReport> {
-    Ok(TviewRelation::load(Some(entity))?
-        .first()
-        .map(|r| !r.unlogged))
-}
-
 /// Replication state of every TVIEW, safe to call on a standby.
 ///
 /// `is_empty` and `needs_rebuild` are NULL for an UNLOGGED TVIEW during
@@ -118,21 +101,9 @@ fn pg_tviews_is_replica_readable(entity: &str) -> Result<Option<bool>, ErrorRepo
 ///
 /// # Errors
 /// Returns an error if a catalog query or an emptiness probe fails.
-#[pg_extern]
-#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
-fn pg_tviews_replication_status() -> Result<
-    TableIterator<
-        'static,
-        (
-            name!(entity, String),
-            name!(persistence, String),
-            name!(replica_readable, bool),
-            name!(is_empty, Option<bool>),
-            name!(needs_rebuild, Option<bool>),
-        ),
-    >,
-    ErrorReport,
-> {
+#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_replication_status()
+pub(crate) fn replication_status()
+-> TViewResult<Vec<(String, String, bool, Option<bool>, Option<bool>)>> {
     let recovering = in_recovery();
     let relations = TviewRelation::load(None)?;
     let mut rows = Vec::new();
@@ -157,28 +128,12 @@ fn pg_tviews_replication_status() -> Result<
             needs_rebuild,
         ));
     }
-    Ok(TableIterator::new(rows))
+    Ok(rows)
 }
 
-/// Rebuild TVIEWs from their backing views, dependencies first, and return
-/// each rebuilt entity with its row count, in rebuild order.
-///
-/// With `only_empty` (the default) only the UNLOGGED TVIEWs PostgreSQL reset
-/// are filled: run it after a promotion, a crash restart or a restore. With
-/// `only_empty => false` every TVIEW is rebuilt.
-///
-/// # Errors
-/// Returns an error during recovery, or if a catalog query or a refresh fails.
-#[pg_extern]
-#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
-fn pg_tviews_rebuild_all(
-    only_empty: default!(bool, true),
-) -> Result<TableIterator<'static, (name!(entity, String), name!(rows, i64))>, ErrorReport> {
-    crate::revision::check();
-    Ok(TableIterator::new(rebuild_all(only_empty)?))
-}
-
-/// See [`pg_tviews_rebuild_all`].
+/// Rebuild TVIEWs from their backing views, dependencies first, and return each
+/// rebuilt entity with its row count, in rebuild order: only the UNLOGGED TVIEWs
+/// PostgreSQL reset with `only_empty`, every TVIEW otherwise.
 ///
 /// # Errors
 /// Returns an error during recovery, or if a catalog query or a refresh fails.
@@ -194,7 +149,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
     let mut targets = TviewRelation::load(None)?;
-    let graph = crate::flush::EntityDepGraph::load()?;
+    let graph = crate::cache::graph()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order
@@ -213,7 +168,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
             }
         } else {
             // Every target is rebuilt, dependencies first: no cascade needed.
-            crate::admin::rebuild_one(&rel.entity)?;
+            crate::refresh::full::rebuild_one(&rel.entity)?;
         }
         // Counted as its owner, as it was rebuilt: the caller may not read it.
         let _owner = crate::owner::AsOwner::of_entity(&rel.entity)?;
@@ -261,44 +216,6 @@ fn dependencies_first(depends_on: &HashMap<String, Vec<String>>) -> Vec<String> 
         visit(entity, depends_on, &mut seen, &mut out);
     }
     out
-}
-
-/// Switch `tv_<entity>` to LOGGED (`logged => true`, readable on standbys) or
-/// back to UNLOGGED. `ALTER TABLE … SET [UN]LOGGED` rewrites the whole table
-/// under an ACCESS EXCLUSIVE lock.
-///
-/// # Errors
-/// Returns an error if the entity is unknown or the `ALTER TABLE` fails.
-#[pg_extern]
-fn pg_tviews_set_logged(entity: &str, logged: bool) -> Result<(), ErrorReport> {
-    crate::revision::check();
-    let rel = TviewRelation::load(Some(entity))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        })?;
-    crate::owner::require_owner(rel.table_oid, &format!("tv_{entity}"))?;
-    if logged != rel.unlogged {
-        return Ok(());
-    }
-    // A reset TVIEW is filled before it is logged: a LOGGED one is never filled.
-    if logged {
-        crate::lifecycle::validity::fill_if_reset(entity)?;
-    }
-    let persistence = if logged { "LOGGED" } else { "UNLOGGED" };
-    let sql = format!(
-        "ALTER TABLE {} SET {persistence}",
-        rel.qualified(&rel.table)
-    );
-    crate::utils::spi_run_ddl(&sql).map_err(|error| TViewError::SpiError { query: sql, error })?;
-    // Its rows were trusted while it was LOGGED.
-    if logged {
-        crate::lifecycle::validity::forget(rel.table_oid)?;
-    } else {
-        crate::lifecycle::validity::mark(rel.table_oid)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

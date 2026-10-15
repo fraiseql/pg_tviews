@@ -10,7 +10,7 @@ use super::Policy;
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
-use crate::utils::quote_identifier;
+use crate::utils::ident;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
@@ -35,11 +35,11 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     }
     let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?
         .iter()
-        .map(|c| format!("v.{}", quote_identifier(c)))
+        .map(|c| format!("v.{}", ident::quoted(c)))
         .collect::<Vec<_>>()
         .join(", ");
     let key_type = meta.key_type()?;
-    let key = quote_identifier(&meta.identity.column);
+    let key = ident::quoted(&meta.identity.column);
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let sql = format!(
         "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v \

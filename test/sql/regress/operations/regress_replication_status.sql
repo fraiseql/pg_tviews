@@ -1,5 +1,5 @@
 -- Regression test for issue #75:
---   "UNLOGGED TVIEWs (the default) are unreadable on hot standbys; empty after
+--   "UNLOGGED TVIEWs are unreadable on hot standbys; empty after
 --    promotion."
 --
 -- PostgreSQL refuses to read UNLOGGED relations during recovery and resets them
@@ -7,9 +7,9 @@
 -- such a TVIEW only lazily, on the first write that touched it.
 --
 -- Correct behaviour: clients can tell which TVIEWs a standby can serve
--- (pg_tviews_is_replica_readable / pg_tviews_replication_status), deploy tooling
--- can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a TVIEW
--- can be switched to LOGGED (pg_tviews_set_logged). TRUNCATE plus deleting the
+-- (pg_tviews_replication_status, tviews.registry.options->'logged'), deploy
+-- tooling can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a
+-- TVIEW can be switched to LOGGED (ALTER TABLE … SET LOGGED, or the option). TRUNCATE plus deleting the
 -- rows of tviews.pg_tview_valid stands in for the init-fork reset here (it
 -- empties both); test/replication/promote_rebuild.sh runs a real standby.
 --
@@ -44,29 +44,24 @@ INSERT INTO tb_user (name) VALUES ('ann'), ('bob');
 INSERT INTO tb_post (fk_user, title) VALUES (1, 'p1'), (2, 'p2'), (2, 'p3');
 INSERT INTO tb_tag (label) VALUES ('t1');
 
--- Two UNLOGGED TVIEWs (the default), post embedding user, and one LOGGED.
-CREATE TABLE tv_user AS
+-- Two UNLOGGED TVIEWs, post embedding user, and one LOGGED (the default).
+CREATE UNLOGGED TABLE tv_user AS
 SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
-CREATE TABLE tv_post AS
+CREATE UNLOGGED TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user,
        jsonb_build_object('title', p.title, 'user', tv_user.data) AS data
 FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
 CREATE TABLE tv_tag AS
 SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
-COMMIT;
 
 -- ========================================================================
 -- Cycle 1: detection
 -- ========================================================================
 DO $$ BEGIN
-  IF pg_tviews_is_replica_readable('user') OR NOT pg_tviews_is_replica_readable('tag') THEN
-    RAISE EXCEPTION '#75 FAIL: is_replica_readable user=% tag=%',
-      pg_tviews_is_replica_readable('user'), pg_tviews_is_replica_readable('tag');
-  END IF;
-  IF pg_tviews_is_replica_readable('nope') IS NOT NULL THEN
-    RAISE EXCEPTION '#75 FAIL: is_replica_readable of an unknown entity should be NULL';
+  IF (SELECT array_agg(entity || ':' || (options->>'logged') ORDER BY entity) FROM tviews.registry)
+     IS DISTINCT FROM ARRAY['post:false', 'tag:true', 'user:false'] THEN
+    RAISE EXCEPTION '#75 FAIL: registry logged %',
+      (SELECT array_agg(entity || ':' || (options->>'logged') ORDER BY entity) FROM tviews.registry);
   END IF;
   IF (SELECT array_agg(entity || ':' || persistence || ':' || replica_readable
                        || ':' || is_empty || ':' || needs_rebuild ORDER BY entity)
@@ -123,18 +118,19 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
--- Cycle 3: set_logged switches persistence (and back)
+-- Cycle 3: ALTER TABLE switches persistence (and back)
 -- ========================================================================
-SELECT pg_tviews_set_logged('user', true);
+ALTER TABLE tv_user SET LOGGED;
 DO $$ BEGIN
-  IF NOT pg_tviews_is_replica_readable('user') OR (SELECT count(*) FROM tv_user) <> 2 THEN
-    RAISE EXCEPTION '#75 FAIL: set_logged(user, true)';
+  IF NOT (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user')
+     OR (SELECT count(*) FROM tv_user) <> 2 THEN
+    RAISE EXCEPTION '#75 FAIL: SET LOGGED';
   END IF;
 END $$;
-SELECT pg_tviews_set_logged('user', false);
+ALTER TABLE tv_user SET UNLOGGED;
 DO $$ BEGIN
-  IF pg_tviews_is_replica_readable('user') THEN
-    RAISE EXCEPTION '#75 FAIL: set_logged(user, false)';
+  IF (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user') THEN
+    RAISE EXCEPTION '#75 FAIL: SET UNLOGGED';
   END IF;
 END $$;
 

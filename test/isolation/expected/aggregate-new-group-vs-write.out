@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: a_begin a_insert b_begin b_insert a_commit b_commit b_check
-pg_tviews_create_aggregate                  
---------------------------------------------
-TVIEW 'tv_user_summary' created successfully
+pg_tviews_create                    
+------------------------------------
+TVIEW public.tv_user_summary created
 (1 row)
 
 step a_begin: BEGIN;

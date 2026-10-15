@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion in every
+  database, unconfigured** (#215): `pg_tviews.auto_rebuild_databases` defaults to
+  `*`. One launcher starts a worker per database, one at a time; each exits when
+  done. A list restricts it to those databases; an empty value disables it. A
+  database without the extension is skipped quietly.
+
+- **Read contract v2** (ADR 0211): `tviews.contract_version()` returns `2`.
+  `tviews.registry` drops the columns `options` now carries: `logged`
+  (`options->'logged'`), `uncascaded_policy` (`options->>'uncascaded_policy'`),
+  `uncascaded_table_policies` (`options->'uncascaded_tables'`), `function_reads`
+  (`options->'function_reads'`) and `time_refresh` (`options->>'time_refresh'`). Its
+  columns are, in order: `schema`, `name`, `entity`, `query`, `options`, `view`,
+  `identity`, `base_tables`, `cascade_kinds`, `uncascaded_tables`, `time_dependent`,
+  `managed_indexes`, `needs_reregister`.
+
+- **One name for a TVIEW across the API** (#211, ADR 0211). Every function acting on
+  one TVIEW takes it as its first parameter, `tview`, spelled as its entity
+  (`post`), `tv_post`, or `schema.tv_post`, quoted or not: `pg_tviews_refresh`,
+  `pg_tviews_reregister`, `pg_tviews_refresh_time_dependent`,
+  `pg_tviews_ensure_propagation_indexes`, `pg_tviews_show_cascade_path`,
+  `pg_tviews_mapping_query`, `pg_tviews_read_set_queries`, `pg_tviews_profile`,
+  `pg_tviews_create`, `pg_tviews_create_or_replace`, `pg_tviews_drop`. Named arguments
+  `tview_name =>`, `entity =>`, `entity_name =>` and `p_entity =>` become `tview =>`. A
+  name that names no TVIEW fails with `42704` and `TVIEW <name> does not exist`.
+  Messages name the TVIEW's table (`TVIEW public.tv_post created`, `… dropped`).
+  `pg_tviews_create_or_replace` with an unqualified name changes the existing TVIEW
+  wherever it lives.
+- **Removed functions** (ADR 0211), each with what replaces it:
+  `pg_tviews_create_aggregate` (`pg_tviews_create(…, '{"group_keys": …}')`),
+  `pg_tviews_refresh_all_entities` (`pg_tviews_refresh_all()`),
+  `pg_tviews_recover_after_crash` (`pg_tviews_rebuild_all()`),
+  `pg_tviews_set_logged` (the `logged` option, or `ALTER TABLE … SET [UN]LOGGED`),
+  `pg_tviews_is_replica_readable` (`pg_tviews_replication_status()`, or
+  `registry.options->'logged'`), `pg_tviews_performance_stats` (`pg_tviews_profile()`)
+  and `pg_tviews_set_typename` (the `typename` option).
+- **`pg_tviews_show_cascade_path` returns `entity`** (was `entity_name`);
+  **`pg_tviews_profile` returns `schema` and `name`** (was `tview`, now its parameter).
+
+- **A TVIEW is its definition and its options; no setting changes it** (ADR 0220).
+  These settings are removed, and setting one fails: `pg_tviews.unlogged_by_default`,
+  `pg_tviews.fillfactor`, `pg_tviews.data_gin_index` (now options only),
+  `pg_tviews.uncascaded_policy`, `pg_tviews.time_refresh` (options only),
+  `pg_tviews.suspend_triggers` (use `pg_tviews_suspend_triggers()`, which records and
+  refreshes what it suspends) and `pg_tviews.log_level` (diagnostics are `DEBUG1`
+  messages: `client_min_messages = debug1`). A `postgresql.conf` or `ALTER ROLE … SET`
+  naming one must drop it.
+- **TVIEWs are LOGGED by default.** `logged: false` (or `CREATE UNLOGGED TABLE tv_x
+  AS`) makes one UNLOGGED. The other defaults are fixed: fillfactor 85, no GIN index on
+  `data`, `uncascaded_policy` `error`. Existing TVIEWs keep their tables.
+- **`pg_tviews_create_or_replace()` options are the whole declaration**: an option not
+  passed is at its default, also on an existing TVIEW. It kept the TVIEW's current
+  value. Pass every option the TVIEW should have: `tviews.registry.options` lists them.
+- **Settings that decide whether a write or a creation succeeds are a superuser's**:
+  `max_propagation_depth`, `max_dependency_depth`, `max_queue_size`,
+  `lock_escalation_threshold`, `audit_enabled`. The cache and direct-patch switches
+  are a superuser's too, and hidden from `SHOW ALL`.
+
+- **A UNION TVIEW whose branches return one key twice fails on every path with
+  `21000`** (#216, ADR 0216): creation, a write refreshing one key or several,
+  `pg_tviews_refresh()`, `pg_tviews_refresh_all()`, the refill of a reset UNLOGGED
+  TVIEW and the reconcile of a replaced definition. Creation and full refreshes
+  failed with the table's raw `23505`; a single-key write failed with `ON CONFLICT
+  DO UPDATE command cannot affect row a second time`.
+- **`pg_tviews.union_duplicate_policy` is removed.** Its `first` value kept an
+  arbitrary row, on one path in five. Keep one row per key in the definition
+  instead: `DISTINCT ON` over the UNION, ordered by preference.
+
+### Added
+
+- **`tviews.stats`: per-TVIEW refresh statistics readable from any session** (#220,
+  ADR 0221): `view_recomputes`, `noop_skipped`, `patch_captured`, `patch_applied`,
+  `patch_fallbacks`, `propagation_pruned`, `rows_written`, `rows_deleted`,
+  `full_refreshes`, `refresh_ms`, `stats_reset` and `untracked`, per TVIEW of the
+  database, cumulative since the server started or `pg_tviews_stats_reset(tview)`
+  (an operator's). Kept in shared memory (4096 TVIEWs per cluster) and merged once
+  per transaction; needs `shared_preload_libraries = 'pg_tviews'`.
+
+- **`tviews.pg_tviews_entity_of(tview)`**: the entity a TVIEW name names, for tools.
+
+- **`pg_tviews_create()` takes `options`**, those of `pg_tviews_create_or_replace()`.
+- **Option `typename`**: the GraphQL type name `pg_tviews_flush_and_report()` reports,
+  declared with the TVIEW.
+- **`tviews.registry.options` holds every option**, defaults included: `logged`,
+  `fillfactor`, `data_gin_index`, `group_keys`, `uncascaded_policy`,
+  `uncascaded_tables`, `function_reads`, `time_refresh`, `typename`. Passing it back to
+  `pg_tviews_create_or_replace()` with `query` returns `unchanged`.
+
+- **A `DISTINCT ON` key may be a column of a UNION subquery** (ADR 0216): a TVIEW
+  `SELECT DISTINCT ON (u.pk_x) … FROM (… UNION ALL …) u ORDER BY u.pk_x, <preference>`
+  is accepted, and a write to any branch's table refreshes it. It was refused ("not
+  a column of a base table").
+
+### Fixed
+
+- **`time_refresh` declared for a TVIEW that reads no time is refused at creation too**,
+  as it was when changing an existing TVIEW.
+
+- **A transaction that refilled a reset UNLOGGED TVIEW cannot be prepared** (#215):
+  `PREPARE TRANSACTION` fails with `25000`. The claim it held made every writer of
+  that TVIEW wait until `COMMIT PREPARED`.
+- **A reset UNLOGGED TVIEW switched to LOGGED is filled first, however it is
+  switched** (#215): a raw `ALTER TABLE tv_x SET LOGGED` and the `logged` option of
+  `pg_tviews_create_or_replace()` left it empty for good (a LOGGED table is never
+  checked again). Both now do what `pg_tviews_set_logged()` did, and a switch to
+  UNLOGGED records the rows as trusted.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` (from 0.1.0-beta.27) swaps the functions whose
+  parameters were renamed, drops the seven removed ones, rebuilds `tviews.registry`
+  as contract v2 and adds `tviews.stats`. TVIEWs, their tables and their rows are
+  untouched; nothing needs to run afterwards.
+- Existing TVIEWs keep their persistence: one created UNLOGGED stays UNLOGGED, and
+  `registry.options->'logged'` says so. Only TVIEWs created after the update are
+  LOGGED by default.
+- Remove the removed settings from `postgresql.conf` and from `ALTER ROLE` /
+  `ALTER DATABASE … SET`: PostgreSQL warns about each and ignores it, and a `SET` of
+  one in a session fails. A TVIEW that relied on a session's
+  `pg_tviews.uncascaded_policy` already stores its own policy.
+- Callers using named arguments `tview_name =>`, `entity =>`, `entity_name =>` or
+  `p_entity =>` pass `tview =>`. Tools reading the dropped registry columns read
+  `options` (`tviews.contract_version()` is 2).
+- A migration that called `pg_tviews_create_or_replace()` without the options a TVIEW
+  has now resets them to their defaults: pass `registry.options` (or the options the
+  template declares) every time.
+- `tviews.stats` needs `shared_preload_libraries = 'pg_tviews'` (already required for
+  the settings) and a server restart after installing the library.
+
 ## [0.1.0-beta.27] - 2026-10-11
 
 ### Changed (breaking)

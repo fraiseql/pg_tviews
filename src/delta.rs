@@ -22,13 +22,7 @@ use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::RefCell;
 
-/// The statement event a delta trigger fired for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Event {
-    Insert,
-    Update,
-    Delete,
-}
+pub use crate::queue::Event;
 
 thread_local! {
     /// Number of the current `TRUNCATE` statement, counted by the `ProcessUtility`
@@ -56,7 +50,7 @@ pub fn trigger_entity(trigger: &PgTrigger<'_>) -> String {
 }
 
 fn suspended() -> bool {
-    crate::config::suspend_triggers() || crate::suspend::is_suspended()
+    crate::suspend::is_suspended()
 }
 
 /// Statement-level trigger over the transition tables of a `mapped` or
@@ -164,23 +158,16 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 }
 
 /// The query that maps changed rows of `base_table`, read from a relation named
-/// `pg_tviews_delta`, to keys of TVIEW `tview` (ADR 0157), with the current names
-/// of what it reads. NULL when writes to the table do not map through a query of
-/// their own (`propagated`, `all_keys`) or the TVIEW does not read it; an error
-/// when no such TVIEW is registered.
-#[pg_extern]
-fn pg_tviews_mapping_query(
-    tview: &str,
+/// `pg_tviews_delta`, to keys of `meta`'s TVIEW (ADR 0157), with the current names
+/// of what it reads. `None` when writes to the table do not map through a query
+/// of their own (`propagated`, `all_keys`) or the TVIEW does not read it.
+///
+/// # Errors
+/// Returns an error if the query cannot be rendered.
+pub(crate) fn mapping_query(
+    meta: &TviewMeta,
     base_table: pg_sys::Oid,
-) -> Result<Option<String>, pgrx::pg_sys::panic::ErrorReport> {
-    crate::revision::check();
-    let entity = tview.strip_prefix("tv_").unwrap_or(tview);
-    let report = |e: TViewError| e.report_in(&format!("pg_tviews: the mapping query of {tview}"));
-    let Some(meta) = TviewMeta::load_by_entity(entity).map_err(report)? else {
-        return Err(report(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        }));
-    };
+) -> TViewResult<Option<String>> {
     let Some(mapping) = meta.key_mapping(base_table, None) else {
         return Ok(None);
     };
@@ -188,50 +175,33 @@ fn pg_tviews_mapping_query(
         MappingKind::Local => Ok(mapping.column.as_deref().map(|column| {
             format!(
                 "SELECT DISTINCT {} FROM {DELTA}",
-                crate::utils::quote_identifier(column)
+                crate::utils::ident::quoted(column)
             )
         })),
         MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
-            rendered(entity, mapping).map_err(report)
+            rendered(&meta.entity_name, mapping)
         }
         _ => Ok(None),
     }
 }
 
-/// What a refresh of `tview`'s rows reads of `base_table`, for value locks (ADR
-/// 0207): for each column of the table its mapping joins on (NULL when the table
+/// What a refresh of `meta`'s rows reads of `base_table`, for value locks (ADR
+/// 0207): for each column of the table its mapping joins on (`None` when the table
 /// is locked as a whole), the query from the TVIEW's keys (`$1`) to the values a
-/// refresh locks. No rows when writes to the table map through no query of their
-/// own; an error when no such TVIEW is registered.
-#[pg_extern]
-#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
-fn pg_tviews_read_set_queries(
-    tview: &str,
+/// refresh locks. Empty when writes to the table map through no query of their own.
+///
+/// # Errors
+/// Returns an error if a catalog read or a rendering fails.
+pub(crate) fn read_set_queries(
+    meta: &TviewMeta,
     base_table: pg_sys::Oid,
-) -> Result<
-    TableIterator<
-        'static,
-        (
-            name!(column_name, Option<String>),
-            name!(query, Option<String>),
-        ),
-    >,
-    pgrx::pg_sys::panic::ErrorReport,
-> {
-    crate::revision::check();
-    let entity = tview.strip_prefix("tv_").unwrap_or(tview);
-    let report = |e: TViewError| e.report_in(&format!("pg_tviews: the read sets of {tview}"));
-    let Some(meta) = TviewMeta::load_by_entity(entity).map_err(report)? else {
-        return Err(report(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
-        }));
-    };
+) -> TViewResult<Vec<(Option<String>, Option<String>)>> {
     let Some(mapping) = meta.key_mapping(base_table, None) else {
-        return Ok(TableIterator::new(Vec::new()));
+        return Ok(Vec::new());
     };
     let key_type = meta
         .key_type()
-        .map_err(|e| report(crate::utils::spi::error("the identity's type", &e)))?;
+        .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
     let mut rows = Vec::new();
     for set in &mapping.reads {
         let column = (set.attnum != 0)
@@ -246,13 +216,13 @@ fn pg_tviews_read_set_queries(
                 )
             })
             .transpose()
-            .map_err(|e| report(crate::utils::spi::error("the column's name", &e)))?
+            .map_err(|e| crate::utils::spi::error("the column's name", &e))?
             .flatten();
         let query =
-            crate::concurrency::reads::rendered(entity, mapping, set, &key_type).map_err(report)?;
+            crate::concurrency::reads::rendered(&meta.entity_name, mapping, set, &key_type)?;
         rows.push((column, query));
     }
-    Ok(TableIterator::new(rows))
+    Ok(rows)
 }
 
 /// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
@@ -263,8 +233,8 @@ fn map_statement(
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<()> {
-    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::MetadataNotFound {
-        entity: entity.to_string(),
+    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
+        name: entity.to_string(),
     })?;
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         refresh_all(entity, "its mapping of a written table is unknown");
@@ -608,7 +578,7 @@ fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>>
             "ROW({})::pg_catalog.record",
             columns
                 .iter()
-                .map(|c| format!("{alias}.{}", crate::utils::quote_identifier(c)))
+                .map(|c| format!("{alias}.{}", crate::utils::ident::quoted(c)))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -670,7 +640,7 @@ fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, V
     let same_row = keys
         .iter()
         .map(|(k, _)| {
-            let k = crate::utils::quote_identifier(k);
+            let k = crate::utils::ident::quoted(k);
             format!("n.{k} OPERATOR(pg_catalog.=) o.{k}")
         })
         .collect::<Vec<_>>()

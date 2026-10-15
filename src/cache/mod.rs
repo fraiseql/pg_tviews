@@ -8,9 +8,9 @@
 //! callback only touches a `Cell`: it can run in the middle of a catalog access, so
 //! it must neither take a lock nor call SPI.
 
+use crate::catalog::EntityDepGraph;
 use crate::catalog::plan::LocalPath;
 use crate::catalog::{KeyType, TviewMeta};
-use crate::flush::EntityDepGraph;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -84,7 +84,7 @@ thread_local! {
     /// revalidates a kept plan when what it reads changes).
     pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
-    pub static DELTAS: Memo<(u32, crate::delta::Event, Vec<i16>), String> = Memo::new();
+    pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
     /// it has none).
     pub static COMPUTED: Memo<Oid, Option<String>> = Memo::new();
@@ -173,7 +173,7 @@ fn watch_catalog() {
     crate::metrics::metrics_api::record_catalog_lookup();
     if let Ok(Some(oid)) = Spi::get_one::<Oid>(&format!(
         "SELECT pg_catalog.to_regclass('{}')::pg_catalog.oid",
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     )) {
         watch(&[oid]);
         CATALOG_WATCHED.with(|w| w.set(true));
@@ -211,14 +211,6 @@ pub fn register_relcache_callback() {
     unsafe {
         pg_sys::CacheRegisterRelcacheCallback(Some(relcache_callback), pg_sys::Datum::from(0));
     }
-}
-
-/// Invalidate the `pg_tviews` caches of every backend (and this one) once the
-/// current transaction commits, by invalidating `relid`'s relcache entry.
-#[pg_extern]
-fn pg_tviews_invalidate_caches(relid: Oid) {
-    // SAFETY: the caller passes an existing relation (the trigger's TG_RELID).
-    unsafe { pg_sys::CacheInvalidateRelcacheByRelid(relid) };
 }
 
 #[cfg(test)]

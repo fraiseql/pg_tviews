@@ -17,7 +17,7 @@ fn update(table: pg_sys::Oid, sql: &str, names: &[String]) -> TViewResult<()> {
         &format!(
             "UPDATE {} SET managed_index_names = {sql} \
              WHERE table_oid = $1::pg_catalog.oid::pg_catalog.regclass",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &[
             crate::utils::spi::oid(table),
@@ -65,7 +65,7 @@ pub(crate) fn recorded(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
         &format!(
             "SELECT n FROM {} m, pg_catalog.unnest(m.managed_index_names) n \
              WHERE m.table_oid = $1::pg_catalog.oid::pg_catalog.regclass ORDER BY n",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &[crate::utils::spi::oid(table)],
     )
@@ -78,7 +78,7 @@ pub(crate) fn unrecorded(table: pg_sys::Oid) -> TViewResult<bool> {
         &format!(
             "SELECT managed_index_names IS NULL FROM {} \
              WHERE table_oid = $1::pg_catalog.oid::pg_catalog.regclass",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         ),
         &[crate::utils::spi::oid(table)],
     )?

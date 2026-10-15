@@ -42,11 +42,11 @@ SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user,
            jsonb_build_object('title', p.title, 'author', u.name) AS data
     FROM app.tb_post p JOIN app.tb_user u ON u.pk_user = p.fk_user $$);
-SELECT pg_tviews_create_aggregate('tv_user_orders', $$
+SELECT pg_tviews_create('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id, jsonb_build_object('orders', count(*)) AS data
     FROM app.tb_order o JOIN app.tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 RESET search_path;
 
 -- An unrelated trigger whose name starts with tview_.

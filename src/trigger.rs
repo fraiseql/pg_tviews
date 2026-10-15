@@ -133,7 +133,7 @@ fn pg_tview_trigger_handler<'a>(
         .filter(|p| p.entity_name == served)
         .collect();
     // If triggers are suspended, record the change instead of enqueuing
-    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+    if crate::suspend::is_suspended() {
         crate::suspend::record_change(&served);
         return Ok(None);
     }
@@ -432,7 +432,7 @@ fn pg_tview_flush_trigger<'a>(
 /// that fails fails the write, as an error PostgreSQL raises does: committing it
 /// would leave the TVIEWs stale.
 pub fn flush_after_statement() {
-    if crate::config::suspend_triggers() || crate::suspend::is_suspended() {
+    if crate::suspend::is_suspended() {
         return;
     }
     if let Err(e) = crate::flush::flush_refresh_queue() {

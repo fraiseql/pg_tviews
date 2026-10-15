@@ -31,15 +31,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         crate::revision::check();
     }
     for (entity, schema_name, view_oid) in affected {
-        let definition: String = Spi::get_one_with_args(
-            &format!(
-                "SELECT definition FROM {} WHERE entity = $1",
-                crate::utils::meta_table()
-            ),
-            &[crate::utils::spi::text(&entity)],
-        )
-        .map_err(|e| crate::utils::spi::catalog_error("Read TVIEW definition", &e))?
-        .unwrap_or_default();
+        let definition = crate::catalog::row::definition(&entity)?.unwrap_or_default();
 
         let relname = relation_name(relid)?;
         let rewritten = rewrite_column_references(&definition, &relname, old_name, new_name)
@@ -71,7 +63,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
             &format!(
                 "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
                  WHERE entity = $1 AND group_keys->>$2 = $3",
-                crate::utils::meta_table()
+                crate::catalog::meta_table()
             ),
             &[
                 crate::utils::spi::text(&entity),
@@ -103,9 +95,9 @@ fn affected_tviews(relid: Oid, column: &str) -> TViewResult<Vec<(String, String,
          ORDER BY m.entity",
         crate::catalog::reads::view_reads_cte(&format!(
             "SELECT m.view_oid::pg_catalog.oid, m.view_oid::pg_catalog.oid, 0 FROM {} m",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         )),
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     );
     Spi::connect(|client| {
         let args = [
@@ -166,7 +158,7 @@ fn defines_view(candidate: &str, view_oid: Oid) -> bool {
 /// nothing matched. The result is a candidate: the caller must verify it.
 #[must_use]
 pub fn rewrite_column_references(sql: &str, table: &str, old: &str, new: &str) -> Option<String> {
-    rewrite_with(sql, table, old, new, crate::utils::quote_ident)
+    rewrite_with(sql, table, old, new, crate::utils::ident::quote_if_needed)
 }
 
 /// [`rewrite_column_references`] with `quote` writing an identifier.
@@ -327,14 +319,9 @@ fn select_list_items(tokens: &[&Token]) -> Vec<(usize, usize)> {
     items
 }
 
-/// Identifier equality with `PostgreSQL` folding: unquoted words compare
-/// case-insensitively, quoted ones exactly.
+/// Whether `word` names `name`, with `PostgreSQL`'s folding.
 fn ident_eq(word: &sqlparser::tokenizer::Word, name: &str) -> bool {
-    if word.quote_style.is_some() {
-        word.value == name
-    } else {
-        word.value.to_lowercase() == name
-    }
+    crate::utils::ident::names(&word.value, word.quote_style.is_some(), name)
 }
 
 #[cfg(test)]
@@ -351,7 +338,7 @@ mod tests {
         if plain {
             name.to_string()
         } else {
-            crate::utils::quote_identifier(name)
+            crate::utils::ident::quoted(name)
         }
     }
 

@@ -39,9 +39,8 @@ SET client_min_messages TO WARNING;
 CREATE TABLE tb_doc (pk_doc int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                      counter int NOT NULL DEFAULT 0, payload text NOT NULL);
 INSERT INTO tb_doc (pk_doc, payload) SELECT g, $(payload_expr "$size") FROM generate_series(1, $ROWS) g;
-$(mode_sql "$mode")
 SELECT pg_tviews_create('tv_doc', \$v\$
-  SELECT pk_doc, id, jsonb_build_object('counter', counter, 'payload', payload) AS data FROM tb_doc \$v\$);
+  SELECT pk_doc, id, jsonb_build_object('counter', counter, 'payload', payload) AS data FROM tb_doc \$v\$, $(mode_options "$mode"));
 $(knob_sql "$knob")
 VACUUM FULL tv_doc;
 SQL

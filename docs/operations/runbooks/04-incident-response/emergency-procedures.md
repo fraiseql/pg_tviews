@@ -38,32 +38,29 @@ stores no error state.
 
 ## Emergency Actions
 
-### Action 1: Let a writer proceed without refresh
+### Action 1: Defer refresh to the end of a writing transaction
 Refresh runs inside each writing transaction, so the writer that fails or is too
-slow is the one to change. In that session:
+slow is the one to change. Suspend refresh in that transaction:
 
 ```sql
-SET pg_tviews.suspend_triggers = on;     -- this session only, until RESET
+BEGIN;
+SELECT tviews.pg_tviews_suspend_triggers();   -- this transaction only
 -- ... the writes that must go through ...
-RESET pg_tviews.suspend_triggers;
+SELECT tviews.pg_tviews_resume_triggers();    -- refreshes the TVIEWs it skipped
+COMMIT;                                       -- or COMMIT directly: same refresh
 ```
 
-Or, for a single transaction, `SELECT tviews.pg_tviews_suspend_triggers();` after
-`BEGIN` (refreshed at `COMMIT`; see [Batch Refresh](../02-refresh-operations/batch-refresh.md)).
-The TVIEWs those writes touch are stale until refreshed (Action 3).
+Suspension lasts until the end of the transaction. It records the TVIEWs the writes
+touched and refreshes them at resume or at `COMMIT`, so the transaction still pays
+for the refresh, once, at the end; other sessions keep refreshing. If that final
+refresh is what fails, the transaction rolls back; then fix the cause (a broken
+definition: Action 5) and refresh with Action 3. See
+[Batch Refresh](../02-refresh-operations/batch-refresh.md).
 [emergency-disable.sql](../scripts/emergency-disable.sql) shows the state and
 these commands.
 
-To stop refresh for every session, set the GUC for the application role or the
-database and have clients reconnect:
-
-```sql
-ALTER ROLE app_writer SET pg_tviews.suspend_triggers = on;
--- undo: ALTER ROLE app_writer RESET pg_tviews.suspend_triggers;
-```
-
-Writes then leave every TVIEW stale until Action 3. Use it only when wrong TVIEW
-data is acceptable for a while.
+There is no switch that stops refresh for every session: a TVIEW that does not
+follow its base tables is not offered.
 
 ### Action 2: Clear blocking sessions
 ```sql
@@ -113,16 +110,8 @@ TVIEWs is enough. Restore to a separate database first and check it with
 SELECT component, severity, message
 FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
 
--- No session left suspended (in each session that suspended)
-SELECT tviews.pg_tviews_is_suspended(),
-       current_setting('pg_tviews.suspend_triggers', true) AS suspend_triggers;
-
--- No role or database still suspended
-SELECT coalesce(r.rolname, '(all roles)') AS role, coalesce(d.datname, '(all)') AS db, s.setconfig
-FROM pg_db_role_setting s
-LEFT JOIN pg_roles r ON r.oid = s.setrole
-LEFT JOIN pg_database d ON d.oid = s.setdatabase
-WHERE array_to_string(s.setconfig, ',') LIKE '%pg_tviews.suspend_triggers%';
+-- Refresh statistics: full_refreshes counts the Action 3 refreshes
+SELECT entity, full_refreshes, rows_written, stats_reset FROM tviews.stats ORDER BY entity;
 ```
 
 Then compare every TVIEW with its view (step 4 of post-upgrade-validation.sql,
@@ -133,7 +122,7 @@ expect 0) and run the application's critical reads.
 TVIEW INCIDENT - [TIMESTAMP]
 Status: [ACTIVE/MITIGATED/RESOLVED]
 Impact: [writes failing / stale data / slow writes]
-Action taken: [e.g. refresh suspended for role X since HH:MM]
+Action taken: [e.g. bulk load run with refresh suspended, TVIEWs refreshed at HH:MM]
 Next step / ETA: [...]
 Contact: [incident coordinator]
 ```

@@ -28,8 +28,6 @@ CREATE FUNCTION kinds(e text) RETURNS text LANGUAGE sql AS $$
     SELECT cascade_kinds::text || ' uncascaded=' || uncascaded_tables::text
     FROM tviews.registry WHERE entity = e $$;
 
-SET pg_tviews.uncascaded_policy = 'error';
-
 CREATE TABLE tb_product (pk_product bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 CREATE TABLE tb_customer (pk_customer bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, fk_customer bigint REFERENCES tb_customer,
@@ -117,11 +115,10 @@ SELECT must(error_of($$SELECT tviews.pg_tviews_create('tv_product', $q$
     SELECT p.pk_product, p.id, p.name,
            (SELECT count(*) FROM v_first_order f WHERE f.fk_product = p.pk_product) AS first_buyers
     FROM tb_product p $q$)$$) LIKE '%public.tb_order%', 'the control was not refused');
-SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT tviews.pg_tviews_create('tv_product', $q$
     SELECT p.pk_product, p.id, p.name,
            (SELECT count(*) FROM v_first_order f WHERE f.fk_product = p.pk_product) AS first_buyers
-    FROM tb_product p $q$);
+    FROM tb_product p $q$, '{"uncascaded_policy": "full_refresh"}');
 SELECT must((SELECT cascade_kinds ->> 'tb_order' = 'all_keys' FROM tviews.registry WHERE entity = 'product'),
             'control: ' || kinds('product'));
 UPDATE tb_order SET placed_on = '2026-03-01' WHERE pk_order = 10;

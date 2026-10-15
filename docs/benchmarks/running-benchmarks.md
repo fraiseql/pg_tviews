@@ -112,7 +112,7 @@ cost the comparison is measuring.
 | `--scales "<list>"` | `small` | Space-separated scales to run (`small`, `medium`, `large`). |
 | `--single-iters N` | `25` | Iterations for the single-row `UPDATE` op on arms A/B. |
 | `--c-iters N` | `5` | Iterations per op for arm C (each is a full `REFRESH`). |
-| `--modes "<list>"` | `unlogged logged` | TVIEW persistence modes for arms A/B (`pg_tviews.unlogged_by_default`). |
+| `--modes "<list>"` | `unlogged logged` | TVIEW persistence modes for arms A/B: each passes the `logged` option (`false` or `true`) to `pg_tviews_create()`. |
 | `--help` | — | Print the script header and exit. |
 
 Environment: `RUN_DIR` (output directory, default
@@ -136,7 +136,8 @@ For each scale, `run.sh`:
    - **Arm B** — `CREATE EXTENSION pg_tviews;`
    - **Arm C** — no extensions.
 3. Arms A/B create the tview with
-   `SELECT pg_tviews_create('tv_product', <product_select.sql>)`; arm C creates a
+   `SELECT pg_tviews_create('tv_product', <product_select.sql>, '{"logged": …}')`
+   (the `logged` option of the mode); arm C creates a
    `MATERIALIZED VIEW mv_product` with a unique index on `pk_product`.
 4. Runs the same sequence of `tb_product` mutations under `psql \timing`:
    `update_single`, `update_batch` (1% of rows), `insert_single`,

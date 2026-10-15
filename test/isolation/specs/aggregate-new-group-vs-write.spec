@@ -9,10 +9,11 @@ setup
   CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                          fk_user bigint NOT NULL, total int);
   INSERT INTO tb_order (pk_order, fk_user, total) VALUES (1, 1, 5);
-  SELECT tviews.pg_tviews_create_aggregate('tv_user_summary', $$
+  SELECT tviews.pg_tviews_create('tv_user_summary', $$
       SELECT o.fk_user AS pk_user_summary, md5(o.fk_user::text)::uuid AS id,
              jsonb_build_object('orders', count(*), 'total', sum(o.total)) AS data
-      FROM tb_order o GROUP BY o.fk_user $$, jsonb_build_object('tb_order', 'fk_user'));
+      FROM tb_order o GROUP BY o.fk_user $$,
+      jsonb_build_object('group_keys', jsonb_build_object('tb_order', 'fk_user')));
 }
 
 teardown

@@ -3,8 +3,9 @@
 #
 #   1. On a hot standby, an UNLOGGED tv_* cannot be read, a LOGGED one can, and
 #      pg_tviews_replication_status() works (read-only).
-#   2. After promotion, the pg_tviews.auto_rebuild_databases worker repopulates
-#      the UNLOGGED TVIEW without any write.
+#   2. After promotion, the rebuild launcher (pg_tviews.auto_rebuild_databases,
+#      `*` by default: no configuration) repopulates the UNLOGGED TVIEW without
+#      any write.
 #   3. After an immediate (crash) stop and restart of the promoted node, the
 #      worker repopulates it again.
 #   4. After a clean restart, a TVIEW that is merely empty stays empty: only a
@@ -63,11 +64,8 @@ CREATE TABLE tb_tag (pk_tag BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                      id UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE, label TEXT);
 INSERT INTO tb_post (title) VALUES ('a'), ('b');
 INSERT INTO tb_tag (label) VALUES ('x');
-CREATE TABLE tv_post AS SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
-BEGIN;
-SET LOCAL pg_tviews.unlogged_by_default = off;
+CREATE UNLOGGED TABLE tv_post AS SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;
 CREATE TABLE tv_tag AS SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag;
-COMMIT;
 CHECKPOINT;
 SQL
 
@@ -80,7 +78,6 @@ SQL
   echo "listen_addresses = 'localhost'"
   echo "unix_socket_directories = ''"
   echo "hba_file = '$standby/pg_hba.conf'"
-  echo "pg_tviews.auto_rebuild_databases = '$db'"
 } >> "$standby/postgresql.auto.conf"
 start_node
 

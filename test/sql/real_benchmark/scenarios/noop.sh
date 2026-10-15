@@ -47,13 +47,12 @@ CREATE INDEX ON tb_post (fk_user);
 INSERT INTO tb_user (pk_user, name) SELECT g, 'user ' || g FROM generate_series(1, $USERS) g;
 INSERT INTO tb_post (pk_post, fk_user, title)
 SELECT g, 1 + (g - 1) % $USERS, 'post ' || g FROM generate_series(1, $POSTS) g;
-$(mode_sql "$1")
 SELECT pg_tviews_create('tv_user', \$v\$
-    SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user \$v\$);
+    SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user \$v\$, $(mode_options "$1"));
 SELECT pg_tviews_create('tv_post', \$v\$
     SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
            jsonb_build_object('title', tb_post.title, 'author', v_user.data) AS data
-    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user \$v\$);
+    FROM tb_post LEFT JOIN v_user ON v_user.pk_user = tb_post.fk_user \$v\$, $(mode_options "$1"));
 SQL
 }
 

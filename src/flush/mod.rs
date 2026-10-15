@@ -6,16 +6,13 @@
 //!   in dependency order until nothing is left;
 //! - [`apply`]: how one entity's keys are applied (full refresh, direct patch,
 //!   recompute, fan-out) and their parents found;
-//! - [`graph`]: the TVIEWs' dependencies on each other, from their plans;
 //! - [`xact`]: the transaction callbacks, and what the end of a transaction resets.
 
 mod apply;
 mod drain;
-pub mod graph;
 mod savepoint;
 mod xact;
 
-pub use graph::EntityDepGraph;
 pub use xact::{register_subxact_callback, register_xact_callback};
 
 use crate::TViewResult;

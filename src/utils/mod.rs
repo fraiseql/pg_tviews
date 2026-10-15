@@ -2,19 +2,15 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 
+pub mod ident;
 pub mod spi;
 
-/// Emit an internal diagnostic. Silent at the default settings: it is a `DEBUG1` message
-/// (visible with `client_min_messages = debug1`), or a `NOTICE` when the session sets
-/// `pg_tviews.log_level = 'debug'`. Use it for tracing only; anything the user must act on
-/// belongs in `warning!`/`error!`.
+/// Emit an internal diagnostic: a `DEBUG1` message, visible with
+/// `client_min_messages = debug1` or `log_min_messages = debug1`. Use it for tracing
+/// only; anything the user must act on belongs in `warning!`/`error!`.
 macro_rules! log_debug {
     ($($arg:tt)+) => {
-        if $crate::config::log_level().eq_ignore_ascii_case("debug") {
-            ::pgrx::notice!($($arg)+);
-        } else {
-            ::pgrx::debug1!($($arg)+);
-        }
+        ::pgrx::debug1!($($arg)+);
     };
 }
 pub(crate) use log_debug;
@@ -160,24 +156,9 @@ pub fn qualified_relname_from_oid(oid: Oid) -> crate::TViewResult<String> {
         };
         Ok(format!(
             "{}.{}",
-            quote_ident(&name(nsp)),
-            quote_ident(&name(rel))
+            ident::quote_if_needed(&name(nsp)),
+            ident::quote_if_needed(&name(rel))
         ))
-    }
-}
-
-/// `name` quoted as SQL needs it (`quote_ident`): unchanged when it is a plain
-/// lower-case identifier that is no keyword, double-quoted otherwise.
-#[must_use]
-pub fn quote_ident(name: &str) -> String {
-    let Ok(c) = std::ffi::CString::new(name) else {
-        return quote_identifier(name);
-    };
-    // SAFETY: a NUL-terminated string; the result is copied before `c` drops.
-    unsafe {
-        std::ffi::CStr::from_ptr(pg_sys::quote_identifier(c.as_ptr()))
-            .to_string_lossy()
-            .into_owned()
     }
 }
 
@@ -261,12 +242,6 @@ pub fn forget_logged(key: &str) {
     LOGGED_ONCE.with(|seen| seen.borrow_mut().remove(key));
 }
 
-/// `pg_tview_meta`, qualified with the extension's schema, so catalog queries do
-/// not depend on the session's `search_path`.
-pub fn meta_table() -> String {
-    format!("{EXT_SCHEMA}.pg_tview_meta")
-}
-
 /// Schema the `pg_tviews` extension is installed in. It needs no quoting.
 pub const fn ext_schema() -> &'static str {
     EXT_SCHEMA
@@ -300,13 +275,6 @@ pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> 
             })
         })
     })
-}
-
-/// Quote a SQL identifier for safe use in queries: always double-quoted, with
-/// internal double quotes doubled, as `quote_ident` does for any name.
-#[must_use]
-pub fn quote_identifier(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:
@@ -366,28 +334,28 @@ mod tests {
 
     #[test]
     fn quote_identifier_always_quotes_and_doubles_quotes() {
-        assert_eq!(quote_identifier("post"), "\"post\"");
-        assert_eq!(quote_identifier("Post"), "\"Post\"");
-        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+        assert_eq!(ident::quoted("post"), "\"post\"");
+        assert_eq!(ident::quoted("Post"), "\"Post\"");
+        assert_eq!(ident::quoted("test\"col"), "\"test\"\"col\"");
     }
 
     #[test]
     fn test_quote_identifier_normal() {
-        assert_eq!(quote_identifier("post"), "\"post\"");
+        assert_eq!(ident::quoted("post"), "\"post\"");
     }
 
     #[test]
     fn test_quote_identifier_uppercase() {
-        assert_eq!(quote_identifier("Post"), "\"Post\"");
+        assert_eq!(ident::quoted("Post"), "\"Post\"");
     }
 
     #[test]
     fn test_quote_identifier_with_underscore() {
-        assert_eq!(quote_identifier("pk_user"), "\"pk_user\"");
+        assert_eq!(ident::quoted("pk_user"), "\"pk_user\"");
     }
 
     #[test]
     fn test_quote_identifier_with_internal_quotes() {
-        assert_eq!(quote_identifier("test\"col"), "\"test\"\"col\"");
+        assert_eq!(ident::quoted("test\"col"), "\"test\"\"col\"");
     }
 }

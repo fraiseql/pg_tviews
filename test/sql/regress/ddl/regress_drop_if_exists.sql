@@ -27,7 +27,7 @@ BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#152 FAIL: %', what; END IF; END $
 \set missing `psql -X -At -h :HOST -p :PORT -U :USER -d :DBNAME -c "SET client_min_messages = notice" -c "SELECT tviews.pg_tviews_drop('tv_nosuch', if_exists => true)" 2>&1`
 SELECT must(:'missing' LIKE '%NOTICE:  TVIEW "tv_nosuch" does not exist, skipping%',
             'no NOTICE: ' || :'missing');
-SELECT must(:'missing' LIKE '%TVIEW ''tv_nosuch'' does not exist, nothing dropped%',
+SELECT must(:'missing' LIKE '%TVIEW tv_nosuch does not exist, nothing dropped%',
             'result does not say nothing was dropped: ' || :'missing');
 SELECT must(:'missing' NOT LIKE '%dropped successfully%',
             'a missing TVIEW is reported as dropped: ' || :'missing');
@@ -43,7 +43,7 @@ END $$;
 
 -- 3. An existing TVIEW is dropped, without the NOTICE.
 \set existing `psql -X -At -h :HOST -p :PORT -U :USER -d :DBNAME -c "SET client_min_messages = notice" -c "SELECT tviews.pg_tviews_drop('tv_user', if_exists => true)" 2>&1`
-SELECT must(:'existing' LIKE '%TVIEW ''tv_user'' dropped successfully%',
+SELECT must(:'existing' LIKE '%TVIEW public.tv_user dropped%',
             'existing TVIEW: ' || :'existing');
 SELECT must(:'existing' NOT LIKE '%does not exist%', 'existing TVIEW: ' || :'existing');
 SELECT must(to_regclass('tv_user') IS NULL, 'tv_user still exists');

@@ -5,7 +5,8 @@ Bring one TVIEW back in line with its backing view by hand.
 
 ## When to Use
 - **Stale rows**: a TVIEW differs from its backing view `tviews.<schema>__tv_<entity>`
-- **After suspended writes**: a session wrote with `pg_tviews.suspend_triggers = on`
+- **After suspended writes**: a transaction committed implicitly while suspended (it
+  logs a `WARNING` naming the stale TVIEWs)
 - **After a definition change** outside pg_tviews, or a restore
 - **Empty UNLOGGED TVIEW** after a crash or on a promoted standby
 
@@ -51,7 +52,7 @@ nothing; an error rolls the whole refresh back.
 To see what it rebuilds:
 
 ```sql
-SELECT depth, entity_name FROM tviews.pg_tviews_show_cascade_path('user') ORDER BY depth;
+SELECT depth, entity FROM tviews.pg_tviews_show_cascade_path('user') ORDER BY depth;
 ```
 
 To rebuild everything, dependencies first: `SELECT tviews.pg_tviews_refresh_all();`
@@ -64,13 +65,13 @@ SELECT max(updated_at) AS last_change FROM public.tv_user;
 ```
 
 ## Empty TVIEWs after a crash
-UNLOGGED TVIEWs (the default) are emptied by a crash restart and are empty on a
-standby.
+UNLOGGED TVIEWs (declared `logged: false`) are emptied by a crash restart and are
+empty on a standby. The launcher refills them once recovery ends
+([Replication](../../replication.md)); otherwise:
 
 ```sql
 SELECT * FROM tviews.pg_tviews_replication_status();           -- needs_rebuild
-SELECT tviews.pg_tviews_recover_after_crash('user');           -- true if it rebuilt
-SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true); -- all empty ones
+SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true); -- every reset one
 ```
 
 ## Large TVIEWs
@@ -86,8 +87,8 @@ EXPLAIN SELECT * FROM public.v_user;
 
 | Error | Cause | Action |
 |-------|-------|--------|
-| `TVIEW metadata not found for entity 'tv_user'` | Name passed with `tv_` | Pass the entity: `'user'` |
-| `Cannot refresh: triggers are suspended` (`pg_tviews_refresh_all`) | Session is suspended | `SELECT tviews.pg_tviews_resume_triggers();` or `RESET pg_tviews.suspend_triggers;` |
+| `TVIEW tv_usr does not exist` (`42704`) | No TVIEW has that name | Check `tviews.registry`; `user`, `tv_user` and `public.tv_user` all name the same TVIEW |
+| `Cannot refresh: triggers are suspended` (`pg_tviews_refresh_all`) | Session is suspended | `SELECT tviews.pg_tviews_resume_triggers();`, or run it after `COMMIT` |
 | `permission denied ...` | Caller cannot write the TVIEW or read the view's tables | Run as the TVIEW owner |
 | `canceling statement due to lock timeout` | Another transaction holds TVIEW rows | Find it in `pg_stat_activity` / `pg_locks`, retry later |
 | Any error from the view (e.g. `division by zero`) | The view query itself fails on current data | Fix the data or the definition (`pg_tviews_create_or_replace`) |

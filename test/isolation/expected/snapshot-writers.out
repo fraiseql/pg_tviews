@@ -1,9 +1,9 @@
 Parsed test spec with 2 sessions
 
 starting permutation: rr_begin o_rename s_title s_commit o_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step rr_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM tb_post;
@@ -27,9 +27,9 @@ tview                             |fresh
 
 
 starting permutation: ser_begin o_rename s_title s_commit o_check
-pg_tviews_create                    
-------------------------------------
-TVIEW 'tv_post' created successfully
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
 (1 row)
 
 step ser_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM tb_post;

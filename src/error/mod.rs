@@ -16,8 +16,9 @@ mod reference;
 /// An error `pg_tviews` raises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TViewError {
-    /// No TVIEW is registered under this entity.
-    MetadataNotFound { entity: String },
+    /// No TVIEW has this name (ADR 0211: an entity, `tv_<entity>` or
+    /// `schema.tv_<entity>`).
+    TviewNotFound { name: String },
 
     /// The table or backing view a TVIEW needs is already taken.
     RelationExists { name: String },
@@ -70,6 +71,17 @@ pub enum TViewError {
     /// The session or transaction is not in a state that allows this.
     WrongState { reason: String },
 
+    /// A UNION TVIEW's backing view returns several rows for one key (ADR 0216).
+    DuplicateKey {
+        tview: String,
+        key_column: String,
+        key: String,
+    },
+
+    /// PREPARE TRANSACTION of a transaction that claimed the refill of a reset
+    /// UNLOGGED TVIEW: every writer of it would wait for `COMMIT PREPARED`.
+    PrepareHoldsRefill { table: String },
+
     /// Reading or writing the catalog failed (internal).
     CatalogError { operation: String, pg_error: String },
 
@@ -85,7 +97,7 @@ impl TViewError {
     #[must_use]
     pub const fn errcode(&self) -> PgSqlErrorCode {
         match self {
-            Self::MetadataNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
+            Self::TviewNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
@@ -100,6 +112,8 @@ impl TViewError {
             Self::JsonbDeltaMissing => PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
             Self::QueueFull { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+            Self::PrepareHoldsRefill { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
+            Self::DuplicateKey { .. } => PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
             Self::CatalogError { .. } | Self::SpiError { .. } | Self::SerializationError { .. } => {
                 PgSqlErrorCode::ERRCODE_INTERNAL_ERROR
             }
@@ -132,9 +146,11 @@ impl TViewError {
     #[must_use]
     pub fn hint(&self) -> Option<String> {
         match self {
-            Self::MetadataNotFound { .. } => {
-                Some("SELECT entity FROM tviews.pg_tview_meta lists the registered TVIEWs.".into())
-            }
+            Self::TviewNotFound { .. } => Some(
+                "SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by \
+                 its entity, tv_<entity> or schema.tv_<entity>."
+                    .into(),
+            ),
             Self::RelationExists { .. } => {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
@@ -157,6 +173,16 @@ impl TViewError {
             }
             Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
                 "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
+                    .into(),
+            ),
+            Self::DuplicateKey { .. } => Some(
+                "Make the UNION branches' keys disjoint (a sign or an offset per branch), or \
+                 keep one row per key with DISTINCT ON over the UNION, ordered by preference."
+                    .into(),
+            ),
+            Self::PrepareHoldsRefill { .. } => Some(
+                "Refill it in a transaction of its own first (any write to a table it reads), \
+                 then run the work to prepare."
                     .into(),
             ),
             Self::CatalogError { .. } | Self::SerializationError { .. } => {
@@ -226,9 +252,7 @@ impl From<TViewError> for ErrorReport {
 impl fmt::Display for TViewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MetadataNotFound { entity } => {
-                write!(f, "TVIEW metadata not found for entity '{entity}'")
-            }
+            Self::TviewNotFound { name } => write!(f, "TVIEW {name} does not exist"),
             Self::RelationExists { name } => write!(f, "TVIEW {name} already exists"),
             Self::InvalidInput { parameter, reason } => {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
@@ -271,6 +295,19 @@ impl fmt::Display for TViewError {
             Self::JsonbDeltaMissing => {
                 write!(f, "Required extension 'jsonb_delta' is not installed")
             }
+            Self::DuplicateKey {
+                tview,
+                key_column,
+                key,
+            } => write!(
+                f,
+                "TVIEW {tview}: its backing view returned multiple rows for {key_column}={key}"
+            ),
+            Self::PrepareHoldsRefill { table } => write!(
+                f,
+                "cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW {table}, \
+                 and every writer of it would wait for COMMIT PREPARED"
+            ),
             Self::QueueFull { size, max_size } => write!(
                 f,
                 "refresh queue backpressure: queue size ({size}) would exceed \
@@ -318,7 +355,7 @@ mod tests {
     fn every_variant() -> Vec<TViewError> {
         let s = String::new;
         let all = vec![
-            TViewError::MetadataNotFound { entity: s() },
+            TViewError::TviewNotFound { name: s() },
             TViewError::RelationExists { name: s() },
             TViewError::InvalidInput {
                 parameter: s(),
@@ -358,6 +395,12 @@ mod tests {
                 max_size: 1,
             },
             TViewError::WrongState { reason: s() },
+            TViewError::PrepareHoldsRefill { table: s() },
+            TViewError::DuplicateKey {
+                tview: s(),
+                key_column: s(),
+                key: s(),
+            },
             TViewError::CatalogError {
                 operation: s(),
                 pg_error: s(),
@@ -371,7 +414,7 @@ mod tests {
         for e in &all {
             // Exhaustive: adding a variant breaks this match until it is listed above.
             match e {
-                TViewError::MetadataNotFound { .. }
+                TViewError::TviewNotFound { .. }
                 | TViewError::RelationExists { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
@@ -386,6 +429,8 @@ mod tests {
                 | TViewError::JsonbDeltaMissing
                 | TViewError::QueueFull { .. }
                 | TViewError::WrongState { .. }
+                | TViewError::PrepareHoldsRefill { .. }
+                | TViewError::DuplicateKey { .. }
                 | TViewError::CatalogError { .. }
                 | TViewError::SpiError { .. }
                 | TViewError::SerializationError { .. } => {}
@@ -464,8 +509,8 @@ mod tests {
     fn documented_codes() {
         let code = |e: TViewError| e.sqlstate();
         assert_eq!(
-            code(TViewError::MetadataNotFound {
-                entity: "post".into()
+            code(TViewError::TviewNotFound {
+                name: "post".into()
             }),
             "42704"
         );
@@ -491,6 +536,20 @@ mod tests {
                 reason: String::new()
             }),
             "55000"
+        );
+        assert_eq!(
+            code(TViewError::PrepareHoldsRefill {
+                table: String::new()
+            }),
+            "25000"
+        );
+        assert_eq!(
+            code(TViewError::DuplicateKey {
+                tview: String::new(),
+                key_column: String::new(),
+                key: String::new()
+            }),
+            "21000"
         );
         assert_eq!(
             code(TViewError::InvalidSelectStatement {

@@ -9,7 +9,7 @@ fn out(name: &str, junk: bool, sortgroupref: u32, column: Option<Column>) -> Out
         name: name.to_string(),
         junk,
         sortgroupref,
-        column,
+        columns: column.into_iter().collect(),
         type_oid: 20,
     }
 }
@@ -154,6 +154,44 @@ fn identity_of_a_projected_expression_is_refused() {
     assert_eq!(
         select_identity("order", &outputs, Some(&[1]), UNEQUAL),
         Err(IdentityError::NotAColumn)
+    );
+}
+
+#[test]
+fn identity_is_a_union_subquery_column_of_every_branch() {
+    // DISTINCT ON (u.pk_task) u.pk_task … FROM (… tb_task UNION ALL … tb_task_copy) u
+    let key = OutputColumn {
+        name: "pk_task".to_string(),
+        junk: false,
+        sortgroupref: 1,
+        columns: vec![at(0, "pk_task", 1), at(1, "pk_task", 1)],
+        type_oid: 23,
+    };
+    let outputs = [key.clone(), out("id", false, 0, None)];
+    assert_eq!(
+        select_identity("task", &outputs, Some(&[1]), UNEQUAL),
+        Ok(SelectedIdentity {
+            position: 0,
+            kind: IdentityKind::DistinctOn
+        })
+    );
+    // Left unprojected, it is matched by the projected column standing for the
+    // same branch columns.
+    let junk = OutputColumn {
+        junk: true,
+        ..key.clone()
+    };
+    let projected = OutputColumn {
+        sortgroupref: 0,
+        name: "pk".to_string(),
+        ..key
+    };
+    assert_eq!(
+        select_identity("task", &[projected, junk], Some(&[1]), UNEQUAL),
+        Ok(SelectedIdentity {
+            position: 0,
+            kind: IdentityKind::DistinctOn
+        })
     );
 }
 

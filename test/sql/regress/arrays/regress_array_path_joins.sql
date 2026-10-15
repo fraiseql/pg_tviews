@@ -20,8 +20,8 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 \ir ../../lib/assert_fresh.sql
 
--- The controls below are all_keys on purpose: the policy is declared here.
-SET pg_tviews.uncascaded_policy = 'warn';
+-- The controls below are all_keys on purpose: every TVIEW here declares option
+-- uncascaded_policy "warn".
 
 -- One copy of the node tree per spelling (tb_<entity>, as the issue's tb_node).
 DO $$
@@ -54,7 +54,7 @@ SELECT pg_tviews_create('tv_nsrf', $$
     FROM (SELECT n.pk_nsrf, n.id, n.name, unnest(string_to_array(n.path, '.')::bigint[]) AS node_id
           FROM tb_nsrf n WHERE n.deleted_at IS NULL) s
     JOIN tb_nsrf a ON a.pk_nsrf = s.node_id AND a.deleted_at IS NULL
-    GROUP BY s.pk_nsrf, s.id, s.name $$);
+    GROUP BY s.pk_nsrf, s.id, s.name $$, '{"uncascaded_policy": "warn"}');
 SELECT pg_tviews_create('tv_nlat', $$
     SELECT n.pk_nlat, n.id,
            jsonb_build_object('name', n.name, 'path_of_names', array_agg(a.name ORDER BY a.pk_nlat)) AS data
@@ -62,20 +62,20 @@ SELECT pg_tviews_create('tv_nlat', $$
     CROSS JOIN LATERAL unnest(string_to_array(n.path, '.')::bigint[]) AS u(node_id)
     JOIN tb_nlat a ON a.pk_nlat = u.node_id AND a.deleted_at IS NULL
     WHERE n.deleted_at IS NULL
-    GROUP BY n.pk_nlat, n.id, n.name $$);
+    GROUP BY n.pk_nlat, n.id, n.name $$, '{"uncascaded_policy": "warn"}');
 SELECT pg_tviews_create('tv_nany', $$
     SELECT n.pk_nany, n.id,
            jsonb_build_object('name', n.name, 'path_of_names', array_agg(a.name ORDER BY a.pk_nany)) AS data
     FROM tb_nany n
     JOIN tb_nany a ON a.pk_nany = ANY (string_to_array(n.path, '.')::bigint[]) AND a.deleted_at IS NULL
     WHERE n.deleted_at IS NULL
-    GROUP BY n.pk_nany, n.id, n.name $$);
+    GROUP BY n.pk_nany, n.id, n.name $$, '{"uncascaded_policy": "warn"}');
 -- A join on a computed output of a subquery.
 SELECT pg_tviews_create('tv_nbadge', $$
     SELECT s.pk_nbadge, s.id, jsonb_build_object('name', s.name, 'badge', x.label) AS data
     FROM (SELECT n.pk_nbadge, n.id, n.name, upper(n.name) AS upper_name
           FROM tb_nbadge n WHERE n.deleted_at IS NULL) s
-    LEFT JOIN tb_badge x ON x.code = s.upper_name $$);
+    LEFT JOIN tb_badge x ON x.code = s.upper_name $$, '{"uncascaded_policy": "warn"}');
 
 CREATE FUNCTION check_all(label text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE e text;
@@ -141,10 +141,10 @@ INSERT INTO tb_ntop (pk_ntop, name) VALUES (1, 'root'), (2, 'child');
 SELECT pg_tviews_create('tv_nvol', $$
     SELECT s.pk_nvol, s.id, jsonb_build_object('badge', x.label) AS data
     FROM (SELECT n.pk_nvol, n.id, upper(n.name) || to_char(now(), '') AS upper_name FROM tb_nvol n) s
-    LEFT JOIN tb_badge x ON x.code = s.upper_name $$);
+    LEFT JOIN tb_badge x ON x.code = s.upper_name $$, '{"uncascaded_policy": "warn"}');
 -- A set-returning function in the top-level SELECT keeps the TVIEW without a root.
 SELECT pg_tviews_create('tv_ntop', $$
-    SELECT n.pk_ntop, n.id, jsonb_build_object('x', unnest(ARRAY[n.name])) AS data FROM tb_ntop n $$);
+    SELECT n.pk_ntop, n.id, jsonb_build_object('x', unnest(ARRAY[n.name])) AS data FROM tb_ntop n $$, '{"uncascaded_policy": "warn"}');
 DO $$ BEGIN
     IF (SELECT cascade_kinds->>'tb_badge' FROM tviews.registry WHERE entity = 'nvol') <> 'all_keys' THEN
         RAISE EXCEPTION '#182 FAIL: a volatile computed join classifies %',
@@ -166,7 +166,7 @@ SET client_min_messages TO NOTICE;
 SELECT pg_tviews_create('tv_area', $$
     SELECT n.pk_area, n.id, jsonb_build_object('names', array_agg(a.name ORDER BY a.pk_area)) AS data
     FROM tb_area n JOIN tb_area a ON a.pk_area = ANY (string_to_array(n.path, '.')::bigint[])
-    GROUP BY n.pk_area, n.id $$);
+    GROUP BY n.pk_area, n.id $$, '{"uncascaded_policy": "warn"}');
 SET client_min_messages TO WARNING;
 -- The index it names makes the mapping query use it.
 CREATE INDEX tb_area_path_ids ON tb_area USING gin ((string_to_array(path, '.')::bigint[]));

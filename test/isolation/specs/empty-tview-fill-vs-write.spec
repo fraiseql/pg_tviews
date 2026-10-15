@@ -13,7 +13,8 @@ setup
                         title text);
   INSERT INTO tb_post (pk_post, title) VALUES (1, 'p1'), (2, 'p2');
   SELECT tviews.pg_tviews_create('tv_post', $$
-      SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post $$);
+      SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post $$,
+      jsonb_build_object('logged', false));
   TRUNCATE tv_post;
   DELETE FROM tviews.pg_tview_valid;
 }

@@ -118,8 +118,7 @@ INSERT INTO tb_post (title) VALUES ('Test Post');
 
 -- Create TVIEW with nested author in comments array
 -- A table read in an uncorrelated subquery: rows stay stale on its writes.
-SET pg_tviews.uncascaded_policy = 'warn';
-CREATE TABLE tv_post AS
+SELECT pg_tviews_create('tv_post', $$
 SELECT
     p.pk_post,
     p.id,
@@ -142,8 +141,8 @@ SELECT
             WHERE c.fk_user IS NOT NULL  -- Only comments with authors
         ), '[]'::jsonb)
     ) AS data
-FROM tb_post p;
-RESET pg_tviews.uncascaded_policy;
+FROM tb_post p
+$$, '{"uncascaded_policy": "warn"}');
 
 -- Test cascade: Update user name → Should update nested author.name in TVIEW
 UPDATE tb_user SET name = 'Alice Updated' WHERE pk_user = 1;

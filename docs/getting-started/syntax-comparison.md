@@ -39,9 +39,9 @@ Interception needs the extension's library loaded in the session, so add it to
 being intercepted, the statement **fails** with an error that names the table and this fix,
 instead of leaving a plain table behind.
 
-The statement takes no options: it reads the settings `pg_tviews.uncascaded_policy`,
-`pg_tviews.time_refresh`, `pg_tviews.unlogged_by_default`, `pg_tviews.fillfactor` and
-`pg_tviews.data_gin_index`.
+The statement takes no options: the TVIEW gets the defaults (LOGGED, fillfactor 85,
+`uncascaded_policy` `error`, …). `CREATE UNLOGGED TABLE tv_<entity> AS` makes an
+UNLOGGED one. No setting changes what a TVIEW is.
 
 ## 2. Functions
 
@@ -61,16 +61,19 @@ SELECT pg_tviews_create('tv_post', $$
 $$);
 ```
 
-`pg_tviews_create_or_replace(tview_name, query, options)` creates the TVIEW or makes the
-smallest change to an existing one (`created`, `unchanged`, `altered`, `replaced`,
-`rebuilt`), and takes options (`logged`, `fillfactor`, `uncascaded_policy`, …):
+`pg_tviews_create(tview, query, options)` and
+`pg_tviews_create_or_replace(tview, query, options)` take options (`logged`,
+`fillfactor`, `uncascaded_policy`, …). `pg_tviews_create_or_replace` creates the TVIEW
+or makes the smallest change to an existing one (`created`, `unchanged`, `altered`,
+`replaced`, `rebuilt`); the options passed are the whole declaration, and one left out
+is at its default:
 
 ```sql
 SELECT pg_tviews_create_or_replace('tv_post', $$
   SELECT tb_post.pk_post, tb_post.id, tb_post.fk_user,
          jsonb_build_object('id', tb_post.id, 'title', tb_post.title) AS data
   FROM tb_post
-$$, options => '{"logged": true}');
+$$, options => '{"fillfactor": 90}');
 ```
 
 **Use when**: application code, migration tools, scripts; anything that runs the same

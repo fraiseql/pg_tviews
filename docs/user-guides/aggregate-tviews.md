@@ -24,19 +24,19 @@ INSERT INTO tb_user (name) VALUES ('Alice'), ('Bob'), ('Carol');
 INSERT INTO tb_order (fk_user, total) VALUES (1, 10), (1, 20), (2, 5);
 ```
 
-Create it with `tviews.pg_tviews_create_aggregate()`:
+Create it with `tviews.pg_tviews_create()` and the `group_keys` option:
 
 ```sql
-SELECT tviews.pg_tviews_create_aggregate('tv_user_summary', $$
+SELECT tviews.pg_tviews_create('tv_user_summary', $$
     SELECT o.fk_user AS pk_user_summary,
            u.id,
            jsonb_build_object('name', u.name, 'orders', count(*), 'total', sum(o.total)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id, u.name
-$$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 ```
 
-The third argument, `group_keys`, names for each source table the column whose value
+The `group_keys` option names for each source table the column whose value
 **is** the group key: a change to a `tb_order` row affects the group `fk_user`, a change
 to a `tb_user` row the group `pk_user`. Tables not listed do not refresh the aggregate.
 The columns may have any names; `tviews.registry` shows the mapping in `options`:
@@ -70,7 +70,7 @@ with millions of rows is recomputed in full on every write to it
 
 ## Rules
 
-`pg_tviews_create_aggregate()` refuses a definition it cannot maintain group by group:
+A TVIEW with `group_keys` refuses a definition it cannot maintain group by group:
 
 - The definition is a single `SELECT … GROUP BY` (no UNION).
 - `pk_<entity>` is a plain column that is also a `GROUP BY` key (not an expression).

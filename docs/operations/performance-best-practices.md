@@ -112,8 +112,8 @@ TOASTed `jsonb`, so no pg_tviews setting avoids it (measurements and reasoning:
 - **Storage knobs rarely help.** `ALTER TABLE tv_x ALTER COLUMN data SET STORAGE MAIN`
   keeps a 2–8 KB value inline and cuts WAL by about a third on a LOGGED TVIEW, at the cost of
   a larger heap. Beyond one page it changes nothing.
-- **UNLOGGED TVIEWs** (the default) write no WAL for the rewrite, but see
-  [replication](replication.md) before relying on them.
+- **UNLOGGED TVIEWs** (`logged: false`; TVIEWs are LOGGED by default) write no WAL for
+  the rewrite, but see [replication](replication.md) before relying on them.
 
 ### Bulk changes: rebuild instead of refreshing row by row
 
@@ -124,9 +124,9 @@ roughly 15% of a TVIEW's rows, rebuilding once is faster
 
 ```sql
 BEGIN;
-SET LOCAL pg_tviews.suspend_triggers = on;
-UPDATE tb_post SET … ;                 -- the bulk change
-SELECT pg_tviews_refresh('post');      -- rebuild every affected TVIEW
+SELECT pg_tviews_suspend_triggers();   -- this transaction only
+UPDATE tb_post SET … ;                 -- the bulk change, recorded, not refreshed
+SELECT pg_tviews_resume_triggers();    -- rebuilds every affected TVIEW once
 COMMIT;
 ```
 
@@ -158,14 +158,15 @@ TVIEW: nothing to do.
 ### ✅ DO: Use GIN Indexes for JSONB Queries (only where queries use them)
 
 > Any index on `data` costs HOT on every refresh of that TVIEW, which is why new
-> TVIEWs get none by default (`pg_tviews.data_gin_index`). Check `idx_scan` before
+> TVIEWs get none by default (option `data_gin_index`). Check `idx_scan` before
 > keeping one. See [HOT Updates and TVIEW Storage](hot-updates.md).
 
 ```sql
 -- For containment queries (@>, ?, ?&, ?|): pg_tviews' own GIN, through the option
-SELECT tviews.pg_tviews_create_or_replace('public.tv_post',
-    (SELECT query FROM tviews.registry WHERE entity = 'post'),
-    options => '{"data_gin_index": true}');
+-- (the options passed are the whole declaration: start from the current ones)
+SELECT tviews.pg_tviews_create_or_replace(format('%I.%I', schema, name), query,
+    options || '{"data_gin_index": true}')
+FROM tviews.registry WHERE entity = 'post';
 
 -- For specific path queries (more selective): your own, under a name of yours
 CREATE INDEX idx_tv_post_status ON tv_post USING GIN((data -> 'status'));
@@ -381,12 +382,12 @@ ANALYZE tv_post;
 -- For all TVIEWs
 DO $$
 DECLARE
-    tview_name TEXT;
+    tv_table TEXT;
 BEGIN
-    FOR tview_name IN
+    FOR tv_table IN
         SELECT 'tv_' || entity FROM pg_tview_meta
     LOOP
-        EXECUTE 'ANALYZE ' || tview_name;
+        EXECUTE 'ANALYZE ' || tv_table;
     END LOOP;
 END $$;
 ```

@@ -20,7 +20,6 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#196 FAIL: %', what; END IF; END $$;
 
-SET pg_tviews.uncascaded_policy = 'error';
 
 -- One copy of the tree per spelling.
 DO $$

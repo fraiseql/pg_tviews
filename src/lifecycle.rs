@@ -1,34 +1,5 @@
-//! Extension lifecycle: initialization, version, and runtime checks.
-
-use pgrx::pg_sys::panic::ErrorReport;
-use pgrx::prelude::*;
-
-/// Get the version of the `pg_tviews` extension
-#[pg_extern]
-#[allow(clippy::missing_const_for_fn)] // Reason: pgrx #[pg_extern] is incompatible with const fn
-fn pg_tviews_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-/// Fill `entity`'s TVIEW from its backing view if PostgreSQL reset it (an
-/// UNLOGGED table emptied by a crash restart or a promotion), and say whether it
-/// did. A TVIEW that is merely empty is left alone. Requires owning the TVIEW (or
-/// the extension): the fill runs as its owner.
-///
-/// # Errors
-/// Returns an error if the entity is not registered or the fill fails.
-#[pg_extern]
-pub fn pg_tviews_recover_after_crash(entity_name: &str) -> Result<bool, ErrorReport> {
-    crate::revision::check();
-    let meta = crate::catalog::TviewMeta::load_by_entity(entity_name)?.ok_or_else(|| {
-        crate::TViewError::MetadataNotFound {
-            entity: entity_name.to_string(),
-        }
-    })?;
-    // The fill runs as the TVIEW's owner: only its owner may ask for it.
-    crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity_name}"))?;
-    Ok(validity::fill_if_reset(entity_name)?)
-}
+//! The lifecycle of an UNLOGGED TVIEW's rows: trusted until PostgreSQL resets the
+//! table, then refilled once.
 
 /// Whether an UNLOGGED TVIEW's rows can be trusted, and its fill when they can't.
 ///
@@ -49,6 +20,11 @@ pub mod validity {
         /// The TVIEW tables this backend found trusted (or filled).
         static CHECKED: std::cell::RefCell<std::collections::HashSet<u32>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
+
+        /// The TVIEW tables whose refill this transaction claimed, with the
+        /// (sub)transaction nesting level that claimed each.
+        static CLAIMS: std::cell::RefCell<Vec<(Oid, i32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn table() -> String {
@@ -144,6 +120,32 @@ pub mod validity {
         CHECKED.with_borrow_mut(std::collections::HashSet::clear);
     }
 
+    /// The transaction ended: its claims ended with it.
+    pub fn forget_claims() {
+        CLAIMS.with_borrow_mut(Vec::clear);
+    }
+
+    /// A subtransaction rolled back: the claims it made are undone.
+    pub fn forget_subtransaction_claims() {
+        // SAFETY: reads the backend's transaction state.
+        let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+        CLAIMS.with_borrow_mut(|claims| claims.retain(|&(_, at)| at < level));
+    }
+
+    /// Refuse to prepare a transaction that claimed a refill: the claim, a row of
+    /// `pg_tview_valid`, would block every writer of that TVIEW until
+    /// `COMMIT PREPARED`. Runs in the `PRE_PREPARE` callback: no SPI.
+    pub fn refuse_prepare_with_claims() {
+        let Some(table) = CLAIMS.with_borrow(|claims| claims.first().map(|&(t, _)| t)) else {
+            return;
+        };
+        crate::TViewError::PrepareHoldsRefill {
+            table: crate::utils::qualified_relname_from_oid(table)
+                .unwrap_or_else(|_| format!("with OID {}", table.to_u32())),
+        }
+        .raise();
+    }
+
     /// If `entity`'s table is UNLOGGED and was reset, fill the TVIEWs it reads,
     /// then claim and fill it. Returns whether this transaction filled it.
     ///
@@ -156,7 +158,7 @@ pub mod validity {
         if !needs_fill(meta.tview_oid)? {
             return Ok(false);
         }
-        let graph = crate::flush::EntityDepGraph::load()?;
+        let graph = crate::cache::graph()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_reset(dependency)?;
         }
@@ -165,34 +167,35 @@ pub mod validity {
         if !mark(meta.tview_oid)? {
             return Ok(false);
         }
-        crate::admin::refill(entity)?;
+        // SAFETY: reads the backend's transaction state.
+        let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+        CLAIMS.with_borrow_mut(|claims| claims.push((meta.tview_oid, level)));
+        crate::refresh::full::refill(entity)?;
         Ok(true)
     }
-}
 
-/// Initialize the extension
-/// Installs the `ProcessUtility` hook to intercept CREATE TABLE `tv_*` commands
-///
-/// Safety: Only installs hooks when running in a proper `PostgreSQL` backend,
-/// not during initdb or other bootstrap contexts.
-#[pg_guard]
-pub extern "C-unwind" fn _PG_init() {
-    crate::config::register_gucs();
-    crate::cache::register_relcache_callback();
-    crate::rebuild_worker::register();
-
-    // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and
-    // registering callbacks is valid in this context.
-    unsafe {
-        crate::hooks::ensure_hook_installed();
+    /// Before `entity`'s table, `table_oid`, becomes LOGGED (`logged`) or UNLOGGED:
+    /// a reset TVIEW is filled first, since a LOGGED one is never checked again.
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be read or the fill fails.
+    pub fn before_persistence_change(entity: &str, logged: bool) -> TViewResult<()> {
+        if logged {
+            fill_if_reset(entity)?;
+        }
+        Ok(())
     }
 
-    // Register transaction callbacks once at startup.
-    // PostgreSQL's RegisterXactCallback appends to a persistent linked list,
-    // so registering per-transaction would accumulate N copies after N transactions.
-    // SAFETY: Transaction callbacks are registered in backend initialization context.
-    unsafe {
-        crate::flush::register_xact_callback();
-        crate::flush::register_subxact_callback();
+    /// After `table_oid` became LOGGED (`logged`) or UNLOGGED: a LOGGED table has
+    /// no row; the rows of one just made UNLOGGED were trusted until now.
+    ///
+    /// # Errors
+    /// Returns an error if `pg_tview_valid` cannot be written.
+    pub fn after_persistence_change(table_oid: Oid, logged: bool) -> TViewResult<()> {
+        if logged {
+            forget(table_oid)
+        } else {
+            mark(table_oid).map(|_| ())
+        }
     }
 }

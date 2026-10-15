@@ -66,9 +66,21 @@ LIMIT 20;
 
 Refresh work is included in the time of the statement that wrote the base table.
 
-## Step 4: Refresh counters of one session
+## Step 4: Refresh counters
 
-`tviews.pg_tviews_queue_stats()` returns counters for the current session only
+`tviews.stats` counts the refresh work per TVIEW, for every session, since the server
+started or the last `pg_tviews_stats_reset()` (it needs
+`shared_preload_libraries = 'pg_tviews'`). The TVIEW whose `refresh_ms` grows fastest
+is the one to look at:
+
+```sql
+SELECT entity, view_recomputes, noop_skipped, patch_applied, rows_written,
+       full_refreshes, round(refresh_ms::numeric, 1) AS refresh_ms
+FROM tviews.stats
+ORDER BY refresh_ms DESC NULLS LAST;
+```
+
+`tviews.pg_tviews_queue_stats()`, the session's own debugging view, returns counters for the current session only
 (`total_refreshes`, `view_recomputes`, `refresh_noop_skipped`, `direct_patches_applied`,
 `direct_patch_fallbacks`, `total_timing_ms`, cache hit rates, ...). Take a reading, run
 the slow write in the same session, and compare:
@@ -100,13 +112,14 @@ in the base tables.
 ```sql
 SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 
-SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables,
+       options->>'uncascaded_policy' AS uncascaded_policy
 FROM tviews.registry
 ORDER BY schema, name;
 ```
 
 `cascade_kinds` says how writes to each base table reach the TVIEW. Base tables listed
-in `uncascaded_tables` with `uncascaded_policy = 'full_refresh'` recompute the whole TVIEW
+in `uncascaded_tables` under the `full_refresh` policy recompute the whole TVIEW
 on every write: expect those writes to be slow on large TVIEWs.
 
 ## Step 7: Table maintenance

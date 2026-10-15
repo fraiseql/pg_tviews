@@ -42,7 +42,7 @@ FROM tviews.pg_tviews_profile()
 ORDER BY n_dead_tup DESC;
 ```
 A low HOT ratio usually means an index on a column that changes, or a fillfactor of
-100; new TVIEWs get `pg_tviews.fillfactor` (default 85).
+100; a TVIEW gets the `fillfactor` option (default 85).
 
 ### Step 3: Vacuum and analyze TVIEW tables
 Autovacuum normally handles this. To run it by hand for every registered TVIEW:

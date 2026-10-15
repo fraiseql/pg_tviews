@@ -94,7 +94,7 @@ copied as-is into `data`, a child's document embedded in its parents) patches th
 stored documents in place instead of recomputing them; the result is the same
 document. The conditions and the measured figures are in the
 [README](../../README.md) and [Benchmark results](../benchmarks/results.md).
-`SET pg_tviews.direct_patch_enabled = off` turns the fast path off.
+A superuser can turn the fast path off with `SET pg_tviews.direct_patch_enabled = off`.
 
 ## Verification
 
@@ -116,15 +116,14 @@ DROP TABLE tb_install_check;
 ## Production notes
 
 **Connection poolers.** Refresh work is queued and flushed inside the writing
-transaction, so PgBouncer in `transaction` pool mode works. Session settings
-(`SET pg_tviews.uncascaded_policy`, `SET pg_tviews.suspend_triggers`) follow the usual
-pooling rules: set them in the transaction that needs them (`SET LOCAL`).
+transaction, so PgBouncer in `transaction` pool mode works. What a TVIEW is comes from
+its definition and its options, never from a session setting, and
+`pg_tviews_suspend_triggers()` lasts one transaction at most.
 
-**Replication.** TVIEW tables are `UNLOGGED` by default
-(`pg_tviews.unlogged_by_default = on`): a hot standby cannot read them, and they are
-empty after a crash or a promotion until rebuilt. Create the TVIEWs a standby serves
-with `options => '{"logged": true}'`, or switch one with
-`tviews.pg_tviews_set_logged(entity, true)`. See
+**Replication.** TVIEW tables are LOGGED by default: crash-safe and readable on a hot
+standby. A TVIEW declared `options => '{"logged": false}'` (or created with
+`CREATE UNLOGGED TABLE tv_x AS`) writes faster, cannot be read on a standby, and is
+empty after a crash or a promotion until a background worker refills it. See
 [Replication](../operations/replication.md).
 
 **Several servers.** Build once per PostgreSQL major version and copy the files

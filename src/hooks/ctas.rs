@@ -23,12 +23,16 @@ pub(super) struct CtasTarget {
 }
 
 impl CtasTarget {
-    /// The name `pg_tviews_create_or_replace()` takes: `tv_<entity>` or
-    /// `"schema".tv_<entity>`.
+    /// The name `pg_tviews_create_or_replace()` takes: `"tv_<entity>"` or
+    /// `"schema"."tv_<entity>"`, each part quoted, so a part is taken as it is.
     fn name(&self) -> String {
         match &self.schema {
-            Some(schema) => format!("{}.{}", crate::utils::quote_ident(schema), self.table),
-            None => self.table.clone(),
+            Some(schema) => format!(
+                "{}.{}",
+                crate::utils::ident::quoted(schema),
+                crate::utils::ident::quoted(&self.table)
+            ),
+            None => crate::utils::ident::quoted(&self.table),
         }
     }
 
@@ -406,12 +410,7 @@ pub(super) fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<St
         i += 2;
         name = word(i)?;
     }
-    let matches = if name.quote_style.is_some() {
-        name.value == table_name
-    } else {
-        name.value.to_lowercase() == table_name
-    };
-    if !matches {
+    if !crate::utils::ident::names(&name.value, name.quote_style.is_some(), table_name) {
         return None;
     }
     i += 1;

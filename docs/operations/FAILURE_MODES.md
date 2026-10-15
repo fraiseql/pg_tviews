@@ -11,22 +11,23 @@ back together. Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`).
 
 **Symptoms**:
 - The server crashed or was restarted in immediate mode
-- UNLOGGED TVIEWs (the default) are empty after crash recovery
+- UNLOGGED TVIEWs (declared `logged: false`) are empty after crash recovery
 
 **Recovery**:
 1. Uncommitted transactions are rolled back; committed base-table writes and LOGGED
-   TVIEW writes are recovered together.
-2. Rebuild UNLOGGED TVIEWs that recovery emptied:
+   TVIEW writes (the default) are recovered together.
+2. When recovery ends, a launcher worker refills the UNLOGGED TVIEWs recovery emptied,
+   in every database (`pg_tviews.auto_rebuild_databases`, default `*`; a list
+   restricts it, an empty value disables it; server restart required). Otherwise the
+   first write to such a TVIEW refills it, or refill them by hand:
    ```sql
    SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
    SELECT * FROM tviews.pg_tviews_rebuild_all();          -- only empty TVIEWs by default
-   SELECT tviews.pg_tviews_recover_after_crash('user');   -- or one TVIEW
    ```
-   `pg_tviews.auto_rebuild_databases` (server restart required) lists databases whose
-   emptied TVIEWs are rebuilt automatically when recovery ends.
 
-**Prevention**: make TVIEWs that must survive a crash LOGGED:
-`SELECT tviews.pg_tviews_set_logged('user', true);`
+**Prevention**: keep TVIEWs that must survive a crash LOGGED (the default). Switch an
+UNLOGGED one back with `ALTER TABLE tv_user SET LOGGED` or the `logged` option of
+`pg_tviews_create_or_replace()`; both fill a reset TVIEW first.
 
 ### Disk Full
 
@@ -90,7 +91,7 @@ SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 
 **Symptoms**:
 ```
-ERROR: TVIEW metadata not found for entity 'user'
+ERROR: TVIEW user does not exist
 ```
 - Triggers exist on a base table but no TVIEW is registered for them
 
@@ -224,17 +225,17 @@ SELECT * FROM tviews.pg_tviews_health_check();
 - TVIEWs are empty or unreadable on a hot standby
 - TVIEWs are empty after promoting a standby
 
-**Cause**: UNLOGGED TVIEWs (the default) are not replicated.
+**Cause**: UNLOGGED TVIEWs (declared `logged: false`) are not replicated.
 
 **Recovery**:
 ```sql
 SELECT * FROM tviews.pg_tviews_replication_status();
--- after promotion:
+-- after promotion, if the launcher worker is disabled:
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
-**Prevention**: make TVIEWs that standbys must read LOGGED
-(`SELECT tviews.pg_tviews_set_logged('user', true);`). LOGGED TVIEWs replicate like any
+**Prevention**: keep TVIEWs that standbys must read LOGGED (the default;
+`ALTER TABLE tv_user SET LOGGED` switches an UNLOGGED one). LOGGED TVIEWs replicate like any
 table; they lag the primary exactly as much as the base tables do.
 
 ### Concurrent DDL

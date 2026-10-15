@@ -1,5 +1,6 @@
 -- Regression test (#92): the internal diagnostics are still available on request.
--- With pg_tviews.log_level = 'debug' the transcript must contain the diagnostics.
+-- They are DEBUG1 messages: with client_min_messages = debug1 the transcript must
+-- contain them.
 --
 -- expect-output: create_tview
 --
@@ -19,8 +20,7 @@ CREATE TABLE tb_post (
     title TEXT
 );
 
-SET client_min_messages TO NOTICE;
-SET pg_tviews.log_level = 'debug';
+SET client_min_messages TO DEBUG1;
 
 CREATE TABLE tv_post AS
 SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post;

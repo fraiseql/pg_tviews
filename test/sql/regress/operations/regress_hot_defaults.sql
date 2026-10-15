@@ -8,9 +8,9 @@
 -- index-compatible update often found no room on its page.
 --
 -- Correct behaviour: new TVIEWs (pg_tviews_create and CREATE TABLE tv_* AS) get
--- no GIN on `data` unless pg_tviews.data_gin_index is on, and are created
--- WITH (fillfactor = pg_tviews.fillfactor), default 85, so single-row refreshes
--- stay heap-only. Both knobs work per TVIEW via SET LOCAL.
+-- no GIN on `data` unless their options say `data_gin_index: true`, and are
+-- created WITH (fillfactor = 85) unless their options say otherwise, so
+-- single-row refreshes stay heap-only.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/operations/regress_hot_defaults.sql
 -- expect-output: hot_defaults: PASS
@@ -105,26 +105,18 @@ BEGIN
     END LOOP;
 END $$;
 
--- ── Per-TVIEW opt-out via SET LOCAL ─────────────────────────────────────────
-BEGIN;
-SET LOCAL pg_tviews.data_gin_index = on;
-SET LOCAL pg_tviews.fillfactor = 100;
+-- ── Per-TVIEW opt-out through its options ───────────────────────────────────
 SELECT pg_tviews_create('tv_tag', $TV$
     SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM tb_tag
-$TV$);
-COMMIT;
+$TV$, '{"data_gin_index": true, "fillfactor": 100}');
 
 DO $$ BEGIN
     IF NOT pg_temp.has_gin('tv_tag') THEN
-        RAISE EXCEPTION 'FAIL #70: data_gin_index = on did not create the GIN index';
+        RAISE EXCEPTION 'FAIL #70: data_gin_index: true did not create the GIN index';
     END IF;
     IF (SELECT reloptions FROM pg_class WHERE oid = 'tv_tag'::regclass) IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL #73: fillfactor = 100 should leave reloptions empty, got %',
             (SELECT reloptions FROM pg_class WHERE oid = 'tv_tag'::regclass);
-    END IF;
-    IF current_setting('pg_tviews.fillfactor') <> '85'
-       OR current_setting('pg_tviews.data_gin_index') <> 'off' THEN
-        RAISE EXCEPTION 'setup: SET LOCAL leaked past COMMIT';
     END IF;
 END $$;
 

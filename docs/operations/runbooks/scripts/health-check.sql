@@ -20,8 +20,8 @@ ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, com
 
 \echo ''
 \echo '3. Registered TVIEWs'
-SELECT schema, name, logged, needs_reregister,
-       uncascaded_tables, uncascaded_policy, cascade_kinds
+SELECT schema, name, options->'logged' AS logged, needs_reregister,
+       uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy, cascade_kinds
 FROM tviews.registry
 ORDER BY schema, name;
 
@@ -48,5 +48,9 @@ ORDER BY entity;
 SELECT * FROM tviews.pg_tviews_replication_status() ORDER BY entity;
 
 \echo ''
-\echo '7. Refresh activity of this session (the queue lives inside each transaction)'
-SELECT tviews.pg_tviews_queue_stats();
+\echo '7. Refresh activity per TVIEW since the server started or the last reset'
+\echo '   (tviews.stats needs shared_preload_libraries = ''pg_tviews'')'
+SELECT entity, view_recomputes, noop_skipped, rows_written, rows_deleted,
+       full_refreshes, round(refresh_ms::numeric, 1) AS refresh_ms, stats_reset, untracked
+FROM tviews.stats
+ORDER BY entity;

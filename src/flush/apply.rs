@@ -1,7 +1,7 @@
 //! How one entity's pending keys are applied, and their parents found.
 
-use super::EntityDepGraph;
 use crate::TViewResult;
+use crate::catalog::EntityDepGraph;
 use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
 use crate::queue::patch::{FanoutMap, PatchEntry, PatchState};
@@ -102,7 +102,7 @@ impl Flush {
             crate::concurrency::Side::Writer,
         );
         // Parents are found by integer keys: a text key has none to find.
-        let changed: Vec<i64> = crate::ddl::replace::reconcile(entity, &meta)?
+        let changed: Vec<i64> = crate::refresh::full::reconcile(entity, &meta)?
             .into_iter()
             .filter_map(|k| KeyValue::Text(k).to_int())
             .collect();
@@ -211,8 +211,8 @@ impl Flush {
     /// `entity`'s catalog row.
     fn meta(&mut self, entity: &str) -> TViewResult<TviewMeta> {
         self.cached_meta(entity)?
-            .ok_or_else(|| crate::TViewError::MetadataNotFound {
-                entity: entity.to_string(),
+            .ok_or_else(|| crate::TViewError::TviewNotFound {
+                name: entity.to_string(),
             })
     }
 

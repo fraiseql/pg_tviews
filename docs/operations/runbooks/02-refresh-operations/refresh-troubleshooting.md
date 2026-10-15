@@ -25,8 +25,8 @@ FROM tviews.pg_tviews_health_check()
 WHERE severity <> 'info';
 
 -- How writes to each base table reach each TVIEW
-SELECT name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
-       needs_reregister
+SELECT name, base_tables, cascade_kinds, uncascaded_tables,
+       options->>'uncascaded_policy' AS uncascaded_policy, needs_reregister
 FROM tviews.registry
 ORDER BY name;
 ```
@@ -80,13 +80,13 @@ UNION ALL
 Then find why the write was not mapped:
 
 1. **Tables no cascade reaches**: `uncascaded_tables` lists base tables whose writes
-   cannot be mapped to TVIEW keys. Under `uncascaded_policy = 'warn'` writes to them
+   cannot be mapped to TVIEW keys. Under the `warn` policy writes to them
    leave the TVIEW stale. Rewrite the definition so the table joins on a column
-   pg_tviews can trace, or recreate the TVIEW with
-   `pg_tviews.uncascaded_policy = 'full_refresh'` (see
+   pg_tviews can trace, or replace the TVIEW with the option
+   `uncascaded_policy: "full_refresh"` (see
    [DDL reference](../../../reference/ddl.md#tables-no-cascade-reaches)).
    ```sql
-   SELECT name, uncascaded_tables, uncascaded_policy
+   SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
    FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
    ```
 2. **Re-registration pending**: after an extension upgrade, TVIEWs with
@@ -95,9 +95,8 @@ Then find why the write was not mapped:
    SELECT schema, name FROM tviews.registry WHERE needs_reregister;
    SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
-3. **Suspended writes**: a session that wrote with `pg_tviews.suspend_triggers = on`
-   (records nothing), or committed implicitly while suspended (logs a `WARNING`
-   naming the stale TVIEWs).
+3. **Suspended writes**: a transaction that committed implicitly while suspended
+   (logs a `WARNING` naming the stale TVIEWs).
 4. **How a table's writes map to keys**: `pg_tviews_mapping_query` returns the query
    that turns a statement's changed rows of a `mapped` table into TVIEW keys (empty
    when the key is read off the row). Run its plan to see whether it finds the keys
@@ -147,7 +146,7 @@ row embedded in very many TVIEW rows).
 
 ## Issue 4: TVIEW not found
 
-**Symptoms**: `TVIEW metadata not found for entity '...'`.
+**Symptoms**: `TVIEW ... does not exist` (42704).
 
 Functions take the entity without the `tv_` prefix (`pg_tviews_refresh('user')`),
 except `pg_tviews_reregister`, `pg_tviews_drop` and `pg_tviews_mapping_query`,

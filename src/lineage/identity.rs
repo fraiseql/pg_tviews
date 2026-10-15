@@ -29,8 +29,10 @@ pub struct OutputColumn {
     pub junk: bool,
     /// Its `DISTINCT ON` / `ORDER BY` reference, 0 for none.
     pub sortgroupref: u32,
-    /// The base column it stands for, if it is one.
-    pub column: Option<Column>,
+    /// The base column it stands for in each UNION branch it comes from: one for
+    /// a column of a table, one per branch for a column of a UNION subquery,
+    /// none when it is not a column in every branch.
+    pub columns: Vec<Column>,
     pub type_oid: u32,
 }
 
@@ -51,13 +53,16 @@ pub enum IdentityError {
     Composite,
     /// The DISTINCT ON key is not projected, and no projected column equals it.
     Unprojected,
-    /// The DISTINCT ON key is projected but is not a column of a base table.
+    /// The DISTINCT ON key is projected but is not a column of a base table (in
+    /// every UNION branch).
     NotAColumn,
 }
 
 /// Choose the output column that names a TVIEW's rows (ADR 0169): the top-level
 /// DISTINCT ON key, projected or equal through `equal` (a strict equality of the top
-/// level) to a projected column; `pk_<entity>` without DISTINCT ON.
+/// level) to a projected column; `pk_<entity>` without DISTINCT ON. The key is a
+/// base column, or a column of a UNION subquery that is one in every branch
+/// (ADR 0216).
 ///
 /// # Errors
 /// Returns why no output column can be the identity.
@@ -90,25 +95,21 @@ pub fn select_identity(
             kind: IdentityKind::DistinctOn,
         })
     };
-    match (&outputs[key], outputs[key].junk) {
-        (o, false) if o.column.is_some() => chosen(key),
-        (_, false) => Err(IdentityError::NotAColumn),
-        (
-            OutputColumn {
-                column: Some(column),
-                ..
-            },
-            true,
-        ) => outputs
+    let key_columns = &outputs[key].columns;
+    match (key_columns.is_empty(), outputs[key].junk) {
+        (false, false) => chosen(key),
+        (true, false) => Err(IdentityError::NotAColumn),
+        (false, true) => outputs
             .iter()
             .position(|o| {
                 !o.junk
-                    && o.column
-                        .as_ref()
-                        .is_some_and(|c| c == column || equal(c, column))
+                    && !o.columns.is_empty()
+                    && (o.columns == *key_columns
+                        || matches!((&o.columns[..], &key_columns[..]),
+                                    ([c], [k]) if equal(c, k)))
             })
             .map_or(Err(IdentityError::Unprojected), chosen),
-        (_, true) => Err(IdentityError::Unprojected),
+        (true, true) => Err(IdentityError::Unprojected),
     }
 }
 
@@ -176,7 +177,8 @@ pub fn identity_refusal(entity: &str, error: IdentityError, keys: &[String]) -> 
         ),
         IdentityError::NotAColumn => format!(
             "the DISTINCT ON key of tv_{entity} ({key}) names its rows, but it is not a column of \
-             a base table, so writes cannot be mapped to them: DISTINCT ON a column"
+             a base table (in every branch of a UNION it reads), so writes cannot be mapped to \
+             them: DISTINCT ON a column"
         ),
     }
 }

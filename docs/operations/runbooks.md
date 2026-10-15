@@ -20,8 +20,8 @@ WHERE severity <> 'info';
 
 ```sql
 -- 2. Is the table registered, and do writes to it reach the TVIEW?
-SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
-       needs_reregister
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables,
+       options->>'uncascaded_policy' AS uncascaded_policy, needs_reregister
 FROM tviews.registry
 WHERE entity = 'user';
 ```
@@ -40,8 +40,8 @@ Expect a row trigger (`tviews.pg_tview_trigger_handler`), a statement trigger
 (`tviews.pg_tview_flush_trigger`) and a truncate trigger, with `tgenabled = 'O'`.
 
 ```sql
--- 4. Is refresh suspended in this session/transaction?
-SELECT tviews.pg_tviews_is_suspended(), current_setting('pg_tviews.suspend_triggers');
+-- 4. Is refresh suspended in this transaction?
+SELECT tviews.pg_tviews_is_suspended();
 ```
 
 **Resolution**:
@@ -130,7 +130,8 @@ ORDER BY heap_bytes DESC;
    COMMIT;
    ```
 3. Raise limits for the session if the load is legitimate:
-   `SET work_mem = '256MB'; SET pg_tviews.max_queue_size = 100000;`
+   `SET work_mem = '256MB'; SET pg_tviews.max_queue_size = 100000;` (the latter as a
+   superuser)
 
 ---
 
@@ -265,7 +266,7 @@ SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
-### Stop refreshing from one session
+### Defer refresh in one transaction
 
 See `runbooks/scripts/emergency-disable.sql` and
 [Emergency Procedures](runbooks/04-incident-response/emergency-procedures.md).

@@ -265,11 +265,6 @@ pub(super) unsafe fn equality(
     }
 }
 
-/// `name` quoted only where SQL needs it, as `quote_ident()` does.
-pub(super) fn quote_ident(name: &str) -> String {
-    crate::utils::quote_ident(name)
-}
-
 /// SQL string literal of `text`, quoted by PostgreSQL (`quote_literal()`).
 pub(super) fn quote_literal(text: &str) -> Option<String> {
     let c = std::ffi::CString::new(text).ok()?;

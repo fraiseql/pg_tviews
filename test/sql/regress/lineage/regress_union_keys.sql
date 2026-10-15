@@ -110,7 +110,7 @@ SELECT must(error_of(format('SELECT tviews.pg_tviews_create(%L, %L)', 'tv_attach
 
 -- 5. Overlapping keys are loud: at create, and at refresh.
 SELECT must(error_of(format('SELECT tviews.pg_tviews_create(%L, %L)', 'tv_attachment',
-    replace(:'top', '-l.pk_order_line', 'l.pk_order_line'))) LIKE '%duplicate key%',
+    replace(:'top', '-l.pk_order_line', 'l.pk_order_line'))) LIKE '%multiple rows%',
             'overlapping keys were accepted at create');
 SELECT tviews.pg_tviews_create('tv_attachment', :'top');
 INSERT INTO tb_order_line (pk_order_line, fk_product, qty) VALUES (9, 1, 1);

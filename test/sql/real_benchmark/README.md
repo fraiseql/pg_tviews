@@ -72,8 +72,8 @@ also records physical counters per step and per relation.
 | `scenarios/skewed_fanout.sh` | two-hop user -> post -> comment cascade with celebrity users; 1M rows at `SCALE=1`, 10M at `SCALE=10` |
 | `scenarios/noop.sh` | refreshes whose output is unchanged, including one key reached via three paths |
 
-Every scenario runs in both `unlogged` (the shipped `pg_tviews.unlogged_by_default`)
-and `logged` mode (`MODES`), gates on a row-for-row `tv_*` vs backing-view
+Every scenario runs in both `unlogged` (option `logged: false`) and `logged` mode
+(the default; `MODES`), gates on a row-for-row `tv_*` vs backing-view
 divergence check, and appends to the run directory:
 
 | File | Content |

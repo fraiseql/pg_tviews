@@ -24,10 +24,11 @@ many TVIEWs up to date at once.
 ## Option 1: Let the triggers refresh (default)
 
 Write in statements of a size the flush handles, and raise the limits for the
-session if one statement must touch more keys:
+session if one statement must touch more keys (`max_queue_size` is a superuser's
+setting; `batch_size` any role's):
 
 ```sql
-SET pg_tviews.max_queue_size = 100000;  -- this session only
+SET pg_tviews.max_queue_size = 100000;  -- this session only; superuser
 SET pg_tviews.batch_size = 5000;        -- larger refresh chunks
 -- ... bulk statements ...
 RESET pg_tviews.max_queue_size;
@@ -56,19 +57,7 @@ that embed them, then need a refresh (`pg_tviews_refresh_all()`, below).
 Calls nest: each `pg_tviews_suspend_triggers()` needs its own
 `pg_tviews_resume_triggers()`.
 
-## Option 3: Suspend refresh for a whole session
-
-The GUC `pg_tviews.suspend_triggers` stops refresh across transactions in one
-session. It records nothing, so refresh afterwards yourself:
-
-```sql
-SET pg_tviews.suspend_triggers = on;
--- ... bulk transactions ...
-RESET pg_tviews.suspend_triggers;
-SELECT tviews.pg_tviews_refresh_all();
-```
-
-Other sessions keep refreshing normally in all three options.
+Other sessions keep refreshing normally in both options.
 
 ## Refreshing many TVIEWs
 
@@ -76,7 +65,7 @@ Other sessions keep refreshing normally in all three options.
 -- Every TVIEW, dependencies first; returns the order, count and duration_ms
 SELECT tviews.pg_tviews_refresh_all();
 
--- One TVIEW (by entity, without the tv_ prefix)
+-- One TVIEW (by entity, tv_<entity> or schema.tv_<entity>)
 SELECT tviews.pg_tviews_refresh('user');
 
 -- Rebuild only the TVIEWs that are empty (e.g. UNLOGGED ones after a crash),

@@ -9,7 +9,8 @@ What is specific to pg_tviews:
 - A `pg_dump` contains the pg_tviews catalog (`tviews.pg_tview_meta`), so a
   `pg_restore` gives back registered TVIEWs that keep propagating. There is nothing to
   recreate by hand.
-- A physical restore (base backup, PITR) leaves UNLOGGED TVIEWs (the default) empty;
+- A physical restore (base backup, PITR) leaves UNLOGGED TVIEWs (declared `logged: false`;
+  TVIEWs are LOGGED by default) empty;
   they are rebuilt from their views with `tviews.pg_tviews_rebuild_all()`.
 
 ## Prerequisites
@@ -82,8 +83,9 @@ psql -X -d mydb -c "SELECT pg_is_in_recovery();"   # false once recovery ended
 SELECT * FROM tviews.pg_tviews_replication_status();  -- is_empty / needs_rebuild
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
-With `pg_tviews.auto_rebuild_databases` listing the database, a background worker runs
-this rebuild when recovery ends; check `needs_rebuild = false` instead. Until the
+With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs this in every
+database when recovery ends (unless `pg_tviews.auto_rebuild_databases` leaves the
+database out); check `needs_rebuild = false` instead. Until the
 rebuild, readers of a reset UNLOGGED TVIEW see an empty table. After a `pg_dump`
 restore every UNLOGGED TVIEW needs one rebuild, even one restored with its rows:
 which TVIEWs can be trusted is not dumped. See

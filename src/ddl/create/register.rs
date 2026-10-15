@@ -127,7 +127,7 @@ impl MetaRow<'_> {
                 $12::pg_catalog.oid[]::pg_catalog.regclass[], $13,
                 $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17)
             {on_conflict}",
-            crate::utils::meta_table()
+            crate::catalog::meta_table()
         );
 
         let declarations = &self.uncascaded.declarations;
@@ -171,8 +171,9 @@ impl MetaRow<'_> {
         drop(owner);
 
         // TVIEWs that read each other in a cycle could never be refreshed in
-        // order: refuse the definition that closes one.
-        crate::flush::EntityDepGraph::load()?;
+        // order: refuse the definition that closes one. A fresh load, not the
+        // cached graph: the row just written must be in it.
+        crate::catalog::EntityDepGraph::load()?;
         Ok(())
     }
 }

@@ -80,9 +80,8 @@ tview_script() {
     echo '\timing on'
     echo '\pset pager off'
     echo 'SET client_min_messages TO WARNING;'
-    mode_sql "$mode"
     echo "\\echo '@@ build'"
-    printf 'SELECT pg_tviews_create(%s, $RB$\n%s\n$RB$);\n' "'tv_product'" "$SELECT_BODY"
+    printf 'SELECT pg_tviews_create(%s, $RB$\n%s\n$RB$, %s);\n' "'tv_product'" "$SELECT_BODY" "$(mode_options "$mode")"
     # correctness gate (unmarked -> not measured); fails the run if divergent
     cat <<'SQL'
 SELECT CASE WHEN count(*) = 0 THEN 'RB_OK divergence=0'

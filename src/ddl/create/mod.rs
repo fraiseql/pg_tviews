@@ -64,16 +64,13 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// What a new TVIEW gets unless told otherwise: `pg_tviews.unlogged_by_default`,
-    /// `pg_tviews.fillfactor` and `pg_tviews.data_gin_index`.
-    #[must_use]
-    pub fn from_settings() -> Self {
-        Self {
-            logged: !crate::config::unlogged_by_default(),
-            fillfactor: crate::config::fillfactor(),
-            data_gin_index: crate::config::data_gin_index(),
-        }
-    }
+    /// What a TVIEW gets unless its options say otherwise (ADR 0220): LOGGED,
+    /// fillfactor 85 (room for HOT updates), no GIN index on `data`.
+    pub const DEFAULT: Self = Self {
+        logged: true,
+        fillfactor: 85,
+        data_gin_index: false,
+    };
 }
 
 /// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW
@@ -88,7 +85,7 @@ impl Storage {
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
 /// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
-/// own); `None` reads `pg_tviews.uncascaded_policy`.
+/// own); `None` stores the defaults.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
@@ -103,7 +100,7 @@ pub(crate) fn create_tview_in(
         schema_name,
         group_keys,
         storage,
-        declarations.unwrap_or_else(Declarations::from_settings),
+        declarations.unwrap_or_else(Declarations::defaults),
     )
 }
 
@@ -247,7 +244,7 @@ fn create_tview_inner(
     let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
         0
     } else {
-        populate_initial_data(&tv_table_name, &schema_name, view_oid)?
+        fill_new(&schema_name, &tv_table_name, view_oid, lineage)?
     };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
@@ -276,29 +273,68 @@ fn create_tview_inner(
     }
     .write(declarations, false)?;
 
-    // Whoever reads the TVIEW's table reads its backing view.
     let table_oid = relation_oid(&schema_name, &tv_table_name)?;
-    crate::catalog::indexes::record(table_oid, &indexes)?;
+    finish(
+        entity_name,
+        table_oid,
+        &indexes,
+        &derivation,
+        &final_select_sql,
+    )?;
+    Ok(rows)
+}
+
+/// Fill a new TVIEW's table from its backing view `view_oid`: a UNION view
+/// returning one key twice is refused first, instead of failing on the primary
+/// key (ADR 0216). Returns the rows written.
+fn fill_new(
+    schema: &str,
+    table: &str,
+    view_oid: pg_sys::Oid,
+    lineage: &crate::lineage::Lineage,
+) -> TViewResult<u64> {
+    if lineage.set_operation {
+        crate::refresh::refuse_duplicate_keys_in(
+            &format!(
+                "{}.{}",
+                crate::utils::ident::quoted(schema),
+                crate::utils::ident::quoted(table)
+            ),
+            &lineage.identity.name,
+            &crate::utils::qualified_relname_from_oid(view_oid)?,
+            "true",
+            &[],
+        )?;
+    }
+    populate_initial_data(table, schema, view_oid)
+}
+
+/// What follows a new TVIEW's registration: its indexes recorded, its backing
+/// view given the table's readers, its rows marked trusted, the triggers on the
+/// tables it reads, the caches dropped, the audit entry.
+fn finish(
+    entity: &str,
+    table_oid: pg_sys::Oid,
+    indexes: &[String],
+    derivation: &derive::Derivation,
+    definition: &str,
+) -> TViewResult<()> {
+    crate::catalog::indexes::record(table_oid, indexes)?;
+    // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
     // UNLOGGED table's rows can be trusted until a reset.
     crate::lifecycle::validity::mark(table_oid)?;
-
-    // Install triggers on the tables it reads, as their lineage needs them: base
-    // tables, and other TVIEWs' tables it maps like them.
+    // Triggers on the tables it reads, as their lineage needs them: base tables,
+    // and other TVIEWs' tables it maps like them.
     crate::dependency::install_triggers(
-        &crate::dependency::trigger_plan(&derivation.base_tables, lineage),
-        entity_name,
+        &crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage),
+        entity,
     )?;
-
-    // Invalidate caches since new TVIEW was created
     crate::cache::invalidate_all();
-
-    // Buffer and flush audit entry immediately (we're in SPI context)
-    crate::audit::log_create(entity_name, &final_select_sql);
-    crate::audit::flush_audit_buffer()?;
-
-    Ok(rows)
+    // Buffered and flushed at once (in SPI context).
+    crate::audit::log_create(entity, definition);
+    crate::audit::flush_audit_buffer()
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
@@ -319,8 +355,8 @@ pub fn reregister_metadata(
             operation: format!("Read the metadata of tv_{entity_name}"),
             pg_error: e.to_string(),
         })?
-        .ok_or_else(|| TViewError::MetadataNotFound {
-            entity: entity_name.to_string(),
+        .ok_or_else(|| TViewError::TviewNotFound {
+            name: entity_name.to_string(),
         })?;
     let view_oid = meta.view_oid;
     select::check_one_select(definition)?;
@@ -371,8 +407,8 @@ pub fn reregister_metadata(
 pub fn reregister_tview(entity: &str) -> TViewResult<()> {
     // Ownership first: a role that may not re-register the TVIEW takes no lock.
     let meta = crate::catalog::TviewMeta::load_to_rederive(entity)?.ok_or_else(|| {
-        TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        TViewError::TviewNotFound {
+            name: entity.to_string(),
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
@@ -387,7 +423,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
                      JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                      WHERE m.entity = $1",
-                    crate::utils::meta_table()
+                    crate::catalog::meta_table()
                 ),
                 None,
                 &args,
@@ -400,24 +436,13 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         pg_error: e.to_string(),
     })?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
-        return Err(TViewError::MetadataNotFound {
-            entity: entity.to_string(),
+        return Err(TViewError::TviewNotFound {
+            name: entity.to_string(),
         });
     };
     let plan = reregister_metadata(entity, &schema_name, &definition)?;
     crate::dependency::sync_entity_triggers(&plan, entity)?;
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
-        &format!(
-            "UPDATE {} SET needs_reregister = false WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Clear needs_reregister of TVIEW {entity}"),
-        pg_error: e.to_string(),
-    })
+    crate::catalog::row::clear_needs_reregister(entity)
 }
 
 /// The `group_keys` of an aggregate TVIEW, `None` for any other.
@@ -428,20 +453,9 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 pub(crate) fn stored_group_keys(
     entity_name: &str,
 ) -> TViewResult<Option<super::aggregate::GroupKeys>> {
-    let stored: Option<pgrx::JsonB> = Spi::get_one_with_args(
-        &format!(
-            "SELECT group_keys FROM {} WHERE entity = $1",
-            crate::utils::meta_table()
-        ),
-        &[crate::utils::spi::text(entity_name)],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Read group_keys".to_string(),
-        pg_error: e.to_string(),
-    })?;
-    stored
-        .map(|j| {
-            serde_json::from_value(j.0).map_err(|e| TViewError::CatalogError {
+    crate::catalog::row::group_keys(entity_name)?
+        .map(|keys| {
+            serde_json::from_value(keys).map_err(|e| TViewError::CatalogError {
                 operation: format!("Read the group keys of tv_{entity_name}"),
                 pg_error: e.to_string(),
             })

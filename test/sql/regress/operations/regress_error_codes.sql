@@ -42,7 +42,7 @@ SELECT pg_tviews_create('tv_a', $$SELECT pk_a, id, jsonb_build_object('id', id, 
 SELECT expect_code($$SELECT pg_tviews_refresh('nope')$$, '42704', 'refresh unknown');
 SELECT expect_code($$SELECT pg_tviews_drop('tv_nope')$$, '42704', 'drop unknown');
 SELECT expect_code($$SELECT pg_tviews_reregister('tv_nope')$$, '42704', 'reregister unknown');
-SELECT expect_code($$SELECT pg_tviews_set_logged('nope', true)$$, '42704', 'set_logged unknown');
+SELECT expect_code($$SELECT pg_tviews_ensure_propagation_indexes('nope')$$, '42704', 'ensure_propagation_indexes unknown');
 
 -- 42P07 duplicate_table: from pg_tviews_create and from CTAS alike.
 SELECT expect_code($$SELECT pg_tviews_create('tv_a', 'SELECT pk_a, id, jsonb_build_object(''id'', id) AS data FROM tb_a')$$,

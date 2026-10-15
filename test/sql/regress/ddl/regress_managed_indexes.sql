@@ -118,11 +118,11 @@ INSERT INTO tb_item (pk_item, name) VALUES (3, 'c');
 SELECT assert_fresh('tv_post', 'pk_post', 'writes');
 SELECT assert_fresh('tv_item', 'pk_item', 'writes');
 
--- 3. Catalog shape: an appended regclass[]; NULL when the table is gone.
+-- 3. Catalog shape: a regclass[]; NULL when the table is gone.
 RESET ROLE;
-SELECT must((SELECT attname = 'managed_indexes' AND atttypid = 'regclass[]'::regtype
-             FROM pg_attribute WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0
-             ORDER BY attnum DESC LIMIT 1), 'managed_indexes is not the last column');
+SELECT must((SELECT atttypid = 'regclass[]'::regtype FROM pg_attribute
+             WHERE attrelid = 'tviews.registry'::regclass AND attname = 'managed_indexes'),
+            'managed_indexes is not a regclass[] column');
 SELECT must((SELECT array_length(managed_index_names, 1) FROM tviews.pg_tview_meta
              WHERE entity = 'user') = 1, 'pg_tview_meta.managed_index_names');
 UPDATE tviews.pg_tview_meta SET table_oid = 4000000000 WHERE entity = 'item';

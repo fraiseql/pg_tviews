@@ -14,7 +14,7 @@ Placeholders stand for the values each message carries.
 
 | SQLSTATE | Condition | Error | Message | Hint |
 |---|---|---|---|---|
-| `42704` | `undefined_object` | `MetadataNotFound` | TVIEW metadata not found for entity '&lt;entity&gt;' | SELECT entity FROM tviews.pg_tview_meta lists the registered TVIEWs. |
+| `42704` | `undefined_object` | `TviewNotFound` | TVIEW &lt;tview&gt; does not exist | SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by its entity, tv_&lt;entity&gt; or schema.tv_&lt;entity&gt;. |
 | `42P07` | `duplicate_table` | `RelationExists` | TVIEW &lt;name&gt; already exists | pg_tviews_create_or_replace() changes an existing TVIEW. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
@@ -29,6 +29,8 @@ Placeholders stand for the values each message carries.
 | `42883` | `undefined_function` | `JsonbDeltaMissing` | Required extension 'jsonb_delta' is not installed | CREATE EXTENSION jsonb_delta; |
 | `54000` | `program_limit_exceeded` | `QueueFull` | refresh queue backpressure: queue size (10001) would exceed max_queue_size (10000) | Raise pg_tviews.max_queue_size, or write in smaller transactions. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
+| `25000` | `invalid_transaction_state` | `PrepareHoldsRefill` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
+| `21000` | `cardinality_violation` | `DuplicateKey` | TVIEW &lt;table&gt;: its backing view returned multiple rows for &lt;key column&gt;=&lt;key&gt; | Make the UNION branches' keys disjoint (a sign or an offset per branch), or keep one row per key with DISTINCT ON over the UNION, ordered by preference. |
 | `XX000` | `internal_error` | `CatalogError` | Catalog operation '&lt;operation&gt;' failed: &lt;error&gt; | tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata. |
 | `XX000` | `internal_error` | `SpiError` | SPI query failed: &lt;error&gt; |  |
 | `XX000` | `internal_error` | `SerializationError` | Serialization error: &lt;message&gt; | tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata. |
@@ -43,5 +45,4 @@ Placeholders stand for the values each message carries.
 | `42501` | `insufficient_privilege` | The caller neither owns the TVIEW (or is a member of its owner) nor owns the extension. |
 | `0A000` | `feature_not_supported` | A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, `TABLESPACE`, `USING`, a storage parameter other than `fillfactor`, a query with parameters. |
 | `42P07` | `duplicate_table` | `CREATE TABLE tv_* AS` names a TVIEW that already exists. |
-| `21000` | `cardinality_violation` | A UNION backing view returns two rows for one key (`pg_tviews.union_duplicate_policy = 'error'`). |
 | `22023` | `invalid_parameter_value` | Under `uncascaded_policy = 'error'`: a table whose writes no cascade maps to the TVIEW's keys, a function that reads tables not declared in `function_reads`, or a definition reading the time without `time_refresh`. Under `warn` the same is a WARNING (01000). |

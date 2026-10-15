@@ -156,7 +156,7 @@ Create a TVIEW before the TVIEWs that embed it.
 Per-entity aggregates (counts, averages, the last N items) fit in the entity's own TVIEW as
 correlated subqueries, as `reviewCount` above. A read model whose rows are groups (one row
 per customer per month) is an [aggregate TVIEW](aggregate-tviews.md), created with
-`tviews.pg_tviews_create_aggregate()` and refreshed group by group.
+`tviews.pg_tviews_create()` and its `group_keys` option, and refreshed group by group.
 
 ### What a definition cannot do
 
@@ -170,7 +170,9 @@ change its rows without pg_tviews knowing which ones:
 - a non-immutable function that reads tables, unless the `function_reads` option names them;
 - TVIEWs reading each other in a cycle (42P17).
 
-Options are passed to `tviews.pg_tviews_create_or_replace()`; see the
+Options are passed to `tviews.pg_tviews_create()` or
+`tviews.pg_tviews_create_or_replace()`, and are the whole declaration: what a TVIEW is
+comes only from its definition and its options, never from a setting. See the
 [API reference](../reference/api.md).
 
 ## Cascade design
@@ -206,7 +208,7 @@ CREATE INDEX idx_tv_article_fts
 ```
 
 Keep indexes on `data` few: nearly every refresh rewrites `data`, and every index on it makes
-the refresh a non-HOT update. New TVIEWs get a fillfactor of 85 (`pg_tviews.fillfactor`) to
+the refresh a non-HOT update. TVIEWs get a fillfactor of 85 (the `fillfactor` option) to
 leave room for HOT updates.
 
 ### Write side
@@ -220,15 +222,13 @@ leave room for HOT updates.
 
 ### Read replicas
 
-TVIEWs are created UNLOGGED by default (`pg_tviews.unlogged_by_default`): cheaper to write,
-but a hot standby cannot read them, and promotion or a crash restart empties them. A TVIEW
-served from replicas must be LOGGED:
+TVIEWs are LOGGED by default: a hot standby reads them like any table. A TVIEW declared
+`logged: false` (or created with `CREATE UNLOGGED TABLE tv_x AS`) is cheaper to write, but
+a standby cannot read it, and promotion or a crash restart empties it until a worker
+refills it. `ALTER TABLE tv_x SET LOGGED` (or the `logged` option) switches it back:
 
 ```sql
-SET pg_tviews.unlogged_by_default = off;   -- for TVIEWs created from now on
-SELECT tviews.pg_tviews_set_logged('article', true);  -- for an existing one
-
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT entity, persistence, replica_readable FROM tviews.pg_tviews_replication_status();
 ```
 
 A replica never refreshes a TVIEW: it replays the primary's. See
@@ -255,7 +255,7 @@ ROLLBACK;
 ## Security model
 
 - A TVIEW is owned by its creator. Functions acting on one TVIEW (`pg_tviews_refresh`,
-  `pg_tviews_reregister`, `pg_tviews_set_logged`, …) require owning it or the extension
+  `pg_tviews_reregister`, `pg_tviews_drop`, …) require owning it or the extension
   (42501 otherwise).
 - Functions acting on every TVIEW (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`,
   `pg_tviews_reregister_all()`, …) are not executable by `PUBLIC`; grant them to the roles
@@ -269,15 +269,17 @@ See [Operator Guide](operators.md) and [Security](../operations/security.md).
 ```sql
 SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
 SELECT entity, needs_reregister, uncascaded_tables FROM tviews.registry;
-SELECT * FROM tviews.pg_tviews_performance_stats();
+SELECT entity, view_recomputes, rows_written, refresh_ms FROM tviews.stats;
+SELECT entity, persistence, heap_bytes, hot_ratio, warnings FROM tviews.pg_tviews_profile();
 ```
 
 - `pg_tviews_health_check()`: catalog, plans, triggers, `jsonb_delta`; an empty result above
   is healthy.
 - `tviews.registry`: one row per TVIEW, the stable read contract for tools
   ([read contract](../reference/read-contract.md)).
+- `tviews.stats`: refresh work per TVIEW, cumulative, readable from any session.
 - `pg_tviews_profile()`: sizes, dead tuples, fan-out, with warnings.
-- `pg_tviews_queue_stats()`: the current transaction's refresh work, from the application.
+- `pg_tviews_queue_stats()`: the current session's refresh work, for debugging.
 
 ## Trade-offs
 

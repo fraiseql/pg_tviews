@@ -156,6 +156,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
 
+      # A throwaway preloaded cluster: after a crash restart the rebuild launcher
+      # refills the reset UNLOGGED TVIEWs of every database, unconfigured (#215).
+      - name: Crash refill (test/replication/crash_refill.sh)
+        if: ${{ !cancelled() }}
+        run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/replication/crash_refill.sh
+
       # A pg_basebackup standby on a spare port: UNLOGGED TVIEWs on a hot standby,
       # after promotion and after a crash restart (issue #75).
       - name: Replication suite (test/replication/promote_rebuild.sh)

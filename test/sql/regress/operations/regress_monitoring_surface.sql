@@ -1,5 +1,5 @@
--- The monitoring surface reports only real data. pg_tviews_performance_stats()
--- works where query_to_xml/xpath are unusable (a server built without libxml);
+-- The monitoring surface reports only real data. pg_tviews_profile() works where
+-- query_to_xml/xpath are unusable (a server built without libxml);
 -- the placeholder views and pg_tviews_hook_status() are gone; an unknown
 -- pg_tviews.* setting is refused.
 --
@@ -19,7 +19,7 @@ INSERT INTO tb_post (pk_post, title) VALUES (1, 'a'), (2, 'b');
 SELECT pg_tviews_create('tv_post', $$
     SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post $$);
 
--- ── item 3: performance_stats without the XML functions ─────────────────────
+-- ── item 3: the profile without the XML functions ───────────────────────────
 -- Here as on a server built without libxml, query_to_xml and xpath are unusable.
 REVOKE EXECUTE ON FUNCTION pg_catalog.query_to_xml(text, boolean, boolean, text),
                            pg_catalog.xpath(text, xml), pg_catalog.xpath(text, xml, text[])
@@ -32,12 +32,12 @@ SET ROLE monitoring_reader;
 DO $$
 DECLARE n bigint;
 BEGIN
-    SELECT row_count INTO n FROM tviews.pg_tviews_performance_stats() WHERE entity = 'post';
-    IF n IS DISTINCT FROM 2 THEN
-        RAISE EXCEPTION 'item 3 FAIL: performance_stats row_count for post is %', n;
+    SELECT heap_bytes INTO n FROM tviews.pg_tviews_profile('post');
+    IF n IS NULL OR n <= 0 THEN
+        RAISE EXCEPTION 'item 3 FAIL: profile heap_bytes for post is %', n;
     END IF;
 EXCEPTION WHEN insufficient_privilege OR feature_not_supported THEN
-    RAISE EXCEPTION 'item 3 FAIL: performance_stats needs the XML functions: %', SQLERRM;
+    RAISE EXCEPTION 'item 3 FAIL: the profile needs the XML functions: %', SQLERRM;
 END $$;
 RESET ROLE;
 GRANT EXECUTE ON FUNCTION pg_catalog.query_to_xml(text, boolean, boolean, text),

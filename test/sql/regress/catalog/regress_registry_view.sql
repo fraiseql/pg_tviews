@@ -1,7 +1,7 @@
 -- Regression test (#151): tviews.registry reports the backing view.
 --
 -- Tools need each TVIEW's backing view v_<entity>, which was only in the internal
--- pg_tview_meta. The registry's `view` column is a regclass, appended last (an
+-- pg_tview_meta. The registry's `view` column is a regclass (an
 -- addition: contract_version() stays 1), NULL when the view is gone.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/catalog/regress_registry_view.sql
@@ -31,13 +31,12 @@ RESET search_path;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#151 FAIL: %', what; END IF; END $$;
 
--- 1. `view` is a regclass appended after the contract-1 columns (later additions
--- come after it); the contract version is unchanged.
+-- 1. `view` is a regclass column of the read contract (regress_read_contract.sql
+-- checks the whole column list).
 SELECT must(
-    (SELECT attname || ' ' || format_type(atttypid, atttypmod) FROM pg_attribute
-     WHERE attrelid = 'tviews.registry'::regclass AND attnum = 9) = 'view regclass',
-    'the ninth registry column is not view regclass');
-SELECT must(tviews.contract_version() = 1, 'contract_version() changed');
+    (SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+     WHERE attrelid = 'tviews.registry'::regclass AND attname = 'view') = 'regclass',
+    'the registry has no view regclass column');
 
 -- 2. It names the backing view, in the extension's schema (#181).
 SELECT must((SELECT view FROM tviews.registry WHERE entity = 'user') = 'tviews.public__tv_user'::regclass,

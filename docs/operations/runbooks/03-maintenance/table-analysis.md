@@ -18,7 +18,7 @@ the refresh work that keeps them current.
 
 ### Step 1: Inventory
 ```sql
-SELECT schema, name, entity, logged, base_tables
+SELECT schema, name, entity, options->'logged' AS logged, base_tables
 FROM tviews.registry
 ORDER BY schema, name;
 ```
@@ -76,8 +76,8 @@ EXPLAIN (ANALYZE, BUFFERS)
 SELECT data FROM public.tv_post WHERE fk_user = 1;
 ```
 TVIEW tables are ordinary tables: add indexes for your read patterns with
-`CREATE INDEX CONCURRENTLY`. `pg_tviews.data_gin_index` creates a GIN index on `data`
-for new TVIEWs.
+`CREATE INDEX CONCURRENTLY`. The option `data_gin_index: true` makes pg_tviews create
+a GIN index on `data`.
 
 ### Refresh cost
 A refresh recomputes affected rows from its backing view (`tviews.<schema>__tv_<entity>`) by key. Its cost

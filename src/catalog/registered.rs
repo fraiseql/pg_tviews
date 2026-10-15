@@ -34,7 +34,7 @@ pub fn all() -> TViewResult<Vec<Registered>> {
                 group_keys IS NOT NULL, \
                 COALESCE(identity->>'kind' = 'distinct_on', false) \
          FROM {} ORDER BY entity",
-        crate::utils::meta_table()
+        crate::catalog::meta_table()
     );
     let rows = crate::utils::spi::rows(&sql, &[], |row| {
         let (Some(entity), Some(table_oid), Some(view_oid)) = (

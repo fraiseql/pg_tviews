@@ -87,15 +87,17 @@ CREATE TABLE harness_shape (tv regclass PRIMARY KEY, key text NOT NULL);
 CREATE FUNCTION harness_create(tv text, key text, def text, group_keys jsonb DEFAULT NULL,
                                policy text DEFAULT 'warn', options jsonb DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql AS $f$
+DECLARE
+    -- `policy` is the uncascaded_policy option unless `options` declares its own.
+    declared jsonb := jsonb_build_object('uncascaded_policy', policy) || coalesce(options, '{}');
 BEGIN
-    PERFORM set_config('pg_tviews.uncascaded_policy', policy, true);
     BEGIN
         IF options IS NOT NULL THEN
-            PERFORM pg_tviews_create_or_replace(tv, def, options);
+            PERFORM pg_tviews_create_or_replace(tv, def, declared);
         ELSIF group_keys IS NULL THEN
-            PERFORM pg_tviews_create(tv, def);
+            PERFORM pg_tviews_create(tv, def, declared);
         ELSE
-            PERFORM pg_tviews_create_aggregate(tv, def, group_keys);
+            PERFORM pg_tviews_create(tv, def, declared || jsonb_build_object('group_keys', group_keys));
         END IF;
     EXCEPTION WHEN OTHERS THEN
         IF tv = ANY (string_to_array(current_setting('harness.xfail'), ',')) THEN

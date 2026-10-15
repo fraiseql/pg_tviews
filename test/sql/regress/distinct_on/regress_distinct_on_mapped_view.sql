@@ -67,17 +67,15 @@ DELETE FROM tb_line WHERE sku = 'x';
 DROP TABLE tv_order;
 
 -- ── the same under full_refresh: accepted, fresh ───────────────────────────
-SET pg_tviews.uncascaded_policy = 'full_refresh';
 SELECT pg_tviews_create('tv_order', $$
     SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data
-    FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $$);
-RESET pg_tviews.uncascaded_policy;
+    FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $$, '{"uncascaded_policy": "full_refresh"}');
 INSERT INTO tb_line (fk_order, sku) VALUES (1, 'e');
 SELECT check_fresh('an INSERT into tb_line (full_refresh)');
 UPDATE tb_order SET ref = 'y' WHERE pk_order = 2;
 SELECT check_fresh('an UPDATE of tb_order (full_refresh)');
 
--- ── keyed on a unique NOT NULL column of the root table: accepted under warn ─
+-- ── keyed on a unique NOT NULL column of the root table: accepted (no uncascaded table) ─
 DROP TABLE tv_order;
 ALTER TABLE tb_order ADD COLUMN code text;
 UPDATE tb_order SET code = 'C' || pk_order;
