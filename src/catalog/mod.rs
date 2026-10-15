@@ -551,8 +551,10 @@ impl Default for TviewMeta {
 }
 
 /// The GraphQL type name of `entity`'s rows: the `typename` option when declared,
-/// else the entity in Pascal case (`blog_post` → `BlogPost`). The name
-/// `pg_tviews_flush_and_report()` emits and its `types` argument takes.
+/// else the entity in Pascal case (`blog_post` → `BlogPost`), capitalising ASCII letters
+/// only (GraphQL names are ASCII), so `tviews.registry.typename` derives the same name in
+/// SQL whatever the database's locale. The name `pg_tviews_flush_and_report()` emits and
+/// its `types` argument takes.
 #[must_use]
 pub fn typename(entity: &str, declared: Option<String>) -> String {
     declared.unwrap_or_else(|| {
@@ -562,7 +564,7 @@ pub fn typename(entity: &str, declared: Option<String>) -> String {
             .map(|part| {
                 let mut chars = part.chars();
                 chars.next().map_or_else(String::new, |first| {
-                    first.to_uppercase().collect::<String>() + chars.as_str()
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
                 })
             })
             .collect()
@@ -597,6 +599,16 @@ mod tests {
         assert_eq!(super::typename("blog_post", None), "BlogPost");
         assert_eq!(super::typename("order_line_item", None), "OrderLineItem");
         assert_eq!(super::typename("post", Some("Article".into())), "Article");
+    }
+
+    #[test]
+    fn typename_capitalises_ascii_letters_only_whatever_the_locale() {
+        // GraphQL names are ASCII; tviews.registry.typename derives the same name in SQL,
+        // which must not depend on the database's ctype (Turkish dotted I, German sharp s).
+        assert_eq!(super::typename("item", None), "Item");
+        assert_eq!(super::typename("été", None), "été");
+        assert_eq!(super::typename("ßeta_x", None), "ßetaX");
+        assert_eq!(super::typename("_post__line_", None), "PostLine");
     }
 
     use super::*;

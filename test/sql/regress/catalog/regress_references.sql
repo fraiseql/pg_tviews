@@ -190,6 +190,15 @@ SELECT must((SELECT array_agg(parent) FROM tviews.pg_tview_references
              WHERE entity = 'post' AND column_name = 'fk_author' AND chosen)
             = ARRAY[refs('post')->'fk_author'->>'entity'],
             'not exactly one candidate chosen, the one the registry names');
+-- A parent whose identity is unknown (a row awaiting re-registration) never wins: its
+-- `preferred` is NULL, which must not sort before false.
+UPDATE tviews.pg_tview_meta SET identity = NULL WHERE entity = 'account';
+SELECT must(refs('post')->'fk_author'->>'entity' = 'member',
+            'a parent without an identity was chosen: ' || refs('post')::text);
+UPDATE tviews.pg_tview_meta m SET identity = r.identity
+FROM (SELECT jsonb_build_object('kind', 'pk', 'columns',
+             jsonb_build_array(jsonb_build_object('name', 'pk_account'))) AS identity) r
+WHERE m.entity = 'account';
 
 -- 11. registry.typename is the type name the report and the change feed use, so a
 --     reader names a collection (`Comment.fk_post`) from the registry alone: the
@@ -216,7 +225,8 @@ SELECT must((SELECT array_agg(DISTINCT e->>'__typename' ORDER BY e->>'__typename
             'registry.typename is not what the report names: ' || :'r');
 COMMIT;
 SELECT must((SELECT typename FROM tviews.registry WHERE entity = 'blog_entry') = 'BlogEntry'
-            AND (SELECT typename FROM tviews.registry WHERE entity = 'note') = 'Article',
-            'typename: PascalCase of the entity, else the option');
+            AND (SELECT typename FROM tviews.registry WHERE entity = 'note') = 'Article'
+            AND (SELECT typename FROM tviews.registry WHERE entity = 'été') = 'été',
+            'typename: PascalCase of the entity (ASCII letters only), else the option');
 
 \echo 'references: PASS'
