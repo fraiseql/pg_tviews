@@ -14,13 +14,14 @@ AS 'SELECT 8';
 -- its root table. Resolved live, so a parent registered after its child is found.
 -- One row per reference and parent. Of two TVIEWs named by one key, `chosen` marks
 -- the parent: the one whose identity column has the referenced column's name
--- (`preferred`), else the first by entity. The registry and the change feed both
--- publish the chosen one.
+-- (`preferred`; a parent without an identity never wins), else the first by entity.
+-- The registry and the change feed both publish the chosen one.
 -- `index_name` is the managed index (or a constraint's) leading with the column.
 CREATE VIEW @extschema@.pg_tview_references AS
 SELECT x.*,
        pg_catalog.row_number() OVER (PARTITION BY x.entity, x.column_name
-                                     ORDER BY x.preferred DESC, x.parent) = 1 AS chosen
+                                     ORDER BY x.preferred DESC NULLS LAST, x.parent) = 1
+       AS chosen
 FROM (SELECT m.entity,
              r.value->>'column' AS column_name,
              p.entity AS parent,
@@ -151,10 +152,14 @@ SELECT
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
     -- The type name the report and the change feed use, as crate::catalog::typename
-    -- derives it: the typename option, else the PascalCase of the entity.
+    -- derives it: the typename option, else the PascalCase of the entity, capitalising
+    -- ASCII letters only (translate, not upper(): no locale changes the name).
     COALESCE(m.graphql_typename,
              (SELECT pg_catalog.string_agg(
-                         pg_catalog.upper(pg_catalog.left(p.part, 1)) || pg_catalog.substr(p.part, 2),
+                         pg_catalog.translate(pg_catalog.left(p.part, 1),
+                                              'abcdefghijklmnopqrstuvwxyz',
+                                              'ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+                         || pg_catalog.substr(p.part, 2),
                          '' ORDER BY p.n)
               FROM pg_catalog.unnest(pg_catalog.string_to_array(m.entity, '_'))
                    WITH ORDINALITY AS p(part, n)

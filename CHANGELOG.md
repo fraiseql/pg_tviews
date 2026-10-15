@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **A derived type name capitalises ASCII letters only**: an entity starting a word with a
+  non-ASCII letter keeps it (`été` → `été`, was `Été`), in `pg_tviews_flush_and_report()`,
+  the change feed and `tviews.registry.typename` alike. GraphQL names are ASCII; the rule no
+  longer depends on the database's locale (`tr_TR` turned `item` into `İtem` in SQL).
 - **Change feed payload version 2**: every message is `{"v":2,…}`, with the optional `c`
   section. A listener that only knows version 1 evicts everything on a `v: 2` message, as
   the consumer contract says, which is safe; update it to read `c`.
