@@ -4,7 +4,7 @@
 use super::Storage;
 use super::ViewColumns;
 use super::index_name;
-use super::indexes::{create_tview_indexes, storage_clause};
+use super::indexes::create_tview_indexes;
 use crate::error::TViewError;
 use crate::error::TViewResult;
 use crate::utils::ident;
@@ -290,7 +290,12 @@ pub(crate) fn create_materialized_table(
 
     // Data column (JSONB read model)
     if let Some(data) = &schema.data {
-        columns.push(format!("{} JSONB", ident::quoted(data)));
+        storage.data_compression.check_available()?;
+        columns.push(format!(
+            "{} JSONB{}",
+            ident::quoted(data),
+            storage.data_column_clause()
+        ));
     }
 
     // fk_* columns: the type the definition gives them.
@@ -334,7 +339,7 @@ pub(crate) fn create_materialized_table(
     let columns_sql = columns.join(",\n    ");
 
     let unlogged_keyword = if storage.logged { "" } else { "UNLOGGED " };
-    let with = storage_clause(storage.fillfactor);
+    let with = storage.with_clause();
     let create_table_sql = format!(
         "CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n){with}"
     );

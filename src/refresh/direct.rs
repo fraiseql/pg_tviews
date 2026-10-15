@@ -8,8 +8,8 @@
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::queue::patch::PatchEntry;
+use crate::utils::spi::LookupKeys;
 use pgrx::datum::DatumWithOid;
-use pgrx::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -50,121 +50,121 @@ pub fn derive_parent_chain(
     Some(derived)
 }
 
-/// Apply one patch chain to a set of rows of a single entity.
+/// Apply patch chains of one shape (the same prefixes and keys, in order) to
+/// rows of a single entity: `rows` holds each pk with its chain.
 ///
-/// Generates a grouped `UPDATE tv_<entity> SET data = <nested patch calls>` over
-/// `pk = ANY($n)`, guarded by `data IS DISTINCT FROM <patched>` so a patch that
-/// changes nothing writes nothing. Patch values are always bound as
-/// JSONB parameters — never interpolated.
+/// One `UPDATE tv_<entity> SET data = <nested patch calls>` joins the pks and
+/// their values, bound as two arrays (each row's chain values as a JSON array, an
+/// element per entry), guarded by `data IS DISTINCT FROM <patched>` so a patch
+/// that changes nothing writes nothing. Nothing is interpolated.
 ///
-/// Returns `(pk, changed)` for every **materialised** row among `pks`: the
+/// Returns `(pk, changed)` for every **materialised** row among the pks: the
 /// guarded UPDATE runs in a data-modifying CTE and the outer SELECT reads the
 /// statement snapshot, so unchanged rows are still reported as present. The
 /// caller diffs these against the input to find rows that must recompute (not
 /// yet materialised).
-pub fn apply_direct_patch(
+fn apply_direct_patch(
     meta: &TviewMeta,
-    pks: &[i64],
-    chain: &[PatchEntry],
+    rows: &[(i64, Vec<PatchEntry>)],
 ) -> TViewResult<Vec<(i64, bool)>> {
-    if pks.is_empty() || chain.is_empty() {
+    let Some((_, shape)) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    if shape.is_empty() {
         return Ok(Vec::new());
     }
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
     let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
-    let (patch_expr, path_args) = build_direct_patch_expr(&schema, chain);
-    let pk_param = chain.len() + 1;
+    let (patch_expr, path_args) = build_direct_patch_expr(&schema, shape);
 
     let sql = format!(
-        "WITH changed AS ( \
-             UPDATE {qi_tv} SET data = {patch_expr}, updated_at = now() \
-             WHERE {qi_pk} = ANY(${pk_param}) AND data IS DISTINCT FROM {patch_expr} \
-             RETURNING {qi_pk}) \
+        "WITH f AS (SELECT * FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
+                                             pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(pk, v)), \
+         changed AS ( \
+             UPDATE {qi_tv} t SET data = {patch_expr}, updated_at = pg_catalog.now() FROM f \
+             WHERE t.{qi_pk} = f.pk AND t.data IS DISTINCT FROM {patch_expr} \
+             RETURNING t.{qi_pk}) \
          SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed) \
-         FROM {qi_tv} t WHERE t.{qi_pk} = ANY(${pk_param})"
+         FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)"
     );
 
-    // Params (all bound, nothing interpolated): one JSONB per chain entry, then the
-    // pk array, then one text[] per nested-entry path.
-    let json_args: Vec<pgrx::JsonB> = chain
+    let pks: Vec<i64> = rows.iter().map(|(pk, _)| *pk).collect();
+    let values: Vec<pgrx::JsonB> = rows
         .iter()
-        .map(|(_, fields)| pgrx::JsonB(Value::Object(fields.clone())))
+        .map(|(_, chain)| {
+            pgrx::JsonB(Value::Array(
+                chain
+                    .iter()
+                    .map(|(_, fields)| Value::Object(fields.clone()))
+                    .collect(),
+            ))
+        })
         .collect();
-    let pk_vec = pks.to_vec();
-
-    Spi::connect(|client| {
-        let mut args: Vec<DatumWithOid> = Vec::with_capacity(chain.len() + 1 + path_args.len());
-        for j in &json_args {
-            args.push(crate::utils::spi::jsonb(pgrx::JsonB(j.0.clone())));
-        }
-        args.push(crate::utils::spi::int8_array(pk_vec.clone()));
-        for path in &path_args {
-            args.push(crate::utils::spi::text_array(path.clone()));
-        }
-
-        let rows = client.select(&sql, None, &args)?;
-        let mut materialised = Vec::new();
-        for row in rows {
-            if let (Some(pk), Some(changed)) = (row[1].value::<i64>()?, row[2].value::<bool>()?) {
-                materialised.push((pk, changed));
-            }
-        }
-        Ok(materialised)
-    })
+    let mut args: Vec<DatumWithOid> = vec![
+        crate::utils::spi::int8_array(pks),
+        DatumWithOid::from(values),
+    ];
+    for path in path_args {
+        args.push(crate::utils::spi::text_array(path));
+    }
+    Ok(
+        crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)?
+            .into_iter()
+            .filter_map(|row| match &row[..] {
+                [Some(pk), Some(changed)] => Some((pk.parse().ok()?, changed == "t")),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
-/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`,
-/// merge `fields` into the `data` of every row whose `lookup_col` equals `key`,
-/// in one statement. Rows already holding those values are left alone. Returns
-/// the pks of the rows written, which are journaled and counted as applied.
+/// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
+/// `fields` (keyed by their paths in `data`) into the `data` of every row whose
+/// `lookup_col` equals `key`, with one statement per set of paths. Rows already
+/// holding those values are left alone. Returns the pks of the rows written,
+/// which are journaled and counted as applied.
 pub fn apply_fanout_patch(
     meta: &TviewMeta,
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
 ) -> TViewResult<Vec<i64>> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
+    // The rows writing the same paths, each key with its values in path order.
+    type Targets = (Vec<i64>, Vec<pgrx::JsonB>);
+    let mut shapes: std::collections::BTreeMap<Vec<String>, Targets> =
+        std::collections::BTreeMap::new();
+    for (key, fields) in rows {
+        let mut paths: Vec<&String> = fields.keys().collect();
+        paths.sort();
+        let values = paths.iter().map(|p| fields[*p].clone()).collect();
+        let (keys, all_values) = shapes
+            .entry(paths.into_iter().cloned().collect())
+            .or_default();
+        keys.push(*key);
+        all_values.push(pgrx::JsonB(Value::Array(values)));
     }
-    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
-    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-    let qi_lookup = crate::utils::ident::quoted(lookup_col);
-    let patch = format!("{schema}.jsonb_smart_patch_scalar(t.data, f.patch)");
-    let sql = format!(
-        "UPDATE {qi_tv} t SET data = {patch}, updated_at = now() \
-         FROM jsonb_each($1) AS f(k, patch) \
-         WHERE t.{qi_lookup} = f.k::bigint AND t.data IS DISTINCT FROM {patch} \
-         RETURNING t.{qi_pk}::bigint"
-    );
-    // One JSONB object `{key: fields}` carries every target group.
-    let by_key: Map<String, Value> = rows
-        .iter()
-        .map(|(key, fields)| (key.to_string(), Value::Object(fields.clone())))
-        .collect();
-
-    let changed: Vec<i64> = Spi::connect_mut(|client| {
-        let args = [crate::utils::spi::jsonb(pgrx::JsonB(Value::Object(by_key)))];
-        client
-            .update(&sql, None, &args)?
-            .map(|row| row[1].value::<i64>())
-            .filter_map(Result::transpose)
-            .collect::<pgrx::spi::Result<_>>()
-    })?;
+    let mut changed = Vec::new();
+    for (paths, (keys, values)) in shapes {
+        changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
+    }
 
     // REPEATABLE READ: the patch reached every row the latest snapshot holds
     // with these values (a row it couldn't see would keep the old value).
-    if crate::concurrency::crosscheck::enabled() {
-        let keys: Vec<i64> = rows.iter().map(|(key, _)| *key).collect();
+    if crate::concurrency::crosscheck::enabled()
+        && let Some(keys) = LookupKeys::of(rows.iter().map(|(key, _)| *key).collect())
+    {
+        let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+        let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+        let qi_lookup = crate::utils::ident::quoted(lookup_col);
         let lookup = format!(
-            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t \
-             WHERE t.{qi_lookup} = ANY ($1::pg_catalog.int8[])"
+            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t WHERE {}",
+            keys.predicate(&format!("t.{qi_lookup}"), 1)
         );
-        let args = [crate::utils::spi::int8_array(keys)];
+        let args = [keys.arg()];
         // Read-write, as the patch: its snapshot sees this flush's own writes.
-        let found = crate::utils::spi::kept_rows(&lookup, &args)?;
-        crate::concurrency::crosscheck::discovered_by(&lookup, &args, &found)?;
+        let found = crate::utils::spi::kept_rows(&lookup, &args, keys.plan())?;
+        crate::concurrency::crosscheck::discovered_by(&lookup, &args, keys.plan(), &found)?;
     }
     crate::metrics::metrics_api::record_direct_patches_applied(
         &meta.entity_name,
@@ -180,29 +180,95 @@ pub fn apply_fanout_patch(
     Ok(changed)
 }
 
-/// Apply all direct patches for one entity, grouping pks that share an identical
-/// chain into a single UPDATE (chunked by `pg_tviews.batch_size`). Increments the
+/// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
+/// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
+/// at each path, the paths bound as parameters. The pks written.
+///
+/// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
+/// a generic plan of a join with an array assumes ten keys, each matching
+/// `lookup_col`'s average number of rows, and on a TVIEW whose lookup column
+/// has few distinct values it scans the whole table for a few rows. One key,
+/// a write to one parent, is compared with `=` from a generic plan, whose
+/// estimate is the rows of one value; several are joined from the arrays,
+/// planned at each execution for their count.
+fn write_fanout(
+    meta: &TviewMeta,
+    lookup_col: &str,
+    paths: &[String],
+    keys: Vec<i64>,
+    values: Vec<pgrx::JsonB>,
+) -> TViewResult<Vec<i64>> {
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(Vec::new());
+    };
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_lookup = crate::utils::ident::quoted(lookup_col);
+    // The rows written, and where each one's values come from.
+    let (from, filter, value) = match lookup {
+        LookupKeys::One(_) => (
+            "",
+            lookup.predicate(&format!("t.{qi_lookup}"), 1),
+            "($2::pg_catalog.jsonb[])[1]",
+        ),
+        LookupKeys::Many(_) => (
+            " FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
+                              pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v)",
+            format!("t.{qi_lookup} = f.k"),
+            "f.v",
+        ),
+    };
+    let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
+        format!(
+            "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], {value} -> {i})",
+            i + 3
+        )
+    });
+    let sql = format!(
+        "UPDATE {qi_tv} t SET data = {patched}, updated_at = pg_catalog.now(){from} \
+         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
+         RETURNING t.{qi_pk}::pg_catalog.int8"
+    );
+    let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
+    for key in paths {
+        let path = crate::queue::patch::fanout_path(key).ok_or_else(|| {
+            crate::error::TViewError::SerializationError {
+                message: format!("fan-out path {key} of tv_{}", meta.entity_name),
+            }
+        })?;
+        args.push(crate::utils::spi::text_array(path));
+    }
+    Ok(crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?
+        .into_iter()
+        .filter_map(|row| row.first()?.as_deref()?.parse().ok())
+        .collect())
+}
+
+/// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
+/// by `pg_tviews.batch_size`). Increments the
 /// applied/fallback counters. Returns the pks that fell back (row not materialised)
 /// and must be recomputed by the caller.
 pub fn apply_entity_patches(
     meta: &TviewMeta,
     keyed_chains: Vec<(i64, Vec<PatchEntry>)>,
 ) -> TViewResult<Vec<i64>> {
-    // Group pks by identical chain (canonical JSON form).
-    let mut groups: HashMap<String, (Vec<PatchEntry>, Vec<i64>)> = HashMap::new();
+    // Group the rows by the shape of their chains: each entry's prefix and keys.
+    // (prefix, keys) of each entry.
+    type Shape = Vec<(Vec<String>, Vec<String>)>;
+    let mut groups: HashMap<Shape, Vec<(i64, Vec<PatchEntry>)>> = HashMap::new();
     for (pk, chain) in keyed_chains {
-        let canonical = serde_json::to_string(&chain).unwrap_or_default();
-        let entry = groups
-            .entry(canonical)
-            .or_insert_with(|| (chain, Vec::new()));
-        entry.1.push(pk);
+        let shape = chain
+            .iter()
+            .map(|(prefix, fields)| (prefix.clone(), fields.keys().cloned().collect()))
+            .collect();
+        groups.entry(shape).or_default().push((pk, chain));
     }
 
     let batch = crate::config::batch_size();
     let mut fallback = Vec::new();
-    for (chain, pks) in groups.into_values() {
-        for chunk in pks.chunks(batch) {
-            let materialised = apply_direct_patch(meta, chunk, &chain)?;
+    for rows in groups.into_values() {
+        for chunk in rows.chunks(batch) {
+            let materialised = apply_direct_patch(meta, chunk)?;
             let present: HashSet<i64> = materialised.iter().map(|&(pk, _)| pk).collect();
             let changed = materialised.iter().filter(|&&(_, c)| c).count() as u64;
 
@@ -218,9 +284,9 @@ pub fn apply_entity_patches(
                     crate::queue::affected::Change::Updated,
                 );
             }
-            for &pk in chunk {
-                if !present.contains(&pk) {
-                    fallback.push(pk);
+            for (pk, _) in chunk {
+                if !present.contains(pk) {
+                    fallback.push(*pk);
                 }
             }
         }
@@ -235,34 +301,26 @@ pub fn apply_entity_patches(
     Ok(fallback)
 }
 
-/// Build the nested `jsonb_smart_patch_*` expression for a chain, innermost first
-/// (the existing `data` column), and collect the path arrays to bind. `schema` is
-/// the quoted `jsonb_delta` schema the calls are qualified with.
+/// Build the nested `jsonb_smart_patch_*` expression for a chain shape,
+/// innermost first (the existing `t.data`), and collect the path arrays to bind.
+/// `schema` is the quoted `jsonb_delta` schema the calls are qualified with.
 ///
-/// Everything is parameterized — no value or identifier is interpolated. Parameter
-/// layout for a chain of `n` entries: `$1..$n` = the JSONB fields (one per entry),
-/// `$(n+1)` = the pk array, `$(n+2)..` = one `text[]` per nested entry (in order).
-/// Each entry contributes one call:
-/// - empty prefix ⇒ `jsonb_smart_patch_scalar(expr, $i::jsonb)` (top-level merge),
-/// - non-empty prefix ⇒ `jsonb_smart_patch_nested(expr, $i::jsonb, $p::text[])`
-///   with the path bound as a parameter (never an interpolated `ARRAY['…']`).
-///
-/// Returns `(sql_expr, path_args)` where `path_args` are the path arrays to bind
-/// after the JSONB fields and the pk array, in order.
+/// Entry `i`'s fields are `f.v -> i` (the row's values, see
+/// [`apply_direct_patch`]); `$1` and `$2` are the pk and value arrays, and each
+/// nested entry's path is bound as `$3..` in order:
+/// - empty prefix ⇒ `jsonb_smart_patch_scalar(expr, f.v -> i)` (top-level merge),
+/// - non-empty prefix ⇒ `jsonb_smart_patch_nested(expr, f.v -> i, $p::text[])`.
 fn build_direct_patch_expr(schema: &str, chain: &[PatchEntry]) -> (String, Vec<Vec<String>>) {
-    let n = chain.len();
-    let mut expr = "data".to_string();
+    let mut expr = "t.data".to_string();
     let mut path_args: Vec<Vec<String>> = Vec::new();
     for (i, (prefix, _fields)) in chain.iter().enumerate() {
-        let json_param = i + 1;
         if prefix.is_empty() {
-            expr = format!("{schema}.jsonb_smart_patch_scalar({expr}, ${json_param}::jsonb)");
+            expr = format!("{schema}.jsonb_smart_patch_scalar({expr}, f.v -> {i})");
         } else {
-            // Path params follow the n JSONB params and the single pk-array param.
-            let path_param = n + 2 + path_args.len();
+            let path_param = 3 + path_args.len();
             path_args.push(prefix.clone());
             expr = format!(
-                "{schema}.jsonb_smart_patch_nested({expr}, ${json_param}::jsonb, ${path_param}::text[])"
+                "{schema}.jsonb_smart_patch_nested({expr}, f.v -> {i}, ${path_param}::pg_catalog.text[])"
             );
         }
     }
@@ -283,17 +341,17 @@ mod tests {
     #[test]
     fn top_level_chain_builds_scalar_merge() {
         let (expr, paths) = build_direct_patch_expr("jd", &[entry(&[], "bio", "x")]);
-        assert_eq!(expr, "jd.jsonb_smart_patch_scalar(data, $1::jsonb)");
+        assert_eq!(expr, "jd.jsonb_smart_patch_scalar(t.data, f.v -> 0)");
         assert!(paths.is_empty());
     }
 
     #[test]
     fn nested_prefix_binds_path_param() {
-        // Chain of 1 ⇒ $1 = fields, $2 = pk array, $3 = the path text[].
+        // $1 = pk array, $2 = value array, $3 = the path text[].
         let (expr, paths) = build_direct_patch_expr("jd", &[entry(&["author"], "bio", "x")]);
         assert_eq!(
             expr,
-            "jd.jsonb_smart_patch_nested(data, $1::jsonb, $3::text[])"
+            "jd.jsonb_smart_patch_nested(t.data, f.v -> 0, $3::pg_catalog.text[])"
         );
         assert_eq!(paths, vec![vec!["author".to_string()]]);
     }
@@ -304,19 +362,19 @@ mod tests {
             build_direct_patch_expr("jd", &[entry(&["post", "author"], "bio", "x")]);
         assert_eq!(
             expr,
-            "jd.jsonb_smart_patch_nested(data, $1::jsonb, $3::text[])"
+            "jd.jsonb_smart_patch_nested(t.data, f.v -> 0, $3::pg_catalog.text[])"
         );
         assert_eq!(paths, vec![vec!["post".to_string(), "author".to_string()]]);
     }
 
     #[test]
-    fn mixed_chain_nests_calls_and_numbers_path_after_pk() {
-        // 2 entries ⇒ $1,$2 = fields, $3 = pk array, $4 = the nested entry's path.
+    fn mixed_chain_nests_calls_and_numbers_paths_after_the_arrays() {
+        // 2 entries ⇒ values f.v -> 0 and f.v -> 1, $3 = the nested entry's path.
         let chain = vec![entry(&[], "title", "t"), entry(&["author"], "bio", "b")];
         let (expr, paths) = build_direct_patch_expr("jd", &chain);
         assert_eq!(
             expr,
-            "jd.jsonb_smart_patch_nested(jd.jsonb_smart_patch_scalar(data, $1::jsonb), $2::jsonb, $4::text[])"
+            "jd.jsonb_smart_patch_nested(jd.jsonb_smart_patch_scalar(t.data, f.v -> 0), f.v -> 1, $3::pg_catalog.text[])"
         );
         assert_eq!(paths, vec![vec!["author".to_string()]]);
     }
@@ -328,7 +386,7 @@ mod tests {
         let (expr, paths) = build_direct_patch_expr("jd", &[entry(&["we'ird"], "k", "v")]);
         assert_eq!(
             expr,
-            "jd.jsonb_smart_patch_nested(data, $1::jsonb, $3::text[])"
+            "jd.jsonb_smart_patch_nested(t.data, f.v -> 0, $3::pg_catalog.text[])"
         );
         assert_eq!(paths, vec![vec!["we'ird".to_string()]]);
     }

@@ -84,3 +84,36 @@ pub(crate) fn unrecorded(table: pg_sys::Oid) -> TViewResult<bool> {
     )?
     .unwrap_or(false))
 }
+
+/// The `indexes` option `entity` declared, as stored (`[]` when none).
+///
+/// # Errors
+/// A failed catalog read.
+pub(crate) fn declared(entity: &str) -> TViewResult<serde_json::Value> {
+    let stored = crate::utils::spi::one::<pgrx::JsonB>(
+        &format!(
+            "SELECT declared_indexes FROM {} WHERE entity = $1",
+            crate::catalog::meta_table()
+        ),
+        &[crate::utils::spi::text(entity)],
+    )?;
+    Ok(stored.map_or_else(|| serde_json::Value::Array(Vec::new()), |s| s.0))
+}
+
+/// Store the `indexes` option `entity` declares.
+///
+/// # Errors
+/// A failed catalog write.
+pub(crate) fn declare(entity: &str, indexes: serde_json::Value) -> TViewResult<()> {
+    let _owner = crate::owner::AsOwner::of_extension()?;
+    crate::utils::spi::run(
+        &format!(
+            "UPDATE {} SET declared_indexes = $2 WHERE entity = $1",
+            crate::catalog::meta_table()
+        ),
+        &[
+            crate::utils::spi::text(entity),
+            crate::utils::spi::jsonb(pgrx::JsonB(indexes)),
+        ],
+    )
+}

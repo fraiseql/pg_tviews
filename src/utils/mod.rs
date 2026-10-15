@@ -293,6 +293,19 @@ pub fn quote_literal(text: &str) -> String {
     }
 }
 
+unsafe extern "C" {
+    /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
+    /// by the backend but absent from the pgrx bindings; resolved at `.so` load
+    /// time like every other `pg_sys` symbol. Compares datums for physical equality.
+    #[link_name = "datumIsEqual"]
+    pub(crate) fn datum_is_equal(
+        value1: pg_sys::Datum,
+        value2: pg_sys::Datum,
+        typ_by_val: bool,
+        typ_len: i32,
+    ) -> bool;
+}
+
 /// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
 pub const MAX_IDENTIFIER_BYTES: usize = 63;
 

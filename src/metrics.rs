@@ -46,6 +46,9 @@ struct DirectPatchMetrics {
     noop_skipped: u64,
     /// Catalog queries the refresh path made on cache misses.
     catalog_lookups: u64,
+    /// Statements prepared and kept for the backend (each once, until an
+    /// invalidation).
+    plans_prepared: u64,
     /// Parent lookups skipped because the child's row did not change.
     propagation_pruned: u64,
 }
@@ -59,6 +62,7 @@ impl DirectPatchMetrics {
             view_recomputes: 0,
             noop_skipped: 0,
             catalog_lookups: 0,
+            plans_prepared: 0,
             propagation_pruned: 0,
         }
     }
@@ -213,6 +217,13 @@ pub mod metrics_api {
         }
     }
 
+    /// Record one statement prepared and kept for the backend.
+    pub fn record_plan_prepared() {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().plans_prepared += 1;
+        });
+    }
+
     /// Record one catalog query made by the refresh path on a cache miss.
     pub fn record_catalog_lookup() {
         DIRECT_PATCH_METRICS.with(|m| {
@@ -278,6 +289,7 @@ pub mod metrics_api {
                 view_recomputes: dp.view_recomputes,
                 refresh_noop_skipped: dp.noop_skipped,
                 catalog_lookups: dp.catalog_lookups,
+                plans_prepared: dp.plans_prepared,
                 propagation_pruned: dp.propagation_pruned,
             }
         })
@@ -340,6 +352,8 @@ pub struct QueueStats {
     pub refresh_noop_skipped: u64,
     /// Session-cumulative catalog queries made on cache misses.
     pub catalog_lookups: u64,
+    /// Session-cumulative statements prepared and kept for the backend.
+    pub plans_prepared: u64,
     /// Session-cumulative propagation edges skipped at unchanged rows.
     pub propagation_pruned: u64,
 }

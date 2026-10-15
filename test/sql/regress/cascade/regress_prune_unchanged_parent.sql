@@ -19,13 +19,15 @@ CREATE EXTENSION pg_tviews;
 CREATE TABLE tb_user (
     pk_user BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
-    name    TEXT
+    name    TEXT,
+    note    TEXT
 );
 CREATE TABLE tb_post (
     pk_post BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id      UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
     fk_user BIGINT NOT NULL REFERENCES tb_user(pk_user),
-    title   TEXT
+    title   TEXT,
+    note    TEXT
 );
 CREATE TABLE tb_comment (
     pk_comment BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -37,12 +39,17 @@ INSERT INTO tb_user (name) VALUES ('ann'), ('bob');
 INSERT INTO tb_post (fk_user, title) SELECT 1, 'p' || g FROM generate_series(1, 20) g;
 INSERT INTO tb_comment (fk_post, body) SELECT p, 'c' FROM generate_series(1, 20) p, generate_series(1, 3);
 
+-- `note` is read only in a filter no row fails: writing it recomputes rows that
+-- come out unchanged, which is what the no-op guard is for (an UPDATE writing a
+-- column's own value changes nothing pg_tviews reads, and refreshes nothing).
 CREATE TABLE tv_user AS
-SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user;
+SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user
+WHERE note IS DISTINCT FROM 'hidden';
 CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.fk_user,
        jsonb_build_object('title', p.title, 'author', tv_user.data) AS data
-FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user;
+FROM tb_post p JOIN tv_user ON tv_user.pk_user = p.fk_user
+WHERE p.note IS DISTINCT FROM 'hidden';
 CREATE TABLE tv_comment AS
 SELECT c.pk_comment, c.id, c.fk_post,
        jsonb_build_object('body', c.body, 'post', tv_post.data) AS data
@@ -65,7 +72,7 @@ SET pg_tviews.direct_patch_enabled = off;
 -- Cycle 1: a no-op on the user stops at the user
 -- ========================================================================
 SELECT stat('view_recomputes') AS r0, stat('propagation_pruned') AS p0 \gset
-UPDATE tb_user SET name = name WHERE pk_user = 1;
+UPDATE tb_user SET note = 'a' WHERE pk_user = 1;
 SELECT must(stat('view_recomputes') - :r0 = 1,
             format('no-op recomputed %s rows, expected only the user', stat('view_recomputes') - :r0));
 SELECT must(stat('propagation_pruned') - :p0 >= 1, 'no propagation edge was pruned');
@@ -90,7 +97,7 @@ UPDATE tb_post SET fk_user = 2 WHERE pk_post = 1;
 SELECT must(in_sync(), 'out of sync after moving a post');
 -- A no-op on a post leaves its comments alone.
 SELECT stat('view_recomputes') AS r2 \gset
-UPDATE tb_post SET title = title WHERE pk_post = 2;
+UPDATE tb_post SET note = 'a' WHERE pk_post = 2;
 SELECT must(stat('view_recomputes') - :r2 = 1,
             format('post no-op recomputed %s rows, expected 1', stat('view_recomputes') - :r2));
 
@@ -98,7 +105,7 @@ SELECT must(stat('view_recomputes') - :r2 = 1,
 -- Cycle 4: the direct-patch path prunes too, and stays correct
 -- ========================================================================
 SET pg_tviews.direct_patch_enabled = on;
-UPDATE tb_user SET name = name WHERE pk_user = 1;
+UPDATE tb_user SET note = 'b' WHERE pk_user = 1;
 UPDATE tb_user SET name = 'ann3' WHERE pk_user = 1;
 SELECT must(in_sync(), 'out of sync on the direct-patch path');
 

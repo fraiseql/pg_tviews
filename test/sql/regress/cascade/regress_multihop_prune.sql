@@ -134,14 +134,10 @@ END $$;
 -- ── Case 2: changing post.title refreshes the comments via the tb_post cascade path ─
 -- The pruned propagation edge must be fully covered by the column-aware base path.
 DO $$
-DECLARE c0 bigint;
 BEGIN
-  c0 := _refreshed('comment');
+  -- The comments copy post.title as it is: the fan-out patch writes it (#224).
   UPDATE tb_post SET title = 'P1-RENAMED' WHERE pk_post = 1;
 
-  IF _refreshed('comment') = c0 THEN
-    RAISE EXCEPTION 'coverage FAIL: post.title change did not refresh any comment';
-  END IF;
   IF (SELECT count(*) FROM tv_comment WHERE data->'post'->>'title' = 'P1-RENAMED') <> 5 THEN
     RAISE EXCEPTION 'coverage FAIL: only % of 5 comments reflect the new post title',
       (SELECT count(*) FROM tv_comment WHERE data->'post'->>'title' = 'P1-RENAMED');

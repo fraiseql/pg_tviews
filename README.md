@@ -270,17 +270,19 @@ The fast path engages only when **every** condition holds (otherwise recompute):
 - for a parent, its dependency on the child is `nested_object` with a path
   (array/scalar/UUID-fk parents recompute).
 
-### Copied parent columns (Issue #120)
+### Copied parent columns (Issues #120, #224)
 
-A tview that copies a column of a joined parent table into its `data`
-(`jsonb_build_object('author_name', u.name)` over `JOIN tb_user u ON u.pk_user =
-p.fk_user`) is written by **one statement** when that column changes:
-`UPDATE tv_post … WHERE fk_user = <pk>`, instead of recomputing every post of that
-user. Same rules as above, plus: the tview reads the parent through one join on its
-own base table, projects that `fk_*` column, reads the parent table only once, and
-uses the column nowhere else in its definition. Anything else recomputes the
-children. Measured with `test/sql/real_benchmark/scalar_cascade_fanout.sh … scalar`:
-1.8–2.7× faster per parent update from 10 to 10 000 children.
+A tview that copies a column of a joined parent table into its `data`, at the top
+level or in nested objects as FraiseQL writes them
+(`'author', jsonb_build_object('name', u.name)` over `JOIN tb_user u ON u.pk_user =
+p.fk_user`), is written by **one statement** when that column changes:
+`UPDATE tv_post … WHERE fk_user = <pk>`, `jsonb_set` at each path, instead of
+recomputing every post of that user. Same rules as above, plus: the tview reads the
+parent through one join on its own base table, projects that `fk_*` column, reads
+the parent table only once, and uses the column nowhere else in its definition.
+Arrays of embedded rows and embeds two joins away recompute (#228). On the FraiseQL-shaped
+[write benchmark](docs/benchmarks/write-path.md) an author's bio change costs ~0.15 ms
+over the plain UPDATE.
 
 ### Kill-switch and observability
 
@@ -343,7 +345,7 @@ no setting changes what it is. The settings tune limits and sessions:
 |-----|------|---------|-------------|---------|
 | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
 | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
-| `pg_tviews.max_queue_size` | int | 10000 | superuser | Refresh-queue backpressure limit |
+| `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
 | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
 | `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
@@ -453,7 +455,7 @@ The options passed are the whole declaration: an option left out is at its defau
 
 It runs the DDL as the caller and requires owning an existing TVIEW; a role that owns
 the schema and has `TRIGGER` on the base tables needs no superuser. `CREATE TABLE
-tv_post AS SELECT …` (optionally `UNLOGGED`, `WITH (fillfactor = n)`) runs the same
+tv_post AS SELECT …` (optionally `UNLOGGED`, `WITH (fillfactor = n, toast_tuple_target = n)`) runs the same
 code with create-only semantics. See
 [docs/reference/read-contract.md](docs/reference/read-contract.md).
 

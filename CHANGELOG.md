@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`data` is stored compressed and inline by default** (#225): a new TVIEW's `data`
+  is `STORAGE MAIN` and lz4-compressed (pglz on a server built without lz4), read
+  back without a TOAST lookup (2.7× faster reads of 4.4 kB documents in
+  fraiseql#1553). `pg_tviews_create_or_replace()` without the new storage options
+  brings an existing TVIEW to these defaults and writes its rows again.
+
+- **An UPDATE that changes none of the columns a TVIEW reads refreshes none of its
+  rows** (#224), its own included: writing a column's own value (`SET x = x`) no
+  longer recomputes the TVIEW's row.
+
+- **`pg_tviews.max_queue_size` defaults to 1,000,000** (was 10,000, which failed a
+  20,000-row `INSERT … SELECT` at defaults); its maximum is 2,147,483,647.
+
 - **Reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion in every
   database, unconfigured** (#215): `pg_tviews.auto_rebuild_databases` defaults to
   `*`. One launcher starts a worker per database, one at a time; each exits when
@@ -78,6 +91,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Options `data_compression`, `data_storage` and `toast_tuple_target`** (#225):
+  how `data` is compressed (`lz4`, `pglz`), stored (`main`, `extended`, `external`)
+  and when it is compressed or moved out of line, in PostgreSQL's words. A change
+  writes the rows again, so the declared storage is the stored one;
+  `CREATE TABLE tv_* WITH (toast_tuple_target = n) AS` takes it too.
+
+- **Option `indexes`: JSON-path indexes FraiseQL's queries use** (#226): btrees over
+  `data->>'k'`, `data->'a'->>'b'` and `(data->>'k')::bigint|numeric|boolean`, written
+  as FraiseQL writes its filters and sorts, ascending or descending. pg_tviews owns
+  them (`managed_indexes`, reserved names `idx_<tv>_data_<keys>`), changes only the
+  difference on a replace, and keeps them through a rebuild and a dump. Casts to
+  `timestamptz`, `date` and `time` are refused: they are not immutable.
+
+- **`plans_prepared` in `pg_tviews_queue_stats()`**: statements kept for the backend.
+
 - **`tviews.stats`: per-TVIEW refresh statistics readable from any session** (#220,
   ADR 0221): `view_recomputes`, `noop_skipped`, `patch_captured`, `patch_applied`,
   `patch_fallbacks`, `propagation_pruned`, `rows_written`, `rows_deleted`,
@@ -101,7 +129,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is accepted, and a write to any branch's table refreshes it. It was refused ("not
   a column of a base table").
 
+### Changed
+
+- **Writes are 4-6× cheaper on FraiseQL-shaped TVIEWs** (#224; stock PostgreSQL
+  18.4, one client, `test/bench/write_path`, [write path](docs/benchmarks/write-path.md)):
+  - a column a parent TVIEW copies into a nested object (`'author',
+    jsonb_build_object('bio', u.bio)`) is written into the parent rows in place,
+    in one statement, instead of recomputing each through its view;
+  - the statements a write runs are kept for the backend: one looking rows up by a
+    unique key, or by a single key of a column such as `fk_<entity>`, is never
+    planned again; one looking up several keys is planned for their count, so a
+    lookup column with few distinct values is still read through its index;
+  - a statement trigger whose TVIEW reads none of the changed columns returns
+    before any query;
+  - the tables a write reaches are kept for the backend, cached catalog rows are
+    shared rather than copied, and direct patches of rows with different values
+    take one statement.
+
 ### Fixed
+
+- **A column under `COALESCE` is no longer copied by a patch as if it were the field**:
+  `jsonb_build_object('k', COALESCE(col, 'x'))` got `null` where the view computes
+  `'x'` when `col` was set to NULL, in the TVIEW's own row and in the rows embedding
+  it.
+- **DDL in a database whose catalog is of another revision fails with the revision
+  error** (#227): the hook read the catalog as its own before checking. The message
+  of an unexpected unwind names its payload.
+- **`tviews.stats.stats_reset` is never NULL** for a tracked TVIEW: the server's
+  start for one that counted nothing yet, the reset's time after
+  `pg_tviews_stats_reset()`.
 
 - **`time_refresh` declared for a TVIEW that reads no time is refused at creation too**,
   as it was when changing an existing TVIEW.
@@ -120,7 +176,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ALTER EXTENSION pg_tviews UPDATE` (from 0.1.0-beta.27) swaps the functions whose
   parameters were renamed, drops the seven removed ones, rebuilds `tviews.registry`
   as contract v2 and adds `tviews.stats`. TVIEWs, their tables and their rows are
-  untouched; nothing needs to run afterwards.
+  untouched. Run `SELECT * FROM tviews.pg_tviews_reregister_all();` afterwards: it
+  derives the nested fan-out patches and drops the `COALESCE` misreading (every
+  TVIEW is flagged `needs_reregister` until then, and keeps refreshing correctly
+  meanwhile, except for that misreading).
+- Storage: an existing TVIEW keeps its storage until `pg_tviews_create_or_replace()`
+  declares one; called without the storage options, it moves the TVIEW to lz4 +
+  MAIN and writes every row again (`altered`). Declare `"data_compression": "pglz",
+  "data_storage": "extended"` to keep PostgreSQL's defaults.
 - Existing TVIEWs keep their persistence: one created UNLOGGED stays UNLOGGED, and
   `registry.options->'logged'` says so. Only TVIEWs created after the update are
   LOGGED by default.

@@ -20,7 +20,7 @@ pub(super) struct Flush {
     /// Passes of the flush loop so far, starting at 1.
     pub(super) iteration: usize,
     /// The catalog rows read in this flush, by entity (`None`: not a TVIEW).
-    metas: HashMap<String, Option<TviewMeta>>,
+    metas: HashMap<String, Option<std::rc::Rc<TviewMeta>>>,
 }
 
 impl Flush {
@@ -54,7 +54,7 @@ impl Flush {
         // Writers of what these rows read meet them on its values (ADR 0207):
         // locked before the rows are locked and computed.
         let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
-        crate::concurrency::reads::lock_read_set(&self.meta(entity)?, &values)?;
+        crate::concurrency::reads::lock_read_set(&*self.meta(entity)?, &values)?;
 
         // Keys carrying a usable direct patch are written straight into
         // tv_<entity>; the others recompute. The setting is read again
@@ -85,7 +85,7 @@ impl Flush {
             self.recompute(entity, recompute)?;
         }
         // REPEATABLE READ: the rows are what the latest snapshot computes.
-        crate::concurrency::crosscheck::refreshed_rows(&self.meta(entity)?, &values)?;
+        crate::concurrency::crosscheck::refreshed_rows(&*self.meta(entity)?, &values)?;
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
         }
@@ -122,7 +122,7 @@ impl Flush {
     fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();
         let touched = if let [key] = keys.as_slice() {
-            crate::refresh::refresh_key(&self.meta(entity)?, key)?
+            crate::refresh::refresh_key(&*self.meta(entity)?, key)?
         } else {
             crate::refresh::refresh_bulk(entity, &keys)?
         };
@@ -209,7 +209,7 @@ impl Flush {
     }
 
     /// `entity`'s catalog row.
-    fn meta(&mut self, entity: &str) -> TViewResult<TviewMeta> {
+    fn meta(&mut self, entity: &str) -> TViewResult<std::rc::Rc<TviewMeta>> {
         self.cached_meta(entity)?
             .ok_or_else(|| crate::TViewError::TviewNotFound {
                 name: entity.to_string(),
@@ -217,7 +217,7 @@ impl Flush {
     }
 
     /// `entity`'s catalog row, read once per flush (`None`: not a TVIEW).
-    fn cached_meta(&mut self, entity: &str) -> TViewResult<Option<TviewMeta>> {
+    fn cached_meta(&mut self, entity: &str) -> TViewResult<Option<std::rc::Rc<TviewMeta>>> {
         if let Some(meta) = self.metas.get(entity) {
             return Ok(meta.clone());
         }

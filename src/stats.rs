@@ -350,27 +350,41 @@ pub fn read() -> crate::TViewResult<(HashMap<Oid, Counts>, bool)> {
     Ok((counts, table.overflowed))
 }
 
-/// Zero the counters of `table` (one TVIEW of the current database), or of
-/// every TVIEW of the current database.
+/// Zero the counters of `tables` (TVIEWs of the current database), from now on:
+/// each gets a slot, so it shows when its counters started even before it
+/// counts anything. With `whole_database`, the slots of the database's other
+/// tables (TVIEWs since dropped) are freed first.
 ///
 /// # Errors
 /// [`crate::TViewError::WrongState`] when the library was not preloaded.
-pub fn reset(table: Option<Oid>) -> crate::TViewResult<()> {
+pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
     // SAFETY: reads backend globals.
     let (db, now) = unsafe { (pg_sys::MyDatabaseId.to_u32(), pg_sys::GetCurrentTimestamp()) };
     let mut shared = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE).ok_or_else(unavailable)?;
-    if let Some(table) = table {
-        if let Some(i) = shared.find(db, table.to_u32()) {
-            shared.slots[i].counts = [0; COUNTERS];
-            shared.slots[i].since = now;
-        }
-    } else {
+    if whole_database {
         while let Some(i) = shared.slots.iter().position(|slot| slot.db == db) {
             shared.free(i);
         }
         shared.overflowed = false;
     }
+    for table in tables {
+        match shared.find_or_take(db, table.to_u32(), now) {
+            Some(i) => {
+                shared.slots[i].counts = [0; COUNTERS];
+                shared.slots[i].since = now;
+            }
+            None => shared.overflowed = true,
+        }
+    }
     Ok(())
+}
+
+/// When counters without a slot started: at the server's start, since a reset
+/// gives every TVIEW it zeroes a slot.
+#[must_use]
+pub fn started() -> pg_sys::TimestampTz {
+    // SAFETY: reads a backend global, set once by the postmaster.
+    unsafe { pg_sys::PgStartTime }
 }
 
 /// Forget `table`, dropped or replaced by a rebuild.

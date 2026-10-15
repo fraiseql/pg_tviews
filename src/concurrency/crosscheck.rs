@@ -38,18 +38,20 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
         .map(|c| format!("v.{}", ident::quoted(c)))
         .collect::<Vec<_>>()
         .join(", ");
-    let key_type = meta.key_type()?;
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
+        return Ok(());
+    };
     let key = ident::quoted(&meta.identity.column);
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let sql = format!(
         "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v \
-         WHERE v.{key} OPERATOR(pg_catalog.=) ANY ({})",
-        crate::refresh::key_cast(&key_type, "$1", true)
+         WHERE v.{key} OPERATOR(pg_catalog.=) {}",
+        lookup.rhs
     );
-    let args = [crate::refresh::key_array(&key_type, keys)?];
-    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args)?);
+    let args = [lookup.arg];
+    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args, lookup.plan)?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(&sql, &args, true)
+        crate::utils::spi::latest_rows_connected(&sql, &args, Some(lookup.plan))
     })?);
     if seen != latest {
         super::serialization_failure(
@@ -70,16 +72,21 @@ pub fn discovered(found: &[TextRow], latest: &[TextRow]) {
     }
 }
 
-/// Writer side, for a query run on its own: `sql` returns, under the latest
-/// snapshot, no row missing from `found`.
+/// Writer side, for a query run on its own: `sql`, kept with `plan`, returns
+/// under the latest snapshot no row missing from `found`.
 ///
 /// # Errors
 /// Returns an error if the query fails; a missed row raises 40001.
-pub fn discovered_by(sql: &str, args: &[DatumWithOid<'_>], found: &[TextRow]) -> TViewResult<()> {
+pub fn discovered_by(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: crate::utils::spi::Plan,
+    found: &[TextRow],
+) -> TViewResult<()> {
     if !enabled() {
         return Ok(());
     }
-    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args, true))?;
+    let latest = Spi::connect(|_| crate::utils::spi::latest_rows_connected(sql, args, Some(plan)))?;
     discovered(found, &latest);
     Ok(())
 }

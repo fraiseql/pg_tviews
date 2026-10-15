@@ -8,6 +8,7 @@ use crate::catalog::KeyType;
 use crate::queue::RefreshKey;
 use crate::queue::key::KeyValue;
 use crate::utils::ident;
+use crate::utils::spi::LookupKeys;
 
 /// The parent rows to refresh when rows of `child` changed: for each TVIEW that
 /// embeds `child`, its rows whose lookup columns (the output columns its plan
@@ -119,31 +120,33 @@ fn find_affected_keys_batch(
         KeyType::Int => "pg_catalog.int8",
         KeyType::Text(_) => "pg_catalog.text",
     };
+    let Some(children) = LookupKeys::of(child_pks.to_vec()) else {
+        return Ok(HashMap::new());
+    };
     // The lookup column can be the parent's own key (an embedded aggregate keyed by
     // it), so the two outputs are aliased.
-    let select = |relation: &str, param: &str| {
+    let select = |relation: &str, keys: &LookupKeys, param: usize| {
         format!(
             "SELECT {qi_fk}::pg_catalog.int8 AS child_key, {qi_key}::{key_type} AS parent_key \
-             FROM {relation} WHERE {qi_fk} = ANY({param})"
+             FROM {relation} WHERE {}",
+            keys.predicate(&qi_fk, param)
         )
     };
-    let mut query = select(&qi_parent, "$1");
-    if !in_view.is_empty() {
+    let mut query = select(&qi_parent, &children, 1);
+    let mut args = vec![children.arg()];
+    let mut plan = children.plan();
+    if let Some(appeared) = LookupKeys::of(in_view.to_vec()) {
         let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-        query = format!("{query} UNION {}", select(&qi_view, "$2"));
+        query = format!("{query} UNION {}", select(&qi_view, &appeared, 2));
+        args.push(appeared.arg());
+        plan = plan.and(appeared.plan());
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
     // Read-write: a fresh snapshot, which sees what the locks waited for.
     Spi::connect_mut(|client| {
-        let array = |pks: &[i64]| crate::utils::spi::int8_array(pks.to_vec());
-        let args = if in_view.is_empty() {
-            vec![array(child_pks)]
-        } else {
-            vec![array(child_pks), array(in_view)]
-        };
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
         let mut found = Vec::new();
-        for row in client.update(&query, None, &args)? {
+        for row in crate::utils::spi::kept_update(client, &query, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
             };
@@ -158,7 +161,7 @@ fn find_affected_keys_batch(
         }
         // REPEATABLE READ: no parent row the latest snapshot holds is missed.
         if crate::concurrency::crosscheck::enabled() {
-            let latest = crate::utils::spi::latest_rows_connected(&query, &args, true)?;
+            let latest = crate::utils::spi::latest_rows_connected(&query, &args, Some(plan))?;
             crate::concurrency::crosscheck::discovered(&found, &latest);
         }
         Ok::<_, crate::TViewError>(result)

@@ -87,7 +87,7 @@ the slow write in the same session, and compare:
 
 ```sql
 SELECT tviews.pg_tviews_queue_stats();
-UPDATE tb_user SET name = name WHERE pk_user = 1;
+UPDATE tb_user SET name = 'Ann' WHERE pk_user = 1;
 SELECT tviews.pg_tviews_queue_stats();
 ```
 

@@ -2,7 +2,7 @@
 
 use crate::config::UncascadedPolicy;
 use crate::ddl::aggregate::GroupKeys;
-use crate::ddl::create::Storage;
+use crate::ddl::create::{Compression, DataStorage, JsonIndex, Storage, TOAST_TUPLE_TARGET};
 use crate::ddl::uncascaded::{Declarations, TimeRefresh};
 use crate::error::{TViewError, TViewResult};
 use pgrx::prelude::*;
@@ -14,6 +14,9 @@ pub(crate) struct Options {
     pub(super) logged: Option<bool>,
     pub(super) fillfactor: Option<i32>,
     pub(super) data_gin_index: Option<bool>,
+    pub(super) data_compression: Option<Compression>,
+    pub(super) data_storage: Option<DataStorage>,
+    pub(super) toast_tuple_target: Option<i32>,
     /// An aggregate TVIEW's group keys.
     pub(super) group_keys: Option<GroupKeys>,
     /// What a write to a table no cascade reaches does.
@@ -27,6 +30,8 @@ pub(crate) struct Options {
     pub(super) time_refresh: Option<TimeRefresh>,
     /// The GraphQL type name `pg_tviews_flush_and_report()` reports.
     pub(super) typename: Option<String>,
+    /// Declared JSON-path indexes.
+    pub(super) indexes: Option<Vec<JsonIndex>>,
 }
 
 /// A TVIEW as its options declare it: every option, those not passed at their
@@ -38,14 +43,21 @@ pub(crate) struct Declared {
     pub declarations: Declarations,
     /// `None`: `PascalCase(entity)`.
     pub typename: Option<String>,
+    pub indexes: Vec<JsonIndex>,
 }
 
 impl Options {
-    /// Options of a `CREATE [UNLOGGED] TABLE tv_* [WITH (fillfactor = n)] AS`.
-    pub(crate) fn storage(logged: Option<bool>, fillfactor: Option<i32>) -> Self {
+    /// Options of a `CREATE [UNLOGGED] TABLE tv_* [WITH (fillfactor = n,
+    /// toast_tuple_target = n)] AS`.
+    pub(crate) fn storage(
+        logged: Option<bool>,
+        fillfactor: Option<i32>,
+        toast_tuple_target: Option<i32>,
+    ) -> Self {
         Self {
             logged,
             fillfactor,
+            toast_tuple_target,
             ..Self::default()
         }
     }
@@ -61,6 +73,12 @@ impl Options {
                 logged: self.logged.unwrap_or(defaults.logged),
                 fillfactor: self.fillfactor.unwrap_or(defaults.fillfactor),
                 data_gin_index: self.data_gin_index.unwrap_or(defaults.data_gin_index),
+                data_compression: match self.data_compression {
+                    Some(declared) => declared,
+                    None => Compression::server_default()?,
+                },
+                data_storage: self.data_storage.unwrap_or(defaults.data_storage),
+                toast_tuple_target: self.toast_tuple_target.or(defaults.toast_tuple_target),
             },
             group_keys: self.group_keys,
             declarations: Declarations::new(
@@ -76,6 +94,7 @@ impl Options {
                 self.time_refresh.unwrap_or(TimeRefresh::None),
             ),
             typename: self.typename,
+            indexes: self.indexes.unwrap_or_default(),
         })
     }
 }
@@ -102,19 +121,38 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
             "logged" => options.logged = Some(boolean(key, value)?),
             "data_gin_index" => options.data_gin_index = Some(boolean(key, value)?),
             "fillfactor" => options.fillfactor = Some(fillfactor(key, value)?),
+            // `null`, as tviews.registry publishes them where there is no `data`
+            // column or no target: the default.
+            "data_compression" => {
+                options.data_compression = nullable(value, || {
+                    named(key, value, Compression::parse, Compression::NAMES)
+                })?;
+            }
+            "data_storage" => {
+                options.data_storage = nullable(value, || {
+                    named(key, value, DataStorage::parse, DataStorage::NAMES)
+                })?;
+            }
+            "toast_tuple_target" => {
+                options.toast_tuple_target = nullable(value, || toast_tuple_target(key, value))?;
+            }
             "uncascaded_policy" => options.uncascaded_policy = Some(policy(key, value, "")?),
             "uncascaded_tables" => options.uncascaded_tables = Some(uncascaded_tables(key, value)?),
             "function_reads" => options.function_reads = Some(function_reads(key, value)?),
             "time_refresh" => options.time_refresh = Some(time_refresh(key, value)?),
             "group_keys" => options.group_keys = group_keys(key, value)?,
             "typename" => options.typename = typename(key, value)?,
+            "indexes" => {
+                options.indexes = Some(crate::ddl::create::JsonIndex::parse_option(value)?);
+            }
             other => {
                 return Err(invalid(
                     "options",
                     format!(
                         "unknown option \"{other}\" (known: logged, fillfactor, \
-                         data_gin_index, group_keys, uncascaded_policy, uncascaded_tables, \
-                         function_reads, time_refresh, typename)"
+                         data_gin_index, data_compression, data_storage, toast_tuple_target, \
+                         group_keys, uncascaded_policy, uncascaded_tables, \
+                         function_reads, time_refresh, typename, indexes)"
                     ),
                 ));
             }
@@ -137,6 +175,49 @@ fn fillfactor(key: &str, value: &serde_json::Value) -> TViewResult<i32> {
         return Err(invalid(key, "must be between 10 and 100"));
     }
     i32::try_from(fillfactor).map_err(|_| invalid(key, "must be between 10 and 100"))
+}
+
+/// `None` for JSON `null`, else what `parse` reads.
+fn nullable<T>(
+    value: &serde_json::Value,
+    parse: impl FnOnce() -> TViewResult<T>,
+) -> TViewResult<Option<T>> {
+    if value.is_null() {
+        Ok(None)
+    } else {
+        parse().map(Some)
+    }
+}
+
+/// One of the names `parse` knows, listed in `names`.
+fn named<T>(
+    key: &str,
+    value: &serde_json::Value,
+    parse: fn(&str) -> Option<T>,
+    names: &str,
+) -> TViewResult<T> {
+    value
+        .as_str()
+        .and_then(parse)
+        .ok_or_else(|| invalid(key, format!("must be {names}")))
+}
+
+fn toast_tuple_target(key: &str, value: &serde_json::Value) -> TViewResult<i32> {
+    let range = || {
+        invalid(
+            key,
+            format!(
+                "must be an integer from {} to {}",
+                TOAST_TUPLE_TARGET.start(),
+                TOAST_TUPLE_TARGET.end()
+            ),
+        )
+    };
+    value
+        .as_i64()
+        .and_then(|v| i32::try_from(v).ok())
+        .filter(|v| TOAST_TUPLE_TARGET.contains(v))
+        .ok_or_else(range)
 }
 
 /// A policy name; `of` names what it applies to in the error ("" for the option).

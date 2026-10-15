@@ -194,6 +194,10 @@ pub struct QueryGraph {
     pub data: Option<DataShape>,
 }
 
+/// Columns copied unchanged into `data`, each with its path there: a column
+/// copied to several paths has a pair for each.
+pub type CopiedPaths = Vec<(String, Vec<String>)>;
+
 /// What the `data` output is built of, read from its expression tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DataShape {
@@ -280,10 +284,11 @@ pub struct TableLineage {
     /// table, column of the root)`: the TVIEW rows can be found by that column
     /// when the TVIEW projects it (fan-out).
     pub hop: Option<(String, String)>,
-    /// With `hop`: the output column equal to the root's column, and the `data`
-    /// keys copying this table's columns, read nowhere else (`(column, key)`):
-    /// what an UPDATE of it can write into every row with that value.
-    pub fanout: Option<(String, Vec<(String, String)>)>,
+    /// With `hop`: the output column equal to the root's column, and the paths
+    /// in `data` copying this table's columns, read nowhere else (`(column,
+    /// path)`, a column at each path it is copied to): what an UPDATE of it can
+    /// write into every row with that value.
+    pub fanout: Option<(String, CopiedPaths)>,
     /// The table whose column is the key (of a branch, under UNION).
     pub root: bool,
     /// The virtual generated columns the TVIEW reads and their inputs: never
@@ -703,9 +708,11 @@ impl QueryGraph {
     }
 
     /// The fan-out of a write to `occ`, one equality from a root column: the
-    /// output column equal to that root column, and the top-level `data` keys
-    /// that copy columns of `occ` read nowhere else.
-    fn fanout(&self, occ: usize, path: &[usize]) -> Option<(String, Vec<(String, String)>)> {
+    /// output column equal to that root column, and the paths in `data` that
+    /// copy columns of `occ` read nowhere else. A path is a chain of
+    /// `jsonb_build_object` keys (`FraiseQL` nests a joined entity as an object):
+    /// the data walk follows nothing else to a field.
+    fn fanout(&self, occ: usize, path: &[usize]) -> Option<(String, CopiedPaths)> {
         let root = self.root_at(occ, path)?;
         let [only] = path else { return None };
         let (x, y) = self.conjuncts[*only].equality.as_ref()?;
@@ -715,17 +722,11 @@ impl QueryGraph {
         }
         let lookup = self.output_equal_to(std::slice::from_ref(other))?;
         let data = self.data.as_ref()?;
-        let fields: Vec<(String, String)> = data
+        let fields: CopiedPaths = data
             .fields
             .iter()
-            .filter(|f| f.column.occ == occ && f.only_in_data && f.path.len() == 1)
-            .filter(|f| {
-                data.fields
-                    .iter()
-                    .filter(|g| g.column == f.column)
-                    .all(|g| g.path.len() == 1)
-            })
-            .map(|f| (f.column.name.clone(), f.path[0].clone()))
+            .filter(|f| f.column.occ == occ && f.only_in_data && !f.path.is_empty())
+            .map(|f| (f.column.name.clone(), f.path.clone()))
             .collect();
         (!fields.is_empty()).then_some((lookup, fields))
     }

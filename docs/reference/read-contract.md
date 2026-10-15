@@ -96,8 +96,9 @@ or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME
 ([DDL](ddl.md#time-dependent-tviews)).
 
 **`managed_indexes`** are the indexes pg_tviews created on the TVIEW's table: on `id`
-and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, and the GIN index
-on `data` of the `data_gin_index` option. pg_tviews records each when it creates it
+and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, the GIN index
+on `data` of the `data_gin_index` option, and the JSON-path indexes of the `indexes`
+option. pg_tviews records each when it creates it
 (nothing when a relation already holds the name) and follows `ALTER INDEX … RENAME`
 and `DROP INDEX` of one. A TVIEW's **user indexes** are every index on its table,
 minus `managed_indexes`, minus those backing a constraint:
@@ -113,10 +114,11 @@ WHERE r.entity = 'post'
 
 pg_tviews never drops a user index, and carries every one over a `rebuilt` replace.
 The names pg_tviews uses for its indexes on a TVIEW (those in `managed_indexes`, and
-those it creates or would create for the definition, `idx_<tv>_data_gin` included) are
+those it creates or would create for the definition, `idx_<tv>_data_gin` and the
+declared `idx_<tv>_data_<keys>` included) are
 reserved: a user's `CREATE INDEX` or `ALTER INDEX … RENAME TO` under one is refused
 with `42939`, unless the statement creates exactly the index pg_tviews creates under
-that name (same method and columns, nothing else): what
+that name (same method and columns or expressions, nothing else): what
 `pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand
 (`CONCURRENTLY` too), or what a dump restores. That index is pg_tviews', and recorded. A TVIEW registered by an earlier release gets its record
 when the upgrade re-registers it: the indexes that are exactly those pg_tviews
@@ -142,6 +144,10 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
 | `logged` | `boolean` | `pg_class.relpersistence` |
 | `fillfactor` | `integer` | the table's `fillfactor` reloption, 100 when unset |
 | `data_gin_index` | `boolean` | whether pg_tviews' GIN index on `data` (one of `managed_indexes`) exists and is valid; a user's GIN index on `data` does not count |
+| `data_compression` | `text` or `null` | `data`'s compression (`pg_attribute.attcompression`): `lz4` or `pglz`; `null` for a TVIEW without `data` |
+| `data_storage` | `text` or `null` | `data`'s storage strategy (`pg_attribute.attstorage`): `main`, `extended` or `external`; `null` for a TVIEW without `data` |
+| `toast_tuple_target` | `integer` or `null` | the table's `toast_tuple_target` reloption; `null` when unset (PostgreSQL's default) |
+| `indexes` | `array` | the declared JSON-path indexes, as declared (shortest form: a key is its path unless it has a type or `desc`); `[]` for none |
 | `group_keys` | `object` or `null` | the source table → group key column map of an aggregate TVIEW; `null` for a plain one |
 | `uncascaded_policy` | `text` | what a write to one of `uncascaded_tables` does: `error`, `full_refresh` or `warn` |
 | `uncascaded_tables` | `object` | each table declared with a policy of its own (as `regclass` text) → `error`, `full_refresh` or `warn`; `{}` for most TVIEWs |
@@ -219,6 +225,10 @@ TVIEW is created and **also when it exists**. Pass every option the TVIEW should
 | `logged` | boolean | `true` |
 | `fillfactor` | integer 10–100 | `85` |
 | `data_gin_index` | boolean | `false` |
+| `data_compression` | `"lz4"`, `"pglz"` or `null` | `lz4` where the server was built with it, else `pglz`; a declared `lz4` on a server without it is an error |
+| `data_storage` | `"main"`, `"extended"`, `"external"` or `null` | `"main"`: `data` compressed and kept inline, read back without a TOAST lookup |
+| `toast_tuple_target` | integer 128–8160 or `null` | `null`: PostgreSQL's default (2032 with 8 kB pages) |
+| `indexes` | array of indexes | `[]`: JSON-path btrees over `data` ([DDL](ddl.md#json-path-indexes)) |
 | `group_keys` | object or `null` | `null`: a plain TVIEW; an object makes an aggregate TVIEW |
 | `uncascaded_policy` | `"error"`, `"full_refresh"` or `"warn"` | `"error"`: what a write to a table no cascade reaches does |
 | `uncascaded_tables` | object: table → policy | `{}`: tables with a policy of their own, overriding `uncascaded_policy` for writes to them; each must be a table the definition reads that no cascade reaches |
@@ -238,11 +248,15 @@ under the current `search_path` does. An invalid definition raises its error. Pa
 - `unchanged`: definition and options are the same; nothing is touched. The comparison
   creates a temporary view, so the call cannot run on a standby or in a read-only
   transaction.
-- `altered`: only `logged`, `fillfactor`, `data_gin_index`, `uncascaded_policy`,
-  `uncascaded_tables`, `function_reads`, `time_refresh` or `typename` differ; changed in
-  place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a reset UNLOGGED TVIEW filled first,
-  `SET (fillfactor = n)`, pg_tviews' GIN index created or dropped, never a user's, the
-  declarations stored and the TVIEW re-registered), rows kept.
+- `altered`: only `logged`, `fillfactor`, `data_gin_index`, `data_compression`,
+  `data_storage`, `toast_tuple_target`, `indexes`, `uncascaded_policy`,
+  `uncascaded_tables`, `function_reads`, `time_refresh` or `typename` differ, or a
+  declared index is missing; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a
+  reset UNLOGGED TVIEW filled first, `SET (fillfactor = n)`, pg_tviews' GIN index and
+  declared indexes created or dropped, never a user's, the declarations stored and the
+  TVIEW re-registered), rows kept. A change of `data_compression`, `data_storage` or
+  `toast_tuple_target` writes the rows again: PostgreSQL stores only new values the new
+  way, and the declared storage is the stored one.
 - `replaced`: the definition differs but produces the same columns (names and types,
   in order), and `group_keys` is the same. The backing view is replaced, the TVIEW
   re-registered (triggers added and removed), and the rows reconciled in place with

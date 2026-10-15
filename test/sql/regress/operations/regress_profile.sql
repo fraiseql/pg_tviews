@@ -121,7 +121,7 @@ CREATE TABLE tb_blob (
     payload TEXT
 );
 INSERT INTO tb_blob (payload)
-SELECT (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 200) i)
+SELECT (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 400) i)
 FROM generate_series(1, 200) g;
 CREATE TABLE tv_blob AS SELECT pk_blob, id, jsonb_build_object('payload', payload) AS data FROM tb_blob;
 SELECT must(warned('blob', '%of the table is TOAST%'), 'W5 for incompressible large documents');

@@ -92,6 +92,11 @@ impl Tview {
                 .iter()
                 .map(|column| ManagedIndex::propagation(&tview, column, key)),
         );
+        candidates.extend(
+            crate::ddl::create::declared_json_indexes(&self.entity)?
+                .iter()
+                .map(|index| index.managed(&tview)),
+        );
         Ok((recorded, candidates))
     }
 
@@ -185,7 +190,7 @@ unsafe fn create_index(stmt: &pg_sys::IndexStmt) -> TViewResult<Option<IndexFoll
 
 /// Whether `stmt` creates exactly `index`: its method and columns in order,
 /// nothing else (no expression, operator class, collation, ordering, predicate,
-/// INCLUDE, uniqueness).
+/// INCLUDE, uniqueness); for an expression index, the same index elements.
 ///
 /// SAFETY: `stmt` comes from the hook's statement.
 unsafe fn creates(stmt: &pg_sys::IndexStmt, index: &ManagedIndex) -> bool {
@@ -203,12 +208,35 @@ unsafe fn creates(stmt: &pg_sys::IndexStmt, index: &ManagedIndex) -> bool {
         {
             return false;
         }
+        if let Some(elements) = &index.expressions {
+            return same_elements(stmt.indexParams, elements);
+        }
         let n = pg_sys::list_length(stmt.indexParams);
         usize::try_from(n).ok() == Some(index.columns.len())
             && (0..n).zip(&index.columns).all(|(i, column)| {
                 index_elem_column(pg_sys::list_nth(stmt.indexParams, i).cast())
                     .is_some_and(|c| &c == column)
             })
+    }
+}
+
+/// Whether `params`, a statement's index elements, parse the same as
+/// `elements`, SQL index elements: the same expressions, collations, operator
+/// classes and orderings (`equal()` ignores where in the text they were).
+///
+/// SAFETY: `params` is null or the hook's statement's `indexParams`.
+unsafe fn same_elements(params: *mut pg_sys::List, elements: &str) -> bool {
+    let Ok(sql) = std::ffi::CString::new(format!("CREATE INDEX i ON t ({elements})")) else {
+        return false;
+    };
+    // SAFETY: the parser over a statement pg_tviews generates; the parse tree's
+    // first statement is that CREATE INDEX.
+    unsafe {
+        let parsed = pg_sys::raw_parser(sql.as_ptr(), pg_sys::RawParseMode::RAW_PARSE_DEFAULT);
+        let raw = pg_sys::list_nth(parsed, 0).cast::<pg_sys::RawStmt>();
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → IndexStmt* cast
+        let expected = (*raw).stmt.cast::<pg_sys::IndexStmt>();
+        pg_sys::equal(params.cast(), (*expected).indexParams.cast())
     }
 }
 

@@ -126,7 +126,7 @@ pub(crate) fn add_fanout_patches(
         let (Some((own, _)), Some((lookup_col, fields))) = (&table.hop, &table.fanout) else {
             continue;
         };
-        let fields: Vec<(String, String)> = fields
+        let fields: Vec<(String, Vec<String>)> = fields
             .iter()
             .filter(|(col, _)| !table.virtual_reads.contains(col))
             .cloned()

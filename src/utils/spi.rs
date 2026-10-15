@@ -6,7 +6,7 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::datum::{DatumWithOid, FromDatum, IntoDatum};
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
-use pgrx::spi::SpiHeapTupleData;
+use pgrx::spi::{SpiClient, SpiHeapTupleData, SpiTupleTable};
 
 /// Values bound as `text` (`None` is NULL).
 pub trait Text: IntoDatum {}
@@ -65,6 +65,58 @@ pub fn int8<'a>(value: i64) -> DatumWithOid<'a> {
 /// A `bigint[]` argument.
 pub fn int8_array<'a>(values: Vec<i64>) -> DatumWithOid<'a> {
     DatumWithOid::from(values)
+}
+
+/// The `bigint` keys a statement looks rows up by, in a column that may hold
+/// each of them many times (`fk_<entity>`). How many there are decides the
+/// statement's shape and plan: a generic plan can't see an array, and assumes
+/// ten keys each matching the column's average number of rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LookupKeys {
+    /// Compared with `=`, from a generic plan: it estimates the rows of one
+    /// value, as a plan made for the key would, without planning again.
+    One(i64),
+    /// An array, planned at each execution for its count.
+    Many(Vec<i64>),
+}
+
+impl LookupKeys {
+    /// The lookup of `keys`; `None` without any.
+    #[must_use]
+    pub fn of(mut keys: Vec<i64>) -> Option<Self> {
+        match keys.len() {
+            0 => None,
+            1 => keys.pop().map(Self::One),
+            _ => Some(Self::Many(keys)),
+        }
+    }
+
+    /// `column` holds one of the keys, bound as parameter `$param`.
+    #[must_use]
+    pub fn predicate(&self, column: &str, param: usize) -> String {
+        match self {
+            Self::One(_) => format!("{column} = ${param}::pg_catalog.int8"),
+            Self::Many(_) => format!("{column} = ANY (${param}::pg_catalog.int8[])"),
+        }
+    }
+
+    /// The keys, as the parameter [`Self::predicate`] reads.
+    #[must_use]
+    pub fn arg<'a>(&self) -> DatumWithOid<'a> {
+        match self {
+            Self::One(key) => int8(*key),
+            Self::Many(keys) => int8_array(keys.clone()),
+        }
+    }
+
+    /// How a statement looking up these keys is planned.
+    #[must_use]
+    pub const fn plan(&self) -> Plan {
+        match self {
+            Self::One(_) => Plan::Generic,
+            Self::Many(_) => Plan::PerExecution,
+        }
+    }
 }
 
 /// An `integer` argument.
@@ -179,28 +231,103 @@ pub fn run_ddl(sql: &str) -> TViewResult<()> {
     super::spi_run_ddl(sql).map_err(|e| error(sql, &e))
 }
 
+/// The statement `sql` kept for the backend: prepared on first use for the
+/// types of `args` (allowed to change data when `mutating`), then run from its
+/// plan. `PostgreSQL` picks custom or generic plans for it, and plans it again when
+/// what it reads changes; a changed TVIEW changes the SQL `pg_tviews` generates.
+/// Inside `client`'s connection. A statement over a trigger's transition tables
+/// names them alike whatever the table: it is kept per table (`over`), as
+/// PL/pgSQL keeps a trigger function's plans per relation, and dropped with the
+/// other caches when the table changes.
+fn statement(
+    client: &SpiClient<'_>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    mutating: bool,
+    over: Option<Oid>,
+) -> pgrx::spi::Result<std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> {
+    let types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
+    let key = (sql.to_string(), types, mutating, over);
+    if let Some(kept) = crate::cache::STATEMENTS.with(|m| m.get(&key)) {
+        return Ok(kept);
+    }
+    let pg_types: Vec<pgrx::PgOid> = key.1.iter().map(|&t| pgrx::PgOid::from(t)).collect();
+    let prepared = if mutating {
+        client.prepare_mut(sql, &pg_types)?
+    } else {
+        client.prepare(sql, &pg_types)?
+    };
+    let kept = std::rc::Rc::new(prepared.keep());
+    crate::metrics::metrics_api::record_plan_prepared();
+    if let Some(table) = over {
+        crate::cache::watch(&[table]);
+    }
+    crate::cache::STATEMENTS.with(|m| m.insert(key, kept.clone()));
+    Ok(kept)
+}
+
+/// Run the read-only query `sql` from its kept plan ([`statement`]).
+///
+/// # Errors
+/// The query's error.
+pub fn kept_select<'conn>(
+    client: &SpiClient<'conn>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, false, None)?;
+    client.select(&*kept, None, args)
+}
+
+/// Run `sql`, which may change data, from its kept plan ([`statement`]).
+///
+/// # Errors
+/// The statement's error.
+pub fn kept_update<'conn>(
+    client: &mut SpiClient<'conn>,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, true, None)?;
+    client.update(&*kept, None, args)
+}
+
+/// Run `sql`, a statement over the transition tables of `table`'s trigger, from
+/// its kept plan ([`statement`]).
+///
+/// # Errors
+/// The statement's error.
+pub fn kept_update_over<'conn>(
+    client: &mut SpiClient<'conn>,
+    table: Oid,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    let kept = statement(client, sql, args, true, Some(table))?;
+    client.update(&*kept, None, args)
+}
+
 /// A row of a query, its columns as text (`None` for NULL).
 pub type TextRow = Vec<Option<String>>;
 
 /// The rows of the read-only query `sql` as text, under the latest snapshot
 /// instead of the transaction's: what a REPEATABLE READ transaction can't see
-/// yet, as PostgreSQL's foreign-key checks read it. From its kept plan when
-/// `keep` (never for a query over a trigger's transition tables, which are the
-/// statement's own). The caller is inside an SPI connection (one that sees the
-/// transition tables, if the query reads them).
+/// yet, as PostgreSQL's foreign-key checks read it. From its plan kept with
+/// `keep` when there is one (never for a query over a trigger's transition
+/// tables, which are the statement's own). The caller is inside an SPI
+/// connection (one that sees the transition tables, if the query reads them).
 ///
 /// # Errors
 /// Returns an error if the query can't be prepared or doesn't return rows.
 pub fn latest_rows_connected(
     sql: &str,
     args: &[DatumWithOid<'_>],
-    keep: bool,
+    keep: Option<Plan>,
 ) -> TViewResult<Vec<TextRow>> {
     let (mut types, mut values, nulls) = bind(args);
-    let kept = if keep {
-        Some(kept_plan(sql, &mut types)?)
-    } else {
-        None
+    let kept = match keep {
+        Some(plan) => Some(kept_plan(sql, &mut types, plan)?),
+        None => None,
     };
     // SAFETY: inside an SPI connection; the plan (kept, or prepared here and
     // freed below) and the arguments, of the types it was prepared for, live
@@ -238,9 +365,42 @@ pub fn latest_rows_connected(
     }
 }
 
-/// A plan prepared once per backend and kept across transactions, always run
-/// as a generic plan: no planning per execution. PostgreSQL revalidates it when
-/// what it reads changes.
+/// How a kept statement is planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Plan {
+    /// One plan, made without the arguments and never again: for a statement
+    /// whose best plan doesn't depend on them, as a lookup by a unique key (a
+    /// primary key, a TVIEW's identity, a catalog key) or by one key compared
+    /// with `=` ([`LookupKeys`]).
+    Generic,
+    /// Planned at each execution for its arguments, its parse and analysis
+    /// kept: for a lookup by an array of keys of a column that isn't unique,
+    /// whose generic plan would assume ten keys of an average value and may scan
+    /// the whole table for a few rows.
+    PerExecution,
+}
+
+impl Plan {
+    /// The plan of a statement holding lookups planned `self` and `other`.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Generic, Self::Generic) => Self::Generic,
+            _ => Self::PerExecution,
+        }
+    }
+
+    /// The cursor option `SPI_prepare_cursor` takes for this plan.
+    const fn cursor_option(self) -> u32 {
+        match self {
+            Self::Generic => pg_sys::CURSOR_OPT_GENERIC_PLAN,
+            Self::PerExecution => pg_sys::CURSOR_OPT_CUSTOM_PLAN,
+        }
+    }
+}
+
+/// A statement prepared once per backend and kept across transactions, planned
+/// as its [`Plan`] says. PostgreSQL revalidates it when what it reads changes.
 pub struct KeptPlan(std::ptr::NonNull<pg_sys::_SPI_plan>);
 
 impl Drop for KeptPlan {
@@ -253,14 +413,17 @@ impl Drop for KeptPlan {
 }
 
 /// The rows of `sql` as text, run read-write (a fresh snapshot under READ
-/// COMMITTED) from its kept plan, prepared on first use.
+/// COMMITTED) from its statement kept with `plan`, prepared on first use. A
+/// [`Plan::Generic`] statement is never planned again, where `PostgreSQL`'s
+/// own choice would plan it at every execution whenever a custom plan looks
+/// cheaper.
 ///
 /// # Errors
 /// Returns an error if the query can't be prepared or doesn't return rows.
-pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<TextRow>> {
+pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>], plan: Plan) -> TViewResult<Vec<TextRow>> {
     let (mut types, mut values, nulls) = bind(args);
     Spi::connect(|_| {
-        let plan = kept_plan(sql, &mut types)?;
+        let plan = kept_plan(sql, &mut types, plan)?;
         // SAFETY: inside an SPI connection, with a valid kept plan and arguments
         // of the types it was prepared for, living until the call returns.
         unsafe {
@@ -276,10 +439,11 @@ pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<TextRo
     })
 }
 
-/// The kept generic plan of `sql` for arguments of `types`, prepared on first
-/// use. Inside an SPI connection.
-fn kept_plan(sql: &str, types: &mut [Oid]) -> TViewResult<std::rc::Rc<KeptPlan>> {
-    if let Some(plan) = crate::cache::PLANS.with(|m| m.get(&sql.to_string())) {
+/// `sql` for arguments of `types`, kept with `mode`, prepared on first use.
+/// Inside an SPI connection.
+fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::Rc<KeptPlan>> {
+    let key = (mode, sql.to_string());
+    if let Some(plan) = crate::cache::PLANS.with(|m| m.get(&key)) {
         return Ok(plan);
     }
     let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
@@ -291,7 +455,7 @@ fn kept_plan(sql: &str, types: &mut [Oid]) -> TViewResult<std::rc::Rc<KeptPlan>>
             src.as_ptr(),
             nargs,
             types.as_mut_ptr(),
-            pg_sys::CURSOR_OPT_GENERIC_PLAN.cast_signed(),
+            mode.cursor_option().cast_signed(),
         );
         let plan = std::ptr::NonNull::new(plan).ok_or_else(|| {
             error(
@@ -302,7 +466,8 @@ fn kept_plan(sql: &str, types: &mut [Oid]) -> TViewResult<std::rc::Rc<KeptPlan>>
         pg_sys::SPI_keepplan(plan.as_ptr());
         std::rc::Rc::new(KeptPlan(plan))
     };
-    crate::cache::PLANS.with(|m| m.insert(sql.to_string(), plan.clone()));
+    crate::metrics::metrics_api::record_plan_prepared();
+    crate::cache::PLANS.with(|m| m.insert(key, plan.clone()));
     Ok(plan)
 }
 
@@ -328,7 +493,13 @@ fn bind(args: &[DatumWithOid<'_>]) -> (Vec<Oid>, Vec<pg_sys::Datum>, Vec<std::ff
 /// # Safety
 /// The SPI call that returned `rc` was the last one, in the current connection.
 unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
-    if rc != pg_sys::SPI_OK_SELECT.cast_signed() {
+    let returning = [
+        pg_sys::SPI_OK_SELECT,
+        pg_sys::SPI_OK_INSERT_RETURNING,
+        pg_sys::SPI_OK_UPDATE_RETURNING,
+        pg_sys::SPI_OK_DELETE_RETURNING,
+    ];
+    if !returning.iter().any(|&ok| rc == ok.cast_signed()) {
         return Err(error(sql, &format!("SPI returned {rc}")));
     }
     // SAFETY: per the contract, SPI_tuptable holds the last result.
@@ -355,5 +526,35 @@ unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
         }
         pg_sys::SPI_freetuptable(table);
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LookupKeys, Plan};
+
+    #[test]
+    fn no_keys_is_no_lookup() {
+        assert!(LookupKeys::of(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn one_key_is_compared_from_a_generic_plan() {
+        let keys = LookupKeys::of(vec![7]).expect("a key");
+        assert_eq!(
+            keys.predicate("t.\"fk_cat\"", 1),
+            "t.\"fk_cat\" = $1::pg_catalog.int8"
+        );
+        assert_eq!(keys.plan(), Plan::Generic);
+    }
+
+    #[test]
+    fn several_keys_are_an_array_planned_per_execution() {
+        let keys = LookupKeys::of(vec![7, 8]).expect("keys");
+        assert_eq!(
+            keys.predicate("\"fk_cat\"", 2),
+            "\"fk_cat\" = ANY ($2::pg_catalog.int8[])"
+        );
+        assert_eq!(keys.plan(), Plan::PerExecution);
     }
 }

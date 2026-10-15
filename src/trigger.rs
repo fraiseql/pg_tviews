@@ -127,9 +127,10 @@ fn pg_tview_trigger_handler<'a>(
     // A row of a partition: what pg_tviews knows is its partitioned table.
     let table_oid = crate::delta::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
-    let paths: Vec<crate::catalog::plan::LocalPath> = crate::cache::cascade_paths(table_oid)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"))
-        .into_iter()
+    let all_paths = crate::cache::cascade_paths(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
+    let paths: Vec<&crate::catalog::plan::LocalPath> = all_paths
+        .iter()
         .filter(|p| p.entity_name == served)
         .collect();
     // If triggers are suspended, record the change instead of enqueuing
@@ -164,7 +165,7 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 /// Each path is followed from the old and the new row: an UPDATE that moves the
 /// row to another key (a changed join key, a changed DISTINCT ON key) refreshes
 /// both.
-fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalPath]) {
+fn enqueue_local_keys(trigger: &PgTrigger, paths: &[&crate::catalog::plan::LocalPath]) {
     if paths.is_empty() {
         return;
     }
@@ -185,10 +186,9 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[crate::catalog::plan::LocalP
     let changed = changed_columns(trigger);
 
     for path in paths {
-        // A root path always refreshes: the TVIEW's own row is recomputed (and the
-        // no-op guard skips the write) as before root paths existed.
+        // An UPDATE changing none of the columns the TVIEW reads changes none of
+        // its rows, its own included.
         if let Some(changed) = &changed
-            && !path.root
             && !path.source_columns.is_empty()
             && !path.source_columns.iter().any(|c| changed.contains(c))
         {
@@ -240,19 +240,6 @@ fn follow_local_path(
 
 // ── Direct-patch capture ─────────────────────────────────────────────────────
 
-unsafe extern "C" {
-    /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
-    /// by the backend but absent from the pgrx bindings; resolved at `.so` load
-    /// time like every other `pg_sys` symbol. Compares datums for physical equality.
-    #[link_name = "datumIsEqual"]
-    fn datum_is_equal(
-        value1: pg_sys::Datum,
-        value2: pg_sys::Datum,
-        typ_by_val: bool,
-        typ_len: i32,
-    ) -> bool;
-}
-
 /// Try to capture a direct patch for an eligible row-level UPDATE.
 ///
 /// Returns `Some(fields)` — a `key → value` JSONB map ready to merge into the
@@ -273,6 +260,14 @@ fn try_capture_direct_patch(
     // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
     let changed = changed.filter(|c| !c.is_empty())?;
     if changed.contains(&path.initial_col) {
+        return None;
+    }
+    // Columns the TVIEW does not read change none of its data.
+    let changed: Vec<&String> = changed
+        .iter()
+        .filter(|c| path.source_columns.is_empty() || path.source_columns.contains(c))
+        .collect();
+    if changed.is_empty() {
         return None;
     }
     let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
@@ -341,7 +336,12 @@ fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
             } else if old_isnull {
                 false // both NULL
             } else {
-                !datum_is_equal(old_datum, new_datum, att.attbyval, i32::from(att.attlen))
+                !crate::utils::datum_is_equal(
+                    old_datum,
+                    new_datum,
+                    att.attbyval,
+                    i32::from(att.attlen),
+                )
             };
             if differs {
                 changed.push(att.name().to_string());

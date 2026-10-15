@@ -47,10 +47,14 @@ fn pg_tviews_rebuild_all(
 #[pg_extern]
 fn pg_tviews_stats_reset(tview: default!(Option<&str>, "NULL")) -> Result<(), ErrorReport> {
     crate::revision::check();
-    let table = match tview {
-        Some(name) => Some(crate::catalog::resolve::find(name)?.table),
-        None => None,
-    };
-    crate::stats::reset(table)?;
+    if let Some(name) = tview {
+        crate::stats::reset(&[crate::catalog::resolve::find(name)?.table], false)?;
+    } else {
+        let tables: Vec<_> = crate::catalog::row::relations()?
+            .into_iter()
+            .map(|listed| listed.table)
+            .collect();
+        crate::stats::reset(&tables, true)?;
+    }
     Ok(())
 }

@@ -87,7 +87,7 @@ pub fn find(name: &str) -> TViewResult<Found> {
 ///
 /// # Errors
 /// As [`find`], and an error if its catalog row does not decode.
-pub fn resolve(name: &str) -> TViewResult<TviewMeta> {
+pub fn resolve(name: &str) -> TViewResult<std::rc::Rc<TviewMeta>> {
     let found = find(name)?;
     TviewMeta::load_by_entity(&found.entity)?.ok_or_else(|| TViewError::TviewNotFound {
         name: name.to_string(),

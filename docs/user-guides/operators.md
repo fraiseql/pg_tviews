@@ -65,7 +65,7 @@ that matter in operations:
 | Setting | Default | Who sets it | When to change it |
 |---|---|---|---|
 | `pg_tviews.auto_rebuild_databases` | `*` | postmaster | `*` refills the reset UNLOGGED TVIEWs of every database after a crash restart or promotion; a list restricts it to those databases; empty disables it (restart required) |
-| `pg_tviews.max_queue_size` | `10000` | superuser | raise for transactions that queue more refreshes (else `54000`) |
+| `pg_tviews.max_queue_size` | `1000000` | superuser | raise for transactions that queue more refreshes (else `54000`) |
 | `pg_tviews.max_propagation_depth` | `100` | superuser | raise for very deep embed chains (else `54001`) |
 | `pg_tviews.max_dependency_depth` | `10` | superuser | raise for deeper view-on-view hierarchies |
 | `pg_tviews.lock_escalation_threshold` | `64` | superuser | value locks per relation before a transaction locks the relation instead |

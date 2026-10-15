@@ -43,6 +43,6 @@ Placeholders stand for the values each message carries.
 | `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger): the commit fails. |
 | `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). |
 | `42501` | `insufficient_privilege` | The caller neither owns the TVIEW (or is a member of its owner) nor owns the extension. |
-| `0A000` | `feature_not_supported` | A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, `TABLESPACE`, `USING`, a storage parameter other than `fillfactor`, a query with parameters. |
+| `0A000` | `feature_not_supported` | A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, `TABLESPACE`, `USING`, a storage parameter other than `fillfactor` and `toast_tuple_target`, a query with parameters. |
 | `42P07` | `duplicate_table` | `CREATE TABLE tv_* AS` names a TVIEW that already exists. |
 | `22023` | `invalid_parameter_value` | Under `uncascaded_policy = 'error'`: a table whose writes no cascade maps to the TVIEW's keys, a function that reads tables not declared in `function_reads`, or a definition reading the time without `time_refresh`. Under `warn` the same is a WARNING (01000). |

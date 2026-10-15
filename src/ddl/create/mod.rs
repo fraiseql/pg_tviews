@@ -1,17 +1,24 @@
 mod derive;
 mod indexes;
+mod json_indexes;
 mod register;
 mod relations;
 mod select;
+mod storage;
 
 use derive::derive;
 pub(crate) use indexes::{ManagedIndex, index_name, managed_indexes};
+pub use json_indexes::JsonIndex;
+pub(crate) use json_indexes::{
+    apply as apply_json_indexes, declared as declared_json_indexes, present as present_json_indexes,
+};
 use register::Registration;
 pub(crate) use relations::view_source_columns;
 use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,
 };
+pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
 #[cfg(test)]
 mod tests;
 
@@ -52,25 +59,6 @@ pub(crate) fn current_schema() -> TViewResult<String> {
             operation: "Get current schema".to_string(),
             pg_error: "current_schema() returned NULL (no schema in search_path?)".to_string(),
         })
-}
-
-/// Storage of a TVIEW's table: its persistence, its fillfactor, and
-/// whether `data` has a GIN index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Storage {
-    pub logged: bool,
-    pub fillfactor: i32,
-    pub data_gin_index: bool,
-}
-
-impl Storage {
-    /// What a TVIEW gets unless its options say otherwise (ADR 0220): LOGGED,
-    /// fillfactor 85 (room for HOT updates), no GIN index on `data`.
-    pub const DEFAULT: Self = Self {
-        logged: true,
-        fillfactor: 85,
-        data_gin_index: false,
-    };
 }
 
 /// Create a TVIEW in `schema_name` with the given storage, as an aggregate TVIEW

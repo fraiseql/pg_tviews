@@ -65,10 +65,10 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
 thread_local! {
     /// The entity dependency graph (one entry, keyed by `()`).
     pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
-    /// Table → the local paths starting at it. Also cleared at transaction end.
-    pub static CASCADE_PATHS: Memo<Oid, Vec<LocalPath>> = Memo::new();
+    /// Table → the local paths starting at it.
+    pub static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
     /// Every `TviewMeta` read so far (keyed by entity).
-    pub static METAS: Memo<String, TviewMeta> = Memo::new();
+    pub static METAS: Memo<String, std::rc::Rc<TviewMeta>> = Memo::new();
     /// TVIEW table → the type of its identity column.
     pub static KEY_TYPES: Memo<Oid, KeyType> = Memo::new();
     /// Relation → its column names, in order.
@@ -80,9 +80,17 @@ thread_local! {
     pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
     /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
     pub static LOCK_VALUES: Memo<(u32, i16), Option<crate::concurrency::LockValue>> = Memo::new();
-    /// SQL → its kept plan, for the queries every refresh runs (PostgreSQL
-    /// revalidates a kept plan when what it reads changes).
-    pub static PLANS: Memo<String, std::rc::Rc<crate::utils::spi::KeptPlan>> = Memo::new();
+    /// `(how it is planned, SQL)` → its kept statement, for the queries every
+    /// refresh runs (PostgreSQL revalidates a kept plan when what it reads changes).
+    pub static PLANS: Memo<(crate::utils::spi::Plan, String), std::rc::Rc<crate::utils::spi::KeptPlan>> =
+        Memo::new();
+    /// `(SQL, argument types, mutating, the table whose transition tables it
+    /// reads)` → the statement kept for the backend.
+    pub static STATEMENTS: Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
+        Memo::new();
+    /// `(table, attnums)` → how its old and new transition rows pair up, and the
+    /// names of those columns (`None`: they can't be paired).
+    pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<RowPairing>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -93,6 +101,14 @@ thread_local! {
     /// The quoted schema of `jsonb_delta` (`None`: not installed).
     pub static JSONB_DELTA_SCHEMA: Memo<(), Option<String>> = Memo::new();
 }
+
+/// What a kept statement is found by: its SQL, its argument types, whether it
+/// may change data, and the table whose transition tables it reads.
+pub type StatementKey = (String, Vec<Oid>, bool, Option<Oid>);
+
+/// The condition pairing an updated row's two images in a mapped table's
+/// transition tables, and the names of the columns the TVIEW reads.
+pub type RowPairing = (String, Vec<String>);
 
 /// The entity dependency graph (cached per backend).
 ///
@@ -113,18 +129,20 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
 }
 
 /// The local paths starting at `table_oid`, across every TVIEW's plan (cached
-/// for the transaction).
+/// for the backend: a TVIEW created, changed or dropped anywhere writes
+/// `pg_tview_meta`, which invalidates it).
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<Vec<LocalPath>> {
+pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPath]>> {
     CASCADE_PATHS.with(|m| {
         m.get_or_load(table_oid, || {
             Ok(TviewMeta::load_all()?
                 .into_iter()
                 .flat_map(|meta| meta.plan.paths)
                 .filter(|path| path.source_oid == table_oid)
-                .collect())
+                .collect::<Vec<_>>()
+                .into())
         })
     })
 }
@@ -140,18 +158,15 @@ pub fn invalidate_all() {
     READ_SETS.with(Memo::clear);
     LOCK_VALUES.with(Memo::clear);
     PLANS.with(Memo::clear);
+    STATEMENTS.with(Memo::clear);
     DELTAS.with(Memo::clear);
+    PAIRINGS.with(Memo::clear);
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
     JSONB_DELTA_SCHEMA.with(Memo::clear);
     crate::utils::forget_logged(crate::jsonb_delta::JSONB_DELTA_MISSING);
     // The catalog may have been dropped and created again under another OID.
     CATALOG_WATCHED.with(|w| w.set(false));
-}
-
-/// Forget what is valid for one transaction only.
-pub fn end_transaction() {
-    CASCADE_PATHS.with(Memo::clear);
 }
 
 // ── cross-backend invalidation ───────────────────────────────────────────────

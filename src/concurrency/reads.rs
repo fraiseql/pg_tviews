@@ -2,15 +2,14 @@
 //! a refresh of those keys locks (ADR 0207).
 
 use crate::TViewResult;
-use crate::catalog::KeyType;
 use crate::lineage::{KeyMapping, Placeholder, ReadSet};
 use crate::queue::key::KeyValue;
 use pgrx::pg_sys::Oid;
 
 /// The query of `set`, a read set of `entity`'s mapping of `mapping`, with the
-/// current names of what it reads and `$1` bound as an array of `key_type`
-/// (cached until a relation it reads changes). `None` when a relation it reads
-/// is gone, or the set locks the whole table.
+/// current names of what it reads and its keys compared with `keys` (cached
+/// until a relation it reads changes). `None` when a relation it reads is gone,
+/// or the set locks the whole table.
 ///
 /// # Errors
 /// Returns an error if the names cannot be read.
@@ -18,7 +17,7 @@ pub fn rendered(
     entity: &str,
     mapping: &KeyMapping,
     set: &ReadSet,
-    key_type: &KeyType,
+    keys: &str,
 ) -> TViewResult<Option<String>> {
     let Some(template) = &set.sql else {
         return Ok(None);
@@ -39,8 +38,7 @@ pub fn rendered(
         crate::cache::READ_SETS.with(|m| m.insert(key, sql.clone()));
         sql
     };
-    let keys = format!("ANY ({})", crate::refresh::key_cast(key_type, "$1", true));
-    Ok(sql.map(|sql| sql.replace("ANY ($1)", &keys)))
+    Ok(sql.map(|sql| sql.replace("ANY ($1)", keys)))
 }
 
 /// Refresh side: before `meta`'s rows `keys` are computed, lock (shared) every
@@ -54,11 +52,13 @@ pub fn rendered(
 /// Returns an error if a read-set query fails.
 pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     use super::{LockTarget, Policy, Side};
-    if keys.is_empty() || Policy::current() == Policy::Skip {
+    if Policy::current() == Policy::Skip {
         return Ok(());
     }
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
+        return Ok(());
+    };
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
-    let key_type = meta.key_type()?;
     let entity = meta.entity_name.as_str();
     // Each read set's query, run as one statement: (target, query, its lock
     // value of `v`).
@@ -70,7 +70,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
             } else {
                 super::lock_value(mapping.relid, set.attnum)?
             };
-            let (Some(sql), Some(value)) = (rendered(entity, mapping, set, &key_type)?, value)
+            let (Some(sql), Some(value)) = (rendered(entity, mapping, set, &lookup.rhs)?, value)
             else {
                 // No equality to lock by, or a relation or column it reads is gone.
                 super::lock_relation(mapping.relid, Side::Refresh);
@@ -87,7 +87,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
         let Some(child) = crate::catalog::TviewMeta::load_by_entity(&embed.entity)? else {
             continue;
         };
-        if let Some(sql) = embed_keys_sql(meta, &embed.lookups)? {
+        if let Some(sql) = embed_keys_sql(meta, &embed.lookups, &lookup.rhs)? {
             sets.push((
                 super::embedded_keys_target(child.tview_oid),
                 sql,
@@ -104,9 +104,8 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
         .map(|(i, (_, query, value))| format!("SELECT {i}, {value} FROM ({query}) s{i}(v)"))
         .collect::<Vec<_>>()
         .join(" UNION ALL ");
-    let args = [crate::refresh::key_array(&key_type, keys)?];
     let mut values: Vec<Vec<String>> = vec![Vec::new(); sets.len()];
-    for row in crate::utils::spi::kept_rows(&sql, &args)? {
+    for row in crate::utils::spi::kept_rows(&sql, &[lookup.arg], lookup.plan)? {
         if let [Some(i), Some(value)] = row.as_slice()
             && let Ok(i) = i.parse::<usize>()
             && let Some(set) = values.get_mut(i)
@@ -142,17 +141,17 @@ pub fn lock_whole_read_set(meta: &crate::catalog::TviewMeta) -> TViewResult<()> 
     Ok(())
 }
 
-/// `SELECT DISTINCT <lookup>::text FROM <backing view> WHERE <identity> = ANY ($1)`,
+/// `SELECT DISTINCT <lookup>::text FROM <backing view> WHERE <identity> = <keys>`,
 /// one per lookup column, combined with `UNION`; `None` without lookups.
 fn embed_keys_sql(
     meta: &crate::catalog::TviewMeta,
     lookups: &[String],
+    keys: &str,
 ) -> TViewResult<Option<String>> {
     if lookups.is_empty() {
         return Ok(None);
     }
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let key_type = meta.key_type()?;
     let identity = crate::utils::ident::quoted(&meta.identity.column);
     Ok(Some(
         lookups
@@ -161,8 +160,7 @@ fn embed_keys_sql(
                 let lookup = crate::utils::ident::quoted(lookup);
                 format!(
                     "SELECT DISTINCT {lookup}::pg_catalog.text FROM {view} \
-                     WHERE {identity} OPERATOR(pg_catalog.=) ANY ({}) AND {lookup} IS NOT NULL",
-                    crate::refresh::key_cast(&key_type, "$1", true)
+                     WHERE {identity} OPERATOR(pg_catalog.=) {keys} AND {lookup} IS NOT NULL"
                 )
             })
             .collect::<Vec<_>>()

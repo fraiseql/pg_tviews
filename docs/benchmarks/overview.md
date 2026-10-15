@@ -15,6 +15,7 @@ figures from a measured run are in [results.md](results.md).
 - **[Results Interpretation](results-interpretation.md)** — how to read the numbers honestly
 - **[jsonb_delta Integration](jsonb-ivm-integration.md)** — jsonb_delta's role and the parity finding
 - **[Array fast-path GO/NO-GO](array-fastpath-go-no-go.md)** — surgical array patching: measured, deferred
+- **[Write path](write-path.md)** — what a write costs on FraiseQL-shaped TVIEWs, against the same write without triggers
 
 ## What is measured
 

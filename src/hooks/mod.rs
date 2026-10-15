@@ -290,11 +290,22 @@ fn rethrow(panic_info: Box<dyn std::any::Any + Send>) -> ! {
         Ok(report) => pg_sys::panic::CaughtError::ErrorReport(*report).rethrow(),
         Err(panic_info) => panic_info,
     };
+    // The payload's type tells what unwound: a message (a Rust `panic!`) or
+    // something else, named by its type id since `Any` has no type name.
     let panic_msg = panic_info
         .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| panic_info.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| format!("{panic_info:?}"));
+        .map(|s| format!("panic: {s}"))
+        .or_else(|| {
+            panic_info
+                .downcast_ref::<String>()
+                .map(|s| format!("panic: {s}"))
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "unwind with a non-message payload ({:?})",
+                (*panic_info).type_id()
+            )
+        });
     error!(
         "PANIC in ProcessUtility hook: {panic_msg} - This is a bug in pg_tviews - please report it!"
     )

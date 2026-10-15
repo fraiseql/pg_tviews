@@ -48,7 +48,9 @@ CREATE TABLE tb_item (
     mood    app.mood,
     tag     app.label,
     doc     json,
-    pos     point
+    pos     point,
+    -- Read only in a filter no row fails: writing it recomputes the row unchanged.
+    note    text
 );
 INSERT INTO tb_item (label, path, name, attrs, mood, tag, doc, pos) VALUES
     ('a', 'a',   'A', 'k=>1', 'ok',    'X', '{"n": 1}', '(1,1)'),
@@ -59,6 +61,7 @@ SELECT pg_tviews_create('tv_item', $TV$
     SELECT pk_item, id, path, name, attrs, mood, tag, doc, pos,
            jsonb_build_object('id', id, 'label', label) AS data
     FROM tb_item
+    WHERE note IS DISTINCT FROM 'hidden'
 $TV$);
 
 -- The TVIEW keeps the view's column types (they were stored as text before beta.21).
@@ -137,7 +140,7 @@ SET pg_tviews.direct_patch_enabled = off;
 
 -- ── 3. #72 no-op guard still holds ──────────────────────────────────────────
 CREATE TABLE _s AS SELECT _skipped() AS skipped, _updated_at(1) AS at1;
-UPDATE tb_item SET label = label, path = path, name = name WHERE pk_item = 1;
+UPDATE tb_item SET note = 'unchanged row' WHERE pk_item = 1;
 DO $$ BEGIN
     IF _updated_at(1) IS DISTINCT FROM (SELECT at1 FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [no-op]: an unchanged row was rewritten (updated_at moved)';
