@@ -176,7 +176,13 @@ GRANT SELECT ON tv_user TO upgrade_table_reader;
 
 -- Indexes a user added (#219): one under the managed GIN's name with another
 -- operator class, which stays the user's; one exactly as pg_tviews creates its GIN,
--- which the upgrade takes as pg_tviews'.
+-- which the upgrade takes as pg_tviews'. From 0.1.0-beta.27 on, the managed name is
+-- reserved and the first one cannot be created.
+SELECT COALESCE(NULLIF(pg_catalog.split_part(extversion, 'beta.', 2), '')::int < 27, true)
+       AS squatter_fixture
+FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews' \gset
+\if :squatter_fixture
 CREATE INDEX idx_tv_user_data_gin ON public.tv_user USING gin (data jsonb_path_ops);
+\endif
 CREATE INDEX user_by_id ON public.tv_user (id, pk_user);
 CREATE INDEX idx_tv_note_data_gin ON app.tv_note USING gin (data);

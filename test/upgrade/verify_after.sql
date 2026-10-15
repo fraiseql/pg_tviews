@@ -147,6 +147,7 @@ END $$;
 DO $$
 DECLARE
     unmanaged TEXT;
+    expected TEXT;
 BEGIN
     SELECT pg_catalog.string_agg(ic.relname::pg_catalog.text, ', ' ORDER BY ic.relname)
       INTO unmanaged
@@ -158,7 +159,11 @@ BEGIN
      WHERE i.indexrelid OPERATOR(pg_catalog.<>) ALL (r.managed_indexes::pg_catalog.oid[])
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
                        WHERE k.conindid OPERATOR(pg_catalog.=) i.indexrelid);
-    IF unmanaged IS DISTINCT FROM 'idx_tv_user_data_gin, user_by_id' THEN
+    -- The user's index under the managed name exists only when the previous
+    -- release predates the reservation (0.1.0-beta.27).
+    expected := CASE WHEN pg_catalog.to_regclass('public.idx_tv_user_data_gin') IS NULL
+                     THEN 'user_by_id' ELSE 'idx_tv_user_data_gin, user_by_id' END;
+    IF unmanaged IS DISTINCT FROM expected THEN
         RAISE EXCEPTION 'upgrade check: unmanaged indexes are %', unmanaged;
     END IF;
     IF NOT (SELECT (options OPERATOR(pg_catalog.->>) 'data_gin_index')::boolean
