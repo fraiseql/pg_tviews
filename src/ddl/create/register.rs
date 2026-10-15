@@ -2,7 +2,7 @@
 
 use super::ViewColumns;
 use super::derive::{Derivation, uncascaded_tables};
-use super::indexes::create_embed_lookup_indexes;
+use super::indexes::{create_embed_lookup_indexes, key_index};
 use super::relations::relation_oid;
 use crate::catalog::plan::TviewPlan;
 use crate::ddl::uncascaded::{Declarations, Uncascaded};
@@ -61,6 +61,9 @@ impl Registration<'_> {
             &tview,
             self.schema,
         )?);
+        if let Some(index) = key_index(&tview, self.columns, &lineage.identity.name) {
+            indexes.extend(index.create(self.schema, &tview)?);
+        }
         MetaRow {
             entity: self.entity,
             view_oid: self.view_oid,

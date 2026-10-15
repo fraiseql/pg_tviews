@@ -9,8 +9,7 @@
 use crate::error::{TViewError, TViewResult};
 use crate::queue::affected::{self, Change, NetChange};
 use crate::utils::ident;
-use pgrx::JsonB;
-use pgrx::prelude::*;
+use crate::utils::spi::LookupKeys;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
 
@@ -98,32 +97,44 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
 }
 
 /// The current `data` of `entity`'s rows `pks`, keyed by pk text.
-fn current_data(
-    entity: &str,
-    table: &str,
-    pks: Vec<String>,
-) -> TViewResult<HashMap<String, Value>> {
+///
+/// `pk_<entity>` is BIGINT (#209) and indexed (its primary key, or its own index on a
+/// TVIEW named by another key): the keys are bound as `int8` and each row is one index
+/// probe, from a kept plan shaped by their count ([`LookupKeys`]), not a scan (#240).
+///
+/// # Errors
+/// A journaled key that is not an integer, or a failed read.
+fn current_data(entity: &str, table: &str, pks: &[String]) -> TViewResult<HashMap<String, Value>> {
+    let keys = pks
+        .iter()
+        .map(|pk| {
+            pk.parse::<i64>().map_err(|_| TViewError::CatalogError {
+                operation: format!("Read the reported rows of tv_{entity}"),
+                pg_error: format!("journaled key {pk:?} is not an integer"),
+            })
+        })
+        .collect::<TViewResult<Vec<i64>>>()?;
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(HashMap::new());
+    };
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
-        "SELECT t.{qi_pk}::text AS k, t.data AS d FROM {table} t \
-         WHERE t.{qi_pk}::text = ANY($1)"
+        "SELECT t.{qi_pk}::pg_catalog.text, t.data::pg_catalog.text FROM {table} t WHERE {}",
+        lookup.predicate(&format!("t.{qi_pk}"), 1)
     );
-    Spi::connect(|client| {
-        let args = [crate::utils::spi::text_array(pks)];
-        let mut out = HashMap::new();
-        for row in client.select(&sql, None, &args)? {
-            let key: Option<String> = row["k"].value()?;
-            let data: Option<JsonB> = row["d"].value()?;
-            if let Some(key) = key {
-                out.insert(key, data.map_or(Value::Null, |JsonB(d)| d));
-            }
+    let mut out = HashMap::new();
+    for row in crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())? {
+        if let [Some(key), data] = row.as_slice() {
+            let data = data
+                .as_deref()
+                .map_or(Ok(Value::Null), serde_json::from_str)
+                .map_err(|e| TViewError::SerializationError {
+                    message: format!("tv_{entity}: unreadable data for {key}: {e}"),
+                })?;
+            out.insert(key.clone(), data);
         }
-        Ok::<_, spi::Error>(out)
-    })
-    .map_err(|e| TViewError::SpiError {
-        query: sql,
-        error: e.to_string(),
-    })
+    }
+    Ok(out)
 }
 
 fn build_report(
@@ -186,7 +197,7 @@ fn build_report(
         }
         for (entity, pks) in pks_by_entity {
             if let Some(i) = info.get(entity) {
-                for (pk, data) in current_data(entity, &i.table, pks)? {
+                for (pk, data) in current_data(entity, &i.table, &pks)? {
                     rows.insert((entity.to_string(), pk), data);
                 }
             }

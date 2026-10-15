@@ -7,7 +7,7 @@ mod select;
 mod storage;
 
 use derive::derive;
-pub(crate) use indexes::{ManagedIndex, index_name, managed_indexes};
+pub(crate) use indexes::{ManagedIndex, index_name, key_index, managed_indexes};
 pub use json_indexes::JsonIndex;
 pub(crate) use json_indexes::{
     apply as apply_json_indexes, declared as declared_json_indexes, present as present_json_indexes,
