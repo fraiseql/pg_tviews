@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pg_tviews_flush_and_report()` reports `collections`** (#244): with
+  `pg_tviews.publish_changes = 'rows'`, the parents whose composed child lists the
+  reported rows left or joined, as the change feed's `c` names them:
+  `"collections": {"Comment.fk_post": [<post id>, …]}`. A layer that runs the write
+  evicts exactly those composed results inside the transaction, instead of every result
+  composing the child type. `reset`, `types` (by child type) and savepoints apply as to
+  rows; an unlistable parent puts its child type in `invalidated_types`. Without `rows`
+  the key is absent.
+
+### Changed
+
+- The refresh journal carries `pk_<entity>` as an integer from the write to every reader
+  (#246): no text round trip in the report or the change feed. No SQL surface change.
+
 ## [0.1.0-beta.30] - 2026-10-16
 
 ### Added

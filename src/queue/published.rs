@@ -335,6 +335,59 @@ fn settle(found: &dyn Fn(&crate::catalog::Collection, &str) -> Option<String>) {
     });
 }
 
+/// How the change feed names a parent a written row named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listed {
+    /// By its public id, as JSON text.
+    Id(String),
+    /// Not at all: no row of the parent TVIEW holds the key.
+    Gone,
+    /// By the child type: the parent has no id column, did not fit the byte
+    /// budget, or was never resolved.
+    Unlisted,
+}
+
+/// The set's parents as the feed would publish them, for
+/// `pg_tviews_flush_and_report()` (#244): the same capture, read before commit.
+#[derive(Debug, Default)]
+pub struct Listing {
+    parents: HashMap<(Rc<str>, String), Listed>,
+    types: BTreeSet<Rc<str>>,
+}
+
+impl Listing {
+    /// How parent `key` of `collection` is named.
+    #[must_use]
+    pub fn get(&self, collection: &crate::catalog::Collection, key: &str) -> Listed {
+        if self.types.contains(&collection.child_type) {
+            return Listed::Unlisted;
+        }
+        self.parents
+            .get(&(Rc::clone(&collection.key), key.to_string()))
+            .cloned()
+            .unwrap_or(Listed::Unlisted)
+    }
+}
+
+/// The set's parents, resolved as far as the last flush got ([`resolve`]).
+pub fn listing() -> Listing {
+    SET.with_borrow(|set| Listing {
+        parents: set
+            .members
+            .iter()
+            .map(|m| {
+                let listed = match &m.parent {
+                    Parent::Id(id) => Listed::Id(id.clone()),
+                    Parent::Gone => Listed::Gone,
+                    Parent::Key => Listed::Unlisted,
+                };
+                ((Rc::clone(&m.collection.key), m.key.clone()), listed)
+            })
+            .collect(),
+        types: set.types.clone(),
+    })
+}
+
 /// Publish `typename` by name: its rows changed without being listed (a rebuild).
 pub fn add_type(typename: &Rc<str>) {
     SET.with_borrow_mut(|set| {
@@ -843,6 +896,30 @@ mod tests {
         settle_posts();
         rollback(m);
         assert_eq!(collections()[0].2, ["\"p1\""]);
+        clear();
+    }
+
+    #[test]
+    fn the_listing_names_parents_as_the_feed_does() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        let tag = collection("Note", "fk_tag", false);
+        add(
+            Publish::Rows,
+            &child(
+                1,
+                Change::Updated,
+                &[(&post, "1", None), (&post, "9", None), (&tag, "1", None)],
+            ),
+        );
+        // Not resolved yet: the child type stands for the parent.
+        assert_eq!(listing().get(&post, "1"), Listed::Unlisted);
+        settle_posts();
+        let listing = listing();
+        assert_eq!(listing.get(&post, "1"), Listed::Id("\"p1\"".to_string()));
+        assert_eq!(listing.get(&post, "9"), Listed::Gone);
+        assert_eq!(listing.get(&post, "2"), Listed::Unlisted, "never named");
+        assert_eq!(listing.get(&tag, "1"), Listed::Unlisted, "no id column");
         clear();
     }
 }

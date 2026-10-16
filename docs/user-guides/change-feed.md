@@ -7,8 +7,9 @@ on the PostgreSQL channel `tviews_changes`. A cache LISTENs and evicts what chan
 The decision and its trade-offs are [ADR 0231](../adr/0231-publish-changes.md).
 
 Inside the writing transaction, a mutation reports what it changed with
-[`pg_tviews_flush_and_report()`](graphql-cascade.md). The feed is for everyone else,
-after the commit.
+[`pg_tviews_flush_and_report()`](graphql-cascade.md), collection keys included (its
+`collections`, from the same capture as `c`). The feed is for everyone else, after the
+commit.
 
 ## Turning it on
 

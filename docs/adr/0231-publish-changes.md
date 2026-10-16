@@ -139,6 +139,13 @@ parent's row tag.
   TVIEW without an `id` column, publish the child type in `t`.
 - Every reference is published (no declaration selects them); the parents and the budget
   are those of `u`.
+- `pg_tviews_flush_and_report()` reads the same capture before commit (#244): a layer
+  that ran the write evicts by collection synchronously, from `collections`, instead of
+  every result composing the child type. It lists the parents the rows it reports named,
+  under the report's `reset`, `types` and savepoints, resolved as the last flush left
+  them; a parent the feed would publish by type puts the child type in
+  `invalidated_types`. Without `rows` nothing is captured and the report has no
+  `collections`.
 - A collection's parent is the TVIEW `tviews.registry.references` names: of two TVIEWs
   named by the same key, the one whose identity column has the referenced column's name,
   else the first by entity. One parent per reference keeps one key per composed list,

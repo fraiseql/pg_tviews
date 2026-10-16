@@ -8,6 +8,7 @@
 
 use crate::error::{TViewError, TViewResult};
 use crate::queue::affected::{self, Change, NetChange};
+use crate::queue::published::{self, Listed, Publish};
 use crate::utils::ident;
 use crate::utils::spi::LookupKeys;
 use serde_json::{Map, Value, json};
@@ -29,6 +30,10 @@ use std::collections::{BTreeSet, HashMap};
 /// left out and their types listed in `omitted_types` (#230). `reset` clears them
 /// too: they were seen, just not asked for.
 ///
+/// With `pg_tviews.publish_changes = 'rows'`, `collections` names the parents
+/// whose child lists the reported rows left or joined (#244), as the change feed
+/// does ([`collections`]); absent otherwise, nothing having been captured.
+///
 /// # Errors
 /// `InvalidInput` (22023) for a type name no TVIEW has, before anything is
 /// flushed or reset; otherwise an error if the flush or a catalog/TVIEW read fails.
@@ -40,9 +45,9 @@ pub(crate) fn flush_and_report(
 ) -> TViewResult<Value> {
     let wanted = types.map(requested_types).transpose()?;
     crate::flush::flush_refresh_queue()?;
-    let (changes, overflow) = affected::summarize(reset);
+    let summary = affected::summarize(reset);
     let limit = usize::try_from(max_entities).unwrap_or(0);
-    build_report(&changes, &overflow, limit, include_data, wanted.as_ref())
+    build_report(&summary, limit, include_data, wanted.as_ref())
 }
 
 /// How many known type names an unknown-type error lists.
@@ -132,12 +137,12 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
 }
 
 fn build_report(
-    changes: &[NetChange],
-    overflow: &BTreeSet<String>,
+    summary: &affected::Summary,
     max_entities: usize,
     include_data: bool,
     wanted: Option<&BTreeSet<String>>,
 ) -> TViewResult<Value> {
+    let (changes, overflow) = (&summary.changes, &summary.overflow);
     let entities: BTreeSet<&str> = changes
         .iter()
         .map(|c| c.entity.as_str())
@@ -218,20 +223,74 @@ fn build_report(
         updated.push(Value::Object(item));
     }
 
-    let invalidated: BTreeSet<String> = left_out
+    let mut invalidated: BTreeSet<String> = left_out
         .iter()
         .map(|c| c.entity.as_str())
         .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
         .collect();
+    let collections = (crate::config::publish_changes() == Some(Publish::Rows))
+        .then(|| collections(&summary.parents, wanted, &mut invalidated))
+        .transpose()?;
     let mut report = json!({
         "updated": updated,
         "deleted": deleted,
         "truncated": !invalidated.is_empty(),
         "invalidated_types": invalidated.into_iter().collect::<Vec<_>>(),
     });
+    if let Some(collections) = collections {
+        report["collections"] = collections;
+    }
     if wanted.is_some() {
         report["omitted_types"] = json!(omitted.into_iter().collect::<Vec<_>>());
     }
     Ok(report)
+}
+
+/// The collections of the reported rows, `{"Comment.fk_post": [<post id>, …]}`,
+/// named as the change feed names them (ADR 0231 §8): every parent each row
+/// belonged to before or after a write, by public id, ids in text order. A
+/// parent the feed cannot list puts its child type in `invalidated`; one no row
+/// holds any more names nothing. Only rows of the `wanted` types count.
+///
+/// # Errors
+/// A captured id that is not JSON.
+fn collections(
+    parents: &[(
+        std::rc::Rc<crate::catalog::Collection>,
+        crate::catalog::collections::ParentRef,
+    )],
+    wanted: Option<&BTreeSet<String>>,
+    invalidated: &mut BTreeSet<String>,
+) -> TViewResult<Value> {
+    let listing = published::listing();
+    let mut ids: std::collections::BTreeMap<&str, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for (collection, parent) in parents {
+        let child = &*collection.child_type;
+        if wanted.is_some_and(|w| !w.contains(child)) {
+            continue;
+        }
+        match listing.get(collection, &parent.key) {
+            Listed::Id(id) => {
+                ids.entry(&collection.key).or_default().insert(id);
+            }
+            Listed::Gone => {}
+            Listed::Unlisted => {
+                invalidated.insert(child.to_string());
+            }
+        }
+    }
+    let mut out = Map::new();
+    for (key, ids) in ids {
+        let values = ids
+            .iter()
+            .map(|id| serde_json::from_str(id))
+            .collect::<Result<Vec<Value>, _>>()
+            .map_err(|e| TViewError::SerializationError {
+                message: format!("{key}: unreadable parent id: {e}"),
+            })?;
+        out.insert(key.to_string(), Value::Array(values));
+    }
+    Ok(Value::Object(out))
 }

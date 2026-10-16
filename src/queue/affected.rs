@@ -216,20 +216,55 @@ pub fn clear() {
     JOURNAL.with(|j| *j.borrow_mut() = Journal::default());
 }
 
-/// The net change per unreported row, in order of each row's first entry, and the
-/// entities whose changes overflowed the cap. With `reset` they count as reported.
-pub fn summarize(reset: bool) -> (Vec<NetChange>, BTreeSet<String>) {
+/// What a report reads of the journal: the unreported entries, folded.
+#[derive(Debug, Default)]
+pub struct Summary {
+    /// The net change per row, in order of each row's first entry.
+    pub changes: Vec<NetChange>,
+    /// The entities whose changes overflowed the cap.
+    pub overflow: BTreeSet<String>,
+    /// Every parent the entries named, before and after each write, once per
+    /// collection: a row written twice can have left two.
+    pub parents: Vec<(
+        std::rc::Rc<crate::catalog::Collection>,
+        crate::catalog::collections::ParentRef,
+    )>,
+}
+
+/// The unreported entries, folded ([`Summary`]). With `reset` they count as
+/// reported.
+pub fn summarize(reset: bool) -> Summary {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        let net = net_changes(&j.entries[j.reported - j.base..]);
-        let overflow = j.overflow.clone();
+        let entries = &j.entries[j.reported - j.base..];
+        let summary = Summary {
+            changes: net_changes(entries),
+            overflow: j.overflow.clone(),
+            parents: parents(entries),
+        };
         if reset {
             j.reported = j.base + j.entries.len();
             j.overflow.clear();
             j.compact();
         }
-        (net, overflow)
+        summary
     })
+}
+
+/// The parents `entries` name, once per `(collection, key)`, in order first named.
+fn parents(
+    entries: &[Recorded],
+) -> Vec<(
+    std::rc::Rc<crate::catalog::Collection>,
+    crate::catalog::collections::ParentRef,
+)> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .iter()
+        .flat_map(|e| e.parents.iter())
+        .filter(|(c, parent)| seen.insert((std::rc::Rc::clone(&c.key), parent.key.clone())))
+        .cloned()
+        .collect()
 }
 
 /// A row's net change once `next` follows `prev` (`None`: no change so far, or
@@ -292,7 +327,7 @@ mod tests {
     }
 
     fn report(reset: bool) -> Vec<i64> {
-        summarize(reset).0.into_iter().map(|n| n.pk).collect()
+        summarize(reset).changes.into_iter().map(|n| n.pk).collect()
     }
 
     #[test]
@@ -442,5 +477,51 @@ mod tests {
     fn update_then_delete_is_delete() {
         let got = net(&[e("post", 1, Change::Updated), e("post", 1, Change::Deleted)]);
         assert_eq!(got, [("post".to_string(), 1, Change::Deleted)]);
+    }
+
+    #[test]
+    fn a_row_written_twice_names_every_parent_it_left_or_joined() {
+        let post: std::rc::Rc<crate::catalog::Collection> =
+            std::rc::Rc::new(crate::catalog::Collection {
+                key: "Comment.fk_post".into(),
+                child_type: "Comment".into(),
+                column: "fk_post".to_string(),
+                parent_table: "public.tv_post".to_string(),
+                parent_table_oid: pgrx::pg_sys::Oid::from(1),
+                parent_column: "pk_post".to_string(),
+                parent_type: "integer".to_string(),
+                parent_id: Some(crate::catalog::PublicId::String),
+                parent_typename: "Post".into(),
+                parent_keyed_by_pk: true,
+            });
+        let moved = |to: &str, from: &str| {
+            let mut r = e("comment", 1, Change::Updated);
+            r.parents = [to, from]
+                .iter()
+                .map(|key| {
+                    (
+                        std::rc::Rc::clone(&post),
+                        crate::catalog::collections::ParentRef {
+                            key: (*key).to_string(),
+                            id: None,
+                        },
+                    )
+                })
+                .collect();
+            r
+        };
+        clear();
+        JOURNAL.with(|j| {
+            j.borrow_mut()
+                .entries
+                .extend([moved("3", "2"), moved("1", "3")]);
+        });
+        let keys: Vec<String> = summarize(true)
+            .parents
+            .into_iter()
+            .map(|(_, parent)| parent.key)
+            .collect();
+        assert_eq!(keys, ["3", "2", "1"]);
+        clear();
     }
 }
