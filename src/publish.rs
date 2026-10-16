@@ -63,6 +63,7 @@ pub fn at_pre_commit() {
             .unwrap_or(0.0);
     if usage > QUEUE_USAGE_LIMIT {
         SKIPPED.set(SKIPPED.get() + 1);
+        crate::stats::add_feed_gap();
         warning!(
             "pg_tviews: the NOTIFY queue is {:.0}% full: this transaction's TVIEW changes are \
              not published on {}. A listener is not reading: see pg_notification_queue_usage() \

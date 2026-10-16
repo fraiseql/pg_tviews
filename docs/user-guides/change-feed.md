@@ -140,6 +140,23 @@ any `Comment` row in `u` or `d` evicts every result that composes `Comment` chil
 In this order, a change committed between steps 1 and 2 is covered by step 2. One
 committed before step 1 is never seen, which step 2 covers too.
 
+### Gaps while connected
+
+A listener can also miss transactions without losing its connection: when the NOTIFY
+queue is over 90 % full (another listener stopped reading), transactions commit
+unpublished ([Operating it](#operating-it)). `tviews.pg_tviews_feed_gaps()` counts them
+for the whole cluster since the server started, and any session can read it:
+
+1. at connect, after `LISTEN`, read it and keep the value;
+2. on each heartbeat (a few seconds), read it again; when it moved, evict everything and
+   keep the new value.
+
+A gap is counted just before its transaction commits, so a heartbeat may evict before
+the missed transaction is visible; the next read finds its rows fresh. A server restart
+starts the counter over, and also drops every listening connection, which the reconnect
+rule already covers. The counter needs `shared_preload_libraries = 'pg_tviews'`;
+without it the function fails (`55000`) rather than report no gaps.
+
 ### Python (psycopg 3)
 
 ```python
@@ -232,8 +249,10 @@ any pool mode.
 - **Above 90 % queue usage, transactions commit unpublished.** pg_tviews does not let a
   stuck listener fail every write. The writer gets a WARNING naming the cause, and
   `pg_tviews_queue_stats()->'publish_skipped'` counts these transactions in the writing
-  session (the WARNING also goes to the server log, where monitoring sees it).
-  Listeners missed them: that is why a cache evicts everything when it reconnects.
+  session (the WARNING also goes to the server log, where monitoring sees it), and
+  `pg_tviews_feed_gaps()` for the whole cluster. Listeners missed them: a connected
+  listener learns it from the counter ([gaps](#gaps-while-connected)), a reconnecting
+  one evicts everything anyway.
   The check is made just before the commit; another session can fill the last pages in
   between, and PostgreSQL then fails that commit (`too many notifications in the NOTIFY
   queue`).

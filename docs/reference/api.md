@@ -55,6 +55,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_health_check()`](#pg_tviews_health_check) | `TABLE(status text, component text, message text, severity text)` | anyone |
 | [`pg_tviews_stats_reset(tview text DEFAULT NULL)`](#tviewsstats-and-pg_tviews_stats_reset) | `void` | operator |
 | [`pg_tviews_queue_stats()`](#pg_tviews_queue_stats) | `jsonb` | anyone |
+| [`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps) | `bigint` | anyone |
 | [`pg_tviews_debug_queue()`](#pg_tviews_debug_queue) | `jsonb` | anyone |
 | [`pg_tviews_profile(tview text DEFAULT NULL, fanout_warn bigint DEFAULT 1000)`](#pg_tviews_profile) | `TABLE(…)` | anyone |
 | [`pg_tviews_version()`](#version-and-catalog) | `text` | anyone |
@@ -558,6 +559,8 @@ own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
+| `publish_skipped` | transactions this session committed without publishing their changes ([change feed](../user-guides/change-feed.md#operating-it)) |
+| `feed_gaps` | the same, for the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps)); null without the library preloaded |
 
 ```sql
 BEGIN;
@@ -565,6 +568,19 @@ UPDATE tb_post SET title = 'Hello again' WHERE pk_post = 1;
 SELECT tviews.pg_tviews_queue_stats() ->> 'flushes' AS flushes;
 COMMIT;
 ```
+
+### pg_tviews_feed_gaps
+
+```text
+tviews.pg_tviews_feed_gaps() RETURNS bigint
+```
+
+The transactions the cluster committed without publishing their changes on the
+[change feed](../user-guides/change-feed.md), the NOTIFY queue being over 90 % full,
+since the server started. Monotonic; any session reads it. A listener reads it when it
+connects and on each heartbeat, and evicts everything when it moved
+([gaps](../user-guides/change-feed.md#gaps-while-connected)). Without
+`shared_preload_libraries = 'pg_tviews'` nothing is counted and it fails with `55000`.
 
 ### pg_tviews_debug_queue
 

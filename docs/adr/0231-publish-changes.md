@@ -99,7 +99,13 @@ would leave caches stale with no signal. It shares one error variant, `PrepareRe
 
 Above 90 % queue usage (`pg_notification_queue_usage()`, read without SPI), the transaction
 commits unpublished. It emits a WARNING naming the stuck listener's remedy, and adds one to
-`publish_skipped` in `pg_tviews_queue_stats()`. Otherwise a listener idle in a transaction
+`publish_skipped` in `pg_tviews_queue_stats()`, and one to a cluster-wide counter in shared
+memory, `pg_tviews_feed_gaps()` (#247): a listener that stays connected (the healthy ones,
+while another holds the queue) learns from it that it missed transactions, and evicts
+everything. One counter for the cluster, not per database: the queue is the cluster's, a
+skip is an incident, and an eviction in another database costs nothing but a refill. The
+counter is bumped before the commit (a transaction that then fails counts one gap too
+many, which costs one eviction). Otherwise a listener idle in a transaction
 would eventually fail every write. The check is a threshold, not a guarantee: another
 backend can fill the last pages first, and that commit then fails as PostgreSQL decides.
 

@@ -65,4 +65,14 @@ EXCEPTION WHEN object_not_in_prerequisite_state THEN
     PERFORM must(SQLERRM LIKE '%shared_preload_libraries%', 'stats error: ' || SQLERRM);
 END $$;
 
+-- Likewise the change feed's gap counter (#247): an error, never a zero a listener
+-- would trust.
+DO $$
+BEGIN
+    PERFORM tviews.pg_tviews_feed_gaps();
+    PERFORM must(false, 'pg_tviews_feed_gaps() read without the library preloaded');
+EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    PERFORM must(SQLERRM LIKE '%shared_preload_libraries%', 'feed gaps error: ' || SQLERRM);
+END $$;
+
 SELECT 'no-preload create_or_replace: PASS' AS result;

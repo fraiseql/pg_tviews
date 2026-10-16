@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows; an unlistable parent puts its child type in `invalidated_types`. Without `rows`
   the key is absent.
 
+- **`tviews.pg_tviews_feed_gaps()`** (#247): the transactions the cluster committed
+  without publishing their changes (NOTIFY queue over 90 % full) since the server
+  started, readable by any session, and `feed_gaps` in `pg_tviews_queue_stats()`. A
+  listener that stays connected reads it on its heartbeat and evicts everything when it
+  moved: before, only a reconnect told a cache it had missed transactions. Needs the
+  library preloaded (`55000` otherwise).
+
 ### Changed
 
 - The refresh journal carries `pk_<entity>` as an integer from the write to every reader
