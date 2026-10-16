@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"collections": {"Comment.fk_post": [<post id>, …]}`. A layer that runs the write
   evicts exactly those composed results inside the transaction, instead of every result
   composing the child type. `reset`, `types` (by child type) and savepoints apply as to
-  rows; an unlistable parent puts its child type in `invalidated_types`. Without `rows`
+  rows; an unlistable parent puts its child type in `invalidated_types`, which then
+  stands for all that type's collections. Rows written without `rows` captured nothing:
   the key is absent.
 
 - **`tviews.pg_tviews_feed_gaps()`** (#247): the transactions the cluster committed

@@ -154,12 +154,41 @@ SELECT split_part(:'both', '|', 1) AS reported, split_part(:'both', '|', 2) AS f
 SELECT must(sorted(:'reported'::jsonb) = sorted((:'fed'::jsonb)->'c')
             AND :'reported'::jsonb <> '{}', 'report vs feed: ' || :'both');
 
--- 9. Not captured: no collections key at all ("not known" is not "none").
+-- 9. Rows left out past max_entities: their type is invalidated, and stands for
+--    its collections (as a type in the feed's `t`).
+BEGIN;
+UPDATE tb_comment SET content = 'many' WHERE pk_comment IN (1, 2);
+UPDATE tb_post SET title = 'many' WHERE pk_post = 1;
+SELECT tviews.pg_tviews_flush_and_report(max_entities => 1) AS r \gset
+SELECT must((:'r'::jsonb)->'invalidated_types' ? 'Comment', 'left out: ' || :'r');
+SELECT must(NOT EXISTS (SELECT FROM jsonb_object_keys((:'r'::jsonb)->'collections') k
+                        WHERE k LIKE 'Comment.%'), 'left-out collections listed: ' || :'r');
+COMMIT;
+
+-- 10. Not captured: no collections key at all ("not known" is not "none").
 SET pg_tviews.publish_changes = off;
 BEGIN;
 UPDATE tb_comment SET content = 'unpublished' WHERE pk_comment = 2;
 SELECT tviews.pg_tviews_flush_and_report() AS r \gset
 SELECT must(NOT (:'r'::jsonb) ? 'collections', 'off: ' || :'r');
+COMMIT;
+
+-- 11. What decides is the setting when the rows were written, not when the
+--     report runs. (Comment 2 is on p3 since section 8.)
+BEGIN;
+UPDATE tb_comment SET content = 'written off' WHERE pk_comment = 2;
+SET LOCAL pg_tviews.publish_changes = rows;
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(NOT (:'r'::jsonb) ? 'collections', 'written off, reported rows: ' || :'r');
+SELECT must(NOT (:'r'::jsonb)->'invalidated_types' ? 'Comment', 'uncaptured invalidated: ' || :'r');
+COMMIT;
+BEGIN;
+SET LOCAL pg_tviews.publish_changes = rows;
+UPDATE tb_comment SET content = 'written rows' WHERE pk_comment = 2;
+SET LOCAL pg_tviews.publish_changes = off;
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must((:'r'::jsonb)->'collections'->'Comment.fk_post' = expand('["p3"]'),
+            'written rows, reported off: ' || :'r');
 COMMIT;
 
 \echo 'regress_report_collections: PASS'

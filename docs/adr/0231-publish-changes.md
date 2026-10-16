@@ -104,8 +104,10 @@ memory, `pg_tviews_feed_gaps()` (#247): a listener that stays connected (the hea
 while another holds the queue) learns from it that it missed transactions, and evicts
 everything. One counter for the cluster, not per database: the queue is the cluster's, a
 skip is an incident, and an eviction in another database costs nothing but a refill. The
-counter is bumped before the commit (a transaction that then fails counts one gap too
-many, which costs one eviction). Otherwise a listener idle in a transaction
+decision is made at `PRE_COMMIT`, the count at `COMMIT`, once the transaction is visible:
+counted earlier, a listener could evict, refill from a snapshot without the transaction,
+and keep those rows stale with no further signal. The counter is an atomic in the
+`tviews.stats` shared segment: no lock. Otherwise a listener idle in a transaction
 would eventually fail every write. The check is a threshold, not a guarantee: another
 backend can fill the last pages first, and that commit then fails as PostgreSQL decides.
 
@@ -150,8 +152,9 @@ parent's row tag.
   every result composing the child type. It lists the parents the rows it reports named,
   under the report's `reset`, `types` and savepoints, resolved as the last flush left
   them; a parent the feed would publish by type puts the child type in
-  `invalidated_types`. Without `rows` nothing is captured and the report has no
-  `collections`.
+  `invalidated_types`, and a type there stands for all its collections, as in `t`. The
+  rows must have been written with `rows`: otherwise nothing was captured and the
+  report has no `collections`, whatever the setting when it runs.
 - A collection's parent is the TVIEW `tviews.registry.references` names: of two TVIEWs
   named by the same key, the one whose identity column has the referenced column's name,
   else the first by entity. One parent per reference keeps one key per composed list,

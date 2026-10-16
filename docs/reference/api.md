@@ -440,11 +440,12 @@ or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is tr
 later changes; a reset made in a subtransaction that rolls back is undone. With `types`
 (type names), only rows of those types are reported and counted against
 `max_entities`; the other changed types are listed in `omitted_types`; an unknown name
-fails with `22023`. With `pg_tviews.publish_changes = 'rows'`, `collections` names the
-collections the reported rows left or joined, as the change feed's `c` does:
-`{"Comment.fk_post": [<post id>, …]}`, ids in text order; a parent the feed cannot list
-puts its child type in `invalidated_types`. Without `rows` the key is absent: nothing
-was captured. See [GraphQL cascade](../user-guides/graphql-cascade.md).
+fails with `22023`. When the rows were written with `pg_tviews.publish_changes =
+'rows'`, `collections` names the collections they left or joined, as the change feed's
+`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order. A child type in
+`invalidated_types` (rows left out, or a parent the feed cannot list) stands for all its
+collections, which are then not listed. Otherwise the key is absent: nothing was
+captured. See [GraphQL cascade](../user-guides/graphql-cascade.md).
 
 ```sql
 BEGIN;

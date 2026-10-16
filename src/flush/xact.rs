@@ -35,6 +35,7 @@ const RESET_ON_ABORT: &[fn()] = &[
     crate::revision::reset,
     || crate::internal_ddl::release_on_abort(true),
     crate::lifecycle::validity::forget_checks,
+    crate::publish::forget_gap,
 ];
 
 /// What a rolled-back subtransaction resets besides its savepoint: the hook's
@@ -146,6 +147,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             }
 
             crate::suspend::force_resume();
+            if xact_event == XactEvent::Commit {
+                crate::publish::at_commit();
+            }
 
             // The UNLOGGED checks stay done for this backend: an UNLOGGED
             // TVIEW is only reset by a restart, which ends every backend.

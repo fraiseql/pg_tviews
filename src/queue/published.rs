@@ -347,44 +347,34 @@ pub enum Listed {
     Unlisted,
 }
 
-/// The set's parents as the feed would publish them, for
-/// `pg_tviews_flush_and_report()` (#244): the same capture, read before commit.
-#[derive(Debug, Default)]
-pub struct Listing {
-    parents: HashMap<(Rc<str>, String), Listed>,
-    types: BTreeSet<Rc<str>>,
-}
-
-impl Listing {
-    /// How parent `key` of `collection` is named.
-    #[must_use]
-    pub fn get(&self, collection: &crate::catalog::Collection, key: &str) -> Listed {
-        if self.types.contains(&collection.child_type) {
-            return Listed::Unlisted;
-        }
-        self.parents
-            .get(&(Rc::clone(&collection.key), key.to_string()))
-            .cloned()
-            .unwrap_or(Listed::Unlisted)
-    }
-}
-
-/// The set's parents, resolved as far as the last flush got ([`resolve`]).
-pub fn listing() -> Listing {
-    SET.with_borrow(|set| Listing {
-        parents: set
+/// How the feed names each of `parents`, the parents written rows named, as far
+/// as the last flush resolved them ([`resolve`]): the same capture, read before
+/// commit by `pg_tviews_flush_and_report()` (#244).
+pub fn listed(
+    parents: &[(
+        Rc<crate::catalog::Collection>,
+        crate::catalog::collections::ParentRef,
+    )],
+) -> Vec<Listed> {
+    SET.with_borrow(|set| {
+        let members: HashMap<(&str, &str), &Parent> = set
             .members
             .iter()
-            .map(|m| {
-                let listed = match &m.parent {
-                    Parent::Id(id) => Listed::Id(id.clone()),
-                    Parent::Gone => Listed::Gone,
-                    Parent::Key => Listed::Unlisted,
-                };
-                ((Rc::clone(&m.collection.key), m.key.clone()), listed)
+            .map(|m| ((&*m.collection.key, m.key.as_str()), &m.parent))
+            .collect();
+        parents
+            .iter()
+            .map(|(collection, parent)| {
+                if set.types.contains(&collection.child_type) {
+                    return Listed::Unlisted;
+                }
+                match members.get(&(&*collection.key, parent.key.as_str())) {
+                    Some(Parent::Id(id)) => Listed::Id(id.clone()),
+                    Some(Parent::Gone) => Listed::Gone,
+                    Some(Parent::Key) | None => Listed::Unlisted,
+                }
             })
-            .collect(),
-        types: set.types.clone(),
+            .collect()
     })
 }
 
@@ -531,6 +521,7 @@ mod tests {
             }),
             change,
             parents: Vec::new(),
+            captured: true,
         }
     }
 
@@ -912,14 +903,33 @@ mod tests {
                 &[(&post, "1", None), (&post, "9", None), (&tag, "1", None)],
             ),
         );
+        let named = |pairs: &[(&std::rc::Rc<crate::catalog::Collection>, &str)]| {
+            let parents: Vec<_> = pairs
+                .iter()
+                .map(|(c, key)| {
+                    (
+                        std::rc::Rc::clone(c),
+                        crate::catalog::collections::ParentRef {
+                            key: (*key).to_string(),
+                            id: None,
+                        },
+                    )
+                })
+                .collect();
+            listed(&parents)
+        };
         // Not resolved yet: the child type stands for the parent.
-        assert_eq!(listing().get(&post, "1"), Listed::Unlisted);
+        assert_eq!(named(&[(&post, "1")]), [Listed::Unlisted]);
         settle_posts();
-        let listing = listing();
-        assert_eq!(listing.get(&post, "1"), Listed::Id("\"p1\"".to_string()));
-        assert_eq!(listing.get(&post, "9"), Listed::Gone);
-        assert_eq!(listing.get(&post, "2"), Listed::Unlisted, "never named");
-        assert_eq!(listing.get(&tag, "1"), Listed::Unlisted, "no id column");
+        assert_eq!(
+            named(&[(&post, "1"), (&post, "9"), (&post, "2"), (&tag, "1")]),
+            [
+                Listed::Id("\"p1\"".to_string()),
+                Listed::Gone,
+                Listed::Unlisted, // never named
+                Listed::Unlisted, // no id column
+            ]
+        );
         clear();
     }
 }

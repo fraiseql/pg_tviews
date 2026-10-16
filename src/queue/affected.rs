@@ -45,6 +45,9 @@ pub struct Recorded {
         std::rc::Rc<crate::catalog::Collection>,
         crate::catalog::collections::ParentRef,
     )>,
+    /// Whether the write captured `parents` for the change feed
+    /// (`pg_tviews.publish_changes = 'rows'` when it ran).
+    pub captured: bool,
 }
 
 impl Recorded {
@@ -67,6 +70,7 @@ impl Recorded {
             id: id.map(|text| meta.row_id(text)),
             change,
             parents: meta.parents(references, old),
+            captured: crate::config::publish_changes() == Some(super::published::Publish::Rows),
         }
     }
 }
@@ -224,23 +228,32 @@ pub struct Summary {
     /// The entities whose changes overflowed the cap.
     pub overflow: BTreeSet<String>,
     /// Every parent the entries named, before and after each write, once per
-    /// collection: a row written twice can have left two.
-    pub parents: Vec<(
-        std::rc::Rc<crate::catalog::Collection>,
-        crate::catalog::collections::ParentRef,
-    )>,
+    /// collection: a row written twice can have left two. `None` unless every
+    /// entry captured its parents (an empty journal: unless `capturing`).
+    pub parents: Option<
+        Vec<(
+            std::rc::Rc<crate::catalog::Collection>,
+            crate::catalog::collections::ParentRef,
+        )>,
+    >,
 }
 
-/// The unreported entries, folded ([`Summary`]). With `reset` they count as
-/// reported.
-pub fn summarize(reset: bool) -> Summary {
+/// The unreported entries, folded ([`Summary`]); their parents only when
+/// `capturing` (the current transaction captures them for the change feed). With
+/// `reset` they count as reported.
+pub fn summarize(reset: bool, capturing: bool) -> Summary {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
         let entries = &j.entries[j.reported - j.base..];
+        let captured = if entries.is_empty() {
+            capturing
+        } else {
+            entries.iter().all(|e| e.captured)
+        };
         let summary = Summary {
             changes: net_changes(entries),
             overflow: j.overflow.clone(),
-            parents: parents(entries),
+            parents: captured.then(|| parents(entries)),
         };
         if reset {
             j.reported = j.base + j.entries.len();
@@ -327,7 +340,11 @@ mod tests {
     }
 
     fn report(reset: bool) -> Vec<i64> {
-        summarize(reset).changes.into_iter().map(|n| n.pk).collect()
+        summarize(reset, false)
+            .changes
+            .into_iter()
+            .map(|n| n.pk)
+            .collect()
     }
 
     #[test]
@@ -381,6 +398,7 @@ mod tests {
             }),
             change,
             parents: Vec::new(),
+            captured: true,
         }
     }
 
@@ -516,8 +534,9 @@ mod tests {
                 .entries
                 .extend([moved("3", "2"), moved("1", "3")]);
         });
-        let keys: Vec<String> = summarize(true)
+        let keys: Vec<String> = summarize(true, true)
             .parents
+            .unwrap_or_default()
             .into_iter()
             .map(|(_, parent)| parent.key)
             .collect();

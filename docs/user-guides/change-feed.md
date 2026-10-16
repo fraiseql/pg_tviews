@@ -151,8 +151,8 @@ for the whole cluster since the server started, and any session can read it:
 2. on each heartbeat (a few seconds), read it again; when it moved, evict everything and
    keep the new value.
 
-A gap is counted just before its transaction commits, so a heartbeat may evict before
-the missed transaction is visible; the next read finds its rows fresh. A server restart
+A gap is counted once its transaction has committed, so a listener that evicts when the
+counter moves reads the missed transaction's rows fresh. A server restart
 starts the counter over, and also drops every listening connection, which the reconnect
 rule already covers. The counter needs `shared_preload_libraries = 'pg_tviews'`;
 without it the function fails (`55000`) rather than report no gaps.
