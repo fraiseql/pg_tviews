@@ -96,25 +96,16 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
         .collect())
 }
 
-/// The current `data` of `entity`'s rows `pks`, keyed by pk text.
+/// The current `data` of `entity`'s rows `pks`, by `pk_<entity>`.
 ///
 /// `pk_<entity>` is BIGINT (#209) and indexed (its primary key, or its own index on a
 /// TVIEW named by another key): the keys are bound as `int8` and each row is one index
 /// probe, from a kept plan shaped by their count ([`LookupKeys`]), not a scan (#240).
 ///
 /// # Errors
-/// A journaled key that is not an integer, or a failed read.
-fn current_data(entity: &str, table: &str, pks: &[String]) -> TViewResult<HashMap<String, Value>> {
-    let keys = pks
-        .iter()
-        .map(|pk| {
-            pk.parse::<i64>().map_err(|_| TViewError::CatalogError {
-                operation: format!("Read the reported rows of tv_{entity}"),
-                pg_error: format!("journaled key {pk:?} is not an integer"),
-            })
-        })
-        .collect::<TViewResult<Vec<i64>>>()?;
-    let Some(lookup) = LookupKeys::of(keys) else {
+/// A failed read.
+fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap<i64, Value>> {
+    let Some(lookup) = LookupKeys::of(pks) else {
         return Ok(HashMap::new());
     };
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
@@ -124,15 +115,18 @@ fn current_data(entity: &str, table: &str, pks: &[String]) -> TViewResult<HashMa
     );
     let mut out = HashMap::new();
     for row in crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())? {
-        if let [Some(key), data] = row.as_slice() {
-            let data = data
-                .as_deref()
-                .map_or(Ok(Value::Null), serde_json::from_str)
-                .map_err(|e| TViewError::SerializationError {
-                    message: format!("tv_{entity}: unreadable data for {key}: {e}"),
-                })?;
-            out.insert(key.clone(), data);
-        }
+        let [Some(key), data] = row.as_slice() else {
+            continue;
+        };
+        let unreadable = |what: &dyn std::fmt::Display| TViewError::SerializationError {
+            message: format!("tv_{entity}: unreadable row {key}: {what}"),
+        };
+        let pk = key.parse::<i64>().map_err(|e| unreadable(&e))?;
+        let data = data
+            .as_deref()
+            .map_or(Ok(Value::Null), serde_json::from_str)
+            .map_err(|e| unreadable(&e))?;
+        out.insert(pk, data);
     }
     Ok(out)
 }
@@ -168,36 +162,26 @@ fn build_report(
         .collect();
 
     // Flush order is not deterministic across runs, so report in a fixed order:
-    // entity, then key (numerically when the keys are integers).
+    // entity, then key.
     let mut changes: Vec<NetChange> = changes
         .iter()
         .filter(|c| asked(&c.entity))
         .cloned()
         .collect();
-    changes.sort_by(|a, b| {
-        a.entity
-            .cmp(&b.entity)
-            .then_with(|| match (a.pk.parse::<i64>(), b.pk.parse::<i64>()) {
-                (Ok(x), Ok(y)) => x.cmp(&y),
-                _ => a.pk.cmp(&b.pk),
-            })
-    });
+    changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));
     let (reported, left_out) = changes.split_at(changes.len().min(max_entities));
 
     // The fresh documents, one read per entity, only when asked for: the ids
     // come from the journal.
-    let mut rows: HashMap<(String, String), Value> = HashMap::new();
+    let mut rows: HashMap<(String, i64), Value> = HashMap::new();
     if include_data {
-        let mut pks_by_entity: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut pks_by_entity: HashMap<&str, Vec<i64>> = HashMap::new();
         for c in reported.iter().filter(|c| c.change != Change::Deleted) {
-            pks_by_entity
-                .entry(&c.entity)
-                .or_default()
-                .push(c.pk.clone());
+            pks_by_entity.entry(&c.entity).or_default().push(c.pk);
         }
         for (entity, pks) in pks_by_entity {
             if let Some(i) = info.get(entity) {
-                for (pk, data) in current_data(entity, &i.table, &pks)? {
+                for (pk, data) in current_data(entity, &i.table, pks)? {
                     rows.insert((entity.to_string(), pk), data);
                 }
             }
@@ -226,7 +210,7 @@ fn build_report(
         item.insert("operation".into(), Value::String(op.into()));
         if include_data {
             // A row written then removed by a later, unjournaled path is skipped.
-            let Some(data) = rows.remove(&(c.entity.clone(), c.pk.clone())) else {
+            let Some(data) = rows.remove(&(c.entity.clone(), c.pk)) else {
                 continue;
             };
             item.insert("data".into(), data);

@@ -351,7 +351,7 @@ pub(crate) fn run_counted_upsert(
     let sql = format!(
         "WITH src AS ({source_sql}), \
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
-                     {conflict} RETURNING {qi_pk}::text AS k, {} AS i, {} AS r, \
+                     {conflict} RETURNING {qi_pk}::pg_catalog.int8 AS k, {} AS i, {} AS r, \
                                           xmax = 0 AS inserted) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
                 (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r)) \
@@ -375,18 +375,16 @@ pub(crate) fn run_counted_upsert(
     let mut written = Written::default();
     for row in rows {
         let (Some(pk), id, Some(inserted)) = (
-            row[0].as_str().map(str::to_string),
+            row[0].as_i64(),
             row[1].as_str().map(str::to_string),
             row[2].as_bool(),
         ) else {
             continue;
         };
-        if let Ok(value) = pk.parse() {
-            if inserted {
-                written.inserted.push(value);
-            } else {
-                written.updated.push(value);
-            }
+        if inserted {
+            written.inserted.push(pk);
+        } else {
+            written.updated.push(pk);
         }
         let change = if inserted {
             Change::Inserted
@@ -457,10 +455,7 @@ pub(crate) fn lock_rows(
         for row in crate::utils::spi::kept_update(client, &sql, &args)? {
             if let Some(pk) = row.get::<i64>(1)? {
                 if references {
-                    old.insert(
-                        pk.to_string(),
-                        row.get::<Vec<Option<String>>>(3)?.unwrap_or_default(),
-                    );
+                    old.insert(pk, row.get::<Vec<Option<String>>>(3)?.unwrap_or_default());
                 }
                 pks.push(pk);
             }
@@ -501,19 +496,19 @@ pub(crate) struct Locked {
     pub old: Option<crate::catalog::collections::OldKeys>,
 }
 
-/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::text` and what
+/// Run `sql`, a write of `meta`'s TVIEW `RETURNING pk_<entity>::int8` and what
 /// [`crate::catalog::TviewMeta::returned`] lists, journal each row it returns as
-/// `change`, and return their `pk_<entity>`, as text.
+/// `change`, and return their `pk_<entity>`.
 pub(crate) fn run_journaled(
     meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
     change: crate::queue::affected::Change,
-) -> crate::TViewResult<Vec<String>> {
+) -> crate::TViewResult<Vec<i64>> {
     let written = Spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in crate::utils::spi::kept_update(client, sql, args)? {
-            let pk: Option<String> = row.get(1)?;
+            let pk: Option<i64> = row.get(1)?;
             let id: Option<String> = row.get(2)?;
             let references: Option<Vec<Option<String>>> = row.get(3)?;
             if let Some(pk) = pk {
@@ -527,7 +522,7 @@ pub(crate) fn run_journaled(
         .map(|(pk, id, references)| {
             crate::queue::affected::record(crate::queue::affected::Recorded::of(
                 meta,
-                pk.clone(),
+                pk,
                 id,
                 change,
                 &references,
@@ -544,12 +539,7 @@ pub(crate) fn run_journaled_delete(
     sql: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<Vec<i64>> {
-    Ok(
-        run_journaled(meta, sql, args, crate::queue::affected::Change::Deleted)?
-            .into_iter()
-            .filter_map(|pk| pk.parse().ok())
-            .collect(),
-    )
+    run_journaled(meta, sql, args, crate::queue::affected::Change::Deleted)
 }
 
 #[cfg(test)]

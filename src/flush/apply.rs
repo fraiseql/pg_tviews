@@ -138,11 +138,7 @@ impl Flush {
             meta.tview_oid.to_u32(),
             crate::concurrency::Side::Writer,
         );
-        // Parents are found by integer keys: a text key has none to find.
-        let changed: Vec<i64> = crate::refresh::full::reconcile(entity, &meta)?
-            .into_iter()
-            .filter_map(|k| KeyValue::Text(k).to_int())
-            .collect();
+        let changed = crate::refresh::full::reconcile(entity, &meta)?;
         // A full refresh may bring rows back: look their parents up in the
         // parents' views too.
         self.queue_parents_to_recompute(entity, &changed, &changed)?;

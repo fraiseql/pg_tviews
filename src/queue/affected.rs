@@ -34,8 +34,8 @@ pub struct Recorded {
     pub entity: String,
     /// The GraphQL type name of the row ([`crate::catalog::typename`]).
     pub typename: std::rc::Rc<str>,
-    /// `pk_<entity>`, as text.
-    pub pk: String,
+    /// `pk_<entity>`.
+    pub pk: i64,
     /// The row's public `id`; `None` for a TVIEW without an `id` column.
     pub id: Option<crate::catalog::RowId>,
     pub change: Change,
@@ -54,7 +54,7 @@ impl Recorded {
     #[must_use]
     pub fn of(
         meta: &crate::catalog::TviewMeta,
-        pk: String,
+        pk: i64,
         id: Option<String>,
         change: Change,
         references: &[Option<String>],
@@ -114,7 +114,7 @@ thread_local! {
     static JOURNAL: RefCell<Journal> = RefCell::new(Journal::default());
     /// Rows changed during the current flush, uncapped: propagation reads it to
     /// skip parents of rows whose refresh changed nothing.
-    static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, String)>> =
+    static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, i64)>> =
         RefCell::new(std::collections::HashSet::new());
 }
 
@@ -125,7 +125,7 @@ pub fn begin_flush() {
 
 /// Whether `entity`'s row `pk` was inserted, updated or deleted in this flush.
 pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
-    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk.to_string())))
+    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
 }
 
 /// Record that a refresh write changed a TVIEW row.
@@ -137,7 +137,7 @@ pub fn record(recorded: Recorded) {
     crate::stats::add(&recorded.entity, counter, 1);
     FLUSH_CHANGED.with(|c| {
         c.borrow_mut()
-            .insert((recorded.entity.clone(), recorded.pk.clone()))
+            .insert((recorded.entity.clone(), recorded.pk))
     });
     if let Some(publish) = crate::config::publish_changes() {
         super::published::add(publish, &recorded);
@@ -249,10 +249,10 @@ pub const fn fold_change(prev: Option<Change>, next: Change) -> Option<Change> {
 /// Fold journal entries into one net change per `(entity, pk)`, carrying the last
 /// id seen for the row ([`fold_change`]).
 pub fn net_changes(entries: &[Recorded]) -> Vec<NetChange> {
-    let mut order: Vec<(String, String)> = Vec::new();
-    let mut state: HashMap<(String, String), (Option<Change>, &Recorded)> = HashMap::new();
+    let mut order: Vec<(String, i64)> = Vec::new();
+    let mut state: HashMap<(String, i64), (Option<Change>, &Recorded)> = HashMap::new();
     for entry in entries {
-        let key = (entry.entity.clone(), entry.pk.clone());
+        let key = (entry.entity.clone(), entry.pk);
         let prev = if let Some((prev, _)) = state.get(&key) {
             *prev
         } else {
@@ -285,25 +285,25 @@ mod tests {
     };
 
     /// Journal a change without `record`, which reads a GUC.
-    fn push(pk: &str) {
+    fn push(pk: i64) {
         JOURNAL.with(|j| {
             j.borrow_mut().entries.push(e("user", pk, Change::Updated));
         });
     }
 
-    fn report(reset: bool) -> Vec<String> {
+    fn report(reset: bool) -> Vec<i64> {
         summarize(reset).0.into_iter().map(|n| n.pk).collect()
     }
 
     #[test]
     fn a_rolled_back_reset_is_undone() {
         clear();
-        push("1");
+        push(1);
         let m = mark();
-        assert_eq!(report(true), ["1"]);
-        push("2");
+        assert_eq!(report(true), [1]);
+        push(2);
         rollback(m);
-        assert_eq!(report(true), ["1"]);
+        assert_eq!(report(true), [1]);
         assert!(report(false).is_empty());
         clear();
     }
@@ -311,35 +311,35 @@ mod tests {
     #[test]
     fn a_released_reset_holds_until_an_outer_rollback() {
         clear();
-        push("1");
+        push(1);
         let outer = mark();
         let inner = mark();
-        assert_eq!(report(true), ["1"]);
+        assert_eq!(report(true), [1]);
         release(inner);
         assert!(report(false).is_empty());
         rollback(outer);
-        assert_eq!(report(false), ["1"]);
+        assert_eq!(report(false), [1]);
         clear();
     }
 
     #[test]
     fn reported_entries_are_dropped_once_no_subtransaction_is_open() {
         clear();
-        push("1");
+        push(1);
         let m = mark();
         report(true);
         release(m);
-        push("2");
-        assert_eq!(report(true), ["2"]);
+        push(2);
+        assert_eq!(report(true), [2]);
         JOURNAL.with(|j| assert!(j.borrow().entries.is_empty()));
         clear();
     }
 
-    fn with_id(entity: &str, pk: &str, id: Option<&str>, change: Change) -> Recorded {
+    fn with_id(entity: &str, pk: i64, id: Option<&str>, change: Change) -> Recorded {
         Recorded {
             entity: entity.to_string(),
             typename: entity.to_uppercase().into(),
-            pk: pk.to_string(),
+            pk,
             id: id.map(|text| crate::catalog::RowId {
                 text: text.to_string(),
                 kind: crate::catalog::PublicId::String,
@@ -349,18 +349,18 @@ mod tests {
         }
     }
 
-    fn e(entity: &str, pk: &str, c: Change) -> Recorded {
+    fn e(entity: &str, pk: i64, c: Change) -> Recorded {
         with_id(entity, pk, None, c)
     }
 
-    fn net(entries: &[Recorded]) -> Vec<(String, String, Change)> {
+    fn net(entries: &[Recorded]) -> Vec<(String, i64, Change)> {
         net_changes(entries)
             .into_iter()
             .map(|n| (n.entity, n.pk, n.change))
             .collect()
     }
 
-    fn ids(entries: &[Recorded]) -> Vec<(String, Option<String>, Change)> {
+    fn ids(entries: &[Recorded]) -> Vec<(i64, Option<String>, Change)> {
         net_changes(entries)
             .into_iter()
             .map(|n| (n.pk, n.id.map(|id| id.text), n.change))
@@ -370,23 +370,23 @@ mod tests {
     #[test]
     fn the_net_change_keeps_the_last_id_and_the_type_name() {
         let got = net_changes(&[
-            with_id("post", "1", Some("a"), Change::Inserted),
-            with_id("post", "1", Some("b"), Change::Updated),
-            with_id("post", "2", Some("c"), Change::Updated),
-            with_id("post", "2", None, Change::Updated),
+            with_id("post", 1, Some("a"), Change::Inserted),
+            with_id("post", 1, Some("b"), Change::Updated),
+            with_id("post", 2, Some("c"), Change::Updated),
+            with_id("post", 2, None, Change::Updated),
         ]);
         assert_eq!(
             got.iter()
                 .map(|n| (
-                    n.pk.as_str(),
+                    n.pk,
                     n.id.as_ref().map(|id| id.text.as_str()),
                     n.change,
                     &*n.typename
                 ))
                 .collect::<Vec<_>>(),
             [
-                ("1", Some("b"), Change::Inserted, "POST"),
-                ("2", Some("c"), Change::Updated, "POST")
+                (1, Some("b"), Change::Inserted, "POST"),
+                (2, Some("c"), Change::Updated, "POST")
             ]
         );
     }
@@ -395,25 +395,25 @@ mod tests {
     fn a_delete_after_an_update_keeps_the_deletes_id() {
         assert_eq!(
             ids(&[
-                with_id("post", "1", Some("old"), Change::Updated),
-                with_id("post", "1", Some("gone"), Change::Deleted),
+                with_id("post", 1, Some("old"), Change::Updated),
+                with_id("post", 1, Some("gone"), Change::Deleted),
             ]),
-            [("1".to_string(), Some("gone".to_string()), Change::Deleted)]
+            [(1, Some("gone".to_string()), Change::Deleted)]
         );
     }
 
     #[test]
     fn keeps_first_seen_order_and_folds_repeats() {
         let got = net(&[
-            e("post", "2", Change::Updated),
-            e("user", "1", Change::Updated),
-            e("post", "2", Change::Updated),
+            e("post", 2, Change::Updated),
+            e("user", 1, Change::Updated),
+            e("post", 2, Change::Updated),
         ]);
         assert_eq!(
             got,
             [
-                ("post".to_string(), "2".to_string(), Change::Updated),
-                ("user".to_string(), "1".to_string(), Change::Updated)
+                ("post".to_string(), 2, Change::Updated),
+                ("user".to_string(), 1, Change::Updated)
             ]
         );
     }
@@ -421,32 +421,26 @@ mod tests {
     #[test]
     fn insert_then_delete_cancels_and_delete_then_insert_is_update() {
         let got = net(&[
-            e("post", "1", Change::Inserted),
-            e("post", "1", Change::Updated),
-            e("post", "1", Change::Deleted),
-            e("post", "2", Change::Deleted),
-            e("post", "2", Change::Inserted),
-            e("post", "3", Change::Inserted),
-            e("post", "3", Change::Updated),
+            e("post", 1, Change::Inserted),
+            e("post", 1, Change::Updated),
+            e("post", 1, Change::Deleted),
+            e("post", 2, Change::Deleted),
+            e("post", 2, Change::Inserted),
+            e("post", 3, Change::Inserted),
+            e("post", 3, Change::Updated),
         ]);
         assert_eq!(
             got,
             [
-                ("post".to_string(), "2".to_string(), Change::Updated),
-                ("post".to_string(), "3".to_string(), Change::Inserted)
+                ("post".to_string(), 2, Change::Updated),
+                ("post".to_string(), 3, Change::Inserted)
             ]
         );
     }
 
     #[test]
     fn update_then_delete_is_delete() {
-        let got = net(&[
-            e("post", "1", Change::Updated),
-            e("post", "1", Change::Deleted),
-        ]);
-        assert_eq!(
-            got,
-            [("post".to_string(), "1".to_string(), Change::Deleted)]
-        );
+        let got = net(&[e("post", 1, Change::Updated), e("post", 1, Change::Deleted)]);
+        assert_eq!(got, [("post".to_string(), 1, Change::Deleted)]);
     }
 }

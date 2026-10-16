@@ -80,7 +80,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
-         RETURNING t.{qi_pk}::text, {}",
+         RETURNING t.{qi_pk}::pg_catalog.int8, {}",
         super::key_cast(&key_type, "$2", true),
         meta.returned("t", false)
     );
