@@ -1,7 +1,7 @@
 -- Fixture TVIEWs for the upgrade checks (test/upgrade/upgrade_check.sh). Created with
 -- the PREVIOUS release, so only use what every supported release offers: unqualified
--- pg_tviews_create / pg_tviews_create_aggregate on a search_path that reaches them
--- (schema tviews since 0.1.0-beta.20, public before).
+-- pg_tviews_create on a search_path that reaches it (schema tviews since
+-- 0.1.0-beta.20, public before), and what changed between releases under a version test.
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -87,13 +87,26 @@ SELECT pg_tviews_create('tv_comment', $$
     FROM tb_comment c
     JOIN tb_post p ON p.pk_post = c.fk_post
     JOIN tb_user u ON u.pk_user = p.fk_user $$);
--- Aggregate.
+-- Aggregate: pg_tviews_create() with the group_keys option from 0.1.0-beta.28, which
+-- removed pg_tviews_create_aggregate().
+SELECT COALESCE(NULLIF(pg_catalog.split_part(extversion, 'beta.', 2), '')::int >= 28, false)
+       AS group_keys_option
+FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews' \gset
+\if :group_keys_option
+SELECT pg_tviews_create('tv_user_orders', $$
+    SELECT o.fk_user AS pk_user_orders, u.id,
+           jsonb_build_object('orders', count(*), 'total', sum(o.total)) AS data
+    FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
+    GROUP BY o.fk_user, u.id
+$$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
+\else
 SELECT pg_tviews_create_aggregate('tv_user_orders', $$
     SELECT o.fk_user AS pk_user_orders, u.id,
            jsonb_build_object('orders', count(*), 'total', sum(o.total)) AS data
     FROM tb_order o JOIN tb_user u ON u.pk_user = o.fk_user
     GROUP BY o.fk_user, u.id
 $$, '{"tb_order": "fk_user", "tb_user": "pk_user"}');
+\endif
 -- DISTINCT ON TVIEWs, from 0.1.0-beta.22 (which maps tables read through their
 -- joins, #164) on.
 SELECT COALESCE(NULLIF(pg_catalog.split_part(extversion, 'beta.', 2), '')::int >= 22, false)
