@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.30] - 2026-10-16
+
 ### Added
 
 - **`tviews.registry.references`** (read contract 2, appended): the relationships a
@@ -84,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
+- From 0.1.0-beta.27, the previous release: 0.1.0-beta.28 and 0.1.0-beta.29 were not
+  released on their own, and their changes ship here. Read their upgrade notes below
+  too. One `ALTER EXTENSION pg_tviews UPDATE` runs the three scripts in order; then
+  run `SELECT * FROM tviews.pg_tviews_reregister_all();` once.
 - `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW (plan version 2), appends
   `tviews.registry.references` and creates the index of each reference column not
   indexed yet. An `fk_*` column has had its index since its TVIEW was created; a
@@ -92,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Listeners of `tviews_changes` see `v: 2`: read `c`, or keep evicting everything on an
   unknown version.
 
-## [0.1.0-beta.29] - not yet released
+## [0.1.0-beta.29] - not released separately (shipped in 0.1.0-beta.30)
 
 ### Added
 
@@ -192,7 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its groups. A batch whose keys all produced a row deletes nothing and runs no
   delete.
 
-## [0.1.0-beta.28] - not yet released
+## [0.1.0-beta.28] - not released separately (shipped in 0.1.0-beta.30)
 
 ### Changed (breaking)
 
