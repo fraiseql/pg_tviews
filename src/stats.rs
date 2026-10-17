@@ -6,13 +6,16 @@
 //! of TVIEWs for the whole cluster, keyed by database and table; a TVIEW that
 //! finds it full is untracked, and the view says so. Counters start over at a
 //! restart, a reset, and a rebuild (a new table).
+//!
+//! The same table counts, for the whole cluster, the transactions committed
+//! without publishing their changes ([`feed_gaps`]): only a restart starts it over.
 
 use pgrx::pg_guard;
 use pgrx::pg_sys::{self, Oid};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 /// TVIEWs the cluster tracks (a power of two).
 const CAPACITY: usize = 4096;
@@ -70,6 +73,9 @@ pub struct Table {
     slots: [Slot; CAPACITY],
     /// A TVIEW found the table full since the last reset.
     overflowed: bool,
+    /// Transactions committed unpublished since the server started (#247),
+    /// atomic: bumped and read without the lock.
+    feed_gaps: AtomicU64,
 }
 
 impl Table {
@@ -377,6 +383,40 @@ pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
         }
     }
     Ok(())
+}
+
+/// The shared gap counter, once the startup hook found the table.
+fn gaps() -> Option<&'static AtomicU64> {
+    let table = TABLE.load(Ordering::Acquire);
+    // SAFETY: the shared table, set up by the startup hook and never freed; the
+    // counter is atomic, so no lock is needed to read or bump it.
+    (!table.is_null()).then(|| unsafe { &(*table).feed_gaps })
+}
+
+/// Count a transaction committed without publishing its changes (#247). Runs in
+/// the transaction callback at `COMMIT`, once the transaction is visible: a
+/// listener that evicts when the counter moves never reads its rows stale
+/// afterwards. No SPI, no lock, nothing that can fail.
+pub fn add_feed_gap() {
+    if let Some(gaps) = gaps() {
+        gaps.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// The transactions the cluster committed without publishing their changes since
+/// the server started: a listener that sees it move missed some.
+///
+/// # Errors
+/// [`crate::TViewError::WrongState`] when the library was not preloaded: a
+/// listener must not read "none" where nothing is counted.
+pub fn feed_gaps() -> crate::TViewResult<u64> {
+    gaps()
+        .map(|gaps| gaps.load(Ordering::Acquire))
+        .ok_or_else(|| crate::TViewError::WrongState {
+            reason: "pg_tviews_feed_gaps() needs the library preloaded: \
+                     shared_preload_libraries = 'pg_tviews', then restart"
+                .to_string(),
+        })
 }
 
 /// When counters without a slot started: at the server's start, since a reset

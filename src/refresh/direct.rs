@@ -184,7 +184,7 @@ pub fn apply_fanout_patch(
         .map(|(pk, (id, references))| {
             crate::queue::affected::record(crate::queue::affected::Recorded::of(
                 meta,
-                pk.to_string(),
+                pk,
                 id,
                 crate::queue::affected::Change::Updated,
                 &references,
@@ -323,7 +323,7 @@ pub fn apply_entity_patches(
             for (pk, _, (id, references)) in materialised.into_iter().filter(|&(_, c, _)| c) {
                 crate::queue::affected::record(crate::queue::affected::Recorded::of(
                     meta,
-                    pk.to_string(),
+                    pk,
                     id,
                     crate::queue::affected::Change::Updated,
                     &references,

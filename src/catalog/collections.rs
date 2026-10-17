@@ -46,9 +46,9 @@ pub struct ParentRef {
     pub id: Option<String>,
 }
 
-/// The reference keys a row held before a write, by `pk_<entity>` as text, read
-/// when the rows were locked ([`TviewMeta::reference_keys`]).
-pub type OldKeys = std::collections::HashMap<String, Vec<Option<String>>>;
+/// The reference keys a row held before a write, by `pk_<entity>`, read when the
+/// rows were locked ([`TviewMeta::reference_keys`]).
+pub type OldKeys = std::collections::HashMap<i64, Vec<Option<String>>>;
 
 /// SQL over the catalog row of [`super::meta_select`]: the TVIEW's collections, a
 /// `jsonb` array of `[column, parent table, parent oid, parent column, its type,

@@ -278,7 +278,8 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "catalog_lookups": stats.catalog_lookups,
         "plans_prepared": stats.plans_prepared,
         "propagation_pruned": stats.propagation_pruned,
-        "publish_skipped": crate::publish::skipped()
+        "publish_skipped": crate::publish::skipped(),
+        "feed_gaps": crate::stats::feed_gaps().ok()
     });
 
     json_value

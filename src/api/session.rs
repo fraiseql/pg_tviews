@@ -60,6 +60,16 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
     pgrx::JsonB(crate::health::queue_stats())
 }
 
+/// The transactions the cluster committed without publishing their changes on
+/// the change feed (the NOTIFY queue being nearly full), since the server
+/// started (#247). A listener reads it when it connects and on each heartbeat,
+/// and evicts everything when it moved.
+#[pg_extern]
+fn pg_tviews_feed_gaps() -> Result<i64, ErrorReport> {
+    let gaps = crate::stats::feed_gaps()?;
+    Ok(i64::try_from(gaps).unwrap_or(i64::MAX))
+}
+
 /// The transaction's refresh queue (debugging).
 #[pg_extern]
 fn pg_tviews_debug_queue() -> pgrx::JsonB {

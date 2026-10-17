@@ -39,6 +39,8 @@ const QUEUE_USAGE_LIMIT: f64 = 0.9;
 thread_local! {
     /// The transactions this session committed unpublished (`publish_skipped`).
     static SKIPPED: Cell<u64> = const { Cell::new(0) };
+    /// The committing transaction skipped publishing: [`at_commit`] counts it.
+    static GAP: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The transactions this session committed without publishing their changes,
@@ -63,6 +65,7 @@ pub fn at_pre_commit() {
             .unwrap_or(0.0);
     if usage > QUEUE_USAGE_LIMIT {
         SKIPPED.set(SKIPPED.get() + 1);
+        GAP.set(true);
         warning!(
             "pg_tviews: the NOTIFY queue is {:.0}% full: this transaction's TVIEW changes are \
              not published on {}. A listener is not reading: see pg_notification_queue_usage() \
@@ -84,6 +87,20 @@ pub fn at_pre_commit() {
             );
         }
     }
+}
+
+/// The transaction committed: if it skipped publishing, count the gap for every
+/// listener ([`crate::stats::add_feed_gap`]). Counted now, not at `PRE_COMMIT`:
+/// a listener evicting on the counter must find the transaction's rows visible.
+pub fn at_commit() {
+    if GAP.replace(false) {
+        crate::stats::add_feed_gap();
+    }
+}
+
+/// The transaction ended without committing: no gap.
+pub fn forget_gap() {
+    GAP.set(false);
 }
 
 /// Refuse to prepare a transaction with changes to publish (ADR 0231): PostgreSQL

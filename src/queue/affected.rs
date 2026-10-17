@@ -34,8 +34,8 @@ pub struct Recorded {
     pub entity: String,
     /// The GraphQL type name of the row ([`crate::catalog::typename`]).
     pub typename: std::rc::Rc<str>,
-    /// `pk_<entity>`, as text.
-    pub pk: String,
+    /// `pk_<entity>`.
+    pub pk: i64,
     /// The row's public `id`; `None` for a TVIEW without an `id` column.
     pub id: Option<crate::catalog::RowId>,
     pub change: Change,
@@ -45,6 +45,9 @@ pub struct Recorded {
         std::rc::Rc<crate::catalog::Collection>,
         crate::catalog::collections::ParentRef,
     )>,
+    /// Whether the write captured `parents` for the change feed
+    /// (`pg_tviews.publish_changes = 'rows'` when it ran).
+    pub captured: bool,
 }
 
 impl Recorded {
@@ -54,7 +57,7 @@ impl Recorded {
     #[must_use]
     pub fn of(
         meta: &crate::catalog::TviewMeta,
-        pk: String,
+        pk: i64,
         id: Option<String>,
         change: Change,
         references: &[Option<String>],
@@ -67,6 +70,7 @@ impl Recorded {
             id: id.map(|text| meta.row_id(text)),
             change,
             parents: meta.parents(references, old),
+            captured: crate::config::publish_changes() == Some(super::published::Publish::Rows),
         }
     }
 }
@@ -114,7 +118,7 @@ thread_local! {
     static JOURNAL: RefCell<Journal> = RefCell::new(Journal::default());
     /// Rows changed during the current flush, uncapped: propagation reads it to
     /// skip parents of rows whose refresh changed nothing.
-    static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, String)>> =
+    static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, i64)>> =
         RefCell::new(std::collections::HashSet::new());
 }
 
@@ -125,7 +129,7 @@ pub fn begin_flush() {
 
 /// Whether `entity`'s row `pk` was inserted, updated or deleted in this flush.
 pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
-    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk.to_string())))
+    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
 }
 
 /// Record that a refresh write changed a TVIEW row.
@@ -137,7 +141,7 @@ pub fn record(recorded: Recorded) {
     crate::stats::add(&recorded.entity, counter, 1);
     FLUSH_CHANGED.with(|c| {
         c.borrow_mut()
-            .insert((recorded.entity.clone(), recorded.pk.clone()))
+            .insert((recorded.entity.clone(), recorded.pk))
     });
     if let Some(publish) = crate::config::publish_changes() {
         super::published::add(publish, &recorded);
@@ -216,20 +220,64 @@ pub fn clear() {
     JOURNAL.with(|j| *j.borrow_mut() = Journal::default());
 }
 
-/// The net change per unreported row, in order of each row's first entry, and the
-/// entities whose changes overflowed the cap. With `reset` they count as reported.
-pub fn summarize(reset: bool) -> (Vec<NetChange>, BTreeSet<String>) {
+/// What a report reads of the journal: the unreported entries, folded.
+#[derive(Debug, Default)]
+pub struct Summary {
+    /// The net change per row, in order of each row's first entry.
+    pub changes: Vec<NetChange>,
+    /// The entities whose changes overflowed the cap.
+    pub overflow: BTreeSet<String>,
+    /// Every parent the entries named, before and after each write, once per
+    /// collection: a row written twice can have left two. `None` unless every
+    /// entry captured its parents (an empty journal: unless `capturing`).
+    pub parents: Option<
+        Vec<(
+            std::rc::Rc<crate::catalog::Collection>,
+            crate::catalog::collections::ParentRef,
+        )>,
+    >,
+}
+
+/// The unreported entries, folded ([`Summary`]); their parents only when
+/// `capturing` (the current transaction captures them for the change feed). With
+/// `reset` they count as reported.
+pub fn summarize(reset: bool, capturing: bool) -> Summary {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        let net = net_changes(&j.entries[j.reported - j.base..]);
-        let overflow = j.overflow.clone();
+        let entries = &j.entries[j.reported - j.base..];
+        let captured = if entries.is_empty() {
+            capturing
+        } else {
+            entries.iter().all(|e| e.captured)
+        };
+        let summary = Summary {
+            changes: net_changes(entries),
+            overflow: j.overflow.clone(),
+            parents: captured.then(|| parents(entries)),
+        };
         if reset {
             j.reported = j.base + j.entries.len();
             j.overflow.clear();
             j.compact();
         }
-        (net, overflow)
+        summary
     })
+}
+
+/// The parents `entries` name, once per `(collection, key)`, in order first named.
+fn parents(
+    entries: &[Recorded],
+) -> Vec<(
+    std::rc::Rc<crate::catalog::Collection>,
+    crate::catalog::collections::ParentRef,
+)> {
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .iter()
+        .flat_map(|e| e.parents.iter())
+        .filter(|(c, parent)| seen.insert((std::rc::Rc::clone(&c.key), parent.key.clone())))
+        .cloned()
+        .collect()
 }
 
 /// A row's net change once `next` follows `prev` (`None`: no change so far, or
@@ -249,10 +297,10 @@ pub const fn fold_change(prev: Option<Change>, next: Change) -> Option<Change> {
 /// Fold journal entries into one net change per `(entity, pk)`, carrying the last
 /// id seen for the row ([`fold_change`]).
 pub fn net_changes(entries: &[Recorded]) -> Vec<NetChange> {
-    let mut order: Vec<(String, String)> = Vec::new();
-    let mut state: HashMap<(String, String), (Option<Change>, &Recorded)> = HashMap::new();
+    let mut order: Vec<(String, i64)> = Vec::new();
+    let mut state: HashMap<(String, i64), (Option<Change>, &Recorded)> = HashMap::new();
     for entry in entries {
-        let key = (entry.entity.clone(), entry.pk.clone());
+        let key = (entry.entity.clone(), entry.pk);
         let prev = if let Some((prev, _)) = state.get(&key) {
             *prev
         } else {
@@ -285,25 +333,29 @@ mod tests {
     };
 
     /// Journal a change without `record`, which reads a GUC.
-    fn push(pk: &str) {
+    fn push(pk: i64) {
         JOURNAL.with(|j| {
             j.borrow_mut().entries.push(e("user", pk, Change::Updated));
         });
     }
 
-    fn report(reset: bool) -> Vec<String> {
-        summarize(reset).0.into_iter().map(|n| n.pk).collect()
+    fn report(reset: bool) -> Vec<i64> {
+        summarize(reset, false)
+            .changes
+            .into_iter()
+            .map(|n| n.pk)
+            .collect()
     }
 
     #[test]
     fn a_rolled_back_reset_is_undone() {
         clear();
-        push("1");
+        push(1);
         let m = mark();
-        assert_eq!(report(true), ["1"]);
-        push("2");
+        assert_eq!(report(true), [1]);
+        push(2);
         rollback(m);
-        assert_eq!(report(true), ["1"]);
+        assert_eq!(report(true), [1]);
         assert!(report(false).is_empty());
         clear();
     }
@@ -311,56 +363,57 @@ mod tests {
     #[test]
     fn a_released_reset_holds_until_an_outer_rollback() {
         clear();
-        push("1");
+        push(1);
         let outer = mark();
         let inner = mark();
-        assert_eq!(report(true), ["1"]);
+        assert_eq!(report(true), [1]);
         release(inner);
         assert!(report(false).is_empty());
         rollback(outer);
-        assert_eq!(report(false), ["1"]);
+        assert_eq!(report(false), [1]);
         clear();
     }
 
     #[test]
     fn reported_entries_are_dropped_once_no_subtransaction_is_open() {
         clear();
-        push("1");
+        push(1);
         let m = mark();
         report(true);
         release(m);
-        push("2");
-        assert_eq!(report(true), ["2"]);
+        push(2);
+        assert_eq!(report(true), [2]);
         JOURNAL.with(|j| assert!(j.borrow().entries.is_empty()));
         clear();
     }
 
-    fn with_id(entity: &str, pk: &str, id: Option<&str>, change: Change) -> Recorded {
+    fn with_id(entity: &str, pk: i64, id: Option<&str>, change: Change) -> Recorded {
         Recorded {
             entity: entity.to_string(),
             typename: entity.to_uppercase().into(),
-            pk: pk.to_string(),
+            pk,
             id: id.map(|text| crate::catalog::RowId {
                 text: text.to_string(),
                 kind: crate::catalog::PublicId::String,
             }),
             change,
             parents: Vec::new(),
+            captured: true,
         }
     }
 
-    fn e(entity: &str, pk: &str, c: Change) -> Recorded {
+    fn e(entity: &str, pk: i64, c: Change) -> Recorded {
         with_id(entity, pk, None, c)
     }
 
-    fn net(entries: &[Recorded]) -> Vec<(String, String, Change)> {
+    fn net(entries: &[Recorded]) -> Vec<(String, i64, Change)> {
         net_changes(entries)
             .into_iter()
             .map(|n| (n.entity, n.pk, n.change))
             .collect()
     }
 
-    fn ids(entries: &[Recorded]) -> Vec<(String, Option<String>, Change)> {
+    fn ids(entries: &[Recorded]) -> Vec<(i64, Option<String>, Change)> {
         net_changes(entries)
             .into_iter()
             .map(|n| (n.pk, n.id.map(|id| id.text), n.change))
@@ -370,23 +423,23 @@ mod tests {
     #[test]
     fn the_net_change_keeps_the_last_id_and_the_type_name() {
         let got = net_changes(&[
-            with_id("post", "1", Some("a"), Change::Inserted),
-            with_id("post", "1", Some("b"), Change::Updated),
-            with_id("post", "2", Some("c"), Change::Updated),
-            with_id("post", "2", None, Change::Updated),
+            with_id("post", 1, Some("a"), Change::Inserted),
+            with_id("post", 1, Some("b"), Change::Updated),
+            with_id("post", 2, Some("c"), Change::Updated),
+            with_id("post", 2, None, Change::Updated),
         ]);
         assert_eq!(
             got.iter()
                 .map(|n| (
-                    n.pk.as_str(),
+                    n.pk,
                     n.id.as_ref().map(|id| id.text.as_str()),
                     n.change,
                     &*n.typename
                 ))
                 .collect::<Vec<_>>(),
             [
-                ("1", Some("b"), Change::Inserted, "POST"),
-                ("2", Some("c"), Change::Updated, "POST")
+                (1, Some("b"), Change::Inserted, "POST"),
+                (2, Some("c"), Change::Updated, "POST")
             ]
         );
     }
@@ -395,25 +448,25 @@ mod tests {
     fn a_delete_after_an_update_keeps_the_deletes_id() {
         assert_eq!(
             ids(&[
-                with_id("post", "1", Some("old"), Change::Updated),
-                with_id("post", "1", Some("gone"), Change::Deleted),
+                with_id("post", 1, Some("old"), Change::Updated),
+                with_id("post", 1, Some("gone"), Change::Deleted),
             ]),
-            [("1".to_string(), Some("gone".to_string()), Change::Deleted)]
+            [(1, Some("gone".to_string()), Change::Deleted)]
         );
     }
 
     #[test]
     fn keeps_first_seen_order_and_folds_repeats() {
         let got = net(&[
-            e("post", "2", Change::Updated),
-            e("user", "1", Change::Updated),
-            e("post", "2", Change::Updated),
+            e("post", 2, Change::Updated),
+            e("user", 1, Change::Updated),
+            e("post", 2, Change::Updated),
         ]);
         assert_eq!(
             got,
             [
-                ("post".to_string(), "2".to_string(), Change::Updated),
-                ("user".to_string(), "1".to_string(), Change::Updated)
+                ("post".to_string(), 2, Change::Updated),
+                ("user".to_string(), 1, Change::Updated)
             ]
         );
     }
@@ -421,32 +474,73 @@ mod tests {
     #[test]
     fn insert_then_delete_cancels_and_delete_then_insert_is_update() {
         let got = net(&[
-            e("post", "1", Change::Inserted),
-            e("post", "1", Change::Updated),
-            e("post", "1", Change::Deleted),
-            e("post", "2", Change::Deleted),
-            e("post", "2", Change::Inserted),
-            e("post", "3", Change::Inserted),
-            e("post", "3", Change::Updated),
+            e("post", 1, Change::Inserted),
+            e("post", 1, Change::Updated),
+            e("post", 1, Change::Deleted),
+            e("post", 2, Change::Deleted),
+            e("post", 2, Change::Inserted),
+            e("post", 3, Change::Inserted),
+            e("post", 3, Change::Updated),
         ]);
         assert_eq!(
             got,
             [
-                ("post".to_string(), "2".to_string(), Change::Updated),
-                ("post".to_string(), "3".to_string(), Change::Inserted)
+                ("post".to_string(), 2, Change::Updated),
+                ("post".to_string(), 3, Change::Inserted)
             ]
         );
     }
 
     #[test]
     fn update_then_delete_is_delete() {
-        let got = net(&[
-            e("post", "1", Change::Updated),
-            e("post", "1", Change::Deleted),
-        ]);
-        assert_eq!(
-            got,
-            [("post".to_string(), "1".to_string(), Change::Deleted)]
-        );
+        let got = net(&[e("post", 1, Change::Updated), e("post", 1, Change::Deleted)]);
+        assert_eq!(got, [("post".to_string(), 1, Change::Deleted)]);
+    }
+
+    #[test]
+    fn a_row_written_twice_names_every_parent_it_left_or_joined() {
+        let post: std::rc::Rc<crate::catalog::Collection> =
+            std::rc::Rc::new(crate::catalog::Collection {
+                key: "Comment.fk_post".into(),
+                child_type: "Comment".into(),
+                column: "fk_post".to_string(),
+                parent_table: "public.tv_post".to_string(),
+                parent_table_oid: pgrx::pg_sys::Oid::from(1),
+                parent_column: "pk_post".to_string(),
+                parent_type: "integer".to_string(),
+                parent_id: Some(crate::catalog::PublicId::String),
+                parent_typename: "Post".into(),
+                parent_keyed_by_pk: true,
+            });
+        let moved = |to: &str, from: &str| {
+            let mut r = e("comment", 1, Change::Updated);
+            r.parents = [to, from]
+                .iter()
+                .map(|key| {
+                    (
+                        std::rc::Rc::clone(&post),
+                        crate::catalog::collections::ParentRef {
+                            key: (*key).to_string(),
+                            id: None,
+                        },
+                    )
+                })
+                .collect();
+            r
+        };
+        clear();
+        JOURNAL.with(|j| {
+            j.borrow_mut()
+                .entries
+                .extend([moved("3", "2"), moved("1", "3")]);
+        });
+        let keys: Vec<String> = summarize(true, true)
+            .parents
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, parent)| parent.key)
+            .collect();
+        assert_eq!(keys, ["3", "2", "1"]);
+        clear();
     }
 }

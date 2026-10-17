@@ -189,7 +189,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 8';
+    AS 'SELECT 9';
     ",
     name = "create_metadata_tables",
 );
@@ -248,7 +248,9 @@ COMMENT ON FUNCTION @extschema@.contract_version() IS
 
 -- The references of each TVIEW (plan version 2) that name another registered
 -- TVIEW: the referenced column is the source of that TVIEW's identity, a column of
--- its root table. Resolved live, so a parent registered after its child is found.
+-- its root table. Resolved live, so a parent registered after its child is found,
+-- and by name through pg_class: a writer without USAGE on that table's schema
+-- loads every TVIEW's references (#251).
 -- One row per reference and parent. Of two TVIEWs named by one key, `chosen` marks
 -- the parent: the one whose identity column has the referenced column's name
 -- (`preferred`; a parent without an identity never wins), else the first by entity.
@@ -288,9 +290,12 @@ FROM (SELECT m.entity,
         ON NOT COALESCE((p.plan->>'set_operation')::boolean, false)
        AND EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(p.plan->'paths') pp
                    WHERE COALESCE((pp->>'root')::boolean, false)
-                     AND (pp->>'source_oid')::pg_catalog.oid
-                         = pg_catalog.to_regclass(r.value->>'table')::pg_catalog.oid
-                     AND pp->>'initial_col' = r.value->>'key')) x;
+                     AND pp->>'initial_col' = r.value->>'key'
+                     AND EXISTS (SELECT 1 FROM pg_catalog.pg_class sc
+                                 JOIN pg_catalog.pg_namespace sn ON sn.oid = sc.relnamespace
+                                 WHERE sc.oid = (pp->>'source_oid')::pg_catalog.oid
+                                   AND pg_catalog.format('%I.%I', sn.nspname, sc.relname)
+                                       = r.value->>'table'))) x;
 
 COMMENT ON VIEW @extschema@.pg_tview_references IS
 'Internal: the references tviews.registry publishes; may change in any release';

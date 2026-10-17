@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pg_tviews_flush_and_report()` reports `collections`** (#244): with
+  `pg_tviews.publish_changes = 'rows'`, the parents whose composed child lists the
+  reported rows left or joined, as the change feed's `c` names them:
+  `"collections": {"Comment.fk_post": [<post id>, …]}`. A layer that runs the write
+  evicts exactly those composed results inside the transaction, instead of every result
+  composing the child type. `reset`, `types` (by child type) and savepoints apply as to
+  rows; an unlistable parent puts its child type in `invalidated_types`, which then
+  stands for all that type's collections. Rows written without `rows` captured nothing:
+  the key is absent.
+
+- **`tviews.pg_tviews_feed_gaps()`** (#247): the transactions the cluster committed
+  without publishing their changes (NOTIFY queue over 90 % full) since the server
+  started, readable by any session, and `feed_gaps` in `pg_tviews_queue_stats()`. A
+  listener that stays connected reads it on its heartbeat and evicts everything when it
+  moved: before, only a reconnect told a cache it had missed transactions. Needs the
+  library preloaded (`55000` otherwise).
+
+### Changed
+
+- The refresh journal carries `pk_<entity>` as an integer from the write to every reader
+  (#246): no text round trip in the report or the change feed. No SQL surface change.
+
+### Fixed
+
+- A write no longer needs `USAGE` on the schema of every TVIEW with a reference (#251).
+  Each write loads every TVIEW's references, and `tviews.pg_tview_references` resolved
+  their tables with `to_regclass`, which checks the schema: a role without `USAGE` on
+  another TVIEW's schema got `permission denied for schema` and its write rolled back,
+  since 0.1.0-beta.30. The tables are now matched by name through `pg_class`. Catalog
+  revision 9: run `ALTER EXTENSION pg_tviews UPDATE`.
+
 ## [0.1.0-beta.30] - 2026-10-16
 
 ### Added

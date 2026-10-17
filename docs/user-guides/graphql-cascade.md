@@ -107,6 +107,21 @@ tviews.pg_tviews_flush_and_report(
   `'{}'` reports nothing and omits every changed type. A name no TVIEW has fails with
   `22023`, before anything is reported or reset. `types` filters the report only, never
   the [change feed](change-feed.md): a cache elsewhere needs every change.
+- **Collections**: when the rows were written with `pg_tviews.publish_changes = 'rows'`,
+  the report also carries `collections`, the parents whose composed child lists the
+  reported rows changed, as
+  the [change feed](change-feed.md#collection-keys) names them in `c`:
+  `"collections": {"Comment.fk_post": [<post id>, …]}`. A comment inserted into post P,
+  moved from P to Q, edited or deleted names P (and Q), so a layer that ran the write
+  evicts exactly the cached results composing those lists. Every parent each row named
+  since the last reset is listed once, before and after each write, ids in text order;
+  `types` filters by the child type; `reset` and savepoints apply as to rows. A
+  collection whose parents cannot be listed (a parent TVIEW without an `id` column, past
+  the feed's byte budget) puts its child type in `invalidated_types` instead, and a type
+  there (rows left out past `max_entities` too) stands for all its collections, which
+  are then not listed. Rows written without `rows` captured nothing: the key is absent,
+  whatever the setting when the report runs. Absent means "not known", `{}` means
+  "none changed".
 - **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
   kept per transaction, not counting reported ones (kept only until the
   subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.

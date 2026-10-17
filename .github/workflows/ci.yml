@@ -156,6 +156,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
 
+      # A throwaway preloaded cluster with a tiny NOTIFY queue: a listener idle in a
+      # transaction fills it, writes commit unpublished, pg_tviews_feed_gaps() counts
+      # them for every session (#247).
+      - name: Feed gaps (test/feed_gaps/run.sh)
+        if: ${{ !cancelled() }}
+        run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/feed_gaps/run.sh
+
       # A throwaway preloaded cluster: after a crash restart the rebuild launcher
       # refills the reset UNLOGGED TVIEWs of every database, unconfigured (#215).
       - name: Crash refill (test/replication/crash_refill.sh)

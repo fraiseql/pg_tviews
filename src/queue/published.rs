@@ -50,7 +50,7 @@ struct Entry {
     /// The row's id as JSON text.
     id: String,
     /// Its `pk_<entity>`: a child naming it as a parent finds its id here.
-    pk: String,
+    pk: i64,
     change: Change,
 }
 
@@ -117,7 +117,7 @@ pub fn add(publish: Publish, recorded: &Recorded) {
                 set.entries.push(Entry {
                     typename: Rc::clone(&recorded.typename),
                     id,
-                    pk: recorded.pk.clone(),
+                    pk: recorded.pk,
                     change: recorded.change,
                 });
             }
@@ -218,23 +218,26 @@ pub fn resolve() -> crate::TViewResult<()> {
 
 /// The public ids, as JSON text, of the rows the transaction published, by
 /// `(type, pk_<entity>)`.
-fn written_ids(set: &Set) -> HashMap<(&str, &str), &str> {
+fn written_ids(set: &Set) -> HashMap<(&str, i64), &str> {
     set.entries
         .iter()
-        .map(|e| ((&*e.typename, e.pk.as_str()), e.id.as_str()))
+        .map(|e| ((&*e.typename, e.pk), e.id.as_str()))
         .collect()
 }
 
-/// The id of parent `key` of `collection` among the rows the transaction wrote.
+/// The id of parent `key` of `collection` among the rows the transaction wrote:
+/// only a collection keyed by the parent's `pk_<entity>` can name one (any other
+/// reference value is not a journal key).
 fn own_id<'a>(
-    written: &HashMap<(&str, &str), &'a str>,
+    written: &HashMap<(&str, i64), &'a str>,
     collection: &crate::catalog::Collection,
     key: &str,
 ) -> Option<&'a str> {
     if !collection.parent_keyed_by_pk {
         return None;
     }
-    written.get(&(&*collection.parent_typename, key)).copied()
+    let pk = key.parse().ok()?;
+    written.get(&(&*collection.parent_typename, pk)).copied()
 }
 
 /// The public ids, as JSON text, of the parents of `lookups` by
@@ -330,6 +333,49 @@ fn settle(found: &dyn Fn(&crate::catalog::Collection, &str) -> Option<String>) {
         }
         set.resolved = set.members.len();
     });
+}
+
+/// How the change feed names a parent a written row named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listed {
+    /// By its public id, as JSON text.
+    Id(String),
+    /// Not at all: no row of the parent TVIEW holds the key.
+    Gone,
+    /// By the child type: the parent has no id column, did not fit the byte
+    /// budget, or was never resolved.
+    Unlisted,
+}
+
+/// How the feed names each of `parents`, the parents written rows named, as far
+/// as the last flush resolved them ([`resolve`]): the same capture, read before
+/// commit by `pg_tviews_flush_and_report()` (#244).
+pub fn listed(
+    parents: &[(
+        Rc<crate::catalog::Collection>,
+        crate::catalog::collections::ParentRef,
+    )],
+) -> Vec<Listed> {
+    SET.with_borrow(|set| {
+        let members: HashMap<(&str, &str), &Parent> = set
+            .members
+            .iter()
+            .map(|m| ((&*m.collection.key, m.key.as_str()), &m.parent))
+            .collect();
+        parents
+            .iter()
+            .map(|(collection, parent)| {
+                if set.types.contains(&collection.child_type) {
+                    return Listed::Unlisted;
+                }
+                match members.get(&(&*collection.key, parent.key.as_str())) {
+                    Some(Parent::Id(id)) => Listed::Id(id.clone()),
+                    Some(Parent::Gone) => Listed::Gone,
+                    Some(Parent::Key) | None => Listed::Unlisted,
+                }
+            })
+            .collect()
+    })
 }
 
 /// Publish `typename` by name: its rows changed without being listed (a rebuild).
@@ -463,11 +509,11 @@ fn fold(set: &Set) -> Folded<'_> {
 mod tests {
     use super::*;
 
-    fn r(typename: &str, pk: &str, id: Option<&str>, change: Change) -> Recorded {
+    fn r(typename: &str, pk: i64, id: Option<&str>, change: Change) -> Recorded {
         Recorded {
             entity: typename.to_lowercase(),
             typename: typename.into(),
-            pk: pk.to_string(),
+            pk,
             // Already JSON text: kept as is.
             id: id.map(|text| crate::catalog::RowId {
                 text: text.to_string(),
@@ -475,6 +521,7 @@ mod tests {
             }),
             change,
             parents: Vec::new(),
+            captured: true,
         }
     }
 
@@ -518,27 +565,27 @@ mod tests {
         clear();
         add(
             Publish::Rows,
-            &r("User", "1", Some("\"u1\""), Change::Updated),
+            &r("User", 1, Some("\"u1\""), Change::Updated),
         );
         add(
             Publish::Rows,
-            &r("Post", "1", Some("\"p1\""), Change::Inserted),
+            &r("Post", 1, Some("\"p1\""), Change::Inserted),
         );
         add(
             Publish::Rows,
-            &r("Post", "1", Some("\"p1\""), Change::Deleted),
+            &r("Post", 1, Some("\"p1\""), Change::Deleted),
         );
         add(
             Publish::Rows,
-            &r("Post", "2", Some("\"p2\""), Change::Deleted),
+            &r("Post", 2, Some("\"p2\""), Change::Deleted),
         );
         add(
             Publish::Rows,
-            &r("Post", "3", Some("\"p3\""), Change::Deleted),
+            &r("Post", 3, Some("\"p3\""), Change::Deleted),
         );
         add(
             Publish::Rows,
-            &r("Post", "3", Some("\"p3\""), Change::Inserted),
+            &r("Post", 3, Some("\"p3\""), Change::Inserted),
         );
         let (upserted, deleted, types) = snapshot();
         assert_eq!(
@@ -553,10 +600,10 @@ mod tests {
     #[test]
     fn a_row_without_id_publishes_its_type() {
         clear();
-        add(Publish::Rows, &r("Tag", "1", None, Change::Updated));
+        add(Publish::Rows, &r("Tag", 1, None, Change::Updated));
         add(
             Publish::Rows,
-            &r("User", "1", Some("\"u1\""), Change::Updated),
+            &r("User", 1, Some("\"u1\""), Change::Updated),
         );
         let (upserted, _, types) = snapshot();
         assert_eq!(types, ["Tag"]);
@@ -569,11 +616,11 @@ mod tests {
         clear();
         add(
             Publish::Types,
-            &r("User", "1", Some("\"u1\""), Change::Updated),
+            &r("User", 1, Some("\"u1\""), Change::Updated),
         );
         add(
             Publish::Types,
-            &r("Post", "1", Some("\"p1\""), Change::Deleted),
+            &r("Post", 1, Some("\"p1\""), Change::Deleted),
         );
         SET.with_borrow(|set| assert!(set.entries.is_empty()));
         assert_eq!(snapshot().2, ["Post", "User"]);
@@ -584,11 +631,8 @@ mod tests {
     fn past_the_byte_budget_a_type_is_kept_by_name() {
         clear();
         let id = format!("\"{}\"", "x".repeat(36));
-        for pk in 0..=KEPT_BYTES / id.len() {
-            add(
-                Publish::Rows,
-                &r("User", &pk.to_string(), Some(&id), Change::Updated),
-            );
+        for pk in 0..=i64::try_from(KEPT_BYTES / id.len()).expect("a small count") {
+            add(Publish::Rows, &r("User", pk, Some(&id), Change::Updated));
         }
         SET.with_borrow(|set| assert!(set.bytes <= KEPT_BYTES));
         let (upserted, _, types) = snapshot();
@@ -602,14 +646,14 @@ mod tests {
         clear();
         add(
             Publish::Rows,
-            &r("User", "1", Some("\"u1\""), Change::Updated),
+            &r("User", 1, Some("\"u1\""), Change::Updated),
         );
         let outer = mark();
-        add(Publish::Rows, &r("Tag", "1", None, Change::Updated));
+        add(Publish::Rows, &r("Tag", 1, None, Change::Updated));
         let inner = mark();
         add(
             Publish::Rows,
-            &r("Post", "1", Some("\"p1\""), Change::Inserted),
+            &r("Post", 1, Some("\"p1\""), Change::Inserted),
         );
         rollback(inner);
         let (upserted, _, types) = snapshot();
@@ -646,7 +690,7 @@ mod tests {
     /// A written child row naming `parents`, `(collection, key, id read by the
     /// write)`.
     fn child(
-        pk: &str,
+        pk: i64,
         change: Change,
         parents: &[(&std::rc::Rc<crate::catalog::Collection>, &str, Option<&str>)],
     ) -> Recorded {
@@ -697,13 +741,13 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Rows,
-            &child("1", Change::Inserted, &[(&post, "1", None)]),
+            &child(1, Change::Inserted, &[(&post, "1", None)]),
         );
         // Moved from post 1 to post 2: both.
         add(
             Publish::Rows,
             &child(
-                "2",
+                2,
                 Change::Updated,
                 &[(&post, "2", None), (&post, "1", None)],
             ),
@@ -726,7 +770,7 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Rows,
-            &child("1", Change::Deleted, &[(&post, "9", None)]),
+            &child(1, Change::Deleted, &[(&post, "9", None)]),
         );
         settle_posts();
         assert!(collections().is_empty());
@@ -734,7 +778,7 @@ mod tests {
         // Written outside a flush, never resolved: the child type by name.
         add(
             Publish::Rows,
-            &child("2", Change::Updated, &[(&post, "2", None)]),
+            &child(2, Change::Updated, &[(&post, "2", None)]),
         );
         assert!(collections().is_empty());
         assert_eq!(snapshot().2, ["Comment"]);
@@ -747,7 +791,7 @@ mod tests {
         let tag = collection("Comment", "fk_tag", false);
         add(
             Publish::Rows,
-            &child("1", Change::Updated, &[(&tag, "1", None)]),
+            &child(1, Change::Updated, &[(&tag, "1", None)]),
         );
         settle_posts();
         assert!(collections().is_empty());
@@ -761,7 +805,7 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Types,
-            &child("1", Change::Updated, &[(&post, "1", None)]),
+            &child(1, Change::Updated, &[(&post, "1", None)]),
         );
         settle_posts();
         assert!(collections().is_empty());
@@ -775,13 +819,13 @@ mod tests {
         for pk in 0..100 {
             add(
                 Publish::Rows,
-                &child(&pk.to_string(), Change::Inserted, &[(&post, "1", None)]),
+                &child(pk, Change::Inserted, &[(&post, "1", None)]),
             );
         }
         settle_posts();
         add(
             Publish::Rows,
-            &child("100", Change::Inserted, &[(&post, "1", None)]),
+            &child(100, Change::Inserted, &[(&post, "1", None)]),
         );
         settle_posts();
         SET.with_borrow(|set| {
@@ -802,7 +846,7 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Rows,
-            &child("1", Change::Inserted, &[(&post, "1", Some("p1"))]),
+            &child(1, Change::Inserted, &[(&post, "1", Some("p1"))]),
         );
         settle_none();
         assert_eq!(collections()[0].2, ["\"p1\""]);
@@ -815,11 +859,11 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Rows,
-            &r("Post", "4", Some("\"p4\""), Change::Updated),
+            &r("Post", 4, Some("\"p4\""), Change::Updated),
         );
         add(
             Publish::Rows,
-            &child("1", Change::Updated, &[(&post, "4", None)]),
+            &child(1, Change::Updated, &[(&post, "4", None)]),
         );
         settle_none();
         assert_eq!(collections()[0].2, ["\"p4\""]);
@@ -832,17 +876,60 @@ mod tests {
         let post = collection("Comment", "fk_post", true);
         add(
             Publish::Rows,
-            &child("1", Change::Updated, &[(&post, "1", None)]),
+            &child(1, Change::Updated, &[(&post, "1", None)]),
         );
         settle_posts();
         let m = mark();
         add(
             Publish::Rows,
-            &child("2", Change::Updated, &[(&post, "2", None)]),
+            &child(2, Change::Updated, &[(&post, "2", None)]),
         );
         settle_posts();
         rollback(m);
         assert_eq!(collections()[0].2, ["\"p1\""]);
+        clear();
+    }
+
+    #[test]
+    fn the_listing_names_parents_as_the_feed_does() {
+        clear();
+        let post = collection("Comment", "fk_post", true);
+        let tag = collection("Note", "fk_tag", false);
+        add(
+            Publish::Rows,
+            &child(
+                1,
+                Change::Updated,
+                &[(&post, "1", None), (&post, "9", None), (&tag, "1", None)],
+            ),
+        );
+        let named = |pairs: &[(&std::rc::Rc<crate::catalog::Collection>, &str)]| {
+            let parents: Vec<_> = pairs
+                .iter()
+                .map(|(c, key)| {
+                    (
+                        std::rc::Rc::clone(c),
+                        crate::catalog::collections::ParentRef {
+                            key: (*key).to_string(),
+                            id: None,
+                        },
+                    )
+                })
+                .collect();
+            listed(&parents)
+        };
+        // Not resolved yet: the child type stands for the parent.
+        assert_eq!(named(&[(&post, "1")]), [Listed::Unlisted]);
+        settle_posts();
+        assert_eq!(
+            named(&[(&post, "1"), (&post, "9"), (&post, "2"), (&tag, "1")]),
+            [
+                Listed::Id("\"p1\"".to_string()),
+                Listed::Gone,
+                Listed::Unlisted, // never named
+                Listed::Unlisted, // no id column
+            ]
+        );
         clear();
     }
 }

@@ -122,7 +122,7 @@ fn rebuild_statements(
 /// statements that touch only rows that change, journaling each change. Rows
 /// that leave go first, so a unique index holds throughout. Returns the
 /// `pk_<entity>` of every row deleted, updated or inserted.
-pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<String>> {
+pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
     use crate::queue::affected::Change;
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     let _pin = crate::owner::RenderPin::new();
@@ -165,7 +165,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
         &format!(
             "DELETE FROM {qualified_tv} t \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_view} v WHERE {same_key}) \
-             RETURNING t.{pk}::text, {returned}"
+             RETURNING t.{pk}::pg_catalog.int8, {returned}"
         ),
         &[],
         Change::Deleted,
@@ -203,7 +203,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
                 "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
                  FROM {qualified_view} v \
                  WHERE {same_key} AND {} \
-                 RETURNING t.{pk}::text, {}",
+                 RETURNING t.{pk}::pg_catalog.int8, {}",
                 crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh),
                 meta.returned("t", true)
             ),
@@ -217,7 +217,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<Strin
             "INSERT INTO {qualified_tv} AS t ({columns}) \
              SELECT {columns} FROM {qualified_view} v \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
-             RETURNING t.{pk}::text, {returned}",
+             RETURNING t.{pk}::pg_catalog.int8, {returned}",
             columns = list(&all_columns, "")
         ),
         &[],
