@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The refresh journal carries `pk_<entity>` as an integer from the write to every reader
   (#246): no text round trip in the report or the change feed. No SQL surface change.
 
+### Fixed
+
+- A write no longer needs `USAGE` on the schema of every TVIEW with a reference (#251).
+  Each write loads every TVIEW's references, and `tviews.pg_tview_references` resolved
+  their tables with `to_regclass`, which checks the schema: a role without `USAGE` on
+  another TVIEW's schema got `permission denied for schema` and its write rolled back,
+  since 0.1.0-beta.30. The tables are now matched by name through `pg_class`. Catalog
+  revision 9: run `ALTER EXTENSION pg_tviews UPDATE`.
+
 ## [0.1.0-beta.30] - 2026-10-16
 
 ### Added
