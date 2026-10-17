@@ -425,7 +425,7 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
              SELECT m.relid, \
                     COALESCE(pg_catalog.pg_partition_root(m.relid)::pg_catalog.oid, m.relid) AS root \
              FROM (SELECT relid::pg_catalog.oid FROM pg_catalog.pg_partition_tree( \
-                       COALESCE(pg_catalog.pg_partition_root($1), $1::pg_catalog.regclass)) \
+                       COALESCE(pg_catalog.pg_partition_root($1), $1)) \
                    UNION SELECT $1) m \
          ), \
          wanted AS ( \

@@ -12,4 +12,10 @@ repos:
         entry: cargo clippy --no-default-features --features pg18 --all-targets -- -D warnings
         language: system
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]
+      - id: check-name-resolution
+        name: "No name-resolving catalog SQL"
+        entry: scripts/check-name-resolution.sh
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.rs$

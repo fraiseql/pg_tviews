@@ -443,6 +443,21 @@ impl Drop for KeptPlan {
 /// # Errors
 /// Returns an error if the query can't be prepared or doesn't return rows.
 pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>], plan: Plan) -> TViewResult<Vec<TextRow>> {
+    kept_rows_as(sql, args, plan, |row| Ok(row.texts()))
+}
+
+/// The rows of `sql`, run as [`kept_rows`] runs it, each read by `read` with
+/// its columns typed ([`KeptRow::get`]).
+///
+/// # Errors
+/// Returns an error if the query can't be prepared or doesn't return rows, or
+/// what `read` returns.
+pub fn kept_rows_as<R>(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: Plan,
+    read: impl FnMut(&KeptRow<'_>) -> TViewResult<R>,
+) -> TViewResult<Vec<R>> {
     let (mut types, mut values, nulls) = bind(args);
     Spi::connect(|_| {
         let plan = kept_plan(sql, &mut types, plan)?;
@@ -456,7 +471,7 @@ pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>], plan: Plan) -> TViewResul
                 false,
                 0,
             );
-            tuptable_rows(sql, rc)
+            tuptable_map(sql, rc, read)
         }
     })
 }
@@ -510,11 +525,89 @@ fn bind(args: &[DatumWithOid<'_>]) -> (Vec<Oid>, Vec<pg_sys::Datum>, Vec<std::ff
     (types, values, nulls)
 }
 
+/// A row of the last SPI result, valid while the function reading it runs.
+pub struct KeptRow<'a> {
+    sql: &'a str,
+    tuple: pg_sys::HeapTuple,
+    tupdesc: pg_sys::TupleDesc,
+}
+
+/// The types a [`KeptRow`] column is read as: owned values, copied out of the
+/// row before the result is freed (a `&str` would point into it).
+pub trait OwnedColumn: FromDatum + IntoDatum + sealed::Sealed {}
+impl OwnedColumn for i64 {}
+impl OwnedColumn for i32 {}
+impl OwnedColumn for bool {}
+impl OwnedColumn for Oid {}
+impl OwnedColumn for String {}
+impl OwnedColumn for pgrx::JsonB {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for i64 {}
+    impl Sealed for i32 {}
+    impl Sealed for bool {}
+    impl Sealed for super::Oid {}
+    impl Sealed for String {}
+    impl Sealed for pgrx::JsonB {}
+}
+
+impl KeptRow<'_> {
+    /// Column `column` (from 1) as `T`, `None` for NULL.
+    ///
+    /// # Errors
+    /// The column is not of `T`'s SQL type.
+    pub fn get<T: OwnedColumn>(&self, column: i32) -> TViewResult<Option<T>> {
+        // SAFETY: the tuple and its descriptor belong to the last SPI result,
+        // which `tuptable_map` frees only after the reading function returned.
+        unsafe {
+            let mut is_null = false;
+            let datum = pg_sys::SPI_getbinval(self.tuple, self.tupdesc, column, &raw mut is_null);
+            let type_oid = pg_sys::SPI_gettypeid(self.tupdesc, column);
+            T::try_from_datum(datum, is_null, type_oid).map_err(|e| error(self.sql, &e))
+        }
+    }
+
+    /// Every column as text (`None` for NULL).
+    fn texts(&self) -> TextRow {
+        // SAFETY: as in `get`.
+        unsafe {
+            (1..=(*self.tupdesc).natts)
+                .map(|column| {
+                    let value = pg_sys::SPI_getvalue(self.tuple, self.tupdesc, column);
+                    if value.is_null() {
+                        None
+                    } else {
+                        let text = std::ffi::CStr::from_ptr(value)
+                            .to_string_lossy()
+                            .into_owned();
+                        pg_sys::pfree(value.cast());
+                        Some(text)
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
 /// The rows of the result an SPI call returned with `rc`, as text.
 ///
 /// # Safety
 /// The SPI call that returned `rc` was the last one, in the current connection.
 unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
+    // SAFETY: the caller's contract.
+    unsafe { tuptable_map(sql, rc, |row| Ok(row.texts())) }
+}
+
+/// The rows of the result an SPI call returned with `rc`, each read by `read`.
+///
+/// # Safety
+/// The SPI call that returned `rc` was the last one, in the current connection.
+unsafe fn tuptable_map<R>(
+    sql: &str,
+    rc: i32,
+    mut read: impl FnMut(&KeptRow<'_>) -> TViewResult<R>,
+) -> TViewResult<Vec<R>> {
     let returning = [
         pg_sys::SPI_OK_SELECT,
         pg_sys::SPI_OK_INSERT_RETURNING,
@@ -524,30 +617,22 @@ unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
     if !returning.iter().any(|&ok| rc == ok.cast_signed()) {
         return Err(error(sql, &format!("SPI returned {rc}")));
     }
-    // SAFETY: per the contract, SPI_tuptable holds the last result.
+    // SAFETY: per the contract, SPI_tuptable holds the last result, freed once
+    // every row was read.
     unsafe {
         let table = pg_sys::SPI_tuptable;
         let tupdesc = (*table).tupdesc;
-        let mut rows = Vec::new();
-        for i in 0..usize::try_from(pg_sys::SPI_processed).unwrap_or(0) {
-            let tuple = *(*table).vals.add(i);
-            let mut row = Vec::new();
-            for column in 1..=(*tupdesc).natts {
-                let value = pg_sys::SPI_getvalue(tuple, tupdesc, column);
-                row.push(if value.is_null() {
-                    None
-                } else {
-                    let text = std::ffi::CStr::from_ptr(value)
-                        .to_string_lossy()
-                        .into_owned();
-                    pg_sys::pfree(value.cast());
-                    Some(text)
-                });
-            }
-            rows.push(row);
-        }
+        let rows = (0..usize::try_from(pg_sys::SPI_processed).unwrap_or(0))
+            .map(|i| {
+                read(&KeptRow {
+                    sql,
+                    tuple: *(*table).vals.add(i),
+                    tupdesc,
+                })
+            })
+            .collect();
         pg_sys::SPI_freetuptable(table);
-        Ok(rows)
+        rows
     }
 }
 

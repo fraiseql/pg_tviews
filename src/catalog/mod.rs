@@ -62,6 +62,16 @@ pub struct TviewMeta {
     pub collections: Vec<Rc<Collection>>,
 }
 
+/// A TVIEW's entity and plan: all a write reads of the TVIEWs it does not reach
+/// (the cascade paths starting at the written table, the dependency graph).
+#[derive(Debug, Clone, Default)]
+pub struct PlanEntry {
+    /// The TVIEW's entity.
+    pub entity: String,
+    /// Its propagation plan.
+    pub plan: plan::TviewPlan,
+}
+
 /// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublicId {
@@ -334,6 +344,38 @@ impl TviewMeta {
                 result.push(Self::from_spi_row(&row)?);
             }
             Ok(result)
+        })
+    }
+
+    /// Every TVIEW's entity and plan, by entity: the write path's read of the
+    /// whole catalog. It carries no per-TVIEW subquery and resolves no name, so a
+    /// write does not depend on what the writer may see of the TVIEWs it does not
+    /// reach (#251); their full rows are loaded by entity when a write reaches them.
+    ///
+    /// # Errors
+    /// The catalog cannot be read, or a plan does not decode.
+    pub fn load_plans() -> crate::TViewResult<Vec<PlanEntry>> {
+        Spi::connect(|client| -> crate::TViewResult<Vec<PlanEntry>> {
+            let rows = client.select(
+                &format!(
+                    "SELECT entity, plan FROM {} ORDER BY entity",
+                    crate::catalog::meta_table()
+                ),
+                None,
+                &[],
+            )?;
+            let mut entries = Vec::new();
+            for row in rows {
+                let entity = row["entity"].value::<String>()?.unwrap_or_default();
+                let plan = plan::TviewPlan::decode(
+                    &entity,
+                    row["plan"]
+                        .value::<pgrx::JsonB>()?
+                        .map_or(serde_json::Value::Null, |j| j.0),
+                )?;
+                entries.push(PlanEntry { entity, plan });
+            }
+            Ok(entries)
         })
     }
 

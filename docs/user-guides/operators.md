@@ -199,7 +199,8 @@ More in [Troubleshooting](../operations/troubleshooting.md).
 ## Security
 
 Readers need only `SELECT` on the `tv_*` tables; writers need privileges on the base
-tables only, since refreshes run as each TVIEW's owner. `pg_tviews_health_check()` and
+tables only (and `USAGE` on their schemas and on `tviews`), since refreshes run as each
+TVIEW's owner: see [Privileges](../reference/api.md#privileges). `pg_tviews_health_check()` and
 the other read-only functions are executable by everyone.
 
 ```sql

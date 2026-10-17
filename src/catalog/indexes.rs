@@ -127,7 +127,7 @@ pub(crate) fn user_index_filter() -> String {
          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k \
                          WHERE k.conindid = i.indexrelid) \
          AND ic.relname <> ALL (SELECT pg_catalog.unnest(m.managed_index_names) \
-                                FROM {} m WHERE m.table_oid = $1::pg_catalog.regclass)",
+                                FROM {} m WHERE m.table_oid = $1::pg_catalog.oid::pg_catalog.regclass)",
         crate::catalog::meta_table()
     )
 }

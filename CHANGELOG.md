@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A write reads the whole catalog as entities and plans only.** The cascade paths
+  starting at a written table and the dependency graph came from every TVIEW's full
+  catalog row, its collections a subquery per TVIEW: loading it grew with the square of
+  the TVIEWs, and ran on a backend's first write and on the first write after any
+  TVIEW was created, changed or dropped (500 TVIEWs: 4.2 s per such write). They now
+  come from one read of every TVIEW's entity and plan; a full row is read only for the
+  TVIEWs a write reaches. It was also the read that made every write depend on the
+  writer's privileges on other TVIEWs' schemas (#251).
+- `pg_tviews_flush_and_report(include_data => false)` lists no row of a type it
+  reports in `invalidated_types` because its rows were not journaled one by one
+  (rebuilt or refilled in the transaction, or past `pg_tviews.report_max_tracked`): a
+  row journaled before a rebuild may be gone. The type stands for all its rows, as it
+  already did for its collections, and as the change feed publishes it (`t`, no ids).
+  With `include_data` each row is read as it is now, as before.
+- The report reads `pk_<entity>` and `data` typed (#246 follow-up): no text round trip.
+
+### Removed
+
+- **`publish_skipped`** in `pg_tviews_queue_stats()`: it counted, per session, the
+  transactions committed without publishing their changes. `pg_tviews_feed_gaps()`
+  (and `feed_gaps` in the same stats) counts them for the cluster, readable by any
+  session; the WARNING each skipped transaction logs is unchanged.
+
+### Fixed
+
+- **A TVIEW restored without its rows is refilled.** A dump that leaves a TVIEW's rows
+  out by name (`--exclude-table-data='tv_*'`) restored it empty and trusted, UNLOGGED
+  (its validity row is extension configuration, dumped anyway) or LOGGED (no validity
+  check at all), and it stayed empty. The first write reaching a TVIEW that was empty
+  now refills it when its view computes rows the write did not produce, after the
+  TVIEWs it reads that came back empty too; a TVIEW whose view computes nothing is
+  written as before.
+
+### Upgrade notes
+
+- From 0.1.0-beta.31: `ALTER EXTENSION pg_tviews UPDATE`. No extension SQL changed
+  (catalog revision 9 still); no TVIEW needs re-registering. A reader of
+  `pg_tviews_queue_stats()->'publish_skipped'` reads `pg_tviews_feed_gaps()` instead.
+
+### Documentation
+
+- The privileges a write needs (reference, Privileges): DML on the written table and
+  `USAGE` on its schema and on `tviews`, whatever TVIEWs exist elsewhere. A regress
+  matrix holds the write path to it under a minimal-privilege role, and
+  `scripts/check-name-resolution.sh` (CI, pre-commit) refuses SQL in `src/` that
+  resolves an object name outside DDL, restore and install sites.
+
 ## [0.1.0-beta.31] - 2026-10-17
 
 ### Added

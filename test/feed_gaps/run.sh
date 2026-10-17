@@ -75,10 +75,10 @@ INSERT INTO tb_tag (pk_tag, name) VALUES (2, 'b');
 BEGIN;
 UPDATE tb_tag SET name = 'c';
 COMMIT;
-SELECT 'skipped ' || (tviews.pg_tviews_queue_stats()->>'publish_skipped');
+SELECT 'per-session counter ' || (tviews.pg_tviews_queue_stats() ? 'publish_skipped');
 SQL
 )"
-grep -q 'skipped 3' <<<"$out" || fail "the writer did not skip 3 transactions: $out"
+grep -q 'per-session counter false' <<<"$out" || fail "queue stats still count skips per session: $out"
 grep -q 'not published' <<<"$out" || fail "no WARNING: $out"
 after="$(sql -c "SELECT tviews.pg_tviews_feed_gaps()")"
 (( after - before == 3 )) || fail "feed gaps moved by $((after - before)), expected 3"

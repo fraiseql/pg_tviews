@@ -20,7 +20,19 @@ pull request that changes it must do, is in
 
 ## Tagging
 
-Push the tag `v<version>`. `release.yml` then:
+1. Merge the release's pull request with a merge commit, and any green dependency
+   pull requests first. Cancel `main`'s runs for intermediate merge commits.
+2. On `main`, the release commit: `CHANGELOG.md` stamped (above),
+   `git commit -m "chore(release): v<version>"`, pushed. Wait until every workflow
+   `main` runs is green on it (`gh run list --commit <sha>`).
+3. Tag it. Tags are signed and annotated, so a bare `git tag v<version>` fails:
+
+   ```console
+   $ git tag -m "v<version>" v<version> <sha> && git push origin v<version>
+   ```
+
+Pushing the tag `v<version>` starts the one `Release` workflow (watch it with
+`gh run watch <id> --exit-status`). `release.yml`:
 
 1. runs the CI, the lints and confiture's TVIEW suites on the tagged commit;
 2. checks that the tag matches `Cargo.toml` and that `CHANGELOG.md` has the stamped
@@ -33,6 +45,10 @@ Push the tag `v<version>`. `release.yml` then:
 Nothing is built or published when a step before it fails.
 
 ## After the release
+
+Check the release's assets (tarball and its `.sigstore`, SBOMs, `SHA256SUMS`) and the
+crate on crates.io, and tell the projects pinning pg_tviews (FraiseQL's
+`docker/pg-tviews/Dockerfile`, confiture's `ci/pg-tviews`) the new tag and commit.
 
 Open the next one:
 

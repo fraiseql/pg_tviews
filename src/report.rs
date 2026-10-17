@@ -117,25 +117,16 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
     };
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let sql = format!(
-        "SELECT t.{qi_pk}::pg_catalog.text, t.data::pg_catalog.text FROM {table} t WHERE {}",
+        "SELECT t.{qi_pk}, t.data FROM {table} t WHERE {}",
         lookup.predicate(&format!("t.{qi_pk}"), 1)
     );
-    let mut out = HashMap::new();
-    for row in crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())? {
-        let [Some(key), data] = row.as_slice() else {
-            continue;
-        };
-        let unreadable = |what: &dyn std::fmt::Display| TViewError::SerializationError {
-            message: format!("tv_{entity}: unreadable row {key}: {what}"),
-        };
-        let pk = key.parse::<i64>().map_err(|e| unreadable(&e))?;
-        let data = data
-            .as_deref()
-            .map_or(Ok(Value::Null), serde_json::from_str)
-            .map_err(|e| unreadable(&e))?;
-        out.insert(pk, data);
-    }
-    Ok(out)
+    let rows = crate::utils::spi::kept_rows_as(&sql, &[lookup.arg()], lookup.plan(), |row| {
+        Ok((row.get::<i64>(1)?, row.get::<pgrx::JsonB>(2)?))
+    })?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(pk, data)| Some((pk?, data.map_or(Value::Null, |d| d.0))))
+        .collect())
 }
 
 fn build_report(
@@ -168,11 +159,17 @@ fn build_report(
         .map(typename)
         .collect();
 
+    // A type whose rows were not all journaled (rebuilt, or past the cap) is
+    // reported by name, and stands for all its rows: without the data, which
+    // tells, a row journaled before a rebuild may name one that is gone. The
+    // change feed publishes such a type by name, without its rows, too.
+    let listed = |c: &&NetChange| include_data || !overflow.contains(&c.entity);
     // Flush order is not deterministic across runs, so report in a fixed order:
     // entity, then key.
     let mut changes: Vec<NetChange> = changes
         .iter()
         .filter(|c| asked(&c.entity))
+        .filter(listed)
         .cloned()
         .collect();
     changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));

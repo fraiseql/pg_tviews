@@ -24,7 +24,12 @@ on PostgreSQL 16, 17 and 18):
 - The crate-wide exceptions are listed there, each with its reason. Anything
   narrower is allowed on the item, with a `// Reason:` comment.
 - `cargo fmt --check` and `scripts/check-ffi-guards.sh` (every callback PostgreSQL
-  calls carries `#[pg_guard]`) run in CI too.
+  calls carries `#[pg_guard]`) run in CI too, with `scripts/check-layers.sh` and
+  `scripts/check-name-resolution.sh`: no SQL in `src/` resolves an object name
+  (`to_regclass(text)`, `'s.t'::regclass`, a text parameter cast to `reg*`) outside
+  the DDL, restore and install sites it lists. Such a lookup checks `USAGE` on the
+  schema, and a write reads every TVIEW's catalog row: match by OID, or by name
+  through `pg_class`/`pg_namespace` (#251). The pre-commit hook runs it too.
 
 ### `unsafe` code
 

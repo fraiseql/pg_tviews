@@ -436,7 +436,11 @@ cascade response: each entry carries its type name, `id` and (with `include_data
 row's `data`; a deleted entry is `{"__typename", "id"}`. The type name is the TVIEW's
 `typename` option, or the PascalCase of its entity. Past `max_entities` entries,
 or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
-`invalidated_types` lists the types left out. With `reset`, the next call reports only
+`invalidated_types` lists the types left out. A type whose rows were not journaled one
+by one (rebuilt or refilled in the transaction, or past `pg_tviews.report_max_tracked`)
+stands for all its rows: without `include_data` none of them is listed, since a row
+journaled before a rebuild may no longer exist; with it, each listed row is read as it is
+now. With `reset`, the next call reports only
 later changes; a reset made in a subtransaction that rolls back is undone. With `types`
 (type names), only rows of those types are reported and counted against
 `max_entities`; the other changed types are listed in `omitted_types`; an unknown name
@@ -471,8 +475,9 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
   dependencies first, each as its owner, and reports the rows each one inserted
   (`rows_inserted`: a full rebuild inserts every row of the view); it refuses to run
-  during recovery. A TVIEW that is merely empty is not a reset one. Operator
-  function: the caller needs no privilege on the `tv_*` tables.
+  during recovery. A TVIEW that is merely empty is not a reset one (its first write
+  refills it if its view computes rows it lacks). Operator function: the caller needs
+  no privilege on the `tv_*` tables.
 - After a crash restart or a promotion, a background worker does the same in every
   database listed by `pg_tviews.auto_rebuild_databases` (`*`, the default: all). A
   reset TVIEW not yet refilled is filled by its first write.
@@ -560,8 +565,7 @@ own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
-| `publish_skipped` | transactions this session committed without publishing their changes ([change feed](../user-guides/change-feed.md#operating-it)) |
-| `feed_gaps` | the same, for the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps)); null without the library preloaded |
+| `feed_gaps` | transactions committed without publishing their changes, in the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps), [change feed](../user-guides/change-feed.md#operating-it)); null without the library preloaded |
 
 ```sql
 BEGIN;
@@ -658,6 +662,16 @@ pg_tviews follows the rules of `ALTER TABLE` and `REFRESH MATERIALIZED VIEW`
   [Operator role](../user-guides/operators.md#operator-role)).
   `pg_tviews_reregister_all` and `pg_tviews_ensure_propagation_indexes` also check
   ownership of each TVIEW they touch.
+- **Writing.** A write to a table a TVIEW reads needs what the write needs without
+  pg_tviews: the DML privilege on that table and `USAGE` on its schema, plus `USAGE`
+  on `tviews`. Nothing else, whatever TVIEWs exist in other schemas and whatever the
+  write cascades into: the cascade refreshes each TVIEW as its owner, the catalog is
+  readable by every role, and no catalog read on the write path resolves an object
+  by name (which would check `USAGE` on that object's schema). The same holds for an
+  explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_feed_gaps()`,
+  `tviews.registry` and `pg_tviews_flush_and_report(include_data => false)`. With
+  `include_data` (the default), the report reads each reported row's `data` as the
+  caller, so it also needs `SELECT` on those `tv_*` tables (`42501` otherwise).
 - **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table; the caller
   becomes its owner.
 - **Reading.** `tviews.registry` and `tviews.stats` are readable by any role.
