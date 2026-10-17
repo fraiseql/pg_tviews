@@ -532,12 +532,32 @@ pub struct KeptRow<'a> {
     tupdesc: pg_sys::TupleDesc,
 }
 
+/// The types a [`KeptRow`] column is read as: owned values, copied out of the
+/// row before the result is freed (a `&str` would point into it).
+pub trait OwnedColumn: FromDatum + IntoDatum + sealed::Sealed {}
+impl OwnedColumn for i64 {}
+impl OwnedColumn for i32 {}
+impl OwnedColumn for bool {}
+impl OwnedColumn for Oid {}
+impl OwnedColumn for String {}
+impl OwnedColumn for pgrx::JsonB {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for i64 {}
+    impl Sealed for i32 {}
+    impl Sealed for bool {}
+    impl Sealed for super::Oid {}
+    impl Sealed for String {}
+    impl Sealed for pgrx::JsonB {}
+}
+
 impl KeptRow<'_> {
     /// Column `column` (from 1) as `T`, `None` for NULL.
     ///
     /// # Errors
     /// The column is not of `T`'s SQL type.
-    pub fn get<T: FromDatum + IntoDatum>(&self, column: i32) -> TViewResult<Option<T>> {
+    pub fn get<T: OwnedColumn>(&self, column: i32) -> TViewResult<Option<T>> {
         // SAFETY: the tuple and its descriptor belong to the last SPI result,
         // which `tuptable_map` frees only after the reading function returned.
         unsafe {
