@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.32] - 2026-10-17
+
 ### Changed
 
 - **A write reads the whole catalog as entities and plans only.** The cascade paths
