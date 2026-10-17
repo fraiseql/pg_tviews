@@ -159,11 +159,17 @@ fn build_report(
         .map(typename)
         .collect();
 
+    // A type whose rows were not all journaled (rebuilt, or past the cap) is
+    // reported by name, and stands for all its rows: without the data, which
+    // tells, a row journaled before a rebuild may name one that is gone. The
+    // change feed publishes such a type by name, without its rows, too.
+    let listed = |c: &&NetChange| include_data || !overflow.contains(&c.entity);
     // Flush order is not deterministic across runs, so report in a fixed order:
     // entity, then key.
     let mut changes: Vec<NetChange> = changes
         .iter()
         .filter(|c| asked(&c.entity))
+        .filter(listed)
         .cloned()
         .collect();
     changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));

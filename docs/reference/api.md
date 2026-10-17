@@ -436,7 +436,11 @@ cascade response: each entry carries its type name, `id` and (with `include_data
 row's `data`; a deleted entry is `{"__typename", "id"}`. The type name is the TVIEW's
 `typename` option, or the PascalCase of its entity. Past `max_entities` entries,
 or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
-`invalidated_types` lists the types left out. With `reset`, the next call reports only
+`invalidated_types` lists the types left out. A type whose rows were not journaled one
+by one (rebuilt or refilled in the transaction, or past `pg_tviews.report_max_tracked`)
+stands for all its rows: without `include_data` none of them is listed, since a row
+journaled before a rebuild may no longer exist; with it, each listed row is read as it is
+now. With `reset`, the next call reports only
 later changes; a reset made in a subtransaction that rolls back is undone. With `types`
 (type names), only rows of those types are reported and counted against
 `max_entities`; the other changed types are listed in `omitted_types`; an unknown name
