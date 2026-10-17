@@ -32,22 +32,30 @@ allowed=(
 )
 
 reg='reg(class|proc|procedure|type|oper|operator|namespace|role|collation|config|dictionary)'
-pattern="to_${reg}[[:space:]]*\(|(\\\$[0-9]+|'[^']*'|\{[a-z_]*\})[[:space:]]*::[[:space:]]*(pg_catalog\.)?${reg}\b"
+# A literal, a format placeholder or a parameter, maybe cast to a text type
+# first, cast to reg*; or to_reg*(). Any case.
+text_cast='([[:space:]]*::[[:space:]]*(pg_catalog\.)?(text|varchar|name|"char"))?'
+pattern="to_${reg}[[:space:]]*\(|(\\\$[0-9]+|'[^']*'|\{[a-z0-9_]*\})${text_cast}[[:space:]]*::[[:space:]]*(pg_catalog\.)?${reg}\b"
 bad=""
 while IFS= read -r hit; do
   file=${hit%%:*}
   line=${hit#*:}; line=${line#*:}
   [[ "$line" =~ ^[[:space:]]*// ]] && continue
-  # Every match on the line must be a pg_catalog literal or an allowed site.
-  rest=$(grep -oE "$pattern" <<<"$line" | grep -vE "^'pg_catalog(\.[a-z0-9_]+)?'")
-  [[ -z "$rest" ]] && continue
-  ok=""
-  for entry in "${allowed[@]}"; do
-    IFS='|' read -r afile atext _ <<<"$entry"
-    [[ "$file" == "$afile" && "$line" == *"$atext"* ]] && { ok=1; break; }
-  done
-  [[ -z "$ok" ]] && bad+="$hit"$'\n'
-done < <(grep -rnE "$pattern" src --include='*.rs')
+  # Every match on the line must be a pg_catalog literal, or inside an allowed
+  # site's text.
+  while IFS= read -r match; do
+    [[ -z "$match" ]] && continue
+    shopt -s nocasematch
+    [[ "$match" =~ ^\'pg_catalog(\.[a-z0-9_]+)?\' ]] && { shopt -u nocasematch; continue; }
+    shopt -u nocasematch
+    ok=""
+    for entry in "${allowed[@]}"; do
+      IFS='|' read -r afile atext _ <<<"$entry"
+      [[ "$file" == "$afile" && "$line" == *"$atext"* && "$atext" == *"$match"* ]] && { ok=1; break; }
+    done
+    [[ -z "$ok" ]] && { bad+="$hit"$'\n'; break; }
+  done < <(grep -oiE "$pattern" <<<"$line")
+done < <(grep -rniE "$pattern" src --include='*.rs')
 
 if [[ -n "$bad" ]]; then
   echo "SQL resolving a name to an object (match by OID, or through pg_class/pg_namespace; see the header of $0):"
