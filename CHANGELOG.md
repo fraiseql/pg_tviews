@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.31] - 2026-10-17
+
 ### Added
 
 - **`pg_tviews_flush_and_report()` reports `collections`** (#244): with
@@ -30,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The refresh journal carries `pk_<entity>` as an integer from the write to every reader
   (#246): no text round trip in the report or the change feed. No SQL surface change.
+- SQL parsing uses `sqlparser` 0.63 (was 0.62).
 
 ### Fixed
 
@@ -39,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another TVIEW's schema got `permission denied for schema` and its write rolled back,
   since 0.1.0-beta.30. The tables are now matched by name through `pg_class`. Catalog
   revision 9: run `ALTER EXTENSION pg_tviews UPDATE`.
+
+### Upgrade notes
+
+- From 0.1.0-beta.30: run `ALTER EXTENSION pg_tviews UPDATE`. The library refuses the
+  beta.30 catalog until then (catalog revision 9). No TVIEW needs re-registering.
 
 ## [0.1.0-beta.30] - 2026-10-16
 
