@@ -4,6 +4,8 @@
 - Related: [ADR 0220](0220-settings.md) (who may set what), [ADR 0221](0221-observability.md),
   #231, #230, fraiseql/fraiseql#1576, #1577
 - Amended: payload version 2 adds collection keys (`c`, §8)
+- Amended 2026-10-17 (beta.32): `publish_skipped` removed from `pg_tviews_queue_stats()`;
+  `pg_tviews_feed_gaps()` is the one count of skipped transactions (§6)
 
 ## Context
 
@@ -99,8 +101,8 @@ would leave caches stale with no signal. It shares one error variant, `PrepareRe
 
 Above 90 % queue usage (`pg_notification_queue_usage()`, read without SPI), the transaction
 commits unpublished. It emits a WARNING naming the stuck listener's remedy, and adds one to
-`publish_skipped` in `pg_tviews_queue_stats()`, and one to a cluster-wide counter in shared
-memory, `pg_tviews_feed_gaps()` (#247): a listener that stays connected (the healthy ones,
+a cluster-wide counter in shared memory, `pg_tviews_feed_gaps()` (#247; a per-session
+`publish_skipped` in `pg_tviews_queue_stats()` counted them too until beta.32): a listener that stays connected (the healthy ones,
 while another holds the queue) learns from it that it missed transactions, and evicts
 everything. One counter for the cluster, not per database: the queue is the cluster's, a
 skip is an incident, and an eviction in another database costs nothing but a refill. The

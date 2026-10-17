@@ -561,8 +561,7 @@ own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
-| `publish_skipped` | transactions this session committed without publishing their changes ([change feed](../user-guides/change-feed.md#operating-it)) |
-| `feed_gaps` | the same, for the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps)); null without the library preloaded |
+| `feed_gaps` | transactions committed without publishing their changes, in the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps), [change feed](../user-guides/change-feed.md#operating-it)); null without the library preloaded |
 
 ```sql
 BEGIN;

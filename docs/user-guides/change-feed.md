@@ -247,10 +247,9 @@ any pool mode.
   nothing. Watch `pg_notification_queue_usage()` and, in `pg_stat_activity`, the
   sessions `idle in transaction` that LISTEN.
 - **Above 90 % queue usage, transactions commit unpublished.** pg_tviews does not let a
-  stuck listener fail every write. The writer gets a WARNING naming the cause, and
-  `pg_tviews_queue_stats()->'publish_skipped'` counts these transactions in the writing
-  session (the WARNING also goes to the server log, where monitoring sees it), and
-  `pg_tviews_feed_gaps()` for the whole cluster. Listeners missed them: a connected
+  stuck listener fail every write. The writer gets a WARNING naming the cause (it also
+  goes to the server log, where monitoring sees it), and `pg_tviews_feed_gaps()` counts
+  these transactions for the whole cluster. Listeners missed them: a connected
   listener learns it from the counter ([gaps](#gaps-while-connected)), a reconnecting
   one evicts everything anyway.
   The check is made just before the commit; another session can fill the last pages in

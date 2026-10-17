@@ -37,16 +37,8 @@ pub const CHANNEL: &std::ffi::CStr = c"tviews_changes";
 const QUEUE_USAGE_LIMIT: f64 = 0.9;
 
 thread_local! {
-    /// The transactions this session committed unpublished (`publish_skipped`).
-    static SKIPPED: Cell<u64> = const { Cell::new(0) };
     /// The committing transaction skipped publishing: [`at_commit`] counts it.
     static GAP: Cell<bool> = const { Cell::new(false) };
-}
-
-/// The transactions this session committed without publishing their changes,
-/// the NOTIFY queue being nearly full.
-pub fn skipped() -> u64 {
-    SKIPPED.get()
 }
 
 /// Publish the committing transaction's changes. Runs in the transaction callback
@@ -64,7 +56,6 @@ pub fn at_pre_commit() {
         unsafe { pgrx::direct_function_call::<f64>(pg_sys::pg_notification_queue_usage, &[]) }
             .unwrap_or(0.0);
     if usage > QUEUE_USAGE_LIMIT {
-        SKIPPED.set(SKIPPED.get() + 1);
         GAP.set(true);
         warning!(
             "pg_tviews: the NOTIFY queue is {:.0}% full: this transaction's TVIEW changes are \
