@@ -25,8 +25,11 @@ sed -i "0,/^version = \".*\"/s//version = \"$next\"/" Cargo.toml
 
 script="sql/pg_tviews--$released--$next.sql"
 [[ -e "$script" ]] || cat >"$script" <<EOF
--- pg_tviews $released -> $next
--- Upgrade script: statements that bring an install of $released to $next.
+-- pg_tviews $released → $next
+--
+-- Pending upgrade script: a pull request that changes the extension SQL adds its
+-- statements here (docs/development/extension-versioning.md). Released scripts are
+-- never edited.
 EOF
 
 # The badge escapes '-' as '--' (shields.io).
