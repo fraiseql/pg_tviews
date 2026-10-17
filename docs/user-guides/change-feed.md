@@ -266,4 +266,6 @@ any pool mode.
 LISTEN has no privilege. Any role that can connect to the database receives every
 message: the type names and ids of changed rows, the ids of their parents in `c`, and when
 writes happen, including rows the role cannot SELECT (other tenants' rows, under
-row-level security). Where ids are sensitive, publish `types` only.
+row-level security). Where ids are sensitive, publish `types` only. Publishing asks
+nothing more of the writer than the write does
+([Privileges](../reference/api.md#privileges)).

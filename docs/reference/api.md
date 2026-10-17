@@ -658,6 +658,16 @@ pg_tviews follows the rules of `ALTER TABLE` and `REFRESH MATERIALIZED VIEW`
   [Operator role](../user-guides/operators.md#operator-role)).
   `pg_tviews_reregister_all` and `pg_tviews_ensure_propagation_indexes` also check
   ownership of each TVIEW they touch.
+- **Writing.** A write to a table a TVIEW reads needs what the write needs without
+  pg_tviews: the DML privilege on that table and `USAGE` on its schema, plus `USAGE`
+  on `tviews`. Nothing else, whatever TVIEWs exist in other schemas and whatever the
+  write cascades into: the cascade refreshes each TVIEW as its owner, the catalog is
+  readable by every role, and no catalog read on the write path resolves an object
+  by name (which would check `USAGE` on that object's schema). The same holds for an
+  explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_feed_gaps()`,
+  `tviews.registry` and `pg_tviews_flush_and_report(include_data => false)`. With
+  `include_data` (the default), the report reads each reported row's `data` as the
+  caller, so it also needs `SELECT` on those `tv_*` tables (`42501` otherwise).
 - **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table; the caller
   becomes its owner.
 - **Reading.** `tviews.registry` and `tviews.stats` are readable by any role.
