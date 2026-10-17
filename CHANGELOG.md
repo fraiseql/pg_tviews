@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TVIEWs it reads that came back empty too; a TVIEW whose view computes nothing is
   written as before.
 
+### Upgrade notes
+
+- From 0.1.0-beta.31: `ALTER EXTENSION pg_tviews UPDATE`. No extension SQL changed
+  (catalog revision 9 still); no TVIEW needs re-registering. A reader of
+  `pg_tviews_queue_stats()->'publish_skipped'` reads `pg_tviews_feed_gaps()` instead.
+
 ### Documentation
 
 - The privileges a write needs (reference, Privileges): DML on the written table and
