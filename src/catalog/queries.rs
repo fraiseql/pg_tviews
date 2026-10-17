@@ -503,9 +503,9 @@ pub fn full_refresh_readers_of(matview: Oid) -> TViewResult<Vec<String>> {
             .select(
                 &format!(
                     "SELECT entity::text FROM {} \
-                     WHERE $1::pg_catalog.regclass = ANY (uncascaded_oids) \
+                     WHERE $1::pg_catalog.oid::pg_catalog.regclass = ANY (uncascaded_oids) \
                        AND COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
-                               uncascaded_table_oids, $1::pg_catalog.regclass)], \
+                               uncascaded_table_oids, $1::pg_catalog.oid::pg_catalog.regclass)], \
                            uncascaded_policy) = 'full_refresh' \
                      ORDER BY entity",
                     super::meta_table()

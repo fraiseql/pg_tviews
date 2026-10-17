@@ -21,6 +21,8 @@ jobs:
         run: scripts/check-ffi-guards.sh
       - name: Check the refresh path's modules only call downward
         run: scripts/check-layers.sh
+      - name: Check no catalog SQL resolves an object name
+        run: scripts/check-name-resolution.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})
