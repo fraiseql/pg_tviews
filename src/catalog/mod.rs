@@ -66,7 +66,9 @@ pub struct TviewMeta {
 /// (the cascade paths starting at the written table, the dependency graph).
 #[derive(Debug, Clone, Default)]
 pub struct PlanEntry {
+    /// The TVIEW's entity.
     pub entity: String,
+    /// Its propagation plan.
     pub plan: plan::TviewPlan,
 }
 

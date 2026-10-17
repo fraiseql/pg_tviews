@@ -56,15 +56,7 @@ pub mod validity {
             "SELECT EXISTS (SELECT 1 FROM {} WHERE entity = $1)",
             table()
         );
-        // Read-only (`select`): a status call must not assign a transaction id.
-        let marked = Spi::connect(|client| {
-            client
-                .select(&sql, Some(1), &[crate::utils::spi::text(entity)])?
-                .first()
-                .get_one::<bool>()
-        })
-        .map_err(|e| crate::utils::spi::error(&sql, &e))?;
-        Ok(marked != Some(true))
+        Ok(!probe(&sql, &[crate::utils::spi::text(entity)])?)
     }
 
     /// Record that the rows of `entity`'s table, `table_oid`, filled in this
@@ -119,6 +111,11 @@ pub mod validity {
             return Ok(false);
         }
         let filled = fill_if_reset(entity)?.is_some();
+        // The TVIEWs it reads first: one restored empty would make its rows empty.
+        let graph = crate::cache::graph()?;
+        for dependency in graph.children.get(entity).into_iter().flatten() {
+            fill_if_emptied(dependency)?;
+        }
         if !filled && is_empty(&meta)? {
             FOUND_EMPTY.with_borrow_mut(|found| found.insert(entity.to_string()));
         }
@@ -145,10 +142,13 @@ pub mod validity {
         };
         let key = crate::utils::ident::quoted(&meta.identity.column);
         let (tv, view) = relations(&meta)?;
-        let missing = probe(&format!(
-            "SELECT EXISTS (SELECT 1 FROM {view} v \
-                            WHERE NOT EXISTS (SELECT 1 FROM {tv} t WHERE t.{key} = v.{key}))"
-        ))?;
+        let missing = probe(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {view} v \
+                                WHERE NOT EXISTS (SELECT 1 FROM {tv} t WHERE t.{key} = v.{key}))"
+            ),
+            &[],
+        )?;
         if !missing {
             return Ok(false);
         }
@@ -157,12 +157,54 @@ pub mod validity {
         Ok(true)
     }
 
-    /// Whether `meta`'s TVIEW's table has no page: never written since it was
-    /// created (a restore without its rows), or truncated. Reads no row.
+    /// A write refreshed `entity` whole ([`ensure`] found it empty): it holds
+    /// every row of its view, nothing to refill.
+    pub fn refreshed_whole(entity: &str) {
+        FOUND_EMPTY.with_borrow_mut(|found| found.remove(entity));
+    }
+
+    /// Fill `entity`'s TVIEW, a TVIEW a write's TVIEW reads, when it is empty
+    /// while its view computes rows (restored without them), the TVIEWs it reads
+    /// first. No write reaches it in this statement, so its view's rows are all
+    /// missing ones.
+    fn fill_if_emptied(entity: &str) -> TViewResult<()> {
+        let graph = crate::cache::graph()?;
+        for dependency in graph.children.get(entity).into_iter().flatten() {
+            fill_if_emptied(dependency)?;
+        }
+        let Some(meta) = TviewMeta::load_by_entity(entity)? else {
+            return Ok(());
+        };
+        let owner = crate::owner::AsOwner::of_entity(entity)?;
+        let emptied = is_empty(&meta)? && {
+            let (_, view) = relations(&meta)?;
+            probe(&format!("SELECT EXISTS (SELECT 1 FROM {view})"), &[])?
+        };
+        drop(owner);
+        if emptied {
+            crate::refresh::full::refill(entity)?;
+            mark(entity, meta.tview_oid)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `meta`'s TVIEW has no row: no page at all, else no entry in the
+    /// index of its identity (one index probe, never a scan of the table). Read
+    /// by its owner.
     fn is_empty(meta: &TviewMeta) -> TViewResult<bool> {
-        let sql = "SELECT pg_catalog.pg_relation_size($1) = 0";
-        crate::utils::spi::one::<bool>(sql, &[crate::utils::spi::oid(meta.tview_oid)])
-            .map(|empty| empty == Some(true))
+        let args = [crate::utils::spi::oid(meta.tview_oid)];
+        if probe("SELECT pg_catalog.pg_relation_size($1) = 0", &args)? {
+            return Ok(true);
+        }
+        let (tv, _) = relations(meta)?;
+        let key = crate::utils::ident::quoted(&meta.identity.column);
+        probe(
+            &format!(
+                "SELECT pg_catalog.count(*) = 0 \
+                 FROM (SELECT 1 FROM {tv} t ORDER BY t.{key} LIMIT 1) first"
+            ),
+            &[],
+        )
     }
 
     /// The TVIEW's table and its backing view, schema-qualified.
@@ -173,9 +215,10 @@ pub mod validity {
         ))
     }
 
-    /// The boolean `sql` returns, read-only (no transaction id assigned).
-    fn probe(sql: &str) -> TViewResult<bool> {
-        Spi::connect(|client| client.select(sql, Some(1), &[])?.first().get_one::<bool>())
+    /// Whether `sql` returns true, read-only: a status call must not assign a
+    /// transaction id.
+    fn probe(sql: &str, args: &[pgrx::datum::DatumWithOid<'_>]) -> TViewResult<bool> {
+        Spi::connect(|client| client.select(sql, Some(1), args)?.first().get_one::<bool>())
             .map(|found| found == Some(true))
             .map_err(|e| crate::utils::spi::error(sql, &e))
     }

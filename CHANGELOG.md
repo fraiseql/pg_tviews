@@ -38,8 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out by name (`--exclude-table-data='tv_*'`) restored it empty and trusted, UNLOGGED
   (its validity row is extension configuration, dumped anyway) or LOGGED (no validity
   check at all), and it stayed empty. The first write reaching a TVIEW that was empty
-  now refills it when its view computes rows the write did not produce; a TVIEW whose
-  view computes nothing is written as before.
+  now refills it when its view computes rows the write did not produce, after the
+  TVIEWs it reads that came back empty too; a TVIEW whose view computes nothing is
+  written as before.
 
 ### Documentation
 

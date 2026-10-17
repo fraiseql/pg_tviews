@@ -49,6 +49,13 @@ SELECT tviews.pg_tviews_create('tv_user',
     options => '{"logged": false}');
 SELECT tviews.pg_tviews_create('tv_team',
     $$SELECT pk_team, id, jsonb_build_object('name', name) AS data FROM tb_team$$);
+-- Embeds tv_team's document: restored empty with it.
+CREATE TABLE tb_seat (pk_seat bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                      fk_team bigint NOT NULL REFERENCES tb_team, label text NOT NULL);
+INSERT INTO tb_seat (pk_seat, fk_team, label) SELECT g, g, 's' || g FROM generate_series(1, 3) g;
+SELECT tviews.pg_tviews_create('tv_seat',
+    $$SELECT s.pk_seat, s.id, s.fk_team, jsonb_build_object('label', s.label, 'team', t.data) AS data
+      FROM tb_seat s JOIN tv_team t ON t.pk_team = s.fk_team$$);
 SELECT tviews.pg_tviews_create('tv_note',
     $$SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM tb_note$$);
 
@@ -70,6 +77,21 @@ SELECT tviews.pg_tviews_create('tv_note',
 SET client_min_messages TO WARNING;
 SELECT must((SELECT count(*) FROM tv_user) = 0 AND (SELECT count(*) FROM tv_team) = 0,
             'the dump carried the TVIEWs'' rows');
+-- A write rolled back first: it leaves pages in tv_user, and the next one still refills.
+BEGIN;
+UPDATE tb_user SET name = 'rolled back' WHERE pk_user = 2;
+ROLLBACK;
+\c
+SET client_min_messages TO WARNING;
+-- tv_seat first: tv_team, which it reads and which no write reached, is refilled before it.
+UPDATE tb_seat SET label = 's1!' WHERE pk_seat = 1;
+SELECT must((SELECT count(*) FROM tv_seat) = 3 AND (SELECT count(*) FROM tv_team) = 3,
+            'tv_seat refilled without tv_team: seats ' || (SELECT count(*) FROM tv_seat)
+            || ', teams ' || (SELECT count(*) FROM tv_team));
+SELECT must((SELECT count(*) FROM tv_seat WHERE data->'team'->>'name' IS NULL) = 0,
+            'tv_seat embeds an empty tv_team');
+\c
+SET client_min_messages TO WARNING;
 SELECT must(EXISTS (SELECT 1 FROM tviews.pg_tview_valid WHERE entity = 'user'),
             'the dump did not carry tv_user''s validity row');
 UPDATE tb_user SET name = 'u1!' WHERE pk_user = 1;
@@ -83,6 +105,8 @@ UPDATE tb_team SET name = 't1!' WHERE pk_team = 1;
 SELECT must((SELECT count(*) FROM tv_team) = 3,
             'LOGGED tv_team restored empty was not refilled: '
             || (SELECT count(*) FROM tv_team) || ' rows');
+SELECT must((SELECT data->'team'->>'name' FROM tv_seat WHERE pk_seat = 1) = 't1!',
+            'tv_seat missed the team''s write');
 SELECT must((SELECT data->>'name' FROM tv_team WHERE pk_team = 1) = 't1!', 'tv_team missed the write');
 
 -- ========================================================================

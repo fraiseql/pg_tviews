@@ -1,8 +1,8 @@
 # Two transactions writing first into a LOGGED TVIEW restored without its rows
 # (TRUNCATE stands in for the restore: the table has no page, and nothing marks
 # it untrusted). The first finds it empty, refreshes its row, finds the view's
-# other rows missing and refills it; the second, after it, finds the table
-# written and refreshes its own rows, waiting for the first's where they meet.
+# other rows missing and refills it. The second sees none of those rows yet:
+# it refills too, waits for the first's rows where they meet, and keeps them.
 # Every row ends as its view computes it.
 
 setup

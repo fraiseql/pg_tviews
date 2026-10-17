@@ -81,6 +81,7 @@ impl Flush {
         crate::lifecycle::validity::ensure(entity)?;
         if keys.iter().any(RefreshKey::is_all) {
             self.refresh_all(entity)?;
+            crate::lifecycle::validity::refreshed_whole(entity);
         } else {
             self.apply_keys(entity, keys)?;
         }

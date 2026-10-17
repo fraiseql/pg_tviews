@@ -4,8 +4,9 @@ starting permutation: a_begin a_insert b_begin b_insert a_commit b_commit b_chec
 step a_begin: BEGIN;
 step a_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'p3');
 step b_begin: BEGIN;
-step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4');
+step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4'); <waiting ...>
 step a_commit: COMMIT;
+step b_insert: <... completed>
 step b_commit: COMMIT;
 step b_check: 
   SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
@@ -44,8 +45,9 @@ starting permutation: b_begin b_update a_begin a_insert b_commit a_commit b_chec
 step b_begin: BEGIN;
 step b_update: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
 step a_begin: BEGIN;
-step a_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'p3');
+step a_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'p3'); <waiting ...>
 step b_commit: COMMIT;
+step a_insert: <... completed>
 step a_commit: COMMIT;
 step b_check: 
   SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
