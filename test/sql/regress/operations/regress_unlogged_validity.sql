@@ -1,6 +1,7 @@
--- An UNLOGGED TVIEW is refilled from its view only when PostgreSQL reset it (a
--- crash restart or a promotion empties every UNLOGGED table), never because it
--- happens to be empty (#214).
+-- An UNLOGGED TVIEW counts as reset only when PostgreSQL reset it (a crash
+-- restart or a promotion empties every UNLOGGED table), never because it happens
+-- to be empty (#214). An empty one whose view computes rows it lacks is refilled
+-- by its first write all the same, as a TVIEW restored without its rows is.
 --
 -- Each UNLOGGED TVIEW has a row in tviews.pg_tview_valid, itself UNLOGGED, so
 -- the reset empties it together with the TVIEW's table. A missing row means the
@@ -34,15 +35,16 @@ SELECT pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
     FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$, '{"logged": false}');
 
--- 1. Empty is not reset: a TVIEW whose rows were deleted is not refilled by the
---    first write of a new backend. (TRUNCATE leaves the TVIEW trusted.)
+-- 1. Empty is not reset (TRUNCATE leaves the TVIEW trusted), but the first write
+--    of a new backend finds rows of its view missing, and refills it.
 TRUNCATE tv_post;
 \c
 SET client_min_messages TO WARNING;
 UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
-SELECT must((SELECT array_agg(pk_post ORDER BY pk_post) FROM tv_post) = '{1}',
-            'an emptied but trusted tv_post was refilled from its view: '
+SELECT must((SELECT array_agg(pk_post ORDER BY pk_post) FROM tv_post) = '{1,2}',
+            'an emptied but trusted tv_post was not refilled from its view: '
             || (SELECT array_agg(pk_post ORDER BY pk_post) FROM tv_post)::text);
+SELECT assert_fresh('tv_post', 'pk_post', 'tv_post emptied, then written');
 SELECT must(NOT needs_rebuild, 'an emptied but trusted TVIEW reported as needing a rebuild')
 FROM pg_tviews_replication_status() WHERE entity = 'post';
 

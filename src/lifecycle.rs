@@ -26,6 +26,11 @@ pub mod validity {
         /// (sub)transaction nesting level that claimed each.
         static CLAIMS: std::cell::RefCell<Vec<(Oid, i32)>> =
             const { std::cell::RefCell::new(Vec::new()) };
+
+        /// The entities this transaction's writes found empty at their first
+        /// check in the backend ([`refill_if_restored_empty`]).
+        static FOUND_EMPTY: std::cell::RefCell<std::collections::HashSet<String>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
     }
 
     fn table() -> String {
@@ -100,6 +105,8 @@ pub mod validity {
 
     /// Make `entity`'s rows trustworthy before a write refreshes them: once per
     /// entity and backend, since a reset ends every backend. See [`fill_if_reset`].
+    /// A TVIEW found empty is checked again once the write refreshed it
+    /// ([`refill_if_restored_empty`]). Runs as the TVIEW's owner.
     ///
     /// # Errors
     /// Returns an error if the catalog cannot be read or a fill fails.
@@ -112,8 +119,65 @@ pub mod validity {
             return Ok(false);
         }
         let filled = fill_if_reset(entity)?.is_some();
+        if !filled && is_empty(&meta)? {
+            FOUND_EMPTY.with_borrow_mut(|found| found.insert(entity.to_string()));
+        }
         CHECKED.with_borrow_mut(|checked| checked.insert(table));
         Ok(filled)
+    }
+
+    /// After a write refreshed `entity`, which [`ensure`] found empty: refill it
+    /// if its view computes a row the TVIEW still lacks. The TVIEW was restored
+    /// without its rows (a dump that left them out by name keeps an UNLOGGED
+    /// TVIEW's validity row, and a LOGGED one has none), and only the write's own
+    /// rows are in it. A TVIEW empty because its view computed nothing holds every
+    /// row of its view now: it is left as the write made it. Runs as the TVIEW's
+    /// owner. Returns whether it refilled.
+    ///
+    /// # Errors
+    /// Returns an error if the catalog cannot be read or the refill fails.
+    pub fn refill_if_restored_empty(entity: &str) -> TViewResult<bool> {
+        if !FOUND_EMPTY.with_borrow_mut(|found| found.remove(entity)) {
+            return Ok(false);
+        }
+        let Some(meta) = TviewMeta::load_by_entity(entity)? else {
+            return Ok(false);
+        };
+        let key = crate::utils::ident::quoted(&meta.identity.column);
+        let (tv, view) = relations(&meta)?;
+        let missing = probe(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {view} v \
+                            WHERE NOT EXISTS (SELECT 1 FROM {tv} t WHERE t.{key} = v.{key}))"
+        ))?;
+        if !missing {
+            return Ok(false);
+        }
+        crate::refresh::full::refill(entity)?;
+        mark(entity, meta.tview_oid)?;
+        Ok(true)
+    }
+
+    /// Whether `meta`'s TVIEW's table has no page: never written since it was
+    /// created (a restore without its rows), or truncated. Reads no row.
+    fn is_empty(meta: &TviewMeta) -> TViewResult<bool> {
+        let sql = "SELECT pg_catalog.pg_relation_size($1) = 0";
+        crate::utils::spi::one::<bool>(sql, &[crate::utils::spi::oid(meta.tview_oid)])
+            .map(|empty| empty == Some(true))
+    }
+
+    /// The TVIEW's table and its backing view, schema-qualified.
+    fn relations(meta: &TviewMeta) -> TViewResult<(String, String)> {
+        Ok((
+            crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+            crate::utils::qualified_relname_from_oid(meta.view_oid)?,
+        ))
+    }
+
+    /// The boolean `sql` returns, read-only (no transaction id assigned).
+    fn probe(sql: &str) -> TViewResult<bool> {
+        Spi::connect(|client| client.select(sql, Some(1), &[])?.first().get_one::<bool>())
+            .map(|found| found == Some(true))
+            .map_err(|e| crate::utils::spi::error(sql, &e))
     }
 
     /// Check the tables again: a rolled-back (sub)transaction may have undone a
@@ -122,9 +186,11 @@ pub mod validity {
         CHECKED.with_borrow_mut(std::collections::HashSet::clear);
     }
 
-    /// The transaction ended: its claims ended with it.
+    /// The transaction ended: its claims, and the TVIEWs it found empty, ended
+    /// with it.
     pub fn forget_claims() {
         CLAIMS.with_borrow_mut(Vec::clear);
+        FOUND_EMPTY.with_borrow_mut(std::collections::HashSet::clear);
     }
 
     /// A subtransaction rolled back: the claims it made are undone.

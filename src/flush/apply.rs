@@ -80,8 +80,18 @@ impl Flush {
         // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
         crate::lifecycle::validity::ensure(entity)?;
         if keys.iter().any(RefreshKey::is_all) {
-            return self.refresh_all(entity);
+            self.refresh_all(entity)?;
+        } else {
+            self.apply_keys(entity, keys)?;
         }
+        // One restored without its rows holds the write's rows only: filled.
+        crate::lifecycle::validity::refill_if_restored_empty(entity)?;
+        Ok(())
+    }
+
+    /// Bring `entity`'s rows named by `keys` to what its view computes, as
+    /// [`Self::apply_entity`] does when no key names every row.
+    fn apply_keys(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let meta = self.meta(entity)?;
         self.charge(&meta, "by key", keys.len() as u64)?;
         // Writers of what these rows read meet them on its values (ADR 0207):

@@ -471,8 +471,9 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
   dependencies first, each as its owner, and reports the rows each one inserted
   (`rows_inserted`: a full rebuild inserts every row of the view); it refuses to run
-  during recovery. A TVIEW that is merely empty is not a reset one. Operator
-  function: the caller needs no privilege on the `tv_*` tables.
+  during recovery. A TVIEW that is merely empty is not a reset one (its first write
+  refills it if its view computes rows it lacks). Operator function: the caller needs
+  no privilege on the `tv_*` tables.
 - After a crash restart or a promotion, a background worker does the same in every
   database listed by `pg_tviews.auto_rebuild_databases` (`*`, the default: all). A
   reset TVIEW not yet refilled is filled by its first write.
