@@ -36,14 +36,14 @@ impl EntityDepGraph {
     /// # Errors
     /// Returns an error if the catalog cannot be read, or a cycle among TVIEWs.
     pub fn load() -> TViewResult<Self> {
-        Self::from_metas(&crate::catalog::TviewMeta::load_all()?)
+        Self::from_plans(&crate::catalog::TviewMeta::load_plans()?)
     }
 
-    /// Build the graph from `metas`.
+    /// Build the graph from the TVIEWs' plans.
     ///
     /// # Errors
     /// A [`crate::TViewError::DependencyCycle`] when the TVIEWs read each other.
-    pub fn from_metas(metas: &[crate::catalog::TviewMeta]) -> TViewResult<Self> {
+    pub fn from_plans(metas: &[crate::catalog::PlanEntry]) -> TViewResult<Self> {
         let mut parents: HashMap<String, Vec<String>> = HashMap::new();
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_entities: HashSet<String> = HashSet::new();
@@ -51,7 +51,7 @@ impl EntityDepGraph {
         let mut lookup_columns: HashMap<(String, String), Vec<String>> = HashMap::new();
 
         for meta in metas {
-            let entity = &meta.entity_name;
+            let entity = &meta.entity;
             all_entities.insert(entity.clone());
             for embed in &meta.plan.embeds {
                 children
@@ -305,10 +305,10 @@ mod tests {
     fn meta(
         entity: &str,
         embeds: &[(&str, crate::lineage::EmbedKind, &str)],
-    ) -> crate::catalog::TviewMeta {
-        let mut meta = crate::catalog::TviewMeta {
-            entity_name: entity.to_string(),
-            ..crate::catalog::TviewMeta::default()
+    ) -> crate::catalog::PlanEntry {
+        let mut meta = crate::catalog::PlanEntry {
+            entity: entity.to_string(),
+            ..crate::catalog::PlanEntry::default()
         };
         for (child, kind, lookup) in embeds {
             meta.plan.embeds.push(crate::catalog::plan::PlanEmbed {
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn graph_edges_are_the_plans_embeds() {
         use crate::lineage::EmbedKind;
-        let graph = EntityDepGraph::from_metas(&[
+        let graph = EntityDepGraph::from_plans(&[
             meta("user", &[]),
             meta("post", &[("user", EmbedKind::Nested, "author_pk")]),
             meta("feed", &[("post", EmbedKind::Scalar, "fk_post")]),
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn embeds_in_a_cycle_are_refused() {
         use crate::lineage::EmbedKind;
-        let result = EntityDepGraph::from_metas(&[
+        let result = EntityDepGraph::from_plans(&[
             meta("a", &[("b", EmbedKind::Scalar, "b_pk")]),
             meta("b", &[("a", EmbedKind::Scalar, "a_pk")]),
         ]);

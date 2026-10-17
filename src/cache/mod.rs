@@ -10,7 +10,7 @@
 
 use crate::catalog::EntityDepGraph;
 use crate::catalog::plan::LocalPath;
-use crate::catalog::{KeyType, TviewMeta};
+use crate::catalog::{KeyType, PlanEntry, TviewMeta};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -63,6 +63,8 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
 }
 
 thread_local! {
+    /// Every TVIEW's entity and plan (one entry, keyed by `()`).
+    pub static PLANS_BY_ENTITY: Memo<(), std::rc::Rc<[PlanEntry]>> = Memo::new();
     /// The entity dependency graph (one entry, keyed by `()`).
     pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
     /// Table → the local paths starting at it.
@@ -126,7 +128,7 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
         return Ok(graph);
     }
     crate::metrics::metrics_api::record_graph_cache_miss();
-    let graph = EntityDepGraph::load()?;
+    let graph = EntityDepGraph::from_plans(&plans()?)?;
     GRAPH.with(|m| m.insert((), graph.clone()));
     Ok(graph)
 }
@@ -140,18 +142,30 @@ pub fn graph() -> crate::TViewResult<EntityDepGraph> {
 pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPath]>> {
     CASCADE_PATHS.with(|m| {
         m.get_or_load(table_oid, || {
-            Ok(TviewMeta::load_all()?
-                .into_iter()
-                .flat_map(|meta| meta.plan.paths)
+            Ok(plans()?
+                .iter()
+                .flat_map(|entry| &entry.plan.paths)
                 .filter(|path| path.source_oid == table_oid)
+                .cloned()
                 .collect::<Vec<_>>()
                 .into())
         })
     })
 }
 
+/// Every TVIEW's entity and plan (cached for the backend), which the dependency
+/// graph and the cascade paths are built from: not the TVIEWs' full catalog rows
+/// ([`TviewMeta::load_plans`]).
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
+    PLANS_BY_ENTITY.with(|m| m.get_or_load((), || Ok(TviewMeta::load_plans()?.into())))
+}
+
 /// Forget every cached value of this backend.
 pub fn invalidate_all() {
+    PLANS_BY_ENTITY.with(Memo::clear);
     GRAPH.with(Memo::clear);
     CASCADE_PATHS.with(Memo::clear);
     METAS.with(Memo::clear);
