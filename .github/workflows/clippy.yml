@@ -12,7 +12,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check formatting
@@ -32,7 +32,7 @@ jobs:
       matrix:
         pg: ["16", "17", "18"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
@@ -63,7 +63,7 @@ jobs:
       matrix:
         pg: ["16", "17", "18"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Toolchain version comes from rust-toolchain.toml (bump it in a dedicated PR).
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
