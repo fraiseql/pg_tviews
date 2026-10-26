@@ -16,8 +16,8 @@ the crate version, and `pg_extension.extversion` says which release a database r
 Tagging a release is then only stamping the CHANGELOG (`## [Unreleased]` becomes
 `## [<version>] - <date>`) and tagging `v<version>`. The release workflow first runs
 confiture's TVIEW suites (`.github/workflows/confiture.yml`) at the confiture commit
-pinned in `CONFITURE_REF`, and refuses to publish when they fail or nothing is
-pinned: move the pin to the confiture commit that matches the release before tagging. The version check accepts
+pinned in `CONFITURE_REF`, and refuses to publish when they fail, skip a test, or
+nothing is pinned: move the pin to the confiture commit that matches the release before tagging. The version check accepts
 `## [Unreleased]` while no tag `v<version>` exists; the release workflow refuses a tag
 whose version has no stamped CHANGELOG heading.
 
