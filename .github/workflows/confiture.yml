@@ -64,7 +64,7 @@ jobs:
           sudo pg_ctlcluster "${PG_MAJOR}" main restart
           psql -d postgres -c "CREATE DATABASE confiture_test"
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         if: steps.pin.outputs.skip != 'true'
 
       - name: Run confiture's TVIEW suites
