@@ -21,7 +21,7 @@ env:
   CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
   # The confiture commit whose suites this release must pass (a full SHA: fetching
   # by commit needs all 40 characters). A release cannot be tagged while it is empty.
-  CONFITURE_REF: "392310be8f892829f568072f16eb95499319a21b"
+  CONFITURE_REF: "c2c2274f90402f47bde7cb56dde514fb06b674e3"
 
 jobs:
   confiture:
@@ -69,15 +69,17 @@ jobs:
 
       - name: Run confiture's TVIEW suites
         if: steps.pin.outputs.skip != 'true'
+        # The suites, the extras and the flags of confiture's own `pg-tviews` leg
+        # (quality-gate.yml). PGDG's server package carries contrib (pg_trgm) and the
+        # client of its major, which the restore round trip's pg_dump needs.
         run: |
           git init -q /tmp/confiture
           cd /tmp/confiture
           git remote add origin "${CONFITURE_REPO}"
           git fetch -q --depth 1 origin "${CONFITURE_REF}"
           git checkout -q FETCH_HEAD
-          uv sync --locked --extra dev
+          uv sync --locked --extra dev --extra notifications
+          cd "${GITHUB_WORKSPACE}"
+          PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}" \
           CONFITURE_TEST_DB_URL="postgresql://postgres@localhost:${PGPORT}/confiture_test" \
-            uv run pytest \
-              tests/integration/test_tview_live.py tests/integration/test_tview_migrate.py \
-              tests/unit/test_tview_model.py tests/unit/test_tview_ddl.py \
-              tests/unit/test_drift_tviews.py -q -rs
+            scripts/run-confiture-suites.sh /tmp/confiture

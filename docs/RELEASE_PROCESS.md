@@ -13,6 +13,8 @@ pull request that changes it must do, is in
       (`upgrade.yml`), the nightly assertion build (`nightly.yml`).
 - [ ] `CONFITURE_REF` in `.github/workflows/confiture.yml` pins the confiture commit
       that matches this release.
+      Its suites run locally with `scripts/run-confiture-suites.sh <confiture checkout>`
+      (`CONFITURE_TEST_DB_URL` set; the server needs pg_tviews preloaded and `pg_trgm`).
 - [ ] A change that could cost time has been compared against a build of the previous
       release on one machine (`test/sql/real_benchmark/README.md`).
 - [ ] `CHANGELOG.md`: `## [Unreleased]` becomes `## [<version>] - <date>`, and the
