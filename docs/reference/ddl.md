@@ -761,6 +761,21 @@ A column rename on a table or view the definition reads (`ALTER TABLE tb_post RE
 COLUMN title TO headline`) is followed: the stored definition and plan are rewritten
 with the new name.
 
+A retype or a drop of such a column is not followed: the TVIEW's backing view
+(`tviews.<schema>__tv_<entity>`) reads it, so PostgreSQL refuses `ALTER COLUMN … TYPE`
+(`0A000`, `cannot alter type of a column used by a view or rule`) and `DROP COLUMN`
+(`2BP01`). Drop the TVIEW with `pg_tviews_drop()`, change the column, and create it
+again with the new definition, which fills it from the view:
+
+```sql
+SELECT tviews.pg_tviews_drop('tv_user');
+ALTER TABLE tb_user ALTER COLUMN age TYPE bigint;
+SELECT tviews.pg_tviews_create_or_replace('tv_user', $$ SELECT … $$);
+```
+
+`DROP COLUMN … CASCADE` drops the backing view, and with it the whole TVIEW: its
+registration, `tv_<entity>` and its triggers.
+
 The columns of `tv_<entity>` itself are its definition's: refreshes write each one
 by name, with the backing view's type. `ALTER TABLE tv_<entity>` refuses (`42809`)
 `RENAME COLUMN`, `DROP COLUMN`, and `ALTER COLUMN … TYPE` on `pk_<entity>`, `id` or
