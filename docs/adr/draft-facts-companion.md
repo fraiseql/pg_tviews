@@ -1,7 +1,7 @@
 # ADR (draft): `pg_tviews_facts`, an optional companion extension for multi-grain fact tables
 
-- Status: **Proposed, parked until pulled** (2026-10-27). Not to be implemented before one
-  of the pull conditions below holds and the governance amendment is accepted.
+- Status: **Proposed, parked until pulled** (2026-10-27). The project governance allows the
+  companion crate (2026-10-27); implementation waits for one of the pull conditions below.
 - Related: [ADR 0077](0077-refresh-strategy-selection.md) (strategies),
   [ADR 0136](0136-tool-facing-surface.md) (registry), [ADR 0207](0207-concurrent-maintenance.md)
   (value locks), [ADR 0232](0232-distribution.md) (distribution),
