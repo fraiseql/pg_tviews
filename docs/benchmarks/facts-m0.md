@@ -1,6 +1,6 @@
 # Fact families, M0
 
-[ADR 0260](https://github.com/fraiseql/pg_tviews/pull/260)'s M0: one fact family kept at several grains by
+[ADR 0260](../adr/0260-facts-companion.md)'s M0: one fact family kept at several grains by
 the SQL the companion would generate, on a database without it. It checks that the seam's
 design (statement triggers with transition tables on the root and every partition, changes
 applied once per statement, a per-tenant advisory lock) keeps the grains exact, and what it
