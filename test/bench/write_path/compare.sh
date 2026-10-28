@@ -6,7 +6,8 @@
 # Usage: PGHOST=… PGUSER=… ./test/bench/write_path/compare.sh <label>=<port> ... -- \
 #          [rounds] [seconds] [clients ...] [-- write ...]
 #   LOAD_MAX=4        start a run only when the 1-minute load average is below this
-#   LOAD_DISCARD=8    discard a run whose machine was at this load or more when it ended
+#   LOAD_DISCARD=8    discard a run whose machine was at this load or more when it ended,
+#                     plus half its clients (the run's own load)
 #   QUIET_TIMEOUT=7200  give up (exit 3) after waiting this many seconds for a quiet machine
 # Prints one CSV line per run: round,write,clients,label,tps,ms,wal_B,load_start,load_end,kept
 # Then, per write and client count, each build's median tps over the kept runs.
@@ -52,7 +53,7 @@ for (( r = 1; r <= rounds; r++ )); do
         fresh_copy "$tpl" "$db"
         wait_quiet; l0="$(load)"
         read -r tps ms wal < <(measure "$db" "$here/writes/$w.sql" "$secs" "$c")
-        l1="$(load)"; kept=yes; below "$l1" "$load_discard" || kept=no
+        l1="$(load)"; kept=yes; below "$l1" "$(( load_discard + c / 2 ))" || kept=no
         echo "$r,$w,$c,${b%%=*},$tps,$ms,$wal,$l0,$l1,$kept" | tee -a "$out"
       done
     done
