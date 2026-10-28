@@ -1,0 +1,24 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_load b_begin b_load a_commit b_commit b_check
+step a_begin: BEGIN;
+step a_load: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) SELECT md5('1')::uuid, g % 3, 'a', date '2026-07-01' + g % 28, 1, 1 FROM generate_series(1, 100) g;
+step b_begin: BEGIN;
+step b_load: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) SELECT md5('1')::uuid, g % 3, 'a', date '2026-07-01' + g % 28, 2, 1 FROM generate_series(1, 100) g; <waiting ...>
+step a_commit: COMMIT;
+step b_load: <... completed>
+step b_commit: COMMIT;
+step b_check: 
+  SELECT count(*) AS problems FROM facts_m0.verify('sales');
+  SELECT sum(_n) AS rows, sum(amount) AS amount FROM tf_sales_category_month;
+
+problems
+--------
+       0
+(1 row)
+
+rows|amount
+----+------
+ 200|300.00
+(1 row)
+

@@ -5,6 +5,7 @@
 # Usage: PGHOST=… PGPORT=… PGUSER=… ./test/bench/facts_m0/run.sh [correctness|isolation|overhead] …
 #   correctness [rounds] [statements]  randomized load, verify after each round (default 10 × 100)
 #   isolation                          concurrent loads (isolation/specs), via pg_isolation_regress
+#                                      (FACTS_M0_LOCK=false generates the family without its lock)
 #   overhead [seconds] [clients]       µs and WAL per inserted row, with and without the triggers
 # Not run in CI. Run it on a server built without assertions: on an assert-enabled
 # build (pgrx's), the randomized load trips a PostgreSQL assertion in heap_update
@@ -18,7 +19,9 @@ db=facts_m0_run
 fresh() {
   psql -qX -d postgres -c "SET client_min_messages = warning" -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db"
   psql -qX -v ON_ERROR_STOP=1 -d "$db" -f "$here/schema.sql" -f "$here/generate.sql" \
-       -f "$here/verify.sql" -f "$here/load.sql" -c "SELECT facts_m0.install('sales')" >/dev/null
+       -f "$here/verify.sql" -f "$here/load.sql" \
+       -c "UPDATE facts_m0.family SET declaration = declaration || jsonb_build_object('lock', ${FACTS_M0_LOCK:-true})" \
+       -c "SELECT facts_m0.install('sales')" >/dev/null
 }
 
 correctness() {
@@ -37,7 +40,22 @@ correctness() {
   echo "correctness: PASS"
 }
 
+isolation() {
+  local regress out rc
+  regress="$(pg_config --pkglibdir)/pgxs/src/test/isolation/pg_isolation_regress"
+  fresh
+  out="$(mktemp -d)"
+  rc=0
+  "$regress" --use-existing --host="$PGHOST" --port="$PGPORT" --user="$PGUSER" \
+    --bindir="$(pg_config --bindir)" --inputdir="$here/isolation" --outputdir="$out" \
+    --dbname="$db" --schedule="$here/isolation/isolation_schedule" || rc=$?
+  [[ $rc -ne 0 && -f "$out/regression.diffs" ]] && cat "$out/regression.diffs"
+  [[ $rc -eq 0 ]] && rm -rf "$out" || echo "results kept in $out"
+  return $rc
+}
+
 case "${1:-correctness}" in
   correctness) shift || true; correctness "$@" ;;
+  isolation) isolation ;;
   *) echo "usage: $0 [correctness|isolation|overhead] …" >&2; exit 2 ;;
 esac

@@ -1,0 +1,28 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_t1 b_begin b_t2 a_t2 b_t1 a_commit b_commit b_check
+step a_begin: BEGIN;
+step a_t1: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) VALUES (md5('1')::uuid, 1, 'a', '2026-07-03', 10, 1);
+step b_begin: BEGIN;
+step b_t2: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) VALUES (md5('2')::uuid, 1, 'a', '2026-07-04', 20, 2);
+step a_t2: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) VALUES (md5('2')::uuid, 1, 'a', '2026-07-03', 10, 1); <waiting ...>
+step b_t1: INSERT INTO tf_sales_day (tenant_id, entity_id, category, day, amount, qty) VALUES (md5('1')::uuid, 1, 'a', '2026-07-04', 20, 2); <waiting ...>
+step a_t2: <... completed>
+ERROR:  deadlock detected
+step b_t1: <... completed>
+step a_commit: COMMIT;
+step b_commit: COMMIT;
+step b_check: 
+  SELECT count(*) AS problems FROM facts_m0.verify('sales');
+  SELECT count(*) AS day_rows FROM tf_sales_day;
+
+problems
+--------
+       0
+(1 row)
+
+day_rows
+--------
+       2
+(1 row)
+
