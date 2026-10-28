@@ -321,9 +321,13 @@ pub(super) unsafe fn privileges_change_of(
 /// from a partition tree, resolved once `PostgreSQL` has run the statement.
 pub(super) struct PartitionDdl {
     pub(super) tables: Vec<*mut pg_sys::RangeVar>,
-    /// The partitioned table an `ATTACH` or a `DETACH … CONCURRENTLY` (or
-    /// `FINALIZE`) changes the rows of. A plain `DETACH` maps the leaving rows
-    /// before it runs instead ([`leaving_partitions_of`]).
+    /// The partitions an `ATTACH` adds, with their rows: mapped to keys once
+    /// attached.
+    pub(super) attached: Vec<*mut pg_sys::RangeVar>,
+    /// The partitioned table a `DETACH … CONCURRENTLY` (or `FINALIZE`) changes the
+    /// rows of across its two transactions: its TVIEWs are refreshed in full. A
+    /// plain `DETACH` maps the leaving rows before it runs instead
+    /// ([`leaving_partitions_of`]).
     pub(super) changed_rows_of: Option<*mut pg_sys::RangeVar>,
 }
 
@@ -343,9 +347,22 @@ impl PartitionDdl {
                 crate::dependency::triggers::ensure_partition_triggers(oid)?;
             }
         }
-        // The rows of an attached partition enter the partitioned table with no
-        // row written, and so do the rows a concurrent detach takes out across
-        // its two transactions: refresh its TVIEWs in full.
+        // The rows of an attached partition enter the tree with no row written:
+        // mapped to the keys they reach, as their INSERT would be.
+        let mut mapped = false;
+        for rv in self.attached {
+            // SAFETY: see above.
+            let oid = unsafe { resolve_relation_oid(rv) };
+            if oid != pg_sys::InvalidOid {
+                crate::delta::map_entering_partition(oid)?;
+                mapped = true;
+            }
+        }
+        if mapped && !crate::executor::inside_writing_statement() {
+            crate::flush::flush_refresh_queue()?;
+        }
+        // The rows a concurrent detach takes out across its two transactions:
+        // refresh its TVIEWs in full.
         // SAFETY: see above.
         let parent = self
             .changed_rows_of
@@ -368,6 +385,7 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
         }
         let node = (*pstmt).utilityStmt;
         let mut tables = Vec::new();
+        let mut attached = Vec::new();
         let mut changed_rows_of = None;
         match (*node).type_ {
             pg_sys::NodeTag::T_CreateStmt => {
@@ -399,10 +417,13 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
                     let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
                     if !partition.name.is_null() {
                         tables.push(partition.name);
-                        if (*cmd).subtype != pg_sys::AlterTableType::AT_DetachPartition
-                            || partition.concurrent
-                        {
-                            changed_rows_of = Some(stmt.relation);
+                        match (*cmd).subtype {
+                            pg_sys::AlterTableType::AT_AttachPartition => {
+                                attached.push(partition.name);
+                            }
+                            pg_sys::AlterTableType::AT_DetachPartition if !partition.concurrent => {
+                            }
+                            _ => changed_rows_of = Some(stmt.relation),
                         }
                     }
                 }
@@ -411,16 +432,26 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
         }
         (!tables.is_empty()).then_some(PartitionDdl {
             tables,
+            attached,
             changed_rows_of,
         })
     }
 }
 
+/// Who may run a statement that takes a partition's rows out of its tree.
+enum Access {
+    /// The partition's owner, or the given table's (`DETACH`: the parent's).
+    Owner(Option<*mut pg_sys::RangeVar>),
+    /// A role with `TRUNCATE` on the partition.
+    Truncate,
+}
+
 /// The partitions whose rows leave their partition tree with the statement, read
-/// before it runs: each partition a `DROP TABLE` or `DROP FOREIGN TABLE` names, and
-/// the one a plain `DETACH PARTITION` names. Only when the current user may run
-/// the statement (owns the dropped partition, or the table it is detached from):
-/// otherwise it fails before anything changes, and nothing is locked first.
+/// before it runs: each partition a `DROP TABLE`, `DROP FOREIGN TABLE` or
+/// `TRUNCATE` names, and the one a plain `DETACH PARTITION` names. Only when the
+/// current user may run the statement (owns the dropped partition or the table it
+/// is detached from, may truncate the partition): otherwise it fails before
+/// anything changes, and nothing is locked first.
 ///
 /// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
 pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) -> Vec<pg_sys::Oid> {
@@ -434,10 +465,28 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
         let owns = |relid: pg_sys::Oid| {
             pg_sys::object_ownercheck(pg_sys::RelationRelationId, relid, pg_sys::GetUserId())
         };
-        // (partition, the table whose owner may run the statement when not the
-        // partition's)
-        let mut names: Vec<(*mut pg_sys::RangeVar, Option<*mut pg_sys::RangeVar>)> = Vec::new();
+        let may_truncate = |relid: pg_sys::Oid| {
+            pg_sys::pg_class_aclcheck(
+                relid,
+                pg_sys::GetUserId(),
+                pg_sys::AclMode::from(pg_sys::ACL_TRUNCATE),
+            ) == pg_sys::AclResult::ACLCHECK_OK
+        };
+        // (partition, who may run the statement: the owner of the partition, or of
+        // the table given, or a role with TRUNCATE on the partition)
+        let mut names: Vec<(*mut pg_sys::RangeVar, Access)> = Vec::new();
         match (*node).type_ {
+            pg_sys::NodeTag::T_TruncateStmt => {
+                #[allow(clippy::cast_ptr_alignment)]
+                // Reason: PostgreSQL Node* → TruncateStmt* cast
+                let stmt = &*node.cast::<pg_sys::TruncateStmt>();
+                for i in 0..pg_sys::list_length(stmt.relations) {
+                    let rv = pg_sys::list_nth(stmt.relations, i).cast::<pg_sys::RangeVar>();
+                    if !rv.is_null() {
+                        names.push((rv, Access::Truncate));
+                    }
+                }
+            }
             pg_sys::NodeTag::T_DropStmt => {
                 #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
                 let stmt = &*node.cast::<pg_sys::DropStmt>();
@@ -448,7 +497,10 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
                     for i in 0..pg_sys::list_length(stmt.objects) {
                         let name_list = pg_sys::list_nth(stmt.objects, i).cast::<pg_sys::List>();
                         if !name_list.is_null() && pg_sys::list_length(name_list) > 0 {
-                            names.push((pg_sys::makeRangeVarFromNameList(name_list), None));
+                            names.push((
+                                pg_sys::makeRangeVarFromNameList(name_list),
+                                Access::Owner(None),
+                            ));
                         }
                     }
                 }
@@ -470,7 +522,7 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
                     let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
                     // DETACH is the detached-from table's owner's to run.
                     if !partition.concurrent && !partition.name.is_null() {
-                        names.push((partition.name, Some(stmt.relation)));
+                        names.push((partition.name, Access::Owner(Some(stmt.relation))));
                     }
                 }
             }
@@ -478,11 +530,12 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
         }
         names
             .into_iter()
-            .filter_map(|(rv, runs_it)| {
+            .filter_map(|(rv, access)| {
                 let oid = resolve_relation_oid(rv);
-                let allowed = match runs_it {
-                    Some(parent) => owns(resolve_relation_oid(parent)),
-                    None => owns(oid),
+                let allowed = match access {
+                    Access::Owner(Some(parent)) => owns(resolve_relation_oid(parent)),
+                    Access::Owner(None) => owns(oid),
+                    Access::Truncate => may_truncate(oid),
                 };
                 (oid != pg_sys::InvalidOid && pg_sys::get_rel_relispartition(oid) && allowed)
                     .then_some(oid)

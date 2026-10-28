@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are uncascaded reads, refused under the default `error` policy and accepted under
   `warn`. `full_refresh` is refused for them (nothing would start the refresh). Before,
   they were accepted under any policy and the TVIEW went stale.
+- **`TRUNCATE` of a partition and `ATTACH PARTITION` refresh only the keys the
+  partition's rows reach**, as a `DELETE` or an `INSERT` of those rows would, instead of
+  every TVIEW over the tree in full: retention jobs and partition swaps now cost what
+  their rows cost. A foreign partition, one the TVIEW's owner cannot read whole, and
+  `TRUNCATE` of the partitioned table itself still refresh in full.
 - **A table read with its inheritance children is refused** (`0A000`): writes to a child
   fire no trigger on the parent. Read `FROM ONLY` it, or make it a partitioned table. A
   table a TVIEW reads gets no new inheritance child (`CREATE TABLE … INHERITS`,

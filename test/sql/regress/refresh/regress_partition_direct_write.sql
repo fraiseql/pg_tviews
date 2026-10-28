@@ -1,7 +1,7 @@
 -- Every partition flushes and truncates. A statement that names a partition
 -- directly (a leaf, a middle level, a sub-leaf) refreshes the TVIEW when it ends,
--- in autocommit too; TRUNCATE of a partition refreshes it, and TRUNCATE of the root
--- refreshes it once. Partitions created or attached after the TVIEW get the same
+-- in autocommit too; TRUNCATE of a partition refreshes the rows it reached, and
+-- TRUNCATE of the root refreshes the TVIEW in full once. Partitions created or attached after the TVIEW get the same
 -- triggers, a detached one loses them, and the health check sees a missing one.
 --
 -- Runs in autocommit on purpose (no -1): each statement is its own transaction,
@@ -61,11 +61,6 @@ BEGIN
     END IF;
 END $$;
 
--- Scans of tb_order_1 in this transaction: each full refresh of tv_order reads it.
-CREATE FUNCTION order_scans() RETURNS bigint LANGUAGE sql AS $$
-    SELECT COALESCE(seq_scan, 0) + COALESCE(idx_scan, 0)
-    FROM pg_stat_xact_user_tables WHERE relid = 'tb_order_1'::regclass $$;
-
 -- ── direct writes, autocommit ───────────────────────────────────────────────
 UPDATE tb_note_1 SET body = 'n1 leaf' WHERE pk_note = 1;
 SELECT check_fresh('UPDATE a leaf (mapped)');
@@ -103,20 +98,16 @@ SELECT check_fresh('INSERT into a partition created from PL/pgSQL');
 TRUNCATE tb_note_1;
 SELECT check_fresh('TRUNCATE a leaf');
 INSERT INTO tb_note (pk_note, fk_line, body) VALUES (1, 1, 'n1 again'), (220, 130, 'n5');
+-- Stats merge when each transaction commits: each statement runs on its own.
+CREATE TEMP TABLE full_before AS
+    SELECT COALESCE(full_refreshes, 0) AS n FROM tviews.stats WHERE entity = 'order';
+TRUNCATE tb_note;      -- fires the truncate trigger of the root and of each partition
 DO $$
-DECLARE s0 bigint;
-DECLARE one_refresh bigint;
-DECLARE root bigint;
+DECLARE refreshes bigint := (SELECT COALESCE(full_refreshes, 0) FROM tviews.stats WHERE entity = 'order')
+                            - (SELECT n FROM full_before);
 BEGIN
-    s0 := order_scans();
-    TRUNCATE tb_note_1;
-    one_refresh := order_scans() - s0;
-    s0 := order_scans();
-    TRUNCATE tb_note;      -- fires the truncate trigger of the root and of each partition
-    root := order_scans() - s0;
-    IF one_refresh = 0 OR root > one_refresh THEN
-        RAISE EXCEPTION 'item 2 FAIL: TRUNCATE of the root refreshed tv_order % times',
-            CASE WHEN one_refresh = 0 THEN 'an unknown number of' ELSE (root / one_refresh)::text END;
+    IF refreshes <> 1 THEN
+        RAISE EXCEPTION 'item 2 FAIL: TRUNCATE of the root refreshed tv_order in full % times', refreshes;
     END IF;
 END $$;
 SELECT check_fresh('TRUNCATE the root');

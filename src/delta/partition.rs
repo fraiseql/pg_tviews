@@ -6,7 +6,7 @@
 use super::mapping::{refresh_all, rendered};
 use super::render::{computed_columns, key_of, key_sql_type};
 use super::transition::{changed_values, crosscheck_keys, texts};
-use super::trigger::suspended;
+use super::trigger::{suspended, truncate_mapped};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
 use crate::error::{TViewError, TViewResult};
@@ -86,13 +86,49 @@ pub fn map_leaving_partition(partition: Oid) -> TViewResult<()> {
     // SAFETY: a syscache lookup by OID.
     let foreign = unsafe { pg_sys::get_rel_relkind(partition) }
         == pg_sys::RELKIND_FOREIGN_TABLE.cast_signed();
+    let truncated: Vec<Oid> = std::iter::once(partition).chain(below).collect();
     for (entity, ancestor) in readers {
         if suspended() {
             crate::suspend::record_change(&entity);
         } else if foreign {
             crate::queue::enqueue_refresh_all(&entity);
         } else {
-            map_partition_rows(&entity, partition, ancestor)?;
+            map_partition_rows(&entity, partition, ancestor, false)?;
+        }
+        truncate_mapped(&entity, &truncated);
+    }
+    Ok(())
+}
+
+/// `partition` was just attached to a partition tree (`ATTACH PARTITION`): enqueue,
+/// for every TVIEW over a table above it, the keys its rows reach, as an `INSERT`
+/// of those rows would, with the same value locks. A foreign partition, or one
+/// the TVIEW's owner cannot read whole, refreshes the TVIEW in full.
+///
+/// # Errors
+/// Returns an error if the catalog or a mapping query fails.
+pub fn map_entering_partition(partition: Oid) -> TViewResult<()> {
+    // Its rows enter the tree: a link change.
+    crate::concurrency::note_link_change();
+    let mut readers = Vec::new();
+    for ancestor in oids(
+        "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
+        partition,
+    )? {
+        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
+            readers.push((entity, ancestor));
+        }
+    }
+    // SAFETY: a syscache lookup by OID.
+    let foreign = unsafe { pg_sys::get_rel_relkind(partition) }
+        == pg_sys::RELKIND_FOREIGN_TABLE.cast_signed();
+    for (entity, ancestor) in readers {
+        if suspended() {
+            crate::suspend::record_change(&entity);
+        } else if foreign {
+            crate::queue::enqueue_refresh_all(&entity);
+        } else {
+            map_partition_rows(&entity, partition, ancestor, true)?;
         }
     }
     Ok(())
@@ -111,8 +147,10 @@ fn oids(sql: &str, relid: Oid) -> TViewResult<Vec<Oid>> {
 }
 
 /// Enqueue `entity`'s keys reached by the rows of `partition`, below `root`, the
-/// table the TVIEW reads.
-fn map_partition_rows(entity: &str, partition: Oid, root: Oid) -> TViewResult<()> {
+/// table the TVIEW reads. Rows `entering` the tree lock their join values first,
+/// as any writer does (ADR 0207); rows leaving it are covered by the statement's
+/// `ACCESS EXCLUSIVE` locks.
+fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -> TViewResult<()> {
     let Some(meta) = TviewMeta::load_by_entity(entity)? else {
         return Ok(());
     };
@@ -171,6 +209,12 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid) -> TViewResult<()
          SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
         key_sql_type(key_type)
     );
+    if entering {
+        crate::concurrency::lock_changed_rows(mapping, |column| {
+            Spi::connect_mut(|client| texts(client, None, &changed_values(&delta, column), &[]))
+                .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
+        })?;
+    }
     // Read-write: a fresh snapshot, which sees every row committed before the locks.
     let keys = Spi::connect_mut(|client| {
         let mut keys = Vec::new();

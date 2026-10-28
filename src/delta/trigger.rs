@@ -4,6 +4,7 @@
 
 use super::Event;
 use super::mapping::map_statement;
+use pgrx::pg_sys;
 use pgrx::prelude::*;
 use std::cell::RefCell;
 
@@ -14,6 +15,40 @@ thread_local! {
     /// The entities the `TRUNCATE` statement numbered `.0` already refreshed.
     static TRUNCATE_REFRESHED: RefCell<(u64, std::collections::HashSet<String>)> =
         RefCell::new((0, std::collections::HashSet::new()));
+    /// The `(entity, relation)` pairs whose rows the `TRUNCATE` statement numbered
+    /// `.0` mapped to keys before it ran (partitions of a tree the TVIEW reads):
+    /// their truncate triggers refresh nothing in full.
+    static TRUNCATE_MAPPED: RefCell<(u64, std::collections::HashSet<(String, pg_sys::Oid)>)> =
+        RefCell::new((0, std::collections::HashSet::new()));
+}
+
+/// The `TRUNCATE` statement running mapped the rows of `relations` to `entity`'s
+/// keys before it ran. Outside a `TRUNCATE` (a `DROP TABLE`, a `DETACH`), nothing
+/// is recorded: no truncate trigger follows.
+pub(super) fn truncate_mapped(entity: &str, relations: &[pg_sys::Oid]) {
+    let epoch = TRUNCATE_EPOCH.get();
+    if epoch == 0 {
+        return;
+    }
+    TRUNCATE_MAPPED.with(|m| {
+        let mut mapped = m.borrow_mut();
+        if mapped.0 != epoch {
+            *mapped = (epoch, std::collections::HashSet::new());
+        }
+        mapped
+            .1
+            .extend(relations.iter().map(|r| (entity.to_string(), *r)));
+    });
+}
+
+/// Whether the running `TRUNCATE` mapped `relation`'s rows to `entity`'s keys.
+fn was_truncate_mapped(entity: &str, relation: pg_sys::Oid) -> bool {
+    let epoch = TRUNCATE_EPOCH.get();
+    epoch != 0
+        && TRUNCATE_MAPPED.with(|m| {
+            let mapped = m.borrow();
+            mapped.0 == epoch && mapped.1.contains(&(entity.to_string(), relation))
+        })
 }
 
 /// The entity a `pg_tviews` trigger serves: its argument. A trigger without one
@@ -101,6 +136,13 @@ fn pg_tview_truncate_trigger<'a>(
     crate::concurrency::note_link_change();
     if suspended() {
         crate::suspend::record_change(&entity);
+        return Ok(None);
+    }
+    // A truncated partition whose rows were mapped to keys before the statement:
+    // those keys are refreshed after it, not the whole TVIEW.
+    if let Ok(relation) = trigger.relation()
+        && was_truncate_mapped(&entity, relation.oid())
+    {
         return Ok(None);
     }
     if !first_truncate_refresh(&entity) {

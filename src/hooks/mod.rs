@@ -459,7 +459,8 @@ struct FollowUps {
     column_rename: Option<ColumnRename>,
     /// A partition added or removed: it gets or loses the triggers.
     partition_ddl: Option<PartitionDdl>,
-    /// Partitions dropped or detached: their rows leave the TVIEWs over the tree.
+    /// Partitions dropped, detached or truncated: their rows leave the TVIEWs over
+    /// the tree.
     leaving_partitions: Vec<pg_sys::Oid>,
     /// A TVIEW's table renamed or moved: its backing view's name follows.
     table_move: Option<pg_sys::Oid>,
