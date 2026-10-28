@@ -526,7 +526,7 @@ pub fn sync_entity_triggers(
         if PARTITION_MEMBER
             .iter()
             .any(|spec| spec.function == installed.function)
-            && crate::delta::partition_root(installed.table_oid)? != installed.table_oid
+            && crate::catalog::partition_root(installed.table_oid)? != installed.table_oid
         {
             partitions.push(installed.table_oid);
         } else {

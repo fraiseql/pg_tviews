@@ -4,22 +4,16 @@ use std::collections::HashSet;
 
 /// Find all base tables that a view depends on (transitively).
 ///
-/// `schema_hint` is the schema where the view was created.  When `Some`, the OID
-/// lookup is constrained to that schema so the correct view is found even when
-/// `current_schema()` resolves to a different schema (e.g. the database
-/// `search_path` starts with `"app"` but the view lives in `"public"`).
-/// When `None`, the lookup falls back to `current_schema()`.
+/// `schema` is the schema where the view was created: the lookup is constrained
+/// to it, so the right view is found whatever `search_path` says.
 ///
 /// The view's rewrite rule is followed through `pg_depend`, through views, at most
 /// `pg_tviews.max_dependency_depth` views deep.
 ///
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
-pub fn find_base_tables(
-    view_name: &str,
-    schema_hint: Option<&str>,
-) -> TViewResult<Vec<pg_sys::Oid>> {
-    let view_oid = get_view_oid(view_name, schema_hint)?;
+pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys::Oid>> {
+    let view_oid = get_view_oid(view_name, schema)?;
     let max_depth = crate::config::max_dependency_depth();
     let depth = crate::catalog::reads::view_nesting(view_oid)?;
     if depth > max_depth {
@@ -46,34 +40,13 @@ pub fn find_base_tables(
 
 // Helper functions for find_base_tables()
 
-fn get_view_oid(view_name: &str, schema_hint: Option<&str>) -> TViewResult<pg_sys::Oid> {
+fn get_view_oid(view_name: &str, schema: &str) -> TViewResult<pg_sys::Oid> {
     // Use pg_class lookup rather than ::regclass cast: the cast raises a PostgreSQL
     // ERROR (aborting the transaction) when the view doesn't exist, whereas a catalog
     // query returns NULL which we can handle as a Rust error.
-    //
-    // When a schema_hint is provided (e.g. "public" from a schema-qualified CREATE TABLE)
-    // we constrain the lookup to that schema.  Otherwise we fall back to current_schema()
-    // so existing callers that don't know the schema still work.
-    let schema = schema_hint.map_or_else(
-        || {
-            Spi::get_one::<String>("SELECT current_schema()::text")
-                .map_err(|e| TViewError::CatalogError {
-                    operation: "Resolve current_schema()".to_string(),
-                    pg_error: e.to_string(),
-                })
-                .and_then(|opt| {
-                    opt.ok_or_else(|| TViewError::CatalogError {
-                        operation: "Resolve current_schema()".to_string(),
-                        pg_error: "current_schema() returned NULL".to_string(),
-                    })
-                })
-        },
-        |s| Ok(s.to_string()),
-    )?;
-
     let args = vec![
         crate::utils::spi::text(view_name),
-        crate::utils::spi::text(schema.as_str()),
+        crate::utils::spi::text(schema),
     ];
     Spi::get_one_with_args::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \

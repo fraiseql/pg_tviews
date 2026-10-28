@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod graph;
 pub(crate) mod indexes;
+mod partition;
 pub mod plan;
 pub mod queries;
 pub mod reads;
@@ -10,6 +11,7 @@ pub mod row;
 
 pub use collections::Collection;
 pub use graph::EntityDepGraph;
+pub use partition::partition_root;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::rc::Rc;
