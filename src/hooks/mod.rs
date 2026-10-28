@@ -375,7 +375,7 @@ fn refuse_inherit(change: &ColumnChange) -> TViewResult<()> {
         if parent == pg_sys::InvalidOid {
             continue;
         }
-        let readers = crate::dependency::triggers::row_trigger_entities(parent)?;
+        let readers = crate::catalog::queries::table_readers_of(parent)?;
         if let Some(entity) = readers.first() {
             // SAFETY: a RangeVar of the statement's parse tree; the child may not
             // exist yet (CREATE TABLE … INHERITS).
@@ -466,7 +466,7 @@ struct FollowUps {
     partition_ddl: Option<PartitionDdl>,
     /// Partitions dropped, detached or truncated: their rows leave the TVIEWs over
     /// the tree.
-    leaving_partitions: Vec<pg_sys::Oid>,
+    leaving_partitions: Vec<(pg_sys::Oid, bool)>,
     /// A TVIEW's table renamed or moved: its backing view's name follows.
     table_move: Option<pg_sys::Oid>,
     /// GRANT / REVOKE or an owner change: the backing views follow.
@@ -534,8 +534,8 @@ impl FollowUps {
 
     /// What must happen before `PostgreSQL` runs the statement.
     fn prepare(&self) {
-        for &partition in &self.leaving_partitions {
-            if let Err(e) = crate::delta::map_leaving_partition(partition) {
+        for &(partition, lock_parent) in &self.leaving_partitions {
+            if let Err(e) = crate::delta::map_leaving_partition(partition, lock_parent) {
                 e.raise_in("pg_tviews: could not map the rows of a partition leaving its tree");
             }
         }

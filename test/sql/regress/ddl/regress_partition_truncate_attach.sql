@@ -86,6 +86,17 @@ ROLLBACK TO SAVEPOINT s;
 COMMIT;
 SELECT check_fresh('TRUNCATE rolled back to a savepoint');
 
+-- TRUNCATE of a partition locks the partition, as PostgreSQL's does, not its parent.
+BEGIN;
+TRUNCATE tb_line_1;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'tb_line'::regclass
+               AND pid = pg_backend_pid() AND mode = 'AccessExclusiveLock') THEN
+        RAISE EXCEPTION 'FAIL: TRUNCATE of a partition holds ACCESS EXCLUSIVE on tb_line';
+    END IF;
+END $$;
+ROLLBACK;
+
 -- ── ATTACH PARTITION ────────────────────────────────────────────────────────
 CREATE TABLE tb_line_4 (pk_line bigint NOT NULL, fk_order bigint NOT NULL, pos int NOT NULL);
 INSERT INTO tb_line_4 VALUES (310, 2, 7), (320, 6, 8);

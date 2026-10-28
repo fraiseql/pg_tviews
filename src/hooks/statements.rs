@@ -451,10 +451,13 @@ enum Access {
 /// `TRUNCATE` names, and the one a plain `DETACH PARTITION` names. Only when the
 /// current user may run the statement (owns the dropped partition or the table it
 /// is detached from, may truncate the partition): otherwise it fails before
-/// anything changes, and nothing is locked first.
+/// anything changes, and nothing is locked first. With each partition: whether the
+/// statement locks its parent too (not `TRUNCATE`).
 ///
 /// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
-pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) -> Vec<pg_sys::Oid> {
+pub(super) unsafe fn leaving_partitions_of(
+    pstmt: *const pg_sys::PlannedStmt,
+) -> Vec<(pg_sys::Oid, bool)> {
     // SAFETY: every pointer is null-checked before it is dereferenced; each cast
     // follows the node's tag.
     unsafe {
@@ -537,8 +540,9 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
                     Access::Owner(None) => owns(oid),
                     Access::Truncate => may_truncate(oid),
                 };
+                // TRUNCATE locks the partition alone; DROP and DETACH its parent too.
                 (oid != pg_sys::InvalidOid && pg_sys::get_rel_relispartition(oid) && allowed)
-                    .then_some(oid)
+                    .then_some((oid, !matches!(access, Access::Truncate)))
             })
             .collect()
     }

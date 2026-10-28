@@ -139,7 +139,11 @@ fn pg_tview_trigger_handler<'a>(
         .iter()
         .filter(|p| p.entity_name == served)
         .collect();
-    let changed = changed_columns(trigger);
+    // The changed columns, compared datum by datum: only when a local path or a
+    // link check reads them.
+    let changed = (!paths.is_empty() || !crate::concurrency::links_changed())
+        .then(|| changed_columns(trigger))
+        .flatten();
     note_row_write(trigger, &served, table_oid, changed.as_deref());
     // If triggers are suspended, record the change instead of enqueuing
     if crate::suspend::is_suspended() {

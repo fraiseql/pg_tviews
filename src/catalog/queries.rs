@@ -553,20 +553,32 @@ pub fn type_readers_of(enum_type: Oid) -> TViewResult<Vec<String>> {
     )
 }
 
-/// The first column of each row `sql` returns, as text.
+/// The entities `sql` returns, as `operation` names the failure.
 fn entities(
     sql: &str,
     args: &[pgrx::datum::DatumWithOid<'_>],
     operation: &str,
 ) -> TViewResult<Vec<String>> {
-    Spi::connect(|client| {
-        client
-            .select(sql, None, args)?
-            .map(|row| row.get::<String>(1))
-            .collect::<Result<Vec<_>, _>>()
-            .map(|entities| entities.into_iter().flatten().collect())
-    })
-    .map_err(|e| crate::utils::spi::catalog_error(operation, &e))
+    crate::utils::spi::strings(sql, args)
+        .map_err(|e| crate::utils::spi::catalog_error(operation, &e))
+}
+
+/// The TVIEWs whose plan reads `table`, by entity, whatever triggers they have
+/// on it.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn table_readers_of(table: Oid) -> TViewResult<Vec<String>> {
+    entities(
+        &format!(
+            "SELECT DISTINCT m.entity::text FROM {} m, \
+                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
+             WHERE (t->>'relid')::pg_catalog.oid = $1 ORDER BY 1",
+            super::meta_table()
+        ),
+        &[crate::utils::spi::oid(table)],
+        "Find the TVIEWs reading a table",
+    )
 }
 
 /// The TVIEWs reading the materialized view `matview` under the `full_refresh`

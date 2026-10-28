@@ -4,6 +4,7 @@
 use super::apply::Flush;
 use crate::TViewResult;
 use crate::queue::RefreshKey;
+use crate::queue::patch::{self, PatchState};
 use crate::queue::state;
 
 pub(super) fn flush_pending() -> TViewResult<()> {
@@ -76,11 +77,31 @@ impl Flush {
         if late.queue.is_empty() && late.fanout.is_empty() {
             return Ok(());
         }
-        self.patches.extend(late.patches);
-        for key in &late.queue {
-            self.processed.remove(key);
+        let mut late_patches = late.patches;
+        for key in late.queue {
+            // A key refreshed earlier in this flush starts over with what the late
+            // write captured; one still pending keeps what it had and adds that:
+            // a patch merged into its chain, or a recompute when the late write
+            // captured none.
+            let refreshed = self.processed.remove(&key);
+            let state = late_patches.remove(&key);
+            if refreshed || !self.pending.contains(&key) {
+                match state {
+                    Some(state) => self.patches.insert(key.clone(), state),
+                    None => self.patches.remove(&key),
+                };
+            } else {
+                match state {
+                    Some(PatchState::Direct(chain)) => {
+                        patch::merge_chain_into(&mut self.patches, key.clone(), chain);
+                    }
+                    Some(PatchState::Poisoned) | None => {
+                        patch::poison_into(&mut self.patches, key.clone());
+                    }
+                }
+            }
+            self.pending.insert(key);
         }
-        self.pending.extend(late.queue);
         self.apply_fanouts(late.fanout)
     }
 

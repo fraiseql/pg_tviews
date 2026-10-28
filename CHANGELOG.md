@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `updated_at` from every TVIEW's table, then re-derives every TVIEW (plan version 3
   records the columns each one's rows are linked by). An object of yours that reads those
   columns (a view) fails the update, named; so does a TVIEW that no longer analyses.
+- The re-derivation applies this release's refusals: a TVIEW reading a table with its
+  inheritance children, a foreign table or a sequence under the `error` policy, or a
+  foreign table or a sequence under `full_refresh`, fails the update, named. Those TVIEWs
+  were already stale; before updating, read `FROM ONLY` the parent, set the TVIEW's
+  `uncascaded_policy` to `warn` (`pg_tviews_create_or_replace`), or drop it.
 
 ## [0.1.0-beta.33] - 2026-10-28
 

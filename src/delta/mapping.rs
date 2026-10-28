@@ -99,18 +99,20 @@ pub(super) fn map_statement(
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     let computed = computed_columns(entity, table_oid)?;
-    crate::concurrency::note_write(Some(mapping), event, |links| {
-        // SAFETY: an AFTER statement trigger's TriggerData.
-        computed.is_some() || !unsafe { reads_unchanged(trigger.trigger_data(), links) }
-    });
     // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
     // decided from the transition tables themselves, before any query.
-    if event == Event::Update
+    let reads_same = event == Event::Update
         && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
         && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
-        && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) }
-    {
+        && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) };
+    // The links are columns it reads: unchanged when those are.
+    crate::concurrency::note_write(Some(mapping), event, |links| {
+        // SAFETY: an AFTER statement trigger's TriggerData.
+        computed.is_some()
+            || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
+    });
+    if reads_same {
         return Ok(());
     }
     match mapping.kind {

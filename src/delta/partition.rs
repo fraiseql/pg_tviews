@@ -38,7 +38,7 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 }
 
 /// The rows of `partition` are about to leave its partition tree (`DROP TABLE`,
-/// `DROP FOREIGN TABLE`, `DETACH PARTITION`): enqueue, for every TVIEW over a table
+/// `DROP FOREIGN TABLE`, `DETACH PARTITION`, `TRUNCATE`): enqueue, for every TVIEW over a table
 /// above it in the tree, the keys they reach, as a `DELETE` of those rows would.
 /// The refresh that follows the statement finds those keys gone. Called before
 /// `PostgreSQL` runs the statement, with the partition locked as the statement
@@ -46,31 +46,26 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 ///
 /// # Errors
 /// Returns an error if the catalog or a mapping query fails.
-pub fn map_leaving_partition(partition: Oid) -> TViewResult<()> {
+pub fn map_leaving_partition(partition: Oid, lock_parent: bool) -> TViewResult<()> {
     // Its rows leave the tree: a link change.
     crate::concurrency::note_link_change();
-    // The TVIEWs over each table above the partition: the root's, and those of a
-    // partitioned table in between.
-    let mut readers = Vec::new();
-    for ancestor in oids(
-        "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
-        partition,
-    )? {
-        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
-            readers.push((entity, ancestor));
-        }
-    }
+    let readers = readers_above(partition)?;
     if readers.is_empty() {
         return Ok(());
     }
-    // Lock as the statement will (the parent, the partition, then everything
-    // below it), so that no write reaches the rows between reading them and the
-    // statement: a write naming a sub-partition locks neither of the first two.
+    // Lock as the statement will (the parent for DROP and DETACH, the partition,
+    // then everything below it), so that no write reaches the rows between reading
+    // them and the statement: a write naming a sub-partition locks neither of the
+    // first two. TRUNCATE leaves the parent alone.
     let lockmode = pg_sys::AccessExclusiveLock.cast_signed();
-    let parent = oids(
-        "SELECT inhparent FROM pg_catalog.pg_inherits WHERE inhrelid = $1",
-        partition,
-    )?;
+    let parent = if lock_parent {
+        oids(
+            "SELECT inhparent FROM pg_catalog.pg_inherits WHERE inhrelid = $1",
+            partition,
+        )?
+    } else {
+        Vec::new()
+    };
     let below = oids(
         "SELECT relid FROM pg_catalog.pg_partition_tree($1) WHERE relid <> $1 ORDER BY level, relid",
         partition,
@@ -110,15 +105,7 @@ pub fn map_leaving_partition(partition: Oid) -> TViewResult<()> {
 pub fn map_entering_partition(partition: Oid) -> TViewResult<()> {
     // Its rows enter the tree: a link change.
     crate::concurrency::note_link_change();
-    let mut readers = Vec::new();
-    for ancestor in oids(
-        "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
-        partition,
-    )? {
-        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
-            readers.push((entity, ancestor));
-        }
-    }
+    let readers = readers_above(partition)?;
     // SAFETY: a syscache lookup by OID.
     let foreign = unsafe { pg_sys::get_rel_relkind(partition) }
         == pg_sys::RELKIND_FOREIGN_TABLE.cast_signed();
@@ -132,6 +119,21 @@ pub fn map_entering_partition(partition: Oid) -> TViewResult<()> {
         }
     }
     Ok(())
+}
+
+/// The TVIEWs over each table above `partition` in its tree (the root, and a
+/// partitioned table in between), with that table.
+fn readers_above(partition: Oid) -> TViewResult<Vec<(String, Oid)>> {
+    let mut readers = Vec::new();
+    for ancestor in oids(
+        "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
+        partition,
+    )? {
+        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
+            readers.push((entity, ancestor));
+        }
+    }
+    Ok(readers)
 }
 
 /// The OIDs `sql` returns for `relid` (its `$1`).

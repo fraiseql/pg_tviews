@@ -105,6 +105,17 @@ CREATE TABLE tb_bird (pk_animal bigint, id uuid, name text);
 SELECT must(error_of('ALTER TABLE tb_bird INHERIT tb_animal')
             LIKE '0A000: %tb_bird cannot inherit from public.tb_animal: tv_animal reads it%',
             'ALTER TABLE … INHERIT a TVIEW''s table');
+-- Also a table a TVIEW joins (statement triggers only, no row trigger).
+CREATE TABLE tb_kind (pk_kind bigint PRIMARY KEY, label text);
+CREATE TABLE tb_pet (pk_pet bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                     fk_kind bigint);
+SELECT tviews.pg_tviews_create('tv_pet', $$
+    SELECT p.pk_pet, p.id, jsonb_build_object('kind', k.label) AS data
+    FROM tb_pet p JOIN tb_kind k ON k.pk_kind = p.fk_kind $$);
+SELECT must(error_of('CREATE TABLE tb_kind_old () INHERITS (tb_kind)')
+            LIKE '0A000: %tb_kind_old cannot inherit from public.tb_kind: tv_pet reads it%',
+            'CREATE TABLE … INHERITS a table a TVIEW joins: '
+            || coalesce(error_of('CREATE TABLE tb_kind_old () INHERITS (tb_kind)'), 'created'));
 -- A table no TVIEW reads inherits as before.
 CREATE TABLE tb_free (x int);
 CREATE TABLE tb_free_child () INHERITS (tb_free);
