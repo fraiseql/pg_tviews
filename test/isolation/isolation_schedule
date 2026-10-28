@@ -25,3 +25,4 @@ test: partition-drop-vs-subpartition-write
 test: crossed-value-writes
 test: crossed-value-writes-after-rollback
 test: embed-patch-vs-repoint
+test: serializable-vs-read-committed
