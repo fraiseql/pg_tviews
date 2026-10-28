@@ -12,8 +12,8 @@
 //! column a link.
 
 use super::{
-    Flags, Piece, Resolved, Walker, collect_sublinks, collect_vars, elements, in_clause, pg_sys,
-    tag,
+    Flags, Piece, Resolved, Walker, collect_sublinks, collect_vars, elements, in_clause, pg_guard,
+    pg_sys, tag,
 };
 
 impl Walker<'_> {
@@ -244,7 +244,7 @@ unsafe fn clause_exprs(
 ///
 /// SAFETY: `node` is null or a valid expression.
 unsafe fn aggregate_filters(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Node>) {
-    #[pgrx::pg_guard]
+    #[pg_guard]
     unsafe extern "C-unwind" fn walker(
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,

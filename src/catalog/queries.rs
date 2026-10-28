@@ -497,6 +497,7 @@ pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Ve
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
+#[cfg(not(feature = "pg16"))]
 pub fn column_readers_of(table: Oid, columns: &[String]) -> TViewResult<Vec<String>> {
     entities(
         &format!(

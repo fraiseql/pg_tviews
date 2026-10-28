@@ -574,8 +574,9 @@ pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys
 /// A statement that changes values a TVIEW reads without firing a trigger,
 /// resolved before it runs.
 pub(super) enum ValueRewrite {
-    /// `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`: the table and the columns
-    /// whose generation expression changes.
+    /// `ALTER TABLE … ALTER COLUMN … SET EXPRESSION` (PostgreSQL 17 and later):
+    /// the table and the columns whose generation expression changes.
+    #[cfg(not(feature = "pg16"))]
     Expression {
         table: pg_sys::Oid,
         columns: Vec<String>,

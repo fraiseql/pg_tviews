@@ -600,6 +600,7 @@ impl FollowUps {
         }
         if let Some(rewrite) = self.value_rewrite {
             let readers = match &rewrite {
+                #[cfg(not(feature = "pg16"))]
                 ValueRewrite::Expression { table, columns } => {
                     crate::catalog::queries::column_readers_of(*table, columns)
                 }
