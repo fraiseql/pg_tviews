@@ -217,7 +217,8 @@ pub struct TriggerProblems {
     /// `pg_tviews` triggers without an entity argument (installed by an older
     /// release): `pg_tviews_reregister_all()` replaces them.
     pub untagged: Vec<String>,
-    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`.
+    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`, or
+    /// switched to `ENABLE REPLICA TRIGGER` (they then fire only on a replica).
     pub disabled: Vec<String>,
 }
 
@@ -289,9 +290,13 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                                               o.tgrelid::pg_catalog.regclass) \
          FROM ours o WHERE o.entity IS NULL \
          UNION ALL \
-         SELECT 'disabled', pg_catalog.format('%I on %s', o.tgname, \
-                                              o.tgrelid::pg_catalog.regclass) \
-         FROM ours o WHERE o.tgenabled = 'D' \
+         SELECT 'disabled', pg_catalog.format('%I on %s%s', o.tgname, \
+                                              o.tgrelid::pg_catalog.regclass, \
+                                              CASE o.tgenabled WHEN 'R' THEN \
+                                                ' (ENABLE REPLICA: fires only when \
+                                                 session_replication_role is replica)' \
+                                              ELSE '' END) \
+         FROM ours o WHERE o.tgenabled IN ('D', 'R') \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
         reads = crate::catalog::registered::reads_with_kind_sql(),

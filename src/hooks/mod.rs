@@ -23,10 +23,10 @@ use ctas::{
 };
 use indexes::{IndexFollowUp, index_follow_up_of};
 use statements::{
-    ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
-    drops_pg_tviews, extension_installed, extension_statement_names, leaving_partitions_of,
-    matview_refresh_of, partition_ddl_of, persistence_change_of, privileges_change_of,
-    resolve_relation_oid, table_move_of,
+    ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, ValueRewrite, column_change_of,
+    column_rename_of, drops_pg_tviews, extension_installed, extension_statement_names,
+    leaving_partitions_of, matview_refresh_of, partition_ddl_of, persistence_change_of,
+    privileges_change_of, resolve_relation_oid, table_move_of, value_rewrite_of,
 };
 use tables::handle_drop_table;
 
@@ -477,6 +477,9 @@ struct FollowUps {
     /// A TVIEW's table (its entity and OID) switched to LOGGED (`true`) or
     /// UNLOGGED: a reset one is filled first, and its validity row follows.
     persistence_change: Option<(String, pg_sys::Oid, bool)>,
+    /// Values rewritten without a trigger (a generation expression, an enum
+    /// label): the TVIEWs reading them are refreshed.
+    value_rewrite: Option<ValueRewrite>,
 }
 
 impl FollowUps {
@@ -493,6 +496,7 @@ impl FollowUps {
                 matview_refresh: None,
                 index_follow_up: None,
                 persistence_change: None,
+                value_rewrite: None,
             };
         }
         // SAFETY: as above.
@@ -517,6 +521,7 @@ impl FollowUps {
                         .unwrap_or_else(|e| e.raise())
                         .map(|entity| (entity, table, logged))
                 }),
+                value_rewrite: value_rewrite_of(pstmt),
             }
         }
     }
@@ -592,6 +597,19 @@ impl FollowUps {
             e.raise_in(
                 "pg_tviews: could not refresh the TVIEWs reading a refreshed materialized view",
             );
+        }
+        if let Some(rewrite) = self.value_rewrite {
+            let readers = match &rewrite {
+                ValueRewrite::Expression { table, columns } => {
+                    crate::catalog::queries::column_readers_of(*table, columns)
+                }
+                ValueRewrite::EnumLabel(enum_type) => {
+                    crate::catalog::queries::type_readers_of(*enum_type)
+                }
+            };
+            if let Err(e) = readers.and_then(|r| crate::ddl::uncascaded::refresh_entities(&r)) {
+                e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
+            }
         }
     }
 }

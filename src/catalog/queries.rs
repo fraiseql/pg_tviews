@@ -491,6 +491,83 @@ pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Ve
     .map_err(|e| crate::utils::spi::catalog_error("Find the TVIEWs reading a replaced one", &e))
 }
 
+/// The TVIEWs reading any of `columns` of `table` (or reading it with columns
+/// unknown), by entity: what a new generation expression of those columns
+/// changes.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn column_readers_of(table: Oid, columns: &[String]) -> TViewResult<Vec<String>> {
+    entities(
+        &format!(
+            "SELECT DISTINCT m.entity::text FROM {} m, \
+                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
+             WHERE (t->>'relid')::pg_catalog.oid = $1 \
+               AND (pg_catalog.jsonb_array_length(COALESCE(t->'attnums', '[]')) = 0 \
+                    OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements_text(t->'attnums') n \
+                               JOIN pg_catalog.pg_attribute a \
+                                 ON a.attrelid = $1 AND a.attnum = n::pg_catalog.int2 \
+                               WHERE a.attname::pg_catalog.text = ANY ($2))) \
+             ORDER BY 1",
+            super::meta_table()
+        ),
+        &[
+            crate::utils::spi::oid(table),
+            crate::utils::spi::text_array(columns.to_vec()),
+        ],
+        "Find the TVIEWs reading a column",
+    )
+}
+
+/// The TVIEWs whose values show the enum `enum_type`, by entity: they read a
+/// column of it (directly, through a domain over it or as an array of it), or
+/// their backing view names it. What renaming one of its labels changes.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn type_readers_of(enum_type: Oid) -> TViewResult<Vec<String>> {
+    entities(
+        &format!(
+            "WITH RECURSIVE types(oid) AS ( \
+                 SELECT $1::pg_catalog.oid \
+                 UNION SELECT t.oid FROM pg_catalog.pg_type t, types \
+                       WHERE t.typbasetype = types.oid OR t.typelem = types.oid) \
+             SELECT DISTINCT m.entity::text FROM {} m \
+             WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
+                           JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid \
+                           WHERE d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass \
+                             AND r.ev_class = m.view_oid::pg_catalog.oid \
+                             AND d.refclassid = 'pg_catalog.pg_type'::pg_catalog.regclass \
+                             AND d.refobjid IN (SELECT oid FROM types)) \
+                OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(m.plan->'tables') t \
+                           JOIN pg_catalog.pg_attribute a \
+                             ON a.attrelid = (t->>'relid')::pg_catalog.oid \
+                            AND a.attnum > 0 AND NOT a.attisdropped \
+                           WHERE a.atttypid IN (SELECT oid FROM types)) \
+             ORDER BY 1",
+            super::meta_table()
+        ),
+        &[crate::utils::spi::oid(enum_type)],
+        "Find the TVIEWs showing an enum",
+    )
+}
+
+/// The first column of each row `sql` returns, as text.
+fn entities(
+    sql: &str,
+    args: &[pgrx::datum::DatumWithOid<'_>],
+    operation: &str,
+) -> TViewResult<Vec<String>> {
+    Spi::connect(|client| {
+        client
+            .select(sql, None, args)?
+            .map(|row| row.get::<String>(1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|entities| entities.into_iter().flatten().collect())
+    })
+    .map_err(|e| crate::utils::spi::catalog_error(operation, &e))
+}
+
 /// The TVIEWs reading the materialized view `matview` under the `full_refresh`
 /// policy (their own for it, or the TVIEW's), by entity.
 ///

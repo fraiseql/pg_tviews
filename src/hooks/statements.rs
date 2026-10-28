@@ -570,3 +570,68 @@ pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys
         )
     }
 }
+
+/// A statement that changes values a TVIEW reads without firing a trigger,
+/// resolved before it runs.
+pub(super) enum ValueRewrite {
+    /// `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`: the table and the columns
+    /// whose generation expression changes.
+    Expression {
+        table: pg_sys::Oid,
+        columns: Vec<String>,
+    },
+    /// `ALTER TYPE … RENAME VALUE`: the enum.
+    EnumLabel(pg_sys::Oid),
+}
+
+/// The values `pstmt` rewrites without firing a trigger, if it does.
+///
+/// SAFETY: `pstmt` is null or a valid `PlannedStmt`.
+pub(super) unsafe fn value_rewrite_of(pstmt: *const pg_sys::PlannedStmt) -> Option<ValueRewrite> {
+    // SAFETY: every pointer is null-checked before it is dereferenced; each cast
+    // follows the node's tag.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return None;
+        }
+        let node = (*pstmt).utilityStmt;
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        match (*node).type_ {
+            pg_sys::NodeTag::T_AlterEnumStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterEnumStmt>();
+                if stmt.oldVal.is_null() || stmt.typeName.is_null() {
+                    return None;
+                }
+                let name = pg_sys::makeTypeNameFromNameList(stmt.typeName);
+                let oid = pg_sys::LookupTypeNameOid(std::ptr::null_mut(), name, true);
+                (oid != pg_sys::InvalidOid).then_some(ValueRewrite::EnumLabel(oid))
+            }
+            #[cfg(not(feature = "pg16"))]
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                let mut columns = Vec::new();
+                for i in 0..pg_sys::list_length(stmt.cmds) {
+                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    if !cmd.is_null()
+                        && (*cmd).subtype == pg_sys::AlterTableType::AT_SetExpression
+                        && !(*cmd).name.is_null()
+                    {
+                        columns.push(CStr::from_ptr((*cmd).name).to_string_lossy().into_owned());
+                    }
+                }
+                if columns.is_empty() || stmt.relation.is_null() {
+                    return None;
+                }
+                let table = pg_sys::RangeVarGetRelidExtended(
+                    stmt.relation,
+                    pg_sys::NoLock.cast_signed(),
+                    pg_sys::RVROption::RVR_MISSING_OK,
+                    None,
+                    std::ptr::null_mut(),
+                );
+                (table != pg_sys::InvalidOid).then_some(ValueRewrite::Expression { table, columns })
+            }
+            _ => None,
+        }
+    }
+}

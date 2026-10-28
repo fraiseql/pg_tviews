@@ -501,11 +501,20 @@ pub(crate) fn check_declared(
 /// # Errors
 /// Returns an error if the catalog cannot be read or a refresh fails.
 pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
-    let entities = crate::catalog::queries::full_refresh_readers_of(matview)?;
+    refresh_entities(&crate::catalog::queries::full_refresh_readers_of(matview)?)
+}
+
+/// Refresh `entities` in full, then flush the queue, as the flush trigger does
+/// after a write: after a statement that changed what they read without firing
+/// a trigger.
+///
+/// # Errors
+/// Returns an error if a refresh fails.
+pub(crate) fn refresh_entities(entities: &[String]) -> TViewResult<()> {
     if entities.is_empty() {
         return Ok(());
     }
-    for entity in &entities {
+    for entity in entities {
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(entity);
         } else {

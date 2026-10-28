@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A patch is now written only into a row that still embeds the child; the others are
   recomputed.
 
+- **`ALTER TABLE … ALTER COLUMN … SET EXPRESSION` and `ALTER TYPE … RENAME VALUE`
+  left the TVIEWs reading the values stale**: both change values without firing a
+  trigger. The TVIEWs reading the column (PostgreSQL 17 and later), or showing the enum
+  (directly, through a domain or an array, or named in the definition), are now
+  refreshed in the statement.
+- **The health check missed a pg_tviews trigger switched to `ENABLE REPLICA`**, which
+  stops firing on the primary: it is reported with the disabled ones.
+
 ### Changed
 
 - **A definition that reads a foreign table or a sequence follows its
