@@ -58,6 +58,8 @@ fn graph(occurrences: Vec<Occurrence>, conjuncts: Vec<Conjunct>, key: Column) ->
         tview_keys: BTreeMap::new(),
         data: None,
         outputs: vec![],
+        links: std::collections::BTreeSet::new(),
+        links_unknown: false,
     }
 }
 
@@ -189,6 +191,8 @@ fn an_opaque_top_level_without_a_root_is_all_keys_with_the_reason() {
         tview_keys: BTreeMap::new(),
         data: None,
         outputs: vec![],
+        links: std::collections::BTreeSet::new(),
+        links_unknown: false,
     };
     assert_eq!(
         g.classify(0, NONE),

@@ -23,3 +23,4 @@ test: two-hop-rename-vs-repoint
 test: restored-empty-refill-vs-write
 test: partition-drop-vs-subpartition-write
 test: crossed-value-writes
+test: crossed-value-writes-after-rollback

@@ -63,6 +63,7 @@ fn pg_tview_delta_trigger<'a>(
     crate::revision::check();
     let entity = trigger_entity(trigger);
     if suspended() {
+        crate::concurrency::note_link_change();
         crate::suspend::record_change(&entity);
         return Ok(None);
     }
@@ -114,6 +115,7 @@ fn pg_tview_truncate_trigger<'a>(
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
     let entity = trigger_entity(trigger);
+    crate::concurrency::note_link_change();
     if suspended() {
         crate::suspend::record_change(&entity);
         return Ok(None);
@@ -167,6 +169,8 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
 /// # Errors
 /// Returns an error if the catalog or a mapping query fails.
 pub fn map_leaving_partition(partition: Oid) -> TViewResult<()> {
+    // Its rows leave the tree: a link change.
+    crate::concurrency::note_link_change();
     // The TVIEWs over each table above the partition: the root's, and those of a
     // partitioned table in between.
     let mut readers = Vec::new();
@@ -389,11 +393,16 @@ fn map_statement(
         return Ok(());
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
+    let computed = computed_columns(entity, table_oid)?;
+    crate::concurrency::note_write(Some(mapping), event, |links| {
+        // SAFETY: an AFTER statement trigger's TriggerData.
+        computed.is_some() || !unsafe { reads_unchanged(trigger.trigger_data(), links) }
+    });
     // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
     // decided from the transition tables themselves, before any query.
     if event == Event::Update
         && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
-        && computed_columns(entity, table_oid)?.is_none()
+        && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
         && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) }
     {

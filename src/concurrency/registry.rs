@@ -30,11 +30,22 @@ pub(super) enum Held {
     },
 }
 
-/// The locks of one transaction, in the order they were taken.
+/// The locks of one transaction, in the order they were taken, and whether it
+/// changed a link.
 #[derive(Debug, Default)]
 pub(super) struct Registry {
     log: Vec<Held>,
     index: HashSet<Held>,
+    /// The transaction inserted or deleted a row of a table a TVIEW reads, or
+    /// changed a column one is linked by (#263): its refreshes lock what they read.
+    pub(super) links_changed: bool,
+}
+
+/// Where a transaction's registry stands, for a subtransaction to roll back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    log: usize,
+    links_changed: bool,
 }
 
 impl Registry {
@@ -84,21 +95,27 @@ impl Registry {
         }
     }
 
-    pub(super) const fn mark(&self) -> usize {
-        self.log.len()
+    pub(super) const fn mark(&self) -> Mark {
+        Mark {
+            log: self.log.len(),
+            links_changed: self.links_changed,
+        }
     }
 
     /// Forget what was recorded after `mark`: a rolled-back subtransaction's
-    /// locks are released by the lock manager.
-    pub(super) fn rollback(&mut self, mark: usize) {
-        for lock in self.log.drain(mark.min(self.log.len())..) {
+    /// locks are released by the lock manager, and the links it changed are
+    /// as they were.
+    pub(super) fn rollback(&mut self, mark: Mark) {
+        for lock in self.log.drain(mark.log.min(self.log.len())..) {
             self.index.remove(&lock);
         }
+        self.links_changed = mark.links_changed;
     }
 
     pub(super) fn clear(&mut self) {
         self.log.clear();
         self.index.clear();
+        self.links_changed = false;
     }
 }
 
@@ -190,6 +207,21 @@ mod tests {
         assert!(!r.escalated(USERS, V, Side::Writer));
         // Taken again after the rollback: recorded again.
         assert!(r.record(value(2)));
+    }
+
+    #[test]
+    fn a_link_change_rolls_back_with_its_subtransaction() {
+        let mut r = Registry::default();
+        let before = r.mark();
+        r.links_changed = true;
+        r.rollback(before);
+        assert!(!r.links_changed);
+        r.links_changed = true;
+        let after = r.mark();
+        r.rollback(after);
+        assert!(r.links_changed);
+        r.clear();
+        assert!(!r.links_changed);
     }
 
     #[test]

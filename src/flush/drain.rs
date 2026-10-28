@@ -27,40 +27,24 @@ pub(super) fn flush_pending() -> TViewResult<()> {
     // parents of every changed child join the queue.
     flush.apply_fanouts(fanout)?;
 
-    loop {
-        while let Some((entity, keys)) = flush.next_entity() {
-            let started = std::time::Instant::now();
-            flush.apply_entity(&entity, keys)?;
-            crate::stats::add(
-                &entity,
-                crate::stats::Counter::RefreshMicros,
-                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
-            );
-            flush.iteration += 1;
-            let max_depth = crate::config::max_propagation_depth();
-            if flush.iteration > max_depth {
-                return Err(crate::TViewError::DepthExceeded {
-                    what: "propagation",
-                    depth: flush.iteration,
-                    max_depth,
-                });
-            }
+    while let Some((entity, keys)) = flush.next_entity() {
+        let started = std::time::Instant::now();
+        flush.apply_entity(&entity, keys)?;
+        crate::stats::add(
+            &entity,
+            crate::stats::Counter::RefreshMicros,
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
+        flush.take_late()?;
+        flush.iteration += 1;
+        let max_depth = crate::config::max_propagation_depth();
+        if flush.iteration > max_depth {
+            return Err(crate::TViewError::DepthExceeded {
+                what: "propagation",
+                depth: flush.iteration,
+                max_depth,
+            });
         }
-        // Work queued by triggers the flush's own writes fired (a TVIEW's table
-        // read by another, a user trigger writing a base table), with the patches
-        // they captured. A key refreshed earlier in this flush is refreshed again:
-        // its source changed after that refresh read it. The propagation depth
-        // bounds a trigger that keeps writing.
-        let late = state::drain();
-        if late.queue.is_empty() && late.fanout.is_empty() {
-            break;
-        }
-        flush.patches.extend(late.patches);
-        for key in &late.queue {
-            flush.processed.remove(key);
-        }
-        flush.pending = late.queue;
-        flush.apply_fanouts(late.fanout)?;
     }
 
     // One audit entry per entity, written by the COMMIT hook.
@@ -80,6 +64,26 @@ pub(super) fn flush_pending() -> TViewResult<()> {
 }
 
 impl Flush {
+    /// Take the work queued by triggers the last pass's writes fired (a TVIEW's
+    /// table read by another, a user trigger writing a base table), with the
+    /// patches they captured, into this flush's pending keys: each entity is then
+    /// refreshed once, in dependency order, its rows locked in key order, as two
+    /// concurrent flushes must (#263). A key refreshed earlier in this flush is
+    /// refreshed again: its source changed after that refresh read it. The
+    /// propagation depth bounds a trigger that keeps writing.
+    fn take_late(&mut self) -> TViewResult<()> {
+        let late = state::drain();
+        if late.queue.is_empty() && late.fanout.is_empty() {
+            return Ok(());
+        }
+        self.patches.extend(late.patches);
+        for key in &late.queue {
+            self.processed.remove(key);
+        }
+        self.pending.extend(late.queue);
+        self.apply_fanouts(late.fanout)
+    }
+
     /// The keys of the first pending entity in dependency order not refreshed in
     /// this flush yet; the other entities' keys stay pending.
     fn next_entity(&mut self) -> Option<(String, Vec<RefreshKey>)> {

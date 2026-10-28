@@ -525,6 +525,7 @@ fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
         virtual_reads: vec![],
         matview: false,
         tview: None,
+        links: None,
     }
 }
 

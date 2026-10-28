@@ -183,6 +183,8 @@ impl Lineage {
                     table.hop = None;
                     table.via = None;
                     table.fanout = None;
+                    // What the function reads of it is unknown.
+                    table.links = None;
                 }
                 None => self.tables.push(TableLineage {
                     relid: read.relid,
@@ -202,6 +204,7 @@ impl Lineage {
                     virtual_reads: Vec::new(),
                     matview: read.matview,
                     tview: read.tview.clone(),
+                    links: None,
                 }),
             }
         }
@@ -269,6 +272,9 @@ impl Lineage {
                         .collect::<Vec<_>>()
                         .into();
                     entry["attnums"] = t.columns.iter().map(|(_, n)| *n).collect::<Vec<_>>().into();
+                    if let Some(links) = &t.links {
+                        entry["links"] = links.clone().into();
+                    }
                     entry
                 })
                 .collect(),
@@ -406,6 +412,15 @@ pub fn analyze(
         table.columns =
             expand_read_columns(referenced_columns(view_oid, table.relid)?, &virtual_columns);
         table.virtual_reads = virtual_reads(&table.columns, &virtual_columns);
+        // A virtual column has no value in the rows a trigger sees: its inputs are
+        // links in its place.
+        if let Some(links) = &mut table.links {
+            let named: Vec<(String, i16)> = links.iter().map(|&a| (String::new(), a)).collect();
+            *links = expand_read_columns(named, &virtual_columns)
+                .into_iter()
+                .map(|(_, attnum)| attnum)
+                .collect();
+        }
         if let Some(sql) = &table.sql {
             explain(entity, table, sql)?;
         }
@@ -527,6 +542,11 @@ pub struct KeyMapping {
     /// What a refresh reads of the table, for value locks (ADR 0207).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<super::ReadSet>,
+    /// The columns of the table the TVIEW's rows are linked by (joins, filters,
+    /// groupings…): a write that changes none of them, and inserts or deletes no
+    /// row, changes no link (#263). `None` when unknown: every write does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<i16>>,
 }
 
 /// Rows above which a sequential scan in a mapping query is worth an index.

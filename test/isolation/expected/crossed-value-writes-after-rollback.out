@@ -1,0 +1,47 @@
+Parsed test spec with 3 sessions
+
+starting permutation: o_begin o_link t_begin t_link g_close o_bio t_bio g_open1 g_open2 o_commit t_commit t_check
+step o_begin: BEGIN; SAVEPOINT s;
+step o_link: 
+  INSERT INTO tb_comment (pk_comment, fk_post, fk_author, content) VALUES (3, 1, 1, 'ada on pa');
+  ROLLBACK TO SAVEPOINT s;
+
+step t_begin: BEGIN; SAVEPOINT s;
+step t_link: 
+  INSERT INTO tb_comment (pk_comment, fk_post, fk_author, content) VALUES (4, 2, 2, 'bob on pb');
+  ROLLBACK TO SAVEPOINT s;
+
+step g_close: SELECT pg_advisory_lock(263, 1), pg_advisory_lock(263, 2);
+pg_advisory_lock|pg_advisory_lock
+----------------+----------------
+                |                
+(1 row)
+
+step o_bio: UPDATE tb_user SET bio = 'ada!' WHERE pk_user = 1; <waiting ...>
+step t_bio: UPDATE tb_user SET bio = 'bob!' WHERE pk_user = 2; <waiting ...>
+step g_open1: SELECT pg_advisory_unlock(263, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step o_bio: <... completed>
+step g_open2: SELECT pg_advisory_unlock(263, 2);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step o_commit: COMMIT;
+step t_bio: <... completed>
+step t_commit: COMMIT;
+step t_check: 
+  SELECT t.pk_post, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|fresh
+-------+-----
+      1|t    
+      2|t    
+(2 rows)
+

@@ -46,7 +46,9 @@ pub fn rendered(
 /// mappings join, and the keys of the rows of the TVIEWs it embeds (read from
 /// its backing view, since a row not stored yet has none). With the intent lock
 /// on the TVIEW, which a write refreshing the whole TVIEW conflicts with. Run as
-/// the TVIEW's owner, before the rows are locked and computed.
+/// the TVIEW's owner, before the rows are locked and computed. The values are
+/// locked only once the transaction changed a link
+/// ([`super::links_changed`]); the intent lock always.
 ///
 /// # Errors
 /// Returns an error if a read-set query fails.
@@ -59,6 +61,13 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
         return Ok(());
     };
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
+    // A transaction that changed no link computes rows from links every
+    // transaction sees committed: a writer of a value they read finds them, and
+    // the row locks order the two refreshes. Locking the values too would only
+    // make two such writers wait for each other in a cycle (#263).
+    if !super::links_changed() {
+        return Ok(());
+    }
     let entity = meta.entity_name.as_str();
     // Each read set's query, run as one statement: (target, query, its lock
     // value of `v`).

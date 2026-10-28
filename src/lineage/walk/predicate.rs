@@ -51,6 +51,7 @@ impl Walker<'_> {
                 ..flags.clone()
             };
             let outputs = self.level(subselect, &inner, Link::Sublink { required })?;
+            self.sublink_links(sublink, &outputs);
             // `x IN (SELECT y …)`: x = y holds for the matching row.
             if (*sublink).subLinkType == pg_sys::SubLinkType::ANY_SUBLINK {
                 for test in conjuncts((*sublink).testexpr) {

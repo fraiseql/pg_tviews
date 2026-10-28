@@ -1,11 +1,6 @@
 Parsed test spec with 3 sessions
 
 starting permutation: g_close o_bio t_bio g_open t_check
-pg_tviews_create            
-----------------------------
-TVIEW public.tv_post created
-(1 row)
-
 step g_close: SELECT pg_advisory_lock(263);
 pg_advisory_lock
 ----------------

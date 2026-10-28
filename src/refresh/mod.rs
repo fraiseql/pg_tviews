@@ -485,6 +485,38 @@ pub(crate) fn lock_rows(
     })
 }
 
+/// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, under READ
+/// COMMITTED: a refresh that writes them in several statements (direct patches,
+/// grouped by shape, then recomputes) takes their row locks in the order every
+/// concurrent refresh does, so two of them never wait for each other in a cycle
+/// (#263). Under REPEATABLE READ and SERIALIZABLE a concurrent update fails the
+/// write instead (40001): nothing to order.
+///
+/// # Errors
+/// Returns an error if the rows cannot be locked.
+pub(crate) fn lock_in_key_order(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+) -> crate::TViewResult<()> {
+    // SAFETY: reads the backend's isolation level.
+    let level = unsafe { pgrx::pg_sys::XactIsoLevel };
+    if keys.len() < 2 || level >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed() {
+        return Ok(());
+    }
+    let key_type = meta.key_type()?;
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_key = ident::quoted(&meta.identity.column);
+    let sql = format!(
+        "SELECT FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) \
+         ORDER BY t.{qi_key} FOR UPDATE",
+        key_cast(&key_type, "$1", true)
+    );
+    let args = [key_array(&key_type, keys)?];
+    // Read-write: a read-only SPI call refuses FOR UPDATE.
+    Spi::connect_mut(|client| crate::utils::spi::kept_update(client, &sql, &args).map(|_| ()))?;
+    Ok(())
+}
+
 /// What [`lock_rows`] read of the rows it locked.
 #[derive(Debug, Default)]
 pub(crate) struct Locked {

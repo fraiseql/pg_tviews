@@ -68,6 +68,8 @@ pub fn enqueue_refresh_patched(
 /// entry however many rows the statement changes; the flush absorbs the entity's
 /// per-key entries into it.
 pub fn enqueue_refresh_all(entity: &str) {
+    // Rows rebuilt in full may come and go: a link change.
+    crate::concurrency::note_link_change();
     let key = RefreshKey::all(entity);
     if state::queue_contains(&key) {
         return;

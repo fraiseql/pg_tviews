@@ -14,6 +14,7 @@ mod registry;
 
 use pgrx::pg_sys;
 use pgrx::prelude::*;
+pub use registry::Mark;
 use registry::{Held, REGISTRY};
 
 /// `field4` of a value lock's tag. `pg_advisory_lock()` uses 1 and 2.
@@ -456,13 +457,46 @@ pub fn serialization_failure(why: &str) -> ! {
 
 /// Where the transaction's locks stand, for a subtransaction to roll back to.
 #[must_use]
-pub fn mark() -> usize {
+pub fn mark() -> Mark {
     REGISTRY.with_borrow(registry::Registry::mark)
 }
 
 /// A subtransaction rolled back: the lock manager released what it took.
-pub fn rollback(mark: usize) {
+pub fn rollback(mark: Mark) {
     REGISTRY.with_borrow_mut(|r| r.rollback(mark));
+}
+
+/// The transaction changed a link: it inserted or deleted rows of a table a
+/// TVIEW reads, or changed a column of one that a TVIEW's rows are linked by
+/// (#263). From now on its refreshes lock the values they read.
+pub fn note_link_change() {
+    REGISTRY.with_borrow_mut(|r| r.links_changed = true);
+}
+
+/// Whether the transaction changed a link ([`note_link_change`]).
+#[must_use]
+pub fn links_changed() -> bool {
+    REGISTRY.with_borrow(|r| r.links_changed)
+}
+
+/// Note a write of `event` to the table `relid` reads as `mapping`: an insert or
+/// a delete changes a link; an update does when `changed(links)` says one of the
+/// columns `mapping` is linked by changed (unknown links: always).
+pub fn note_write(
+    mapping: Option<&crate::lineage::KeyMapping>,
+    event: crate::queue::Event,
+    changed: impl FnOnce(&[i16]) -> bool,
+) {
+    if links_changed() {
+        return;
+    }
+    let link = match (event, mapping.and_then(|m| m.links.as_deref())) {
+        (crate::queue::Event::Update, Some(links)) => !links.is_empty() && changed(links),
+        _ => true,
+    };
+    if link {
+        note_link_change();
+    }
 }
 
 /// The transaction ended: every lock was released.

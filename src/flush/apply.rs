@@ -118,6 +118,9 @@ impl Flush {
         }
         let mut applied: HashSet<i64> = patched.iter().map(|(pk, _)| *pk).collect();
         if !patched.is_empty() {
+            // Patches (one statement per shape) and recomputes lock rows in
+            // several statements: take them all in key order first.
+            crate::refresh::lock_in_key_order(&*self.meta(entity)?, &values)?;
             // A row not materialised yet cannot be patched: it is recomputed.
             let meta = self.meta(entity)?;
             for pk in crate::refresh::direct::apply_entity_patches(&meta, patched)? {

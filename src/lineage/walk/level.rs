@@ -84,6 +84,7 @@ impl Walker<'_> {
                 return Ok(());
             }
             self.graph.set_operation = true;
+            self.set_operation_links((*query).setOperations);
             // LIMIT/OFFSET over the whole set operation applies to every branch.
             let whole = top_opaque_reason(query);
             // UNION: each leaf is a branch with its own root. The leaves sit in
@@ -199,6 +200,7 @@ impl Walker<'_> {
         let identity_level = std::mem::take(&mut self.identity_level);
         // SAFETY: fields of a valid Query; RTEs and expressions belong to it.
         unsafe {
+            self.note_link_sublinks(query, flags);
             // A view, subquery or CTE in FROM is walked only for the columns this
             // level reads of it.
             let read = referenced_columns(query);
@@ -249,6 +251,7 @@ impl Walker<'_> {
                 self.graph.identity = Some(self.identity(query, &tles));
                 self.graph.data = self.data_shape(query, &tles);
             }
+            self.note_links(query, flags, identity_level);
 
             Ok(self.outputs(query, link, opaque, &skipped))
         }

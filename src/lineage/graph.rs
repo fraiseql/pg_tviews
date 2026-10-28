@@ -192,6 +192,12 @@ pub struct QueryGraph {
     /// The shape of the `data` output of the backing view's own SELECT (`None` for
     /// a set operation, or without a `data` column).
     pub data: Option<DataShape>,
+    /// `(occurrence, attnum)` of the columns the rows are linked by: read in a
+    /// join or filter condition, a grouping, … (ADR 0207, #263).
+    pub links: std::collections::BTreeSet<(usize, i16)>,
+    /// Some read in a link position could not be followed to columns: every
+    /// column is a link.
+    pub links_unknown: bool,
 }
 
 /// Columns copied unchanged into `data`, each with its path there: a column
@@ -313,6 +319,9 @@ pub struct TableLineage {
     pub matview: bool,
     /// The table of another TVIEW, of that entity.
     pub tview: Option<String>,
+    /// The columns of the table the rows are linked by ([`QueryGraph::links`]),
+    /// sorted; `None` when unknown (every column is one).
+    pub links: Option<Vec<i16>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1064,6 +1073,17 @@ impl QueryGraph {
                     virtual_reads: Vec::new(),
                     matview: o.matview,
                     tview: o.tview_table.clone(),
+                    links: (!self.links_unknown).then(|| {
+                        let mut links: Vec<i16> = self
+                            .links
+                            .iter()
+                            .filter(|(occ, _)| self.occurrences[*occ].relid == relid)
+                            .map(|(_, attnum)| *attnum)
+                            .collect();
+                        links.sort_unstable();
+                        links.dedup();
+                        links
+                    }),
                     root: self
                         .roots
                         .iter()
