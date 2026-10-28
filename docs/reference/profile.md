@@ -1,9 +1,19 @@
 # `pg_tviews_profile()`: per-TVIEW physical health
 
+To follow the examples, a TVIEW to profile:
+
 ```sql
-SELECT * FROM pg_tviews_profile();              -- every TVIEW
-SELECT * FROM pg_tviews_profile('post');        -- one TVIEW (post, tv_post or public.tv_post)
-SELECT * FROM pg_tviews_profile(NULL, 5000);    -- fan-out warning threshold
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE TABLE tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                      title text);
+SELECT tviews.pg_tviews_create('tv_post',
+    $$SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post$$);
+```
+
+```sql
+SELECT * FROM tviews.pg_tviews_profile();              -- every TVIEW
+SELECT * FROM tviews.pg_tviews_profile('post');        -- one TVIEW (post, tv_post or public.tv_post)
+SELECT * FROM tviews.pg_tviews_profile(NULL, 5000);    -- fan-out warning threshold
 ```
 
 Reports what refreshes cost PostgreSQL for each TVIEW, from the catalogs and the

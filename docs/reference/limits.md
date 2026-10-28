@@ -21,8 +21,8 @@ Based on benchmark testing and production experience:
 
 ### Small Deployments (<100K rows per TVIEW)
 
-```sql
--- postgresql.conf
+```ini
+# postgresql.conf
 work_mem = 64MB
 shared_buffers = 256MB
 effective_cache_size = 1GB
@@ -31,7 +31,7 @@ maintenance_work_mem = 128MB
 
 ### Medium Deployments (100K-1M rows)
 
-```sql
+```ini
 work_mem = 128MB
 shared_buffers = 1GB
 effective_cache_size = 4GB
@@ -41,20 +41,20 @@ max_parallel_workers_per_gather = 4
 
 ### Large Deployments (>1M rows)
 
-```sql
+```ini
 work_mem = 256MB
 shared_buffers = 4GB
 effective_cache_size = 16GB
 maintenance_work_mem = 2GB
 max_parallel_workers_per_gather = 8
-random_page_cost = 1.1  -- For SSD storage
+random_page_cost = 1.1  # For SSD storage
 ```
 
 ## Capacity Planning
 
 ### Estimating TVIEW Size
 
-```sql
+```sql fragment
 -- Current size
 -- Trinity pattern: tv_your_entity has pk_your_entity (int), id (UUID), data (JSONB)
 SELECT pg_size_pretty(pg_relation_size('tv_your_entity'));
@@ -118,13 +118,9 @@ Cascade state: 1-5MB per active cascade
 ### Total Memory Calculation
 
 ```sql
--- Estimate total memory usage
-SELECT
-  (SELECT count(*) FROM pg_stat_activity WHERE state = 'active') * 5 as base_mb,
-  current_setting('work_mem')::int / 1024 as work_mem_mb,
-  (SELECT count(*) FROM tviews.pg_tview_meta) * 2 as cascade_overhead_mb
-FROM pg_settings
-WHERE name = 'work_mem';
+-- What one sort or hash may use, and the sessions running now
+SELECT current_setting('work_mem') AS work_mem,
+       (SELECT count(*) FROM pg_stat_activity WHERE state = 'active') AS active_sessions;
 ```
 
 ## Monitoring Thresholds
@@ -140,19 +136,9 @@ WHERE name = 'work_mem';
 ### Health Check Queries
 
 ```sql
--- Quick health assessment
-SELECT
-    CASE WHEN unhealthy > 0 THEN 'WARNING' ELSE 'OK' END as tview_status,
-    CASE WHEN memory_usage > 0.8 THEN 'WARNING' ELSE 'OK' END as memory_status,
-    CASE WHEN error_count > 0 THEN 'ERROR' ELSE 'OK' END as error_status
-FROM (
-    SELECT
-        (SELECT count(*) FROM pg_tviews_health_check() WHERE status <> 'OK') as unhealthy,
-        (SELECT sum(total_bytes) / (SELECT setting::bigint * 1024 * 1024
-                                   FROM pg_settings WHERE name = 'shared_buffers')
-         FROM pg_backend_memory_contexts) as memory_usage,
-        (SELECT count(*) FROM pg_log WHERE message LIKE '%ERROR%' AND log_time > now() - interval '1 hour') as error_count
-) checks;
+-- What pg_tviews' own checks found (extension, catalog, plans, triggers)
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+SELECT status, component, message FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
 ```
 
 ## Backup and Recovery
@@ -196,16 +182,12 @@ LIMIT 10;
 ### Memory Issues
 
 ```sql
--- Check memory usage by connection
-SELECT
-    pg_stat_activity.pid,
-    pg_stat_activity.usename,
-    pg_stat_activity.client_addr,
-    pg_size_pretty(pg_backend_memory_contexts.total_bytes) as memory_used,
-    pg_backend_memory_contexts.name as context_name
-FROM pg_stat_activity
-JOIN LATERAL pg_backend_memory_contexts ON true
-ORDER BY pg_backend_memory_contexts.total_bytes DESC;
+-- The largest memory contexts of this session (another session's:
+-- SELECT pg_log_backend_memory_contexts(<pid>), written to the server log)
+SELECT name, pg_size_pretty(total_bytes) AS memory_used
+FROM pg_backend_memory_contexts
+ORDER BY total_bytes DESC
+LIMIT 10;
 ```
 
 ### Disk I/O Issues
@@ -214,7 +196,7 @@ ORDER BY pg_backend_memory_contexts.total_bytes DESC;
 -- Monitor I/O statistics
 SELECT
     schemaname,
-    tablename,
+    relname,
     seq_scan,
     seq_tup_read,
     idx_scan,

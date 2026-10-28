@@ -6,6 +6,9 @@
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres test/docs/run_doc_sql.sh docs/getting-started/quickstart.md
 #
+# A block tagged ```sql fragment is an illustration (a placeholder, `…`): shown as
+# SQL, not run.
+#
 # Honors PGHOST/PGPORT/PGUSER (defaults: localhost / 28818 / postgres). Needs a
 # server that preloads pg_tviews, as the pages tell the reader to set up.
 
