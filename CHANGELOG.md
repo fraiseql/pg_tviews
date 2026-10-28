@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two single-row writes of different rows deadlocked when each one's refresh read
+  the other's row** (#263): two users editing their own `bio`, each having commented
+  on the other's post. Since 0.1.0-beta.27 every refresh took shared value locks on
+  what its rows read after its trigger had taken an exclusive one on what it wrote, so
+  crossed fan-outs waited for each other in a cycle (velocitybench: writes from 589 to
+  about 8 per second). A transaction now takes the shared value locks only once it has
+  changed a link: inserted or deleted rows of a table a TVIEW reads, or updated a column
+  a TVIEW's rows are linked by (a join, filter, grouping…). A refresh writes each
+  entity's rows once per statement, locked in key order (ADR 0207, amended).
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW (plan version 3 records
+  the columns each one's rows are linked by). A TVIEW that no longer analyses fails the
+  update, named with its error.
+
 ## [0.1.0-beta.33] - 2026-10-28
 
 ### Fixed

@@ -1,6 +1,6 @@
 # ADR 0207: Concurrent maintenance with value locks
 
-- Status: Accepted (implemented in 0.1.0-beta.27)
+- Status: Accepted (implemented in 0.1.0-beta.27; amended in 0.1.0-beta.34, #263)
 - Fixes: #207 (concurrent writes leave TVIEW rows stale), #214 (concurrent first writes
   into a reset UNLOGGED TVIEW)
 - Builds on: [ADR 0157](0157-cascade-key-mapping.md) (mapping queries),
@@ -189,3 +189,49 @@ A single-row statement of the product benchmark (`test/sql/real_benchmark`) cost
 at the median (about 0.05 ms). A 10-minute mixed run (inserts, renames of users and of
 organisations two hops away, users moving between organisations, a rename of every user every
 30 s) ends with no stale row.
+
+## Amendment: shared locks only after a link changed (0.1.0-beta.34, #263)
+
+The protocol above deadlocked two single-row writes that changed no relationship. Two
+users each edit their own `bio`; each commented on the other's post, so each write's
+refresh of `tv_post` reads both users. Within one autocommit statement, the trigger took
+the exclusive lock on its own user and the flush then a shared lock on the other one:
+the two statements waited for each other (velocitybench: 846 deadlocks, writes from 589
+to about 8 per second between 0.1.0-beta.11 and 0.1.0-beta.33). "Deadlocks between
+value locks taken in different statements" above was wrong: one statement is enough.
+
+The shared locks protect a refresh whose rows are linked to a value by a row only its
+own transaction can see: a post it inserted, a comment it re-pointed, a user it moved to
+another organisation. A transaction that changed no link computes rows linked by
+committed rows only; a writer of a value they read finds them by its own query, and the
+row locks order the two refreshes, the second computing after the first commits.
+
+- **A refresh takes its shared value locks (read sets and embedded keys) only in a
+  transaction that changed a link**: inserted or deleted a row of a table a TVIEW reads,
+  or updated a column of one that some TVIEW's rows are linked by. TRUNCATE, partitions
+  attached, detached or dropped, full refreshes and suspended writes count as link
+  changes. The intent lock, the writer's exclusive locks and the key locks of rows
+  being created are unchanged. `ROLLBACK TO SAVEPOINT` forgets a link changed after the
+  savepoint, as the lock manager releases its locks.
+- **The link columns come from the definition** (plan version 3, per table): a column
+  read in a join or filter condition, a GROUP BY (not the definition's own, grouped by
+  its identity), a DISTINCT, a window's PARTITION BY or ORDER BY, the ORDER BY of a
+  level under LIMIT/OFFSET, an aggregate's FILTER, a function in FROM, a subquery
+  compared in one of those, and the key. A read the walk cannot follow to columns (a
+  set operation that removes duplicates, an aggregate compared above its level, a
+  whole-row reference) makes every column a link; a plan of an earlier version reads
+  the same way until the update re-derives it.
+- **The writer's exclusive locks on embedded keys** (taken before the parents of a
+  refreshed child are looked up) were not described above; they also serialize two
+  transactions changing the same child row's links, which the shared locks no longer do
+  for value-only writers.
+- **One refresh of an entity per flush, its rows locked in key order.** The rows a
+  flush's own writes queue through another TVIEW's triggers join the flush after each
+  entity, not after the last one, and a refresh that patches some rows and recomputes
+  others locks them all in key order first. Before, the same `tv_post` rows could be
+  locked in two statements in a different order in each transaction.
+
+Specs: `crossed-value-writes` (one statement each, gated between the triggers and the
+flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
+unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change
+links, then rename crosswise) still deadlocks.
