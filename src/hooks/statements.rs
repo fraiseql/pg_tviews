@@ -291,7 +291,9 @@ pub(super) unsafe fn privileges_change_of(
 /// from a partition tree, resolved once `PostgreSQL` has run the statement.
 pub(super) struct PartitionDdl {
     pub(super) tables: Vec<*mut pg_sys::RangeVar>,
-    /// The partitioned table an `ATTACH` or `DETACH` changes the rows of.
+    /// The partitioned table an `ATTACH` or a `DETACH … CONCURRENTLY` (or
+    /// `FINALIZE`) changes the rows of. A plain `DETACH` maps the leaving rows
+    /// before it runs instead ([`leaving_partitions_of`]).
     pub(super) changed_rows_of: Option<*mut pg_sys::RangeVar>,
 }
 
@@ -311,8 +313,9 @@ impl PartitionDdl {
                 crate::dependency::triggers::ensure_partition_triggers(oid)?;
             }
         }
-        // The rows of an attached or detached partition enter or leave the
-        // partitioned table with no row written: refresh its TVIEWs in full.
+        // The rows of an attached partition enter the partitioned table with no
+        // row written, and so do the rows a concurrent detach takes out across
+        // its two transactions: refresh its TVIEWs in full.
         // SAFETY: see above.
         let parent = self
             .changed_rows_of
@@ -366,7 +369,11 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
                     let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
                     if !partition.name.is_null() {
                         tables.push(partition.name);
-                        changed_rows_of = Some(stmt.relation);
+                        if (*cmd).subtype != pg_sys::AlterTableType::AT_DetachPartition
+                            || partition.concurrent
+                        {
+                            changed_rows_of = Some(stmt.relation);
+                        }
                     }
                 }
             }
@@ -376,6 +383,81 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
             tables,
             changed_rows_of,
         })
+    }
+}
+
+/// The partitions whose rows leave their partition tree with the statement, read
+/// before it runs: each partition a `DROP TABLE` or `DROP FOREIGN TABLE` names, and
+/// the one a plain `DETACH PARTITION` names. Only when the current user may run
+/// the statement (owns the dropped partition, or the table it is detached from):
+/// otherwise it fails before anything changes, and nothing is locked first.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) -> Vec<pg_sys::Oid> {
+    // SAFETY: every pointer is null-checked before it is dereferenced; each cast
+    // follows the node's tag.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return Vec::new();
+        }
+        let node = (*pstmt).utilityStmt;
+        let owns = |relid: pg_sys::Oid| {
+            pg_sys::object_ownercheck(pg_sys::RelationRelationId, relid, pg_sys::GetUserId())
+        };
+        // (partition, the table whose owner may run the statement when not the
+        // partition's)
+        let mut names: Vec<(*mut pg_sys::RangeVar, Option<*mut pg_sys::RangeVar>)> = Vec::new();
+        match (*node).type_ {
+            pg_sys::NodeTag::T_DropStmt => {
+                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
+                let stmt = &*node.cast::<pg_sys::DropStmt>();
+                if matches!(
+                    stmt.removeType,
+                    pg_sys::ObjectType::OBJECT_TABLE | pg_sys::ObjectType::OBJECT_FOREIGN_TABLE
+                ) {
+                    for i in 0..pg_sys::list_length(stmt.objects) {
+                        let name_list = pg_sys::list_nth(stmt.objects, i).cast::<pg_sys::List>();
+                        if !name_list.is_null() && pg_sys::list_length(name_list) > 0 {
+                            names.push((pg_sys::makeRangeVarFromNameList(name_list), None));
+                        }
+                    }
+                }
+            }
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                #[allow(clippy::cast_ptr_alignment)]
+                // Reason: PostgreSQL Node* → AlterTableStmt* cast
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                for i in 0..pg_sys::list_length(stmt.cmds) {
+                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    if cmd.is_null()
+                        || (*cmd).subtype != pg_sys::AlterTableType::AT_DetachPartition
+                        || (*cmd).def.is_null()
+                    {
+                        continue;
+                    }
+                    #[allow(clippy::cast_ptr_alignment)]
+                    // Reason: PostgreSQL Node* → PartitionCmd* cast
+                    let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
+                    // DETACH is the detached-from table's owner's to run.
+                    if !partition.concurrent && !partition.name.is_null() {
+                        names.push((partition.name, Some(stmt.relation)));
+                    }
+                }
+            }
+            _ => {}
+        }
+        names
+            .into_iter()
+            .filter_map(|(rv, runs_it)| {
+                let oid = resolve_relation_oid(rv);
+                let allowed = match runs_it {
+                    Some(parent) => owns(resolve_relation_oid(parent)),
+                    None => owns(oid),
+                };
+                (oid != pg_sys::InvalidOid && pg_sys::get_rel_relispartition(oid) && allowed)
+                    .then_some(oid)
+            })
+            .collect()
     }
 }
 

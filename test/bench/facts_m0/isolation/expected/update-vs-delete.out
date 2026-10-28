@@ -1,0 +1,22 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_update b_delete a_commit b_check
+step a_begin: BEGIN;
+step a_update: UPDATE tf_sales_day SET amount = 25, day = '2026-09-01' WHERE pk = 1;
+step b_delete: DELETE FROM tf_sales_day WHERE pk = 1; <waiting ...>
+step a_commit: COMMIT;
+step b_delete: <... completed>
+step b_check: 
+  SELECT count(*) AS problems FROM facts_m0.verify('sales');
+  SELECT count(*) AS month_rows FROM tf_sales_month;
+
+problems
+--------
+       0
+(1 row)
+
+month_rows
+----------
+         0
+(1 row)
+

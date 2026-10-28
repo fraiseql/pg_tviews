@@ -40,6 +40,28 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.33 against 0.1.0-beta.32
+
+beta.33 changes no code on the write path (its fix runs on `DROP TABLE` and `DETACH
+PARTITION` only); this run checks that, with a write added: `untracked_insert`, an insert into
+`tb_audit`, a table no TVIEW reads, which measures what the installed extension costs a table
+it does not maintain. Stock PostgreSQL 18.6 (Arch), release builds, `synchronous_commit =
+off`, both clusters pinned to the same cores, on a machine shared with other builds (load
+30–75): runs of single writes swung by 2× or more from one minute to the next, so only
+adjacent pairs are compared.
+
+Ten alternating 5 s pgbench runs per build, one client, one database copy per build; tps:
+
+| write | beta.32, median | beta.33, median | |
+|---|---:|---:|---:|
+| `bio` | 2,550 | 2,552 | +0.1 % |
+| `untracked_insert` | 34,058 | 33,881 | −0.5 % |
+
+All six writes, interleaved per write in three rounds at 1 and 16 clients (15 s runs, fresh
+copies): the paired head / beta.32 ratios ranged 0.35–2.6 with no direction, the noise of the
+machine. A difference below a few percent cannot be resolved on a shared box; the code says
+there is none.
+
 ## 0.1.0-beta.29 against 0.1.0-beta.28
 
 Stock PostgreSQL 18.4 (Arch), release builds, data directory on NVMe with `fsync` on (a

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`DROP TABLE` of a partition took its rows out of the partitioned table but not out
+  of the TVIEWs over it** (#261), which stayed stale until a rebuild. A dropped
+  partition's rows now leave every TVIEW over the tree in the dropping statement, as a
+  `DELETE` of them would: they are mapped to the keys they reach before the drop, and
+  only those keys are refreshed. This covers TVIEWs over a partitioned table in the
+  middle of the tree, and foreign partitions (`DROP FOREIGN TABLE`, refreshed in full).
+  A plain `DETACH PARTITION` does the same instead of refreshing the TVIEWs in full;
+  `ATTACH` and `DETACH … CONCURRENTLY` still refresh in full.
+
 ## [0.1.0-beta.32] - 2026-10-17
 
 ### Changed

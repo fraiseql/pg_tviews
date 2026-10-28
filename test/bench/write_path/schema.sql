@@ -41,6 +41,13 @@ CREATE TABLE tb_comment (
 );
 CREATE INDEX ON tb_comment (fk_post);
 CREATE INDEX ON tb_comment (fk_author);
+-- Read by no TVIEW: what an installed pg_tviews costs a table it does not maintain.
+CREATE TABLE tb_audit (
+    pk_audit bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    at timestamptz NOT NULL DEFAULT now(),
+    note text NOT NULL
+);
 
 SELECT tviews.pg_tviews_create('bench.tv_user', $$
     SELECT u.pk_user, u.id, u.identifier,

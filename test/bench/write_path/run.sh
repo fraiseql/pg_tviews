@@ -15,7 +15,7 @@ source "$here/lib.sh"
 secs="${1:-10}"; clients="${2:-1}"; shift $(( $# > 2 ? 2 : $# ))
 writes=("$@"); [[ ${#writes[@]} -eq 0 ]] && writes=(bio username title comment_insert bio_bulk100)
 tpl=pg_tviews_write_bench; db=pg_tviews_write_bench_run
-if ! psql -d "$tpl" -tAc "SELECT 1 FROM bench.tv_comment LIMIT 1" >/dev/null 2>&1; then
+if ! psql -d "$tpl" -tAc "SELECT 1 FROM bench.tv_comment, bench.tb_audit LIMIT 1" >/dev/null 2>&1; then
   psql -q -d postgres -c "DROP DATABASE IF EXISTS $tpl" -c "CREATE DATABASE $tpl"
   psql -q -X -v ON_ERROR_STOP=1 -d "$tpl" -c "SET pg_tviews.max_queue_size = 1000000" -f "$here/schema.sql" >/dev/null
 fi
