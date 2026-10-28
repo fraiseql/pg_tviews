@@ -29,6 +29,12 @@ database): a username copied into arrays of embedded rows (`array`) and across t
 (`two_hop`), with pg_tviews, with the patch path off, with the patch written by hand
 (`writes/*.manual.sql`) and plain.
 
+`compare.sh head=28971 base=28972 -- [rounds] [seconds] [clients ...] [-- write ...]`
+compares builds: one cluster per build, the writes interleaved build by build (the
+order alternating each round), each run started only when the 1-minute load average is
+below `LOAD_MAX` (4) and kept only if it ended below `LOAD_DISCARD` (8). It prints every
+run as CSV, then each build's median tps per write and client count.
+
 Every run starts on a fresh copy of the seeded template database (`CREATE DATABASE …
 STRATEGY FILE_COPY`), so no run measures a table an earlier one bloated.
 
