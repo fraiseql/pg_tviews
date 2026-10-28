@@ -6,7 +6,7 @@
 //! read before it computes them. Past a threshold, a transaction locks the
 //! relation instead of its values. Locks live in PostgreSQL's lock manager under a
 //! private advisory tag and are held to the end of the transaction. REPEATABLE
-//! READ fails instead of waiting; SERIALIZABLE takes none.
+//! READ and SERIALIZABLE fail instead of waiting.
 
 pub mod crosscheck;
 pub mod reads;
@@ -65,10 +65,11 @@ pub struct LockTarget {
 pub enum Policy {
     /// Wait for it (READ COMMITTED): what follows sees the other's commit.
     Wait,
-    /// Fail with 40001 (REPEATABLE READ): the snapshot can't see what it waited for.
+    /// Fail with 40001 (REPEATABLE READ, SERIALIZABLE): the snapshot can't see
+    /// what it waited for. Serializable snapshot isolation alone would not do:
+    /// it orders serializable transactions among themselves, not against a
+    /// READ COMMITTED writer.
     FailFast,
-    /// Take no lock (SERIALIZABLE): SSI detects the conflict.
-    Skip,
 }
 
 impl Policy {
@@ -76,8 +77,7 @@ impl Policy {
     #[must_use]
     pub const fn of_level(level: u32) -> Self {
         match level {
-            pg_sys::XACT_SERIALIZABLE => Self::Skip,
-            pg_sys::XACT_REPEATABLE_READ => Self::FailFast,
+            pg_sys::XACT_SERIALIZABLE | pg_sys::XACT_REPEATABLE_READ => Self::FailFast,
             _ => Self::Wait,
         }
     }
@@ -179,7 +179,7 @@ pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
 
 fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
     let policy = Policy::current();
-    if policy == Policy::Skip || values.is_empty() {
+    if values.is_empty() {
         return;
     }
     let relid = target.relid;
@@ -260,7 +260,7 @@ fn relation_lock(relid: u32, space: Space, side: Side, mode: pg_sys::LOCKMODE) {
         Held::Intent { relid, space, side }
     };
     let held = REGISTRY.with_borrow(|r| r.holds(&lock) || r.escalated(relid, space, side));
-    if policy == Policy::Skip || held {
+    if held {
         return;
     }
     acquire(&relation_tag(database(), relid, space), mode, side, policy);
@@ -280,9 +280,6 @@ pub fn lock_changed_rows(
     mapping: &crate::lineage::KeyMapping,
     mut values: impl FnMut(&str) -> crate::TViewResult<Vec<String>>,
 ) -> crate::TViewResult<()> {
-    if Policy::current() == Policy::Skip {
-        return Ok(());
-    }
     for set in &mapping.reads {
         let column = if set.attnum == 0 {
             None
@@ -431,7 +428,7 @@ fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Po
                 "a concurrent transaction refreshes TVIEW rows from rows this write changes"
             }
         }),
-        Policy::Wait | Policy::Skip => {
+        Policy::Wait => {
             let start = std::time::Instant::now();
             // SAFETY: as above; waiting honours lock_timeout and deadlock
             // detection, which raise an ERROR.
@@ -584,6 +581,9 @@ mod tests {
             Policy::of_level(pg_sys::XACT_REPEATABLE_READ),
             Policy::FailFast
         );
-        assert_eq!(Policy::of_level(pg_sys::XACT_SERIALIZABLE), Policy::Skip);
+        assert_eq!(
+            Policy::of_level(pg_sys::XACT_SERIALIZABLE),
+            Policy::FailFast
+        );
     }
 }

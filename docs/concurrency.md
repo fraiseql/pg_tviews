@@ -38,7 +38,7 @@ TVIEW. Whatever the order of their statements and commits:
 |---|---|
 | `READ COMMITTED` (PostgreSQL's default) | every TVIEW row equals its backing view once both have committed. The second transaction waits for the first, then computes from a snapshot that sees its commit. |
 | `REPEATABLE READ` | every TVIEW row equals its backing view, or one transaction fails with `40001` (retry it). A snapshot can't see what committed after it, however long it waits, so such a transaction never waits for these locks, and checks what it refreshed and what it found against the latest snapshot, as PostgreSQL's foreign-key checks do. |
-| `SERIALIZABLE` | every TVIEW row equals its backing view, or one transaction fails with `40001` (retry it). PostgreSQL's serializable snapshot isolation detects the conflict; pg_tviews takes none of the locks below. |
+| `SERIALIZABLE` | as `REPEATABLE READ`. PostgreSQL's serializable snapshot isolation orders serializable transactions among themselves only: against a `READ COMMITTED` writer it detects nothing, so pg_tviews takes the same locks and checks as under `REPEATABLE READ`. |
 
 `REPEATABLE READ` costs more: each refreshed row is computed a second time under the
 latest snapshot, and under contention on the same values many transactions fail and

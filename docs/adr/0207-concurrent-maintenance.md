@@ -231,6 +231,24 @@ row locks order the two refreshes, the second computing after the first commits.
   others locks them all in key order first. Before, the same `tv_post` rows could be
   locked in two statements in a different order in each transaction.
 
+Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both stale on
+0.1.0-beta.33 too:
+
+- **SERIALIZABLE takes the locks and checks of REPEATABLE READ.** "SERIALIZABLE takes
+  no value locks: SSI already detects the anomaly" above holds only when every
+  concurrent writer is serializable: SSI orders serializable transactions among
+  themselves, and a READ COMMITTED rename is invisible to it. A post inserted under
+  SERIALIZABLE while its author was renamed under READ COMMITTED stayed stale in both
+  orders (`serializable-vs-read-committed`). SERIALIZABLE now fails fast on a value
+  lock and cross-checks against the latest snapshot, as REPEATABLE READ does.
+- **A patch derived for a parent holds only while the parent still embeds the child.**
+  A rename patched into the posts embedding the user found post 10 under its
+  snapshot, waited for a concurrent re-point's row lock, then wrote the old user's
+  name into a post that embedded another user (`embed-patch-vs-repoint`). Before
+  patching, the refresh locks the rows in key order (the latest committed version
+  under READ COMMITTED) and recomputes a parent whose lookup column no longer holds
+  the child's key.
+
 Specs: `crossed-value-writes` (one statement each, gated between the triggers and the
 flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
 unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed a link: inserted or deleted rows of a table a TVIEW reads, or updated a column
   a TVIEW's rows are linked by (a join, filter, grouping…). A refresh writes each
   entity's rows once per statement, locked in key order (ADR 0207, amended).
+- **A TVIEW refreshed under `SERIALIZABLE` could stay stale against a `READ
+  COMMITTED` writer**: serializable snapshot isolation only orders serializable
+  transactions among themselves. `SERIALIZABLE` now takes the value locks and runs the
+  cross-checks of `REPEATABLE READ`, so one of the two fails with `40001` instead.
+- **A rename patched into the rows embedding the renamed row could land in a row
+  re-pointed meanwhile**, which then showed the old child's fields over the new one's.
+  A patch is now written only into a row that still embeds the child; the others are
+  recomputed.
 
 ### Upgrade notes
 

@@ -15,6 +15,10 @@ pub(super) struct Flush {
     pub(super) pending: HashSet<RefreshKey>,
     /// The direct-patch chains of the pending keys.
     pub(super) patches: HashMap<RefreshKey, PatchState>,
+    /// For a parent key patched from its children's patches: each `(child
+    /// entity, child pk)` it was found embedding. The patch holds only while the
+    /// parent still embeds every one.
+    guards: HashMap<RefreshKey, Vec<(String, i64)>>,
     /// Keys refreshed in this flush.
     pub(super) processed: HashSet<RefreshKey>,
     /// Passes of the flush loop so far, starting at 1.
@@ -38,6 +42,7 @@ impl Flush {
             graph,
             pending,
             patches,
+            guards: HashMap::new(),
             processed,
             iteration: 1,
             metas: HashMap::new(),
@@ -116,11 +121,11 @@ impl Flush {
             }
             recompute.push(key);
         }
+        if !patched.is_empty() {
+            self.check_patches(entity, &values, &mut patched, &mut recompute)?;
+        }
         let mut applied: HashSet<i64> = patched.iter().map(|(pk, _)| *pk).collect();
         if !patched.is_empty() {
-            // Patches (one statement per shape) and recomputes lock rows in
-            // several statements: take them all in key order first.
-            crate::refresh::lock_in_key_order(&*self.meta(entity)?, &values)?;
             // A row not materialised yet cannot be patched: it is recomputed.
             let meta = self.meta(entity)?;
             for pk in crate::refresh::direct::apply_entity_patches(&meta, patched)? {
@@ -136,6 +141,62 @@ impl Flush {
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
         }
+        Ok(())
+    }
+
+    /// Before `entity`'s rows are patched: lock every row of the pass in key order
+    /// (patches, one statement per shape, and recomputes would lock them in
+    /// several statements, in a different order in each transaction), and move to
+    /// `recompute` a parent patched for a child it no longer embeds. The parent was
+    /// found holding the child under this statement's snapshot; a concurrent
+    /// transaction may have re-pointed it since, and committed while this one
+    /// waited for its row lock: the row locked is that latest version.
+    fn check_patches(
+        &mut self,
+        entity: &str,
+        values: &[KeyValue],
+        patched: &mut Vec<(i64, Vec<PatchEntry>)>,
+        recompute: &mut Vec<RefreshKey>,
+    ) -> TViewResult<()> {
+        let meta = self.meta(entity)?;
+        let guarded = |pk: i64| self.guards.get(&RefreshKey::pk(entity, pk));
+        let mut columns: Vec<String> = Vec::new();
+        for (pk, _) in patched.iter() {
+            for (child, _) in guarded(*pk).into_iter().flatten() {
+                for column in self.graph.lookup_columns(child, entity) {
+                    if !columns.contains(column) {
+                        columns.push(column.clone());
+                    }
+                }
+            }
+        }
+        if patched.len() + recompute.len() < 2 && columns.is_empty() {
+            return Ok(());
+        }
+        let Some(locked) = crate::refresh::lock_in_key_order(&meta, values, &columns)? else {
+            return Ok(());
+        };
+        let holds = |pk: i64| {
+            guarded(pk).into_iter().flatten().all(|(child, child_pk)| {
+                let Some(row) = locked.get(&pk) else {
+                    // Not materialised: the patch falls back to a recompute.
+                    return true;
+                };
+                self.graph
+                    .lookup_columns(child, entity)
+                    .iter()
+                    .any(|column| {
+                        columns
+                            .iter()
+                            .position(|c| c == column)
+                            .and_then(|i| row.get(i).copied().flatten())
+                            == Some(*child_pk)
+                    })
+            })
+        };
+        let (kept, moved): (Vec<_>, Vec<_>) = patched.drain(..).partition(|(pk, _)| holds(*pk));
+        *patched = kept;
+        recompute.extend(moved.into_iter().map(|(pk, _)| RefreshKey::pk(entity, pk)));
         Ok(())
     }
 
@@ -217,6 +278,10 @@ impl Flush {
                 match derived {
                     Some(chain) => {
                         patch::merge_chain_into(&mut self.patches, parent.clone(), chain);
+                        self.guards
+                            .entry(parent.clone())
+                            .or_default()
+                            .push((entity.to_string(), child_pk));
                     }
                     None => patch::poison_into(&mut self.patches, parent.clone()),
                 }

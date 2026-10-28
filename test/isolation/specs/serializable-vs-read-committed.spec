@@ -51,5 +51,5 @@ step check
   ORDER BY 1, 2;
 }
 
-permutation i_begin i_insert r_begin r_rename r_commit i_commit check
+permutation i_begin i_insert r_begin r_rename i_commit r_commit check
 permutation r_begin r_rename i_begin i_insert r_commit i_commit check

@@ -89,11 +89,10 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // single statement never carries an unbounded key array. Each batch's UPSERT and
     // stale-DELETE are keyed on that batch's keys; the DELETE only affects tview rows
     // whose key is in the batch, so per-batch execution stays correct.
-    let with_pks = !meta.identity.is_pk(entity);
     let mut touched = super::Touched::default();
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
-        let locked = super::lock_rows(&meta, &qi_tv, chunk, with_pks)?;
+        let locked = super::lock_rows(&meta, &qi_tv, chunk)?;
         // A key names one row: a UNION view returning several for one is refused.
         super::refuse_duplicate_keys(
             &meta,

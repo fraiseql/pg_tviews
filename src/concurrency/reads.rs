@@ -53,10 +53,7 @@ pub fn rendered(
 /// # Errors
 /// Returns an error if a read-set query fails.
 pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
-    use super::{LockTarget, Policy, Side};
-    if Policy::current() == Policy::Skip {
-        return Ok(());
-    }
+    use super::{LockTarget, Side};
     let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
         return Ok(());
     };
@@ -135,10 +132,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
 /// # Errors
 /// Returns an error if an embedded TVIEW's catalog row cannot be read.
 pub fn lock_whole_read_set(meta: &crate::catalog::TviewMeta) -> TViewResult<()> {
-    use super::{Policy, Side};
-    if Policy::current() == Policy::Skip {
-        return Ok(());
-    }
+    use super::Side;
     for mapping in meta.plan.tables.iter().filter(|m| !m.reads.is_empty()) {
         super::lock_relation(mapping.relid, Side::Refresh);
     }

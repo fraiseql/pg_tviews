@@ -42,12 +42,7 @@ use crate::utils::{ident, qualified_relname_from_oid};
 pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Touched> {
     let keys = std::slice::from_ref(key);
     // Wait for a concurrent writer of this row before reading the view.
-    let locked = super::lock_rows(
-        meta,
-        &qualified_relname_from_oid(meta.tview_oid)?,
-        keys,
-        !meta.identity.is_pk(&meta.entity_name),
-    )?;
+    let locked = super::lock_rows(meta, &qualified_relname_from_oid(meta.tview_oid)?, keys)?;
 
     // A key names one row: a UNION view returning several for it is refused.
     let key_type = meta.key_type()?;
