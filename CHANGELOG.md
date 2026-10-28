@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trigger. The TVIEWs reading the column (PostgreSQL 17 and later), or showing the enum
   (directly, through a domain or an array, or named in the definition), are now
   refreshed in the statement.
+- **A pg_tviews trigger function attached the wrong way** (a row handler fired per
+  statement, a trigger naming no TVIEW) did nothing or raised an internal error: it now
+  fails with `39P01` (trigger protocol violated).
 - **The health check missed a pg_tviews trigger switched to `ENABLE REPLICA`**, which
   stops firing on the primary: it is reported with the disabled ones.
 

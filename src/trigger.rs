@@ -115,11 +115,17 @@ fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
+    crate::delta::require_level(trigger, true);
     // A lookup that fails fails the write: committing it with nothing queued would
     // leave the TVIEWs over the table stale.
     let table_oid = trigger
         .relation()
-        .unwrap_or_else(|e| error!("pg_tviews: the row trigger has no relation: {e}"))
+        .unwrap_or_else(|e| {
+            crate::TViewError::TriggerMisused {
+                reason: format!("pg_tviews: the row trigger has no relation: {e}"),
+            }
+            .raise()
+        })
         .oid();
     // The TVIEW this trigger serves (its argument). A table read by several
     // TVIEWs has one trigger each.
@@ -214,11 +220,17 @@ fn enqueue_local_keys(
         return;
     }
     let Some(tupdesc) = trigger_tupdesc(trigger) else {
-        error!("pg_tviews: the row trigger has no relation");
+        crate::TViewError::TriggerMisused {
+            reason: "pg_tviews: the row trigger has no relation".to_string(),
+        }
+        .raise();
     };
     let images = row_images(trigger);
     if images.is_empty() {
-        error!("pg_tviews: the row trigger has no row");
+        crate::TViewError::TriggerMisused {
+            reason: "pg_tviews: the row trigger has no row".to_string(),
+        }
+        .raise();
     }
 
     // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview

@@ -124,7 +124,7 @@ unsafe extern "C-unwind" fn executor_run(
     }
 }
 
-#[cfg(feature = "pg18")]
+#[cfg(not(any(feature = "pg16", feature = "pg17")))]
 #[pg_guard]
 unsafe extern "C-unwind" fn executor_run(
     query_desc: *mut pg_sys::QueryDesc,

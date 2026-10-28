@@ -60,11 +60,34 @@ pub fn trigger_entity(trigger: &PgTrigger<'_>) -> String {
         .and_then(|args| args.into_iter().next())
         .unwrap_or_else(|| {
             let name = trigger.name().unwrap_or("?");
-            error!(
-                "pg_tviews: trigger {name} names no TVIEW; run \
-                 SELECT * FROM tviews.pg_tviews_reregister_all() and drop it"
-            )
+            crate::TViewError::TriggerMisused {
+                reason: format!(
+                    "pg_tviews: trigger {name} names no TVIEW; run \
+                     SELECT * FROM tviews.pg_tviews_reregister_all() and drop it"
+                ),
+            }
+            .raise()
         })
+}
+
+/// Raise `TriggerMisused` unless `trigger` fires per row (`row`) or per
+/// statement: a handler attached by hand at the other level would see no row, or
+/// no transition table, and refresh nothing.
+pub fn require_level(trigger: &PgTrigger<'_>, row: bool) {
+    if matches!(trigger.level(), PgTriggerLevel::Row) != row {
+        let name = trigger.name().unwrap_or("?");
+        let (fires, needs) = if row {
+            ("STATEMENT", "ROW")
+        } else {
+            ("ROW", "STATEMENT")
+        };
+        crate::TViewError::TriggerMisused {
+            reason: format!(
+                "pg_tviews: trigger {name} fires FOR EACH {fires}, its function needs FOR EACH {needs}"
+            ),
+        }
+        .raise()
+    }
 }
 
 pub(super) fn suspended() -> bool {
@@ -79,6 +102,7 @@ fn pg_tview_delta_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
+    require_level(trigger, false);
     let entity = trigger_entity(trigger);
     if suspended() {
         crate::concurrency::note_link_change();
@@ -93,7 +117,10 @@ fn pg_tview_delta_trigger<'a>(
     };
     let table_oid = match trigger.relation() {
         Ok(rel) => rel.oid(),
-        Err(e) => error!("pg_tviews: delta trigger without a relation: {e}"),
+        Err(e) => crate::TViewError::TriggerMisused {
+            reason: format!("pg_tviews: delta trigger without a relation: {e}"),
+        }
+        .raise(),
     };
     if let Err(e) = map_statement(trigger, &entity, table_oid, event) {
         e.raise_in(&format!(

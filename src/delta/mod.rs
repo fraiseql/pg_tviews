@@ -20,4 +20,4 @@ mod trigger;
 pub use crate::queue::Event;
 pub(crate) use mapping::{mapping_query, read_set_queries};
 pub use partition::{map_entering_partition, map_leaving_partition, map_row, refresh_tviews_over};
-pub use trigger::{begin_truncate, trigger_entity};
+pub use trigger::{begin_truncate, require_level, trigger_entity};

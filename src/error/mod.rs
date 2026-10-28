@@ -55,6 +55,10 @@ pub enum TViewError {
     /// `pg_tviews` cannot maintain a TVIEW with this definition.
     DefinitionRefused { reason: String },
 
+    /// One of `pg_tviews`' trigger functions was attached the wrong way (by
+    /// hand, or left by an older release).
+    TriggerMisused { reason: String },
+
     /// The definition's `pk_<entity>` column is not an integer.
     KeyTypeRefused { column: String, found: String },
 
@@ -127,6 +131,9 @@ impl TViewError {
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+            Self::TriggerMisused { .. } => {
+                PgSqlErrorCode::ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED
+            }
             Self::KeyTypeRefused { .. } => PgSqlErrorCode::ERRCODE_DATATYPE_MISMATCH,
             Self::ColumnDdlRefused { .. } => PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE,
             Self::IndexNameReserved { .. } => PgSqlErrorCode::ERRCODE_RESERVED_NAME,
@@ -300,6 +307,7 @@ impl fmt::Display for TViewError {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
             }
             Self::DefinitionRefused { reason }
+            | Self::TriggerMisused { reason }
             | Self::PermissionDenied { reason }
             | Self::WrongState { reason } => {
                 write!(f, "{reason}")
@@ -428,6 +436,7 @@ mod tests {
                 reason: s(),
             },
             TViewError::DefinitionRefused { reason: s() },
+            TViewError::TriggerMisused { reason: s() },
             TViewError::KeyTypeRefused {
                 column: s(),
                 found: s(),
@@ -485,6 +494,7 @@ mod tests {
                 | TViewError::RelationExists { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
+                | TViewError::TriggerMisused { .. }
                 | TViewError::KeyTypeRefused { .. }
                 | TViewError::ColumnDdlRefused { .. }
                 | TViewError::IndexNameReserved { .. }
