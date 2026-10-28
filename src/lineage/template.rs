@@ -99,43 +99,58 @@ pub fn template_placeholders(template: &str) -> Vec<Placeholder> {
 pub const DELTA: &str = "pg_tviews_delta";
 
 /// A mapping-query template with the current names of its relations and columns;
-/// `None` when one of them is gone.
+/// `None` when one of them is gone. One catalog read, whatever the placeholders.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
     use pgrx::prelude::*;
-    let mut names: std::collections::HashMap<(u32, i16), Option<String>> =
-        std::collections::HashMap::new();
-    for placeholder in template_placeholders(template) {
-        let (relid, attnum) = match placeholder {
-            Placeholder::Relation(relid) => (relid, 0),
-            Placeholder::Column(relid, attnum) => (relid, attnum),
-        };
-        if names.contains_key(&(relid, attnum)) {
-            continue;
-        }
+    let key = |p: Placeholder| match p {
+        Placeholder::Relation(relid) => (relid, 0),
+        Placeholder::Column(relid, attnum) => (relid, attnum),
+    };
+    let mut wanted: Vec<(u32, i16)> = template_placeholders(template)
+        .into_iter()
+        .map(key)
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut names: std::collections::HashMap<(u32, i16), String> =
+        std::collections::HashMap::with_capacity(wanted.len());
+    if !wanted.is_empty() {
+        crate::metrics::metrics_api::record_catalog_lookup();
         let args = [
-            crate::utils::spi::oid(pgrx::pg_sys::Oid::from(relid)),
-            crate::utils::spi::int2(attnum),
+            crate::utils::spi::oid_array(
+                wanted
+                    .iter()
+                    .map(|w| pgrx::pg_sys::Oid::from(w.0))
+                    .collect(),
+            ),
+            crate::utils::spi::int2_array(wanted.iter().map(|w| w.1).collect()),
         ];
-        let name = Spi::get_one_with_args::<String>(
-            "SELECT CASE WHEN $2 = 0 \
-                    THEN pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
-                    ELSE (SELECT pg_catalog.quote_ident(a.attname) FROM pg_catalog.pg_attribute a \
-                          WHERE a.attrelid = c.oid AND a.attnum = $2 AND NOT a.attisdropped) END \
-             FROM pg_catalog.pg_class c \
-             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             WHERE c.oid = $1",
-            &args,
-        )?;
-        names.insert((relid, attnum), name);
+        Spi::connect(|client| {
+            let rows = client.select(
+                "SELECT k.relid, k.attnum, CASE WHEN k.attnum = 0 \
+                        THEN pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
+                        ELSE (SELECT pg_catalog.quote_ident(a.attname) FROM pg_catalog.pg_attribute a \
+                              WHERE a.attrelid = c.oid AND a.attnum = k.attnum AND NOT a.attisdropped) END \
+                 FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.oid[]), pg_catalog.unnest($2::pg_catalog.int2[])) AS k (relid, attnum) \
+                 JOIN pg_catalog.pg_class c ON c.oid = k.relid \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace",
+                None,
+                &args,
+            )?;
+            for row in rows {
+                if let (Some(relid), Some(attnum), Some(name)) = (
+                    row.get::<pgrx::pg_sys::Oid>(1)?,
+                    row.get::<i16>(2)?,
+                    row.get::<String>(3)?,
+                ) {
+                    names.insert((relid.to_u32(), attnum), name);
+                }
+            }
+            Ok::<_, pgrx::spi::Error>(())
+        })?;
     }
-    Ok(fill_template(template, &|p| {
-        let key = match p {
-            Placeholder::Relation(relid) => (relid, 0),
-            Placeholder::Column(relid, attnum) => (relid, attnum),
-        };
-        names.get(&key).cloned().flatten()
-    }))
+    Ok(fill_template(template, &|p| names.get(&key(p)).cloned()))
 }

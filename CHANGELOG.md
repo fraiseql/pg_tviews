@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A backend keeps its caches across a rolled-back transaction** (#266). Every
+  `ROLLBACK`, `ROLLBACK TO SAVEPOINT` and error caught in PL/pgSQL threw them away, so
+  the next write read the catalog again: its mapping queries rendered anew, one lookup
+  per name they hold (a write reaching three TVIEWs ran 40 statements instead of 10).
+  Retries after `40001` / `40P01` and test suites that roll back each test paid it on
+  every write. They are now forgotten only when the transaction ran DDL or filled a
+  TVIEW. A mapping query is rendered with one catalog read, whatever names it holds.
 - **A definition that reads a foreign table or a sequence follows its
   `uncascaded_policy`**: nothing pg_tviews sees fires when their rows change, so they
   are uncascaded reads, refused under the default `error` policy and accepted under

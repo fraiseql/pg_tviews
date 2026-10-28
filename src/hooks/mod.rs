@@ -139,6 +139,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         crate::delta::begin_truncate();
     }
 
+    // A statement that may change the catalog: if the transaction rolls back, the
+    // caches forget what they memoized of it.
+    if call.tag().is_some_and(may_change_catalog) {
+        crate::cache::mark_changed();
+    }
+
     // DDL pg_tviews itself issues: run it as it is.
     if crate::internal_ddl::InternalDdl::active() {
         call.pass_through();
@@ -163,6 +169,37 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let _internal = crate::internal_ddl::InternalDdl::begin();
         follow_ups.run();
     }
+}
+
+/// Whether a utility statement may change the catalog: any but those that only
+/// control the session, the transaction, cursors and prepared statements, or that
+/// run statements of their own (`DO`, `CALL`, `EXPLAIN`, `EXECUTE`: DDL they run
+/// comes through the hook itself).
+const fn may_change_catalog(tag: pg_sys::NodeTag) -> bool {
+    use pg_sys::NodeTag as T;
+    !matches!(
+        tag,
+        T::T_TransactionStmt
+            | T::T_VariableSetStmt
+            | T::T_VariableShowStmt
+            | T::T_ConstraintsSetStmt
+            | T::T_ExplainStmt
+            | T::T_CopyStmt
+            | T::T_PrepareStmt
+            | T::T_ExecuteStmt
+            | T::T_DeallocateStmt
+            | T::T_DeclareCursorStmt
+            | T::T_FetchStmt
+            | T::T_ClosePortalStmt
+            | T::T_NotifyStmt
+            | T::T_ListenStmt
+            | T::T_UnlistenStmt
+            | T::T_LockStmt
+            | T::T_DoStmt
+            | T::T_CallStmt
+            | T::T_DiscardStmt
+            | T::T_CheckPointStmt
+    )
 }
 
 /// Flush the refresh queue before a top-level `COMMIT` or `PREPARE TRANSACTION`:

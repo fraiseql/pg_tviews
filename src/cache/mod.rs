@@ -165,6 +165,7 @@ fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
 
 /// Forget every cached value of this backend.
 pub fn invalidate_all() {
+    CHANGED_IN_XACT.with(|c| c.set(true));
     PLANS_BY_ENTITY.with(Memo::clear);
     GRAPH.with(Memo::clear);
     CASCADE_PATHS.with(Memo::clear);
@@ -194,6 +195,37 @@ thread_local! {
     static SEEN_GENERATION: Cell<u64> = const { Cell::new(0) };
     static WATCHED: RefCell<HashSet<Oid>> = RefCell::new(HashSet::new());
     static CATALOG_WATCHED: Cell<bool> = const { Cell::new(false) };
+    /// A relation invalidation arrived, or the caches were cleared, in the open
+    /// transaction.
+    static CHANGED_IN_XACT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// At the abort of a transaction, or of a subtransaction: forget the caches if
+/// the transaction may have memoized a catalog change being rolled back. A change
+/// of its own came through the utility hook ([`mark_changed`]), as a relation
+/// invalidation (processed locally at each command boundary) or a clear by the
+/// DDL path that made it; without one, the
+/// caches hold what the committed catalog says, and the next write needs no lookup.
+pub fn forget_on_abort() {
+    if changed_in_xact() {
+        invalidate_all();
+    }
+}
+
+/// The open transaction ran a statement that may change the catalog.
+pub fn mark_changed() {
+    CHANGED_IN_XACT.with(|c| c.set(true));
+}
+
+/// Whether the open transaction may have changed the catalog: what an abort
+/// must forget (see [`forget_on_abort`]).
+pub fn changed_in_xact() -> bool {
+    CHANGED_IN_XACT.with(Cell::get)
+}
+
+/// At the end of a transaction, however it ends.
+pub fn end_transaction() {
+    CHANGED_IN_XACT.with(|c| c.set(false));
 }
 
 /// Watch `pg_tview_meta` itself: its statement trigger invalidates it on every
@@ -228,6 +260,9 @@ pub fn sync_generation() {
 
 #[pg_guard]
 unsafe extern "C-unwind" fn relcache_callback(_arg: pg_sys::Datum, relid: Oid) {
+    // Any relation's: what the caches memoized of one they don't watch may be rolled
+    // back too. Plain writes send none.
+    CHANGED_IN_XACT.with(|c| c.set(true));
     let relevant = relid == pg_sys::InvalidOid
         || WATCHED.with(|w| w.try_borrow().map_or(true, |w| w.contains(&relid)));
     if relevant {

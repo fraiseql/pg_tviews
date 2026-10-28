@@ -92,9 +92,9 @@ pub const fn remedy(revision: i32) -> &'static str {
     }
 }
 
-/// Forget a match, so the next check compares again: after an abort (which may
-/// have rolled back an `ALTER EXTENSION pg_tviews UPDATE`) and after DDL on the
-/// extension itself.
+/// Forget a match, so the next check compares again: after an abort that ran DDL
+/// (it may have rolled back an `ALTER EXTENSION pg_tviews UPDATE`) and after DDL
+/// on the extension itself.
 pub fn reset() {
     MATCHED.set(false);
 }

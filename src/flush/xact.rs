@@ -23,27 +23,33 @@ const RESET_AT_END: &[fn()] = &[
     crate::queue::published::clear,
     crate::lifecycle::validity::forget_claims,
     crate::stats::merge,
+    crate::cache::end_transaction,
 ];
 
-/// What an abort resets besides: the catalog the caches memoized may be rolled
-/// back with it (a TVIEW create that failed leaves no view), the
-/// suspension, the revision check, the hook's pending CTAS and the UNLOGGED
-/// checks.
+/// What an abort resets besides: the caches and the revision check, when the
+/// catalog they memoized may be rolled back with it (a TVIEW create that failed
+/// leaves no view, an `ALTER EXTENSION … UPDATE` its revision); the suspension,
+/// the hook's pending CTAS and the UNLOGGED checks.
 const RESET_ON_ABORT: &[fn()] = &[
-    crate::cache::invalidate_all,
+    crate::cache::forget_on_abort,
     crate::suspend::force_resume,
-    crate::revision::reset,
+    || {
+        if crate::cache::changed_in_xact() {
+            crate::revision::reset();
+        }
+    },
     || crate::internal_ddl::release_on_abort(true),
     crate::lifecycle::validity::forget_checks,
     crate::publish::forget_gap,
 ];
 
 /// What a rolled-back subtransaction resets besides its savepoint: the hook's
-/// pending CTAS (it never reached the event trigger), the cached catalog of DDL it
-/// undid, and the UNLOGGED fills it undid.
+/// pending CTAS (it never reached the event trigger), the caches when the
+/// transaction changed the catalog (see [`crate::cache::forget_on_abort`]), and
+/// the UNLOGGED fills it undid.
 const RESET_ON_SUBABORT: &[fn()] = &[
     || crate::internal_ddl::release_on_abort(false),
-    crate::cache::invalidate_all,
+    crate::cache::forget_on_abort,
     crate::lifecycle::validity::forget_checks,
     crate::lifecycle::validity::forget_subtransaction_claims,
 ];
@@ -165,7 +171,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // the refresh writes are part of the prepared transaction. This backend's
             // transaction ends here: drop its in-memory state (no SPI in callbacks).
             crate::suspend::force_resume();
-            crate::lifecycle::validity::forget_checks();
+            crate::lifecycle::validity::forget_all_checks();
             run(RESET_AT_END);
         }
         XactEvent::Abort => {
