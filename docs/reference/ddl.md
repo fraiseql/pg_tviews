@@ -480,13 +480,16 @@ detached one loses them. `ATTACH`, `DETACH` and `DROP TABLE` of a partition move
 rows in or out with no row trigger firing:
 
 - A partition dropped (`DROP TABLE`, also several at once or a middle level) or
-  detached (`DETACH PARTITION`) takes its rows out as a `DELETE` of them would: before
-  the statement runs, its rows are mapped to the TVIEW keys they reach, and those keys
-  are refreshed once it has run. The cost follows the partition, not what remains, so
-  a retention job that drops last year's partition refreshes last year's rows only.
-  When the TVIEW's owner cannot read the partition (partitions keep their own
-  privileges), or the table is `all_keys` under `full_refresh`, the TVIEW is refreshed
-  in full instead.
+  detached (`DETACH PARTITION`) takes its rows out of every TVIEW over a table above it
+  (the root, or a partitioned table in between) as a `DELETE` of them would: before the
+  statement runs, the partition and everything below it are locked as the statement
+  locks them, its rows are mapped to the TVIEW keys they reach, and those keys are
+  refreshed once it has run. The cost follows the partition, not what remains, so a
+  retention job that drops last year's partition refreshes last year's rows only.
+- The TVIEW is refreshed in full instead when its owner cannot read the partition
+  whole (partitions keep their own privileges and row security), when the partition is
+  a foreign table (`DROP FOREIGN TABLE`; it is not read, as it may be unreachable), or
+  when the table is `all_keys` under `full_refresh`.
 - `ATTACH PARTITION` and `DETACH … CONCURRENTLY` (which commits in the middle, and
   its `FINALIZE`) refresh the TVIEWs over that table in full.
 

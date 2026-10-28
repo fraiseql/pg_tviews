@@ -178,8 +178,79 @@ DO $$ BEGIN
             (SELECT count(*) FROM tv_ev);
     END IF;
 END $$;
+-- Read directly, a partition applies its own row security: one that hides its
+-- rows from the TVIEW owner is refreshed in full too.
+SET ROLE regress_261_owner;
+GRANT SELECT ON tb_ev_2026 TO regress_261_tview;
+ALTER TABLE tb_ev_2026 ENABLE ROW LEVEL SECURITY;
+DROP TABLE tb_ev_2026;
+RESET ROLE;
+DO $$ BEGIN
+    IF (SELECT count(*) FROM tv_ev) <> 0 THEN
+        RAISE EXCEPTION 'FAIL: drop of a partition whose row security hides its rows: tv_ev has % rows',
+            (SELECT count(*) FROM tv_ev);
+    END IF;
+END $$;
+-- DETACH is the partitioned table's owner's to run, whoever owns the partition.
+CREATE TABLE tb_dt (pk_dt bigint NOT NULL, id uuid NOT NULL DEFAULT gen_random_uuid(), PRIMARY KEY (pk_dt))
+    PARTITION BY RANGE (pk_dt);
+CREATE TABLE tb_dt_1 PARTITION OF tb_dt FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_dt_2 PARTITION OF tb_dt FOR VALUES FROM (100) TO (200);
+INSERT INTO tb_dt (pk_dt) VALUES (1), (150);
+ALTER TABLE tb_dt OWNER TO regress_261_owner;
+ALTER TABLE tb_dt_1 OWNER TO regress_261_tview;
+SELECT pg_tviews_create('tv_dt', $$ SELECT pk_dt, id, jsonb_build_object('pk', pk_dt) AS data FROM tb_dt $$);
+SET ROLE regress_261_owner;
+ALTER TABLE tb_dt DETACH PARTITION tb_dt_1;
+RESET ROLE;
+DO $$ BEGIN
+    IF (SELECT array_agg(pk_dt) FROM tv_dt) IS DISTINCT FROM ARRAY[150::bigint] THEN
+        RAISE EXCEPTION 'FAIL: detach by the partitioned table''s owner: tv_dt holds %',
+            (SELECT array_agg(pk_dt) FROM tv_dt);
+    END IF;
+END $$;
+DROP TABLE tv_dt;
+DROP TABLE tb_dt, tb_dt_1;
 DROP OWNED BY regress_261_owner, regress_261_tview CASCADE;
 DROP ROLE regress_261_owner;
 DROP ROLE regress_261_tview;
+
+-- ── a TVIEW over a partitioned table below the root ────────────────────────
+CREATE TABLE tb_m (pk_m bigint NOT NULL, grp int NOT NULL, PRIMARY KEY (pk_m, grp))
+    PARTITION BY LIST (grp);
+CREATE TABLE tb_m_1 PARTITION OF tb_m FOR VALUES IN (1) PARTITION BY RANGE (pk_m);
+CREATE TABLE tb_m_1a PARTITION OF tb_m_1 FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_m_1b PARTITION OF tb_m_1 FOR VALUES FROM (100) TO (200);
+INSERT INTO tb_m VALUES (1, 1), (150, 1);
+SELECT pg_tviews_create('tv_m', $$
+    SELECT pk_m, md5(pk_m::text)::uuid AS id, jsonb_build_object('grp', grp) AS data FROM tb_m_1 $$);
+DROP TABLE tb_m_1a;
+DO $$ BEGIN
+    IF (SELECT array_agg(pk_m) FROM tv_m) IS DISTINCT FROM ARRAY[150::bigint] THEN
+        RAISE EXCEPTION 'FAIL: drop below a TVIEW over a middle level: tv_m holds %',
+            (SELECT array_agg(pk_m) FROM tv_m);
+    END IF;
+END $$;
+
+-- ── a foreign partition ─────────────────────────────────────────────────────
+-- It is not read (it may be unreachable): its rows leave with a full refresh.
+CREATE EXTENSION IF NOT EXISTS file_fdw;
+CREATE SERVER regress_261_files FOREIGN DATA WRAPPER file_fdw;
+CREATE TABLE tb_f (pk_f bigint NOT NULL, day date NOT NULL) PARTITION BY RANGE (day);
+CREATE TABLE tb_f_2026 PARTITION OF tb_f FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+CREATE FOREIGN TABLE tb_f_2025 PARTITION OF tb_f FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')
+    SERVER regress_261_files OPTIONS (program 'echo 7,2025-03-01', format 'csv');
+INSERT INTO tb_f VALUES (8, '2026-03-01');
+SELECT pg_tviews_create('tv_f', $$
+    SELECT pk_f, md5(pk_f::text)::uuid AS id, jsonb_build_object('day', day) AS data FROM tb_f $$);
+DROP FOREIGN TABLE tb_f_2025;
+DO $$ BEGIN
+    IF (SELECT array_agg(pk_f) FROM tv_f) IS DISTINCT FROM ARRAY[8::bigint] THEN
+        RAISE EXCEPTION 'FAIL: drop of a foreign partition: tv_f holds %', (SELECT array_agg(pk_f) FROM tv_f);
+    END IF;
+END $$;
+DROP TABLE tv_f;
+DROP TABLE tb_f;
+DROP SERVER regress_261_files;
 
 \echo 'partition drop: PASS'

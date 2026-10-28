@@ -387,9 +387,10 @@ pub(super) unsafe fn partition_ddl_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
 }
 
 /// The partitions whose rows leave their partition tree with the statement, read
-/// before it runs: each partition a `DROP TABLE` names and the one a plain
-/// `DETACH PARTITION` names. Only those the current user owns: the statement fails
-/// on any other before anything changes.
+/// before it runs: each partition a `DROP TABLE` or `DROP FOREIGN TABLE` names, and
+/// the one a plain `DETACH PARTITION` names. Only when the current user may run
+/// the statement (owns the dropped partition, or the table it is detached from):
+/// otherwise it fails before anything changes, and nothing is locked first.
 ///
 /// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
 pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) -> Vec<pg_sys::Oid> {
@@ -400,16 +401,24 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
             return Vec::new();
         }
         let node = (*pstmt).utilityStmt;
-        let mut names = Vec::new();
+        let owns = |relid: pg_sys::Oid| {
+            pg_sys::object_ownercheck(pg_sys::RelationRelationId, relid, pg_sys::GetUserId())
+        };
+        // (partition, the table whose owner may run the statement when not the
+        // partition's)
+        let mut names: Vec<(*mut pg_sys::RangeVar, Option<*mut pg_sys::RangeVar>)> = Vec::new();
         match (*node).type_ {
             pg_sys::NodeTag::T_DropStmt => {
                 #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
                 let stmt = &*node.cast::<pg_sys::DropStmt>();
-                if stmt.removeType == pg_sys::ObjectType::OBJECT_TABLE {
+                if matches!(
+                    stmt.removeType,
+                    pg_sys::ObjectType::OBJECT_TABLE | pg_sys::ObjectType::OBJECT_FOREIGN_TABLE
+                ) {
                     for i in 0..pg_sys::list_length(stmt.objects) {
                         let name_list = pg_sys::list_nth(stmt.objects, i).cast::<pg_sys::List>();
                         if !name_list.is_null() && pg_sys::list_length(name_list) > 0 {
-                            names.push(pg_sys::makeRangeVarFromNameList(name_list));
+                            names.push((pg_sys::makeRangeVarFromNameList(name_list), None));
                         }
                     }
                 }
@@ -429,8 +438,9 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
                     #[allow(clippy::cast_ptr_alignment)]
                     // Reason: PostgreSQL Node* → PartitionCmd* cast
                     let partition = &*(*cmd).def.cast::<pg_sys::PartitionCmd>();
+                    // DETACH is the detached-from table's owner's to run.
                     if !partition.concurrent && !partition.name.is_null() {
-                        names.push(partition.name);
+                        names.push((partition.name, Some(stmt.relation)));
                     }
                 }
             }
@@ -438,15 +448,14 @@ pub(super) unsafe fn leaving_partitions_of(pstmt: *const pg_sys::PlannedStmt) ->
         }
         names
             .into_iter()
-            .map(|rv| resolve_relation_oid(rv))
-            .filter(|&oid| {
-                oid != pg_sys::InvalidOid
-                    && pg_sys::get_rel_relispartition(oid)
-                    && pg_sys::object_ownercheck(
-                        pg_sys::RelationRelationId,
-                        oid,
-                        pg_sys::GetUserId(),
-                    )
+            .filter_map(|(rv, runs_it)| {
+                let oid = resolve_relation_oid(rv);
+                let allowed = match runs_it {
+                    Some(parent) => owns(resolve_relation_oid(parent)),
+                    None => owns(oid),
+                };
+                (oid != pg_sys::InvalidOid && pg_sys::get_rel_relispartition(oid) && allowed)
+                    .then_some(oid)
             })
             .collect()
     }

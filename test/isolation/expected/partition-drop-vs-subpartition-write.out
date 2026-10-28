@@ -1,0 +1,22 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_insert b_drop a_commit b_check
+pg_tviews_create          
+--------------------------
+TVIEW public.tv_ev created
+(1 row)
+
+step a_begin: BEGIN;
+step a_insert: INSERT INTO tb_ev_2026a (pk_ev, yr) VALUES (3, 2026);
+step b_drop: DROP TABLE tb_ev_2026; <waiting ...>
+step a_commit: COMMIT;
+step b_drop: <... completed>
+step b_check: 
+  SELECT t.pk_ev, t.pk_ev IS NOT DISTINCT FROM v.pk_ev AS fresh
+  FROM tv_ev t FULL JOIN tviews.public__tv_ev v USING (pk_ev) ORDER BY 1;
+
+pk_ev|fresh
+-----+-----
+    1|t    
+(1 row)
+
