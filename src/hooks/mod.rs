@@ -24,9 +24,9 @@ use ctas::{
 use indexes::{IndexFollowUp, index_follow_up_of};
 use statements::{
     ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
-    drops_pg_tviews, extension_installed, extension_statement_names, matview_refresh_of,
-    partition_ddl_of, persistence_change_of, privileges_change_of, resolve_relation_oid,
-    table_move_of,
+    drops_pg_tviews, extension_installed, extension_statement_names, leaving_partitions_of,
+    matview_refresh_of, partition_ddl_of, persistence_change_of, privileges_change_of,
+    resolve_relation_oid, table_move_of,
 };
 use tables::handle_drop_table;
 
@@ -430,6 +430,8 @@ struct FollowUps {
     column_rename: Option<ColumnRename>,
     /// A partition added or removed: it gets or loses the triggers.
     partition_ddl: Option<PartitionDdl>,
+    /// Partitions dropped or detached: their rows leave the TVIEWs over the tree.
+    leaving_partitions: Vec<pg_sys::Oid>,
     /// A TVIEW's table renamed or moved: its backing view's name follows.
     table_move: Option<pg_sys::Oid>,
     /// GRANT / REVOKE or an owner change: the backing views follow.
@@ -455,6 +457,7 @@ impl FollowUps {
             return Self {
                 column_rename: None,
                 partition_ddl: None,
+                leaving_partitions: Vec::new(),
                 table_move: None,
                 privileges_change: None,
                 extension_drop: None,
@@ -474,6 +477,7 @@ impl FollowUps {
             Self {
                 column_rename: column_rename_of(pstmt),
                 partition_ddl: partition_ddl_of(pstmt),
+                leaving_partitions: leaving_partitions_of(pstmt),
                 table_move: table_move_of(pstmt),
                 privileges_change: privileges_change_of(pstmt),
                 extension_drop,
@@ -490,6 +494,11 @@ impl FollowUps {
 
     /// What must happen before `PostgreSQL` runs the statement.
     fn prepare(&self) {
+        for &partition in &self.leaving_partitions {
+            if let Err(e) = crate::delta::map_leaving_partition(partition) {
+                e.raise_in("pg_tviews: could not map the rows of a partition leaving its tree");
+            }
+        }
         if let Some((entity, _, logged)) = &self.persistence_change
             && let Err(e) = crate::lifecycle::validity::before_persistence_change(entity, *logged)
         {
@@ -500,6 +509,16 @@ impl FollowUps {
     /// Follow what the statement changed. SPI errors abort the statement rather
     /// than leave a TVIEW with stale metadata.
     fn run(self) {
+        // The rows that left with the statement: refreshed now (no flush trigger
+        // follows DDL), or by the writing statement this one is nested in.
+        if !self.leaving_partitions.is_empty()
+            && !crate::executor::inside_writing_statement()
+            && let Err(e) = crate::flush::flush_refresh_queue()
+        {
+            e.raise_in(
+                "pg_tviews: could not refresh the TVIEWs over a dropped or detached partition",
+            );
+        }
         if let Some((relid, old_name, new_name)) =
             self.column_rename.and_then(ColumnRename::resolve)
             && let Err(e) = crate::ddl::rename::handle_column_rename(relid, &old_name, &new_name)

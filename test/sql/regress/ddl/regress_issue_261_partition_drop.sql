@@ -14,6 +14,13 @@
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'regress_261_owner') THEN
+        DROP OWNED BY regress_261_owner, regress_261_tview CASCADE;
+    END IF;
+END $$;
+DROP ROLE IF EXISTS regress_261_owner;
+DROP ROLE IF EXISTS regress_261_tview;
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
@@ -122,11 +129,57 @@ SELECT check_fresh('detach');
 SELECT check_no_full_refresh('DETACH');
 ALTER TABLE tb_order DETACH PARTITION tb_order_5 CONCURRENTLY;
 SELECT check_fresh('detach concurrently');
+DO $$ BEGIN
+    IF full_refreshes() <= (SELECT n FROM full_before) THEN
+        RAISE EXCEPTION 'FAIL: the full-refresh counter did not see DETACH CONCURRENTLY';
+    END IF;
+END $$;
 ALTER TABLE tb_order ATTACH PARTITION tb_order_5 FOR VALUES FROM (400) TO (500);
 SELECT check_fresh('attach back');
 
 -- A detached partition is a plain table: dropping it changes no TVIEW.
 DROP TABLE tb_order_4;
 SELECT check_fresh('drop a detached partition');
+
+-- ── a partition its TVIEW's owner cannot read ───────────────────────────────
+-- Partitions keep their own privileges: the TVIEW's owner reads the root, not
+-- the partition, so the leaving rows cannot be mapped and the TVIEW is refreshed
+-- in full. A role that does not own the partition fails before anything changes.
+CREATE ROLE regress_261_owner;
+CREATE ROLE regress_261_tview;
+GRANT CREATE ON SCHEMA public TO regress_261_owner, regress_261_tview;
+SET ROLE regress_261_owner;
+CREATE TABLE tb_ev (pk_ev bigint NOT NULL, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                    day date NOT NULL, amount int, PRIMARY KEY (pk_ev, day)) PARTITION BY RANGE (day);
+CREATE TABLE tb_ev_2025 PARTITION OF tb_ev FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE TABLE tb_ev_2026 PARTITION OF tb_ev FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+INSERT INTO tb_ev (pk_ev, day, amount) VALUES (1, '2025-06-01', 10), (2, '2026-06-01', 20);
+GRANT SELECT, TRIGGER ON tb_ev TO regress_261_tview;
+GRANT TRIGGER ON tb_ev_2025, tb_ev_2026 TO regress_261_tview;
+SET ROLE regress_261_tview;
+SELECT pg_tviews_create('tv_ev', $$
+    SELECT pk_ev, id, jsonb_build_object('day', day, 'amount', amount) AS data FROM tb_ev $$);
+DO $$ BEGIN
+    IF has_table_privilege('tb_ev_2025', 'SELECT') THEN
+        RAISE EXCEPTION 'FAIL: setup: the TVIEW owner can read the partition';
+    END IF;
+END $$;
+DO $$ BEGIN
+    DROP TABLE tb_ev_2025;
+    RAISE EXCEPTION 'FAIL: a role that does not own the partition dropped it';
+EXCEPTION WHEN insufficient_privilege THEN NULL;
+END $$;
+SET ROLE regress_261_owner;
+DROP TABLE tb_ev_2025;
+RESET ROLE;
+DO $$ BEGIN
+    IF (SELECT count(*) FROM tv_ev) <> 1 OR EXISTS (SELECT 1 FROM tv_ev WHERE pk_ev = 1) THEN
+        RAISE EXCEPTION 'FAIL: drop of a partition the TVIEW owner cannot read: tv_ev has % rows',
+            (SELECT count(*) FROM tv_ev);
+    END IF;
+END $$;
+DROP OWNED BY regress_261_owner, regress_261_tview CASCADE;
+DROP ROLE regress_261_owner;
+DROP ROLE regress_261_tview;
 
 \echo 'partition drop: PASS'

@@ -157,6 +157,115 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
     crate::flush::flush_refresh_queue()
 }
 
+/// The rows of `partition` are about to leave its partition tree (`DROP TABLE`,
+/// `DETACH PARTITION`): enqueue, for every TVIEW over the tree, the keys they
+/// reach, as a `DELETE` of those rows would. The refresh that follows the
+/// statement finds those keys gone. Called before `PostgreSQL` runs the statement,
+/// with the tree locked as the statement locks it.
+///
+/// # Errors
+/// Returns an error if the catalog or a mapping query fails.
+pub fn map_leaving_partition(partition: Oid) -> TViewResult<()> {
+    let root = partition_root(partition)?;
+    let entities = crate::dependency::triggers::row_trigger_entities(root)?;
+    if entities.is_empty() {
+        return Ok(());
+    }
+    // Lock as the statement will (its parent, then the partition), so that no
+    // write reaches the partition between reading its rows and the statement.
+    let parent = Spi::get_one_with_args::<Oid>(
+        "SELECT inhparent FROM pg_catalog.pg_inherits WHERE inhrelid = $1",
+        &[crate::utils::spi::oid(partition)],
+    )
+    .map_err(|e| crate::utils::spi::error("pg_inherits", &e))?;
+    let lockmode = pg_sys::AccessExclusiveLock.cast_signed();
+    // SAFETY: relation locks by OID, held until the transaction ends.
+    unsafe {
+        if let Some(parent) = parent {
+            pg_sys::LockRelationOid(parent, lockmode);
+        }
+        pg_sys::LockRelationOid(partition, lockmode);
+    }
+    for entity in entities {
+        if suspended() {
+            crate::suspend::record_change(&entity);
+        } else {
+            map_partition_rows(&entity, partition, root)?;
+        }
+    }
+    Ok(())
+}
+
+/// Enqueue `entity`'s keys reached by the rows of `partition` (in tree `root`).
+fn map_partition_rows(entity: &str, partition: Oid, root: Oid) -> TViewResult<()> {
+    let Some(meta) = TviewMeta::load_by_entity(entity)? else {
+        return Ok(());
+    };
+    let Some(mapping) = meta.key_mapping(partition, Some(root)) else {
+        refresh_all(entity, "its mapping of a written table is unknown");
+        return Ok(());
+    };
+    let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
+    let keys_sql = match mapping.kind {
+        MappingKind::AllKeys if full_refresh => None,
+        MappingKind::Local => mapping.column.as_deref().map(|column| {
+            format!(
+                "SELECT {} FROM {DELTA}",
+                crate::utils::ident::quoted(column)
+            )
+        }),
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            rendered(entity, mapping)?
+        }
+        // Writes to it map to no key (an `all_keys` read that cannot be traced).
+        MappingKind::AllKeys => return Ok(()),
+        _ => None,
+    };
+    let _owner = crate::owner::AsOwner::of_entity(entity)?;
+    // The owner reads the partition through the root; a partition has its own
+    // privileges, and one the owner cannot read is refreshed in full.
+    let readable = Spi::get_one_with_args::<bool>(
+        "SELECT pg_catalog.has_table_privilege($1, 'SELECT')",
+        &[crate::utils::spi::regclass(partition)],
+    )
+    .map_err(|e| crate::utils::spi::error("has_table_privilege", &e))?
+    .unwrap_or(false);
+    let Some(keys_sql) = keys_sql.filter(|_| readable) else {
+        crate::queue::enqueue_refresh_all(entity);
+        return Ok(());
+    };
+    let rows = format!(
+        "SELECT * FROM {}",
+        crate::utils::qualified_relname_from_oid(partition)?
+    );
+    let delta = match computed_columns(entity, root)? {
+        Some(columns) => format!("SELECT {columns} FROM ({rows}) r"),
+        None => rows,
+    };
+    let key_type = &meta
+        .key_type()
+        .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
+    let sql = format!(
+        "WITH {DELTA} AS ({delta}) \
+         SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
+        key_sql_type(key_type)
+    );
+    // Read-write: a fresh snapshot, which sees every row committed before the locks.
+    let keys = Spi::connect_mut(|client| {
+        let mut keys = Vec::new();
+        for row in crate::utils::spi::kept_update(client, &sql, &[])? {
+            keys.extend(key_of(&row, key_type)?);
+        }
+        crosscheck_keys(&sql, &[], &keys)?;
+        Ok::<_, TViewError>(keys)
+    })
+    .map_err(|e| crate::utils::spi::error(&sql, &e))?;
+    if !keys.is_empty() {
+        crate::queue::enqueue_refresh_bulk(entity, keys);
+    }
+    Ok(())
+}
+
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of `meta`'s TVIEW (ADR 0157), with the current names
 /// of what it reads. `None` when writes to the table do not map through a query

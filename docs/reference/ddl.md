@@ -476,8 +476,20 @@ table, and a `TRUNCATE` of the partitioned table refreshes it once.
 
 Partitions created (`CREATE TABLE … PARTITION OF`, also from a function such as a
 partition manager's) or attached after the TVIEW get the same triggers, and a
-detached one loses them. `ATTACH` and `DETACH` move rows in or out with no row
-trigger firing, so each refreshes the TVIEWs over that table in full.
+detached one loses them. `ATTACH`, `DETACH` and `DROP TABLE` of a partition move
+rows in or out with no row trigger firing:
+
+- A partition dropped (`DROP TABLE`, also several at once or a middle level) or
+  detached (`DETACH PARTITION`) takes its rows out as a `DELETE` of them would: before
+  the statement runs, its rows are mapped to the TVIEW keys they reach, and those keys
+  are refreshed once it has run. The cost follows the partition, not what remains, so
+  a retention job that drops last year's partition refreshes last year's rows only.
+  When the TVIEW's owner cannot read the partition (partitions keep their own
+  privileges), or the table is `all_keys` under `full_refresh`, the TVIEW is refreshed
+  in full instead.
+- `ATTACH PARTITION` and `DETACH … CONCURRENTLY` (which commits in the middle, and
+  its `FINALIZE`) refresh the TVIEWs over that table in full.
+
 `pg_tviews_health_check()` reports a partition whose triggers are missing, and
 `pg_tviews_reregister_all()` puts them back.
 
