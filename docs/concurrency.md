@@ -73,7 +73,9 @@ link** (it inserts and deletes no row, and updates only columns its TVIEWs show,
 columns they join, filter, group or order by) takes no shared value lock: two such
 writes, say two users editing their own `bio`, each refreshing posts that show both
 users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
-those rows would. Readers are never blocked, except by `pg_tviews_refresh()`
+those rows would. Under `REPEATABLE READ` and `SERIALIZABLE` the second of them fails
+with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does, and
+rarely (about one such pair in ten thousand) with `40P01` first. Readers are never blocked, except by `pg_tviews_refresh()`
 (`ACCESS EXCLUSIVE`).
 
 Like any workload that locks, two transactions that change links and take these locks
