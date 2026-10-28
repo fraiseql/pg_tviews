@@ -1,0 +1,11 @@
+\set level random(1, 10)
+\set seed random(1, 2147483647)
+\if :level <= :rc
+BEGIN;
+\elif :level <= :rr
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+\else
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+\endif
+SELECT fuzz_txn(:seed, :harness);
+COMMIT;
