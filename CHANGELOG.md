@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A patch is now written only into a row that still embeds the child; the others are
   recomputed.
 
+### Changed
+
+- **A definition that reads a foreign table or a sequence follows its
+  `uncascaded_policy`**: nothing pg_tviews sees fires when their rows change, so they
+  are uncascaded reads, refused under the default `error` policy and accepted under
+  `warn`. `full_refresh` is refused for them (nothing would start the refresh). Before,
+  they were accepted under any policy and the TVIEW went stale.
+- **A table read with its inheritance children is refused** (`0A000`): writes to a child
+  fire no trigger on the parent. Read `FROM ONLY` it, or make it a partitioned table. A
+  table a TVIEW reads gets no new inheritance child (`CREATE TABLE … INHERITS`,
+  `ALTER TABLE … INHERIT`).
+
 ### Upgrade notes
 
 - `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW (plan version 3 records

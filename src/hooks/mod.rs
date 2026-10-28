@@ -365,6 +365,34 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
     }
 }
 
+/// Refuse `ALTER TABLE child INHERIT parent` onto a table a TVIEW reads: writes to
+/// the child would fire no trigger on the parent, and the TVIEW would go stale
+/// (a TVIEW reading the parent with its children is refused at create).
+fn refuse_inherit(change: &ColumnChange) -> TViewResult<()> {
+    for &parent in &change.inherits {
+        // SAFETY: a RangeVar of the statement's parse tree.
+        let parent = unsafe { resolve_relation_oid(parent) };
+        if parent == pg_sys::InvalidOid {
+            continue;
+        }
+        let readers = crate::dependency::triggers::row_trigger_entities(parent)?;
+        if let Some(entity) = readers.first() {
+            // SAFETY: a RangeVar of the statement's parse tree; the child may not
+            // exist yet (CREATE TABLE … INHERITS).
+            let child = unsafe { CStr::from_ptr((*change.relation).relname) }.to_string_lossy();
+            let parent = crate::utils::qualified_relname_from_oid(parent)?;
+            return Err(TViewError::DefinitionRefused {
+                reason: format!(
+                    "{child} cannot inherit from {parent}: tv_{entity} reads it, and writes to \
+                     an inheritance child fire no trigger on its parent; make {parent} a \
+                     partitioned table and attach {child} as a partition"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a column change to a TVIEW's table that its refreshes could not write
 /// through: they write every column the definition outputs, by name, with the
 /// type the backing view gives it. Renaming or dropping one is refused, and so is
@@ -372,6 +400,7 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
 /// new type is refused unless the view's type converts to it on assignment (a
 /// TVIEW can keep such a type until `pg_tviews_create_or_replace` retypes it).
 fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
+    refuse_inherit(change)?;
     // SAFETY: a RangeVar of the statement's parse tree.
     let relid = unsafe { resolve_relation_oid(change.relation) };
     if relid == pg_sys::InvalidOid || crate::catalog::TviewMeta::entity_of_table(relid)?.is_none() {

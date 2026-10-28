@@ -117,9 +117,10 @@ pub fn trigger_plan(base_tables: &[pg_sys::Oid], lineage: &crate::lineage::Linea
         .chain(base_tables.iter().map(|&oid| {
             let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
             let set = match table.map(|t| &t.kind) {
-                // REFRESH MATERIALIZED VIEW fires no trigger: the ProcessUtility
-                // hook follows it.
-                _ if table.is_some_and(|t| t.matview) => TriggerSet::None,
+                // Nothing fires a trigger on a materialized view (the
+                // ProcessUtility hook follows its REFRESH), a foreign table or a
+                // sequence.
+                _ if table.is_some_and(|t| t.unwatched.is_some()) => TriggerSet::None,
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
                 None if lineage.unread.contains(&oid.to_u32()) => TriggerSet::None,

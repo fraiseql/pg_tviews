@@ -69,14 +69,16 @@ pub(super) unsafe fn column_rename_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
     }
 }
 
-/// An `ALTER TABLE` that renames, drops or retypes columns, captured before it
-/// runs.
+/// An `ALTER TABLE` that renames, drops or retypes columns, or makes the table
+/// inherit from another, captured before it runs.
 pub(super) struct ColumnChange {
     pub(super) relation: *const pg_sys::RangeVar,
     /// `RENAME COLUMN` or `DROP COLUMN`, when the statement does either.
     pub(super) removes: Option<&'static str>,
     /// Each `ALTER COLUMN … TYPE`: the column and its new type.
     pub(super) retypes: Vec<(String, *const pg_sys::TypeName)>,
+    /// Each `INHERIT parent`: the parent.
+    pub(super) inherits: Vec<*const pg_sys::RangeVar>,
 }
 
 /// The column change carried by the utility statement `node`, if it is one.
@@ -97,6 +99,7 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
                     relation: stmt.relation,
                     removes: Some("RENAME COLUMN"),
                     retypes: Vec::new(),
+                    inherits: Vec::new(),
                 }
             }
             pg_sys::NodeTag::T_AlterTableStmt => {
@@ -105,6 +108,7 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
                     relation: stmt.relation,
                     removes: None,
                     retypes: Vec::new(),
+                    inherits: Vec::new(),
                 };
                 for i in 0..pg_sys::list_length(stmt.cmds) {
                     let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
@@ -114,6 +118,9 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
                     match (*cmd).subtype {
                         pg_sys::AlterTableType::AT_DropColumn => {
                             change.removes = Some("DROP COLUMN");
+                        }
+                        pg_sys::AlterTableType::AT_AddInherit if !(*cmd).def.is_null() => {
+                            change.inherits.push((*cmd).def.cast::<pg_sys::RangeVar>());
                         }
                         pg_sys::AlterTableType::AT_AlterColumnType
                             if !(*cmd).name.is_null() && !(*cmd).def.is_null() =>
@@ -129,10 +136,33 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
                 }
                 change
             }
+            // CREATE TABLE … INHERITS (…), not a partition.
+            pg_sys::NodeTag::T_CreateStmt => {
+                let stmt = &*node.cast::<pg_sys::CreateStmt>();
+                if !stmt.partbound.is_null() {
+                    return None;
+                }
+                ColumnChange {
+                    relation: stmt.relation,
+                    removes: None,
+                    retypes: Vec::new(),
+                    inherits: (0..pg_sys::list_length(stmt.inhRelations))
+                        .map(|i| {
+                            pg_sys::list_nth(stmt.inhRelations, i)
+                                .cast::<pg_sys::RangeVar>()
+                                .cast_const()
+                        })
+                        .filter(|r| !r.is_null())
+                        .collect(),
+                }
+            }
             _ => return None,
         };
-        (!change.relation.is_null() && (change.removes.is_some() || !change.retypes.is_empty()))
-            .then_some(change)
+        (!change.relation.is_null()
+            && (change.removes.is_some()
+                || !change.retypes.is_empty()
+                || !change.inherits.is_empty()))
+        .then_some(change)
     }
 }
 

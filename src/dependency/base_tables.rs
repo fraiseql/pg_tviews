@@ -30,9 +30,10 @@ pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys
             // A TVIEW's table is followed through the TVIEW's own refresh.
             b'r' | b'p' if !tview_tables.contains(&oid) => Some(oid),
             // A materialized view's rows change only by REFRESH MATERIALIZED VIEW,
-            // which fires no trigger: the lineage classifies it `all_keys`, and the
-            // TVIEW's uncascaded_policy decides.
-            b'm' => Some(oid),
+            // a foreign table's on its server, a sequence's by nextval(): no trigger
+            // sees them, the lineage classifies them `all_keys`, and the TVIEW's
+            // uncascaded_policy decides.
+            b'm' | b'f' | b'S' => Some(oid),
             _ => None,
         })
         .collect())

@@ -454,7 +454,15 @@ impl Walker<'_> {
         // SAFETY: fields of a valid RTE.
         unsafe {
             match (*rte).rtekind {
-                pg_sys::RTEKind::RTE_RELATION => self.relation((*rte).relid, flags),
+                pg_sys::RTEKind::RTE_RELATION => {
+                    if !flags.unread
+                        && (*rte).inh
+                        && pg_sys::get_rel_relkind((*rte).relid).cast_unsigned() == b'r'
+                    {
+                        self.graph.inherited_reads.insert((*rte).relid.to_u32());
+                    }
+                    self.relation((*rte).relid, flags)
+                }
                 pg_sys::RTEKind::RTE_SUBQUERY => Ok(RteInfo::Outputs(self.level(
                     (*rte).subquery,
                     flags,
@@ -511,7 +519,7 @@ impl Walker<'_> {
             (relkind, relname, qualified)
         };
         match relkind {
-            b'r' | b'p' | b'm' if flags.unread => {
+            b'r' | b'p' | b'm' | b'f' | b'S' if flags.unread => {
                 self.graph.unread_tables.insert(relid.to_u32());
                 Ok(RteInfo::Other)
             }
@@ -527,13 +535,13 @@ impl Walker<'_> {
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
-                    matview: false,
+                    unwatched: None,
                     tview_table: Some(entity.clone()),
                 });
                 let occ = self.graph.occurrences.len() - 1;
                 Ok(RteInfo::Tview { entity, relid, occ })
             }
-            b'r' | b'p' | b'm' => {
+            b'r' | b'p' | b'm' | b'f' | b'S' => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
                     relname,
@@ -543,7 +551,7 @@ impl Walker<'_> {
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
-                    matview: relkind == b'm',
+                    unwatched: crate::lineage::Unwatched::of_relkind(relkind),
                     tview_table: None,
                 });
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))

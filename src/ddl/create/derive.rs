@@ -182,10 +182,11 @@ pub(crate) fn uncascaded_tables(
         .all_keys()
         .into_iter()
         .map(
-            |(relid, name, reason)| crate::ddl::uncascaded::UncascadedTable {
+            |(relid, name, reason, followed)| crate::ddl::uncascaded::UncascadedTable {
                 oid: pg_sys::Oid::from(relid),
                 name,
                 reason,
+                followed,
             },
         )
         .collect()
