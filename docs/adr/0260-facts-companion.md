@@ -154,8 +154,9 @@ tenant, a rollup that drops a measure's entity while carrying that measure.
   (`MAKE_DATE(EXTRACT(YEAR FROM d)::int, CASE WHEN EXTRACT(MONTH FROM d) <= 6 THEN 1 ELSE 7 END, 1)`).
 - day ⊂ ISO week ⊂ ISO year: a separate chain (weeks do not nest in months).
 - **A bucket of a `date` is a `date`**, computed without passing through `timestamptz`
-  (`date_trunc('month', d)::date`): `date_trunc(text, date)` resolves to the `timestamptz`
-  form and shifts with the session `TimeZone` (#1798). A `timestamptz` source must declare
+  (`date_trunc('month', d::timestamp)::date`): `date_trunc(text, date)` resolves to the
+  `timestamptz` form, local midnight of the session's `TimeZone`, and a bucket typed from it
+  reads `2026-07-01 00:00:00+14` (#1798; M0 shows it). A `timestamptz` source must declare
   its zone.
 
 ### Measure algebra (#1459 vocabulary, as landed in FraiseQL's `fact-table.md`)
@@ -191,8 +192,10 @@ to `sum / _n`.
   statement, before any derived row is written: concurrent loads of one tenant serialise
   on it, so two inserts of a new bucket never race. Across statements there is no global
   order: two transactions that load tenants A then B and B then A can deadlock, and
-  PostgreSQL detects it and aborts one. Loads are one tenant per transaction in practice;
-  M0 measures it.
+  PostgreSQL detects it and aborts one. Loads are one tenant per transaction in practice.
+  M0's isolation specs show both sides: without the lock, two loads of one tenant writing
+  two buckets in opposite orders deadlock; with it they serialise, and only the
+  cross-tenant opposite order deadlocks (detected, grains exact).
 - Recomputed measures (`min`, `max`, `last`, `first`, `delta`) take pg_tviews' value locks,
   the fix for the READ COMMITTED stale-row class (ADR 0207).
 - M1's exit includes isolation specs for concurrent same-tenant loads: no deadlock, no stale
@@ -242,7 +245,7 @@ declaration, the views follow the declaration. The backup catalog uses
 
 | M | scope | exit |
 |---|---|---|
-| M0 (before any crate) | generated SQL: statement triggers + signed-delta upserts, additive only, day → month → year, one rollup, verify | verify clean under randomized insert/update/delete batches; overhead measured |
+| M0 (before any crate) | generated SQL: statement triggers + signed-delta upserts, additive only, day → month → year, one rollup, verify | verify clean under randomized insert/update/delete batches; overhead measured. **Done 2026-10-28** ([results](../benchmarks/facts-m0.md)): 7,000 randomized statements (moves across buckets and partitions, `MERGE`, `ON CONFLICT`, savepoints) verify clean; four isolation specs; about 5 µs and 235 B of WAL per derived table per inserted row |
 | M1 | the consumer seam in pg_tviews; the companion with additive measures, `_n`, the full lattice, rollups, concurrency, bypass-path handling | isolation specs green; seam overhead unmeasurable; verify clean |
 | M2 | semi-additive and delta measures, rebuild, load mode, `consistent` flag | verify clean under concurrent loads with late rows |
 | M3 | spec-generated catalog + `compile --database` drift check (fraiseql side) | a family declared in the spec compiles, maintains and verifies end to end |
