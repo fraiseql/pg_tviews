@@ -245,7 +245,7 @@ declaration, the views follow the declaration. The backup catalog uses
 
 | M | scope | exit |
 |---|---|---|
-| M0 (before any crate) | generated SQL: statement triggers + signed-delta upserts, additive only, day → month → year, one rollup, verify | verify clean under randomized insert/update/delete batches; overhead measured. **Done 2026-10-28** ([results](../benchmarks/facts-m0.md)): 7,000 randomized statements (moves across buckets and partitions, `MERGE`, `ON CONFLICT`, savepoints) verify clean; four isolation specs; about 5 µs and 235 B of WAL per derived table per inserted row |
+| M0 (before any crate) | generated SQL: statement triggers + signed-delta upserts, additive only, day → month → year, one rollup, verify | verify clean under randomized insert/update/delete batches; overhead measured. **Done 2026-10-28** ([results](https://github.com/fraiseql/pg_tviews/pull/262), `docs/benchmarks/facts-m0.md`): 7,000 randomized statements (moves across buckets and partitions, `MERGE`, `ON CONFLICT`, savepoints) verify clean; four isolation specs; about 5 µs and 235 B of WAL per derived table per inserted row |
 | M1 | the consumer seam in pg_tviews; the companion with additive measures, `_n`, the full lattice, rollups, concurrency, bypass-path handling | isolation specs green; seam overhead unmeasurable; verify clean |
 | M2 | semi-additive and delta measures, rebuild, load mode, `consistent` flag | verify clean under concurrent loads with late rows |
 | M3 | spec-generated catalog + `compile --database` drift check (fraiseql side) | a family declared in the spec compiles, maintains and verifies end to end |
