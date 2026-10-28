@@ -289,7 +289,11 @@ fn reached_through(
     let keys: Vec<i64> = patches.iter().map(|(key, _)| *key).collect();
     let args = [crate::utils::spi::int8_array(keys)];
     let plan = crate::utils::spi::Plan::PerExecution;
-    let found = crate::utils::spi::kept_rows(&sql, &args, plan)?;
+    // The rows in between hold the link the patch follows, and the patched rows
+    // don't: lock them, so a concurrent re-point of one waits for this write, or
+    // this lookup waits for it and drops a row it moved away (READ COMMITTED
+    // re-checks a locked row's latest version).
+    let found = crate::utils::spi::kept_rows(&format!("{sql} FOR SHARE"), &args, plan)?;
     crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
     let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
         patches.iter().map(|(key, fields)| (*key, fields)).collect();

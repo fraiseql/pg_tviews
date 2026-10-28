@@ -249,6 +249,13 @@ Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both sta
   under READ COMMITTED) and recomputes a parent whose lookup column no longer holds
   the child's key.
 
+- **A two-hop fan-out patch locks the rows in between.** A rename written into the
+  lines of the renamed customer's orders found order 10 under its snapshot, waited for
+  a concurrent re-point of that order, then wrote the old customer's name into lines
+  that now show another one (`two-hop-patch-vs-repoint`): the link lives in `tb_order`,
+  which the patch's own condition cannot re-check. The lookup takes `FOR SHARE` on the
+  orders it goes through.
+
 Specs: `crossed-value-writes` (one statement each, gated between the triggers and the
 flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
 unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change

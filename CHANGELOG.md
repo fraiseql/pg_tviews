@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   COMMITTED` writer**: serializable snapshot isolation only orders serializable
   transactions among themselves. `SERIALIZABLE` now takes the value locks and runs the
   cross-checks of `REPEATABLE READ`, so one of the two fails with `40001` instead.
+- **A rename written two joins away as a fan-out patch (line → order → customer) could
+  land in the lines of an order re-pointed meanwhile**: the lookup through the table in
+  between now locks its rows (`FOR SHARE`), so a concurrent re-point waits for the
+  rename, or the rename waits for it and leaves the moved order alone.
 - **A rename patched into the rows embedding the renamed row could land in a row
   re-pointed meanwhile**, which then showed the old child's fields over the new one's.
   A patch is now written only into a row that still embeds the child; the others are
