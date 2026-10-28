@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **A TVIEW's table holds only its definition's columns** (fraiseql/fraiseql#1818):
+  pg_tviews no longer adds `created_at` and `updated_at` (row write times). A definition
+  that projected either failed with `column "created_at" specified more than once`, and
+  FraiseQL's compiler took them for the document's dates. Project the domain's own
+  `created_at` / `updated_at` from the base table instead; `tviews.stats` counts what the
+  refreshes wrote.
+
 ### Fixed
 
 - **Two single-row writes of different rows deadlocked when each one's refresh read
@@ -54,9 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
-- `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW (plan version 3 records
-  the columns each one's rows are linked by). A TVIEW that no longer analyses fails the
-  update, named with its error.
+- `ALTER EXTENSION pg_tviews UPDATE` (catalog revision 10) drops `created_at` and
+  `updated_at` from every TVIEW's table, then re-derives every TVIEW (plan version 3
+  records the columns each one's rows are linked by). An object of yours that reads those
+  columns (a view) fails the update, named; so does a TVIEW that no longer analyses.
 
 ## [0.1.0-beta.33] - 2026-10-28
 

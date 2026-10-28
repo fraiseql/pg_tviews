@@ -263,8 +263,8 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
         .join(", ")
 }
 
-/// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>,
-/// updated_at = NOW()` guarded by a comparison of the non-key columns.
+/// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>`
+/// guarded by a comparison of the non-key columns.
 ///
 /// The guard compares record images ([`rows_differ`]), with the operator and type
 /// qualified. The flush runs under the owner's
@@ -276,7 +276,7 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 /// which is what a materialized copy should record.
 ///
 /// A recomputed row that equals the stored one gets no new tuple version, no index
-/// entries, no dead tuple, and keeps its `updated_at` ("last content change").
+/// entries and no dead tuple.
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
 /// qualified with `qi_tv`, the quoted (schema-qualified) TVIEW table, because the
 /// source relation is in scope too.
@@ -296,7 +296,6 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
     let set = cols
         .iter()
         .map(|(c, fresh)| format!("{c} = {fresh}"))
-        .chain(std::iter::once("updated_at = NOW()".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
     let stored: Vec<String> = cols.iter().map(|(c, _)| format!("{qi_tv}.{c}")).collect();
@@ -606,7 +605,7 @@ mod tests {
                 &cols(&["pk_post", "id", "data"]),
                 "pk_post"
             ),
-            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
+            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data" WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
@@ -614,7 +613,7 @@ mod tests {
     fn conflict_action_single_column_compares_one_column_records() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x"),
-            r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
+            r#"DO UPDATE SET "data" = EXCLUDED."data" WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
@@ -622,7 +621,7 @@ mod tests {
     fn conflict_action_quotes_reserved_and_mixed_case_columns() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "order", "Label"]), "pk_x"),
-            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
+            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label" WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
         );
     }
 

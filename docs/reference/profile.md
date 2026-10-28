@@ -41,7 +41,7 @@ existing ones are never renamed or retyped. Warning texts may be reworded.
 | condition | advice |
 |---|---|
 | an `fk_*` column has no leading index | cascades scan the whole TVIEW: run `pg_tviews_ensure_propagation_indexes(tview)` |
-| more than 1000 updates, HOT ratio under 50%, an index on `data` or `updated_at` | that index prevents HOT updates |
+| more than 1000 updates, HOT ratio under 50%, an index on `data` | that index prevents HOT updates |
 | a GIN index on `data` never scanned since the statistics reset | it costs every refresh for no reader |
 | fillfactor 100 and more updates than rows | refreshed rows cannot stay on their page (option `fillfactor`, default 85) |
 | TOAST data over 30% of the table | each refresh rewrites whole documents ([ADR 0094](../adr/0094-large-document-refresh.md)) |

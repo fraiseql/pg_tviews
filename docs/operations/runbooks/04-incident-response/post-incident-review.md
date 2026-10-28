@@ -26,8 +26,8 @@ and every action taken. Sources:
 pg_tviews keeps no history of refresh errors. What the database can still show:
 
 ```sql
--- When each TVIEW's rows last changed (per TVIEW)
-SELECT max(updated_at) AS last_change FROM public.tv_user;
+-- What refreshes wrote per TVIEW since the counters started (stats_reset)
+SELECT schema, name, rows_written, rows_deleted, full_refreshes, stats_reset FROM tviews.stats;
 
 -- Installed versions (the time of an upgrade is not recorded)
 SELECT tviews.pg_tviews_version() AS library,

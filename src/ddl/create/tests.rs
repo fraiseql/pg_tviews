@@ -18,7 +18,6 @@ fn test_index_ddl_never_indexes_rewritten_columns_by_default() {
     assert_eq!(ddl.len(), 3, "{ddl:?}");
     for stmt in &ddl {
         assert!(!stmt.contains("\"data\""), "indexes data: {stmt}");
-        assert!(!stmt.contains("updated_at"), "indexes updated_at: {stmt}");
         assert!(!stmt.contains("GIN"), "creates a GIN: {stmt}");
     }
 }
@@ -33,7 +32,6 @@ fn test_index_ddl_gin_only_when_requested() {
             .count(),
         1
     );
-    assert!(ddl.iter().all(|s| !s.contains("updated_at")));
 }
 
 #[test]

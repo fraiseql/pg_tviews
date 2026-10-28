@@ -189,7 +189,7 @@ extension_sql!(
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 9';
+    AS 'SELECT 10';
     ",
     name = "create_metadata_tables",
 );
@@ -882,7 +882,7 @@ BEGIN
                 SELECT DISTINCT quote_ident(ic.relname) FROM pg_index i
                 JOIN pg_class ic ON ic.oid = i.indexrelid
                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
-                WHERE i.indrelid = r.rel AND a.attname IN ('data', 'updated_at')
+                WHERE i.indrelid = r.rel AND a.attname = 'data'
                 ORDER BY 1
             LOOP
                 warnings := warnings || format(

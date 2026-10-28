@@ -66,8 +66,7 @@ DECLARE cols text;
 BEGIN
     SELECT string_agg(attname, ',' ORDER BY attnum) INTO cols
     FROM pg_attribute
-    WHERE attrelid = 'tv_item'::regclass AND attnum > 0 AND NOT attisdropped
-      AND attname NOT IN ('created_at', 'updated_at');
+    WHERE attrelid = 'tv_item'::regclass AND attnum > 0 AND NOT attisdropped;
     IF cols <> 'pk_item,id,data,order,Label,with space,folded' THEN
         RAISE EXCEPTION '#89 FAIL: unexpected columns: %', cols;
     END IF;

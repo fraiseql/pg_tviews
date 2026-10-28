@@ -127,7 +127,7 @@ ORDER BY tgrelid::regclass::text, tgname;
 -- Test one write end to end
 BEGIN;
 UPDATE tb_user SET name = name || '' WHERE pk_user = 1;
-SELECT updated_at, data FROM tv_user WHERE pk_user = 1;
+SELECT data FROM tv_user WHERE pk_user = 1;
 ROLLBACK;
 ```
 

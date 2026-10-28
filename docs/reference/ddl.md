@@ -140,9 +140,9 @@ except columns whose names give them a fixed type:
 | `*_id` | the view's type | indexed |
 
 The table's columns come in this order: `pk_<entity>`, `id`, `identifier`, `data`,
-`fk_*`, `*_id`, then the others in definition order; pg_tviews adds `created_at` and
-`updated_at` (`timestamptz`). Name columns in queries rather than relying on
-`SELECT *` order.
+`fk_*`, `*_id`, then the others in definition order. pg_tviews adds no column of its
+own: a definition can project a `created_at` or `updated_at` of the domain under those
+names. Name columns in queries rather than relying on `SELECT *` order.
 
 A definition with no `pk_*` column is rewritten to the shape `pk_<entity>, id, data`:
 its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, `id`

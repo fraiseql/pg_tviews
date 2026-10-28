@@ -20,9 +20,9 @@ ORDER BY r.schema, r.name, k.key;
 SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''
-\echo '3. Last content change and write activity per TVIEW table'
+\echo '3. Rows and write activity per TVIEW table'
 SELECT pg_catalog.format(
-           'SELECT %L AS tview, max(t.updated_at) AS last_change, '
+           'SELECT %L AS tview, count(*) AS rows, '
            '(SELECT n_tup_ins FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_inserted, '
            '(SELECT n_tup_upd FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_updated, '
            '(SELECT n_tup_del FROM pg_catalog.pg_stat_user_tables WHERE relid = %L::regclass) AS rows_deleted '

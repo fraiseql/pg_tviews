@@ -1,15 +1,13 @@
 -- Regression test for issue #72:
---   "Refresh rewrites unchanged rows: no IS DISTINCT FROM guard, updated_at
---    bumped unconditionally"
+--   "Refresh rewrites unchanged rows: no IS DISTINCT FROM guard"
 --
 -- Every refresh path wrote the tv_* row even when its content would not change:
--- a new tuple version, index entries and a dead tuple per key, and updated_at
--- only recorded that a refresh ran.
+-- a new tuple version, index entries and a dead tuple per key.
 --
 -- Correct behaviour: a refresh whose result equals the stored row writes
--- nothing (n_tup_upd unchanged, updated_at unchanged), on every path: bulk
+-- nothing (n_tup_upd unchanged, no new tuple version), on every path: bulk
 -- recompute, cascade, direct patch, smart patch, and DISTINCT ON upsert. A real
--- change (including NULL <-> value) still writes and moves updated_at.
+-- change (including NULL <-> value) still writes a new version.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_noop_refresh.sql
 -- expect-output: noop_refresh: PASS
@@ -114,36 +112,38 @@ SELECT pg_tviews_create('tv_contract', $TV$
     ORDER BY c.id_contract, c.version_no DESC
 $TV$);
 
--- Bookkeeping: tuple updates per tview since the last mark, plus updated_at.
-CREATE TABLE _mark (relname text PRIMARY KEY, upd bigint, max_updated timestamptz);
+-- Bookkeeping: tuple updates per tview since the last mark, plus the rows'
+-- tuple versions.
+CREATE TABLE _mark (relname text PRIMARY KEY, upd bigint, versions text);
 CREATE FUNCTION _tv_upd(rel text) RETURNS bigint LANGUAGE sql AS $$
     SELECT n_tup_upd FROM pg_stat_user_tables WHERE relname = rel
 $$;
-CREATE FUNCTION _max_updated(rel text) RETURNS timestamptz LANGUAGE plpgsql AS $$
-DECLARE t timestamptz;
+CREATE FUNCTION _versions(rel text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE t text;
 BEGIN
-    EXECUTE format('SELECT max(updated_at) FROM %I', rel) INTO t;
+    EXECUTE format('SELECT string_agg(xmin::text || ctid::text, '','' ORDER BY ctid) FROM %I', rel)
+       INTO t;
     RETURN t;
 END $$;
 CREATE FUNCTION _set_mark() RETURNS void LANGUAGE sql AS $$
     DELETE FROM _mark;
     INSERT INTO _mark
-    SELECT r, _tv_upd(r), _max_updated(r)
+    SELECT r, _tv_upd(r), _versions(r)
     FROM unnest(ARRAY['tv_user', 'tv_post', 'tv_article', 'tv_item', 'tv_contract']) r;
 $$;
 -- Assert tview `rel` got exactly `expected` tuple updates since the mark, and
--- that updated_at moved iff it was written.
+-- that its rows got new tuple versions iff it was written.
 CREATE FUNCTION _expect(rel text, expected bigint, label text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE got bigint; moved boolean;
 BEGIN
     PERFORM pg_stat_clear_snapshot();
-    SELECT _tv_upd(rel) - m.upd, _max_updated(rel) IS DISTINCT FROM m.max_updated
+    SELECT _tv_upd(rel) - m.upd, _versions(rel) IS DISTINCT FROM m.versions
       INTO got, moved FROM _mark m WHERE m.relname = rel;
     IF got <> expected THEN
         RAISE EXCEPTION 'FAIL #72 [%]: % got % tuple updates, expected %', label, rel, got, expected;
     END IF;
     IF moved <> (expected > 0) THEN
-        RAISE EXCEPTION 'FAIL #72 [%]: % updated_at moved=% with % writes', label, rel, moved, got;
+        RAISE EXCEPTION 'FAIL #72 [%]: % rows rewritten=% with % writes', label, rel, moved, got;
     END IF;
 END $$;
 CREATE FUNCTION _recomputes() RETURNS bigint LANGUAGE sql AS
@@ -229,7 +229,7 @@ UPDATE tb_contract SET note = coalesce(note, '') || '.' WHERE id_contract = 100;
 SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_contract', 0, 'distinct-on no-op');
 
--- ── 7. positive controls: real changes still write and move updated_at ──────
+-- ── 7. positive controls: real changes still write a new version ──────────
 SELECT pg_stat_force_next_flush();
 SELECT _set_mark();
 UPDATE tb_post SET title = 'changed' WHERE pk_post = 1;

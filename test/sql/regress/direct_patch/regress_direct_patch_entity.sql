@@ -62,8 +62,8 @@ BEGIN
 END $$;
 
 -- ── Cycle 1: single eligible column, direct patch, merge semantics ───────────
--- Baseline for updated_at bump.
-CREATE TEMP TABLE _ts AS SELECT updated_at AS u FROM tv_user WHERE pk_user = 1;
+-- Baseline: the row's tuple version before the patch.
+CREATE TEMP TABLE _ts AS SELECT ctid AS u FROM tv_user WHERE pk_user = 1;
 
 UPDATE tb_user SET bio = 'a1' WHERE pk_user = 1;
 SELECT _c_assert(1, 0, 0, 'single eligible bio: patched, no recompute');
@@ -83,9 +83,9 @@ DO $$ BEGIN
     RAISE EXCEPTION '#56 FAIL: unexpected key set %',
       (SELECT data FROM tv_user WHERE pk_user = 1);
   END IF;
-  -- updated_at bumped.
-  IF (SELECT updated_at FROM tv_user WHERE pk_user = 1) <= (SELECT u FROM _ts) THEN
-    RAISE EXCEPTION '#56 FAIL: updated_at not bumped by direct patch';
+  -- A new tuple version written.
+  IF (SELECT ctid FROM tv_user WHERE pk_user = 1) = (SELECT u FROM _ts) THEN
+    RAISE EXCEPTION '#56 FAIL: the direct patch wrote no new row version';
   END IF;
 END $$;
 

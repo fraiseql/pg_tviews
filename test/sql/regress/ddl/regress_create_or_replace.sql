@@ -99,14 +99,14 @@ SELECT must(cor(format('%I.%I', schema, name), query, options) = 'unchanged',
 FROM tviews.registry WHERE entity = 'post';
 
 -- 3. altered: storage only, rows kept.
-CREATE TEMP TABLE post_rows AS SELECT pk_post, data, created_at FROM app.tv_post;
+CREATE TEMP TABLE post_rows AS SELECT pk_post, data FROM app.tv_post;
 SELECT must(cor('app.tv_post', (SELECT query FROM tviews.registry WHERE entity = 'post'),
                 '{"logged": false, "fillfactor": 60, "data_gin_index": true}') = 'altered',
             'storage change');
 SELECT must((SELECT NOT (options->>'logged')::boolean AND (options->>'fillfactor')::int = 60
                     AND (options->>'data_gin_index')::boolean
              FROM tviews.registry WHERE entity = 'post'), 'altered storage');
-SELECT must(NOT EXISTS (SELECT pk_post, data, created_at FROM app.tv_post
+SELECT must(NOT EXISTS (SELECT pk_post, data FROM app.tv_post
                         EXCEPT SELECT * FROM post_rows), 'rows kept by altered');
 SELECT must(cor('app.tv_post', (SELECT query FROM tviews.registry WHERE entity = 'post'),
                 '{"data_gin_index": false, "fillfactor": 100}') = 'altered', 'drop GIN index');

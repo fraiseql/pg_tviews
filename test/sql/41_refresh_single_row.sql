@@ -1,6 +1,6 @@
 -- Test 41: Single Row Refresh (No Cascade)
 -- Purpose: Verify single row refresh works correctly without cascading
--- Expected: Row updated in tv_* table, updated_at timestamp changes
+-- Expected: Row updated in tv_* table
 
 \set ECHO all
 \set ON_ERROR_STOP on
@@ -79,9 +79,8 @@ END $$;
 -- Test 2: Update single scalar field
 \echo ''
 \echo 'Test 2: Update single scalar field'
--- The whole file runs in one transaction, where now() (and so updated_at)
--- never advances: whether a row was rewritten shows in its ctid instead, since
--- every UPDATE writes a new tuple version and a no-op refresh writes none.
+-- Whether a row was rewritten shows in its ctid: every UPDATE writes a new
+-- tuple version, and a no-op refresh writes none.
 CREATE TEMP TABLE article_before AS SELECT pk_article, ctid AS tid FROM tv_article;
 
 -- Update title
@@ -172,27 +171,6 @@ DO $$ BEGIN
 END $$;
 
 \echo '✓ Test 4 passed: Full row update works'
-
--- Test 5: Verify updated_at maintained correctly
-\echo ''
-\echo 'Test 5: Verify updated_at timestamps'
-SELECT
-    pk_article,
-    updated_at > NOW() - INTERVAL '10 seconds' AS recently_updated,
-    updated_at < NOW() + INTERVAL '1 second' AS not_future
-FROM tv_article
-ORDER BY pk_article;
-
-DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM tv_article
-               WHERE updated_at IS NULL
-                  OR updated_at <= NOW() - INTERVAL '10 seconds'
-                  OR updated_at >= NOW() + INTERVAL '1 second') THEN
-        RAISE EXCEPTION 'FAIL: an updated_at is missing or out of range';
-    END IF;
-END $$;
-
-\echo '✓ Test 5 passed: updated_at timestamps correct'
 
 -- Test 6: NULL value handling
 \echo ''

@@ -49,12 +49,11 @@ ORDER BY schema, name;
 
 ### Step 2: Freshness
 
-`updated_at` on a TVIEW row moves only when the row's content changes.
+What the refreshes of a TVIEW wrote since its counters started:
 
 ```sql
-SELECT count(*) AS rows, max(updated_at) AS last_change,
-       now() - max(updated_at) AS since_last_change
-FROM public.tv_user;
+SELECT schema, name, rows_written, rows_deleted, full_refreshes, stats_reset
+FROM tviews.stats WHERE schema = 'public' AND name = 'tv_user';
 ```
 
 A TVIEW that has not changed for a long time is not necessarily stale: compare with

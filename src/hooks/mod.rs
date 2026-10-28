@@ -400,6 +400,11 @@ fn refuse_inherit(change: &ColumnChange) -> TViewResult<()> {
 /// new type is refused unless the view's type converts to it on assignment (a
 /// TVIEW can keep such a type until `pg_tviews_create_or_replace` retypes it).
 fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
+    // The extension's own scripts change its tables as they need.
+    // SAFETY: a plain backend global.
+    if unsafe { pg_sys::creating_extension } {
+        return Ok(());
+    }
     refuse_inherit(change)?;
     // SAFETY: a RangeVar of the statement's parse tree.
     let relid = unsafe { resolve_relation_oid(change.relation) };
