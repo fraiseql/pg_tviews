@@ -1,10 +1,10 @@
 # Two writes of different users, each a change no TVIEW joins or filters on
 # (#263). Each user commented on the other's post, so each write's refresh reads
 # the other's user. A statement trigger between pg_tviews' delta triggers (which
-# lock the written values) and its flush waits on a gate, so both writes have
-# locked their own value before either refreshes. Neither changed a link, so
-# neither refresh locks the values it reads: both commit, and the TVIEWs are
-# fresh.
+# lock the written values) and its flush waits on a gate, one per session, so
+# both writes have locked their own value before either refreshes; the gates
+# open one after the other. Neither changed a link, so neither refresh locks the
+# values it reads: both commit, and the TVIEWs are fresh.
 
 setup
 {
@@ -35,7 +35,10 @@ setup
   -- Fires after pg_tviews' delta triggers ("trg_tview_delta_…") and before its
   -- flush ("trg_tview_flush_…"): statement triggers fire in name order.
   CREATE FUNCTION gate() RETURNS trigger LANGUAGE plpgsql AS $$
-    BEGIN PERFORM pg_advisory_xact_lock_shared(263); RETURN NULL; END $$;
+    BEGIN
+      PERFORM pg_advisory_xact_lock_shared(263, current_setting('test.gate')::int);
+      RETURN NULL;
+    END $$;
   CREATE TRIGGER trg_tview_e_gate AFTER UPDATE ON tb_user
     FOR EACH STATEMENT EXECUTE FUNCTION gate();
 }
@@ -49,15 +52,16 @@ teardown
 }
 
 session gate
-step g_close   { SELECT pg_advisory_lock(263); }
-step g_open    { SELECT pg_advisory_unlock(263); }
+step g_close   { SELECT pg_advisory_lock(263, 1), pg_advisory_lock(263, 2); }
+step g_open1   { SELECT pg_advisory_unlock(263, 1); }
+step g_open2   { SELECT pg_advisory_unlock(263, 2); }
 
 session one
-setup          { SET deadlock_timeout = '100ms'; }
+setup          { SET deadlock_timeout = '100ms'; SET test.gate = '1'; }
 step o_bio     { UPDATE tb_user SET bio = 'ada!' WHERE pk_user = 1; }
 
 session two
-setup          { SET deadlock_timeout = '100ms'; }
+setup          { SET deadlock_timeout = '100ms'; SET test.gate = '2'; }
 step t_bio     { UPDATE tb_user SET bio = 'bob!' WHERE pk_user = 2; }
 step t_check
 {
@@ -65,4 +69,4 @@ step t_check
   FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
 }
 
-permutation g_close o_bio t_bio g_open t_check
+permutation g_close o_bio t_bio g_open1 g_open2 t_check
