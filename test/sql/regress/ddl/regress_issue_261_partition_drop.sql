@@ -1,0 +1,132 @@
+-- #261: a partition dropped with DROP TABLE takes its rows out of every TVIEW over
+-- the partitioned root, in the dropping transaction, as DETACH does. The rows
+-- leave as a delete of the partition's rows: only the keys they reach are
+-- refreshed, never the whole TVIEW (the cost follows the dropped partition, not
+-- what remains). Plain DETACH leaves the same way; DETACH CONCURRENTLY, which
+-- commits in the middle, keeps its full refresh.
+--
+-- Runs in autocommit on purpose (no -1): DETACH CONCURRENTLY cannot run in a
+-- transaction block, and freshness is checked after each statement.
+--
+--   psql -v ON_ERROR_STOP=1 -f test/sql/regress/ddl/regress_issue_261_partition_drop.sql
+--
+-- expect-output: partition drop: PASS
+
+\set ON_ERROR_STOP on
+SET client_min_messages TO WARNING;
+DROP EXTENSION IF EXISTS pg_tviews CASCADE;
+DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;
+
+-- tb_order is the partitioned entity table, tb_line is partitioned and local
+-- (read by fk_order), tb_note is partitioned, sub-partitioned and mapped (read
+-- through tb_line).
+CREATE TABLE tb_order (pk_order bigint NOT NULL, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       ref text, PRIMARY KEY (pk_order)) PARTITION BY RANGE (pk_order);
+CREATE TABLE tb_order_1 PARTITION OF tb_order FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_order_2 PARTITION OF tb_order FOR VALUES FROM (100) TO (200);
+CREATE TABLE tb_order_3 PARTITION OF tb_order FOR VALUES FROM (200) TO (300);
+CREATE TABLE tb_order_4 PARTITION OF tb_order FOR VALUES FROM (300) TO (400);
+CREATE TABLE tb_order_5 PARTITION OF tb_order FOR VALUES FROM (400) TO (500);
+CREATE TABLE tb_order_6 PARTITION OF tb_order FOR VALUES FROM (500) TO (600);
+CREATE TABLE tb_line (pk_line bigint NOT NULL, fk_order bigint NOT NULL, pos int NOT NULL,
+                      PRIMARY KEY (pk_line)) PARTITION BY RANGE (pk_line);
+CREATE TABLE tb_line_1 PARTITION OF tb_line FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_line_2 PARTITION OF tb_line FOR VALUES FROM (100) TO (200);
+CREATE TABLE tb_line_3 PARTITION OF tb_line FOR VALUES FROM (200) TO (300);
+CREATE TABLE tb_note (pk_note bigint NOT NULL, fk_line bigint NOT NULL, body text,
+                      PRIMARY KEY (pk_note)) PARTITION BY RANGE (pk_note);
+CREATE TABLE tb_note_1 PARTITION OF tb_note FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_note_2 PARTITION OF tb_note FOR VALUES FROM (100) TO (200)
+    PARTITION BY RANGE (pk_note);
+CREATE TABLE tb_note_2a PARTITION OF tb_note_2 FOR VALUES FROM (100) TO (150);
+CREATE TABLE tb_note_2b PARTITION OF tb_note_2 FOR VALUES FROM (150) TO (200);
+
+INSERT INTO tb_order (pk_order, ref)
+SELECT n, 'o' || n FROM unnest(ARRAY[1, 2, 150, 250, 350, 450, 550]) n;
+INSERT INTO tb_line (pk_line, fk_order, pos) VALUES
+    (1, 150, 1), (2, 250, 1), (120, 150, 2), (130, 350, 1), (220, 450, 1), (230, 550, 1);
+INSERT INTO tb_note (pk_note, fk_line, body) VALUES
+    (1, 1, 'n1'), (120, 2, 'n2'), (170, 120, 'n3'), (180, 130, 'n4');
+
+SELECT pg_tviews_create('tv_order', $$
+    SELECT o.pk_order, o.id,
+           jsonb_build_object(
+               'ref', o.ref,
+               'lines', (SELECT jsonb_agg(l.pos ORDER BY l.pk_line) FROM tb_line l
+                         WHERE l.fk_order = o.pk_order),
+               'notes', (SELECT jsonb_agg(n.body ORDER BY n.body) FROM tb_line l2
+                         JOIN tb_note n ON n.fk_line = l2.pk_line WHERE l2.fk_order = o.pk_order)
+           ) AS data
+    FROM tb_order o $$);
+
+CREATE FUNCTION check_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order)
+               WHERE t.pk_order IS NULL OR v.pk_order IS NULL
+                  OR t.data IS DISTINCT FROM v.data) THEN
+        RAISE EXCEPTION 'FAIL: %: tv_order has % rows, its definition %', label,
+            (SELECT count(*) FROM tv_order), (SELECT count(*) FROM tviews.public__tv_order);
+    END IF;
+END $$;
+
+-- Full refreshes of tv_order so far (merged when each transaction commits).
+CREATE FUNCTION full_refreshes() RETURNS bigint LANGUAGE sql AS $$
+    SELECT COALESCE(full_refreshes, 0) FROM tviews.stats WHERE entity = 'order' $$;
+CREATE TABLE full_before AS SELECT full_refreshes() AS n;
+CREATE FUNCTION check_no_full_refresh(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF full_refreshes() <> (SELECT n FROM full_before) THEN
+        RAISE EXCEPTION 'FAIL: %: tv_order was refreshed in full', label;
+    END IF;
+END $$;
+
+SELECT check_fresh('after creation');
+
+-- ── DROP TABLE of a partition ───────────────────────────────────────────────
+DROP TABLE tb_order_1;
+SELECT check_fresh('drop a partition of the entity table');
+DROP TABLE tb_line_1;
+SELECT check_fresh('drop a partition of a local table');
+DROP TABLE tb_note_2b;
+SELECT check_fresh('drop a sub-partition of a mapped table');
+DROP TABLE tb_note_2;
+SELECT check_fresh('drop a middle level of a mapped table');
+DROP TABLE tb_order_3, tb_line_3;
+SELECT check_fresh('drop two partitions of two tables in one statement');
+SELECT check_no_full_refresh('DROP TABLE of partitions');
+
+-- ── inside a transaction ────────────────────────────────────────────────────
+BEGIN;
+DROP TABLE tb_order_4;
+SELECT check_fresh('drop inside a transaction');
+ROLLBACK;
+SELECT check_fresh('drop rolled back');
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM tv_order WHERE pk_order = 350) THEN
+        RAISE EXCEPTION 'FAIL: a rolled-back drop removed rows from tv_order';
+    END IF;
+END $$;
+BEGIN;
+SAVEPOINT s;
+DROP TABLE tb_order_4;
+ROLLBACK TO SAVEPOINT s;
+SELECT check_fresh('drop rolled back to a savepoint');
+COMMIT;
+SELECT check_fresh('after the savepoint transaction');
+
+-- ── DETACH ──────────────────────────────────────────────────────────────────
+ALTER TABLE tb_order DETACH PARTITION tb_order_4;
+SELECT check_fresh('detach');
+SELECT check_no_full_refresh('DETACH');
+ALTER TABLE tb_order DETACH PARTITION tb_order_5 CONCURRENTLY;
+SELECT check_fresh('detach concurrently');
+ALTER TABLE tb_order ATTACH PARTITION tb_order_5 FOR VALUES FROM (400) TO (500);
+SELECT check_fresh('attach back');
+
+-- A detached partition is a plain table: dropping it changes no TVIEW.
+DROP TABLE tb_order_4;
+SELECT check_fresh('drop a detached partition');
+
+\echo 'partition drop: PASS'
