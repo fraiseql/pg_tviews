@@ -182,7 +182,7 @@ fn note_row_write(
         Ok(PgTriggerOperation::Update) => crate::queue::Event::Update,
         _ => crate::queue::Event::Delete,
     };
-    let meta = crate::catalog::TviewMeta::load_by_entity(served)
+    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
         .ok()
         .flatten();
     let mapping = meta.as_deref().and_then(|m| m.key_mapping(table, None));

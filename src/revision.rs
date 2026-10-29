@@ -107,36 +107,14 @@ pub fn installed() -> Installed {
     }
     // The function is looked up in the extension's own schema, so a 0.1.0 install
     // (another schema, no such function) is told apart from a wrong revision.
-    let revision = Spi::connect(|client| {
-        let found = client.select(
-            "SELECT pg_catalog.quote_ident(n.nspname) \
-                 FROM pg_catalog.pg_extension e \
-                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
-                 JOIN pg_catalog.pg_proc p ON p.pronamespace = e.extnamespace \
-                  AND p.proname = 'pg_tviews_catalog_revision' AND p.pronargs = 0 \
-                 WHERE e.extname = 'pg_tviews'",
-            None,
+    let revision = revision_schema().map(|schema| {
+        crate::utils::spi::catalog_one::<i32>(
+            &format!("SELECT {schema}.pg_tviews_catalog_revision()"),
             &[],
-        )?;
-        let schema = if found.is_empty() {
-            None
-        } else {
-            found.first().get_one::<String>()?
-        };
-        match schema {
-            Some(schema) => client
-                .select(
-                    &format!("SELECT {schema}.pg_tviews_catalog_revision()"),
-                    None,
-                    &[],
-                )?
-                .first()
-                .get_one::<i32>()
-                .map(|revision| Some(revision.ok_or("the revision function returned NULL"))),
-            None => Ok(None),
-        }
+        )
+        .map(|revision| revision.ok_or("the revision function returned NULL"))
     });
-    match revision {
+    match revision.transpose() {
         Ok(Some(Ok(CATALOG_REVISION))) => {
             MATCHED.set(true);
             Installed::Matches
@@ -145,6 +123,38 @@ pub fn installed() -> Installed {
         Ok(Some(Err(why))) => Installed::Unreadable(why.to_string()),
         Ok(None) => Installed::Unversioned,
         Err(e) => Installed::Unreadable(e.to_string()),
+    }
+}
+
+/// The quoted schema of the `pg_tviews` extension when the revision function is
+/// in it, read from the system caches: no query to parse and plan in a new backend.
+fn revision_schema() -> Option<String> {
+    // SAFETY: catalog lookups by name and OID inside a transaction; the names are
+    // NUL-terminated, the argument vector is built for the lookup.
+    unsafe {
+        let extension = pg_sys::get_extension_oid(c"pg_tviews".as_ptr(), true);
+        if extension == pg_sys::InvalidOid {
+            return None;
+        }
+        let schema = pg_sys::get_extension_schema(extension);
+        let no_arguments = pg_sys::buildoidvector(std::ptr::null(), 0);
+        let defined = pg_sys::SearchSysCacheExists(
+            pg_sys::SysCacheIdentifier::PROCNAMEARGSNSP.cast_signed(),
+            pg_sys::Datum::from(c"pg_tviews_catalog_revision".as_ptr()),
+            pg_sys::Datum::from(no_arguments),
+            pg_sys::Datum::from(schema),
+            pg_sys::Datum::from(0),
+        );
+        let name = pg_sys::get_namespace_name(schema);
+        if !defined || name.is_null() {
+            return None;
+        }
+        let quoted = pg_sys::quote_identifier(name);
+        Some(
+            std::ffi::CStr::from_ptr(quoted)
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 

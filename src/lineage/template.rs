@@ -104,7 +104,6 @@ pub const DELTA: &str = "pg_tviews_delta";
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
-    use pgrx::prelude::*;
     let key = |p: Placeholder| match p {
         Placeholder::Relation(relid) => (relid, 0),
         Placeholder::Column(relid, attnum) => (relid, attnum),
@@ -118,7 +117,6 @@ pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
     let mut names: std::collections::HashMap<(u32, i16), String> =
         std::collections::HashMap::with_capacity(wanted.len());
     if !wanted.is_empty() {
-        crate::metrics::metrics_api::record_catalog_lookup();
         let args = [
             crate::utils::spi::oid_array(
                 wanted
@@ -128,19 +126,16 @@ pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
             ),
             crate::utils::spi::int2_array(wanted.iter().map(|w| w.1).collect()),
         ];
-        Spi::connect(|client| {
-            let rows = client.select(
-                "SELECT k.relid, k.attnum, CASE WHEN k.attnum = 0 \
+        crate::utils::spi::catalog_rows(
+            "SELECT k.relid, k.attnum, CASE WHEN k.attnum = 0 \
                         THEN pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
                         ELSE (SELECT pg_catalog.quote_ident(a.attname) FROM pg_catalog.pg_attribute a \
                               WHERE a.attrelid = c.oid AND a.attnum = k.attnum AND NOT a.attisdropped) END \
                  FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.oid[]), pg_catalog.unnest($2::pg_catalog.int2[])) AS k (relid, attnum) \
                  JOIN pg_catalog.pg_class c ON c.oid = k.relid \
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace",
-                None,
-                &args,
-            )?;
-            for row in rows {
+            &args,
+            |row| {
                 if let (Some(relid), Some(attnum), Some(name)) = (
                     row.get::<pgrx::pg_sys::Oid>(1)?,
                     row.get::<i16>(2)?,
@@ -148,9 +143,9 @@ pub fn render_template(template: &str) -> crate::TViewResult<Option<String>> {
                 ) {
                     names.insert((relid.to_u32(), attnum), name);
                 }
-            }
-            Ok::<_, pgrx::spi::Error>(())
-        })?;
+                Ok(())
+            },
+        )?;
     }
     Ok(fill_template(template, &|p| names.get(&key(p)).cloned()))
 }

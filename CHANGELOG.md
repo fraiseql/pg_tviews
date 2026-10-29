@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Retries after `40001` / `40P01` and test suites that roll back each test paid it on
   every write. They are now forgotten only when the transaction ran DDL or filled a
   TVIEW. A mapping query is rendered with one catalog read, whatever names it holds.
+- **A backend's first write, and its first after TVIEW DDL anywhere, plans less**
+  (#266). It reads the catalog rows of all the TVIEWs it reaches in one query, with
+  their key types and column lists, and without the change feed's collections unless
+  `pg_tviews.publish_changes = rows`; every catalog read runs from a plan the backend
+  keeps, and kept plans outlive cache invalidations (PostgreSQL revalidates them).
 - **A definition that reads a foreign table or a sequence follows its
   `uncascaded_policy`**: nothing pg_tviews sees fires when their rows change, so they
   are uncascaded reads, refused under the default `error` policy and accepted under

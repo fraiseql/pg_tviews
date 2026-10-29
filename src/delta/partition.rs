@@ -203,9 +203,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         Some(columns) => format!("SELECT {columns} FROM ({rows}) r"),
         None => rows,
     };
-    let key_type = &meta
-        .key_type()
-        .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
+    let key_type = &meta.key_type;
     let sql = format!(
         "WITH {DELTA} AS ({delta}) \
          SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
@@ -284,9 +282,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 Some(columns) => format!("SELECT {columns} FROM ({images_sql}) r"),
                 None => images_sql,
             };
-            let key_type = &meta
-                .key_type()
-                .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
+            let key_type = &meta.key_type;
             let sql = format!(
                 "WITH {DELTA} AS ({delta}) \
                  SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",

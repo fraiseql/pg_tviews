@@ -56,9 +56,7 @@ pub(crate) fn read_set_queries(
     let Some(mapping) = meta.key_mapping(base_table, None) else {
         return Ok(Vec::new());
     };
-    let key_type = meta
-        .key_type()
-        .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
+    let key_type = meta.key_type.clone();
     let mut rows = Vec::new();
     for set in &mapping.reads {
         let column = (set.attnum != 0)
@@ -90,9 +88,10 @@ pub(super) fn map_statement(
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<()> {
-    let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
-        name: entity.to_string(),
-    })?;
+    let meta =
+        TviewMeta::load_reaching(entity, table_oid)?.ok_or_else(|| TViewError::TviewNotFound {
+            name: entity.to_string(),
+        })?;
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         refresh_all(entity, "its mapping of a written table is unknown");
         return Ok(());
@@ -153,9 +152,7 @@ pub(super) fn map_statement(
                 refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(());
             };
-            let key_type = &meta
-                .key_type()
-                .map_err(|e| crate::utils::spi::error("the identity's type", &e))?;
+            let key_type = &meta.key_type;
             let keys = run_with_transition_tables(
                 trigger,
                 entity,

@@ -376,7 +376,7 @@ pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValu
         crate::utils::spi::oid(pg_sys::Oid::from(relid)),
         crate::utils::spi::int2(attnum),
     ];
-    let row = crate::utils::spi::kept_rows(SQL, &args, crate::utils::spi::Plan::Generic)?
+    let row = crate::utils::spi::catalog_text_rows(SQL, &args)?
         .into_iter()
         .next();
     let value = row.and_then(|row| {

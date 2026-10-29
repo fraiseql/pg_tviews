@@ -10,7 +10,7 @@
 
 use crate::catalog::EntityDepGraph;
 use crate::catalog::plan::LocalPath;
-use crate::catalog::{KeyType, PlanEntry, TviewMeta};
+use crate::catalog::{PlanEntry, TviewMeta};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -71,8 +71,6 @@ thread_local! {
     pub static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
     /// Every `TviewMeta` read so far (keyed by entity).
     pub static METAS: Memo<String, std::rc::Rc<TviewMeta>> = Memo::new();
-    /// TVIEW table → the type of its identity column.
-    pub static KEY_TYPES: Memo<Oid, KeyType> = Memo::new();
     /// Relation → its column names, in order.
     pub static COLUMNS: Memo<Oid, Vec<String>> = Memo::new();
     /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
@@ -86,7 +84,9 @@ thread_local! {
     /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
     pub static LOCK_VALUES: Memo<(u32, i16), Option<crate::concurrency::LockValue>> = Memo::new();
     /// `(how it is planned, SQL)` → its kept statement, for the queries every
-    /// refresh runs (PostgreSQL revalidates a kept plan when what it reads changes).
+    /// refresh runs and the catalog reads. Kept across [`invalidate_all`]:
+    /// PostgreSQL revalidates a kept plan when what it reads changes, and a TVIEW
+    /// changed changes the SQL generated for it.
     pub static PLANS: Memo<(crate::utils::spi::Plan, String), std::rc::Rc<crate::utils::spi::KeptPlan>> =
         Memo::new();
     /// `(SQL, argument types, mutating, the table whose transition tables it
@@ -96,6 +96,9 @@ thread_local! {
     /// `(table, attnums)` → how its old and new transition rows pair up, and the
     /// names of those columns (`None`: they can't be paired).
     pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<RowPairing>> = Memo::new();
+    /// Table → its primary key columns, each with whether the equality operator
+    /// of its type is in `pg_catalog`.
+    pub static PRIMARY_KEYS: Memo<Oid, std::rc::Rc<[(String, bool)]>> = Memo::new();
     /// `(relid, event, attnums)` → the query of the changed rows.
     pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
     /// Table → the select list computing its virtual generated columns (`None`:
@@ -159,27 +162,26 @@ pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPat
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
+pub fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
     PLANS_BY_ENTITY.with(|m| m.get_or_load((), || Ok(TviewMeta::load_plans()?.into())))
 }
 
-/// Forget every cached value of this backend.
+/// Forget every cached value of this backend but its kept plans ([`PLANS`]).
 pub fn invalidate_all() {
     CHANGED_IN_XACT.with(|c| c.set(true));
     PLANS_BY_ENTITY.with(Memo::clear);
     GRAPH.with(Memo::clear);
     CASCADE_PATHS.with(Memo::clear);
     METAS.with(Memo::clear);
-    KEY_TYPES.with(Memo::clear);
     COLUMNS.with(Memo::clear);
     MAPPINGS.with(Memo::clear);
     FANOUT_VIAS.with(Memo::clear);
     READ_SETS.with(Memo::clear);
     LOCK_VALUES.with(Memo::clear);
-    PLANS.with(Memo::clear);
     STATEMENTS.with(Memo::clear);
     DELTAS.with(Memo::clear);
     PAIRINGS.with(Memo::clear);
+    PRIMARY_KEYS.with(Memo::clear);
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
     JSONB_DELTA_SCHEMA.with(Memo::clear);
@@ -235,8 +237,7 @@ fn watch_catalog() {
     if CATALOG_WATCHED.with(Cell::get) {
         return;
     }
-    crate::metrics::metrics_api::record_catalog_lookup();
-    if let Ok(Some(oid)) = crate::catalog::queries::meta_table_oid() {
+    if let Some(oid) = crate::catalog::queries::meta_table_oid() {
         watch(&[oid]);
         CATALOG_WATCHED.with(|w| w.set(true));
     }

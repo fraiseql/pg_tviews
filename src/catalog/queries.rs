@@ -615,16 +615,19 @@ pub fn full_refresh_readers_of(matview: Oid) -> TViewResult<Vec<String>> {
 
 // --- Relations ---------------------------------------------------------------
 
-/// The catalog table's OID, once it exists.
-///
-/// # Errors
-/// Returns the query's error.
-pub fn meta_table_oid() -> TViewResult<Option<Oid>> {
-    let sql = format!(
-        "SELECT pg_catalog.to_regclass('{}')::pg_catalog.oid",
-        super::meta_table()
-    );
-    Spi::get_one::<Oid>(&sql).map_err(|e| crate::utils::spi::error(&sql, &e))
+/// The catalog table's OID, once it exists: read from the system caches, without
+/// a query (the kept plans' cache, which every catalog read goes through, asks
+/// for it).
+#[must_use]
+pub fn meta_table_oid() -> Option<Oid> {
+    let schema = std::ffi::CString::new(crate::utils::ext_schema()).ok()?;
+    // SAFETY: catalog lookups by name inside a transaction; the names are
+    // NUL-terminated.
+    unsafe {
+        let schema = pg_sys::get_namespace_oid(schema.as_ptr(), true);
+        let table = pg_sys::get_relname_relid(c"pg_tview_meta".as_ptr(), schema);
+        (schema != pg_sys::InvalidOid && table != pg_sys::InvalidOid).then_some(table)
+    }
 }
 
 /// Table `table`, read inside a function, as `(relname, relkind, entity)`: the

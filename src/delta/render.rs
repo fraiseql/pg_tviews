@@ -58,10 +58,8 @@ pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Opti
         return Ok(columns);
     }
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (columns, any_virtual) = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT pg_catalog.string_agg( \
+    let (columns, any_virtual) = crate::utils::spi::catalog_rows(
+        "SELECT pg_catalog.string_agg( \
                           CASE WHEN a.attgenerated = 'v' \
                                THEN '(' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) || ') AS ' \
                                     || pg_catalog.quote_ident(a.attname) \
@@ -71,13 +69,12 @@ pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Opti
                  FROM pg_catalog.pg_attribute a \
                  LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
                  WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
-                None,
-                &[crate::utils::spi::oid(table_oid)],
-            )?
-            .first()
-            .get_two::<String, bool>()
-    })
-    .map_err(|e| crate::utils::spi::error("the generated columns of a mapped table", &e))?;
+        &[crate::utils::spi::oid(table_oid)],
+        |row| Ok((row.get::<String>(1)?, row.get::<bool>(2)?)),
+    )?
+    .into_iter()
+    .next()
+    .unwrap_or_default();
     let columns = columns.filter(|_| any_virtual == Some(true));
     crate::cache::watch(&[table_oid]);
     crate::cache::COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
@@ -129,40 +126,22 @@ pub(super) fn row_pairing(
 
 /// [`row_pairing`], read from the catalog.
 fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, Vec<String>)>> {
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let args = [
-        crate::utils::spi::oid(table_oid),
-        crate::utils::spi::int2_array(attnums.to_vec()),
-    ];
-    let (keys, columns) = Spi::connect(|client| {
-        // Key columns with the equality operator of their type, if it is in pg_catalog.
-        let mut keys = Vec::new();
-        for row in client.select(
-            "SELECT a.attname::pg_catalog.text, \
-                    EXISTS (SELECT 1 FROM pg_catalog.pg_operator o \
-                            WHERE o.oprname = '=' AND o.oprleft = a.atttypid \
-                              AND o.oprright = a.atttypid \
-                              AND o.oprnamespace = 'pg_catalog'::pg_catalog.regnamespace) \
-             FROM pg_catalog.pg_index i \
-             JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
-             WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
-            None,
-            &args[..1],
-        )? {
-            keys.push((row.get::<String>(1)?.unwrap_or_default(), row.get::<bool>(2)?.unwrap_or(false)));
-        }
-        let mut columns = Vec::new();
-        for row in client.select(
-            "SELECT attname::pg_catalog.text FROM pg_catalog.pg_attribute \
-             WHERE attrelid = $1 AND attnum = ANY ($2) AND NOT attisdropped ORDER BY attnum",
-            None,
-            &args,
-        )? {
-            columns.push(row.get::<String>(1)?.unwrap_or_default());
-        }
-        Ok::<_, spi::Error>((keys, columns))
-    })
-    .map_err(|e| crate::utils::spi::error("primary key and columns of a mapped table", &e))?;
+    let keys = primary_key(table_oid)?;
+    let mut ordered = attnums.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    // SAFETY: catalog lookups by OID and attribute number.
+    let columns: Vec<String> = ordered
+        .iter()
+        .filter_map(|&attnum| unsafe {
+            let name = pg_sys::get_attname(table_oid, attnum, true);
+            (!name.is_null()).then(|| {
+                std::ffi::CStr::from_ptr(name)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .collect();
     if keys.is_empty()
         || keys.iter().any(|(_, catalog_eq)| !catalog_eq)
         || columns.len() != attnums.len()
@@ -178,6 +157,38 @@ fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(Stri
         .collect::<Vec<_>>()
         .join(" AND ");
     Ok(Some((same_row, columns)))
+}
+
+/// The primary key columns of `table_oid`, each with whether the equality operator
+/// of its type is in `pg_catalog` (cached).
+fn primary_key(table_oid: Oid) -> TViewResult<std::rc::Rc<[(String, bool)]>> {
+    crate::cache::PRIMARY_KEYS.with(|m| {
+        m.get_or_load(table_oid, || {
+            crate::cache::watch(&[table_oid]);
+            Ok(read_primary_key(table_oid)?.into())
+        })
+    })
+}
+
+/// [`primary_key`], read from the catalog.
+fn read_primary_key(table_oid: Oid) -> TViewResult<Vec<(String, bool)>> {
+    crate::utils::spi::catalog_rows(
+        "SELECT a.attname::pg_catalog.text, \
+                EXISTS (SELECT 1 FROM pg_catalog.pg_operator o \
+                        WHERE o.oprname = '=' AND o.oprleft = a.atttypid \
+                          AND o.oprright = a.atttypid \
+                          AND o.oprnamespace = 'pg_catalog'::pg_catalog.regnamespace) \
+         FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
+         WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
+        &[crate::utils::spi::oid(table_oid)],
+        |row| {
+            Ok((
+                row.get::<String>(1)?.unwrap_or_default(),
+                row.get::<bool>(2)?.unwrap_or(false),
+            ))
+        },
+    )
 }
 
 /// The type a mapping query casts its keys to: `int8` for an integer identity,

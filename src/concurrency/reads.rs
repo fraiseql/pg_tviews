@@ -54,7 +54,7 @@ pub fn rendered(
 /// Returns an error if a read-set query fails.
 pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     use super::{LockTarget, Side};
-    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
         return Ok(());
     };
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);

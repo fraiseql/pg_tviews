@@ -545,7 +545,7 @@ tviews.pg_tviews_queue_stats() RETURNS jsonb
 
 Counters of the calling backend, for debugging. Queue, flush and cache counters cover
 the current transaction; the `direct_patch_*`, `view_recomputes`,
-`refresh_noop_skipped`, `catalog_lookups` and `propagation_pruned` counters accumulate
+`refresh_noop_skipped`, `catalog_lookups`, `plans_prepared` and `propagation_pruned` counters accumulate
 over the session. Read it from the session doing the writes: another session sees its
 own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 
@@ -561,7 +561,8 @@ own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 | `direct_patch_captured`, `direct_patches_applied`, `direct_patch_fallbacks` | direct patches captured, applied, and fallen back to a recompute |
 | `view_recomputes` | rows recomputed from the backing view |
 | `refresh_noop_skipped` | recomputed rows not rewritten because their content was unchanged |
-| `catalog_lookups` | catalog reads by the row triggers |
+| `catalog_lookups` | catalog reads by writes (TVIEWs' catalog rows, mapping-query names, columns, keys); none on a warm write |
+| `plans_prepared` | statements the backend prepared and kept: refresh statements and catalog reads, each once per backend |
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |

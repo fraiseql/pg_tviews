@@ -1,4 +1,3 @@
-use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 
@@ -255,24 +254,17 @@ pub const fn ext_schema() -> &'static str {
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
     crate::cache::COLUMNS.with(|m| {
         m.get_or_load(rel_oid, || {
-            crate::metrics::metrics_api::record_catalog_lookup();
             crate::cache::watch(&[rel_oid]);
-            Spi::connect(|client| -> crate::TViewResult<Vec<String>> {
-                let rows = client.select(
-                    "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
-                     WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-                     ORDER BY a.attnum",
-                    None,
-                    &[DatumWithOid::from(rel_oid)],
-                )?;
-                let mut columns = Vec::new();
-                for row in rows {
-                    if let Some(name) = row.get::<String>(1)? {
-                        columns.push(name);
-                    }
-                }
-                Ok(columns)
-            })
+            Ok(crate::utils::spi::catalog_rows(
+                "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
+                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
+                &[crate::utils::spi::oid(rel_oid)],
+                |row| row.get::<String>(1),
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
         })
     })
 }

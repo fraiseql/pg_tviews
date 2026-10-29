@@ -46,13 +46,13 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
 
-    let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    let col_names = &meta.view_columns;
     if col_names.is_empty() {
         return Ok(super::Touched::default());
     }
-    let col_list = super::column_list(&col_names);
+    let col_list = super::column_list(col_names);
 
     // UPSERT every requested row that still resolves in the backing view. Rows not
     // yet materialized are inserted rather than silently skipped — the old
@@ -62,11 +62,11 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // tables' indexes through the view.
     let qi_key = crate::utils::ident::quoted(key_col);
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{entity}"));
-    let any_key = format!("ANY({})", super::key_cast(&key_type, "$1", true));
+    let any_key = format!("ANY({})", super::key_cast(key_type, "$1", true));
     let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
-        super::upsert_conflict_action(&qi_tv, &col_names, key_col)
+        super::upsert_conflict_action(&qi_tv, col_names, key_col)
     );
 
     // DELETE the rows of the keys the upsert's source no longer produced (deleted
@@ -81,7 +81,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \
          RETURNING t.{qi_pk}::pg_catalog.int8, {}",
-        super::key_cast(&key_type, "$2", true),
+        super::key_cast(key_type, "$2", true),
         meta.returned("t", false)
     );
 
@@ -97,7 +97,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         super::refuse_duplicate_keys(
             &meta,
             &format!("{qi_key} = {any_key}"),
-            &[super::key_array(&key_type, chunk)?],
+            &[super::key_array(key_type, chunk)?],
         )?;
         let produced = super::run_counted_upsert(
             &meta,
@@ -105,7 +105,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &col_list,
             &source_sql,
             &conflict,
-            &[super::key_array(&key_type, chunk)?],
+            &[super::key_array(key_type, chunk)?],
             locked.old.as_ref(),
         )?;
         // A key produces at most one row (duplicates were refused above): as many
@@ -117,8 +117,8 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
                 &meta,
                 &delete_sql,
                 &[
-                    super::key_array(&key_type, chunk)?,
-                    super::produced_keys(&key_type, produced.keys)?,
+                    super::key_array(key_type, chunk)?,
+                    super::produced_keys(key_type, produced.keys)?,
                 ],
             )?
         };

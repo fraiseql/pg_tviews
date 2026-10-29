@@ -1,8 +1,6 @@
 //! Whether the `jsonb_delta` extension is installed, and in which schema: the
 //! smart patches call its functions.
 
-use pgrx::prelude::*;
-
 /// [`crate::utils::log_once`] key of "`jsonb_delta` is not installed".
 pub const JSONB_DELTA_MISSING: &str = "jsonb_delta_missing";
 
@@ -33,19 +31,13 @@ pub fn jsonb_delta_schema() -> Option<String> {
     if let Some(schema) = crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.get(&())) {
         return schema;
     }
-    let schema = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT pg_catalog.quote_ident(n.nspname) \
-                 FROM pg_catalog.pg_extension e \
-                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
-                 WHERE e.extname = 'jsonb_delta'",
-                None,
-                &[],
-            )?
-            .first()
-            .get_one::<String>()
-    })
+    let schema = crate::utils::spi::catalog_one::<String>(
+        "SELECT pg_catalog.quote_ident(n.nspname) \
+         FROM pg_catalog.pg_extension e \
+         JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
+         WHERE e.extname = 'jsonb_delta'",
+        &[],
+    )
     .ok()
     .flatten();
     crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.insert((), schema.clone()));

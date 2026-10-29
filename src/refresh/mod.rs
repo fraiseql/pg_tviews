@@ -426,7 +426,7 @@ pub(crate) fn lock_rows(
     if keys.is_empty() {
         return Ok(Locked::default());
     }
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let lock = if transaction_snapshot {
@@ -441,9 +441,9 @@ pub(crate) fn lock_rows(
         "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
          FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
         meta.reference_keys("t"),
-        key_cast(&key_type, "$1", true)
+        key_cast(key_type, "$1", true)
     );
-    let args = [key_array(&key_type, keys)?];
+    let args = [key_array(key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
     let (pks, held, old) = Spi::connect_mut(|client| {
         let mut pks = Vec::new();
@@ -467,7 +467,7 @@ pub(crate) fn lock_rows(
         KeyType::Text(_) => crate::utils::spi::strings(
             &format!(
                 "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
-                key_cast(&key_type, "$1", true)
+                key_cast(key_type, "$1", true)
             ),
             &args,
         )?,
@@ -502,7 +502,7 @@ pub(crate) fn lock_in_key_order(
     if level >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed() {
         return Ok(None);
     }
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
@@ -513,9 +513,9 @@ pub(crate) fn lock_in_key_order(
     let sql = format!(
         "SELECT t.{qi_pk}::pg_catalog.int8{read} FROM {qi_tv} t \
          WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key} FOR UPDATE",
-        key_cast(&key_type, "$1", true)
+        key_cast(key_type, "$1", true)
     );
-    let args = [key_array(&key_type, keys)?];
+    let args = [key_array(key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
     let rows = Spi::connect_mut(|client| {
         let mut rows = std::collections::HashMap::new();

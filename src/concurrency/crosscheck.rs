@@ -33,12 +33,13 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     if keys.is_empty() || !enabled() || meta.time_dependent {
         return Ok(());
     }
-    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?
+    let columns = meta
+        .view_columns
         .iter()
         .map(|c| format!("v.{}", ident::quoted(c)))
         .collect::<Vec<_>>()
         .join(", ");
-    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
         return Ok(());
     };
     let key = ident::quoted(&meta.identity.column);
