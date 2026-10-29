@@ -60,6 +60,10 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
     fn clear(&self) {
         self.0.borrow_mut().clear();
     }
+
+    fn retain(&self, keep: impl FnMut(&K, &mut V) -> bool) {
+        self.0.borrow_mut().retain(keep);
+    }
 }
 
 thread_local! {
@@ -90,7 +94,9 @@ thread_local! {
     pub static PLANS: Memo<(crate::utils::spi::Plan, String), std::rc::Rc<crate::utils::spi::KeptPlan>> =
         Memo::new();
     /// `(SQL, argument types, mutating, the table whose transition tables it
-    /// reads)` → the statement kept for the backend.
+    /// reads)` → the statement kept for the backend. Kept across
+    /// [`invalidate_all`] as [`PLANS`] are, but for the statements over transition
+    /// tables: PostgreSQL does not revalidate those when their table changes.
     pub static STATEMENTS: Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
         Memo::new();
     /// `(table, attnums)` → how its old and new transition rows pair up, and the
@@ -166,7 +172,8 @@ pub fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
     PLANS_BY_ENTITY.with(|m| m.get_or_load((), || Ok(TviewMeta::load_plans()?.into())))
 }
 
-/// Forget every cached value of this backend but its kept plans ([`PLANS`]).
+/// Forget every cached value of this backend but its kept plans ([`PLANS`],
+/// [`STATEMENTS`] not over transition tables).
 pub fn invalidate_all() {
     CHANGED_IN_XACT.with(|c| c.set(true));
     PLANS_BY_ENTITY.with(Memo::clear);
@@ -178,7 +185,7 @@ pub fn invalidate_all() {
     FANOUT_VIAS.with(Memo::clear);
     READ_SETS.with(Memo::clear);
     LOCK_VALUES.with(Memo::clear);
-    STATEMENTS.with(Memo::clear);
+    STATEMENTS.with(|m| m.retain(|(_, _, _, over), _| over.is_none()));
     DELTAS.with(Memo::clear);
     PAIRINGS.with(Memo::clear);
     PRIMARY_KEYS.with(Memo::clear);

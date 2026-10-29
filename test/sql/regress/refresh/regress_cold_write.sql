@@ -98,16 +98,23 @@ COMMIT;
 SELECT must(in_sync(), 'a TVIEW out of sync');
 
 -- ── after an invalidation, no kept plan is prepared again ───────────────────
+-- But the statements over a trigger's transition tables, which PostgreSQL does not
+-- revalidate: tb_author's, two for each TVIEW mapping it through a query
+-- (tv_comment, tv_post).
 \c
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 1;
+UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
 SELECT plans() AS cold \gset
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 1;
+UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
 SELECT must(plans() = :cold, format('a warm write prepared %s plans', plans() - :cold));
 SELECT tviews.pg_tviews_invalidate_caches('tviews.pg_tview_meta'::regclass);
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 2;
-SELECT must(plans() = :cold,
-            format('the write after an invalidation prepared %s plans again, of %s',
+UPDATE tb_author SET name = name || '!' WHERE pk_author = 2;
+SELECT must(plans() - :cold <= 4,
+            format('the writes after an invalidation prepared %s plans again, of %s',
                    plans() - :cold, :cold));
+SELECT must(in_sync(), 'a TVIEW out of sync after an invalidation');
 
 -- ── the change feed names collections once a session turns it on ─────────────
 \setenv PGTV_DB :DBNAME
