@@ -505,15 +505,15 @@ pub(crate) fn lock_rows(
     })
 }
 
-/// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, under READ
-/// COMMITTED, and read `columns` (integer lookup columns) off the version locked,
-/// the latest committed one, by `pk_<entity>`. A refresh that writes rows in
-/// several statements (direct patches, grouped by shape, then recomputes) then
-/// takes their row locks in the order every concurrent refresh does, so two of
-/// them never wait for each other in a cycle (#263); and a patch written into a
-/// parent can be checked against what the parent embeds now. `None` under
-/// REPEATABLE READ and SERIALIZABLE, which lock nothing here: a concurrent update
-/// fails the write instead (40001).
+/// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, and read
+/// `columns` (integer lookup columns) off the version locked, the latest
+/// committed one, by `pk_<entity>`. A refresh that writes rows in several
+/// statements (direct patches, grouped by shape, then recomputes) then takes
+/// their row locks in the order every concurrent refresh does, so two of them
+/// never wait for each other in a cycle (#263); and a patch written into a parent
+/// can be checked against what the parent embeds now. Under REPEATABLE READ and
+/// SERIALIZABLE a row updated since the snapshot fails the write here (40001), as
+/// it would in the refresh; one being updated is waited for in key order too.
 ///
 /// # Errors
 /// Returns an error if the rows cannot be locked.
@@ -521,12 +521,7 @@ pub(crate) fn lock_in_key_order(
     meta: &crate::catalog::TviewMeta,
     keys: &[KeyValue],
     columns: &[String],
-) -> crate::TViewResult<Option<std::collections::HashMap<i64, Vec<Option<i64>>>>> {
-    // SAFETY: reads the backend's isolation level.
-    let level = unsafe { pgrx::pg_sys::XactIsoLevel };
-    if level >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed() {
-        return Ok(None);
-    }
+) -> crate::TViewResult<std::collections::HashMap<i64, Vec<Option<i64>>>> {
     let key_type = &meta.key_type;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
@@ -556,7 +551,7 @@ pub(crate) fn lock_in_key_order(
         }
         Ok::<_, spi::Error>(rows)
     })?;
-    Ok(Some(rows))
+    Ok(rows)
 }
 
 /// What [`lock_rows`] read of the rows it locked.

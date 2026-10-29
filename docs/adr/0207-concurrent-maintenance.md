@@ -228,7 +228,7 @@ row locks order the two refreshes, the second computing after the first commits.
 - **One refresh of an entity per flush, its rows locked in key order.** The rows a
   flush's own writes queue through another TVIEW's triggers join the flush after each
   entity, not after the last one, and a refresh that patches some rows and recomputes
-  others locks them all in key order first. Before, the same `tv_post` rows could be
+  others locks them all in key order first, at every isolation level. Before, the same `tv_post` rows could be
   locked in two statements in a different order in each transaction.
 
 Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both stale on

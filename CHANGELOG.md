@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about 8 per second). A transaction now takes the shared value locks only once it has
   changed a link: inserted or deleted rows of a table a TVIEW reads, or updated a column
   a TVIEW's rows are linked by (a join, filter, grouping…). A refresh writes each
-  entity's rows once per statement, locked in key order (ADR 0207, amended).
+  entity's rows once per statement, locked in key order (ADR 0207, amended), at every
+  isolation level: under `REPEATABLE READ` and `SERIALIZABLE` the second of two such
+  writes fails with `40001`, never with `40P01`.
 - **A TVIEW refreshed under `SERIALIZABLE` could stay stale against a `READ
   COMMITTED` writer**: serializable snapshot isolation only orders serializable
   transactions among themselves. `SERIALIZABLE` now takes the value locks and runs the

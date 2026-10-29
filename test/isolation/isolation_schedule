@@ -24,6 +24,7 @@ test: restored-empty-refill-vs-write
 test: partition-drop-vs-subpartition-write
 test: crossed-value-writes
 test: crossed-value-writes-after-rollback
+test: rr-crossed-value-writes
 test: embed-patch-vs-repoint
 test: serializable-vs-read-committed
 test: partition-truncate-vs-write

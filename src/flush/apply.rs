@@ -173,9 +173,7 @@ impl Flush {
         if patched.len() + recompute.len() < 2 && columns.is_empty() {
             return Ok(());
         }
-        let Some(locked) = crate::refresh::lock_in_key_order(&meta, values, &columns)? else {
-            return Ok(());
-        };
+        let locked = crate::refresh::lock_in_key_order(&meta, values, &columns)?;
         let holds = |pk: i64| {
             guarded(pk).into_iter().flatten().all(|(child, child_pk)| {
                 let Some(row) = locked.get(&pk) else {

@@ -74,9 +74,8 @@ columns they join, filter, group or order by) takes no shared value lock: two su
 writes, say two users editing their own `bio`, each refreshing posts that show both
 users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
 those rows would. Under `REPEATABLE READ` and `SERIALIZABLE` the second of them fails
-with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does, and
-rarely (about one such pair in ten thousand) with `40P01` first. Readers are never blocked, except by `pg_tviews_refresh()`
-(`ACCESS EXCLUSIVE`).
+with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does.
+Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
 
 Like any workload that locks, two transactions that change links and take these locks
 in opposite orders can deadlock: PostgreSQL detects it and fails one of them with
@@ -89,7 +88,7 @@ in opposite orders can deadlock: PostgreSQL detects it and fails one of them wit
 |---|---|---|
 | A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new, before it looks up the TVIEW rows they feed | end of transaction |
 | A write to a TVIEW's rows that other TVIEWs embed | exclusive value locks on those rows' keys, before it looks up the parents | end of transaction |
-| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`, under `READ COMMITTED`) | end of transaction |
+| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`; under `REPEATABLE READ` and `SERIALIZABLE`, when the refresh writes them in several statements) | end of transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it (under `REPEATABLE READ` they fail with `40001`); readers are not blocked | end of transaction |
