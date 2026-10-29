@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their key types and column lists, and without the change feed's collections unless
   `pg_tviews.publish_changes = rows`; every catalog read runs from a plan the backend
   keeps, and kept plans outlive cache invalidations (PostgreSQL revalidates them).
+- **A refresh of a `UNION` TVIEW reads its backing view once** (#267). A key returned
+  twice (ADR 0216) was looked for with a read of its own before the upsert's, which cost
+  as much whenever a branch's filter or joins decide which rows exist; it is now found
+  among the rows the upsert reads, which then writes none, and refused as before
+  (`21000`, naming the key). A full refresh still checks the whole view first.
 - **A definition that reads a foreign table or a sequence follows its
   `uncascaded_policy`**: nothing pg_tviews sees fires when their rows change, so they
   are uncascaded reads, refused under the default `error` policy and accepted under

@@ -93,12 +93,6 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let locked = super::lock_rows(&meta, &qi_tv, chunk)?;
-        // A key names one row: a UNION view returning several for one is refused.
-        super::refuse_duplicate_keys(
-            &meta,
-            &format!("{qi_key} = {any_key}"),
-            &[super::key_array(key_type, chunk)?],
-        )?;
         let produced = super::run_counted_upsert(
             &meta,
             &qi_tv,
@@ -108,7 +102,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             &[super::key_array(key_type, chunk)?],
             locked.old.as_ref(),
         )?;
-        // A key produces at most one row (duplicates were refused above): as many
+        // A key produces at most one row (the upsert refuses duplicates): as many
         // rows as keys means none is gone.
         let deleted = if produced.keys.len() == chunk.len() {
             Vec::new()

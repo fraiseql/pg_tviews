@@ -348,21 +348,46 @@ pub(crate) fn run_counted_upsert(
     let entity = &meta.entity_name;
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let qi_key = ident::quoted(&meta.identity.column);
+    // A UNION view returning several rows for one key is refused (ADR 0216) from
+    // the rows the upsert reads, which then writes none: the view is read once.
+    let (duplicate, unless_duplicate, duplicate_key) = if meta.plan.set_operation {
+        (
+            format!(
+                "dup AS (SELECT {qi_key}::pg_catalog.text AS key FROM src \
+                         GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1), "
+            ),
+            "WHERE NOT EXISTS (SELECT FROM dup)",
+            "(SELECT key FROM dup)",
+        )
+    } else {
+        (String::new(), "", "NULL::pg_catalog.text")
+    };
     let sql = format!(
-        "WITH src AS ({source_sql}), \
-         written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
+        "WITH src AS ({source_sql}), {duplicate}\
+         written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src {unless_duplicate} \
                      {conflict} RETURNING {qi_pk}::pg_catalog.int8 AS k, {} AS i, {} AS r, \
                                           xmax = 0 AS inserted) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
                 (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r)) \
-                 FROM written)",
+                 FROM written), {duplicate_key}",
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows) = Spi::connect_mut(|client| {
+    let (keys, rows, duplicate) = Spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
-        Ok::<_, spi::Error>((row.get::<Vec<String>>(1)?, row.get::<pgrx::JsonB>(2)?))
+        Ok::<_, spi::Error>((
+            row.get::<Vec<String>>(1)?,
+            row.get::<pgrx::JsonB>(2)?,
+            row.get::<String>(3)?,
+        ))
     })?;
+    if let Some(key) = duplicate {
+        return Err(crate::TViewError::DuplicateKey {
+            tview: qi_tv.to_string(),
+            key_column: meta.identity.column.clone(),
+            key,
+        });
+    }
     let keys = keys.unwrap_or_default();
     let rows = match rows {
         Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,

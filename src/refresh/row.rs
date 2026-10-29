@@ -44,18 +44,8 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     // Wait for a concurrent writer of this row before reading the view.
     let locked = super::lock_rows(meta, &qualified_relname_from_oid(meta.tview_oid)?, keys)?;
 
-    // A key names one row: a UNION view returning several for it is refused.
-    let key_type = &meta.key_type;
-    super::refuse_duplicate_keys(
-        meta,
-        &format!(
-            "{} = {}",
-            ident::quoted(&meta.identity.column),
-            super::key_cast(key_type, "$1", false)
-        ),
-        &[super::key_scalar(key_type, key)?],
-    )?;
-    // Upsert straight from v_entity: the view is evaluated once. No source row
+    // Upsert straight from v_entity: the view is evaluated once, and a UNION view
+    // returning several rows for the key is refused there. No source row
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
     crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
