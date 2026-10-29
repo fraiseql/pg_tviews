@@ -40,6 +40,65 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.34 against 0.1.0-beta.33 (2026-10-29)
+
+Stock PostgreSQL 18.6 (Arch), release builds (beta.34 at 7d830f98, `.so` md5 bb023cd0…;
+beta.33 17d8ccd0…), jsonb_delta 0.3.0, `synchronous_commit = off`, `autovacuum = off`, both
+postmasters pinned to the same two cores. `test/bench/write_path/compare.sh` interleaved the
+builds per write, alternating which ran first, and started each run only when the
+machine's 1-minute load average was below 4 (1.5–7.1 across the 72 runs, none discarded).
+Three rounds of 15 s, a fresh database copy per run; the ratio is the median of the three
+paired beta.34 / beta.33 runs.
+
+| write | clients | beta.33 tps | beta.34 tps | paired ratio | WAL B/write, beta.33 | beta.34 |
+|---|---:|---:|---:|---:|---:|---:|
+| `bio` | 1 | 5,131 | 5,051 | 0.99 | 13,583 | 9,128 |
+| `bio` | 16 | 6,392 | 6,323 | 0.99 | 13,785 | 9,026 |
+| `username` | 1 | 1,958 | 2,035 | 1.02 | 43,055 | 24,549 |
+| `username` | 16 | 2,511 | 2,532 | 1.01 | 42,508 | 24,030 |
+| `title` | 1 | 4,952 | 5,280 | 1.07 | 6,479 | 3,633 |
+| `title` | 16 | 5,868 | 6,845 | 1.17 | 6,625 | 3,324 |
+| `comment_insert` | 1 | 6,984 | 7,134 | 0.98 | 2,314 | 1,802 |
+| `comment_insert` | 16 | 8,455 | 8,518 | 1.01 | 2,207 | 1,746 |
+| `bio_bulk100` | 1 | 184 | 176 | 0.96 | 1,417,363 | 923,625 |
+| `bio_bulk100` | 16 | 41 | 40 | 0.98 | 2,036,621 | 1,948,315 |
+| `untracked_insert` | 1 | 61,447 | 60,348 | 0.98 | 295 | 295 |
+| `untracked_insert` | 16 | 81,279 | 80,545 | 0.99 | 295 | 295 |
+
+No write is more than 4 % slower (`bio_bulk100` at one client, the largest gap), and
+`title` is 7–17 % faster. Every write that changes TVIEW rows writes 25–45 % less WAL
+(`bio_bulk100` at 16 clients 4 %): the rows no longer carry `created_at` and `updated_at`.
+A write that changes no link takes no shared value lock; one that does also checks
+its link columns.
+
+**Crossed writes** ([#263](https://github.com/fraiseql/pg_tviews/issues/263)): N users,
+one post each, every user commenting on every other's post; client *i* updates the `bio`
+of user *i*, so each write's refresh of the posts reads the users the other clients
+write. `embed` nests `tv_user` and `tv_comment` rows into `tv_post`; `mapped` joins the
+base tables. 15 s, READ COMMITTED, `deadlock_timeout = 50ms`, no retries; tps over the
+three rounds, failed transactions (all deadlocks) per run:
+
+| shape | clients | beta.33 tps | beta.33 deadlocks | beta.34 tps | beta.34 deadlocks |
+|---|---:|---:|---:|---:|---:|
+| `embed` | 2 | 16 | 251–252 | 3,885–3,902 | 0 |
+| `embed` | 20 | 0 | 424–536 | 260–285 | 0 |
+| `mapped` | 2 | 60 | 229 | 4,396–4,407 | 0 |
+| `mapped` | 20 | 0 | 105–125 | 405–417 | 0 |
+
+Every TVIEW was fresh after every run, on both builds.
+
+**The first write after DDL**, ms (median of 20, three rounds, the same on each): a
+`bio` write warm 0.22 / 0.22, right after `CREATE INDEX` on a base table 0.31 / 0.29,
+right after `pg_tviews_create` of an unrelated TVIEW 3.38 / 3.38 (beta.33 / beta.34).
+A write after a rolled-back transaction now costs what a warm one does
+([#266](https://github.com/fraiseql/pg_tviews/issues/266)): 10 nested statements instead
+of 40 for a write reaching three TVIEWs.
+
+**TRUNCATE of a partition** holding 1 % of a table's rows (1,000 of 100,000 lines, 100 of
+10,000 orders, an aggregate TVIEW over the orders), median of 10, three rounds: 1,062–1,066
+ms on beta.33, which refreshed the TVIEW whole, and 4.5–4.6 ms on beta.34, which refreshes
+the 100 orders the lines reached.
+
 ## 0.1.0-beta.33 against 0.1.0-beta.32
 
 beta.33 changes no code on the write path (its fix runs on `DROP TABLE` and `DETACH
