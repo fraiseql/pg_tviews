@@ -64,7 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#266). It reads the catalog rows of all the TVIEWs it reaches in one query, with
   their key types and column lists, and without the change feed's collections unless
   `pg_tviews.publish_changes = rows`; every catalog read runs from a plan the backend
-  keeps, and kept plans outlive cache invalidations (PostgreSQL revalidates them).
+  keeps, and kept plans outlive cache invalidations (PostgreSQL revalidates them). An
+  author write reaching three TVIEWs: 21.2 → 12.0 ms CPU as a backend's first write,
+  14.5 → 4.2 ms after TVIEW DDL anywhere (stock PostgreSQL 18.6,
+  [write path](docs/benchmarks/write-path.md)).
 - **A refresh of a `UNION` TVIEW reads its backing view once** (#267). A key returned
   twice (ADR 0216) was looked for with a read of its own before the upsert's, which cost
   as much whenever a branch's filter or joins decide which rows exist; it is now found

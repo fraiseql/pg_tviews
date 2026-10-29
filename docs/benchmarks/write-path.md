@@ -87,12 +87,36 @@ three rounds, failed transactions (all deadlocks) per run:
 
 Every TVIEW was fresh after every run, on both builds.
 
-**The first write after DDL**, ms (median of 20, three rounds, the same on each): a
-`bio` write warm 0.22 / 0.22, right after `CREATE INDEX` on a base table 0.31 / 0.29,
-right after `pg_tviews_create` of an unrelated TVIEW 3.38 / 3.38 (beta.33 / beta.34).
-A write after a rolled-back transaction now costs what a warm one does
-([#266](https://github.com/fraiseql/pg_tviews/issues/266)): 10 nested statements instead
-of 40 for a write reaching three TVIEWs.
+**The first write in a backend, and the first after DDL**
+([#266](https://github.com/fraiseql/pg_tviews/issues/266)), measured at b20c7ef5 on a second
+machine: Debian 13, 12 cores, PostgreSQL 18.6 built from source with the default
+`configure`, the same settings (beta.34 `.so` md5 d68280b5…, beta.33 b978b3af…). Backend CPU
+per write from `/proc/<pid>/schedstat`, median of three rounds: 300 warm writes, 100 writes
+each right after `pg_tviews_invalidate_caches()` of the catalog (what TVIEW DDL anywhere
+does to every backend), 30 first writes of a new backend. An author `UPDATE` reaching three
+TVIEWs (#266's schema), then reaching five in a schema of 13 TVIEWs:
+
+| ms CPU per write | 3 TVIEWs, beta.33 | beta.34 | 13 TVIEWs, beta.33 | beta.34 |
+|---|---:|---:|---:|---:|
+| warm | 2.77 | 2.21 | 3.46 | 2.81 |
+| warm, after a `ROLLBACK` | 14.88 | 2.24 | 23.91 | 2.88 |
+| after TVIEW DDL anywhere | 14.54 | 4.19 | 24.36 | 5.90 |
+| first write of a backend | 21.25 | 11.99 | 32.03 | 16.09 |
+| the same write, triggers off | 0.080 | 0.081 | 0.081 | 0.081 |
+
+A rolled-back write now costs what a warm one does (10 nested statements instead of 40 for
+three TVIEWs). After DDL and in a new backend, a write reads the catalog rows of every TVIEW
+it reaches at once, without the change feed's collections unless the feed names them, and
+plans each catalog read once per backend: kept plans outlive cache invalidations. What is
+left in a new backend is mostly PostgreSQL loading its own caches and planning each refresh
+statement once. The first `bio` write of the benchmark schema, ms (median of 20, three
+rounds): warm 0.51 / 0.51, right after `CREATE INDEX` on a base table 0.71 / 0.65, right after
+`pg_tviews_create` of an unrelated TVIEW 6.68 / 1.93 (beta.33 / beta.34).
+
+**A `UNION` TVIEW's refresh reads its backing view once**
+([#267](https://github.com/fraiseql/pg_tviews/issues/267)): the author write of #267's schema
+read 96 buffers of the view to look for a duplicated key, then 348 in the upsert (96 of
+them the same rows); now 348.
 
 **TRUNCATE of a partition** holding 1 % of a table's rows (1,000 of 100,000 lines, 100 of
 10,000 orders, an aggregate TVIEW over the orders), median of 10, three rounds: 1,062–1,066
