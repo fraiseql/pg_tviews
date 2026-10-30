@@ -32,3 +32,4 @@ test: two-hop-patch-vs-repoint
 test: two-hop-rename-vs-move-in
 test: two-hop-hidden-repoint
 test: rr-full-refresh-vs-insert
+test: new-row-vs-row-lock

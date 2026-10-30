@@ -109,6 +109,15 @@ transactions creating rows of that TVIEW. Existing rows keep their row locks
 (`SELECT … FOR UPDATE`). Specs: `local-child-vs-new-parent`,
 `aggregate-new-group-vs-write`.
 
+The key lock only stops other creations of the row. A row another transaction
+created and committed after the refresh looked for it, and that a third one may
+since have locked through the row itself, is locked after the key lock, in a new
+statement, before the refresh computes: the order is row locks of the rows found,
+then key locks, then row locks of the rows created in between (amended in
+0.1.0-beta.34; `new-row-vs-row-lock`). Before, the refresh's upsert waited for
+that row inside `ON CONFLICT DO UPDATE` and wrote what it computed before the
+wait.
+
 ### Lock tags and modes
 
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:

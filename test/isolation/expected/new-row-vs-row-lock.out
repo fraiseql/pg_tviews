@@ -1,0 +1,139 @@
+Parsed test spec with 6 sessions
+
+starting permutation: c3_begin c3_create h_begin h_lock5 r_begin r_insert c3_commit e_begin e_edit3 h_commit e_commit r_commit e_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step c3_begin: BEGIN;
+step c3_create: INSERT INTO tb_doc VALUES (30, '00000000-0000-0000-0000-000000000003', 1, 'c30');
+step h_begin: BEGIN;
+step h_lock5: UPDATE tb_doc SET body = 'd5!' WHERE pk_doc = 5;
+step r_begin: BEGIN;
+step r_insert: INSERT INTO tb_doc VALUES (29, '00000000-0000-0000-0000-000000000003', 0, 'r'),
+                                          (39, '00000000-0000-0000-0000-000000000004', 0, 'r'),
+                                          (49, '00000000-0000-0000-0000-000000000005', 0, 'r'); <waiting ...>
+step c3_commit: COMMIT;
+step e_begin: BEGIN;
+step e_edit3: UPDATE tb_doc SET body = 'c30!' WHERE pk_doc = 30;
+step h_commit: COMMIT;
+step e_commit: COMMIT;
+step r_insert: <... completed>
+step r_commit: COMMIT;
+step e_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|c31   |c31     |t    
+00000000-0000-0000-0000-000000000003|c30!  |c30!    |t    
+00000000-0000-0000-0000-000000000004|r     |r       |t    
+00000000-0000-0000-0000-000000000005|d5!   |d5!     |t    
+(4 rows)
+
+
+starting permutation: c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_begin e_edit4 c3_commit e_commit r_commit e_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step c3_begin: BEGIN;
+step c3_create: INSERT INTO tb_doc VALUES (30, '00000000-0000-0000-0000-000000000003', 1, 'c30');
+step c4_begin: BEGIN;
+step c4_create: INSERT INTO tb_doc VALUES (40, '00000000-0000-0000-0000-000000000004', 1, 'c40');
+step r_begin: BEGIN;
+step r_insert: INSERT INTO tb_doc VALUES (29, '00000000-0000-0000-0000-000000000003', 0, 'r'),
+                                          (39, '00000000-0000-0000-0000-000000000004', 0, 'r'),
+                                          (49, '00000000-0000-0000-0000-000000000005', 0, 'r'); <waiting ...>
+step c4_commit: COMMIT;
+step e_begin: BEGIN;
+step e_edit4: UPDATE tb_doc SET body = 'c40!' WHERE pk_doc = 40;
+step c3_commit: COMMIT;
+step e_commit: COMMIT;
+step r_insert: <... completed>
+step r_commit: COMMIT;
+step e_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|c31   |c31     |t    
+00000000-0000-0000-0000-000000000003|c30   |c30     |t    
+00000000-0000-0000-0000-000000000004|c40!  |c40!    |t    
+00000000-0000-0000-0000-000000000005|d5    |d5      |t    
+(4 rows)
+
+
+starting permutation: c3_begin c3_create h_begin h_lock5 r_begin r_insert c3_commit e_begin e_delete3 h_commit e_commit r_commit e_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step c3_begin: BEGIN;
+step c3_create: INSERT INTO tb_doc VALUES (30, '00000000-0000-0000-0000-000000000003', 1, 'c30');
+step h_begin: BEGIN;
+step h_lock5: UPDATE tb_doc SET body = 'd5!' WHERE pk_doc = 5;
+step r_begin: BEGIN;
+step r_insert: INSERT INTO tb_doc VALUES (29, '00000000-0000-0000-0000-000000000003', 0, 'r'),
+                                          (39, '00000000-0000-0000-0000-000000000004', 0, 'r'),
+                                          (49, '00000000-0000-0000-0000-000000000005', 0, 'r'); <waiting ...>
+step c3_commit: COMMIT;
+step e_begin: BEGIN;
+step e_delete3: DELETE FROM tb_doc WHERE pk_doc = 30;
+step h_commit: COMMIT;
+step e_commit: COMMIT;
+step r_insert: <... completed>
+step r_commit: COMMIT;
+step e_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|c31   |c31     |t    
+00000000-0000-0000-0000-000000000003|r     |r       |t    
+00000000-0000-0000-0000-000000000004|r     |r       |t    
+00000000-0000-0000-0000-000000000005|d5!   |d5!     |t    
+(4 rows)
+
+
+starting permutation: f_begin f_empty2 h_begin h_lock5 r_begin r_insert25 f_fill2 f_commit e_begin e_edit32 h_commit e_commit r_commit e_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step f_begin: BEGIN;
+step f_empty2: DELETE FROM tb_doc WHERE pk_doc = 31;
+step h_begin: BEGIN;
+step h_lock5: UPDATE tb_doc SET body = 'd5!' WHERE pk_doc = 5;
+step r_begin: BEGIN;
+step r_insert25: INSERT INTO tb_doc VALUES (28, '00000000-0000-0000-0000-000000000002', 0, 'r'),
+                                            (48, '00000000-0000-0000-0000-000000000005', 0, 'r'); <waiting ...>
+step f_fill2: INSERT INTO tb_doc VALUES (32, '00000000-0000-0000-0000-000000000002', 1, 'c32');
+step f_commit: COMMIT;
+step e_begin: BEGIN;
+step e_edit32: UPDATE tb_doc SET body = 'c32!' WHERE pk_doc = 32;
+step h_commit: COMMIT;
+step e_commit: COMMIT;
+step r_insert25: <... completed>
+step r_commit: COMMIT;
+step e_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|c32!  |c32!    |t    
+00000000-0000-0000-0000-000000000005|d5!   |d5!     |t    
+(2 rows)
+
