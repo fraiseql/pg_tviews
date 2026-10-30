@@ -153,6 +153,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
 
     let pass_through = {
         let _internal = crate::internal_ddl::InternalDdl::begin();
+        // What pg_tviews does about the statement resolves nothing on the caller's
+        // search_path but the names the statement gives (`resolve_relation_oid`).
+        let _path = crate::owner::CatalogPath::pin();
         flush_before_transaction_end(call);
         // SAFETY: the hook's statement.
         let follow_ups = unsafe { FollowUps::of(call.pstmt) };
@@ -167,6 +170,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
     if let Some(follow_ups) = pass_through {
         call.pass_through();
         let _internal = crate::internal_ddl::InternalDdl::begin();
+        let _path = crate::owner::CatalogPath::pin();
         follow_ups.run();
     }
 }
@@ -438,8 +442,7 @@ fn refuse_inherit(change: &ColumnChange) -> TViewResult<()> {
 /// TVIEW can keep such a type until `pg_tviews_create_or_replace` retypes it).
 fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
     // The extension's own scripts change its tables as they need.
-    // SAFETY: a plain backend global.
-    if unsafe { pg_sys::creating_extension } {
+    if crate::revision::in_own_script() {
         return Ok(());
     }
     refuse_inherit(change)?;
@@ -460,15 +463,18 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
     for (column, type_name) in &change.retypes {
         let mut to = pg_sys::InvalidOid;
         let mut typmod = -1;
-        // SAFETY: a TypeName of the statement's parse tree; an unknown type raises
-        // the error PostgreSQL would.
-        unsafe {
-            pg_sys::typenameTypeIdAndMod(
-                std::ptr::null_mut(),
-                *type_name,
-                &raw mut to,
-                &raw mut typmod,
-            );
+        {
+            let _caller = crate::owner::CallerPath::enter();
+            // SAFETY: a TypeName of the statement's parse tree; an unknown type
+            // raises the error PostgreSQL would.
+            unsafe {
+                pg_sys::typenameTypeIdAndMod(
+                    std::ptr::null_mut(),
+                    *type_name,
+                    &raw mut to,
+                    &raw mut typmod,
+                );
+            }
         }
         let from = crate::catalog::queries::view_column_type(relid, column.as_str())?;
         let fixed = column == "id" || column == "data" || column.starts_with("pk_");
@@ -586,6 +592,12 @@ impl FollowUps {
     /// Follow what the statement changed. SPI errors abort the statement rather
     /// than leave a TVIEW with stale metadata.
     fn run(self) {
+        if let Some((relid, old_name, new_name)) =
+            self.column_rename.and_then(ColumnRename::resolve)
+            && let Err(e) = crate::ddl::rename::handle_column_rename(relid, &old_name, &new_name)
+        {
+            e.raise_in("pg_tviews: could not follow the column rename");
+        }
         // The rows that left with the statement: refreshed now (no flush trigger
         // follows DDL), or by the writing statement this one is nested in.
         if !self.leaving_partitions.is_empty()
@@ -595,12 +607,6 @@ impl FollowUps {
             e.raise_in(
                 "pg_tviews: could not refresh the TVIEWs over a dropped or detached partition",
             );
-        }
-        if let Some((relid, old_name, new_name)) =
-            self.column_rename.and_then(ColumnRename::resolve)
-            && let Err(e) = crate::ddl::rename::handle_column_rename(relid, &old_name, &new_name)
-        {
-            e.raise_in("pg_tviews: could not follow the column rename");
         }
         if let Some(ddl) = self.partition_ddl
             // SAFETY: the RangeVars come from the parse tree, which outlives the statement.

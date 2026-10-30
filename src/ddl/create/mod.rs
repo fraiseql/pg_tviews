@@ -47,9 +47,10 @@ use pgrx::prelude::*;
 
 /// Resolve the target schema for creating TVIEW objects.
 ///
-/// Uses `current_schema()` to respect the active `search_path`, matching
-/// standard `PostgreSQL` convention for unqualified DDL statements.
+/// Uses `current_schema()` under the caller's `search_path`, matching standard
+/// `PostgreSQL` convention for unqualified DDL statements.
 pub(crate) fn current_schema() -> TViewResult<String> {
+    let _caller = crate::owner::CallerPath::enter();
     crate::utils::spi_get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
@@ -338,6 +339,9 @@ pub fn reregister_metadata(
     schema_name: &str,
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
+    // What is derived here runs as the owner later: nothing in it depends on
+    // the search_path of the role whose DDL re-derives it.
+    let _path = crate::owner::CatalogPath::pin();
     let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name)
         .map_err(|e| TViewError::CatalogError {
             operation: format!("Read the metadata of tv_{entity_name}"),

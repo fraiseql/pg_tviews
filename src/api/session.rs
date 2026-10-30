@@ -8,6 +8,7 @@ use pgrx::prelude::*;
 /// of the transaction, which refreshes them.
 #[pg_extern]
 fn pg_tviews_suspend_triggers() {
+    let _path = crate::owner::CatalogPath::pin();
     crate::suspend::suspend();
 }
 
@@ -15,6 +16,7 @@ fn pg_tviews_suspend_triggers() {
 /// changed while suspended (and every TVIEW reading one of them) is rebuilt.
 #[pg_extern]
 fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     crate::suspend::resume()?;
     if !crate::suspend::is_suspended() {
@@ -26,12 +28,14 @@ fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
 /// Whether this transaction's trigger-based refresh is suspended.
 #[pg_extern]
 fn pg_tviews_is_suspended() -> bool {
+    let _path = crate::owner::CatalogPath::pin();
     crate::suspend::is_suspended()
 }
 
 /// The TVIEWs changed while this transaction's refresh is suspended.
 #[pg_extern]
 fn pg_tviews_suspended_entities() -> Vec<String> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::suspend::get_changed_entities()
 }
 
@@ -44,6 +48,7 @@ fn pg_tviews_flush_and_report(
     reset: default!(bool, true),
     types: default!(Option<Vec<String>>, "NULL"),
 ) -> Result<pgrx::JsonB, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     Ok(pgrx::JsonB(crate::report::flush_and_report(
         max_entities,
@@ -57,6 +62,7 @@ fn pg_tviews_flush_and_report(
 /// readable from any session).
 #[pg_extern]
 fn pg_tviews_queue_stats() -> pgrx::JsonB {
+    let _path = crate::owner::CatalogPath::pin();
     pgrx::JsonB(crate::health::queue_stats())
 }
 
@@ -66,6 +72,7 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
 /// and evicts everything when it moved.
 #[pg_extern]
 fn pg_tviews_feed_gaps() -> Result<i64, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     let gaps = crate::stats::feed_gaps()?;
     Ok(i64::try_from(gaps).unwrap_or(i64::MAX))
 }
@@ -73,5 +80,6 @@ fn pg_tviews_feed_gaps() -> Result<i64, ErrorReport> {
 /// The transaction's refresh queue (debugging).
 #[pg_extern]
 fn pg_tviews_debug_queue() -> pgrx::JsonB {
+    let _path = crate::owner::CatalogPath::pin();
     pgrx::JsonB(crate::health::debug_queue())
 }

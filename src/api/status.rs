@@ -14,12 +14,14 @@ fn pg_tviews_version() -> &'static str {
 /// or `schema.tv_<entity>`, quoted or not. 42704 when it names no TVIEW.
 #[pg_extern(stable, parallel_safe)]
 fn pg_tviews_entity_of(tview: &str) -> Result<String, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     Ok(crate::catalog::resolve::find(tview)?.entity)
 }
 
 /// Whether `jsonb_delta` is installed (cached).
 #[pg_extern]
 fn pg_tviews_check_jsonb_delta() -> bool {
+    let _path = crate::owner::CatalogPath::pin();
     crate::jsonb_delta::check_jsonb_delta_available()
 }
 
@@ -36,6 +38,7 @@ fn pg_tviews_health_check() -> TableIterator<
         name!(severity, String),
     ),
 > {
+    let _path = crate::owner::CatalogPath::pin();
     TableIterator::new(crate::health::health_check())
 }
 
@@ -57,6 +60,7 @@ fn pg_tviews_replication_status() -> Result<
     >,
     ErrorReport,
 > {
+    let _path = crate::owner::CatalogPath::pin();
     Ok(TableIterator::new(crate::replication::replication_status()?))
 }
 
@@ -89,6 +93,7 @@ fn pg_tviews_stats_rows() -> Result<
     ErrorReport,
 > {
     use crate::stats::Counter;
+    let _path = crate::owner::CatalogPath::pin();
     let (counts, overflowed) = crate::stats::read()?;
     let rows = crate::catalog::row::relations()?
         .into_iter()

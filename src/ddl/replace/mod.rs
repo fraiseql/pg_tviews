@@ -345,9 +345,12 @@ fn compare_definition(
     view_oid: pg_sys::Oid,
     definition: &str,
 ) -> TViewResult<Comparison> {
-    crate::utils::spi::run_ddl(&format!(
-        "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
-    ))?;
+    {
+        let _caller = crate::owner::CallerPath::enter();
+        crate::utils::spi::run_ddl(&format!(
+            "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
+        ))?;
+    }
     let (same_view, same_columns) = Spi::connect(|client| {
         client
             .select(
@@ -440,6 +443,7 @@ fn replace_in_place(
     }
 
     super::in_extension_schema(|| {
+        let _caller = crate::owner::CallerPath::enter();
         crate::utils::spi::run_ddl(&format!(
             "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
         ))

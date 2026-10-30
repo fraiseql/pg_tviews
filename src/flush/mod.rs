@@ -41,6 +41,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let Some(_flushing) = Flushing::enter() else {
         return Ok(());
     };
+    let _path = crate::owner::CatalogPath::pin();
     drain::flush_pending()?;
     // The collections the written rows belong to, named by their parents'
     // public ids while SPI is available (the commit callback has none).

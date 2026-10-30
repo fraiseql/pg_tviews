@@ -16,7 +16,8 @@
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
-use std::ffi::CStr;
+use std::cell::RefCell;
+use std::ffi::{CStr, CString};
 
 /// While alive, the current user is a TVIEW's owner. Dropping it restores the
 /// previous user, security context and `search_path`. On an error, the
@@ -76,6 +77,12 @@ impl AsOwner {
         Ok(Self::role(owner))
     }
 
+    /// Switch to `owner`, a TVIEW's owner read with [`relation_owner`].
+    #[must_use]
+    pub fn of_role(owner: Oid) -> Self {
+        Self::role(owner)
+    }
+
     fn role(owner: Oid) -> Self {
         let mut saved_user = pg_sys::InvalidOid;
         let mut saved_context = 0;
@@ -95,6 +102,8 @@ impl AsOwner {
             pin_settings();
             level
         };
+        // The owner resolves no name the caller wrote.
+        REPLACED_PATHS.with(|paths| paths.borrow_mut().push(None));
         Self {
             saved_user,
             saved_context,
@@ -105,6 +114,7 @@ impl AsOwner {
 
 impl Drop for AsOwner {
     fn drop(&mut self) {
+        REPLACED_PATHS.with(|paths| paths.borrow_mut().pop());
         if std::thread::panicking() {
             return;
         }
@@ -161,6 +171,108 @@ impl Drop for RenderPin {
         }
         // SAFETY: closes the nest level `new` opened.
         unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
+    }
+}
+
+/// While alive, `search_path` is `pg_catalog, pg_temp`; dropping it restores the
+/// session's (an error's (sub)transaction abort restores it instead).
+///
+/// For the work `pg_tviews` does on a caller's behalf: a function called, a
+/// write, a flush, a utility statement. The catalog SQL it runs then resolves its
+/// operators and functions in `pg_catalog`, whatever another role planted in a
+/// schema on the caller's path, and the names it reads (`format_type`, `regproc`
+/// output) come out qualified, so the SQL rendered from them, which an owner may
+/// run, does not depend on that path either. The names the caller wrote are
+/// resolved under its own path, in a [`CallerPath`].
+pub struct CatalogPath {
+    guc_level: i32,
+}
+
+impl CatalogPath {
+    #[must_use]
+    pub fn pin() -> Self {
+        // Nested, the outermost pin's caller is still the caller.
+        REPLACED_PATHS.with(|paths| {
+            let mut paths = paths.borrow_mut();
+            let replaced = match paths.last() {
+                Some(outer) => outer.clone(),
+                None => Some(search_path()),
+            };
+            paths.push(replaced);
+        });
+        // SAFETY: the GUC nest level opened here is closed by Drop or by the abort.
+        let guc_level = unsafe {
+            let level = pg_sys::NewGUCNestLevel();
+            set_local(c"search_path", c"pg_catalog, pg_temp");
+            level
+        };
+        Self { guc_level }
+    }
+}
+
+impl Drop for CatalogPath {
+    fn drop(&mut self) {
+        REPLACED_PATHS.with(|paths| paths.borrow_mut().pop());
+        if std::thread::panicking() {
+            return;
+        }
+        // SAFETY: closes the nest level `pin` opened.
+        unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
+    }
+}
+
+thread_local! {
+    /// The `search_path` each open [`CatalogPath`] replaced: the caller's.
+    /// `None` for an [`AsOwner`], under which nothing the caller wrote is resolved.
+    static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The session's `search_path`, as set.
+fn search_path() -> CString {
+    // SAFETY: a built-in setting, never missing; the value is copied before
+    // another setting can change it.
+    unsafe {
+        let value = pg_sys::GetConfigOption(c"search_path".as_ptr(), false, false);
+        if value.is_null() {
+            CString::default()
+        } else {
+            CStr::from_ptr(value).to_owned()
+        }
+    }
+}
+
+/// While alive inside a [`CatalogPath`], `search_path` is the caller's again: for
+/// resolving the names the caller wrote (a relation in its statement, a type, a
+/// definition's text, the schema of an unqualified TVIEW) as it would. Only that
+/// resolution belongs in it, never catalog SQL of `pg_tviews`' own. Outside a pin,
+/// or under an [`AsOwner`], it changes nothing.
+pub struct CallerPath {
+    guc_level: Option<i32>,
+}
+
+impl CallerPath {
+    #[must_use]
+    pub fn enter() -> Self {
+        let caller = REPLACED_PATHS.with(|paths| paths.borrow().last().cloned().flatten());
+        // SAFETY: the GUC nest level opened here is closed by Drop or by the abort.
+        let guc_level = caller.map(|path| unsafe {
+            let level = pg_sys::NewGUCNestLevel();
+            set_local(c"search_path", &path);
+            level
+        });
+        Self { guc_level }
+    }
+}
+
+impl Drop for CallerPath {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(level) = self.guc_level {
+            // SAFETY: closes the nest level `enter` opened.
+            unsafe { pg_sys::AtEOXact_GUC(false, level) };
+        }
     }
 }
 
@@ -230,7 +342,10 @@ pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
 
 /// Owner of the relation `table`, from the syscache: cheap enough for the row
 /// trigger, and never stale after an `ALTER TABLE … OWNER TO`.
-fn relation_owner(table: Oid) -> TViewResult<Oid> {
+///
+/// # Errors
+/// Returns an error if the relation does not exist.
+pub fn relation_owner(table: Oid) -> TViewResult<Oid> {
     // SAFETY: SearchSysCache1 returns a valid pg_class tuple or null; the tuple's
     // fixed part is a FormData_pg_class, and it is released before returning.
     let owner = unsafe {

@@ -16,8 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `created_at` / `updated_at` from the base table instead; `tviews.stats` counts what the
   refreshes wrote.
 
+### Security
+
+- **pg_tviews resolves the operators and functions of its own SQL in `pg_catalog`.**
+  Its functions, triggers, flush, `ProcessUtility` hook and rebuild worker run their
+  catalog SQL under `search_path = pg_catalog, pg_temp`, and so do its PL/pgSQL
+  functions; what they read from the catalog (names, types) comes out qualified. The
+  names a caller writes still resolve under the caller's `search_path`: a TVIEW's name
+  and definition, the tables and functions its options name, the relations a statement
+  names. This also fixes writes that failed with `type "…" does not exist` when the
+  writer's `search_path` named the schema of a column's type.
+- **The change feed's parent ids (`publish_changes = rows`) are read as the parent
+  TVIEW's owner**, as every refresh read is: a writer needs no privilege on the parent
+  TVIEW, and the parent's policies apply as they do to its owner.
+
 ### Fixed
 
+- **`DROP TABLE IF EXISTS`, `ALTER TABLE IF EXISTS … DETACH PARTITION` and `TRUNCATE`
+  of a missing relation failed with `cache lookup failed for relation 0`** (or `relation
+  with OID 0 does not exist`) in a database with pg_tviews, for every role but a
+  superuser (`TRUNCATE`: every role). They behave as PostgreSQL's own again.
+- **`CREATE FOREIGN TABLE … INHERITS` a table a TVIEW reads is refused**, as `CREATE
+  TABLE … INHERITS` is.
 - **Two single-row writes of different rows deadlocked when each one's refresh read
   the other's row** (#263): two users editing their own `bio`, each having commented
   on the other's post. Since 0.1.0-beta.27 every refresh took shared value locks on
@@ -95,6 +115,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every TVIEW over the tree in full: retention jobs and partition swaps now cost what
   their rows cost. A foreign partition, one the TVIEW's owner cannot read whole, and
   `TRUNCATE` of the partitioned table itself still refresh in full.
+- **Creating a TVIEW fills it under `search_path = pg_catalog, pg_temp`**, as every
+  refresh of it runs (and as `CREATE MATERIALIZED VIEW` fills since PostgreSQL 17): a
+  function its definition calls must name the tables it reads with their schema, or set
+  its own `search_path`. Such a definition was created before, and its first refresh
+  failed. Messages name relations with their schema.
 - **A table read with its inheritance children is refused** (`0A000`): writes to a child
   fire no trigger on the parent. Read `FROM ONLY` it, or make it a partitioned table. A
   table a TVIEW reads gets no new inheritance child (`CREATE TABLE … INHERITS`,

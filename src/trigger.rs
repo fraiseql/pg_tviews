@@ -114,6 +114,7 @@ fn trigger_tupdesc<'a>(trigger: &'a PgTrigger<'a>) -> Option<PgTupleDesc<'a>> {
 fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     crate::delta::require_level(trigger, true);
     // A lookup that fails fails the write: committing it with nothing queued would
@@ -480,6 +481,7 @@ fn capture_value(
 fn pg_tview_flush_trigger<'a>(
     _trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    let _path = crate::owner::CatalogPath::pin();
     if !crate::executor::flush_deferred() {
         flush_after_statement();
     }
@@ -490,6 +492,7 @@ fn pg_tview_flush_trigger<'a>(
 /// that fails fails the write, as an error PostgreSQL raises does: committing it
 /// would leave the TVIEWs stale.
 pub fn flush_after_statement() {
+    let _path = crate::owner::CatalogPath::pin();
     if crate::suspend::is_suspended() {
         return;
     }

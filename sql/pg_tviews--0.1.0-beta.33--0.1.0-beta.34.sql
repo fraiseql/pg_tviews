@@ -287,3 +287,28 @@ BEGIN
     END IF;
 END
 $$;
+
+-- The rename check compares with pg_catalog's operators, whatever the renamer's
+-- search_path holds (it still resolves the candidate's names, as written).
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_defines_view(view_oid OID, candidate TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    same BOOLEAN;
+BEGIN
+    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' OPERATOR(pg_catalog.||) candidate;
+    same := pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_rename_check'::regclass)
+            OPERATOR(pg_catalog.=) pg_catalog.pg_get_viewdef(view_oid);
+    DROP VIEW pg_temp.pg_tviews_rename_check;
+    RETURN same;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END;
+$$;
+
+-- The extension's own PL/pgSQL resolves its operators and functions in pg_catalog,
+-- whatever the calling role's search_path holds.
+ALTER FUNCTION @extschema@.pg_tviews_handle_ddl_event() SET search_path = pg_catalog, pg_temp;
+ALTER FUNCTION @extschema@.pg_tviews_meta_changed() SET search_path = pg_catalog, pg_temp;
+ALTER FUNCTION @extschema@.pg_tviews_reregister_all(BOOLEAN) SET search_path = pg_catalog, pg_temp;

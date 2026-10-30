@@ -8,6 +8,7 @@ use pgrx::prelude::*;
 /// was dropped as a dependent (see [`crate::ddl::drop::handle_dropped`]).
 #[pg_extern]
 fn pg_tviews_handle_dropped(entity: &str) -> Result<(), ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::ddl::drop::handle_dropped(entity)
         .map_err(|e| e.report_in(&format!("Failed to deregister TVIEW '{entity}'")))
 }
@@ -16,6 +17,7 @@ fn pg_tviews_handle_dropped(entity: &str) -> Result<(), ErrorReport> {
 /// current transaction commits, by invalidating `relid`'s relcache entry.
 #[pg_extern]
 fn pg_tviews_invalidate_caches(relid: pg_sys::Oid) {
+    let _path = crate::owner::CatalogPath::pin();
     // SAFETY: the caller passes an existing relation (the trigger's TG_RELID).
     unsafe { pg_sys::CacheInvalidateRelcacheByRelid(relid) };
 }

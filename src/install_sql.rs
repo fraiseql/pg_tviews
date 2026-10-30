@@ -436,6 +436,7 @@ extension_sql!(
 CREATE FUNCTION @extschema@.pg_tviews_handle_ddl_event()
 RETURNS event_trigger
 LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     obj record;
@@ -537,9 +538,9 @@ AS $$
 DECLARE
     same BOOLEAN;
 BEGIN
-    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' || candidate;
+    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' OPERATOR(pg_catalog.||) candidate;
     same := pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_rename_check'::regclass)
-            = pg_catalog.pg_get_viewdef(view_oid);
+            OPERATOR(pg_catalog.=) pg_catalog.pg_get_viewdef(view_oid);
     DROP VIEW pg_temp.pg_tviews_rename_check;
     RETURN same;
 EXCEPTION WHEN OTHERS THEN
@@ -626,6 +627,7 @@ CREATE TRIGGER pg_tview_meta_rebind
 CREATE FUNCTION @extschema@.pg_tviews_meta_changed()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
     PERFORM @extschema@.pg_tviews_invalidate_caches(TG_RELID);
@@ -954,6 +956,7 @@ extension_sql!(
 CREATE FUNCTION @extschema@.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
 RETURNS TABLE (entity TEXT, status TEXT)
 LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
 AS $$
 #variable_conflict use_column
 DECLARE

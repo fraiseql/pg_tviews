@@ -76,7 +76,9 @@ CREATE TABLE tb_order (pk_order int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_ra
 CREATE TABLE tb_rate (pk_rate int PRIMARY KEY, pct int NOT NULL);
 INSERT INTO tb_order VALUES (1, DEFAULT, 1, 10, current_date), (2, DEFAULT, 1, 5, current_date - 40);
 INSERT INTO tb_rate VALUES (1, 20);
-CREATE FUNCTION current_rate() RETURNS int LANGUAGE sql STABLE AS 'SELECT max(pct) FROM tb_rate';
+-- Filled as every refresh runs, under search_path = pg_catalog, pg_temp: the
+-- function names its table.
+CREATE FUNCTION current_rate() RETURNS int LANGUAGE sql STABLE AS 'SELECT max(pct) FROM public.tb_rate';
 SELECT tviews.pg_tviews_create_or_replace('tv_spend', $$
     SELECT o.fk_a AS pk_spend, a.id,
            jsonb_build_object('total', sum(o.total),

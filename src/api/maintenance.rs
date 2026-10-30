@@ -10,6 +10,7 @@ use crate::error::TViewError;
 /// in which order, and how long it took.
 #[pg_extern]
 fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     if crate::suspend::is_suspended() {
         return Err(TViewError::WrongState {
@@ -38,6 +39,7 @@ fn pg_tviews_rebuild_all(
     only_empty: default!(bool, true),
 ) -> Result<TableIterator<'static, (name!(entity, String), name!(rows_inserted, i64))>, ErrorReport>
 {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     Ok(TableIterator::new(crate::replication::rebuild_all(
         only_empty,
@@ -48,6 +50,7 @@ fn pg_tviews_rebuild_all(
 /// (`tviews.stats`, ADR 0221).
 #[pg_extern]
 fn pg_tviews_stats_reset(tview: default!(Option<&str>, "NULL")) -> Result<(), ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     if let Some(name) = tview {
         crate::stats::reset(&[crate::catalog::resolve::find(name)?.table], false)?;

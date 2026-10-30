@@ -155,7 +155,12 @@ pub(crate) fn create_backing_view(
         create_view_sql.len()
     );
 
-    match crate::utils::spi_run_ddl(&create_view_sql) {
+    // The definition's names resolve as the caller wrote them.
+    let created = {
+        let _caller = crate::owner::CallerPath::enter();
+        crate::utils::spi_run_ddl(&create_view_sql)
+    };
+    match created {
         Ok(()) => {
             // Log successful spi_run_ddl
             log_debug!("spi_run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
@@ -169,7 +174,7 @@ pub(crate) fn create_backing_view(
                 e
             );
             return Err(TViewError::SpiError {
-                query: create_view_sql.clone(),
+                query: create_view_sql,
                 error: e,
             });
         }

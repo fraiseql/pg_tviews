@@ -41,6 +41,16 @@ controls exist today. How the extension works is in
   with `search_path = pg_catalog, pg_temp` and fixed render settings (`src/owner.rs`),
   as `REFRESH MATERIALIZED VIEW` does. A writer to a base table needs no privilege on
   the TVIEW, its backing view, or the tables the view reads.
+- **The caller's `search_path` has no say in pg_tviews' own SQL.** Every function, the
+  triggers, the flush, the `ProcessUtility` hook and the rebuild worker run their catalog
+  SQL under `search_path = pg_catalog, pg_temp` (`owner::CatalogPath`), and the
+  extension's PL/pgSQL functions set it: an operator or function in another schema on
+  the caller's path is never used, and what is read from the catalog (names, types,
+  mapping templates) comes out qualified, so the SQL then run as an owner is the same
+  whatever the caller's session holds. Only the names the caller writes resolve under
+  its own path (`owner::CallerPath`): a definition, the tables and functions its options
+  name, an unqualified TVIEW's schema, the relations a statement names.
+  `scripts/check-name-resolution.sh` fails on an entry point that does not pin it.
 - **No `SECURITY DEFINER` functions.** Every function checks as the caller; the
   catalog and audit-log writes then run as the extension's owner inside the library.
 - **Ownership checks before any lock.** Every function acting on one TVIEW requires

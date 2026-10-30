@@ -82,9 +82,10 @@ CREATE TABLE tb_dog (bark text) INHERITS (tb_animal);
 INSERT INTO tb_dog VALUES (2, gen_random_uuid(), 'rex', 'woof');
 SELECT must(error_of($$SELECT tviews.pg_tviews_create('tv_animal', $d$
                 SELECT pk_animal, id, jsonb_build_object('name', name) AS data FROM tb_animal $d$)$$)
-            LIKE '0A000: %the definition reads tb_animal with its inheritance children (tb_dog): '
-                 'writes to them fire no trigger on tb_animal, and the TVIEW would go stale; read '
-                 'FROM ONLY tb_animal, or make tb_animal a partitioned table',
+            LIKE '0A000: %the definition reads public.tb_animal with its inheritance children '
+                 '(public.tb_dog): writes to them fire no trigger on public.tb_animal, and the '
+                 'TVIEW would go stale; read FROM ONLY public.tb_animal, or make '
+                 'public.tb_animal a partitioned table',
             'a table read with its children is refused: '
             || coalesce(error_of($$SELECT tviews.pg_tviews_create('tv_animal', $d$
                 SELECT pk_animal, id, jsonb_build_object('name', name) AS data FROM tb_animal $d$)$$), 'created'));
@@ -101,6 +102,12 @@ SELECT must(error_of('CREATE TABLE tb_cat (purr text) INHERITS (tb_animal)')
             LIKE '0A000: %tb_cat cannot inherit from public.tb_animal: tv_animal reads it%',
             'CREATE TABLE … INHERITS a TVIEW''s table: '
             || coalesce(error_of('CREATE TABLE tb_cat (purr text) INHERITS (tb_animal)'), 'created'));
+SELECT must(error_of('CREATE FOREIGN TABLE tb_fox () INHERITS (tb_animal) SERVER regress_untrackable '
+                     || 'OPTIONS (program ''echo 1'', format ''csv'')')
+            LIKE '0A000: %tb_fox cannot inherit from public.tb_animal: tv_animal reads it%',
+            'CREATE FOREIGN TABLE … INHERITS a TVIEW''s table: '
+            || coalesce(error_of('CREATE FOREIGN TABLE tb_fox () INHERITS (tb_animal) SERVER regress_untrackable '
+                                 || 'OPTIONS (program ''echo 1'', format ''csv'')'), 'created'));
 CREATE TABLE tb_bird (pk_animal bigint, id uuid, name text);
 SELECT must(error_of('ALTER TABLE tb_bird INHERIT tb_animal')
             LIKE '0A000: %tb_bird cannot inherit from public.tb_animal: tv_animal reads it%',

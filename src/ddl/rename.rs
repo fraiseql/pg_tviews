@@ -30,10 +30,9 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
     if !affected.is_empty() {
         crate::revision::check();
     }
+    let relname = relation_name(relid)?;
     for (entity, schema_name, view_oid) in affected {
         let definition = crate::catalog::row::definition(&entity)?.unwrap_or_default();
-
-        let relname = relation_name(relid)?;
         let rewritten = rewrite_column_references(&definition, &relname, old_name, new_name)
             // Only ever run as one SELECT: the rewrite works on tokens, and the
             // check executes the candidate.
@@ -79,7 +78,10 @@ fn relation_name(relid: Oid) -> TViewResult<String> {
 
 /// Whether `candidate` defines the same view as `view_oid`, compared through
 /// `pg_get_viewdef` (any error, e.g. a syntax error in the candidate, is false).
+/// The candidate names relations as its author did: it is checked under the
+/// renamer's `search_path`, as the definition was written under one.
 fn defines_view(candidate: &str, view_oid: Oid) -> bool {
+    let _caller = crate::owner::CallerPath::enter();
     Spi::get_one_with_args::<bool>(
         &format!(
             "SELECT {}.pg_tviews_defines_view($1, $2)",

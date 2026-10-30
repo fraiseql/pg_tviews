@@ -15,15 +15,7 @@ impl ColumnRename {
     pub(super) fn resolve(self) -> Option<(pg_sys::Oid, String, String)> {
         // SAFETY: `relation` points into the statement's parse tree, which lives
         // until the utility statement finishes.
-        let relid = unsafe {
-            pg_sys::RangeVarGetRelidExtended(
-                self.relation,
-                pg_sys::NoLock.cast_signed(),
-                pg_sys::RVROption::RVR_MISSING_OK,
-                None,
-                std::ptr::null_mut(),
-            )
-        };
+        let relid = unsafe { resolve_relation_oid(self.relation) };
         (relid != pg_sys::InvalidOid).then_some((relid, self.old_name, self.new_name))
     }
 }
@@ -136,8 +128,9 @@ pub(super) unsafe fn column_change_of(node: *mut pg_sys::Node) -> Option<ColumnC
                 }
                 change
             }
-            // CREATE TABLE … INHERITS (…), not a partition.
-            pg_sys::NodeTag::T_CreateStmt => {
+            // CREATE [FOREIGN] TABLE … INHERITS (…), not a partition. A foreign
+            // table's statement starts with its CreateStmt.
+            pg_sys::NodeTag::T_CreateStmt | pg_sys::NodeTag::T_CreateForeignTableStmt => {
                 let stmt = &*node.cast::<pg_sys::CreateStmt>();
                 if !stmt.partbound.is_null() {
                     return None;
@@ -233,13 +226,7 @@ pub(super) unsafe fn table_move_of(pstmt: *const pg_sys::PlannedStmt) -> Option<
         if relation.is_null() {
             return None;
         }
-        let relid = pg_sys::RangeVarGetRelidExtended(
-            relation,
-            pg_sys::NoLock.cast_signed(),
-            pg_sys::RVROption::RVR_MISSING_OK,
-            None,
-            std::ptr::null_mut(),
-        );
+        let relid = resolve_relation_oid(relation);
         (relid != pg_sys::InvalidOid).then_some(relid)
     }
 }
@@ -263,13 +250,7 @@ pub(super) unsafe fn matview_refresh_of(pstmt: *const pg_sys::PlannedStmt) -> Op
         if stmt.skipData || stmt.relation.is_null() {
             return None;
         }
-        let relid = pg_sys::RangeVarGetRelidExtended(
-            stmt.relation,
-            pg_sys::NoLock.cast_signed(),
-            pg_sys::RVROption::RVR_MISSING_OK,
-            None,
-            std::ptr::null_mut(),
-        );
+        let relid = resolve_relation_oid(stmt.relation);
         (relid != pg_sys::InvalidOid).then_some(relid)
     }
 }
@@ -338,36 +319,33 @@ impl PartitionDdl {
     /// SAFETY: the `RangeVar`s come from the statement's parse tree, which outlives
     /// the statement.
     pub(super) unsafe fn apply(self) -> TViewResult<()> {
+        let resolve = |rvs: Vec<*mut pg_sys::RangeVar>| -> Vec<pg_sys::Oid> {
+            rvs.into_iter()
+                // SAFETY: see above.
+                .map(|rv| unsafe { resolve_relation_oid(rv) })
+                .filter(|&oid| oid != pg_sys::InvalidOid)
+                .collect()
+        };
+        let tables = resolve(self.tables);
+        let attached = resolve(self.attached);
+        let parents = resolve(self.changed_rows_of.into_iter().collect());
         // Partition roots are cached per backend.
         crate::cache::invalidate_all();
-        for rv in self.tables {
-            // SAFETY: see above.
-            let oid = unsafe { resolve_relation_oid(rv) };
-            if oid != pg_sys::InvalidOid {
-                crate::dependency::triggers::ensure_partition_triggers(oid)?;
-            }
+        for oid in tables {
+            crate::dependency::triggers::ensure_partition_triggers(oid)?;
         }
         // The rows of an attached partition enter the tree with no row written:
         // mapped to the keys they reach, as their INSERT would be.
-        let mut mapped = false;
-        for rv in self.attached {
-            // SAFETY: see above.
-            let oid = unsafe { resolve_relation_oid(rv) };
-            if oid != pg_sys::InvalidOid {
-                crate::delta::map_entering_partition(oid)?;
-                mapped = true;
-            }
+        let mapped = !attached.is_empty();
+        for oid in attached {
+            crate::delta::map_entering_partition(oid)?;
         }
         if mapped && !crate::executor::inside_writing_statement() {
             crate::flush::flush_refresh_queue()?;
         }
         // The rows a concurrent detach takes out across its two transactions:
         // refresh its TVIEWs in full.
-        // SAFETY: see above.
-        let parent = self
-            .changed_rows_of
-            .map_or(pg_sys::InvalidOid, |rv| unsafe { resolve_relation_oid(rv) });
-        if parent != pg_sys::InvalidOid {
+        for parent in parents {
             crate::delta::refresh_tviews_over(parent)?;
         }
         Ok(())
@@ -534,15 +512,22 @@ pub(super) unsafe fn leaving_partitions_of(
         names
             .into_iter()
             .filter_map(|(rv, access)| {
+                // A name that does not resolve is PostgreSQL's to report: the
+                // privilege checks below raise on InvalidOid.
                 let oid = resolve_relation_oid(rv);
+                if oid == pg_sys::InvalidOid || !pg_sys::get_rel_relispartition(oid) {
+                    return None;
+                }
                 let allowed = match access {
-                    Access::Owner(Some(parent)) => owns(resolve_relation_oid(parent)),
+                    Access::Owner(Some(parent)) => {
+                        let parent = resolve_relation_oid(parent);
+                        parent != pg_sys::InvalidOid && owns(parent)
+                    }
                     Access::Owner(None) => owns(oid),
                     Access::Truncate => may_truncate(oid),
                 };
                 // TRUNCATE locks the partition alone; DROP and DETACH its parent too.
-                (oid != pg_sys::InvalidOid && pg_sys::get_rel_relispartition(oid) && allowed)
-                    .then_some((oid, !matches!(access, Access::Truncate)))
+                allowed.then_some((oid, !matches!(access, Access::Truncate)))
             })
             .collect()
     }
@@ -605,7 +590,8 @@ pub(super) unsafe fn drops_pg_tviews(pstmt: *const pg_sys::PlannedStmt) -> bool 
     }
 }
 
-/// Resolve a `RangeVar` to a relation OID without locking or raising.
+/// Resolve a `RangeVar` to a relation OID without locking or raising, under the
+/// caller's `search_path` (the hook's own work runs under a fixed one).
 ///
 /// Returns `InvalidOid` when the relation (or its schema) doesn't exist. This is a
 /// direct catalog lookup: no SPI, so it is safe inside the hook's `catch_unwind`.
@@ -615,6 +601,7 @@ pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys
     if rv.is_null() {
         return pg_sys::InvalidOid;
     }
+    let _caller = crate::owner::CallerPath::enter();
     // SAFETY: the caller's RangeVar, checked for null; NoLock with MISSING_OK
     // neither locks nor raises for a missing relation.
     unsafe {
@@ -661,7 +648,10 @@ pub(super) unsafe fn value_rewrite_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
                     return None;
                 }
                 let name = pg_sys::makeTypeNameFromNameList(stmt.typeName);
-                let oid = pg_sys::LookupTypeNameOid(std::ptr::null_mut(), name, true);
+                let oid = {
+                    let _caller = crate::owner::CallerPath::enter();
+                    pg_sys::LookupTypeNameOid(std::ptr::null_mut(), name, true)
+                };
                 (oid != pg_sys::InvalidOid).then_some(ValueRewrite::EnumLabel(oid))
             }
             #[cfg(not(feature = "pg16"))]
@@ -680,13 +670,7 @@ pub(super) unsafe fn value_rewrite_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
                 if columns.is_empty() || stmt.relation.is_null() {
                     return None;
                 }
-                let table = pg_sys::RangeVarGetRelidExtended(
-                    stmt.relation,
-                    pg_sys::NoLock.cast_signed(),
-                    pg_sys::RVROption::RVR_MISSING_OK,
-                    None,
-                    std::ptr::null_mut(),
-                );
+                let table = resolve_relation_oid(stmt.relation);
                 (table != pg_sys::InvalidOid).then_some(ValueRewrite::Expression { table, columns })
             }
             _ => None,

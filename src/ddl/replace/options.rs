@@ -344,20 +344,27 @@ pub(super) fn resolve_tables(
 /// # Errors
 /// Returns an error if it does not exist or is not a table.
 pub(super) fn resolve_table(name: &str, option: &str) -> TViewResult<pg_sys::Oid> {
-    let found = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT c.oid, c.relkind IN ('r', 'p', 'm', 'f') \
-                 FROM (SELECT pg_catalog.to_regclass($1) AS relation) r \
-                 LEFT JOIN pg_catalog.pg_class c ON c.oid = r.relation",
-                None,
-                &[crate::utils::spi::text(name)],
-            )?
-            .first()
-            .get_two::<pg_sys::Oid, bool>()
-    })
-    .map_err(|e| crate::utils::spi::catalog_error(&format!("Look up a table of {option}"), &e))?;
-    match found {
+    let lookup = |e: spi::Error| {
+        crate::utils::spi::catalog_error(&format!("Look up a table of {option}"), &e)
+    };
+    let relation = {
+        // Named as the caller writes names.
+        let _caller = crate::owner::CallerPath::enter();
+        Spi::get_one_with_args::<pg_sys::Oid>(
+            "SELECT pg_catalog.to_regclass($1)::pg_catalog.oid",
+            &[crate::utils::spi::text(name)],
+        )
+        .map_err(lookup)?
+    };
+    let table = match relation {
+        Some(oid) => Spi::get_one_with_args::<bool>(
+            "SELECT relkind IN ('r', 'p', 'm', 'f') FROM pg_catalog.pg_class WHERE oid = $1",
+            &[crate::utils::spi::oid(oid)],
+        )
+        .map_err(lookup)?,
+        None => None,
+    };
+    match (relation, table) {
         (Some(oid), Some(true)) => Ok(oid),
         (Some(_), _) => Err(invalid(
             option,
@@ -377,25 +384,29 @@ pub(super) fn resolve_function_reads(
 ) -> TViewResult<Vec<(String, Vec<pg_sys::Oid>)>> {
     let mut reads = Vec::new();
     for (function, tables) in declared {
-        let signature = Spi::connect(|client| {
-            client
-                .select(
-                    &format!(
-                        "SELECT {} FROM pg_catalog.pg_proc p \
-                         WHERE p.oid = pg_catalog.to_regprocedure($1)",
-                        crate::lineage::FUNCTION_SIGNATURE
-                    ),
-                    None,
-                    &[crate::utils::spi::text(function)],
-                )?
-                .first()
-                .get_one::<String>()
-        })
-        .or_else(|e| match e {
-            spi::Error::InvalidPosition => Ok(None),
-            e => Err(e),
-        })
-        .map_err(|e| crate::utils::spi::catalog_error("Look up a function of function_reads", &e))?
+        let lookup = |e: spi::Error| {
+            crate::utils::spi::catalog_error("Look up a function of function_reads", &e)
+        };
+        let procedure = {
+            // Named as the caller writes names.
+            let _caller = crate::owner::CallerPath::enter();
+            Spi::get_one_with_args::<pg_sys::Oid>(
+                "SELECT pg_catalog.to_regprocedure($1)::pg_catalog.oid",
+                &[crate::utils::spi::text(function.as_str())],
+            )
+            .map_err(lookup)?
+        };
+        let signature = match procedure {
+            Some(oid) => Spi::get_one_with_args::<String>(
+                &format!(
+                    "SELECT {} FROM pg_catalog.pg_proc p WHERE p.oid = $1",
+                    crate::lineage::FUNCTION_SIGNATURE
+                ),
+                &[crate::utils::spi::oid(oid)],
+            )
+            .map_err(lookup)?,
+            None => None,
+        }
         .ok_or_else(|| {
             invalid(
                 "function_reads",

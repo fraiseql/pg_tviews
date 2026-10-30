@@ -241,24 +241,48 @@ fn own_id<'a>(
 }
 
 /// The public ids, as JSON text, of the parents of `lookups` by
-/// `(parent table, key)`: one statement, a branch per parent TVIEW.
+/// `(parent table, key)`: one statement per owner of parent TVIEWs, run as that
+/// owner as every refresh read is, with a branch per parent TVIEW.
 fn parent_ids(
     lookups: &[(Rc<crate::catalog::Collection>, Vec<String>)],
 ) -> crate::TViewResult<HashMap<(String, String), String>> {
+    let mut by_owner: Vec<(pgrx::pg_sys::Oid, Vec<usize>)> = Vec::new();
+    for (i, (c, _)) in lookups.iter().enumerate() {
+        let owner = crate::owner::relation_owner(c.parent_table_oid)?;
+        match by_owner.iter_mut().find(|(o, _)| *o == owner) {
+            Some((_, at)) => at.push(i),
+            None => by_owner.push((owner, vec![i])),
+        }
+    }
+    let mut found = HashMap::new();
+    for (owner, at) in by_owner {
+        let _owner = crate::owner::AsOwner::of_role(owner);
+        parent_ids_of(lookups, &at, &mut found)?;
+    }
+    Ok(found)
+}
+
+/// [`parent_ids`] of the lookups at `at`, into `found`.
+fn parent_ids_of(
+    lookups: &[(Rc<crate::catalog::Collection>, Vec<String>)],
+    at: &[usize],
+    found: &mut HashMap<(String, String), String>,
+) -> crate::TViewResult<()> {
     use crate::utils::ident::quoted;
     // An integer key is bound as int8[]; any other as text, cast to its type.
     let integer = |c: &crate::catalog::Collection| {
         matches!(c.parent_type.as_str(), "smallint" | "integer" | "bigint")
     };
-    let branches: Vec<String> = lookups
+    let branches: Vec<String> = at
         .iter()
         .enumerate()
-        .map(|(i, (c, _))| {
+        .map(|(n, &i)| {
+            let c = &lookups[i].0;
             let key = quoted(&c.parent_column);
             let keys = if integer(c) {
-                format!("${}::pg_catalog.int8[]", i + 1)
+                format!("${}::pg_catalog.int8[]", n + 1)
             } else {
-                format!("${}::pg_catalog.text[]::{}[]", i + 1, c.parent_type)
+                format!("${}::pg_catalog.text[]::{}[]", n + 1, c.parent_type)
             };
             format!(
                 "SELECT {i}, p.{key}::pg_catalog.text, p.\"id\"::pg_catalog.text FROM {} p \
@@ -267,9 +291,10 @@ fn parent_ids(
             )
         })
         .collect();
-    let args: Vec<pgrx::datum::DatumWithOid> = lookups
+    let args: Vec<pgrx::datum::DatumWithOid> = at
         .iter()
-        .map(|(c, keys)| {
+        .map(|&i| {
+            let (c, keys) = &lookups[i];
             if integer(c) {
                 crate::utils::spi::int8_array(keys.iter().filter_map(|k| k.parse().ok()).collect())
             } else {
@@ -277,7 +302,6 @@ fn parent_ids(
             }
         })
         .collect();
-    let mut found = HashMap::new();
     for row in crate::utils::spi::kept_rows(
         &branches.join(" UNION ALL "),
         &args,
@@ -295,7 +319,7 @@ fn parent_ids(
         };
         found.insert((c.parent_table.clone(), key.clone()), id.json());
     }
-    Ok(found)
+    Ok(())
 }
 
 /// Resolve every unresolved parent key: from the rows the transaction wrote, else

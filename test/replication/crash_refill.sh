@@ -2,7 +2,9 @@
 # After a crash restart, the rebuild launcher refills the reset UNLOGGED TVIEWs of
 # every database with pg_tviews, with no configuration and no write
 # (pg_tviews.auto_rebuild_databases defaults to `*`). A database without the
-# extension is skipped. Runs a throwaway cluster that preloads pg_tviews
+# extension is skipped. The worker runs under search_path = pg_catalog, pg_temp,
+# whatever a database sets (a search_path of its own, an operator in public). Runs
+# a throwaway cluster that preloads pg_tviews
 # (pg_tviews and jsonb_delta must be installed for $PGBIN).
 #
 #   PGBIN=/usr/lib/postgresql/18/bin test/replication/crash_refill.sh
@@ -47,6 +49,30 @@ SQL
 done
 sql -d postgres -c "CREATE DATABASE plain"
 
+# A database's own objects named like the worker's: a pg_extension view in a
+# schema its search_path setting names first, and an oid = regclass operator in
+# public, which pg_catalog has no exact match for. Each records its calls.
+sql -d postgres -c "CREATE ROLE dbo" -c "CREATE DATABASE settings OWNER dbo" \
+    -c "ALTER DATABASE app OWNER TO dbo"
+for db in settings app; do
+    sql -d "$db" <<'SQL'
+SET ROLE dbo;
+CREATE SCHEMA own;
+CREATE TABLE own.log (who text);
+GRANT INSERT ON own.log TO PUBLIC;
+GRANT USAGE ON SCHEMA own TO PUBLIC;
+CREATE FUNCTION own.record() RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN INSERT INTO own.log VALUES (current_user); RETURN true; END $$;
+CREATE FUNCTION own.extensions() RETURNS SETOF pg_catalog.pg_extension LANGUAGE plpgsql AS $$
+BEGIN PERFORM own.record(); RETURN QUERY SELECT * FROM pg_catalog.pg_extension; END $$;
+CREATE VIEW own.pg_extension AS SELECT * FROM own.extensions();
+CREATE FUNCTION public.oid_is(oid, regclass) RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN PERFORM own.record(); RETURN $1 OPERATOR(pg_catalog.=) $2::pg_catalog.oid; END $$;
+CREATE OPERATOR public.= (LEFTARG = oid, RIGHTARG = regclass, FUNCTION = public.oid_is);
+SQL
+done
+sql -d postgres -c "ALTER DATABASE settings SET search_path = own, pg_catalog"
+
 "$PGBIN/pg_ctl" -D "$dir/data" -m immediate stop >/dev/null
 start
 
@@ -57,6 +83,13 @@ for db in app reporting; do
         sleep 0.5
     done
     [[ -n "$filled" ]] || fail "tv_item of database $db was not refilled after the crash restart"
+done
+# Before any query of this script's own reads through them.
+for db in settings app; do
+    [[ "$(sql -d "$db" -c 'SELECT count(*) FROM own.log')" == 0 ]] \
+        || fail "the worker called objects of database $db"
+done
+for db in app reporting; do
     [[ "$(sql -d "$db" -c 'SELECT bool_and(NOT needs_rebuild) FROM tviews.pg_tviews_replication_status()')" == t ]] \
         || fail "tv_item of database $db still needs a rebuild"
 done

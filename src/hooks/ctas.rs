@@ -44,8 +44,12 @@ impl CtasTarget {
         if !self.if_not_exists {
             return Ok(false);
         }
+        let schema = match &self.schema {
+            Some(schema) => schema.clone(),
+            None => crate::ddl::create::current_schema()?,
+        };
         let args = [
-            crate::utils::spi::text(self.schema.as_deref()),
+            crate::utils::spi::text(schema.as_str()),
             crate::utils::spi::text(self.table.as_str()),
         ];
         Spi::connect(|client| {
@@ -53,7 +57,7 @@ impl CtasTarget {
                 .select(
                     "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE c.relname = $2 AND n.nspname = COALESCE($1, current_schema()))",
+                     WHERE c.relname = $2 AND n.nspname = $1)",
                     None,
                     &args,
                 )?

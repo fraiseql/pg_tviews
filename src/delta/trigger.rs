@@ -101,6 +101,7 @@ pub(super) fn suspended() -> bool {
 fn pg_tview_delta_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     require_level(trigger, false);
     let entity = trigger_entity(trigger);
@@ -158,6 +159,7 @@ fn first_truncate_refresh(entity: &str) -> bool {
 fn pg_tview_truncate_trigger<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let entity = trigger_entity(trigger);
     crate::concurrency::note_link_change();

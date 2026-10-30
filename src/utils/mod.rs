@@ -150,6 +150,12 @@ pub fn qualified_relname_from_oid(oid: Oid) -> crate::TViewResult<String> {
             });
         }
         let nsp = pg_sys::get_namespace_name(pg_sys::get_rel_namespace(oid));
+        if nsp.is_null() {
+            return Err(crate::TViewError::CatalogError {
+                operation: format!("Name relation {oid:?}"),
+                pg_error: "its schema does not exist".to_string(),
+            });
+        }
         let name = |ptr: *const std::ffi::c_char| {
             std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         };

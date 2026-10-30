@@ -139,11 +139,19 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::connect_worker_to_spi(Some(&database), None);
 
     BackgroundWorker::transaction(|| {
+        // The worker runs as the bootstrap superuser with the database's own
+        // settings: its owner's search_path must resolve nothing it runs. Each
+        // TVIEW is rebuilt as its owner, under the same fixed path.
+        if let Err(e) =
+            Spi::run("SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)")
+        {
+            error!("pg_tviews: could not set search_path in database \"{database}\": {e}");
+        }
         // An SPI error here is not "not installed": it ends the worker, and the
         // first write to a reset TVIEW refills it.
-        let schema = Spi::get_one::<String>(
-            "SELECT n.nspname::text FROM pg_extension e \
-             JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_tviews'",
+        let installed = Spi::get_one::<bool>(
+            "SELECT true FROM pg_catalog.pg_extension \
+             WHERE extname OPERATOR(pg_catalog.=) 'pg_tviews'",
         )
         .or_else(|e| match e {
             // No row: the extension is not installed here.
@@ -153,12 +161,12 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
         .unwrap_or_else(|e| {
             error!("pg_tviews: could not look up the extension in database \"{database}\": {e}")
         });
-        let Some(schema) = schema else {
+        if installed.is_none() {
             log!(
                 "pg_tviews: extension not installed in database \"{database}\"; nothing to rebuild"
             );
             return;
-        };
+        }
         // A library installed without ALTER EXTENSION UPDATE: say so once and idle
         // until the next start, instead of failing into the restart loop.
         let remedy = match crate::revision::installed() {
@@ -182,14 +190,6 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
                 crate::revision::CATALOG_REVISION
             );
             return;
-        }
-        let path = format!("{}, public", crate::utils::ident::quoted(&schema));
-        let args = [crate::utils::spi::text(path.as_str())];
-        if let Err(e) = Spi::run_with_args(
-            "SELECT pg_catalog.set_config('search_path', $1, true)",
-            &args,
-        ) {
-            error!("pg_tviews: could not set search_path in database \"{database}\": {e}");
         }
         match crate::replication::rebuild_all(true) {
             Ok(rebuilt) if rebuilt.is_empty() => {

@@ -85,13 +85,7 @@ pub fn analyze(sql: &str) -> TViewResult<Vec<(String, String)>> {
     // just parsed from `c_sql`; the Query is read only while that context lives.
     // Errors it raises propagate as PostgreSQL ERRORs.
     unsafe {
-        let query = pg_sys::parse_analyze_fixedparams(
-            raw,
-            c_sql.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-        );
+        let query = analyze_raw(raw, &c_sql);
         let mut out = Vec::new();
         let tlist = (*query).targetList;
         let len = if tlist.is_null() { 0 } else { (*tlist).length };
@@ -170,13 +164,7 @@ pub fn check_aggregate(sql: &str, entity: &str) -> TViewResult<()> {
     let pk = format!("pk_{entity}");
     // SAFETY: the Query just analyzed from `raw`, read in the current memory context.
     unsafe {
-        let query = pg_sys::parse_analyze_fixedparams(
-            raw,
-            c_sql.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-        );
+        let query = analyze_raw(raw, &c_sql);
         if (*query).hasWindowFuncs {
             return Err(refuse(
                 "window functions (OVER …) are not supported in aggregate TVIEWs: a window \
@@ -242,6 +230,24 @@ pub fn check_one_select(sql: &str) -> TViewResult<()> {
         reason: "it contains a NUL byte".to_string(),
     })?;
     parse_one_select(sql, &c_sql).map(|_| ())
+}
+
+/// The Query PostgreSQL analyzes `raw` (parsed from `c_sql`) into, its names
+/// resolved under the caller's `search_path`, as `CREATE VIEW` resolves them.
+///
+/// SAFETY: `raw` was just parsed from `c_sql`, in the current memory context.
+unsafe fn analyze_raw(raw: *mut pg_sys::RawStmt, c_sql: &CStr) -> *mut pg_sys::Query {
+    let _caller = crate::owner::CallerPath::enter();
+    // SAFETY: as the caller guarantees; errors propagate as PostgreSQL ERRORs.
+    unsafe {
+        pg_sys::parse_analyze_fixedparams(
+            raw,
+            c_sql.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+        )
+    }
 }
 
 /// The single `RawStmt` of `c_sql`, a SELECT.

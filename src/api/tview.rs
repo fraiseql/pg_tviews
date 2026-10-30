@@ -17,6 +17,7 @@ fn pg_tviews_create_with_options(
     query: &str,
     options: default!(pgrx::JsonB, "'{}'"),
 ) -> Result<String, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let options = replace::parse_options(&options.0)?;
     match replace::create_only(tview, query, options, false) {
@@ -41,6 +42,7 @@ fn pg_tviews_create_or_replace(
     query: &str,
     options: default!(pgrx::JsonB, "'{}'"),
 ) -> Result<String, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     replace::create_or_replace(tview, query, &options.0)
         .map(str::to_string)
@@ -56,6 +58,7 @@ fn pg_tviews_drop(
     if_exists: default!(bool, false),
     cascade: default!(bool, false),
 ) -> Result<String, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let relation = crate::catalog::resolve::find(tview)
         .ok()
@@ -75,6 +78,7 @@ fn pg_tviews_drop(
 /// touched.
 #[pg_extern]
 fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let found = super::owned(tview)?;
     crate::ddl::create::reregister_tview(&found.entity)
@@ -86,6 +90,7 @@ fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
 /// dependency order, each as its owner.
 #[pg_extern]
 fn pg_tviews_refresh(tview: &str) -> Result<(), ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let found = super::owned(tview)?;
     crate::admin::rebuild_with_dependents(&[found.entity])?;
@@ -99,6 +104,7 @@ fn pg_tviews_refresh(tview: &str) -> Result<(), ErrorReport> {
 fn pg_tviews_refresh_time_dependent(
     tview: default!(Option<&str>, "NULL"),
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let chosen = match tview {
         Some(name) => {
@@ -130,6 +136,7 @@ fn pg_tviews_ensure_propagation_indexes(
     tview: default!(Option<&str>, "NULL"),
     dry_run: default!(bool, false),
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let metas = if let Some(name) = tview {
         vec![super::owned_meta(name)?]
@@ -165,6 +172,7 @@ fn pg_tviews_show_cascade_path(
     >,
     ErrorReport,
 > {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let found = crate::catalog::resolve::find(tview)?;
     Ok(TableIterator::new(crate::admin::cascade_path(
@@ -181,6 +189,7 @@ fn pg_tviews_mapping_query(
     tview: &str,
     base_table: pg_sys::Oid,
 ) -> Result<Option<String>, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let report = |e: TViewError| e.report_in(&format!("pg_tviews: the mapping query of {tview}"));
     let meta = crate::catalog::resolve::resolve(tview)?;
@@ -205,6 +214,7 @@ fn pg_tviews_read_set_queries(
     >,
     ErrorReport,
 > {
+    let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let report = |e: TViewError| e.report_in(&format!("pg_tviews: the read sets of {tview}"));
     let meta = crate::catalog::resolve::resolve(tview)?;

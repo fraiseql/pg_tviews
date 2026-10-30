@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# No SQL in src/ resolves a name to an object, outside the sites listed below.
+# 1. No SQL in src/ resolves a name to an object, outside the sites listed below.
+# 2. Every entry point pins search_path before it runs SQL (see the second part).
 #
 # A schema-qualified name lookup (`to_regclass(text)`, `'s.t'::regclass`,
 # `$1::regtype` on a text parameter, ...) checks USAGE on the schema and raises
@@ -63,3 +64,57 @@ if [[ -n "$bad" ]]; then
   exit 1
 fi
 echo "no SQL resolves an object name outside the allowed DDL, restore and install sites"
+
+# 2. The catalog SQL of pg_tviews compares values pg_catalog has no exact operator
+# for (oid with regclass, oid with an integer literal): an exact one in any schema
+# on the search_path would win over pg_catalog's. So every way SQL reaches the
+# library pins search_path to `pg_catalog, pg_temp` first (owner::CatalogPath),
+# and resolves the names its caller wrote in an owner::CallerPath; the extension's
+# own SQL functions set it.
+pin='let _path = crate::owner::CatalogPath::pin();'
+unpinned=""
+# The first statement (after `use` items) of each #[pg_extern] / #[pg_trigger]
+# function. pg_tviews_version() runs no SQL.
+unpinned+=$(awk -v pin="$pin" '
+  FNR == 1 { state = 0 }
+  /^#\[pg_(extern|trigger)/ { state = 1; name = ""; next }
+  state == 1 && match($0, /^(pub(\([a-z]+\))? )?fn [a-z_0-9]+/) {
+    name = substr($0, RSTART, RLENGTH); sub(/.*fn /, "", name)
+  }
+  state == 1 && /\{$/ && !/^[[:space:]]/ { state = 2; next }
+  state == 2 && /^[[:space:]]*use / { next }
+  state == 2 {
+    if (index($0, pin) == 0 && name != "pg_tviews_version") print FILENAME ": " name "()"
+    state = 0
+  }' $(grep -rlE '^#\[pg_(extern|trigger)' src))
+# Entry points that are not SQL-callable functions: `file|function|text it holds`.
+entries=(
+  "src/hooks/mod.rs|tview_process_utility_hook|$pin"
+  "src/trigger.rs|flush_after_statement|$pin"
+  "src/flush/mod.rs|flush_refresh_queue|$pin"
+  "src/rebuild_worker.rs|pg_tviews_rebuild_worker_main|set_config('search_path', 'pg_catalog, pg_temp', true)"
+)
+for entry in "${entries[@]}"; do
+  IFS='|' read -r file fn text <<<"$entry"
+  awk -v fn="$fn" -v text="$text" '
+    $0 ~ "fn " fn "[(<]" { inside = 1 }
+    inside && index($0, text) { found = 1 }
+    inside && /^}/ { exit }
+    END { exit !found }' "$file" || unpinned+=$'\n'"$file: $fn()"
+done
+# The extension's SQL functions. Constant ones read nothing; the rename check
+# resolves a candidate's names as the renamer wrote them, and qualifies its
+# operators.
+unpinned+=$'\n'$(awk '
+  /CREATE FUNCTION/ { if (name != "" && !set) print FILENAME ": " name; match($0, /@extschema@\.[a-z_]+/)
+                      name = substr($0, RSTART + 12, RLENGTH - 12); set = 0; body = 0 }
+  name != "" && /SET search_path = pg_catalog/ && !body { set = 1 }
+  name != "" && /^AS / { body = 1 }
+  END { if (name != "" && !set) print FILENAME ": " name }' src/install_sql.rs \
+  | grep -vE ': (pg_tviews_catalog_revision|contract_version|pg_tviews_defines_view)$')
+if [[ -n "${unpinned//$'\n'/}" ]]; then
+  echo "entry points that do not pin search_path before running SQL (see part 2 of $0):"
+  grep -v '^$' <<<"$unpinned"
+  exit 1
+fi
+echo "every entry point pins search_path"
