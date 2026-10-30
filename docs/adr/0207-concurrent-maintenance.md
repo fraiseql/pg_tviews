@@ -249,6 +249,13 @@ Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both sta
   under READ COMMITTED) and recomputes a parent whose lookup column no longer holds
   the child's key.
 
+- **A full refresh is cross-checked too.** Under REPEATABLE READ the reconcile of a
+  `full_refresh` table compared the TVIEW with its view under the transaction's
+  snapshot: a post inserted and committed since then, written with the old name by its
+  own refresh, was invisible to it and stayed stale (`rr-full-refresh-vs-insert`). The
+  whole view is now compared with the latest snapshot after the reconcile, as a keyed
+  refresh's rows are; a difference raises 40001.
+
 - **A two-hop fan-out patch locks the rows in between.** A rename written into the
   lines of the renamed customer's orders found order 10 under its snapshot, waited for
   a concurrent re-point of that order, then wrote the old customer's name into lines

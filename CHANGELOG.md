@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other refresh read does, and locks no row of the table (#268): its writer needs no
   privilege on the table in between, and the lines of orders its row-level security
   policies hide are patched too.
+- **A full refresh under `REPEATABLE READ` could leave a row stale**: a write to a table
+  under the `full_refresh` policy compared the TVIEW with its view under the transaction's
+  snapshot, so a row another transaction wrote and committed since then (a post inserted,
+  an item moved under a renamed category) kept that transaction's values. As every
+  refresh under `REPEATABLE READ` and `SERIALIZABLE`, it is now checked against the latest
+  snapshot and fails with `40001` instead.
 - **A rename patched into the rows embedding the renamed row could land in a row
   re-pointed meanwhile**, which then showed the old child's fields over the new one's.
   A patch is now written only into a row that still embeds the child; the others are

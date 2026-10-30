@@ -1,0 +1,39 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_begin i_insert r_rename r_commit r_check
+step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS posts FROM tb_post;
+posts
+-----
+    1
+(1 row)
+
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
+step r_rename: UPDATE tb_site SET name = 'news';
+ERROR:  could not serialize access: a TVIEW row this transaction refreshed changed in a concurrent transaction
+step r_commit: COMMIT;
+step r_check: 
+  SELECT t.pk_post, t.data->>'site' AS site, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|site|fresh
+-------+----+-----
+      1|blog|t    
+      2|blog|t    
+(2 rows)
+
+
+starting permutation: r_begin_rc i_insert r_rename r_commit r_check
+step r_begin_rc: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
+step r_rename: UPDATE tb_site SET name = 'news';
+step r_commit: COMMIT;
+step r_check: 
+  SELECT t.pk_post, t.data->>'site' AS site, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|site|fresh
+-------+----+-----
+      1|news|t    
+      2|news|t    
+(2 rows)
+

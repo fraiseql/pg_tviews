@@ -222,5 +222,6 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
         &[],
         Change::Inserted,
     )?);
+    crate::concurrency::crosscheck::reconciled(meta)?;
     Ok(changed)
 }
