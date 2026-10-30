@@ -18,6 +18,7 @@ Placeholders stand for the values each message carries.
 | `42P07` | `duplicate_table` | `RelationExists` | TVIEW &lt;name&gt; already exists | pg_tviews_create_or_replace() changes an existing TVIEW. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
+| `39P01` | `e_r_i_e_trigger_protocol_violated` | `TriggerMisused` | &lt;reason&gt; |  |
 | `42804` | `datatype_mismatch` | `KeyTypeRefused` | &lt;column&gt; is &lt;type&gt;: a TVIEW's pk_&lt;entity&gt; must be an integer key (smallint, integer or bigint) | Key the rows on an integer column, and keep a uuid key in the id column. |
 | `42809` | `wrong_object_type` | `ColumnDdlRefused` | &lt;statement&gt; on TVIEW &lt;table&gt; is refused: a TVIEW's columns are its definition's | Change the definition with tviews.pg_tviews_create_or_replace(): the table follows it. |
 | `42939` | `reserved_name` | `IndexNameReserved` | index name &lt;index&gt; on TVIEW &lt;table&gt; is reserved for pg_tviews' own index | Give the index another name. pg_tviews creates its own indexes on a TVIEW (tviews.registry.managed_indexes lists them). |

@@ -9,6 +9,7 @@
 | Integration | `test/sql/[0-9]*.sql` | Longer scenarios, each TVIEW checked against its backing view (`test/sql/lib/assert_fresh.sql`). |
 | Differential | `test/sql/differential/` | Seeded random writes (MERGE, `ON CONFLICT`, COPY, transactions with savepoints) over every TVIEW shape; each TVIEW equals its view after every statement. |
 | Isolation | `test/isolation/` | Concurrent writers, DDL and snapshot isolation levels, run by `pg_isolation_regress`. |
+| Concurrent fuzzer | `test/concurrency/fuzz/run.sh` | random transactions of the differential suite's shapes and of crossed fan-outs from 8 pgbench clients, at `READ COMMITTED`, `REPEATABLE READ` and `SERIALIZABLE`, with subtransactions that commit or roll back; a checker compares every TVIEW with its view in `REPEATABLE READ` snapshots while they run. `values` mode: single-row writes of values no TVIEW links rows by, none of which may fail. In CI. |
 | Concurrency | `test/concurrency/run.sh` | pgbench workloads (uniform, hot keys, a bulk transaction, a single client, a mixed stress run with orgs two hops away): throughput, failed and retried transactions, and rows that differ from the backing view afterwards. Run by hand, not in CI. |
 | Upgrade | `test/upgrade/` | An older release upgraded to this tree: the catalog equals a fresh install's. |
 | Documentation | `test/docs/run_doc_sql.sh` | The SQL of the user docs, run as written. |
@@ -38,6 +39,8 @@ export PGHOST=localhost PGPORT=28818 PGUSER=postgres
 ./test/run_regression_tests.sh regress_copy_from.sql  # one, by file name
 ./test/run_integration_tests.sh
 ./test/sql/differential/run.sh 60 "1 2 3"
+./test/concurrency/fuzz/run.sh 60 "1 2 3" 8 mixed   # LEVELS=rc|rr|all, MIX=%, KEEP=1
+./test/concurrency/fuzz/run.sh 30 "1" 8 values
 PG_CONFIG=$(which pg_config) ./test/isolation/run.sh
 RUNS=3 ./test/concurrency/run.sh uniform hot bulk     # stale rows must be 0
 ```

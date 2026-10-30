@@ -18,8 +18,8 @@ worker: if a refresh fails, the writing statement fails.
 SELECT * FROM tviews.pg_tviews_health_check();
 
 -- Registered TVIEWs and how writes reach them
-SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables, uncascaded_policy,
-       needs_reregister
+SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables,
+       options->>'uncascaded_policy' AS uncascaded_policy, needs_reregister
 FROM tviews.registry;
 
 -- Physical health and warnings per TVIEW
@@ -127,7 +127,7 @@ ORDER BY tgrelid::regclass::text, tgname;
 -- Test one write end to end
 BEGIN;
 UPDATE tb_user SET name = name || '' WHERE pk_user = 1;
-SELECT updated_at, data FROM tv_user WHERE pk_user = 1;
+SELECT data FROM tv_user WHERE pk_user = 1;
 ROLLBACK;
 ```
 

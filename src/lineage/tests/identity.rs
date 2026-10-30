@@ -427,9 +427,9 @@ fn a_materialized_view_is_all_keys_even_when_linked() {
         vec![eq(col(1, "fk_customer"), col(0, "pk_customer"), true, true)],
         col(0, "pk_customer"),
     );
-    g.occurrences[1].matview = true;
+    g.occurrences[1].unwatched = Some(crate::lineage::Unwatched::Matview);
     assert!(matches!(g.classify(1, NONE), Kind::AllKeys(r) if r.contains("materialized view")));
-    assert!(g.tables(NONE)[1].matview);
+    assert!(g.tables(NONE)[1].unwatched.is_some());
 }
 
 // ── reads of another TVIEW's table ───────────────────────────────
@@ -523,8 +523,9 @@ fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
         fanout: None,
         root: false,
         virtual_reads: vec![],
-        matview: false,
+        unwatched: None,
         tview: None,
+        links: None,
     }
 }
 
@@ -556,7 +557,7 @@ fn a_function_read_is_all_keys_and_keeps_the_traced_reads() {
         relid,
         relname: format!("t{relid}"),
         qualified: format!("public.t{relid}"),
-        matview: false,
+        unwatched: None,
         tview: None,
     };
     lineage.add_function_reads(&[read(1), read(2), read(3)]);

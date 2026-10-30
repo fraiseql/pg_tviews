@@ -23,10 +23,10 @@ use ctas::{
 };
 use indexes::{IndexFollowUp, index_follow_up_of};
 use statements::{
-    ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, column_change_of, column_rename_of,
-    drops_pg_tviews, extension_installed, extension_statement_names, leaving_partitions_of,
-    matview_refresh_of, partition_ddl_of, persistence_change_of, privileges_change_of,
-    resolve_relation_oid, table_move_of,
+    ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, ValueRewrite, column_change_of,
+    column_rename_of, drops_pg_tviews, extension_installed, extension_statement_names,
+    leaving_partitions_of, matview_refresh_of, partition_ddl_of, persistence_change_of,
+    privileges_change_of, resolve_relation_oid, table_move_of, value_rewrite_of,
 };
 use tables::handle_drop_table;
 
@@ -139,6 +139,12 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         crate::delta::begin_truncate();
     }
 
+    // A statement that may change the catalog: if the transaction rolls back, the
+    // caches forget what they memoized of it.
+    if call.tag().is_some_and(may_change_catalog) {
+        crate::cache::mark_changed();
+    }
+
     // DDL pg_tviews itself issues: run it as it is.
     if crate::internal_ddl::InternalDdl::active() {
         call.pass_through();
@@ -163,6 +169,37 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let _internal = crate::internal_ddl::InternalDdl::begin();
         follow_ups.run();
     }
+}
+
+/// Whether a utility statement may change the catalog: any but those that only
+/// control the session, the transaction, cursors and prepared statements, or that
+/// run statements of their own (`DO`, `CALL`, `EXPLAIN`, `EXECUTE`: DDL they run
+/// comes through the hook itself).
+const fn may_change_catalog(tag: pg_sys::NodeTag) -> bool {
+    use pg_sys::NodeTag as T;
+    !matches!(
+        tag,
+        T::T_TransactionStmt
+            | T::T_VariableSetStmt
+            | T::T_VariableShowStmt
+            | T::T_ConstraintsSetStmt
+            | T::T_ExplainStmt
+            | T::T_CopyStmt
+            | T::T_PrepareStmt
+            | T::T_ExecuteStmt
+            | T::T_DeallocateStmt
+            | T::T_DeclareCursorStmt
+            | T::T_FetchStmt
+            | T::T_ClosePortalStmt
+            | T::T_NotifyStmt
+            | T::T_ListenStmt
+            | T::T_UnlistenStmt
+            | T::T_LockStmt
+            | T::T_DoStmt
+            | T::T_CallStmt
+            | T::T_DiscardStmt
+            | T::T_CheckPointStmt
+    )
 }
 
 /// Flush the refresh queue before a top-level `COMMIT` or `PREPARE TRANSACTION`:
@@ -365,6 +402,34 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
     }
 }
 
+/// Refuse `ALTER TABLE child INHERIT parent` onto a table a TVIEW reads: writes to
+/// the child would fire no trigger on the parent, and the TVIEW would go stale
+/// (a TVIEW reading the parent with its children is refused at create).
+fn refuse_inherit(change: &ColumnChange) -> TViewResult<()> {
+    for &parent in &change.inherits {
+        // SAFETY: a RangeVar of the statement's parse tree.
+        let parent = unsafe { resolve_relation_oid(parent) };
+        if parent == pg_sys::InvalidOid {
+            continue;
+        }
+        let readers = crate::catalog::queries::table_readers_of(parent)?;
+        if let Some(entity) = readers.first() {
+            // SAFETY: a RangeVar of the statement's parse tree; the child may not
+            // exist yet (CREATE TABLE … INHERITS).
+            let child = unsafe { CStr::from_ptr((*change.relation).relname) }.to_string_lossy();
+            let parent = crate::utils::qualified_relname_from_oid(parent)?;
+            return Err(TViewError::DefinitionRefused {
+                reason: format!(
+                    "{child} cannot inherit from {parent}: tv_{entity} reads it, and writes to \
+                     an inheritance child fire no trigger on its parent; make {parent} a \
+                     partitioned table and attach {child} as a partition"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a column change to a TVIEW's table that its refreshes could not write
 /// through: they write every column the definition outputs, by name, with the
 /// type the backing view gives it. Renaming or dropping one is refused, and so is
@@ -372,6 +437,12 @@ fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
 /// new type is refused unless the view's type converts to it on assignment (a
 /// TVIEW can keep such a type until `pg_tviews_create_or_replace` retypes it).
 fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
+    // The extension's own scripts change its tables as they need.
+    // SAFETY: a plain backend global.
+    if unsafe { pg_sys::creating_extension } {
+        return Ok(());
+    }
+    refuse_inherit(change)?;
     // SAFETY: a RangeVar of the statement's parse tree.
     let relid = unsafe { resolve_relation_oid(change.relation) };
     if relid == pg_sys::InvalidOid || crate::catalog::TviewMeta::entity_of_table(relid)?.is_none() {
@@ -430,8 +501,9 @@ struct FollowUps {
     column_rename: Option<ColumnRename>,
     /// A partition added or removed: it gets or loses the triggers.
     partition_ddl: Option<PartitionDdl>,
-    /// Partitions dropped or detached: their rows leave the TVIEWs over the tree.
-    leaving_partitions: Vec<pg_sys::Oid>,
+    /// Partitions dropped, detached or truncated: their rows leave the TVIEWs over
+    /// the tree.
+    leaving_partitions: Vec<(pg_sys::Oid, bool)>,
     /// A TVIEW's table renamed or moved: its backing view's name follows.
     table_move: Option<pg_sys::Oid>,
     /// GRANT / REVOKE or an owner change: the backing views follow.
@@ -448,6 +520,9 @@ struct FollowUps {
     /// A TVIEW's table (its entity and OID) switched to LOGGED (`true`) or
     /// UNLOGGED: a reset one is filled first, and its validity row follows.
     persistence_change: Option<(String, pg_sys::Oid, bool)>,
+    /// Values rewritten without a trigger (a generation expression, an enum
+    /// label): the TVIEWs reading them are refreshed.
+    value_rewrite: Option<ValueRewrite>,
 }
 
 impl FollowUps {
@@ -464,6 +539,7 @@ impl FollowUps {
                 matview_refresh: None,
                 index_follow_up: None,
                 persistence_change: None,
+                value_rewrite: None,
             };
         }
         // SAFETY: as above.
@@ -488,14 +564,15 @@ impl FollowUps {
                         .unwrap_or_else(|e| e.raise())
                         .map(|entity| (entity, table, logged))
                 }),
+                value_rewrite: value_rewrite_of(pstmt),
             }
         }
     }
 
     /// What must happen before `PostgreSQL` runs the statement.
     fn prepare(&self) {
-        for &partition in &self.leaving_partitions {
-            if let Err(e) = crate::delta::map_leaving_partition(partition) {
+        for &(partition, lock_parent) in &self.leaving_partitions {
+            if let Err(e) = crate::delta::map_leaving_partition(partition, lock_parent) {
                 e.raise_in("pg_tviews: could not map the rows of a partition leaving its tree");
             }
         }
@@ -563,6 +640,20 @@ impl FollowUps {
             e.raise_in(
                 "pg_tviews: could not refresh the TVIEWs reading a refreshed materialized view",
             );
+        }
+        if let Some(rewrite) = self.value_rewrite {
+            let readers = match &rewrite {
+                #[cfg(not(feature = "pg16"))]
+                ValueRewrite::Expression { table, columns } => {
+                    crate::catalog::queries::column_readers_of(*table, columns)
+                }
+                ValueRewrite::EnumLabel(enum_type) => {
+                    crate::catalog::queries::type_readers_of(*enum_type)
+                }
+            };
+            if let Err(e) = readers.and_then(|r| crate::ddl::uncascaded::refresh_entities(&r)) {
+                e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
+            }
         }
     }
 }

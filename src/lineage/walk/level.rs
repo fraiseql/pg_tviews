@@ -84,6 +84,7 @@ impl Walker<'_> {
                 return Ok(());
             }
             self.graph.set_operation = true;
+            self.set_operation_links((*query).setOperations);
             // LIMIT/OFFSET over the whole set operation applies to every branch.
             let whole = top_opaque_reason(query);
             // UNION: each leaf is a branch with its own root. The leaves sit in
@@ -199,6 +200,7 @@ impl Walker<'_> {
         let identity_level = std::mem::take(&mut self.identity_level);
         // SAFETY: fields of a valid Query; RTEs and expressions belong to it.
         unsafe {
+            self.note_link_sublinks(query, flags);
             // A view, subquery or CTE in FROM is walked only for the columns this
             // level reads of it.
             let read = referenced_columns(query);
@@ -249,6 +251,7 @@ impl Walker<'_> {
                 self.graph.identity = Some(self.identity(query, &tles));
                 self.graph.data = self.data_shape(query, &tles);
             }
+            self.note_links(query, flags, identity_level);
 
             Ok(self.outputs(query, link, opaque, &skipped))
         }
@@ -451,7 +454,15 @@ impl Walker<'_> {
         // SAFETY: fields of a valid RTE.
         unsafe {
             match (*rte).rtekind {
-                pg_sys::RTEKind::RTE_RELATION => self.relation((*rte).relid, flags),
+                pg_sys::RTEKind::RTE_RELATION => {
+                    if !flags.unread
+                        && (*rte).inh
+                        && pg_sys::get_rel_relkind((*rte).relid).cast_unsigned() == b'r'
+                    {
+                        self.graph.inherited_reads.insert((*rte).relid.to_u32());
+                    }
+                    self.relation((*rte).relid, flags)
+                }
                 pg_sys::RTEKind::RTE_SUBQUERY => Ok(RteInfo::Outputs(self.level(
                     (*rte).subquery,
                     flags,
@@ -490,7 +501,7 @@ impl Walker<'_> {
                 pg_sys::RTEKind::RTE_FUNCTION => Ok(self.function_rte(rte)),
                 // PostgreSQL 18: grouped Vars point at the GROUP entry, whose
                 // expressions are those of the level.
-                #[cfg(feature = "pg18")]
+                #[cfg(not(any(feature = "pg16", feature = "pg17")))]
                 pg_sys::RTEKind::RTE_GROUP => Ok(RteInfo::Join((*rte).groupexprs)),
                 _ => Ok(RteInfo::Other),
             }
@@ -508,7 +519,7 @@ impl Walker<'_> {
             (relkind, relname, qualified)
         };
         match relkind {
-            b'r' | b'p' | b'm' if flags.unread => {
+            b'r' | b'p' | b'm' | b'f' | b'S' if flags.unread => {
                 self.graph.unread_tables.insert(relid.to_u32());
                 Ok(RteInfo::Other)
             }
@@ -524,13 +535,13 @@ impl Walker<'_> {
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
-                    matview: false,
+                    unwatched: None,
                     tview_table: Some(entity.clone()),
                 });
                 let occ = self.graph.occurrences.len() - 1;
                 Ok(RteInfo::Tview { entity, relid, occ })
             }
-            b'r' | b'p' | b'm' => {
+            b'r' | b'p' | b'm' | b'f' | b'S' => {
                 self.graph.occurrences.push(Occurrence {
                     relid: relid.to_u32(),
                     relname,
@@ -540,7 +551,7 @@ impl Walker<'_> {
                     via_tview: flags.via_tview.clone(),
                     in_sublink: flags.in_sublink,
                     opaque_level: flags.opaque_level.clone(),
-                    matview: relkind == b'm',
+                    unwatched: crate::lineage::Unwatched::of_relkind(relkind),
                     tview_table: None,
                 });
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))

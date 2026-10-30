@@ -276,24 +276,25 @@ UPDATE tb_post SET title = tb_post.title || ' [updated]';  -- Huge cascade!
 
 **Target**: 1000-10000 rows per batch
 
-### ✅ DO: Disable Triggers for Bulk Loading
+### ✅ DO: Suspend Refreshes for Bulk Loading
 
 ```sql
 -- For initial data load only
 BEGIN;
 
-ALTER TABLE tb_post DISABLE TRIGGER ALL;
+SELECT tviews.pg_tviews_suspend_triggers();   -- until the end of this transaction
 
 COPY tb_post FROM '/data/posts.csv' CSV;
 
-ALTER TABLE tb_post ENABLE TRIGGER ALL;
-
--- Rebuild TVIEWs after load
-TRUNCATE tv_post;
-INSERT INTO tv_post SELECT * FROM tviews.public__tv_post;
+-- Resuming rebuilds the TVIEWs the load changed, and those that embed them, once
+SELECT tviews.pg_tviews_resume_triggers();
 
 COMMIT;
 ```
+
+Don't `DISABLE TRIGGER` pg_tviews' triggers by hand: the TVIEWs then go stale
+without a trace, and a hand-written `INSERT … SELECT *` into a TVIEW depends on its
+column order.
 
 **Impact**: 5-10× faster bulk loading
 

@@ -216,8 +216,8 @@ pub(crate) fn managed_indexes(
 
 /// The indexes a new TVIEW gets.
 ///
-/// HOT invariant: refreshes rewrite `data` and `updated_at`, so neither is indexed
-/// (the `data` GIN only when `data_gin` is explicitly requested). An index on a
+/// HOT invariant: refreshes rewrite `data`, so it is not indexed (the `data` GIN
+/// only when `data_gin` is explicitly requested). An index on a
 /// rewritten column makes every refresh a non-HOT update: new entries in every
 /// index, a dead tuple needing index cleanup, and a cleared visibility-map bit.
 pub(crate) fn tview_indexes(

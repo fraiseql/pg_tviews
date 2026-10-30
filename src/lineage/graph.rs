@@ -22,6 +22,52 @@ impl Column {
     }
 }
 
+/// A relation whose rows change without firing a trigger `pg_tviews` could install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unwatched {
+    /// `REFRESH MATERIALIZED VIEW` replaces its rows; the `ProcessUtility` hook
+    /// follows it.
+    Matview,
+    /// Its rows live on another server.
+    Foreign,
+    /// `nextval()` and `setval()` change it.
+    Sequence,
+}
+
+impl Unwatched {
+    /// What a relation of kind `relkind` is, when no trigger watches it.
+    #[must_use]
+    pub const fn of_relkind(relkind: u8) -> Option<Self> {
+        match relkind {
+            b'm' => Some(Self::Matview),
+            b'f' => Some(Self::Foreign),
+            b'S' => Some(Self::Sequence),
+            _ => None,
+        }
+    }
+
+    /// Why a write to it maps to no key.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Matview => {
+                "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without firing triggers"
+            }
+            Self::Foreign => {
+                "a foreign table: its rows change on another server, which fires no trigger here"
+            }
+            Self::Sequence => "a sequence: nextval() changes it without firing a trigger",
+        }
+    }
+
+    /// Whether `pg_tviews` learns that it changed (a materialized view's REFRESH),
+    /// so a full refresh can follow.
+    #[must_use]
+    pub const fn followed(self) -> bool {
+        matches!(self, Self::Matview)
+    }
+}
+
 /// One reference to a base table somewhere in the backing view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Occurrence {
@@ -40,9 +86,9 @@ pub struct Occurrence {
     /// Why nothing passes through the query level it sits in, if so (window
     /// function, LIMIT, …): its columns are not visible outside that level.
     pub opaque_level: Option<String>,
-    /// A materialized view: `REFRESH MATERIALIZED VIEW` replaces its rows, and no
-    /// trigger sees them.
-    pub matview: bool,
+    /// A relation no trigger watches (a materialized view, a foreign table, a
+    /// sequence).
+    pub unwatched: Option<Unwatched>,
     /// The table of another TVIEW, of that entity: its rows change when that
     /// TVIEW is refreshed.
     pub tview_table: Option<String>,
@@ -192,6 +238,14 @@ pub struct QueryGraph {
     /// The shape of the `data` output of the backing view's own SELECT (`None` for
     /// a set operation, or without a `data` column).
     pub data: Option<DataShape>,
+    /// `(occurrence, attnum)` of the columns the rows are linked by: read in a
+    /// join or filter condition, a grouping, … (ADR 0207, #263).
+    pub links: std::collections::BTreeSet<(usize, i16)>,
+    /// Some read in a link position could not be followed to columns: every
+    /// column is a link.
+    pub links_unknown: bool,
+    /// Plain tables read with their inheritance children (no `ONLY`).
+    pub inherited_reads: std::collections::BTreeSet<u32>,
 }
 
 /// Columns copied unchanged into `data`, each with its path there: a column
@@ -309,10 +363,13 @@ pub struct TableLineage {
     /// The virtual generated columns the TVIEW reads and their inputs: never
     /// copied by a fast path, which reads the changed row.
     pub virtual_reads: Vec<String>,
-    /// A materialized view: no trigger can be installed on it.
-    pub matview: bool,
+    /// A relation no trigger watches: none is installed on it.
+    pub unwatched: Option<Unwatched>,
     /// The table of another TVIEW, of that entity.
     pub tview: Option<String>,
+    /// The columns of the table the rows are linked by ([`QueryGraph::links`]),
+    /// sorted; `None` when unknown (every column is one).
+    pub links: Option<Vec<i16>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,16 +519,13 @@ impl QueryGraph {
 
     fn classify_read(&self, occ: usize, propagates: &dyn Fn(&str, u32) -> bool) -> Kind {
         let o = &self.occurrences[occ];
-        if o.matview {
+        if let Some(unwatched) = o.unwatched {
             let via = o
                 .via_view
                 .as_ref()
                 .map(|view| format!(", read through view {view}"))
                 .unwrap_or_default();
-            return Kind::AllKeys(format!(
-                "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without \
-                 firing triggers{via}"
-            ));
+            return Kind::AllKeys(format!("{}{via}", unwatched.reason()));
         }
         let roots = self.roots_of(occ);
         if roots.is_empty() || self.reaches_hole(occ) {
@@ -761,7 +815,9 @@ impl QueryGraph {
     /// For a hop through a table in between, the query from values of this
     /// table's hop column (`$1`, `int8[]`) to the root column's values they reach:
     /// `(value, root value)` pairs as text, read from that table (a root value
-    /// that is no integer leaves the rows to the recompute).
+    /// that is no integer leaves the rows to the recompute). The root column is
+    /// the template's second placeholder: the lookup locks the rows it reaches
+    /// by its value.
     fn hop_via(&self, occ: usize, path: &[usize]) -> Option<String> {
         let (joined, to_root) = self.hop_columns(occ, path)?.between?;
         let relid = self.occurrences[joined.occ].relid;
@@ -1062,8 +1118,19 @@ impl QueryGraph {
                     via,
                     fanout,
                     virtual_reads: Vec::new(),
-                    matview: o.matview,
+                    unwatched: o.unwatched,
                     tview: o.tview_table.clone(),
+                    links: (!self.links_unknown).then(|| {
+                        let mut links: Vec<i16> = self
+                            .links
+                            .iter()
+                            .filter(|(occ, _)| self.occurrences[*occ].relid == relid)
+                            .map(|(_, attnum)| *attnum)
+                            .collect();
+                        links.sort_unstable();
+                        links.dedup();
+                        links
+                    }),
                     root: self
                         .roots
                         .iter()

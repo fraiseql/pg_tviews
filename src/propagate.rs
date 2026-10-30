@@ -115,7 +115,7 @@ fn find_affected_keys_batch(
     let qi_fk = ident::quoted(lookup_col);
     let qi_parent = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
-    let parent_key_type = meta.key_type()?;
+    let parent_key_type = meta.key_type.clone();
     let key_type = match parent_key_type {
         KeyType::Int => "pg_catalog.int8",
         KeyType::Text(_) => "pg_catalog.text",

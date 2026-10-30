@@ -117,9 +117,10 @@ pub fn trigger_plan(base_tables: &[pg_sys::Oid], lineage: &crate::lineage::Linea
         .chain(base_tables.iter().map(|&oid| {
             let table = lineage.tables.iter().find(|t| t.relid == oid.to_u32());
             let set = match table.map(|t| &t.kind) {
-                // REFRESH MATERIALIZED VIEW fires no trigger: the ProcessUtility
-                // hook follows it.
-                _ if table.is_some_and(|t| t.matview) => TriggerSet::None,
+                // Nothing fires a trigger on a materialized view (the
+                // ProcessUtility hook follows its REFRESH), a foreign table or a
+                // sequence.
+                _ if table.is_some_and(|t| t.unwatched.is_some()) => TriggerSet::None,
                 Some(TableKind::Mapped | TableKind::AllKeys(_)) => TriggerSet::Delta,
                 Some(TableKind::Propagated(_)) => TriggerSet::None,
                 None if lineage.unread.contains(&oid.to_u32()) => TriggerSet::None,
@@ -216,7 +217,8 @@ pub struct TriggerProblems {
     /// `pg_tviews` triggers without an entity argument (installed by an older
     /// release): `pg_tviews_reregister_all()` replaces them.
     pub untagged: Vec<String>,
-    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`.
+    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`, or
+    /// switched to `ENABLE REPLICA TRIGGER` (they then fire only on a replica).
     pub disabled: Vec<String>,
 }
 
@@ -288,9 +290,13 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                                               o.tgrelid::pg_catalog.regclass) \
          FROM ours o WHERE o.entity IS NULL \
          UNION ALL \
-         SELECT 'disabled', pg_catalog.format('%I on %s', o.tgname, \
-                                              o.tgrelid::pg_catalog.regclass) \
-         FROM ours o WHERE o.tgenabled = 'D' \
+         SELECT 'disabled', pg_catalog.format('%I on %s%s', o.tgname, \
+                                              o.tgrelid::pg_catalog.regclass, \
+                                              CASE o.tgenabled WHEN 'R' THEN \
+                                                ' (ENABLE REPLICA: fires only when \
+                                                 session_replication_role is replica)' \
+                                              ELSE '' END) \
+         FROM ours o WHERE o.tgenabled IN ('D', 'R') \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
         reads = crate::catalog::registered::reads_with_kind_sql(),
@@ -526,7 +532,7 @@ pub fn sync_entity_triggers(
         if PARTITION_MEMBER
             .iter()
             .any(|spec| spec.function == installed.function)
-            && crate::delta::partition_root(installed.table_oid)? != installed.table_oid
+            && crate::catalog::partition_root(installed.table_oid)? != installed.table_oid
         {
             partitions.push(installed.table_oid);
         } else {

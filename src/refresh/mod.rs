@@ -15,6 +15,7 @@ use crate::queue::key::KeyValue;
 use crate::utils::ident;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
+use std::fmt::Write as _;
 
 /// `param` (`$1`) cast to the identity's type, or to an array of it: an integer
 /// identity is bound as `int8`, any other as text cast to its type, so a filter on
@@ -262,8 +263,8 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
         .join(", ")
 }
 
-/// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>,
-/// updated_at = NOW()` guarded by a comparison of the non-key columns.
+/// `ON CONFLICT` action for a refresh upsert: `DO UPDATE SET <cols> = EXCLUDED.<cols>`
+/// guarded by a comparison of the non-key columns.
 ///
 /// The guard compares record images ([`rows_differ`]), with the operator and type
 /// qualified. The flush runs under the owner's
@@ -275,7 +276,7 @@ pub(crate) fn column_list(col_names: &[String]) -> String {
 /// which is what a materialized copy should record.
 ///
 /// A recomputed row that equals the stored one gets no new tuple version, no index
-/// entries, no dead tuple, and keeps its `updated_at` ("last content change").
+/// entries and no dead tuple.
 /// `key_col` is the conflict key (excluded from the SET list); target columns are
 /// qualified with `qi_tv`, the quoted (schema-qualified) TVIEW table, because the
 /// source relation is in scope too.
@@ -295,7 +296,6 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
     let set = cols
         .iter()
         .map(|(c, fresh)| format!("{c} = {fresh}"))
-        .chain(std::iter::once("updated_at = NOW()".to_string()))
         .collect::<Vec<_>>()
         .join(", ");
     let stored: Vec<String> = cols.iter().map(|(c, _)| format!("{qi_tv}.{c}")).collect();
@@ -348,21 +348,46 @@ pub(crate) fn run_counted_upsert(
     let entity = &meta.entity_name;
     let qi_pk = ident::quoted(&format!("pk_{entity}"));
     let qi_key = ident::quoted(&meta.identity.column);
+    // A UNION view returning several rows for one key is refused (ADR 0216) from
+    // the rows the upsert reads, which then writes none: the view is read once.
+    let (duplicate, unless_duplicate, duplicate_key) = if meta.plan.set_operation {
+        (
+            format!(
+                "dup AS (SELECT {qi_key}::pg_catalog.text AS key FROM src \
+                         GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1), "
+            ),
+            "WHERE NOT EXISTS (SELECT FROM dup)",
+            "(SELECT key FROM dup)",
+        )
+    } else {
+        (String::new(), "", "NULL::pg_catalog.text")
+    };
     let sql = format!(
-        "WITH src AS ({source_sql}), \
-         written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src \
+        "WITH src AS ({source_sql}), {duplicate}\
+         written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src {unless_duplicate} \
                      {conflict} RETURNING {qi_pk}::pg_catalog.int8 AS k, {} AS i, {} AS r, \
                                           xmax = 0 AS inserted) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
                 (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r)) \
-                 FROM written)",
+                 FROM written), {duplicate_key}",
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows) = Spi::connect_mut(|client| {
+    let (keys, rows, duplicate) = Spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
-        Ok::<_, spi::Error>((row.get::<Vec<String>>(1)?, row.get::<pgrx::JsonB>(2)?))
+        Ok::<_, spi::Error>((
+            row.get::<Vec<String>>(1)?,
+            row.get::<pgrx::JsonB>(2)?,
+            row.get::<String>(3)?,
+        ))
     })?;
+    if let Some(key) = duplicate {
+        return Err(crate::TViewError::DuplicateKey {
+            tview: qi_tv.to_string(),
+            key_column: meta.identity.column.clone(),
+            key,
+        });
+    }
     let keys = keys.unwrap_or_default();
     let rows = match rows {
         Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
@@ -414,22 +439,19 @@ pub(crate) fn run_counted_upsert(
 /// the lock it waited inside its own upsert and wrote a document computed before
 /// that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already fails
 /// on an existing row (SQLSTATE 40001): those rows are only read; a key another
-/// transaction is creating fails at once (REPEATABLE READ, ADR 0207).
+/// transaction is creating fails at once (ADR 0207).
 pub(crate) fn lock_rows(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
-    with_pks: bool,
 ) -> crate::TViewResult<Locked> {
-    use crate::concurrency::Policy;
     // SAFETY: reads the backend's isolation level.
     let transaction_snapshot =
         unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
-    let key_locks = Policy::current() != Policy::Skip;
-    if keys.is_empty() || (transaction_snapshot && !with_pks && !key_locks) {
+    if keys.is_empty() {
         return Ok(Locked::default());
     }
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let lock = if transaction_snapshot {
@@ -444,9 +466,9 @@ pub(crate) fn lock_rows(
         "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
          FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
         meta.reference_keys("t"),
-        key_cast(&key_type, "$1", true)
+        key_cast(key_type, "$1", true)
     );
-    let args = [key_array(&key_type, keys)?];
+    let args = [key_array(key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
     let (pks, held, old) = Spi::connect_mut(|client| {
         let mut pks = Vec::new();
@@ -463,26 +485,73 @@ pub(crate) fn lock_rows(
         }
         Ok::<_, spi::Error>((pks, held, old))
     })?;
-    if key_locks {
-        // As the identity's type writes them, as the rows found are compared:
-        // the same uuid can be queued in another spelling.
-        let keys: Vec<String> = match &key_type {
-            KeyType::Int => keys.iter().map(ToString::to_string).collect(),
-            KeyType::Text(_) => crate::utils::spi::strings(
-                &format!(
-                    "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
-                    key_cast(&key_type, "$1", true)
-                ),
-                &args,
-            )?,
-        };
-        let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
-        crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
-    }
+    // As the identity's type writes them, as the rows found are compared:
+    // the same uuid can be queued in another spelling.
+    let keys: Vec<String> = match &key_type {
+        KeyType::Int => keys.iter().map(ToString::to_string).collect(),
+        KeyType::Text(_) => crate::utils::spi::strings(
+            &format!(
+                "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
+                key_cast(key_type, "$1", true)
+            ),
+            &args,
+        )?,
+    };
+    let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
+    crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
     Ok(Locked {
         pks,
         old: Some(old),
     })
+}
+
+/// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, and read
+/// `columns` (integer lookup columns) off the version locked, the latest
+/// committed one, by `pk_<entity>`. A refresh that writes rows in several
+/// statements (direct patches, grouped by shape, then recomputes) then takes
+/// their row locks in the order every concurrent refresh does, so two of them
+/// never wait for each other in a cycle (#263); and a patch written into a parent
+/// can be checked against what the parent embeds now. Under REPEATABLE READ and
+/// SERIALIZABLE a row updated since the snapshot fails the write here (40001), as
+/// it would in the refresh; one being updated is waited for in key order too.
+///
+/// # Errors
+/// Returns an error if the rows cannot be locked.
+pub(crate) fn lock_in_key_order(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+    columns: &[String],
+) -> crate::TViewResult<std::collections::HashMap<i64, Vec<Option<i64>>>> {
+    let key_type = &meta.key_type;
+    let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let qi_key = ident::quoted(&meta.identity.column);
+    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let mut read = String::new();
+    for column in columns {
+        let _ = write!(read, ", t.{}::pg_catalog.int8", ident::quoted(column));
+    }
+    let sql = format!(
+        "SELECT t.{qi_pk}::pg_catalog.int8{read} FROM {qi_tv} t \
+         WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key} FOR UPDATE",
+        key_cast(key_type, "$1", true)
+    );
+    let args = [key_array(key_type, keys)?];
+    // Read-write: a read-only SPI call refuses FOR UPDATE.
+    let rows = Spi::connect_mut(|client| {
+        let mut rows = std::collections::HashMap::new();
+        for row in crate::utils::spi::kept_update(client, &sql, &args)? {
+            let Some(pk) = row.get::<i64>(1)? else {
+                continue;
+            };
+            let mut values = Vec::with_capacity(columns.len());
+            for i in 0..columns.len() {
+                values.push(row.get::<i64>(i + 2)?);
+            }
+            rows.insert(pk, values);
+        }
+        Ok::<_, spi::Error>(rows)
+    })?;
+    Ok(rows)
 }
 
 /// What [`lock_rows`] read of the rows it locked.
@@ -491,8 +560,8 @@ pub(crate) struct Locked {
     /// The existing rows' `pk_<entity>`.
     pub pks: Vec<i64>,
     /// Their reference keys, when the change feed names collections (empty
-    /// otherwise); `None` when the rows were not read (REPEATABLE READ without
-    /// key locks), so a recompute reads them itself.
+    /// otherwise); `None` when no key was given, so a recompute reads them
+    /// itself.
     pub old: Option<crate::catalog::collections::OldKeys>,
 }
 
@@ -556,7 +625,7 @@ mod tests {
                 &cols(&["pk_post", "id", "data"]),
                 "pk_post"
             ),
-            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
+            r#"DO UPDATE SET "id" = EXCLUDED."id", "data" = EXCLUDED."data" WHERE NOT (ROW("app"."tv_post"."id", "app"."tv_post"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."id", EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
@@ -564,7 +633,7 @@ mod tests {
     fn conflict_action_single_column_compares_one_column_records() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "data"]), "pk_x"),
-            r#"DO UPDATE SET "data" = EXCLUDED."data", updated_at = NOW() WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
+            r#"DO UPDATE SET "data" = EXCLUDED."data" WHERE NOT (ROW("tv_x"."data")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."data")::pg_catalog.record)"#
         );
     }
 
@@ -572,7 +641,7 @@ mod tests {
     fn conflict_action_quotes_reserved_and_mixed_case_columns() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x", "order", "Label"]), "pk_x"),
-            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label", updated_at = NOW() WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
+            r#"DO UPDATE SET "order" = EXCLUDED."order", "Label" = EXCLUDED."Label" WHERE NOT (ROW("tv_x"."order", "tv_x"."Label")::pg_catalog.record OPERATOR(pg_catalog.*=) ROW(EXCLUDED."order", EXCLUDED."Label")::pg_catalog.record)"#
         );
     }
 

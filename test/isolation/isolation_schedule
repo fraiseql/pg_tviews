@@ -22,3 +22,13 @@ test: publish-collections
 test: two-hop-rename-vs-repoint
 test: restored-empty-refill-vs-write
 test: partition-drop-vs-subpartition-write
+test: crossed-value-writes
+test: crossed-value-writes-after-rollback
+test: rr-crossed-value-writes
+test: embed-patch-vs-repoint
+test: serializable-vs-read-committed
+test: partition-truncate-vs-write
+test: two-hop-patch-vs-repoint
+test: two-hop-rename-vs-move-in
+test: two-hop-hidden-repoint
+test: rr-full-refresh-vs-insert

@@ -22,6 +22,9 @@ pub mod validity {
         static CHECKED: std::cell::RefCell<std::collections::HashSet<u32>> =
             std::cell::RefCell::new(std::collections::HashSet::new());
 
+        /// This transaction filled a TVIEW: an abort undoes it.
+        static FILLED_IN_XACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
         /// The TVIEW tables whose refill this transaction claimed, with the
         /// (sub)transaction nesting level that claimed each.
         static CLAIMS: std::cell::RefCell<Vec<(Oid, i32)>> =
@@ -152,7 +155,7 @@ pub mod validity {
         if !missing {
             return Ok(false);
         }
-        crate::refresh::full::refill(entity)?;
+        refill(entity)?;
         mark(entity, meta.tview_oid)?;
         Ok(true)
     }
@@ -182,7 +185,7 @@ pub mod validity {
         };
         drop(owner);
         if emptied {
-            crate::refresh::full::refill(entity)?;
+            refill(entity)?;
             mark(entity, meta.tview_oid)?;
         }
         Ok(())
@@ -223,17 +226,33 @@ pub mod validity {
             .map_err(|e| crate::utils::spi::error(sql, &e))
     }
 
-    /// Check the tables again: a rolled-back (sub)transaction may have undone a
-    /// fill, and a prepared one may not commit.
+    /// Check the tables again when a rolled-back (sub)transaction may have undone
+    /// what was found: it filled a TVIEW, or changed the catalog (a TVIEW created
+    /// in it is gone); and after a prepared one, which may not commit. A check
+    /// that found a TVIEW trusted, and filled nothing, holds after the rollback.
     pub fn forget_checks() {
+        if FILLED_IN_XACT.get() || crate::cache::changed_in_xact() {
+            forget_all_checks();
+        }
+    }
+
+    /// Check every table again.
+    pub fn forget_all_checks() {
         CHECKED.with_borrow_mut(std::collections::HashSet::clear);
     }
 
-    /// The transaction ended: its claims, and the TVIEWs it found empty, ended
-    /// with it.
+    /// Fill `entity`'s TVIEW from its view, noting it for an abort.
+    fn refill(entity: &str) -> TViewResult<u64> {
+        FILLED_IN_XACT.set(true);
+        crate::refresh::full::refill(entity)
+    }
+
+    /// The transaction ended: its claims, the TVIEWs it found empty, and its
+    /// fills ended with it.
     pub fn forget_claims() {
         CLAIMS.with_borrow_mut(Vec::clear);
         FOUND_EMPTY.with_borrow_mut(std::collections::HashSet::clear);
+        FILLED_IN_XACT.set(false);
     }
 
     /// A subtransaction rolled back: the claims it made are undone.
@@ -284,7 +303,7 @@ pub mod validity {
         // SAFETY: reads the backend's transaction state.
         let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
         CLAIMS.with_borrow_mut(|claims| claims.push((meta.tview_oid, level)));
-        crate::refresh::full::refill(entity).map(Some)
+        refill(entity).map(Some)
     }
 
     /// Before `entity`'s table, `table_oid`, becomes LOGGED (`logged`) or UNLOGGED:

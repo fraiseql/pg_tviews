@@ -1,0 +1,62 @@
+Parsed test spec with 3 sessions
+
+starting permutation: g_close m_move n_begin n_rename g_open n_commit n_check
+step g_close: SELECT pg_advisory_lock(268, 1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step m_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 10; <waiting ...>
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_customer SET name = 'bea' WHERE pk_customer = 2;
+step g_open: SELECT pg_advisory_unlock(268, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step n_commit: COMMIT;
+step m_move: <... completed>
+step n_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|bea     |t    
+    200|bea     |t    
+    210|bea     |t    
+(3 rows)
+
+
+starting permutation: g_close m_move n_escalate n_begin n_rename g_open n_commit n_check
+step g_close: SELECT pg_advisory_lock(268, 1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step m_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 10; <waiting ...>
+step n_escalate: SET pg_tviews.lock_escalation_threshold = 1;
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_customer SET name = 'bea' WHERE pk_customer = 2;
+step g_open: SELECT pg_advisory_unlock(268, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step n_commit: COMMIT;
+step m_move: <... completed>
+step n_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|bea     |t    
+    200|bea     |t    
+    210|bea     |t    
+(3 rows)
+

@@ -4,8 +4,8 @@
 -- RowShare intent locks on the relation, in PostgreSQL's lock manager as
 -- advisory locks whose objsubid is 21622 (value) or 21623 (relation). They last until the end of the
 -- transaction, go with a rolled-back savepoint, are kept by a prepared
--- transaction, can't be taken or blocked through pg_advisory_lock(), and aren't
--- taken under SERIALIZABLE.
+-- transaction, can't be taken or blocked through pg_advisory_lock(), and are
+-- taken under SERIALIZABLE as under REPEATABLE READ.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_value_locks.sql
 -- expect-output: value_locks: PASS
@@ -143,11 +143,13 @@ SELECT must(held('tb_region') = '{relation:RowExclusiveLock:1,value:ExclusiveLoc
             'a partition''s row holds ' || held('tb_region')::text);
 COMMIT;
 
--- 8. SERIALIZABLE takes none: SSI detects the conflicts.
+-- 8. SERIALIZABLE takes them as REPEATABLE READ does: serializable snapshot
+--    isolation orders serializable transactions among themselves only, not
+--    against a READ COMMITTED writer.
 BEGIN ISOLATION LEVEL SERIALIZABLE;
 UPDATE tb_user SET name = 'ann!' WHERE pk_user = 1;
-SELECT must(held('tb_user') = '{}' AND held('tv_user') = '{}',
-            'SERIALIZABLE took value locks: ' || held('tb_user')::text);
+SELECT must(held('tb_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:1}',
+            'SERIALIZABLE holds ' || held('tb_user')::text);
 COMMIT;
 
 -- 9. A refresh locks, shared, what the rows it computes read: the post's user

@@ -137,6 +137,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
 
+      # Random transactions from 8 clients at every isolation level: every TVIEW
+      # equals its view in every committed snapshot; single-row writes of values
+      # no TVIEW links rows by never fail (#263).
+      - name: Concurrent fuzzer (test/concurrency/fuzz/run.sh)
+        if: ${{ !cancelled() }}
+        run: |
+          export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          ./test/concurrency/fuzz/run.sh 60 "1 2 3" 8 mixed
+          ./test/concurrency/fuzz/run.sh 30 "1" 8 values
+
       # Concurrent writers, DDL and snapshot isolation levels.
       - name: Isolation suite (test/isolation/run.sh)
         if: ${{ !cancelled() }}
@@ -147,7 +157,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md docs/concurrency.md \
-            docs/reference/api.md docs/user-guides/*.md
+            docs/reference/*.md docs/user-guides/*.md
 
       # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
       # pg_tviews_create_or_replace() and refresh work where the library is loaded

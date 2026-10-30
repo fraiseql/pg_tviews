@@ -2,7 +2,18 @@
 
 Tools that generate migrations for TVIEWs, or read back what a database registers,
 use objects whose behaviour is versioned: views to read, and a function to create or
-replace. The read side:
+replace. To follow the examples, a TVIEW in schema `app`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE SCHEMA app;
+CREATE TABLE app.tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                          title text);
+SELECT tviews.pg_tviews_create('app.tv_post',
+    $$SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM app.tb_post$$);
+```
+
+The read side:
 
 ```sql
 SELECT tviews.contract_version();   -- integer, currently 2
@@ -237,7 +248,7 @@ extension disagree.
 
 ## `tviews.pg_tviews_create_or_replace()`
 
-```sql
+```sql fragment
 SELECT tviews.pg_tviews_create_or_replace(
     'app.tv_post', $$SELECT …$$,
     options => '{"fillfactor": 90}');

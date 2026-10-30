@@ -14,7 +14,7 @@ use std::cell::RefCell;
 struct Savepoint {
     pending: state::Mark,
     published: crate::queue::published::Mark,
-    locks: usize,
+    locks: crate::concurrency::Mark,
     frames: usize,
     suspension: crate::suspend::Suspension,
 }

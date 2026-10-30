@@ -26,15 +26,10 @@ FROM tviews.registry
 ORDER BY schema, name;
 
 \echo ''
-\echo '4. Freshness: rows and last content change per TVIEW (updated_at moves only when a row changes)'
-SELECT pg_catalog.format(
-           'SELECT %L AS tview, count(*) AS rows, max(updated_at) AS last_change, '
-           'pg_catalog.now() - max(updated_at) AS since_last_change FROM %I.%I',
-           r.schema || '.' || r.name, r.schema, r.name)
-FROM tviews.registry r
-WHERE r.schema IS NOT NULL
-ORDER BY r.schema, r.name
-\gexec
+\echo '4. Refresh activity per TVIEW since its counters started'
+SELECT schema, name, rows_written, rows_deleted, full_refreshes, stats_reset
+FROM tviews.stats
+ORDER BY schema, name;
 
 \echo ''
 \echo '5. Physical health and warnings (sizes, HOT ratio, dead tuples, missing indexes, fan-out)'

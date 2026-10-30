@@ -149,7 +149,7 @@ Optimize disk I/O for TVIEW workloads:
 
 ```sql
 -- Checkpoint tuning
-ALTER SYSTEM SET checkpoint_segments = 32;
+ALTER SYSTEM SET max_wal_size = '4GB';
 ALTER SYSTEM SET checkpoint_completion_target = 0.9;
 
 -- Autovacuum tuning for TVIEWs

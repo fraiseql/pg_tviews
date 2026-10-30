@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared by run.sh and fanout.sh. Source it; needs PGHOST/PGPORT/PGUSER.
+# Shared by run.sh, fanout.sh and compare.sh. Source it; needs PGHOST/PGPORT/PGUSER.
 
 # measure <db> <pgbench file> <seconds> <clients> [PGOPTIONS]: run pgbench on <db> and
 # print "<tps> <ms per transaction> <WAL bytes per transaction>". The WAL is the
@@ -23,4 +23,13 @@ measure() {
 fresh_copy() {
   psql -X -q -d postgres -c "SET client_min_messages = warning" -c "DROP DATABASE IF EXISTS $2" \
        -c "CREATE DATABASE $2 TEMPLATE $1 STRATEGY FILE_COPY" >/dev/null
+}
+
+# seed_template <template> <schema file>: create and seed <template> unless it holds
+# the seeded schema already.
+seed_template() {
+  if ! psql -X -d "$1" -tAc "SELECT 1 FROM bench.tv_comment, bench.tb_audit LIMIT 1" >/dev/null 2>&1; then
+    psql -X -q -d postgres -c "DROP DATABASE IF EXISTS $1" -c "CREATE DATABASE $1"
+    psql -X -q -v ON_ERROR_STOP=1 -d "$1" -c "SET pg_tviews.max_queue_size = 1000000" -f "$2" >/dev/null
+  fi
 }

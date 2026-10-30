@@ -11,7 +11,7 @@ fn occ(relid: u32, relname: &str) -> Occurrence {
         via_tview: None,
         in_sublink: false,
         opaque_level: None,
-        matview: false,
+        unwatched: None,
         tview_table: None,
     }
 }
@@ -58,6 +58,9 @@ fn graph(occurrences: Vec<Occurrence>, conjuncts: Vec<Conjunct>, key: Column) ->
         tview_keys: BTreeMap::new(),
         data: None,
         outputs: vec![],
+        links: std::collections::BTreeSet::new(),
+        links_unknown: false,
+        inherited_reads: std::collections::BTreeSet::new(),
     }
 }
 
@@ -189,6 +192,9 @@ fn an_opaque_top_level_without_a_root_is_all_keys_with_the_reason() {
         tview_keys: BTreeMap::new(),
         data: None,
         outputs: vec![],
+        links: std::collections::BTreeSet::new(),
+        links_unknown: false,
+        inherited_reads: std::collections::BTreeSet::new(),
     };
     assert_eq!(
         g.classify(0, NONE),

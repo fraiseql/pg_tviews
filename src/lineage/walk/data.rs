@@ -346,6 +346,7 @@ impl Walker<'_> {
                 vec![RteInfo::Other; list_len((*query).rtable)],
                 Link::From,
             );
+            self.set_operation_links((*query).setOperations);
             let mut leaves = Vec::new();
             setop_leaves((*query).setOperations, &mut leaves);
             let width = list_len((*query).targetList);

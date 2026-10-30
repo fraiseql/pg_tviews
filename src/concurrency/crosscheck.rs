@@ -21,11 +21,9 @@ pub fn enabled() -> bool {
 }
 
 /// Refresh side: the rows of `meta` named by `keys` are the same under the latest
-/// snapshot as under the transaction's, which the refresh computed them from.
-/// Both are read from the backing view with one kept plan, so only what the
-/// snapshots see can differ, never how the rows are computed (duplicate UNION
-/// keys, row order inside an aggregate, a direct patch). A TVIEW that reads the
-/// current time is left alone: its rows differ between any two computations.
+/// snapshot as under the transaction's, which the refresh computed them from,
+/// both read from the backing view. A TVIEW that reads the current time is left
+/// alone: its rows differ between any two computations.
 ///
 /// # Errors
 /// Returns an error if a query fails; a difference raises 40001.
@@ -33,25 +31,64 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     if keys.is_empty() || !enabled() || meta.time_dependent {
         return Ok(());
     }
-    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
+        return Ok(());
+    };
+    let key = ident::quoted(&meta.identity.column);
+    let sql = format!(
+        "{} WHERE v.{key} OPERATOR(pg_catalog.=) {}",
+        view_rows(meta)?,
+        lookup.rhs
+    );
+    same_under_latest(&sql, &[lookup.arg], lookup.plan)
+}
+
+/// Refresh side, for a TVIEW brought to its view as a whole (a reconcile): the
+/// whole view is the same under the latest snapshot as under the transaction's.
+/// A row a concurrent transaction committed since the snapshot (a post
+/// inserted, a child moved under a renamed parent) is invisible to the
+/// reconcile, which would leave it as that transaction wrote it.
+///
+/// # Errors
+/// Returns an error if a query fails; a difference raises 40001.
+pub fn reconciled(meta: &TviewMeta) -> TViewResult<()> {
+    if !enabled() || meta.time_dependent {
+        return Ok(());
+    }
+    same_under_latest(
+        &view_rows(meta)?,
+        &[],
+        crate::utils::spi::Plan::PerExecution,
+    )
+}
+
+/// The rows of `meta`'s backing view as (key, row) text pairs.
+fn view_rows(meta: &TviewMeta) -> TViewResult<String> {
+    let columns = meta
+        .view_columns
         .iter()
         .map(|c| format!("v.{}", ident::quoted(c)))
         .collect::<Vec<_>>()
         .join(", ");
-    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type()?, keys)? else {
-        return Ok(());
-    };
     let key = ident::quoted(&meta.identity.column);
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let sql = format!(
-        "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v \
-         WHERE v.{key} OPERATOR(pg_catalog.=) {}",
-        lookup.rhs
-    );
-    let args = [lookup.arg];
-    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args, lookup.plan)?);
+    Ok(format!(
+        "SELECT v.{key}::pg_catalog.text, ROW({columns})::pg_catalog.text FROM {view} v"
+    ))
+}
+
+/// `sql` returns the same rows under the latest snapshot as under the
+/// transaction's. Both run from one kept plan, so only what the snapshots see
+/// can differ, never how the rows are computed (duplicate UNION keys, row
+/// order inside an aggregate, a direct patch).
+fn same_under_latest(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: crate::utils::spi::Plan,
+) -> TViewResult<()> {
+    let seen = sorted(crate::utils::spi::kept_rows(sql, args, plan)?);
     let latest = sorted(Spi::connect(|_| {
-        crate::utils::spi::latest_rows_connected(&sql, &args, Some(lookup.plan))
+        crate::utils::spi::latest_rows_connected(sql, args, Some(plan))
     })?);
     if seen != latest {
         super::serialization_failure(

@@ -149,7 +149,7 @@ pub struct FunctionRead {
     pub relid: u32,
     pub relname: String,
     pub qualified: String,
-    pub matview: bool,
+    pub unwatched: Option<super::Unwatched>,
     /// The table of another TVIEW, of that entity.
     pub tview: Option<String>,
 }
@@ -183,6 +183,8 @@ impl Lineage {
                     table.hop = None;
                     table.via = None;
                     table.fanout = None;
+                    // What the function reads of it is unknown.
+                    table.links = None;
                 }
                 None => self.tables.push(TableLineage {
                     relid: read.relid,
@@ -200,17 +202,20 @@ impl Lineage {
                     fanout: None,
                     root: false,
                     virtual_reads: Vec::new(),
-                    matview: read.matview,
+                    unwatched: read.unwatched,
                     tview: read.tview.clone(),
+                    links: None,
                 }),
             }
         }
     }
 
     /// The tables no cascade reaches (`all_keys`), with the reason, which says when
-    /// some reads of the table still refresh the rows they reach.
+    /// some reads of the table still refresh the rows they reach, and whether
+    /// `pg_tviews` learns when the table changes (not for a foreign table or a
+    /// sequence).
     #[must_use]
-    pub fn all_keys(&self) -> Vec<(u32, String, String)> {
+    pub fn all_keys(&self) -> Vec<(u32, String, String, bool)> {
         self.tables
             .iter()
             .filter_map(|t| match &t.kind {
@@ -222,6 +227,7 @@ impl Lineage {
                     } else {
                         reason.clone()
                     },
+                    t.unwatched.is_none_or(super::Unwatched::followed),
                 )),
                 _ => None,
             })
@@ -269,10 +275,47 @@ impl Lineage {
                         .collect::<Vec<_>>()
                         .into();
                     entry["attnums"] = t.columns.iter().map(|(_, n)| *n).collect::<Vec<_>>().into();
+                    if let Some(links) = &t.links {
+                        entry["links"] = links.clone().into();
+                    }
                     entry
                 })
                 .collect(),
         )
+    }
+}
+
+/// A table read with its inheritance children (no `ONLY`) is refused: the
+/// triggers on the table don't see writes to its children, which would leave the
+/// TVIEW stale. A partitioned table's partitions are followed; this is the
+/// older, non-declarative inheritance.
+fn refuse_inheritance(tables: &std::collections::BTreeSet<u32>) -> crate::TViewResult<()> {
+    use pgrx::prelude::*;
+    if tables.is_empty() {
+        return Ok(());
+    }
+    let oids: Vec<pgrx::pg_sys::Oid> = tables.iter().map(|&t| t.into()).collect();
+    let found = Spi::get_two_with_args::<String, String>(
+        "SELECT i.inhparent::pg_catalog.regclass::pg_catalog.text, \
+                pg_catalog.string_agg(i.inhrelid::pg_catalog.regclass::pg_catalog.text, ', ' \
+                                      ORDER BY i.inhrelid::pg_catalog.regclass::pg_catalog.text) \
+         FROM pg_catalog.pg_inherits i \
+         WHERE i.inhparent = ANY ($1) GROUP BY i.inhparent ORDER BY 1 LIMIT 1",
+        &[crate::utils::spi::oid_array(oids)],
+    );
+    match found {
+        Ok((Some(table), Some(children))) => Err(crate::TViewError::DefinitionRefused {
+            reason: format!(
+                "the definition reads {table} with its inheritance children ({children}): \
+                 writes to them fire no trigger on {table}, and the TVIEW would go stale; \
+                 read FROM ONLY {table}, or make {table} a partitioned table"
+            ),
+        }),
+        Ok(_) | Err(pgrx::spi::Error::InvalidPosition) => Ok(()),
+        Err(e) => Err(crate::TViewError::CatalogError {
+            operation: "Read the inheritance children of the tables a TVIEW reads".to_string(),
+            pg_error: e.to_string(),
+        }),
     }
 }
 
@@ -364,6 +407,7 @@ pub fn analyze(
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
+    refuse_inheritance(&graph.inherited_reads)?;
     let identity = identity_of(entity, view_oid, &graph)?;
     check_tables_agree(entity, &graph, base_tables)?;
 
@@ -406,6 +450,15 @@ pub fn analyze(
         table.columns =
             expand_read_columns(referenced_columns(view_oid, table.relid)?, &virtual_columns);
         table.virtual_reads = virtual_reads(&table.columns, &virtual_columns);
+        // A virtual column has no value in the rows a trigger sees: its inputs are
+        // links in its place.
+        if let Some(links) = &mut table.links {
+            let named: Vec<(String, i16)> = links.iter().map(|&a| (String::new(), a)).collect();
+            *links = expand_read_columns(named, &virtual_columns)
+                .into_iter()
+                .map(|(_, attnum)| attnum)
+                .collect();
+        }
         if let Some(sql) = &table.sql {
             explain(entity, table, sql)?;
         }
@@ -527,6 +580,11 @@ pub struct KeyMapping {
     /// What a refresh reads of the table, for value locks (ADR 0207).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<super::ReadSet>,
+    /// The columns of the table the TVIEW's rows are linked by (joins, filters,
+    /// groupings…): a write that changes none of them, and inserts or deletes no
+    /// row, changes no link (#263). `None` when unknown: every write does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<i16>>,
 }
 
 /// Rows above which a sequential scan in a mapping query is worth an index.

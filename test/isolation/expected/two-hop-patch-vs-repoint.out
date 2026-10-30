@@ -1,0 +1,47 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_begin r_move n_begin n_rename r_commit n_commit n_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_line created
+(1 row)
+
+step r_begin: BEGIN;
+step r_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 10;
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_customer SET name = 'amy' WHERE pk_customer = 1; <waiting ...>
+step r_commit: COMMIT;
+step n_rename: <... completed>
+step n_commit: COMMIT;
+step n_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|bob     |t    
+(1 row)
+
+
+starting permutation: n_begin n_rename r_begin r_move n_commit r_commit n_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_line created
+(1 row)
+
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_customer SET name = 'amy' WHERE pk_customer = 1;
+step r_begin: BEGIN;
+step r_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 10; <waiting ...>
+step n_commit: COMMIT;
+step r_move: <... completed>
+step r_commit: COMMIT;
+step n_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|bob     |t    
+(1 row)
+

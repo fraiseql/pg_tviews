@@ -58,10 +58,11 @@ SELECT depth, entity FROM tviews.pg_tviews_show_cascade_path('user') ORDER BY de
 To rebuild everything, dependencies first: `SELECT tviews.pg_tviews_refresh_all();`
 
 ### Step 4: Verify
-Rerun Step 2 (expect 0), then check when the rows last changed:
+Rerun Step 2 (expect 0), then check what the refresh wrote:
 
 ```sql
-SELECT max(updated_at) AS last_change FROM public.tv_user;
+SELECT rows_written, rows_deleted, full_refreshes FROM tviews.stats
+WHERE schema = 'public' AND name = 'tv_user';
 ```
 
 ## Empty TVIEWs after a crash

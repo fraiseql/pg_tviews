@@ -7,10 +7,11 @@ use pgrx::pg_sys::Oid;
 use serde::{Deserialize, Serialize};
 
 /// The version this library writes. It also reads version 1, a plan without
-/// references (what the upgrade scripts of earlier releases write before they
-/// re-derive); a plan of any other version is re-derived by `ALTER EXTENSION
-/// pg_tviews UPDATE`, never read.
-pub const PLAN_VERSION: u32 = 2;
+/// references, and version 2, one without the columns its rows are linked by
+/// (what the upgrade scripts of earlier releases write before they re-derive);
+/// a plan of any other version is re-derived by `ALTER EXTENSION pg_tviews
+/// UPDATE`, never read.
+pub const PLAN_VERSION: u32 = 3;
 
 /// The oldest version this library reads.
 const OLDEST_READ: u32 = 1;
@@ -259,8 +260,8 @@ mod tests {
         // What upgrade scripts of earlier releases write before re-deriving.
         let plan = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap();
         assert!(plan.references.is_empty());
-        let err = TviewPlan::decode("post", serde_json::json!({"version": 3})).unwrap_err();
-        assert!(err.to_string().contains("plan version 3 is not 2"), "{err}");
+        let err = TviewPlan::decode("post", serde_json::json!({"version": 4})).unwrap_err();
+        assert!(err.to_string().contains("plan version 4 is not 3"), "{err}");
     }
 
     #[test]

@@ -111,8 +111,9 @@ BEGIN
     END IF;
 END $$;
 
-CREATE FUNCTION _updated_at(k bigint) RETURNS timestamptz LANGUAGE sql AS
-    $$ SELECT updated_at FROM tv_item WHERE pk_item = k $$;
+-- The row's tuple version: a rewrite gives it a new one.
+CREATE FUNCTION _version(k bigint) RETURNS text LANGUAGE sql AS
+    $$ SELECT xmin::text || ctid::text FROM tv_item WHERE pk_item = k $$;
 CREATE FUNCTION _skipped() RETURNS bigint LANGUAGE sql AS
     $$ SELECT (pg_tviews_queue_stats()->>'refresh_noop_skipped')::bigint $$;
 
@@ -139,11 +140,11 @@ SELECT _check('direct insert/delete');
 SET pg_tviews.direct_patch_enabled = off;
 
 -- ── 3. #72 no-op guard still holds ──────────────────────────────────────────
-CREATE TABLE _s AS SELECT _skipped() AS skipped, _updated_at(1) AS at1;
+CREATE TABLE _s AS SELECT _skipped() AS skipped, _version(1) AS at1;
 UPDATE tb_item SET note = 'unchanged row' WHERE pk_item = 1;
 DO $$ BEGIN
-    IF _updated_at(1) IS DISTINCT FROM (SELECT at1 FROM _s) THEN
-        RAISE EXCEPTION 'FAIL #156 [no-op]: an unchanged row was rewritten (updated_at moved)';
+    IF _version(1) IS DISTINCT FROM (SELECT at1 FROM _s) THEN
+        RAISE EXCEPTION 'FAIL #156 [no-op]: an unchanged row was rewritten (a new row version)';
     END IF;
     IF _skipped() <= (SELECT skipped FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [no-op]: refresh_noop_skipped did not grow';
@@ -151,24 +152,24 @@ DO $$ BEGIN
 END $$;
 
 -- ── 4. NULL semantics: NULL vs NULL is equal, NULL vs value is a change ─────
-UPDATE _s SET skipped = _skipped(), at1 = _updated_at(3);
+UPDATE _s SET skipped = _skipped(), at1 = _version(3);
 UPDATE tb_item SET path = NULL, doc = NULL WHERE pk_item = 3;  -- already NULL
 DO $$ BEGIN
-    IF _updated_at(3) IS DISTINCT FROM (SELECT at1 FROM _s) THEN
+    IF _version(3) IS DISTINCT FROM (SELECT at1 FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [NULL = NULL]: an all-NULL unchanged row was rewritten';
     END IF;
 END $$;
 UPDATE tb_item SET path = 'n' WHERE pk_item = 3;
 DO $$ BEGIN
-    IF _updated_at(3) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
+    IF _version(3) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [NULL -> value]: the row was not rewritten';
     END IF;
 END $$;
 SELECT _check('null -> value');
-UPDATE _s SET at1 = _updated_at(3);
+UPDATE _s SET at1 = _version(3);
 UPDATE tb_item SET path = NULL WHERE pk_item = 3;
 DO $$ BEGIN
-    IF _updated_at(3) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
+    IF _version(3) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [value -> NULL]: the row was not rewritten';
     END IF;
 END $$;
@@ -176,10 +177,10 @@ SELECT _check('value -> null');
 
 -- ── 5. D2: binary equality. citext 'A' -> 'a' rewrites the row ──────────────
 UPDATE tb_item SET name = 'Q' WHERE pk_item = 1;
-UPDATE _s SET at1 = _updated_at(1);
+UPDATE _s SET at1 = _version(1);
 UPDATE tb_item SET name = 'q' WHERE pk_item = 1;
 DO $$ BEGIN
-    IF _updated_at(1) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
+    IF _version(1) IS NOT DISTINCT FROM (SELECT at1 FROM _s) THEN
         RAISE EXCEPTION 'FAIL #156 [D2]: citext Q -> q did not rewrite the TVIEW row';
     END IF;
     IF (SELECT name::text FROM tv_item WHERE pk_item = 1) <> 'q' THEN

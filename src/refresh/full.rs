@@ -83,9 +83,8 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
-/// its backing view, once the view is known to return one row per key. The
-/// explicit column list comes from the view's own columns, which excludes the
-/// table-only `created_at`/`updated_at` columns.
+/// its backing view, once the view is known to return one row per key, with the
+/// view's own columns listed.
 /// Taking the owner's guard makes running the statements as anyone else
 /// unrepresentable.
 fn rebuild_statements(
@@ -200,7 +199,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
         changed.extend(crate::refresh::run_journaled(
             meta,
             &format!(
-                "UPDATE {qualified_tv} t SET {set}, updated_at = pg_catalog.now() \
+                "UPDATE {qualified_tv} t SET {set} \
                  FROM {qualified_view} v \
                  WHERE {same_key} AND {} \
                  RETURNING t.{pk}::pg_catalog.int8, {}",
@@ -223,5 +222,6 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
         &[],
         Change::Inserted,
     )?);
+    crate::concurrency::crosscheck::reconciled(meta)?;
     Ok(changed)
 }

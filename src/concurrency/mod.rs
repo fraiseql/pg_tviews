@@ -6,7 +6,7 @@
 //! read before it computes them. Past a threshold, a transaction locks the
 //! relation instead of its values. Locks live in PostgreSQL's lock manager under a
 //! private advisory tag and are held to the end of the transaction. REPEATABLE
-//! READ fails instead of waiting; SERIALIZABLE takes none.
+//! READ and SERIALIZABLE fail instead of waiting.
 
 pub mod crosscheck;
 pub mod reads;
@@ -14,6 +14,7 @@ mod registry;
 
 use pgrx::pg_sys;
 use pgrx::prelude::*;
+pub use registry::Mark;
 use registry::{Held, REGISTRY};
 
 /// `field4` of a value lock's tag. `pg_advisory_lock()` uses 1 and 2.
@@ -64,10 +65,11 @@ pub struct LockTarget {
 pub enum Policy {
     /// Wait for it (READ COMMITTED): what follows sees the other's commit.
     Wait,
-    /// Fail with 40001 (REPEATABLE READ): the snapshot can't see what it waited for.
+    /// Fail with 40001 (REPEATABLE READ, SERIALIZABLE): the snapshot can't see
+    /// what it waited for. Serializable snapshot isolation alone would not do:
+    /// it orders serializable transactions among themselves, not against a
+    /// READ COMMITTED writer.
     FailFast,
-    /// Take no lock (SERIALIZABLE): SSI detects the conflict.
-    Skip,
 }
 
 impl Policy {
@@ -75,8 +77,7 @@ impl Policy {
     #[must_use]
     pub const fn of_level(level: u32) -> Self {
         match level {
-            pg_sys::XACT_SERIALIZABLE => Self::Skip,
-            pg_sys::XACT_REPEATABLE_READ => Self::FailFast,
+            pg_sys::XACT_SERIALIZABLE | pg_sys::XACT_REPEATABLE_READ => Self::FailFast,
             _ => Self::Wait,
         }
     }
@@ -176,11 +177,29 @@ pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
     lock_in(Space::Keys, &target, Side::Writer, keys);
 }
 
-fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
-    let policy = Policy::current();
-    if policy == Policy::Skip || values.is_empty() {
-        return;
+/// Lock `values` of `target` for `side`, as [`lock_values`] does, unless that
+/// would lock the relation as a whole: past `pg_tviews.lock_escalation_threshold`
+/// values, nothing is locked and `false` is returned, for the caller to find its
+/// rows another way. An escalated lock blocks every writer of the relation, not
+/// only the writers of these values. A relation already locked as a whole holds
+/// the values.
+pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String]) -> bool {
+    if pending(Space::Values, target, side, values).0 {
+        return false;
     }
+    lock_values(target, side, values);
+    true
+}
+
+/// What locking `values` of `target` in `space` for `side` takes: whether the
+/// relation is locked as a whole instead, whether its intent lock is still to
+/// take, and the hashes of the values not held yet.
+fn pending(
+    space: Space,
+    target: &LockTarget,
+    side: Side,
+    values: &[String],
+) -> (bool, bool, Vec<u32>) {
     let relid = target.relid;
     let mut hashes: Vec<u32> = values
         .iter()
@@ -188,19 +207,20 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
         .collect();
     hashes.sort_unstable();
     hashes.dedup();
-    let held = |hash| Held::Value {
-        relid,
-        space,
-        side,
-        hash,
-    };
-    let (escalate, intent, new) = REGISTRY.with_borrow(|r| {
+    REGISTRY.with_borrow(|r| {
         if r.escalated(relid, space, side) {
             return (false, false, Vec::new());
         }
         let new: Vec<u32> = hashes
             .into_iter()
-            .filter(|&hash| !r.holds(&held(hash)))
+            .filter(|&hash| {
+                !r.holds(&Held::Value {
+                    relid,
+                    space,
+                    side,
+                    hash,
+                })
+            })
             .collect();
         let threshold = crate::config::lock_escalation_threshold();
         let escalate =
@@ -210,7 +230,22 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
             !r.holds(&Held::Intent { relid, space, side }),
             new,
         )
-    });
+    })
+}
+
+fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
+    let policy = Policy::current();
+    if values.is_empty() {
+        return;
+    }
+    let relid = target.relid;
+    let held = |hash| Held::Value {
+        relid,
+        space,
+        side,
+        hash,
+    };
+    let (escalate, intent, new) = pending(space, target, side, values);
     if escalate {
         relation_lock(relid, space, side, escalated_mode(side));
         crate::metrics::metrics_api::record_value_lock_escalation();
@@ -259,7 +294,7 @@ fn relation_lock(relid: u32, space: Space, side: Side, mode: pg_sys::LOCKMODE) {
         Held::Intent { relid, space, side }
     };
     let held = REGISTRY.with_borrow(|r| r.holds(&lock) || r.escalated(relid, space, side));
-    if policy == Policy::Skip || held {
+    if held {
         return;
     }
     acquire(&relation_tag(database(), relid, space), mode, side, policy);
@@ -279,9 +314,6 @@ pub fn lock_changed_rows(
     mapping: &crate::lineage::KeyMapping,
     mut values: impl FnMut(&str) -> crate::TViewResult<Vec<String>>,
 ) -> crate::TViewResult<()> {
-    if Policy::current() == Policy::Skip {
-        return Ok(());
-    }
     for set in &mapping.reads {
         let column = if set.attnum == 0 {
             None
@@ -378,7 +410,7 @@ pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValu
         crate::utils::spi::oid(pg_sys::Oid::from(relid)),
         crate::utils::spi::int2(attnum),
     ];
-    let row = crate::utils::spi::kept_rows(SQL, &args, crate::utils::spi::Plan::Generic)?
+    let row = crate::utils::spi::catalog_text_rows(SQL, &args)?
         .into_iter()
         .next();
     let value = row.and_then(|row| {
@@ -430,7 +462,7 @@ fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Po
                 "a concurrent transaction refreshes TVIEW rows from rows this write changes"
             }
         }),
-        Policy::Wait | Policy::Skip => {
+        Policy::Wait => {
             let start = std::time::Instant::now();
             // SAFETY: as above; waiting honours lock_timeout and deadlock
             // detection, which raise an ERROR.
@@ -456,13 +488,46 @@ pub fn serialization_failure(why: &str) -> ! {
 
 /// Where the transaction's locks stand, for a subtransaction to roll back to.
 #[must_use]
-pub fn mark() -> usize {
+pub fn mark() -> Mark {
     REGISTRY.with_borrow(registry::Registry::mark)
 }
 
 /// A subtransaction rolled back: the lock manager released what it took.
-pub fn rollback(mark: usize) {
+pub fn rollback(mark: Mark) {
     REGISTRY.with_borrow_mut(|r| r.rollback(mark));
+}
+
+/// The transaction changed a link: it inserted or deleted rows of a table a
+/// TVIEW reads, or changed a column of one that a TVIEW's rows are linked by
+/// (#263). From now on its refreshes lock the values they read.
+pub fn note_link_change() {
+    REGISTRY.with_borrow_mut(|r| r.links_changed = true);
+}
+
+/// Whether the transaction changed a link ([`note_link_change`]).
+#[must_use]
+pub fn links_changed() -> bool {
+    REGISTRY.with_borrow(|r| r.links_changed)
+}
+
+/// Note a write of `event` to the table `relid` reads as `mapping`: an insert or
+/// a delete changes a link; an update does when `changed(links)` says one of the
+/// columns `mapping` is linked by changed (unknown links: always).
+pub fn note_write(
+    mapping: Option<&crate::lineage::KeyMapping>,
+    event: crate::queue::Event,
+    changed: impl FnOnce(&[i16]) -> bool,
+) {
+    if links_changed() {
+        return;
+    }
+    let link = match (event, mapping.and_then(|m| m.links.as_deref())) {
+        (crate::queue::Event::Update, Some(links)) => !links.is_empty() && changed(links),
+        _ => true,
+    };
+    if link {
+        note_link_change();
+    }
 }
 
 /// The transaction ended: every lock was released.
@@ -550,6 +615,9 @@ mod tests {
             Policy::of_level(pg_sys::XACT_REPEATABLE_READ),
             Policy::FailFast
         );
-        assert_eq!(Policy::of_level(pg_sys::XACT_SERIALIZABLE), Policy::Skip);
+        assert_eq!(
+            Policy::of_level(pg_sys::XACT_SERIALIZABLE),
+            Policy::FailFast
+        );
     }
 }

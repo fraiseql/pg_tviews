@@ -20,9 +20,9 @@ step r_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+ERROR:  could not serialize access: a concurrent transaction refreshes TVIEW rows from rows this write changes
 step r_commit: COMMIT;
 step i_commit: COMMIT;
-ERROR:  could not serialize access due to read/write dependencies among transactions
 step r_check: 
   SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
     FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)
@@ -33,9 +33,11 @@ step r_check:
 
 tv  |pk|author|fresh
 ----+--+------+-----
-note| 1|GRACE |t    
-post| 1|grace |t    
-(2 rows)
+note| 1|ADA   |t    
+note| 2|ADA   |t    
+post| 1|ada   |t    
+post| 2|ada   |t    
+(4 rows)
 
 
 starting permutation: r_begin r_rename i_begin i_insert r_commit i_commit r_check
@@ -58,9 +60,9 @@ step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+ERROR:  could not serialize access: a concurrent transaction changes rows this TVIEW refresh reads
 step r_commit: COMMIT;
 step i_commit: COMMIT;
-ERROR:  could not serialize access due to read/write dependencies among transactions
 step r_check: 
   SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
     FROM tv_post t JOIN tviews.public__tv_post v USING (pk_post)

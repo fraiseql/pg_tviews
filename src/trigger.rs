@@ -115,17 +115,23 @@ fn pg_tview_trigger_handler<'a>(
     trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     crate::revision::check();
+    crate::delta::require_level(trigger, true);
     // A lookup that fails fails the write: committing it with nothing queued would
     // leave the TVIEWs over the table stale.
     let table_oid = trigger
         .relation()
-        .unwrap_or_else(|e| error!("pg_tviews: the row trigger has no relation: {e}"))
+        .unwrap_or_else(|e| {
+            crate::TViewError::TriggerMisused {
+                reason: format!("pg_tviews: the row trigger has no relation: {e}"),
+            }
+            .raise()
+        })
         .oid();
     // The TVIEW this trigger serves (its argument). A table read by several
     // TVIEWs has one trigger each.
     let served = crate::delta::trigger_entity(trigger);
     // A row of a partition: what pg_tviews knows is its partitioned table.
-    let table_oid = crate::delta::partition_root(table_oid)
+    let table_oid = crate::catalog::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
     let all_paths = crate::cache::cascade_paths(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
@@ -133,6 +139,12 @@ fn pg_tview_trigger_handler<'a>(
         .iter()
         .filter(|p| p.entity_name == served)
         .collect();
+    // The changed columns, compared datum by datum: only when a local path or a
+    // link check reads them.
+    let changed = (!paths.is_empty() || !crate::concurrency::links_changed())
+        .then(|| changed_columns(trigger))
+        .flatten();
+    note_row_write(trigger, &served, table_oid, changed.as_deref());
     // If triggers are suspended, record the change instead of enqueuing
     if crate::suspend::is_suspended() {
         crate::suspend::record_change(&served);
@@ -140,7 +152,7 @@ fn pg_tview_trigger_handler<'a>(
     }
 
     // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
-    enqueue_local_keys(trigger, &paths);
+    enqueue_local_keys(trigger, &paths, changed.as_deref());
 
     // A partitioned table whose writes map through a query (ADR 0157): the
     //    row trigger is the one copied onto every partition, so map this row.
@@ -151,6 +163,44 @@ fn pg_tview_trigger_handler<'a>(
     }
 
     Ok(None)
+}
+
+/// Note whether the changed row changed a link of `served`'s rows (#263): an
+/// insert or a delete does; an update does when one of the columns of `table`
+/// (the partition tree's root) its rows are linked by is among `changed`.
+fn note_row_write(
+    trigger: &PgTrigger<'_>,
+    served: &str,
+    table: pg_sys::Oid,
+    changed: Option<&[String]>,
+) {
+    if crate::concurrency::links_changed() {
+        return;
+    }
+    let event = match trigger.op() {
+        Ok(PgTriggerOperation::Insert) => crate::queue::Event::Insert,
+        Ok(PgTriggerOperation::Update) => crate::queue::Event::Update,
+        _ => crate::queue::Event::Delete,
+    };
+    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
+        .ok()
+        .flatten();
+    let mapping = meta.as_deref().and_then(|m| m.key_mapping(table, None));
+    crate::concurrency::note_write(mapping, event, |links| {
+        let Some(changed) = changed else {
+            return true;
+        };
+        links.iter().any(|&attnum| {
+            // SAFETY: a catalog lookup by OID and attribute number.
+            let name = unsafe { pg_sys::get_attname(table, attnum, true) };
+            // A link column gone (dropped) cannot be told apart: count it.
+            name.is_null() || {
+                // SAFETY: a non-null, NUL-terminated name from the catalog.
+                let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
+                changed.iter().any(|c| *c == name)
+            }
+        })
+    });
 }
 
 /// The new image of an UPDATE's row.
@@ -165,30 +215,38 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 /// Each path is followed from the old and the new row: an UPDATE that moves the
 /// row to another key (a changed join key, a changed DISTINCT ON key) refreshes
 /// both.
-fn enqueue_local_keys(trigger: &PgTrigger, paths: &[&crate::catalog::plan::LocalPath]) {
+fn enqueue_local_keys(
+    trigger: &PgTrigger,
+    paths: &[&crate::catalog::plan::LocalPath],
+    changed: Option<&[String]>,
+) {
     if paths.is_empty() {
         return;
     }
     let Some(tupdesc) = trigger_tupdesc(trigger) else {
-        error!("pg_tviews: the row trigger has no relation");
+        crate::TViewError::TriggerMisused {
+            reason: "pg_tviews: the row trigger has no relation".to_string(),
+        }
+        .raise();
     };
     let images = row_images(trigger);
     if images.is_empty() {
-        error!("pg_tviews: the row trigger has no row");
+        crate::TViewError::TriggerMisused {
+            reason: "pg_tviews: the row trigger has no row".to_string(),
+        }
+        .raise();
     }
 
     // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
     // depends on NONE of the changed columns cannot alter any target row, so the
-    // refresh is skipped. `changed_columns` returns None for INSERT/DELETE
-    // (membership changes) — those always cascade. A path with an empty
-    // `source_columns` (multi-hop, unknown, or whole-row/.data reference) also
-    // always cascades — the safe default.
-    let changed = changed_columns(trigger);
-
+    // refresh is skipped. `changed` is None for INSERT/DELETE (membership
+    // changes) — those always cascade. A path with an empty `source_columns`
+    // (multi-hop, unknown, or whole-row/.data reference) also always cascades —
+    // the safe default.
     for path in paths {
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.
-        if let Some(changed) = &changed
+        if let Some(changed) = changed
             && !path.source_columns.is_empty()
             && !path.source_columns.iter().any(|c| changed.contains(c))
         {
@@ -197,7 +255,7 @@ fn enqueue_local_keys(trigger: &PgTrigger, paths: &[&crate::catalog::plan::Local
         // An UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
         if path.root
-            && let Some(fields) = try_capture_direct_patch(trigger, path, changed.as_deref())
+            && let Some(fields) = try_capture_direct_patch(trigger, path, changed)
             && let Some(new) = new_image(trigger)
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
                 // SAFETY: the new image of the trigger's row, of its relation's

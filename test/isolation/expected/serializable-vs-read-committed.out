@@ -1,0 +1,69 @@
+Parsed test spec with 2 sessions
+
+starting permutation: i_begin i_insert r_begin r_rename i_commit r_commit check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
+(1 row)
+
+step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1; <waiting ...>
+step i_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'note', t.pk_note, t.data = v.data
+  FROM tv_note t FULL JOIN tviews.public__tv_note v USING (pk_note)
+  ORDER BY 1, 2;
+
+tv  |pk|fresh
+----+--+-----
+note| 1|t    
+note| 2|t    
+post| 1|t    
+post| 2|t    
+(4 rows)
+
+
+starting permutation: r_begin r_rename i_begin i_insert r_commit i_commit check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_note created
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+ERROR:  could not serialize access: a concurrent transaction changes rows this TVIEW refresh reads
+step r_commit: COMMIT;
+step i_commit: COMMIT;
+step check: 
+  SELECT 'post' AS tv, t.pk_post AS pk, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
+  UNION ALL
+  SELECT 'note', t.pk_note, t.data = v.data
+  FROM tv_note t FULL JOIN tviews.public__tv_note v USING (pk_note)
+  ORDER BY 1, 2;
+
+tv  |pk|fresh
+----+--+-----
+note| 1|t    
+post| 1|t    
+(2 rows)
+

@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **A TVIEW's table holds only its definition's columns** (fraiseql/fraiseql#1818):
+  pg_tviews no longer adds `created_at` and `updated_at` (row write times). A definition
+  that projected either failed with `column "created_at" specified more than once`, and
+  FraiseQL's compiler took them for the document's dates. Project the domain's own
+  `created_at` / `updated_at` from the base table instead; `tviews.stats` counts what the
+  refreshes wrote.
+
+### Fixed
+
+- **Two single-row writes of different rows deadlocked when each one's refresh read
+  the other's row** (#263): two users editing their own `bio`, each having commented
+  on the other's post. Since 0.1.0-beta.27 every refresh took shared value locks on
+  what its rows read after its trigger had taken an exclusive one on what it wrote, so
+  crossed fan-outs waited for each other in a cycle (velocitybench: writes from 589 to
+  about 8 per second). A transaction now takes the shared value locks only once it has
+  changed a link: inserted or deleted rows of a table a TVIEW reads, or updated a column
+  a TVIEW's rows are linked by (a join, filter, grouping…). A refresh writes each
+  entity's rows once per statement, locked in key order (ADR 0207, amended), at every
+  isolation level: under `REPEATABLE READ` and `SERIALIZABLE` the second of two such
+  writes fails with `40001`, never with `40P01`.
+- **A TVIEW refreshed under `SERIALIZABLE` could stay stale against a `READ
+  COMMITTED` writer**: serializable snapshot isolation only orders serializable
+  transactions among themselves. `SERIALIZABLE` now takes the value locks and runs the
+  cross-checks of `REPEATABLE READ`, so one of the two fails with `40001` instead.
+- **A rename written two joins away as a fan-out patch (line → order → customer) could
+  land in the lines of an order re-pointed meanwhile**: the lookup through the table in
+  between now takes a shared value lock on each order it reaches and reads again (ADR
+  0207, amended), so a concurrent re-point waits for the rename, or the rename waits for
+  it and leaves the moved order alone. The lookup reads as the TVIEW's owner, as every
+  other refresh read does, and locks no row of the table (#268): its writer needs no
+  privilege on the table in between, and the lines of orders its row-level security
+  policies hide are patched too.
+- **A full refresh under `REPEATABLE READ` could leave a row stale**: a write to a table
+  under the `full_refresh` policy compared the TVIEW with its view under the transaction's
+  snapshot, so a row another transaction wrote and committed since then (a post inserted,
+  an item moved under a renamed category) kept that transaction's values. As every
+  refresh under `REPEATABLE READ` and `SERIALIZABLE`, it is now checked against the latest
+  snapshot and fails with `40001` instead.
+- **A rename patched into the rows embedding the renamed row could land in a row
+  re-pointed meanwhile**, which then showed the old child's fields over the new one's.
+  A patch is now written only into a row that still embeds the child; the others are
+  recomputed.
+
+- **`ALTER TABLE … ALTER COLUMN … SET EXPRESSION` and `ALTER TYPE … RENAME VALUE`
+  left the TVIEWs reading the values stale**: both change values without firing a
+  trigger. The TVIEWs reading the column (PostgreSQL 17 and later), or showing the enum
+  (directly, through a domain or an array, or named in the definition), are now
+  refreshed in the statement.
+- **A pg_tviews trigger function attached the wrong way** (a row handler fired per
+  statement, a trigger naming no TVIEW) did nothing or raised an internal error: it now
+  fails with `39P01` (trigger protocol violated).
+- **The health check missed a pg_tviews trigger switched to `ENABLE REPLICA`**, which
+  stops firing on the primary: it is reported with the disabled ones.
+
+### Changed
+
+- **A backend keeps its caches across a rolled-back transaction** (#266). Every
+  `ROLLBACK`, `ROLLBACK TO SAVEPOINT` and error caught in PL/pgSQL threw them away, so
+  the next write read the catalog again: its mapping queries rendered anew, one lookup
+  per name they hold (a write reaching three TVIEWs ran 40 statements instead of 10).
+  Retries after `40001` / `40P01` and test suites that roll back each test paid it on
+  every write. They are now forgotten only when the transaction ran DDL or filled a
+  TVIEW. A mapping query is rendered with one catalog read, whatever names it holds.
+- **A backend's first write, and its first after TVIEW DDL anywhere, plans less**
+  (#266). It reads the catalog rows of all the TVIEWs it reaches in one query, with
+  their key types and column lists, and without the change feed's collections unless
+  `pg_tviews.publish_changes = rows`; every catalog read runs from a plan the backend
+  keeps, and kept plans outlive cache invalidations (PostgreSQL revalidates them). An
+  author write reaching three TVIEWs: 21.2 → 12.0 ms CPU as a backend's first write,
+  14.5 → 4.2 ms after TVIEW DDL anywhere (stock PostgreSQL 18.6,
+  [write path](docs/benchmarks/write-path.md)).
+- **A refresh of a `UNION` TVIEW reads its backing view once** (#267). A key returned
+  twice (ADR 0216) was looked for with a read of its own before the upsert's, which cost
+  as much whenever a branch's filter or joins decide which rows exist; it is now found
+  among the rows the upsert reads, which then writes none, and refused as before
+  (`21000`, naming the key). A full refresh still checks the whole view first.
+- **A definition that reads a foreign table or a sequence follows its
+  `uncascaded_policy`**: nothing pg_tviews sees fires when their rows change, so they
+  are uncascaded reads, refused under the default `error` policy and accepted under
+  `warn`. `full_refresh` is refused for them (nothing would start the refresh). Before,
+  they were accepted under any policy and the TVIEW went stale.
+- **`TRUNCATE` of a partition and `ATTACH PARTITION` refresh only the keys the
+  partition's rows reach**, as a `DELETE` or an `INSERT` of those rows would, instead of
+  every TVIEW over the tree in full: retention jobs and partition swaps now cost what
+  their rows cost. A foreign partition, one the TVIEW's owner cannot read whole, and
+  `TRUNCATE` of the partitioned table itself still refresh in full.
+- **A table read with its inheritance children is refused** (`0A000`): writes to a child
+  fire no trigger on the parent. Read `FROM ONLY` it, or make it a partitioned table. A
+  table a TVIEW reads gets no new inheritance child (`CREATE TABLE … INHERITS`,
+  `ALTER TABLE … INHERIT`).
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` (catalog revision 10) drops `created_at` and
+  `updated_at` from every TVIEW's table, then re-derives every TVIEW (plan version 3
+  records the columns each one's rows are linked by). An object of yours that reads those
+  columns (a view) fails the update, named; so does a TVIEW that no longer analyses.
+- The re-derivation applies this release's refusals: a TVIEW reading a table with its
+  inheritance children, a foreign table or a sequence under the `error` policy, or a
+  foreign table or a sequence under `full_refresh`, fails the update, named. Those TVIEWs
+  were already stale; before updating, read `FROM ONLY` the parent, set the TVIEW's
+  `uncascaded_policy` to `warn` (`pg_tviews_create_or_replace`), or drop it.
+
 ## [0.1.0-beta.33] - 2026-10-28
 
 ### Fixed

@@ -20,6 +20,13 @@ A standby never refills a TVIEW itself: it is read-only, and the TVIEW's content
 are the primary's to maintain. The refill happens where writes happen, once
 recovery ends.
 
+**Logical replication subscribers.** A TVIEW table is published like any table:
+subscribe to it to read the TVIEW elsewhere. A subscriber that defines its own TVIEWs
+over replicated *base* tables gets no refresh from replication: the apply worker runs
+with `session_replication_role = replica`, and pg_tviews' triggers fire only on the
+origin's writes. Replicate the TVIEW tables themselves, or refresh the subscriber's
+TVIEWs (`tviews.pg_tviews_refresh()`) once it has caught up.
+
 ## Choosing LOGGED or UNLOGGED
 
 Keep a TVIEW LOGGED when it is read from replicas, or when it must be complete

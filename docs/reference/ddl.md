@@ -15,7 +15,7 @@ column names.
 
 ### `CREATE TABLE tv_<entity> AS SELECT`
 
-```sql
+```sql fragment
 CREATE TABLE tv_<entity> AS
 SELECT
     <key>       AS pk_<entity>,  -- required: names the TVIEW's rows
@@ -37,7 +37,7 @@ tv_<entity> AS SELECT …` makes an UNLOGGED one (`logged: false`), and
 
 ### `pg_tviews_create()` and `pg_tviews_create_or_replace()`
 
-```sql
+```sql fragment
 SELECT tviews.pg_tviews_create('tv_<entity>', $$ SELECT … $$,
                                options => '{}');                          -- returns text
 SELECT tviews.pg_tviews_create_or_replace('tv_<entity>', $$ SELECT … $$,
@@ -110,7 +110,7 @@ backing view (see [Privileges](#privileges)).
 **Embedding another TVIEW.** Read its table and join it on its key; the column that
 holds the key may have any name:
 
-```sql
+```sql fragment
 CREATE TABLE tv_post AS
 SELECT p.pk_post, p.id, p.author AS author_pk,
        jsonb_build_object('title', p.title, 'author', u.data) AS data
@@ -140,9 +140,9 @@ except columns whose names give them a fixed type:
 | `*_id` | the view's type | indexed |
 
 The table's columns come in this order: `pk_<entity>`, `id`, `identifier`, `data`,
-`fk_*`, `*_id`, then the others in definition order; pg_tviews adds `created_at` and
-`updated_at` (`timestamptz`). Name columns in queries rather than relying on
-`SELECT *` order.
+`fk_*`, `*_id`, then the others in definition order. pg_tviews adds no column of its
+own: a definition can project a `created_at` or `updated_at` of the domain under those
+names. Name columns in queries rather than relying on `SELECT *` order.
 
 A definition with no `pk_*` column is rewritten to the shape `pk_<entity>, id, data`:
 its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, `id`
@@ -184,7 +184,7 @@ has; `tviews.registry.options` reads it back from the catalog.
 The `indexes` option declares btree indexes over paths in `data`, written exactly as
 FraiseQL writes its filters and sorts, so the planner uses them:
 
-```sql
+```sql fragment
 SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ … $$, options => '{
   "indexes": [
     ["status", "created_at"],
@@ -223,7 +223,7 @@ table, triggers and registration), as when a base table is dropped with `CASCADE
 
 ### Example
 
-```sql
+```sql fragment
 CREATE TABLE tv_post AS
 SELECT
     p.pk_post,
@@ -404,7 +404,13 @@ A definition is refused, nothing created, when:
   than `pg_tviews.max_dependency_depth` (10; `54001`);
 - it reads a table no cascade reaches, calls a function that may read tables, or reads
   the current time, without declaring what to do about it (`22023`; see the next
-  sections).
+  sections);
+- it reads a table with its inheritance children (no `ONLY`; `0A000`): a write to a
+  child fires no trigger on the parent. Read `FROM ONLY` the table, or make it a
+  partitioned table. A table a TVIEW reads gets no new inheritance child
+  (`CREATE TABLE … INHERITS`, `ALTER TABLE … INHERIT` fail with `0A000`);
+- it reads a temporary table: PostgreSQL refuses the backing view it would need
+  (`cannot create temporary relation in non-temporary schema`).
 
 The [error reference](../error-reference.md) lists every SQLSTATE.
 
@@ -472,15 +478,16 @@ miss the rows of a statement that names a partition. Every partition, leaf or mi
 level, also gets the flush and `AFTER TRUNCATE` triggers, because a statement
 trigger fires only on the table the statement names. So a write or a `TRUNCATE` that
 targets a partition directly refreshes the TVIEW like one through the partitioned
-table, and a `TRUNCATE` of the partitioned table refreshes it once.
+table, and a `TRUNCATE` of the partitioned table refreshes it in full, once.
 
 Partitions created (`CREATE TABLE … PARTITION OF`, also from a function such as a
 partition manager's) or attached after the TVIEW get the same triggers, and a
 detached one loses them. `ATTACH`, `DETACH` and `DROP TABLE` of a partition move
 rows in or out with no row trigger firing:
 
-- A partition dropped (`DROP TABLE`, also several at once or a middle level) or
-  detached (`DETACH PARTITION`) takes its rows out of every TVIEW over a table above it
+- A partition dropped (`DROP TABLE`, also several at once or a middle level),
+  truncated (`TRUNCATE` of the partition) or detached (`DETACH PARTITION`) takes its
+  rows out of every TVIEW over a table above it
   (the root, or a partitioned table in between) as a `DELETE` of them would: before the
   statement runs, the partition and everything below it are locked as the statement
   locks them, its rows are mapped to the TVIEW keys they reach, and those keys are
@@ -490,8 +497,12 @@ rows in or out with no row trigger firing:
   whole (partitions keep their own privileges and row security), when the partition is
   a foreign table (`DROP FOREIGN TABLE`; it is not read, as it may be unreachable), or
   when the table is `all_keys` under `full_refresh`.
-- `ATTACH PARTITION` and `DETACH … CONCURRENTLY` (which commits in the middle, and
-  its `FINALIZE`) refresh the TVIEWs over that table in full.
+- A partition attached (`ATTACH PARTITION`) brings its rows into every TVIEW over a
+  table above it as an `INSERT` of them would: once attached, its rows are mapped to the
+  keys they reach, with the same value locks a writer takes, and those keys are
+  refreshed. The same cases as above refresh in full instead.
+- `DETACH … CONCURRENTLY` (which commits in the middle, and its `FINALIZE`) refreshes
+  the TVIEWs over that table in full.
 
 `pg_tviews_health_check()` reports a partition whose triggers are missing, and
 `pg_tviews_reregister_all()` puts them back.
@@ -512,7 +523,17 @@ listed in `tviews.registry.uncascaded_tables`. Common shapes:
   `GROUPING SETS`, or joined on a column computed by a volatile or stable
   expression;
 - a materialized view (`a materialized view: REFRESH MATERIALIZED VIEW replaces its
-  rows without firing triggers`);
+  rows without firing triggers`). Under `full_refresh`, `REFRESH MATERIALIZED VIEW`
+  rebuilds the TVIEW in the same transaction. A plain (not `CONCURRENTLY`) refresh
+  writes the materialized view's new rows frozen, so a reader whose snapshot is older
+  than its commit can see those new rows next to the TVIEW rows of before: PostgreSQL's
+  MVCC caveat for `REFRESH MATERIALIZED VIEW`, gone once the reader takes a new snapshot;
+- a foreign table (`a foreign table: its rows change on another server, which fires no
+  trigger here`) or a sequence (`a sequence: nextval() changes it without firing a
+  trigger`). Nothing pg_tviews sees tells it when they change, so `full_refresh` is
+  refused for them: declare `warn` and call `pg_tviews_refresh()` when they change. A
+  foreign *partition* of a partitioned table gets the triggers, but a write made on the
+  remote server does not fire them either;
 - the rows of a UNION branch whose key is not a column or expression of one of
   its tables (`the TVIEW key is not a column of a base table in every UNION
   branch`);
@@ -551,7 +572,7 @@ HINT:  To refresh public.tv_report in full on such writes: pg_tviews_create_or_r
 
 Declare it with the TVIEW:
 
-```sql
+```sql fragment
 SELECT pg_tviews_create_or_replace('tv_report', $$ … $$,
     options => '{"uncascaded_policy": "full_refresh"}');
 ```
@@ -572,7 +593,7 @@ the table is joined on a column pg_tviews can trace.
 A TVIEW that reads a locale table or a small reference list nothing links to the key
 can give that table its own policy, and keep refusing every other untraced read:
 
-```sql
+```sql fragment
 SELECT pg_tviews_create_or_replace('public.tv_x', $q$ … $q$, '{
   "uncascaded_policy": "error",
   "uncascaded_tables": {"public.tb_locale": "full_refresh", "catalog.tb_currency": "full_refresh"}
@@ -604,7 +625,7 @@ ERROR:  public.tv_contract calls public.label_suffix(), not immutable: the table
 Declare the tables each function reads, naming the function with its argument types
 (`[]` for a function that reads none, such as one reading a setting):
 
-```sql
+```sql fragment
 SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
     SELECT pk_contract, id, name || label_suffix() AS label FROM tb_contract $q$, '{
   "function_reads": {"public.label_suffix()": ["public.tb_setting"], "public.app_tag()": []},
@@ -636,7 +657,7 @@ with no write: `end_date >= CURRENT_DATE AS is_current` flips at midnight. Under
 `error` and `full_refresh` policies it is refused unless it declares who brings it
 up to date; under `warn` it is created with a WARNING.
 
-```sql
+```sql fragment
 SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
     SELECT pk_contract, id, name, end_date >= CURRENT_DATE AS is_current FROM tb_contract $q$,
     '{"time_refresh": "external"}');
@@ -646,7 +667,7 @@ SELECT pg_tviews_create_or_replace('public.tv_contract', $q$
 and `options->>'time_refresh'` the declaration. Writes refresh it as usual; at the boundary,
 something outside calls
 
-```sql
+```sql fragment
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent();               -- every one you own
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent('public.tv_contract');
 ```
@@ -655,7 +676,7 @@ which refreshes it in full, as a write to a `full_refresh` table does (the TVIEW
 reading it follow), and returns the TVIEWs refreshed. With pg_cron, just after
 midnight:
 
-```sql
+```sql fragment
 SELECT cron.schedule('tviews-day', '1 0 * * *',
                      'SELECT tviews.pg_tviews_refresh_time_dependent()');
 ```
@@ -691,7 +712,7 @@ write it in the definition, `(now() AT TIME ZONE 'Europe/Paris')::date`, and cal
 
 To compare a TVIEW with its definition, run the definition under the same settings:
 
-```sql
+```sql fragment
 BEGIN;
 SET LOCAL TimeZone = 'UTC'; SET LOCAL DateStyle = 'ISO, YMD'; SET LOCAL IntervalStyle = 'postgres';
 SET LOCAL extra_float_digits = 1; SET LOCAL bytea_output = 'hex';
@@ -725,7 +746,7 @@ executable by `PUBLIC` ([Operator role](../user-guides/operators.md#operator-rol
 
 ## DROP TABLE tv_*
 
-```sql
+```sql fragment
 DROP TABLE [IF EXISTS] tv_<entity> [CASCADE];
 -- or
 SELECT tviews.pg_tviews_drop('tv_<entity>', if_exists => true, cascade => false);
@@ -739,7 +760,7 @@ view depends on its table, and PostgreSQL refuses (`cannot drop table tv_user be
 other objects depend on it`). Drop the readers first, or use `CASCADE`, which drops
 every TVIEW that reads it too. To list them:
 
-```sql
+```sql fragment
 SELECT schema, name FROM tviews.registry
 WHERE 'public.tv_user'::regclass = ANY (base_tables);
 ```
@@ -764,7 +785,7 @@ Change a TVIEW's definition or storage with `pg_tviews_create_or_replace()`, whi
 the smallest change (`unchanged`, `altered`, `replaced` in place, or `rebuilt`). Pass
 every option the TVIEW should have: one left out goes back to its default.
 
-```sql
+```sql fragment
 SELECT tviews.pg_tviews_create_or_replace('tv_post', $$ SELECT … $$,
                                           '{"fillfactor": 90}');
 ```
@@ -782,7 +803,7 @@ A retype or a drop of such a column is not followed: the TVIEW's backing view
 (`2BP01`). Drop the TVIEW with `pg_tviews_drop()`, change the column, and create it
 again with the new definition, which fills it from the view:
 
-```sql
+```sql fragment
 SELECT tviews.pg_tviews_drop('tv_user');
 ALTER TABLE tb_user ALTER COLUMN age TYPE bigint;
 SELECT tviews.pg_tviews_create_or_replace('tv_user', $$ SELECT … $$);
@@ -790,6 +811,13 @@ SELECT tviews.pg_tviews_create_or_replace('tv_user', $$ SELECT … $$);
 
 `DROP COLUMN … CASCADE` drops the backing view, and with it the whole TVIEW: its
 registration, `tv_<entity>` and its triggers.
+
+Two statements change the values a TVIEW reads without writing a row, and refresh the
+TVIEWs reading them in the statement: `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`
+(PostgreSQL 17 and later) on a generated column a definition reads, and
+`ALTER TYPE … RENAME VALUE` of an enum a TVIEW shows (a column of it, of a domain or an
+array over it, or a label named in the definition). `DROP EXPRESSION` keeps the
+values: nothing to refresh.
 
 The columns of `tv_<entity>` itself are its definition's: refreshes write each one
 by name, with the backing view's type. `ALTER TABLE tv_<entity>` refuses (`42809`)

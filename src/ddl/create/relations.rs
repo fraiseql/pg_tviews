@@ -332,10 +332,6 @@ pub(crate) fn create_materialized_table(
         });
     }
 
-    // Add timestamps for tracking
-    columns.push("created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string());
-    columns.push("updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string());
-
     let columns_sql = columns.join(",\n    ");
 
     let unlogged_keyword = if storage.logged { "" } else { "UNLOGGED " };

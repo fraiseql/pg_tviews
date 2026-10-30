@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod graph;
 pub(crate) mod indexes;
+mod partition;
 pub mod plan;
 pub mod queries;
 pub mod reads;
@@ -10,6 +11,7 @@ pub mod row;
 
 pub use collections::Collection;
 pub use graph::EntityDepGraph;
+pub use partition::partition_root;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::rc::Rc;
@@ -50,6 +52,10 @@ pub struct TviewMeta {
 
     /// The column that names the TVIEW's rows (ADR 0169).
     pub identity: RowIdentity,
+    /// How the values of that column are bound.
+    pub key_type: KeyType,
+    /// The columns of its backing view, in order: what its upserts write.
+    pub view_columns: Vec<String>,
 
     /// The GraphQL type name of its rows ([`typename`]), shared by every change
     /// the journal records.
@@ -58,8 +64,10 @@ pub struct TviewMeta {
     /// is written in JSON; `None` without such a column.
     pub public_id: Option<PublicId>,
     /// Its references to other TVIEWs, as the change feed names the collections
-    /// its rows belong to.
+    /// its rows belong to: read only while the feed names them.
     pub collections: Vec<Rc<Collection>>,
+    /// Whether `collections` was read.
+    collections_read: bool,
 }
 
 /// A TVIEW's entity and plan: all a write reads of the TVIEWs it does not reach
@@ -172,15 +180,16 @@ impl RowIdentity {
 /// append their own `WHERE` / `ORDER BY`. One copy keeps the loaders from drifting
 /// out of sync as catalog columns are added.
 ///
-/// Inside the extension's own script (an upgrade re-registering TVIEWs between two
-/// scripts) the catalog can be an earlier release's, without the view the
-/// collections are read from: they are left out, and nothing loaded then is
-/// cached ([`remember`]).
-pub(crate) fn meta_select() -> String {
-    let collections = if crate::revision::in_own_script() {
-        "NULL::pg_catalog.jsonb AS collections".to_string()
-    } else {
+/// The collections are read only when `with_collections`: planning their subquery
+/// costs ten times the rest. Inside the extension's own script (an upgrade
+/// re-registering TVIEWs between two scripts) the catalog can be an earlier
+/// release's, without the view they are read from: they are left out, and nothing
+/// loaded then is cached ([`remember`]).
+pub(crate) fn meta_select(with_collections: bool) -> String {
+    let collections = if with_collections && !crate::revision::in_own_script() {
         collections::collections_sql()
+    } else {
+        "NULL::pg_catalog.jsonb AS collections".to_string()
     };
     format!(
         "SELECT table_oid::oid AS tview_oid, view_oid::oid AS view_oid, entity, plan, \
@@ -195,19 +204,38 @@ pub(crate) fn meta_select() -> String {
                                 'pg_catalog.numeric'::pg_catalog.regtype) \
           FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number, \
+         (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
+                                          'pg_catalog.int4'::pg_catalog.regtype, \
+                                          'pg_catalog.int8'::pg_catalog.regtype) THEN NULL \
+                 ELSE pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(t.typname) END \
+          FROM pg_catalog.pg_attribute a \
+          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+          WHERE a.attrelid = table_oid AND a.attname = identity -> 'columns' -> 0 ->> 'name' \
+          AND NOT a.attisdropped) AS key_type, \
+         ARRAY(SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
+               WHERE a.attrelid = view_oid AND a.attnum > 0 AND NOT a.attisdropped \
+               ORDER BY a.attnum) AS view_columns, \
          {collections} \
          FROM {}",
         crate::catalog::meta_table()
     )
 }
 
+/// Whether the change feed names collections: then the catalog rows read carry them.
+fn feed_collections() -> bool {
+    crate::config::publish_changes() == Some(crate::queue::published::Publish::Rows)
+}
+
 /// The cached catalog row of `entity`, unless `pg_tviews.table_cache_enabled` is
-/// off.
+/// off, or the feed names collections and it was read without them.
 fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     if !crate::config::table_cache_enabled() {
         return None;
     }
-    let meta = crate::cache::METAS.with(|m| m.get(&entity.to_string()));
+    let meta = crate::cache::METAS
+        .with(|m| m.get(&entity.to_string()))
+        .filter(|meta| meta.collections_read || !feed_collections());
     if meta.is_some() {
         crate::metrics::metrics_api::record_table_cache_hit();
     } else {
@@ -216,26 +244,23 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     meta
 }
 
-/// Count the catalog query just made and cache its result, unless the extension's
-/// own script is running ([`meta_select`]).
-fn remember(loaded: Option<TviewMeta>) -> Option<Rc<TviewMeta>> {
-    crate::metrics::metrics_api::record_catalog_lookup();
-    let loaded = loaded.map(Rc::new);
+/// Cache a catalog row just read, unless the extension's own script is running
+/// ([`meta_select`]).
+fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
+    let meta = Rc::new(loaded);
     if crate::revision::in_own_script() {
-        return loaded;
+        return meta;
     }
-    if let Some(meta) = &loaded {
-        crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
-        // A parent's `id` column is part of how the collections are named.
-        let parents: Vec<Oid> = meta
-            .collections
-            .iter()
-            .map(|c| c.parent_table_oid)
-            .collect();
-        crate::cache::watch(&parents);
-        crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
-    }
-    loaded
+    crate::cache::watch(&[meta.tview_oid, meta.view_oid]);
+    // A parent's `id` column is part of how the collections are named.
+    let parents: Vec<Oid> = meta
+        .collections
+        .iter()
+        .map(|c| c.parent_table_oid)
+        .collect();
+    crate::cache::watch(&parents);
+    crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
+    meta
 }
 
 impl TviewMeta {
@@ -257,38 +282,6 @@ impl TviewMeta {
             text,
             kind: self.public_id.unwrap_or(PublicId::String),
         }
-    }
-
-    /// How the values of the identity column are bound: the type of the column in
-    /// the TVIEW's table (cached per backend).
-    ///
-    /// # Errors
-    /// Returns an error if the catalog cannot be read.
-    pub fn key_type(&self) -> crate::TViewResult<KeyType> {
-        if let Some(key_type) = crate::cache::KEY_TYPES.with(|m| m.get(&self.tview_oid)) {
-            return Ok(key_type);
-        }
-        let name = Spi::get_one_with_args::<String>(
-            "SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
-                                             'pg_catalog.int4'::pg_catalog.regtype, \
-                                             'pg_catalog.int8'::pg_catalog.regtype) THEN NULL \
-                    ELSE pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(t.typname) END \
-             FROM pg_catalog.pg_attribute a \
-             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
-             WHERE a.attrelid = $1 AND a.attname = $2 AND NOT a.attisdropped",
-            &[
-                crate::utils::spi::oid(self.tview_oid),
-                crate::utils::spi::text(self.identity.column.as_str()),
-            ],
-        )
-        .or_else(|e| match e {
-            spi::Error::InvalidPosition => Ok(None),
-            e => Err(e),
-        })?;
-        let key_type = name.map_or(KeyType::Int, KeyType::Text);
-        crate::cache::KEY_TYPES.with(|m| m.insert(self.tview_oid, key_type.clone()));
-        Ok(key_type)
     }
 
     /// What a write to `table_oid`, a table no cascade reaches, does: its own
@@ -317,34 +310,90 @@ impl TviewMeta {
 
     /// Look up metadata by entity name (cached per backend, shared: a lookup
     /// copies nothing).
+    ///
+    /// # Errors
+    /// The catalog cannot be read, or the row does not decode.
     pub fn load_by_entity(entity_name: &str) -> crate::TViewResult<Option<Rc<Self>>> {
         if let Some(meta) = cached(entity_name) {
             return Ok(Some(meta));
         }
-        let loaded = Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
-            let args = vec![crate::utils::spi::text(entity_name)];
-            let mut rows =
-                client.select(&format!("{} WHERE entity = $1", meta_select()), None, &args)?;
+        Self::load(&[entity_name.to_string()], entity_name)
+    }
 
-            match rows.next() {
-                Some(row) => Ok(Some(Self::from_spi_row(&row)?)),
-                None => Ok(None),
+    /// `entity_name`'s catalog row ([`Self::load_by_entity`]), read on a miss with
+    /// those of every other TVIEW whose plan maps `table_oid` and that is not
+    /// cached: one catalog read for the TVIEWs a write to the table reaches.
+    ///
+    /// # Errors
+    /// The catalog cannot be read, or `entity_name`'s row does not decode.
+    pub fn load_reaching(
+        entity_name: &str,
+        table_oid: Oid,
+    ) -> crate::TViewResult<Option<Rc<Self>>> {
+        if let Some(meta) = cached(entity_name) {
+            return Ok(Some(meta));
+        }
+        let mut entities = vec![entity_name.to_string()];
+        if crate::config::table_cache_enabled() {
+            let relid = table_oid.to_u32();
+            entities.extend(
+                crate::cache::plans()?
+                    .iter()
+                    .filter(|e| e.entity != entity_name)
+                    .filter(|e| e.plan.tables.iter().any(|m| m.relid == relid))
+                    .filter(|e| cached(&e.entity).is_none())
+                    .map(|e| e.entity.clone()),
+            );
+        }
+        Self::load(&entities, entity_name)
+    }
+
+    /// Read the catalog rows of `entities` and cache them; `wanted`'s. A row of
+    /// another entity that does not decode is left for its own read.
+    fn load(entities: &[String], wanted: &str) -> crate::TViewResult<Option<Rc<Self>>> {
+        let mut found = None;
+        for (entity, meta) in Self::read(
+            "WHERE entity OPERATOR(pg_catalog.=) ANY ($1)",
+            &[crate::utils::spi::text_array_of(entities)],
+            Derived::Strict,
+        )? {
+            if entity == wanted {
+                found = Some(remember(meta?));
+            } else if let Ok(meta) = meta {
+                remember(meta);
             }
-        })?;
-        Ok(remember(loaded))
+        }
+        Ok(found)
+    }
+
+    /// The catalog rows `clause` (a `WHERE` or `ORDER BY` clause) selects, each
+    /// with its entity and decoded as `derived` says.
+    fn read(
+        clause: &str,
+        args: &[pgrx::datum::DatumWithOid<'_>],
+        derived: Derived,
+    ) -> crate::TViewResult<Vec<(String, crate::TViewResult<Self>)>> {
+        let with_collections = feed_collections();
+        let sql = format!("{} {clause}", meta_select(with_collections));
+        crate::utils::spi::catalog_rows(&sql, args, |row| {
+            let entity = row.named::<String>("entity")?.unwrap_or_default();
+            let meta = Self::decode(row, derived).map(|mut meta| {
+                meta.collections_read = with_collections;
+                meta
+            });
+            Ok((entity, meta))
+        })
     }
 
     /// Load all TVIEW metadata
+    ///
+    /// # Errors
+    /// The catalog cannot be read, or a row does not decode.
     pub fn load_all() -> crate::TViewResult<Vec<Self>> {
-        Spi::connect(|client| -> crate::TViewResult<Vec<Self>> {
-            let rows = client.select(&format!("{} ORDER BY entity", meta_select()), None, &[])?;
-
-            let mut result = Vec::new();
-            for row in rows {
-                result.push(Self::from_spi_row(&row)?);
-            }
-            Ok(result)
-        })
+        Self::read("ORDER BY entity", &[], Derived::Strict)?
+            .into_iter()
+            .map(|(_, meta)| meta)
+            .collect()
     }
 
     /// Every TVIEW's entity and plan, by entity: the write path's read of the
@@ -355,28 +404,22 @@ impl TviewMeta {
     /// # Errors
     /// The catalog cannot be read, or a plan does not decode.
     pub fn load_plans() -> crate::TViewResult<Vec<PlanEntry>> {
-        Spi::connect(|client| -> crate::TViewResult<Vec<PlanEntry>> {
-            let rows = client.select(
-                &format!(
-                    "SELECT entity, plan FROM {} ORDER BY entity",
-                    crate::catalog::meta_table()
-                ),
-                None,
-                &[],
-            )?;
-            let mut entries = Vec::new();
-            for row in rows {
-                let entity = row["entity"].value::<String>()?.unwrap_or_default();
+        crate::utils::spi::catalog_rows(
+            &format!(
+                "SELECT entity, plan FROM {} ORDER BY entity",
+                crate::catalog::meta_table()
+            ),
+            &[],
+            |row| {
+                let entity = row.named::<String>("entity")?.unwrap_or_default();
                 let plan = plan::TviewPlan::decode(
                     &entity,
-                    row["plan"]
-                        .value::<pgrx::JsonB>()?
+                    row.named::<pgrx::JsonB>("plan")?
                         .map_or(serde_json::Value::Null, |j| j.0),
                 )?;
-                entries.push(PlanEntry { entity, plan });
-            }
-            Ok(entries)
-        })
+                Ok(PlanEntry { entity, plan })
+            },
+        )
     }
 
     /// The TVIEWs whose catalog row does not decode, each with why.
@@ -384,17 +427,10 @@ impl TviewMeta {
     /// # Errors
     /// The catalog cannot be read.
     pub fn unreadable() -> crate::TViewResult<Vec<(String, String)>> {
-        Spi::connect(|client| -> crate::TViewResult<Vec<(String, String)>> {
-            let rows = client.select(&format!("{} ORDER BY entity", meta_select()), None, &[])?;
-            let mut unreadable = Vec::new();
-            for row in rows {
-                if let Err(e) = Self::from_spi_row(&row) {
-                    let entity = row["entity"].value::<String>()?.unwrap_or_default();
-                    unreadable.push((entity, e.to_string()));
-                }
-            }
-            Ok(unreadable)
-        })
+        Ok(Self::read("ORDER BY entity", &[], Derived::Strict)?
+            .into_iter()
+            .filter_map(|(entity, meta)| meta.err().map(|e| (entity, e.to_string())))
+            .collect())
     }
 
     /// The entity of the TVIEW whose table is `tview_oid`, read without decoding
@@ -423,25 +459,20 @@ impl TviewMeta {
     /// # Errors
     /// The catalog cannot be read.
     pub fn load_to_rederive(entity_name: &str) -> crate::TViewResult<Option<Self>> {
-        Spi::connect(|client| -> crate::TViewResult<Option<Self>> {
-            let args = vec![crate::utils::spi::text(entity_name)];
-            let mut rows =
-                client.select(&format!("{} WHERE entity = $1", meta_select()), None, &args)?;
-            rows.next()
-                .map(|row| Self::decode(&row, Derived::Rederive))
-                .transpose()
-        })
+        Self::read(
+            "WHERE entity OPERATOR(pg_catalog.=) ANY ($1)",
+            &[crate::utils::spi::text_array_of(&[entity_name.to_string()])],
+            Derived::Rederive,
+        )?
+        .into_iter()
+        .next()
+        .map(|(_, meta)| meta)
+        .transpose()
     }
 
-    /// Parse a row of [`meta_select`] into a `TviewMeta`.
-    pub fn from_spi_row(row: &spi::SpiHeapTupleData) -> crate::TViewResult<Self> {
-        Self::decode(row, Derived::Strict)
-    }
-
-    fn decode(row: &spi::SpiHeapTupleData, derived: Derived) -> crate::TViewResult<Self> {
+    fn decode(row: &crate::utils::spi::KeptRow<'_>, derived: Derived) -> crate::TViewResult<Self> {
         let entity_name: String =
-            row["entity"]
-                .value()?
+            row.named::<String>("entity")?
                 .ok_or_else(|| crate::TViewError::SpiError {
                     query: String::new(),
                     error: "entity column is NULL".to_string(),
@@ -455,31 +486,28 @@ impl TviewMeta {
             })
         };
         let uncascaded_policy = policy(
-            &row["uncascaded_policy"]
-                .value::<String>()?
+            &row.named::<String>("uncascaded_policy")?
                 .unwrap_or_default(),
         )?;
 
-        let table_policies = row["uncascaded_table_oids"]
-            .value::<Vec<Oid>>()?
+        let table_policies = row
+            .named::<Vec<Oid>>("uncascaded_table_oids")?
             .unwrap_or_default()
             .into_iter()
             .zip(
-                row["uncascaded_table_policies"]
-                    .value::<Vec<String>>()?
+                row.named::<Vec<String>>("uncascaded_table_policies")?
                     .unwrap_or_default(),
             )
             .map(|(oid, name)| Ok((oid, policy(&name)?)))
             .collect::<crate::TViewResult<_>>()?;
 
         let mut function_reads: Vec<(String, Vec<Oid>)> = Vec::new();
-        for (function, table) in row["function_read_functions"]
-            .value::<Vec<String>>()?
+        for (function, table) in row
+            .named::<Vec<String>>("function_read_functions")?
             .unwrap_or_default()
             .into_iter()
             .zip(
-                row["function_read_tables"]
-                    .value::<Vec<Option<Oid>>>()?
+                row.named::<Vec<Option<Oid>>>("function_read_tables")?
                     .unwrap_or_default(),
             )
         {
@@ -493,10 +521,7 @@ impl TviewMeta {
 
         let identity = RowIdentity::from_catalog(
             &entity_name,
-            row["identity"]
-                .value::<pgrx::JsonB>()?
-                .map(|j| j.0)
-                .as_ref(),
+            row.named::<pgrx::JsonB>("identity")?.map(|j| j.0).as_ref(),
         );
         let identity = match (identity, derived) {
             (Ok(identity), _) => identity,
@@ -505,8 +530,7 @@ impl TviewMeta {
         };
         let plan = plan::TviewPlan::decode(
             &entity_name,
-            row["plan"]
-                .value::<pgrx::JsonB>()?
+            row.named::<pgrx::JsonB>("plan")?
                 .map_or(serde_json::Value::Null, |j| j.0),
         );
         let plan = match (plan, derived) {
@@ -516,23 +540,22 @@ impl TviewMeta {
         };
 
         let typename: Rc<str> =
-            typename(&entity_name, row["graphql_typename"].value::<String>()?).into();
+            typename(&entity_name, row.named::<String>("graphql_typename")?).into();
         let collections = collections::decode(
             &typename,
-            row["collections"]
-                .value::<pgrx::JsonB>()?
+            row.named::<pgrx::JsonB>("collections")?
                 .map(|j| j.0)
                 .as_ref(),
         );
         Ok(Self {
-            tview_oid: row["tview_oid"]
-                .value()?
-                .ok_or_else(|| crate::TViewError::SpiError {
+            tview_oid: row.named::<Oid>("tview_oid")?.ok_or_else(|| {
+                crate::TViewError::SpiError {
                     query: String::new(),
                     error: "tview_oid column is NULL".to_string(),
-                })?,
-            view_oid: row["view_oid"]
-                .value()?
+                }
+            })?,
+            view_oid: row
+                .named::<Oid>("view_oid")?
                 .ok_or_else(|| crate::TViewError::SpiError {
                     query: String::new(),
                     error: "view_oid column is NULL".to_string(),
@@ -543,13 +566,17 @@ impl TviewMeta {
             uncascaded_policy,
             table_policies,
             function_reads,
-            time_refresh_external: row["time_refresh_external"]
-                .value::<bool>()?
-                .unwrap_or(false),
-            time_dependent: row["time_dependent"].value::<bool>()?.unwrap_or(false),
+            time_refresh_external: row.named::<bool>("time_refresh_external")?.unwrap_or(false),
+            time_dependent: row.named::<bool>("time_dependent")?.unwrap_or(false),
             identity,
+            key_type: row
+                .named::<String>("key_type")?
+                .map_or(KeyType::Int, KeyType::Text),
+            view_columns: row
+                .named::<Vec<String>>("view_columns")?
+                .unwrap_or_default(),
             typename,
-            public_id: row["public_id_number"].value::<bool>()?.map(|number| {
+            public_id: row.named::<bool>("public_id_number")?.map(|number| {
                 if number {
                     PublicId::Number
                 } else {
@@ -557,6 +584,7 @@ impl TviewMeta {
                 }
             }),
             collections,
+            collections_read: false,
         })
     }
 }
@@ -585,9 +613,12 @@ impl Default for TviewMeta {
             time_refresh_external: false,
             time_dependent: false,
             identity: RowIdentity::unknown(),
+            key_type: KeyType::Int,
+            view_columns: Vec::new(),
             typename: "".into(),
             public_id: None,
             collections: Vec::new(),
+            collections_read: false,
         }
     }
 }

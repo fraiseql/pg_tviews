@@ -1,0 +1,49 @@
+Parsed test spec with 2 sessions
+
+starting permutation: t_begin t_truncate w_begin w_insert t_commit w_commit w_check
+pg_tviews_create             
+-----------------------------
+TVIEW public.tv_order created
+(1 row)
+
+step t_begin: BEGIN;
+step t_truncate: TRUNCATE tb_line_1;
+step w_begin: BEGIN;
+step w_insert: INSERT INTO tb_line VALUES (120, 1, 3); <waiting ...>
+step t_commit: COMMIT;
+step w_insert: <... completed>
+step w_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_order, t.data->'lines' AS lines, t.data = v.data AS fresh
+  FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order) ORDER BY 1;
+
+pk_order|lines |fresh
+--------+------+-----
+       1|[2, 3]|t    
+       2|null  |t    
+(2 rows)
+
+
+starting permutation: w_begin w_insert t_begin t_truncate w_commit t_commit w_check
+pg_tviews_create             
+-----------------------------
+TVIEW public.tv_order created
+(1 row)
+
+step w_begin: BEGIN;
+step w_insert: INSERT INTO tb_line VALUES (120, 1, 3);
+step t_begin: BEGIN;
+step t_truncate: TRUNCATE tb_line_1; <waiting ...>
+step w_commit: COMMIT;
+step t_truncate: <... completed>
+step t_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_order, t.data->'lines' AS lines, t.data = v.data AS fresh
+  FROM tv_order t FULL JOIN tviews.public__tv_order v USING (pk_order) ORDER BY 1;
+
+pk_order|lines |fresh
+--------+------+-----
+       1|[2, 3]|t    
+       2|null  |t    
+(2 rows)
+

@@ -171,9 +171,8 @@ END $$;
 \echo ''
 \echo 'Test 4: Child update does not cascade to parent'
 
--- Record the user row's tuple id before the post update: the file runs in one
--- transaction, where updated_at (now()) cannot change, but any rewrite of the
--- row gives it a new ctid.
+-- Record the user row's tuple id before the post update: any rewrite of the row
+-- gives it a new ctid.
 CREATE TEMP TABLE user_before AS SELECT ctid AS tid FROM tv_user WHERE pk_user = 1;
 
 -- Update post

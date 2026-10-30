@@ -42,25 +42,10 @@ use crate::utils::{ident, qualified_relname_from_oid};
 pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super::Touched> {
     let keys = std::slice::from_ref(key);
     // Wait for a concurrent writer of this row before reading the view.
-    let locked = super::lock_rows(
-        meta,
-        &qualified_relname_from_oid(meta.tview_oid)?,
-        keys,
-        !meta.identity.is_pk(&meta.entity_name),
-    )?;
+    let locked = super::lock_rows(meta, &qualified_relname_from_oid(meta.tview_oid)?, keys)?;
 
-    // A key names one row: a UNION view returning several for it is refused.
-    let key_type = meta.key_type()?;
-    super::refuse_duplicate_keys(
-        meta,
-        &format!(
-            "{} = {}",
-            ident::quoted(&meta.identity.column),
-            super::key_cast(&key_type, "$1", false)
-        ),
-        &[super::key_scalar(&key_type, key)?],
-    )?;
-    // Upsert straight from v_entity: the view is evaluated once. No source row
+    // Upsert straight from v_entity: the view is evaluated once, and a UNION view
+    // returning several rows for the key is refused there. No source row
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
     crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
@@ -85,17 +70,17 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
 /// Removing the row here is what makes DELETE propagate to the tview instead of
 /// leaving a stale row.
 fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<i64>> {
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::pg_catalog.int8, {}",
-        super::key_cast(&key_type, "$1", false),
+        super::key_cast(key_type, "$1", false),
         meta.returned(&qi_tv, false)
     );
-    super::run_journaled_delete(meta, &sql, &[super::key_scalar(&key_type, key)?])
+    super::run_journaled_delete(meta, &sql, &[super::key_scalar(key_type, key)?])
 }
 
 /// Write the row `key` of `meta`'s TVIEW from its backing view, its document
@@ -121,7 +106,7 @@ fn write_row(
              patches.",
         );
     }
-    let key_type = meta.key_type()?;
+    let key_type = &meta.key_type;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;
     let qi_key = ident::quoted(key_col);
@@ -130,9 +115,9 @@ fn write_row(
     let qi_view = qualified_relname_from_oid(meta.view_oid)?;
 
     // Get view column names (authoritative list of data columns; excludes timestamps)
-    let col_names = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    let col_names = &meta.view_columns;
 
-    let col_list = super::column_list(&col_names);
+    let col_list = super::column_list(col_names);
 
     // UPSERT: INSERT from view (timestamps use DEFAULT NOW()), or UPDATE on conflict
     // when a column actually changed. This handles both new rows (inserted into
@@ -143,13 +128,13 @@ fn write_row(
         &col_list,
         &format!(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
-            super::key_cast(&key_type, "$1", false)
+            super::key_cast(key_type, "$1", false)
         ),
         &format!(
             "ON CONFLICT ({qi_key}) {}",
-            super::upsert_conflict_action(&qi_tv, &col_names, key_col)
+            super::upsert_conflict_action(&qi_tv, col_names, key_col)
         ),
-        &[super::key_scalar(&key_type, key)?],
+        &[super::key_scalar(key_type, key)?],
         old,
     )
 }

@@ -207,7 +207,7 @@ fn create_tview_inner(
     // aggregate TVIEW, one per declared group key).
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
-    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
+    let base_table_oids = crate::dependency::find_base_tables(&view_name, &view_schema)?;
     let derivation = derive(
         entity_name,
         group_keys,
@@ -352,7 +352,7 @@ pub fn reregister_metadata(
     // the text, which the current search_path may resolve differently.
     let schema = ViewColumns::classify(crate::utils::column_types(view_oid)?);
     let (view_schema, view_name) = super::relation_name(view_oid)?;
-    let base_table_oids = crate::dependency::find_base_tables(&view_name, Some(&view_schema))?;
+    let base_table_oids = crate::dependency::find_base_tables(&view_name, &view_schema)?;
     let group_keys = stored_group_keys(entity_name)?;
     // The stored policies hold; an `error` table no cascade reaches aborts the
     // re-registration (and the ALTER that caused it).

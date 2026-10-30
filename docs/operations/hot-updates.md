@@ -1,6 +1,6 @@
 # HOT Updates and TVIEW Storage
 
-Nearly every refresh rewrites a TVIEW row's `data` and `updated_at`. Whether that
+Nearly every refresh rewrites a TVIEW row's `data`. Whether that
 rewrite is a **HOT** (heap-only tuple) update decides most of what a refresh
 costs physically. This page explains how TVIEW tables are set up to keep
 refreshes HOT, and which choices break that.
@@ -32,7 +32,7 @@ condition 2.
 
 The indexes a TVIEW does get (`pk_<entity>`, `id`, UUID FKs, and the
 `(fk_<x>, pk_<entity>)` propagation indexes) are all on columns that a `data`
-refresh doesn't change. `updated_at` is never indexed. With these defaults,
+refresh doesn't change. With these defaults,
 single-row refreshes measure **100 % HOT** (`regress_hot_defaults.sql`).
 
 The defaults are fixed: no setting changes them. `pg_tviews_create()` and

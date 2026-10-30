@@ -1,9 +1,19 @@
 # `pg_tviews_profile()`: per-TVIEW physical health
 
+To follow the examples, a TVIEW to profile:
+
 ```sql
-SELECT * FROM pg_tviews_profile();              -- every TVIEW
-SELECT * FROM pg_tviews_profile('post');        -- one TVIEW (post, tv_post or public.tv_post)
-SELECT * FROM pg_tviews_profile(NULL, 5000);    -- fan-out warning threshold
+CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE TABLE tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                      title text);
+SELECT tviews.pg_tviews_create('tv_post',
+    $$SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post$$);
+```
+
+```sql
+SELECT * FROM tviews.pg_tviews_profile();              -- every TVIEW
+SELECT * FROM tviews.pg_tviews_profile('post');        -- one TVIEW (post, tv_post or public.tv_post)
+SELECT * FROM tviews.pg_tviews_profile(NULL, 5000);    -- fan-out warning threshold
 ```
 
 Reports what refreshes cost PostgreSQL for each TVIEW, from the catalogs and the
@@ -41,7 +51,7 @@ existing ones are never renamed or retyped. Warning texts may be reworded.
 | condition | advice |
 |---|---|
 | an `fk_*` column has no leading index | cascades scan the whole TVIEW: run `pg_tviews_ensure_propagation_indexes(tview)` |
-| more than 1000 updates, HOT ratio under 50%, an index on `data` or `updated_at` | that index prevents HOT updates |
+| more than 1000 updates, HOT ratio under 50%, an index on `data` | that index prevents HOT updates |
 | a GIN index on `data` never scanned since the statistics reset | it costs every refresh for no reader |
 | fillfactor 100 and more updates than rows | refreshed rows cannot stay on their page (option `fillfactor`, default 85) |
 | TOAST data over 30% of the table | each refresh rewrites whole documents ([ADR 0094](../adr/0094-large-document-refresh.md)) |

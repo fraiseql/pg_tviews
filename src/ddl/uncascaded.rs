@@ -16,6 +16,9 @@ pub(crate) struct UncascadedTable {
     pub name: String,
     /// How the view reads it, when known.
     pub reason: String,
+    /// `pg_tviews` learns when it changes (a write, a REFRESH): a full refresh can
+    /// follow. Not for a foreign table or a sequence.
+    pub followed: bool,
 }
 
 /// What a TVIEW declares about the reads no cascade reaches: its policy, the
@@ -279,6 +282,27 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) {
         .report(PgLogLevel::WARNING);
     }
     let refreshed = under(UncascadedPolicy::FullRefresh);
+    // A full refresh needs something to start it: nothing tells pg_tviews when a
+    // foreign table or a sequence changes.
+    let unfollowed: Vec<&UncascadedTable> =
+        refreshed.iter().copied().filter(|t| !t.followed).collect();
+    if !unfollowed.is_empty() {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
+            format!(
+                "{}, and no write pg_tviews sees tells it when they change: the \
+                 full_refresh policy would never run",
+                describe(tview, &unfollowed, "would not refresh")
+            ),
+            function_name!(),
+        )
+        .set_hint(format!(
+            "Declare them \"warn\" and call pg_tviews_refresh('{tview}') when they change: {}. \
+             Or read the data from a table pg_tviews can trace.",
+            how_to_declare(tview, &unfollowed, "warn")
+        ))
+        .report(PgLogLevel::ERROR);
+    }
     if !refreshed.is_empty() {
         notice!(
             "{}",
@@ -335,7 +359,10 @@ fn function_read(function: &str, table: Oid) -> TViewResult<crate::lineage::Func
         relid: table.to_u32(),
         relname: relname.unwrap_or_default(),
         qualified: crate::utils::qualified_relname_from_oid(table)?,
-        matview: relkind.as_deref() == Some("m"),
+        unwatched: relkind
+            .as_deref()
+            .and_then(|k| k.bytes().next())
+            .and_then(crate::lineage::Unwatched::of_relkind),
         tview,
     })
 }
@@ -474,11 +501,20 @@ pub(crate) fn check_declared(
 /// # Errors
 /// Returns an error if the catalog cannot be read or a refresh fails.
 pub(crate) fn refresh_readers_of(matview: Oid) -> TViewResult<()> {
-    let entities = crate::catalog::queries::full_refresh_readers_of(matview)?;
+    refresh_entities(&crate::catalog::queries::full_refresh_readers_of(matview)?)
+}
+
+/// Refresh `entities` in full, then flush the queue, as the flush trigger does
+/// after a write: after a statement that changed what they read without firing
+/// a trigger.
+///
+/// # Errors
+/// Returns an error if a refresh fails.
+pub(crate) fn refresh_entities(entities: &[String]) -> TViewResult<()> {
     if entities.is_empty() {
         return Ok(());
     }
-    for entity in &entities {
+    for entity in entities {
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(entity);
         } else {
@@ -498,6 +534,7 @@ mod tests {
             oid: Oid::INVALID,
             name: n.to_string(),
             reason: r.to_string(),
+            followed: true,
         };
         let (a, b) = (t("public.a", "x"), t("public.b", "y"));
         assert_eq!(
@@ -560,6 +597,7 @@ mod tests {
             oid: Oid::INVALID,
             name: "public.tb_locale".to_string(),
             reason: String::new(),
+            followed: true,
         };
         assert!(
             how_to_declare("public.tv_x", &[&a], "full_refresh")

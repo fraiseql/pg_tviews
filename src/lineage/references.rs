@@ -337,7 +337,7 @@ mod tests {
                 via_tview: None,
                 in_sublink: false,
                 opaque_level: None,
-                matview: false,
+                unwatched: None,
                 tview_table: None,
             }
         }

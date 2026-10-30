@@ -31,11 +31,14 @@ TVIEW, is in `docs/operations/runbooks/scripts/health-check.sql`.
 
 ## Freshness
 
-`updated_at` on a TVIEW row moves only when the row's content changes:
+A TVIEW's table holds only its definition's columns: no write time of its own. To
+know when a row's source last changed, project the base table's own timestamp in the
+definition (an `updated_at` the application maintains). `tviews.stats` counts what the
+refreshes of each TVIEW wrote since `stats_reset`:
 
 ```sql
-SELECT max(updated_at) AS last_change, now() - max(updated_at) AS since_last_change
-FROM public.tv_user;
+SELECT schema, name, rows_written, rows_deleted, full_refreshes, stats_reset
+FROM tviews.stats WHERE schema = 'public' AND name = 'tv_user';
 ```
 
 Compare with writes to the base tables (`pg_stat_user_tables.n_tup_ins / n_tup_upd /

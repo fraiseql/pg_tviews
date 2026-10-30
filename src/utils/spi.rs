@@ -476,6 +476,43 @@ pub fn kept_rows_as<R>(
     })
 }
 
+/// The rows of the catalog query `sql`, each read by `read` ([`kept_rows_as`]),
+/// counted as a catalog lookup. A catalog read is a lookup by key: its plan is
+/// made once per backend and outlives the caches, whose invalidations are what
+/// `PostgreSQL` revalidates it for.
+///
+/// # Errors
+/// Returns an error if the query can't be prepared or doesn't return rows, or
+/// what `read` returns.
+pub fn catalog_rows<R>(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    read: impl FnMut(&KeptRow<'_>) -> TViewResult<R>,
+) -> TViewResult<Vec<R>> {
+    crate::metrics::metrics_api::record_catalog_lookup();
+    kept_rows_as(sql, args, Plan::Generic, read)
+}
+
+/// The rows of the catalog query `sql` as text ([`catalog_rows`]).
+///
+/// # Errors
+/// As [`catalog_rows`].
+pub fn catalog_text_rows(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Vec<TextRow>> {
+    catalog_rows(sql, args, |row| Ok(row.texts()))
+}
+
+/// The first column of the first row of the catalog query `sql`
+/// ([`catalog_rows`]), `None` without one.
+///
+/// # Errors
+/// As [`catalog_rows`].
+pub fn catalog_one<T: OwnedColumn>(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<Option<T>> {
+    Ok(catalog_rows(sql, args, |row| row.get::<T>(1))?
+        .into_iter()
+        .next()
+        .flatten())
+}
+
 /// `sql` for arguments of `types`, kept with `mode`, prepared on first use.
 /// Inside an SPI connection.
 fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::Rc<KeptPlan>> {
@@ -537,19 +574,27 @@ pub struct KeptRow<'a> {
 pub trait OwnedColumn: FromDatum + IntoDatum + sealed::Sealed {}
 impl OwnedColumn for i64 {}
 impl OwnedColumn for i32 {}
+impl OwnedColumn for i16 {}
 impl OwnedColumn for bool {}
 impl OwnedColumn for Oid {}
 impl OwnedColumn for String {}
 impl OwnedColumn for pgrx::JsonB {}
+impl OwnedColumn for Vec<Oid> {}
+impl OwnedColumn for Vec<Option<Oid>> {}
+impl OwnedColumn for Vec<String> {}
 
 mod sealed {
     pub trait Sealed {}
     impl Sealed for i64 {}
     impl Sealed for i32 {}
+    impl Sealed for i16 {}
     impl Sealed for bool {}
     impl Sealed for super::Oid {}
     impl Sealed for String {}
     impl Sealed for pgrx::JsonB {}
+    impl Sealed for Vec<super::Oid> {}
+    impl Sealed for Vec<Option<super::Oid>> {}
+    impl Sealed for Vec<String> {}
 }
 
 impl KeptRow<'_> {
@@ -566,6 +611,20 @@ impl KeptRow<'_> {
             let type_oid = pg_sys::SPI_gettypeid(self.tupdesc, column);
             T::try_from_datum(datum, is_null, type_oid).map_err(|e| error(self.sql, &e))
         }
+    }
+
+    /// Column `name` as `T`, `None` for NULL.
+    ///
+    /// # Errors
+    /// The row has no such column, or it is not of `T`'s SQL type.
+    pub fn named<T: OwnedColumn>(&self, name: &str) -> TViewResult<Option<T>> {
+        let c_name = std::ffi::CString::new(name).map_err(|e| error(self.sql, &e))?;
+        // SAFETY: as in `get`; the name is a NUL-terminated string.
+        let column = unsafe { pg_sys::SPI_fnumber(self.tupdesc, c_name.as_ptr()) };
+        if column <= 0 {
+            return Err(error(self.sql, &format!("no column {name}")));
+        }
+        self.get(column)
     }
 
     /// Every column as text (`None` for NULL).

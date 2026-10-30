@@ -261,8 +261,7 @@ END $$;
 \echo ''
 \echo 'Test 4: Post update does not cascade upward'
 
--- Record tuple ids: the file runs in one transaction, where updated_at
--- (now()) cannot change, but any rewrite of a row gives it a new ctid.
+-- Record tuple ids: any rewrite of a row gives it a new ctid.
 CREATE TEMP TABLE before_post_update AS
 SELECT (SELECT ctid FROM tv_user WHERE pk_user = 1) AS user_tid,
        (SELECT ctid FROM tv_company WHERE pk_company = 1) AS company_tid;

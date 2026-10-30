@@ -56,6 +56,7 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<QueryGraph> {
         identity_level: false,
         nullable: HashSet::new(),
         unions: 0,
+        link_sublinks: HashSet::new(),
     };
     // SAFETY: `view_query` returns a copy owned by the current memory context; the
     // walk only reads it.
@@ -64,6 +65,17 @@ pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<QueryGraph> {
     // SAFETY: `query` is a valid, copied Query.
     unsafe { walker.top(query, &flags)? };
     walker.note_virtual_columns();
+    // The key names the rows: a link.
+    for root in walker.graph.roots.clone() {
+        walker.add_links(&Resolved::Col(root.key.clone()));
+        if let Some(expr) = &root.expr {
+            for piece in &expr.0 {
+                if let Piece::Column { occ, attnum } = piece {
+                    walker.graph.links.insert((*occ, *attnum));
+                }
+            }
+        }
+    }
     Ok(walker.graph)
 }
 
@@ -258,6 +270,9 @@ struct Walker<'c> {
     nullable: HashSet<usize>,
     /// UNIONs entered so far: the next one's number.
     unions: usize,
+    /// The subquery expressions compared in link positions (by address): their
+    /// outputs are links ([`Walker::sublink_links`]).
+    link_sublinks: HashSet<usize>,
 }
 
 fn cstr(ptr: *const std::ffi::c_char) -> String {
@@ -341,6 +356,7 @@ mod data;
 mod deparse;
 mod expr;
 mod level;
+mod links;
 mod nodes;
 mod predicate;
 mod time;

@@ -48,18 +48,18 @@ BEGIN;
 
     -- Verify the plan is stored, versioned
     SELECT
-        (plan->>'version')::int = 2 AS plan_v2,
+        (plan->>'version')::int = 3 AS plan_v3,
         jsonb_typeof(plan->'tables') = 'array' AS has_tables,
         jsonb_typeof(plan->'paths') = 'array' AS has_paths
     FROM pg_tview_meta
     WHERE entity = 'post';
     -- Expected: t, t, t
     DO $$ BEGIN
-        IF NOT (SELECT (plan->>'version')::int = 2
+        IF NOT (SELECT (plan->>'version')::int = 3
                        AND jsonb_typeof(plan->'tables') = 'array'
                        AND jsonb_typeof(plan->'paths') = 'array'
                 FROM pg_tview_meta WHERE entity = 'post') THEN
-            RAISE EXCEPTION 'FAIL: post plan is not a version 2 plan with tables and paths';
+            RAISE EXCEPTION 'FAIL: post plan is not a version 3 plan with tables and paths';
         END IF;
     END $$;
 
