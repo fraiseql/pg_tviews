@@ -40,16 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transaction created and committed the row meanwhile, and a third one then changed it, the
   refresh's upsert waited for that third transaction inside `ON CONFLICT DO UPDATE` and
   wrote what it had computed before the wait. The row stayed stale until its next refresh,
-  and so did the rows embedding it. A refresh now locks such a row too, in a statement
-  after the key lock, before it computes. Found by the concurrent fuzzer
-  (`new-row-vs-row-lock`).
+  and so did the rows embedding it. Every write of a row now holds that row's key lock
+  (see Changed). Found by the concurrent fuzzer (`new-row-vs-row-lock`).
 - **A `REPEATABLE READ` or `SERIALIZABLE` refresh could re-create a TVIEW row a concurrent
   transaction had deleted, outside the lock that orders transactions creating it** (#273):
   its snapshot still showed the row, so it took no key lock, and a `READ COMMITTED` writer
-  creating the same row then overwrote it with a document computed before the wait. A
-  refresh now creates a row only while it holds that row's key lock. Under `REPEATABLE
-  READ` and `SERIALIZABLE` such a refresh fails with `40001` (retryable), as an `UPDATE`
-  of a concurrently deleted row does; this can be new for those writers
+  creating the same row then overwrote it with a document computed before the wait. Every
+  write of a row now holds that row's key lock (see Changed); a `REPEATABLE READ` or
+  `SERIALIZABLE` write of a row another transaction wrote since the snapshot fails with
+  `40001` (retryable), as an `UPDATE` of that row does; this can be new for those writers
   (`rr-recreated-row`).
 - **`DROP TABLE IF EXISTS`, `ALTER TABLE IF EXISTS … DETACH PARTITION` and `TRUNCATE`
   of a missing relation failed with `cache lookup failed for relation 0`** (or `relation
@@ -65,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about 8 per second). A transaction now takes the shared value locks only once it has
   changed a link: inserted or deleted rows of a table a TVIEW reads, or updated a column
   a TVIEW's rows are linked by (a join, filter, grouping…). A refresh writes each
-  entity's rows once per statement, locked in key order (ADR 0207, amended), at every
+  entity's rows once per statement, their key locks taken in one sorted call (ADR 0207, amended), at every
   isolation level: under `REPEATABLE READ` and `SERIALIZABLE` the second of two such
   writes fails with `40001`, never with `40P01`.
 - **A TVIEW refreshed under `SERIALIZABLE` could stay stale against a `READ
@@ -103,6 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops firing on the primary: it is reported with the disabled ones.
 
 ### Changed
+
+- **One lock per TVIEW row, whatever the isolation level** (ADR 0207, amended): every
+  write of a TVIEW row (a recompute, a direct patch, a fan-out patch) holds that row's
+  key lock, whether the row exists or not, and computes it after the lock is granted.
+  It replaces the row locks (`SELECT … FOR UPDATE`) taken before recomputes and the
+  key locks taken only for rows being created, which together left rows created,
+  deleted or re-created in between unguarded (#272, #273). A flush takes each TVIEW's
+  key locks in one sorted call, TVIEWs in dependency order; a fan-out patch reads the
+  rows it writes first. Under `REPEATABLE READ` and `SERIALIZABLE` a row another
+  transaction wrote since the snapshot fails the write with `40001`. Key locks live in
+  the shared lock table: past `pg_tviews.lock_escalation_threshold` keys of one TVIEW, or
+  the new `pg_tviews.key_lock_budget` over all of them, a transaction locks the TVIEW's
+  key space as a whole, and every other write of that TVIEW waits for it to commit.
+  Run large renames in batches.
 
 - **A backend keeps its caches across a rolled-back transaction** (#266). Every
   `ROLLBACK`, `ROLLBACK TO SAVEPOINT` and error caught in PL/pgSQL threw them away, so

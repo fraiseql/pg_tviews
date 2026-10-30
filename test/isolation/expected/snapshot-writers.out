@@ -14,7 +14,7 @@ count
 
 step o_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
 step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
-ERROR:  could not serialize access due to concurrent update
+ERROR:  could not serialize access: a concurrent transaction wrote a TVIEW row this refresh writes
 step s_commit: COMMIT;
 step o_check: 
   SELECT t.data AS tview, t.data = v.data AS fresh
@@ -40,7 +40,7 @@ count
 
 step o_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
 step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
-ERROR:  could not serialize access due to concurrent update
+ERROR:  could not serialize access: a concurrent transaction wrote a TVIEW row this refresh writes
 step s_commit: COMMIT;
 step o_check: 
   SELECT t.data AS tview, t.data = v.data AS fresh

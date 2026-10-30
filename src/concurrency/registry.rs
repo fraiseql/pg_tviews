@@ -73,6 +73,16 @@ impl Registry {
             .count()
     }
 
+    /// The values locked in `space` by `side`, over every relation.
+    pub(super) fn values_in(&self, space: Space, side: Side) -> usize {
+        self.log
+            .iter()
+            .filter(
+                |h| matches!(h, Held::Value { space: p, side: s, .. } if *p == space && *s == side),
+            )
+            .count()
+    }
+
     pub(super) fn escalated(&self, relid: u32, space: Space, side: Side) -> bool {
         self.holds(&Held::Escalated { relid, space, side })
     }

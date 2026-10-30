@@ -1,0 +1,130 @@
+name: Nightly soak (report only)
+
+# The concurrent differential fuzzer at 32 clients, statements from the
+# differential harness only, a few hundred runs a night across shards: rare
+# interleavings show up here before a release gate meets them (ADR 0207). It
+# reports and never fails: a stale run is a warning with the TVIEW it named.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+env:
+  PGRX_VERSION: "0.17.0"
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.3.0"
+
+jobs:
+  soak:
+    name: soak shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      PG_MAJOR: "18"
+      PRELOAD: "pg_tviews"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install PostgreSQL ${{ env.PG_MAJOR }} (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y \
+            "postgresql-${PG_MAJOR}" "postgresql-server-dev-${PG_MAJOR}"
+
+      - name: Configure and start PostgreSQL
+        run: |
+          # GitHub runners may not auto-create the PGDG "main" cluster, and if a
+          # default PostgreSQL already holds 5432 the new cluster lands on 5433.
+          # Create it if missing, trust all local connections (ephemeral runner),
+          # start it, and export the ACTUAL port to later steps.
+          if ! pg_lsclusters -h | awk '{print $1"/"$2}' | grep -qx "${PG_MAJOR}/main"; then
+            sudo pg_createcluster "${PG_MAJOR}" main
+          fi
+          # Prepend trust rules so they match before the default scram/peer rules.
+          hba="/etc/postgresql/${PG_MAJOR}/main/pg_hba.conf"
+          sudo sed -i '1i local all all trust\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust' "$hba"
+          sudo pg_ctlcluster "${PG_MAJOR}" main start \
+            || sudo pg_ctlcluster "${PG_MAJOR}" main restart
+          port="$(pg_lsclusters -h | awk -v v="${PG_MAJOR}" '$1==v && $2=="main" {print $3}')"
+          {
+            echo "PGHOST=localhost"
+            echo "PGPORT=${port}"
+            echo "PGUSER=postgres"
+          } >> "$GITHUB_ENV"
+          # Client tools of the same major (pg_dump/pg_restore in the #96 test).
+          echo "/usr/lib/postgresql/${PG_MAJOR}/bin" >> "$GITHUB_PATH"
+
+      - name: Install pgrx
+        run: |
+          cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+          cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+
+      - name: Build and install pg_tviews
+        run: |
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
+
+      - name: Build and install jsonb_delta (real extension, 0.3.0)
+        run: |
+          git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+          cd /tmp/jsonb_delta
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+            --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
+
+      - name: Enable shared_preload_libraries and restart
+        run: |
+          # Required for the pg_tviews GUCs; pg_tviews must already be installed.
+          # PGPORT was exported to $GITHUB_ENV by the cluster-setup step.
+          # One quoted name per library: 'a,b' would name a single library "a,b".
+          libraries="$(sed "s/[^,]*/'&'/g; s/,/, /g" <<<"${PRELOAD}")"
+          sudo -u postgres psql -p "${PGPORT}" \
+            -c "ALTER SYSTEM SET shared_preload_libraries = ${libraries};" \
+            -c "ALTER SYSTEM SET max_prepared_transactions = 10;"
+          sudo pg_ctlcluster "${PG_MAJOR}" main restart || {
+            sudo tail -n 50 "/var/log/postgresql/postgresql-${PG_MAJOR}-main.log"
+            exit 1
+          }
+
+      # PGHOST/PGPORT/PGUSER come from $GITHUB_ENV (cluster-setup step) so the
+      # discovered port is used, not a hard-coded 5432.
+      - name: Preflight (extensions available, preload active)
+        run: |
+          psql -d postgres -tAc "SELECT 1" >/dev/null
+          for ext in pg_tviews jsonb_delta; do
+            n="$(psql -d postgres -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='$ext'")"
+            test "$n" = "1" || { echo "FATAL: extension '$ext' not available in the cluster"; exit 1; }
+          done
+          # Prove the suites exercise jsonb_delta 0.3.0 (the documented minimum),
+          # since the test scripts CREATE EXTENSION at default_version.
+          jd_ver="$(psql -d postgres -tAc "SELECT default_version FROM pg_available_extensions WHERE name='jsonb_delta'")"
+          test "$jd_ver" = "0.3.0" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.0"; exit 1; }
+          psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
+            || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
+
+
+      - name: Soak (50 runs of 60 seconds, 32 clients)
+        continue-on-error: true
+        run: |
+          export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          stale=0
+          for run in $(seq 1 50); do
+            seed=$(( (${{ matrix.shard }} - 1) * 50 + run ))
+            out="$(MIX=100 ./test/concurrency/fuzz/run.sh 60 "$seed" 32 mixed 2>&1)"
+            line="$(grep -E '^(PASS|FAIL)' <<<"$out" | head -1)"
+            echo "$line"
+            if grep -q '^FAIL (stale)' <<<"$out"; then
+              stale=$((stale + 1))
+              echo "::warning::stale run, seed $seed: $(grep -oE '^  tv_[a-z_]+' <<<"$out" | sort -u | tr -d ' ' | tr '\n' ' ')"
+            fi
+          done
+          echo "### Shard ${{ matrix.shard }}: $stale stale runs of 50" >> "$GITHUB_STEP_SUMMARY"

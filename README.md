@@ -355,6 +355,7 @@ no setting changes what it is. The settings tune limits and sessions:
 | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` ([change feed](docs/user-guides/change-feed.md)) |
 | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write; 0 = no limit ([ADR 0233](docs/adr/0233-fanout-cost-and-guard.md)) |
 | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
+| `pg_tviews.key_lock_budget` | int | 256 | superuser | Key locks a transaction holds over all TVIEWs before it locks a TVIEW's key space instead (-1 = no budget; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
 | `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
 | `pg_tviews.cache_size` | int | 10000 | any role | Max entries per in-memory metadata cache |

@@ -60,7 +60,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
     super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
     // A transaction that changed no link computes rows from links every
     // transaction sees committed: a writer of a value they read finds them, and
-    // the row locks order the two refreshes. Locking the values too would only
+    // the key locks order the two refreshes. Locking the values too would only
     // make two such writers wait for each other in a cycle (#263).
     if !super::links_changed() {
         return Ok(());

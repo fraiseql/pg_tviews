@@ -80,7 +80,9 @@ SELECT must(held('tb_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:
             'a value released by the savepoint was not taken again: ' || held('tb_user')::text);
 COMMIT;
 
--- 3. Embeds: refreshing a child row locks its key in the child's table.
+-- 3. Embeds: refreshing a child row locks its key in the child's table, where the
+--    refresh also holds the row's own key lock (the key space), each with its
+--    intent lock (ADR 0207).
 SELECT pg_tviews_create('tv_user', $$
     SELECT pk_user, id, jsonb_build_object('name', name) AS data FROM tb_user $$);
 SELECT pg_tviews_create('tv_post', $$
@@ -88,7 +90,7 @@ SELECT pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
 BEGIN;
 UPDATE tb_user SET name = 'ann' WHERE pk_user = 1;
-SELECT must(held('tv_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:1}',
+SELECT must(held('tv_user') = '{relation:RowExclusiveLock:2,value:ExclusiveLock:2}',
             'an embedded child holds ' || held('tv_user')::text);
 COMMIT;
 
@@ -201,6 +203,31 @@ SELECT must((pg_tviews_queue_stats()->>'value_locks')::int >= 10
             AND (pg_tviews_queue_stats()->>'value_lock_escalations')::int = 0
             AND (pg_tviews_queue_stats()->>'value_lock_waits')::int = 0,
             'lock counters: ' || pg_tviews_queue_stats()::text);
+COMMIT;
+
+-- 11. Key locks: every row a refresh writes holds its key lock, in the TVIEW's key
+--     space (ADR 0207). Past pg_tviews.key_lock_budget key locks over all TVIEWs, a
+--     request locks its TVIEW's key space as a whole instead.
+CREATE FUNCTION key_space(rel regclass) RETURNS text LANGUAGE sql AS $$
+    SELECT coalesce(string_agg(mode, ',' ORDER BY mode), '') FROM pg_locks
+    WHERE locktype = 'advisory' AND objsubid = 21623 AND objid = 1 AND classid = rel::oid
+      AND pid = pg_backend_pid() $$;
+BEGIN;
+UPDATE tb_user SET name = name || '.' WHERE pk_user = 10;
+SELECT must(key_space('tv_user') = 'RowExclusiveLock',
+            'one row written holds the key space''s intent lock only: ' || key_space('tv_user'));
+COMMIT;
+BEGIN;
+SET LOCAL pg_tviews.key_lock_budget = 4;
+UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
+SELECT must(key_space('tv_user') LIKE '%ExclusiveLock%' AND key_space('tv_user') <> 'RowExclusiveLock',
+            'past the budget, the key space is not locked whole: ' || key_space('tv_user'));
+COMMIT;
+BEGIN;
+SET LOCAL pg_tviews.key_lock_budget = -1;
+UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
+SELECT must(key_space('tv_user') = 'RowExclusiveLock',
+            'without a budget, ten keys locked the key space whole: ' || key_space('tv_user'));
 COMMIT;
 
 \echo 'value_locks: PASS'

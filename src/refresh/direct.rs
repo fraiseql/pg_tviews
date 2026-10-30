@@ -80,6 +80,9 @@ fn apply_direct_patch(
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    // The UPDATE writes these keys only, each under its key lock (ADR 0207).
+    let keys: Vec<String> = rows.iter().map(|(pk, _)| pk.to_string()).collect();
+    crate::refresh::refuse_unlocked_writes(meta, &qi_tv, &keys)?;
     let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, shape);
 
@@ -129,15 +132,48 @@ fn apply_direct_patch(
     )
 }
 
+/// The keys of the rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`:
+/// the rows a fan-out patch of those keys writes, read (a statement of its own)
+/// before their key locks are taken (ADR 0207). Read through the lookup index
+/// with the statement shapes [`write_fanout`] uses.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn fanout_targets(
+    meta: &TviewMeta,
+    lookup_col: &str,
+    keys: Vec<i64>,
+) -> TViewResult<Vec<String>> {
+    let Some(lookup) = LookupKeys::of(keys) else {
+        return Ok(Vec::new());
+    };
+    let sql = format!(
+        "SELECT t.{}::pg_catalog.text FROM {} t WHERE {}",
+        crate::utils::ident::quoted(&meta.identity.column),
+        crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
+    );
+    Ok(
+        crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?
+            .into_iter()
+            .filter_map(|mut row| row.first_mut().and_then(Option::take))
+            .collect(),
+    )
+}
+
 /// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
 /// `fields` (keyed by their paths in `data`) into the `data` of every row whose
-/// `lookup_col` equals `key`, with one statement per set of paths. Rows already
-/// holding those values are left alone. Returns the pks of the rows written,
-/// which are journaled and counted as applied.
+/// `lookup_col` equals `key` and whose key is one of `targets` (the rows
+/// [`fanout_targets`] found, locked since), with one statement per set of paths.
+/// A row re-pointed to `key` after that read is left to its re-pointer, which
+/// recomputes it under its key lock. Rows already holding those values are left
+/// alone. Returns the pks of the rows written, which are journaled and counted as
+/// applied.
 pub fn apply_fanout_patch(
     meta: &TviewMeta,
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
+    targets: &[String],
 ) -> TViewResult<Vec<i64>> {
     // The rows writing the same paths, each key with its values in path order.
     type Targets = (Vec<i64>, Vec<pgrx::JsonB>);
@@ -155,7 +191,9 @@ pub fn apply_fanout_patch(
     }
     let mut changed = Vec::new();
     for (paths, (keys, values)) in shapes {
-        changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
+        changed.extend(write_fanout(
+            meta, lookup_col, &paths, keys, values, targets,
+        )?);
     }
 
     // REPEATABLE READ: the patch reached every row the latest snapshot holds
@@ -195,28 +233,6 @@ pub fn apply_fanout_patch(
         .collect())
 }
 
-/// The rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`: the children a
-/// fan-out of those keys writes, counted through the lookup index with the
-/// statement shapes [`write_fanout`] uses.
-///
-/// # Errors
-/// Returns the query's error.
-pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TViewResult<u64> {
-    let Some(lookup) = LookupKeys::of(keys) else {
-        return Ok(0);
-    };
-    let sql = format!(
-        "SELECT pg_catalog.count(*) FROM {} t WHERE {}",
-        crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
-        lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
-    );
-    let rows = crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?;
-    Ok(rows
-        .first()
-        .and_then(|row| row.first()?.as_deref()?.parse().ok())
-        .unwrap_or(0))
-}
-
 /// One UPDATE writing `values[i]` (an array, a value per path) at `paths`
 /// (fan-out path keys) into the rows whose `lookup_col` is `keys[i]`: `jsonb_set`
 /// at each path, the paths bound as parameters. The pks written, with their
@@ -235,12 +251,14 @@ fn write_fanout(
     paths: &[String],
     keys: Vec<i64>,
     values: Vec<pgrx::JsonB>,
+    targets: &[String],
 ) -> TViewResult<Vec<(i64, Patched)>> {
     let Some(lookup) = LookupKeys::of(keys) else {
         return Ok(Vec::new());
     };
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_key = crate::utils::ident::quoted(&meta.identity.column);
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
     // The rows written, and where each one's values come from.
     let (from, filter, value) = match lookup {
@@ -262,10 +280,12 @@ fn write_fanout(
             i + 3
         )
     });
+    let locked = 3 + paths.len();
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}{from} \
-         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
-         RETURNING t.{qi_pk}::pg_catalog.int8, {}",
+         WHERE {filter} AND t.{qi_key}::pg_catalog.text = ANY(${locked}::pg_catalog.text[]) \
+           AND t.data IS DISTINCT FROM {patched} \
+         RETURNING t.{qi_pk}::pg_catalog.int8, {}, t.{qi_key}::pg_catalog.text",
         meta.returned_keys("t")
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
@@ -277,7 +297,14 @@ fn write_fanout(
         })?;
         args.push(crate::utils::spi::text_array(path));
     }
-    Ok(crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?
+    args.push(crate::utils::spi::text_array_of(targets));
+    let mut rows = crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?;
+    let written: Vec<String> = rows
+        .iter_mut()
+        .filter_map(|row| row.pop().flatten())
+        .collect();
+    crate::refresh::refuse_unlocked_writes(meta, &qi_tv, &written)?;
+    Ok(rows
         .into_iter()
         .filter_map(|mut row| {
             let id = row.get_mut(1).and_then(Option::take);

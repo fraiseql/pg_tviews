@@ -13,6 +13,7 @@
 //! | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` (ADR 0231) |
 //! | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write (0 = no limit, ADR 0233) |
 //! | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks per relation before a transaction locks the relation (ADR 0207) |
+//! | `pg_tviews.key_lock_budget` | int | 256 | superuser | Key locks a transaction holds over all TVIEWs before it locks a TVIEW's key space instead (ADR 0207) |
 //! | `pg_tviews.audit_enabled` | bool | false | superuser | Audit logging (opt-in) |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | superuser, hidden | Cache dependency graphs |
 //! | `pg_tviews.table_cache_enabled` | bool | true | superuser, hidden | Cache TVIEW catalog rows and plans |
@@ -81,6 +82,7 @@ pub enum PublishChanges {
     Rows,
 }
 static LOCK_ESCALATION_THRESHOLD_GUC: GucSetting<i32> = GucSetting::<i32>::new(64);
+static KEY_LOCK_BUDGET_GUC: GucSetting<i32> = GucSetting::<i32>::new(256);
 static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
@@ -170,6 +172,18 @@ fn register_limits() {
         c"Counted per relation and per side (writes, refreshes). 0 always locks relations; \
           -1 never does, which can exhaust the shared lock table on bulk writes.",
         &LOCK_ESCALATION_THRESHOLD_GUC,
+        -1,
+        1_000_000,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"pg_tviews.key_lock_budget",
+        c"Key locks a transaction holds over all TVIEWs before it locks a TVIEW's key space instead.",
+        c"Each write of a TVIEW row holds that row's key lock to the end of the transaction. \
+          Past this many over all TVIEWs, a request locks its TVIEW's key space as a whole, \
+          which every other writer of that TVIEW waits for. -1: no budget.",
+        &KEY_LOCK_BUDGET_GUC,
         -1,
         1_000_000,
         GucContext::Suset,
@@ -330,6 +344,12 @@ pub fn max_refresh_rows() -> Option<u64> {
 /// (`pg_tviews.lock_escalation_threshold`): 0 always, -1 never.
 pub fn lock_escalation_threshold() -> i32 {
     LOCK_ESCALATION_THRESHOLD_GUC.get()
+}
+
+/// Key locks a transaction holds over all TVIEWs before it locks a TVIEW's key
+/// space instead (`pg_tviews.key_lock_budget`): -1 no budget.
+pub fn key_lock_budget() -> i32 {
+    KEY_LOCK_BUDGET_GUC.get()
 }
 
 /// Check if audit logging is enabled (default: false, opt-in)

@@ -1,0 +1,32 @@
+Parsed test spec with 3 sessions
+
+starting permutation: g_close n_rename t_title g_open t_check
+step g_close: SELECT pg_advisory_lock(268, 1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step n_rename: UPDATE tb_author SET name = 'amy' WHERE pk_author = 1; <waiting ...>
+step t_title: UPDATE tb_book SET title = 'b1!' WHERE pk_book = 1; <waiting ...>
+step g_open: SELECT pg_advisory_unlock(268, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step n_rename: <... completed>
+step t_title: <... completed>
+step t_check: 
+  SELECT 'author' AS tv, t.data = v.data AS fresh
+  FROM tv_author t FULL JOIN tviews.public__tv_author v USING (pk_author)
+  UNION ALL
+  SELECT 'book', t.data = v.data FROM tv_book t FULL JOIN tviews.public__tv_book v USING (pk_book)
+  ORDER BY 1;
+
+tv    |fresh
+------+-----
+author|t    
+book  |t    
+(2 rows)
+

@@ -757,7 +757,7 @@ The settings are listed, with types and defaults, in the
 TVIEW is: that comes only from its definition and its [options](#options). The
 settings that decide whether a write or a creation succeeds
 (`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `max_refresh_rows`,
-`lock_escalation_threshold`), `pg_tviews.audit_enabled` and `pg_tviews.publish_changes`
+`lock_escalation_threshold`, `key_lock_budget`), `pg_tviews.audit_enabled` and `pg_tviews.publish_changes`
 (what other sessions observe, [change feed](../user-guides/change-feed.md)) are a superuser's.
 `batch_size`, `cache_size` and `report_max_tracked` apply to each session.
 `pg_tviews.auto_rebuild_databases` is read at server start. Diagnostics are `DEBUG1`

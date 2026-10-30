@@ -14,7 +14,7 @@ docs
 
 step d_delete: DELETE FROM tb_doc WHERE pk_doc = 41;
 step s_insert: INSERT INTO tb_doc VALUES (47, '00000000-0000-0000-0000-000000000002', 8, 'b47');
-ERROR:  could not serialize access: a concurrent transaction deleted a TVIEW row this refresh read
+ERROR:  could not serialize access: a concurrent transaction wrote a TVIEW row this refresh writes
 step c_insert: INSERT INTO tb_doc VALUES (48, '00000000-0000-0000-0000-000000000002', 1, 'b48');
 step s_commit: COMMIT;
 step c_check: 
@@ -42,7 +42,7 @@ docs
 
 step d_delete: DELETE FROM tb_doc WHERE pk_doc = 41;
 step s_insert: INSERT INTO tb_doc VALUES (47, '00000000-0000-0000-0000-000000000002', 8, 'b47');
-ERROR:  could not serialize access: a concurrent transaction deleted a TVIEW row this refresh read
+ERROR:  could not serialize access: a concurrent transaction wrote a TVIEW row this refresh writes
 step c_insert: INSERT INTO tb_doc VALUES (48, '00000000-0000-0000-0000-000000000002', 1, 'b48');
 step s_commit: COMMIT;
 step c_check: 

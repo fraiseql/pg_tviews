@@ -302,3 +302,88 @@ Specs: `crossed-value-writes` (one statement each, gated between the triggers an
 flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
 unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change
 links, then rename crosswise) still deadlocks.
+
+## Amendment: one lock per TVIEW key (0.1.0-beta.34, #272, #273)
+
+### Why
+
+#272 and #273 broke one invariant from two sides: a TVIEW row was written without the
+lock that orders the transactions writing it. The protocol had two locks for one row: a
+row lock (`FOR UPDATE`) when the refresh's statement saw the row, under READ COMMITTED,
+and a key lock (a value lock in the TVIEW's key space) when it didn't, at every level;
+under REPEATABLE READ and SERIALIZABLE no row lock at all, so the snapshot's view of the
+row decided which lock was taken. A row created, deleted or re-created between the
+statement that classified it and the one that wrote it was covered by neither lock
+(#272: created, then changed by a third transaction; #273: deleted after a REPEATABLE
+READ snapshot and re-created without the key lock). Patches were a third path: their
+`UPDATE` took the row lock itself.
+
+### Decision
+
+1. **Every write of a TVIEW row holds that row's key lock**, whether the row exists or
+   not, at every isolation level: a recompute (upsert or delete), a direct patch, a
+   fan-out patch. The key lock is the value lock of the TVIEW's key space (`field3` the
+   FNV-1a hash of the key's text, relation tag `field3` 1), `ExclusiveLock`. Writers of
+   other rows never wait for it except on a hash collision. There is no other row lock:
+   `FOR UPDATE` before a recompute, the missing-key case and the re-lock of #272 are
+   gone, and the locks of rows being patched in key order become key locks.
+2. **One order.** Within a flush, TVIEWs are visited in one global order: the
+   dependency order (what a TVIEW reads first), ties by entity name. Each TVIEW's key
+   locks, for the fan-out patches, the direct patches and the recomputes of that visit,
+   are taken in one call, sorted by lock id. Two flushes therefore never take key locks
+   of two TVIEWs, or two keys of one TVIEW, in opposite orders. A TVIEW visited again in
+   the same flush (a late write of its source) takes the new keys in a second call;
+   between statements of one transaction, as before, locks are taken in statement order
+   and a deadlock is reported with 40P01.
+3. **Compute after the locks.** Under READ COMMITTED every value written is computed by a
+   statement that starts after the last key lock was granted (the upsert, the patch
+   `UPDATE`), so it sees what any transaction it waited for committed. Under REPEATABLE
+   READ and SERIALIZABLE a key lock held elsewhere fails at once (40001, as before); once
+   the locks are held, each key's row must be the same under the transaction's snapshot
+   and the latest snapshot: the same `pk_<entity>` and the same `xmin`, or absent from
+   both. Otherwise another transaction wrote, created or deleted it since the snapshot,
+   and the refresh fails with 40001. The transaction's own earlier writes are visible to
+   both snapshots, so they never cause it.
+4. **Fan-out patches find their rows first.** `UPDATE … WHERE lookup = ANY(v)` becomes:
+   read the keys of the rows holding `v` (a statement of its own), lock them with the
+   TVIEW's other keys, then `UPDATE … WHERE key = ANY(keys) AND lookup = ANY(v)`. A row
+   re-pointed to `v` after the read is not patched; its re-pointer recomputes it under
+   its key lock, after this transaction.
+5. **Every written key is checked.** The refresh and patch statements return the keys
+   of the rows they insert, update or delete; each must be locked by the transaction (a
+   key lock or its TVIEW's escalated key space). Under REPEATABLE READ and SERIALIZABLE
+   a miss is 40001; under READ COMMITTED it is an internal error (a bug).
+6. **Bulk paths keep the relation lock.** The fill at CREATE (a new table), the rebuild,
+   the refill, the fill of an empty TVIEW and the reconcile hold the TVIEW's relation lock
+   (`ExclusiveLock` in its value space), which every refresh's and patch's intent lock
+   conflicts with; they take no key locks.
+
+### Lock table
+
+Key locks live in the shared lock table; row locks didn't. A transaction holds at most
+`pg_tviews.lock_escalation_threshold` key locks on one TVIEW: past it the TVIEW's key
+space is locked as a whole (one `ExclusiveLock`), which every other writer of that TVIEW
+waits for until the transaction ends. Across TVIEWs, a transaction holds at most
+`pg_tviews.key_lock_budget` key locks: a request that would go past it locks its TVIEW's
+key space instead. A transaction therefore holds at most `key_lock_budget` key locks plus
+one lock per escalated TVIEW, whatever its cascade. The defaults are chosen from the
+measurements below so that 32 clients at their worst stay under half of the default
+shared lock table (`max_locks_per_transaction` × `max_connections`).
+
+A fan-out patch, or a recompute, of more rows than the threshold serializes the writers
+of that TVIEW until it commits. Large renames run best in batches, or with a higher
+threshold and `max_locks_per_transaction`.
+
+### Tests
+
+Every isolation spec stays green, among them `new-row-vs-row-lock` and
+`rr-recreated-row`. New: a recompute against a concurrent patch of the same row, a
+fan-out patch against a re-point of one of its rows, a REPEATABLE READ refresh of a row
+another transaction updated after the snapshot (40001), a REPEATABLE READ transaction
+that writes a key and refreshes it again (no 40001), and two transactions cascading
+through two TVIEWs. Mutations, each caught by a spec: no key lock on a recompute, on a
+direct patch, on a fan-out patch; unsorted keys; TVIEWs visited in reverse order (40P01);
+values computed in the locking statement; the REPEATABLE READ comparison removed; the
+written-key check removed. Then the #263 suite, the fuzzer's values mode, 500
+consecutive clean runs of the 32-client loop and the release matrix; a nightly report-only
+soak keeps running the loop on main.

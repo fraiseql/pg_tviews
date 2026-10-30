@@ -23,7 +23,7 @@ use crate::utils::{ident, qualified_relname_from_oid};
 ///
 /// # Workflow
 ///
-/// 1. **Lock**: wait for a concurrent writer of the row (READ COMMITTED)
+/// 1. **Lock**: take the row's key lock, waiting for a concurrent writer of it
 /// 2. **Recompute**: read the row from the backing view
 /// 3. **Write**: upsert it, or delete the row when the view has none
 ///

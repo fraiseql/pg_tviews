@@ -2,11 +2,10 @@
 # filters on (#263). Each user wrote one post and commented on the other's, so
 # each refresh patches both posts, one statement per shape: its own post, then the
 # post it commented on, the other user's first. A row trigger on tv_post holds
-# each refresh right after it wrote its first post, so each has locked the post the
-# other writes last. Rows locked in key order before the patches, the second write
-# waits on the first and fails with 40001, as a plain UPDATE of a row updated since
-# its snapshot does; locked statement by statement, the two waited for each other
-# and one failed with 40P01.
+# each refresh right after it wrote its first post. Each refresh takes the key
+# locks of both posts before its patches (ADR 0207), so the second one finds them
+# held and fails at once with 40001; locked statement by statement, the two
+# waited for each other and one failed with 40P01.
 
 setup
 {
