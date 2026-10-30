@@ -132,48 +132,41 @@ fn apply_direct_patch(
     )
 }
 
-/// The keys of the rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`:
-/// the rows a fan-out patch of those keys writes, read (a statement of its own)
-/// before their key locks are taken (ADR 0207). Read through the lookup index
-/// with the statement shapes [`write_fanout`] uses.
+/// The rows of `meta`'s TVIEW whose `lookup_col` is one of `keys`: the children a
+/// fan-out of those keys writes, counted through the lookup index.
 ///
 /// # Errors
 /// Returns the query's error.
-pub fn fanout_targets(
-    meta: &TviewMeta,
-    lookup_col: &str,
-    keys: Vec<i64>,
-) -> TViewResult<Vec<String>> {
+pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TViewResult<u64> {
     let Some(lookup) = LookupKeys::of(keys) else {
-        return Ok(Vec::new());
+        return Ok(0);
     };
     let sql = format!(
-        "SELECT t.{}::pg_catalog.text FROM {} t WHERE {}",
-        crate::utils::ident::quoted(&meta.identity.column),
+        "SELECT pg_catalog.count(*) FROM {} t WHERE {}",
         crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
         lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
     );
-    Ok(
-        crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?
-            .into_iter()
-            .filter_map(|mut row| row.first_mut().and_then(Option::take))
-            .collect(),
-    )
+    let rows = crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?;
+    Ok(rows
+        .first()
+        .and_then(|row| row.first())
+        .and_then(|cell| cell.as_deref())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0))
 }
 
 /// Write fan-out patches into `tv_<entity>`: for each `(key, fields)`, write
 /// `fields` (keyed by their paths in `data`) into the `data` of every row whose
-/// `lookup_col` equals `key` and whose key is one of `targets` (the rows
-/// [`fanout_targets`] found, locked since), with one statement per set of paths.
-/// A row re-pointed to `key` after that read is left to its re-pointer, which
-/// recomputes it under its key lock. Rows already holding those values are left
+/// `lookup_col` (attnum `attnum`) equals `key`, with one statement per set of
+/// paths. The caller holds each key's lookup lock exclusively (ADR 0207): no row
+/// holding it is recomputed meanwhile. Rows already holding those values are left
 /// alone. Returns the pks of the rows written, which are journaled and counted as
 /// applied.
 pub fn apply_fanout_patch(
     meta: &TviewMeta,
     lookup_col: &str,
+    attnum: i16,
     rows: &[(i64, Map<String, Value>)],
-    targets: &[String],
 ) -> TViewResult<Vec<i64>> {
     // The rows writing the same paths, each key with its values in path order.
     type Targets = (Vec<i64>, Vec<pgrx::JsonB>);
@@ -192,7 +185,7 @@ pub fn apply_fanout_patch(
     let mut changed = Vec::new();
     for (paths, (keys, values)) in shapes {
         changed.extend(write_fanout(
-            meta, lookup_col, &paths, keys, values, targets,
+            meta, lookup_col, attnum, &paths, keys, values,
         )?);
     }
 
@@ -248,17 +241,16 @@ pub fn apply_fanout_patch(
 fn write_fanout(
     meta: &TviewMeta,
     lookup_col: &str,
+    attnum: i16,
     paths: &[String],
     keys: Vec<i64>,
     values: Vec<pgrx::JsonB>,
-    targets: &[String],
 ) -> TViewResult<Vec<(i64, Patched)>> {
     let Some(lookup) = LookupKeys::of(keys) else {
         return Ok(Vec::new());
     };
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-    let qi_key = crate::utils::ident::quoted(&meta.identity.column);
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
     // The rows written, and where each one's values come from.
     let (from, filter, value) = match lookup {
@@ -280,12 +272,10 @@ fn write_fanout(
             i + 3
         )
     });
-    let locked = 3 + paths.len();
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}{from} \
-         WHERE {filter} AND t.{qi_key}::pg_catalog.text = ANY(${locked}::pg_catalog.text[]) \
-           AND t.data IS DISTINCT FROM {patched} \
-         RETURNING t.{qi_pk}::pg_catalog.int8, {}, t.{qi_key}::pg_catalog.text",
+         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
+         RETURNING t.{qi_pk}::pg_catalog.int8, {}, t.{qi_lookup}::pg_catalog.text",
         meta.returned_keys("t")
     );
     let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
@@ -297,13 +287,12 @@ fn write_fanout(
         })?;
         args.push(crate::utils::spi::text_array(path));
     }
-    args.push(crate::utils::spi::text_array_of(targets));
     let mut rows = crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?;
     let written: Vec<String> = rows
         .iter_mut()
         .filter_map(|row| row.pop().flatten())
         .collect();
-    crate::refresh::refuse_unlocked_writes(meta, &qi_tv, &written)?;
+    refuse_unlocked_fanout(meta, &qi_tv, attnum, &written)?;
     Ok(rows
         .into_iter()
         .filter_map(|mut row| {
@@ -398,6 +387,35 @@ fn build_direct_patch_expr(schema: &str, chain: &[PatchEntry]) -> (String, Vec<V
         }
     }
     (expr, path_args)
+}
+
+/// A fan-out patch writes rows only under the exclusive lookup lock of the value
+/// they hold (ADR 0207): `written` are the lookup values of the rows it wrote.
+///
+/// # Errors
+/// An internal error under READ COMMITTED; 40001 under REPEATABLE READ and
+/// SERIALIZABLE.
+fn refuse_unlocked_fanout(
+    meta: &TviewMeta,
+    qi_tv: &str,
+    attnum: i16,
+    written: &[String],
+) -> TViewResult<()> {
+    if written
+        .iter()
+        .all(|value| crate::concurrency::holds_lookup(meta.tview_oid, attnum, value, false))
+    {
+        return Ok(());
+    }
+    if crate::concurrency::crosscheck::enabled() {
+        crate::concurrency::serialization_failure(
+            "a concurrent transaction wrote a TVIEW row this refresh writes",
+        );
+    }
+    Err(crate::error::TViewError::CatalogError {
+        operation: format!("Write a row of {qi_tv}"),
+        pg_error: "a fan-out patch wrote a row without its lookup lock".to_string(),
+    })
 }
 
 #[cfg(test)]

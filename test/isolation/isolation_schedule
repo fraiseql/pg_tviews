@@ -39,3 +39,4 @@ test: key-lock-fanout-vs-repoint
 test: rr-row-written-since-snapshot
 test: cross-tview-key-order
 test: key-lock-fanout-vs-recompute
+test: child-insert-vs-parent-rename

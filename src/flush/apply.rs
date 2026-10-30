@@ -117,25 +117,35 @@ impl Flush {
         if !values.is_empty() {
             crate::concurrency::reads::lock_read_set(&meta, &values)?;
         }
-        // The rows this entity's fan-out patches write, found before any key lock.
-        let mut fanouts = Vec::new();
-        for (lookup_col, rows) in self.fanouts.remove(entity).unwrap_or_default() {
+        // This visit's locks, in one order (ADR 0207): the lookup values first, in
+        // one sorted call (each fan-out patch's value exclusively, those the rows
+        // being recomputed hold now shared), then the keys of the rows recomputed
+        // or patched directly, in one sorted call.
+        let columns = crate::refresh::lookup_columns(&meta);
+        let fanouts: Vec<_> = self
+            .fanouts
+            .remove(entity)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut exclusive = Vec::new();
+        for (lookup_col, rows) in &fanouts {
+            if self.max_rows.is_some() {
+                let lookups = rows.keys().copied().collect();
+                let children = crate::refresh::direct::count_fanout(&meta, lookup_col, lookups)?;
+                self.charge(&meta, &format!("via {lookup_col}"), children)?;
+            }
+            let attnum = lookup_attnum(&columns, lookup_col)?;
+            exclusive.extend(rows.keys().map(|key| (attnum, key.to_string())));
+        }
+        let shared = crate::refresh::stored_lookups(&meta, &values, &columns)?;
+        crate::concurrency::lock_lookups(meta.tview_oid, &exclusive, &shared);
+        crate::refresh::lock_keys_of(&meta, &values)?;
+        for (lookup_col, rows) in fanouts {
             let rows: Vec<_> = rows.into_iter().collect();
-            let lookups = rows.iter().map(|(key, _)| *key).collect();
-            let targets = crate::refresh::direct::fanout_targets(&meta, &lookup_col, lookups)?;
-            self.charge(&meta, &format!("via {lookup_col}"), targets.len() as u64)?;
-            fanouts.push((lookup_col, rows, targets));
-        }
-        // Every key lock of this visit in one sorted call (ADR 0207): the rows the
-        // fan-out patches, the direct patches and the recomputes write.
-        let mut locked = values.clone();
-        for (_, _, targets) in &fanouts {
-            locked.extend(targets.iter().map(|key| key_value(&meta.key_type, key)));
-        }
-        crate::refresh::lock_keys_of(&meta, &locked)?;
-        for (lookup_col, rows, targets) in fanouts {
+            let attnum = lookup_attnum(&columns, &lookup_col)?;
             let changed =
-                crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows, &targets)?;
+                crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, attnum, &rows)?;
             self.queue_parents_to_recompute(entity, &changed, &[])?;
         }
         if keys.is_empty() {
@@ -371,12 +381,14 @@ impl Flush {
     }
 }
 
-/// A key read back as text, as the identity binds it.
-fn key_value(key_type: &crate::catalog::KeyType, text: &str) -> KeyValue {
-    match key_type {
-        crate::catalog::KeyType::Int => text
-            .parse()
-            .map_or_else(|_| KeyValue::Text(text.to_string()), KeyValue::Int),
-        crate::catalog::KeyType::Text(_) => KeyValue::Text(text.to_string()),
-    }
+/// The number `lookup_col`'s lookup locks are hashed with ([`crate::refresh::lookup_columns`]).
+fn lookup_attnum(columns: &[(String, i16)], lookup_col: &str) -> TViewResult<i16> {
+    columns
+        .iter()
+        .find(|(name, _)| name == lookup_col)
+        .map(|(_, attnum)| *attnum)
+        .ok_or_else(|| crate::TViewError::CatalogError {
+            operation: "Lock the rows of a fan-out patch".to_string(),
+            pg_error: format!("lookup column {lookup_col} is gone"),
+        })
 }

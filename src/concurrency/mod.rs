@@ -38,6 +38,9 @@ pub enum Side {
 pub enum Space {
     Values,
     Keys,
+    /// A TVIEW's lookup values: the values of the columns its fan-out patches
+    /// look rows up by (ADR 0207).
+    Lookups,
 }
 
 impl Space {
@@ -46,6 +49,7 @@ impl Space {
         match self {
             Self::Values => 0,
             Self::Keys => 1,
+            Self::Lookups => 2,
         }
     }
 }
@@ -225,14 +229,74 @@ fn pending(
             })
             .collect();
         let threshold = crate::config::lock_escalation_threshold();
+        let budgeted = matches!(space, Space::Keys | Space::Lookups);
         let escalate = !new.is_empty()
             && (r.should_escalate(relid, space, side, new.len(), threshold)
-                || (space == Space::Keys && over_budget(r.values_in(space, side) + new.len())));
+                || (budgeted
+                    && over_budget(
+                        r.values_in(Space::Keys, Side::Writer)
+                            + r.values_in(Space::Lookups, Side::Writer)
+                            + r.values_in(Space::Lookups, Side::Refresh)
+                            + new.len(),
+                    )));
         (
             escalate,
             !r.holds(&Held::Intent { relid, space, side }),
             new,
         )
+    })
+}
+
+/// Lock lookup values of `tview` (ADR 0207), in one call sorted by lock id:
+/// `exclusive`, the `(attnum, value)` pairs its fan-out patches write rows of,
+/// and `shared`, those its recomputes read rows of (a pair in both is locked
+/// exclusively). A fan-out patch of a value and a recompute of a row holding it
+/// wait for each other; two recomputes don't.
+pub fn lock_lookups(tview: pg_sys::Oid, exclusive: &[(i16, String)], shared: &[(i16, String)]) {
+    let mut wanted: std::collections::BTreeMap<u32, (i16, &str, Side)> =
+        std::collections::BTreeMap::new();
+    for (pairs, side) in [(shared, Side::Refresh), (exclusive, Side::Writer)] {
+        for (attnum, value) in pairs {
+            let hash = value_hash(&[*attnum], value);
+            let entry = wanted
+                .entry(hash)
+                .or_insert((*attnum, value.as_str(), side));
+            if side == Side::Writer {
+                *entry = (*attnum, value.as_str(), side);
+            }
+        }
+    }
+    for (attnum, value, side) in wanted.into_values() {
+        let target = LockTarget {
+            relid: tview.to_u32(),
+            attnums: vec![attnum],
+        };
+        lock_in(Space::Lookups, &target, side, &[value.to_string()]);
+    }
+}
+
+/// Whether this transaction holds `tview`'s lookup lock on `value` of column
+/// `attnum`, exclusively, or shared too when `shared` allows it; an escalated
+/// lookup space holds every value.
+#[must_use]
+pub fn holds_lookup(tview: pg_sys::Oid, attnum: i16, value: &str, shared: bool) -> bool {
+    let relid = tview.to_u32();
+    let hash = value_hash(&[attnum], value);
+    let sides: &[Side] = if shared {
+        &[Side::Writer, Side::Refresh]
+    } else {
+        &[Side::Writer]
+    };
+    REGISTRY.with_borrow(|r| {
+        sides.iter().any(|&side| {
+            r.escalated(relid, Space::Lookups, side)
+                || r.holds(&Held::Value {
+                    relid,
+                    space: Space::Lookups,
+                    side,
+                    hash,
+                })
+        })
     })
 }
 

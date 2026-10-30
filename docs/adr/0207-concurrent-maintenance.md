@@ -321,8 +321,8 @@ READ snapshot and re-created without the key lock). Patches were a third path: t
 ### Decision
 
 1. **Every write of a TVIEW row holds that row's key lock**, whether the row exists or
-   not, at every isolation level: a recompute (upsert or delete), a direct patch, a
-   fan-out patch. The key lock is the value lock of the TVIEW's key space (`field3` the
+   not, at every isolation level: a recompute (upsert or delete), a direct patch; a
+   fan-out patch holds the lock of its lookup value instead (below). The key lock is the value lock of the TVIEW's key space (`field3` the
    FNV-1a hash of the key's text, relation tag `field3` 1), `ExclusiveLock`. Writers of
    other rows never wait for it except on a hash collision. There is no other row lock:
    `FOR UPDATE` before a recompute, the missing-key case and the re-lock of #272 are
@@ -330,8 +330,9 @@ READ snapshot and re-created without the key lock). Patches were a third path: t
 2. **One order.** Within a flush, TVIEWs are visited in one global order: the
    dependency order (what a TVIEW reads first), ties by entity name. Each TVIEW's key
    locks, for the fan-out patches, the direct patches and the recomputes of that visit,
-   are taken in one call, sorted by lock id. Two flushes therefore never take key locks
-   of two TVIEWs, or two keys of one TVIEW, in opposite orders. A TVIEW visited again in
+   are taken in one call, sorted by lock id, after the visit's lookup locks (below).
+   Two flushes therefore never take key locks of two TVIEWs, or two keys of one TVIEW,
+   in opposite orders. A TVIEW visited again in
    the same flush (a late write of its source) takes the new keys in a second call;
    between statements of one transaction, as before, locks are taken in statement order
    and a deadlock is reported with 40P01.
@@ -344,19 +345,58 @@ READ snapshot and re-created without the key lock). Patches were a third path: t
    both. Otherwise another transaction wrote, created or deleted it since the snapshot,
    and the refresh fails with 40001. The transaction's own earlier writes are visible to
    both snapshots, so they never cause it.
-4. **Fan-out patches find their rows first.** `UPDATE … WHERE lookup = ANY(v)` becomes:
-   read the keys of the rows holding `v` (a statement of its own), lock them with the
-   TVIEW's other keys, then `UPDATE … WHERE key = ANY(keys) AND lookup = ANY(v)`. A row
-   re-pointed to `v` after the read is not patched; its re-pointer recomputes it under
-   its key lock, after this transaction.
+4. **Fan-out patches lock their lookup value**, not their rows' keys (below).
 5. **Every written key is checked.** The refresh and patch statements return the keys
    of the rows they insert, update or delete; each must be locked by the transaction (a
-   key lock or its TVIEW's escalated key space). Under REPEATABLE READ and SERIALIZABLE
+   key lock or its TVIEW's escalated key space; for a fan-out, the exclusive lookup lock
+   of the row's value). Under REPEATABLE READ and SERIALIZABLE
    a miss is 40001; under READ COMMITTED it is an internal error (a bug).
 6. **Bulk paths keep the relation lock.** The fill at CREATE (a new table), the rebuild,
    the refill, the fill of an empty TVIEW and the reconcile hold the TVIEW's relation lock
    (`ExclusiveLock` in its value space), which every refresh's and patch's intent lock
    conflicts with; they take no key locks.
+
+### Fan-out patches: one lock per lookup value
+
+A fan-out patch writes every row of `T` whose lookup column `L` holds a value `v` (the
+posts of user 1). Locking those rows' keys one by one past the escalation threshold
+locked `T`'s whole key space, and in a workload of parents with many children (renames
+of users with thousands of posts, inserts of posts) every insert, for any user, waited
+for every rename: 40–60% of the throughput was lost (`hot`, #275). Instead:
+
+1. **A fan-out patch of `v` takes `T`'s lookup lock on `(L, v)` exclusively**, and no key
+   lock: the lock covers every row holding `v`, existing or written later. It writes
+   `UPDATE … WHERE L = v`, without reading the rows first.
+2. **Every recompute of a row of `T` (an insert, a re-point, any other) takes `T`'s lookup
+   locks shared** on the values its rows hold for each of `T`'s lookup columns, before
+   and after: the values its rows hold now, read before the key locks (a plain read),
+   then the values of the rows it wrote, checked after the write. A value it did not
+   hold yet (a new row, a row re-pointed by this transaction or meanwhile) is locked
+   then, and those rows are computed again in a new statement: whatever a fan-out of
+   that value wrote is then included. A recompute of a row of user 2 and a rename of
+   user 1 never wait for each other.
+3. **Direct patches take key locks only.** A direct patch and a fan-out patch of one row
+   both write `jsonb_set` of their own paths into the row's latest version under its row
+   lock (READ COMMITTED re-applies a patch to the version it waited for): they commute.
+4. **Order.** Within a TVIEW's visit: lookup locks, in one sorted call (a value both
+   written by a fan-out and read by a recompute is locked exclusively), then key locks,
+   in one sorted call; TVIEWs in dependency order. The values found only after the
+   write (rule 2) are locked out of that order; a cycle then needs a fan-out of the new
+   value that also recomputes the same row in the same statement, and is reported as
+   40P01 (retryable).
+5. **The written-row check** accepts a row written under its key lock, or by a fan-out
+   holding the exclusive lookup lock of the row's value.
+6. Under REPEATABLE READ and SERIALIZABLE a lookup lock held elsewhere fails at once
+   (40001), as key locks do.
+
+The lookup lock is a value lock of `T` in a space of its own (`field3` of the value
+tag the hash of the lookup column's place among `T`'s lookup columns, by name, and the
+value's text; the space's relation
+tag has `field3` 2), with its own intent and escalated locks. It counts toward
+`pg_tviews.lock_escalation_threshold` per side, and, shared or exclusive, toward
+`pg_tviews.key_lock_budget` with the key locks: a transaction renaming more parents
+than the threshold, or recomputing rows of more of them, locks `T`'s lookup space as a
+whole, which every fan-out patch and recompute of `T` then waits for.
 
 ### Lock table
 
@@ -366,13 +406,14 @@ space is locked as a whole (one `ExclusiveLock`), which every other writer of th
 waits for until the transaction ends. Across TVIEWs, a transaction holds at most
 `pg_tviews.key_lock_budget` key locks: a request that would go past it locks its TVIEW's
 key space instead. A transaction therefore holds at most `key_lock_budget` key locks plus
-one lock per escalated TVIEW, whatever its cascade. The defaults are chosen from the
-measurements below so that 32 clients at their worst stay under half of the default
-shared lock table (`max_locks_per_transaction` × `max_connections`).
+one lock per escalated TVIEW, whatever its cascade. Fan-out patches take one lookup lock
+per parent value, not one key lock per row. The defaults are chosen from the
+measurements so that 32 clients at their worst stay under half of the default shared
+lock table (`max_locks_per_transaction` × `max_connections`).
 
-A fan-out patch, or a recompute, of more rows than the threshold serializes the writers
-of that TVIEW until it commits. Large renames run best in batches, or with a higher
-threshold and `max_locks_per_transaction`.
+A recompute of more rows of one TVIEW than the threshold (a bulk `UPDATE` of a base
+table) locks that TVIEW's key space as a whole: every other write of that TVIEW waits
+until it commits.
 
 ### Tests
 
