@@ -14,7 +14,8 @@ setup
   CREATE EXTENSION IF NOT EXISTS jsonb_delta;
   CREATE EXTENSION pg_tviews;
   CREATE TABLE tb_doc (pk_doc int PRIMARY KEY, id uuid NOT NULL, rev int NOT NULL, body text);
-  INSERT INTO tb_doc VALUES (5, '00000000-0000-0000-0000-000000000005', 1, 'd5');
+  INSERT INTO tb_doc VALUES (5, '00000000-0000-0000-0000-000000000005', 1, 'd5'),
+                            (31, '00000000-0000-0000-0000-000000000002', 1, 'c31');
   SELECT tviews.pg_tviews_create('tv_doc', $$
     SELECT DISTINCT ON (d.id) d.pk_doc, d.id, jsonb_build_object('body', d.body, 'rev', d.rev) AS data
     FROM tb_doc d ORDER BY d.id, d.rev DESC, d.pk_doc DESC $$);
@@ -39,6 +40,13 @@ step c4_begin  { BEGIN; }
 step c4_create { INSERT INTO tb_doc VALUES (40, '00000000-0000-0000-0000-000000000004', 1, 'c40'); }
 step c4_commit { COMMIT; }
 
+# Empties doc ...02 and fills it again: its row is deleted, then created anew.
+session refiller
+step f_begin  { BEGIN; }
+step f_empty2 { DELETE FROM tb_doc WHERE pk_doc = 31; }
+step f_fill2  { INSERT INTO tb_doc VALUES (32, '00000000-0000-0000-0000-000000000002', 1, 'c32'); }
+step f_commit { COMMIT; }
+
 # Holds the row of doc ...05.
 session holder
 step h_begin  { BEGIN; }
@@ -51,6 +59,8 @@ step r_begin  { BEGIN; }
 step r_insert { INSERT INTO tb_doc VALUES (29, '00000000-0000-0000-0000-000000000003', 0, 'r'),
                                           (39, '00000000-0000-0000-0000-000000000004', 0, 'r'),
                                           (49, '00000000-0000-0000-0000-000000000005', 0, 'r'); }
+step r_insert25 { INSERT INTO tb_doc VALUES (28, '00000000-0000-0000-0000-000000000002', 0, 'r'),
+                                            (48, '00000000-0000-0000-0000-000000000005', 0, 'r'); }
 step r_commit { COMMIT; }
 
 # Changes a row once it exists.
@@ -59,6 +69,7 @@ step e_begin  { BEGIN; }
 step e_edit3  { UPDATE tb_doc SET body = 'c30!' WHERE pk_doc = 30; }
 step e_edit4  { UPDATE tb_doc SET body = 'c40!' WHERE pk_doc = 40; }
 step e_delete3 { DELETE FROM tb_doc WHERE pk_doc = 30; }
+step e_edit32  { UPDATE tb_doc SET body = 'c32!' WHERE pk_doc = 32; }
 step e_commit { COMMIT; }
 step e_check
 {
@@ -76,3 +87,7 @@ permutation c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_b
 # The same, ...03 deleted instead of changed: the row is gone when the refresh
 # locks it, and the refresh writes ...03 from its own row alone.
 permutation c3_begin c3_create h_begin h_lock5 r_begin r_insert c3_commit e_begin e_delete3 h_commit e_commit r_commit e_check
+# The refresh finds ...02 and waits for its row, which another transaction
+# deletes and creates anew; then for ...05, while the new row is changed. The
+# row it waited for is gone: ...02 is a key with no row, locked as above.
+permutation f_begin f_empty2 h_begin h_lock5 r_begin r_insert25 f_fill2 f_commit e_begin e_edit32 h_commit e_commit r_commit e_check
