@@ -7,6 +7,7 @@ use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
 };
 use crate::catalog::{KeyType, TviewMeta};
+use crate::concurrency::{LockTarget, LockValue};
 use crate::config::UncascadedPolicy;
 use crate::dependency::triggers::{NEW_TABLE, OLD_TABLE};
 use crate::error::{TViewError, TViewResult};
@@ -267,10 +268,13 @@ type FanoutFields = (i64, serde_json::Map<String, serde_json::Value>);
 
 /// The fan-out `patches` of keys of a table two joins away, by the lookup value
 /// each key reaches through the table in between (`fanout.via`): a key reaching
-/// none writes nothing. Under REPEATABLE READ the lookup is checked against the
-/// latest snapshot, as the patch's own lookup is. `None` when a relation the
-/// lookup reads is gone, or a value it reaches is no integer: the rows are then
-/// mapped and recomputed.
+/// none writes nothing. The lookup reads as the TVIEW's owner, as every refresh
+/// read does, so the writer needs no privilege on the table in between and its
+/// policies hide none of the rows. Under REPEATABLE READ the lookup is checked
+/// against the latest snapshot, as the patch's own lookup is. `None` when a
+/// relation the lookup reads is gone, a value it reaches is no integer, or the
+/// rows in between can't be locked one by one: the rows are then mapped and
+/// recomputed.
 ///
 /// # Errors
 /// Returns an error if the lookup fails; a missed row raises 40001.
@@ -285,14 +289,18 @@ fn reached_through(
     let Some(sql) = rendered_via(entity, mapping)? else {
         return Ok(None);
     };
+    let template = mapping.fanout.as_ref().and_then(|f| f.via.as_deref());
+    let Some((target, value)) = via_lock(entity, template.unwrap_or_default())? else {
+        return Ok(None);
+    };
+    let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
     let keys: Vec<i64> = patches.iter().map(|(key, _)| *key).collect();
     let args = [crate::utils::spi::int8_array(keys)];
     let plan = crate::utils::spi::Plan::PerExecution;
-    // The rows in between hold the link the patch follows, and the patched rows
-    // don't: lock them, so a concurrent re-point of one waits for this write, or
-    // this lookup waits for it and drops a row it moved away (READ COMMITTED
-    // re-checks a locked row's latest version).
-    let found = crate::utils::spi::kept_rows(&format!("{sql} FOR SHARE"), &args, plan)?;
+    let _owner = crate::owner::AsOwner::of_entity(entity)?;
+    let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
+        return Ok(None);
+    };
     crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
     let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
         patches.iter().map(|(key, fields)| (*key, fields)).collect();
@@ -307,6 +315,93 @@ fn reached_through(
         }
     }
     Ok(Some(reached))
+}
+
+/// The rows of a two-hop lookup (`sql`: key, lookup value, the value's lock
+/// form), each row in between it reached share-locked by its lookup value
+/// (ADR 0207). The rows in between hold the link the patch follows, and the
+/// patched rows don't: a concurrent re-point of one locks that value
+/// exclusively, so it waits for this write, or this lookup waits for it. No row
+/// of the table is locked, so the owner needs no more than SELECT on it.
+///
+/// Under READ COMMITTED the lookup runs again after its locks, in a new
+/// snapshot, until it reaches no row it hasn't locked: it then drops a row a
+/// re-point moved away, whether it waited for the re-point or the re-point
+/// committed between the lookup and the lock. Under REPEATABLE READ a lock
+/// held elsewhere raises 40001, and the snapshot can't change.
+///
+/// `None` past `pg_tviews.lock_escalation_threshold` rows: a lock on the whole
+/// table would wait for every writer of it, among them one moving a row to
+/// the changed key, which waits for this write's own lock on that key. The
+/// rows are then mapped and recomputed, which needs no lock in between: a
+/// recompute reads the link itself.
+///
+/// # Errors
+/// Returns an error if the lookup fails.
+fn locked_lookup(
+    sql: &str,
+    args: &[pgrx::datum::DatumWithOid<'_>],
+    plan: crate::utils::spi::Plan,
+    target: &LockTarget,
+) -> TViewResult<Option<Vec<crate::utils::spi::TextRow>>> {
+    let mut locked = std::collections::HashSet::new();
+    loop {
+        let found = crate::utils::spi::kept_rows(sql, args, plan)?;
+        let new: Vec<String> = found
+            .iter()
+            .filter_map(|row| row.get(2).cloned().flatten())
+            .filter(|value| !locked.contains(value))
+            .collect();
+        if new.is_empty() {
+            return Ok(Some(found));
+        }
+        if !crate::concurrency::lock_values_unescalated(
+            target,
+            crate::concurrency::Side::Refresh,
+            &new,
+        ) {
+            return Ok(None);
+        }
+        if crate::concurrency::crosscheck::enabled() {
+            return Ok(Some(found));
+        }
+        locked.extend(new);
+    }
+}
+
+/// Where a two-hop lookup locks the rows in between it reaches: their lookup
+/// value (the second column the `via` template reads, see
+/// `QueryGraph::hop_via`), when it is a read set of the table in between, so
+/// that every write of such a row locks it exclusively (old and new images).
+/// `None` otherwise, or when the column is gone.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+fn via_lock(entity: &str, template: &str) -> TViewResult<Option<(LockTarget, LockValue)>> {
+    let Some(crate::lineage::Placeholder::Column(relid, attnum)) =
+        crate::lineage::template_placeholders(template)
+            .get(1)
+            .copied()
+    else {
+        return Ok(None);
+    };
+    let Some(meta) = TviewMeta::load_by_entity(entity)? else {
+        return Ok(None);
+    };
+    let read = meta
+        .key_mapping(Oid::from(relid), None)
+        .is_some_and(|m| m.reads.iter().any(|set| set.attnum == attnum));
+    if !read {
+        return Ok(None);
+    }
+    let Some(value) = crate::concurrency::lock_value(relid, attnum)? else {
+        return Ok(None);
+    };
+    let target = LockTarget {
+        relid,
+        attnums: vec![attnum],
+    };
+    Ok(Some((target, value)))
 }
 
 /// Refresh `entity` in full because its mapping cannot run, and say once why.

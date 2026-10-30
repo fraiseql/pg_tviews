@@ -177,11 +177,29 @@ pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
     lock_in(Space::Keys, &target, Side::Writer, keys);
 }
 
-fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
-    let policy = Policy::current();
-    if values.is_empty() {
-        return;
+/// Lock `values` of `target` for `side`, as [`lock_values`] does, unless that
+/// would lock the relation as a whole: past `pg_tviews.lock_escalation_threshold`
+/// values, nothing is locked and `false` is returned, for the caller to find its
+/// rows another way. An escalated lock blocks every writer of the relation, not
+/// only the writers of these values. A relation already locked as a whole holds
+/// the values.
+pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String]) -> bool {
+    if pending(Space::Values, target, side, values).0 {
+        return false;
     }
+    lock_values(target, side, values);
+    true
+}
+
+/// What locking `values` of `target` in `space` for `side` takes: whether the
+/// relation is locked as a whole instead, whether its intent lock is still to
+/// take, and the hashes of the values not held yet.
+fn pending(
+    space: Space,
+    target: &LockTarget,
+    side: Side,
+    values: &[String],
+) -> (bool, bool, Vec<u32>) {
     let relid = target.relid;
     let mut hashes: Vec<u32> = values
         .iter()
@@ -189,19 +207,20 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
         .collect();
     hashes.sort_unstable();
     hashes.dedup();
-    let held = |hash| Held::Value {
-        relid,
-        space,
-        side,
-        hash,
-    };
-    let (escalate, intent, new) = REGISTRY.with_borrow(|r| {
+    REGISTRY.with_borrow(|r| {
         if r.escalated(relid, space, side) {
             return (false, false, Vec::new());
         }
         let new: Vec<u32> = hashes
             .into_iter()
-            .filter(|&hash| !r.holds(&held(hash)))
+            .filter(|&hash| {
+                !r.holds(&Held::Value {
+                    relid,
+                    space,
+                    side,
+                    hash,
+                })
+            })
             .collect();
         let threshold = crate::config::lock_escalation_threshold();
         let escalate =
@@ -211,7 +230,22 @@ fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
             !r.holds(&Held::Intent { relid, space, side }),
             new,
         )
-    });
+    })
+}
+
+fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
+    let policy = Policy::current();
+    if values.is_empty() {
+        return;
+    }
+    let relid = target.relid;
+    let held = |hash| Held::Value {
+        relid,
+        space,
+        side,
+        hash,
+    };
+    let (escalate, intent, new) = pending(space, target, side, values);
     if escalate {
         relation_lock(relid, space, side, escalated_mode(side));
         crate::metrics::metrics_api::record_value_lock_escalation();

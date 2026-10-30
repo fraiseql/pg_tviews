@@ -815,7 +815,9 @@ impl QueryGraph {
     /// For a hop through a table in between, the query from values of this
     /// table's hop column (`$1`, `int8[]`) to the root column's values they reach:
     /// `(value, root value)` pairs as text, read from that table (a root value
-    /// that is no integer leaves the rows to the recompute).
+    /// that is no integer leaves the rows to the recompute). The root column is
+    /// the template's second placeholder: the lookup locks the rows it reaches
+    /// by its value.
     fn hop_via(&self, occ: usize, path: &[usize]) -> Option<String> {
         let (joined, to_root) = self.hop_columns(occ, path)?.between?;
         let relid = self.occurrences[joined.occ].relid;

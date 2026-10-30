@@ -253,8 +253,26 @@ Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both sta
   lines of the renamed customer's orders found order 10 under its snapshot, waited for
   a concurrent re-point of that order, then wrote the old customer's name into lines
   that now show another one (`two-hop-patch-vs-repoint`): the link lives in `tb_order`,
-  which the patch's own condition cannot re-check. The lookup takes `FOR SHARE` on the
-  orders it goes through.
+  which the patch's own condition cannot re-check. The lookup now takes a shared value
+  lock on each order it reached, by the column the lines join on (`pk_order`, a read
+  set of `tb_order`, which every write of an order locks exclusively, old and new
+  images), whether or not the transaction changed a link. Then, under READ COMMITTED,
+  it reads again in a new snapshot until it reaches no order it hasn't locked: an order
+  re-pointed while it waited, or between its read and its lock, is dropped. Under
+  REPEATABLE READ a lock held elsewhere raises 40001. Past
+  `pg_tviews.lock_escalation_threshold` orders it doesn't lock the table instead, which
+  would wait for every writer of `tb_order`: the lines are mapped and recomputed, which
+  reads the link itself and needs no lock in between.
+
+  The order is fixed: the writer's exclusive locks, then the lookup, then the shared
+  locks on what it reached. A shared lock taken before the lookup (on the customer's
+  orders as a whole) waits for an order being moved to the renamed customer, which
+  waits for the rename's customer to recompute its line: a deadlock in one statement
+  each (`two-hop-rename-vs-move-in`), and so would an escalated lock. The lookup reads as the TVIEW's owner and locks
+  no row: a `FOR SHARE` took UPDATE on the table in between, which its writer, and
+  often its owner, lacks, and as the writer it missed the rows its policies hide
+  (#268). No value it reads reaches the writer's errors, notices or results
+  (`two-hop-hidden-repoint`).
 
 Specs: `crossed-value-writes` (one statement each, gated between the triggers and the
 flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass

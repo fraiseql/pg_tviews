@@ -1,0 +1,77 @@
+Parsed test spec with 2 sessions
+
+starting permutation: o_begin o_move w_timeout w_rename o_sleep o_rollback o_check
+step o_begin: BEGIN;
+step o_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 7770010;
+step w_timeout: SET lock_timeout = '200ms';
+step w_rename: SELECT * FROM rename_customer('amy'); <waiting ...>
+step o_sleep: SELECT pg_sleep(1);
+pg_sleep
+--------
+        
+(1 row)
+
+step w_rename: <... completed>
+state|message                                |names_hidden
+-----+---------------------------------------+------------
+55P03|canceling statement due to lock timeout|f           
+(1 row)
+
+step o_rollback: ROLLBACK;
+step o_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|ann     |t    
+(1 row)
+
+
+starting permutation: o_begin o_move w_rr w_rename w_commit o_rollback o_check
+step o_begin: BEGIN;
+step o_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 7770010;
+step w_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS orders_seen FROM tb_order;
+orders_seen
+-----------
+          0
+(1 row)
+
+step w_rename: SELECT * FROM rename_customer('amy');
+state|message                                                                                   |names_hidden
+-----+------------------------------------------------------------------------------------------+------------
+40001|could not serialize access: a concurrent transaction changes rows this TVIEW refresh reads|f           
+(1 row)
+
+step w_commit: COMMIT;
+step o_rollback: ROLLBACK;
+step o_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|ann     |t    
+(1 row)
+
+
+starting permutation: o_begin o_move w_rename o_commit o_check
+step o_begin: BEGIN;
+step o_move: UPDATE tb_order SET fk_customer = 2 WHERE pk_order = 7770010;
+step w_rename: SELECT * FROM rename_customer('amy'); <waiting ...>
+step o_commit: COMMIT;
+step w_rename: <... completed>
+state|message|names_hidden
+-----+-------+------------
+00000|       |f           
+(1 row)
+
+step o_check: 
+  SELECT t.pk_line, t.data->>'customer' AS customer, t.data = v.data AS fresh
+  FROM tv_line t FULL JOIN tviews.public__tv_line v USING (pk_line) ORDER BY 1;
+
+pk_line|customer|fresh
+-------+--------+-----
+    100|bob     |t    
+(1 row)
+
