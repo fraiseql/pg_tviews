@@ -72,9 +72,10 @@ Writes to unrelated values don't wait for each other. A write that changes **no
 link** (it inserts and deletes no row, and updates only columns its TVIEWs show, not
 columns they join, filter, group or order by) takes no shared value lock: two such
 writes, say two users editing their own `bio`, each refreshing posts that show both
-users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
-those rows would. Under `REPEATABLE READ` and `SERIALIZABLE` the second of them fails
-with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does.
+users, only wait for each other's key locks on those posts, taken in one sorted call,
+as two plain `UPDATE`s of those rows would wait for each other's row locks. Under
+`REPEATABLE READ` and `SERIALIZABLE` the second of them fails with `40001` instead, as
+a plain `UPDATE` of a row updated since its snapshot does.
 Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
 
 Like any workload that locks, two transactions that change links and take these locks
@@ -88,7 +89,7 @@ in opposite orders can deadlock: PostgreSQL detects it and fails one of them wit
 |---|---|---|
 | A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new, before it looks up the TVIEW rows they feed | end of transaction |
 | A write to a TVIEW's rows that other TVIEWs embed | exclusive value locks on those rows' keys, before it looks up the parents | end of transaction |
-| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`; under `REPEATABLE READ` and `SERIALIZABLE`, when the refresh writes them in several statements) | end of transaction |
+| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: an exclusive key lock on every `tv_<entity>` row it writes, existing or not (recomputed, patched directly or by a fan-out), all of one TVIEW's in one sorted call, TVIEWs in dependency order; the rows are computed after the locks are granted. Under `REPEATABLE READ` and `SERIALIZABLE` a row another transaction wrote since the snapshot fails the write with `40001` | end of transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it (under `REPEATABLE READ` they fail with `40001`); readers are not blocked | end of transaction |
@@ -97,7 +98,8 @@ in opposite orders can deadlock: PostgreSQL detects it and fails one of them wit
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'
 own: `objsubid` is 21622 for a value (or the key of a row being created) and 21623 for
 a relation's intent and escalated locks, `classid` is the relation, `objid` a hash of
-the value. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
+the value (or of the key, in the TVIEW's key space, whose relation lock has `objid`
+1). `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
 nor block them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
 released by `ROLLBACK TO SAVEPOINT` when taken after the savepoint; a link changed
 after the savepoint is forgotten with them.
@@ -112,7 +114,15 @@ an aggregate compared above its level) counts every column as a link.
 Past `pg_tviews.lock_escalation_threshold` values of one relation (64 by default), a
 transaction locks the relation instead of its values, so a bulk write never exhausts
 the shared lock table: one transaction renaming 20,000 users holds a few dozen locks, and
-writes linking rows to any of those users wait for it.
+writes linking rows to any of those users wait for it. Key locks also count against
+`pg_tviews.key_lock_budget` over all TVIEWs (256 by default): past it, a request locks
+its TVIEW's key space instead. A transaction therefore holds at most the budget plus one
+lock per such TVIEW, whatever its cascade.
+
+A write of more rows of one TVIEW than the threshold (a rename patched into 10,000
+comments, a bulk `UPDATE`) locks that TVIEW's key space as a whole: every other write of
+that TVIEW waits until the transaction commits. Run large renames in batches, or raise
+the threshold together with `max_locks_per_transaction`.
 
 ```sql
 -- Who waits for whom
@@ -144,6 +154,8 @@ The ones that bear on concurrent writers:
 - `pg_tviews.lock_escalation_threshold` (superuser): value locks per relation before a transaction
   locks the relation (0 always locks relations; -1 never does, which can exhaust the
   shared lock table on a bulk write);
+- `pg_tviews.key_lock_budget` (superuser): key locks a transaction holds over all TVIEWs
+  before it locks a TVIEW's key space instead (-1: no budget);
 - `pg_tviews.max_queue_size` (superuser): refreshes one transaction may queue before it fails;
 - `pg_tviews.direct_patch_enabled` (superuser, hidden): the direct-patch fast path (on
   by default).

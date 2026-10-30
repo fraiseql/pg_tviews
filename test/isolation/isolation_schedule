@@ -34,3 +34,9 @@ test: two-hop-hidden-repoint
 test: rr-full-refresh-vs-insert
 test: new-row-vs-row-lock
 test: rr-recreated-row
+test: key-lock-patch-vs-recompute
+test: key-lock-fanout-vs-repoint
+test: rr-row-written-since-snapshot
+test: cross-tview-key-order
+test: key-lock-fanout-vs-recompute
+test: child-insert-vs-parent-rename

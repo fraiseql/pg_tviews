@@ -38,6 +38,9 @@ pub enum Side {
 pub enum Space {
     Values,
     Keys,
+    /// A TVIEW's lookup values: the values of the columns its fan-out patches
+    /// look rows up by (ADR 0207).
+    Lookups,
 }
 
 impl Space {
@@ -46,6 +49,7 @@ impl Space {
         match self {
             Self::Values => 0,
             Self::Keys => 1,
+            Self::Lookups => 2,
         }
     }
 }
@@ -164,12 +168,14 @@ pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
     lock_in(Space::Values, target, side, values);
 }
 
-/// A refresh about to create TVIEW rows (`keys`, rows of `tview` it found
-/// missing) locks them exclusively, in the TVIEW's key space: two transactions
-/// creating the same row, which no join value links (a child carrying the key
-/// in its row, a new group of an aggregate), wait for each other. Escalation
-/// locks the key space alone, so it only stops other creations of rows.
-pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
+/// A write of TVIEW rows (`keys`, rows of `tview`, whether they exist or not)
+/// locks them exclusively, in the TVIEW's key space, before it computes them:
+/// every recompute, direct patch and fan-out patch of a row holds its key lock,
+/// so two transactions writing the same row wait for each other, and the second
+/// computes after the first committed. Past `pg_tviews.lock_escalation_threshold`
+/// keys of one TVIEW, or `pg_tviews.key_lock_budget` over all of them, the key
+/// space is locked as a whole.
+pub fn lock_keys(tview: pg_sys::Oid, keys: &[String]) {
     let target = LockTarget {
         relid: tview.to_u32(),
         attnums: vec![-1],
@@ -223,8 +229,16 @@ fn pending(
             })
             .collect();
         let threshold = crate::config::lock_escalation_threshold();
-        let escalate =
-            !new.is_empty() && r.should_escalate(relid, space, side, new.len(), threshold);
+        let budgeted = matches!(space, Space::Keys | Space::Lookups);
+        let escalate = !new.is_empty()
+            && (r.should_escalate(relid, space, side, new.len(), threshold)
+                || (budgeted
+                    && over_budget(
+                        r.values_in(Space::Keys, Side::Writer)
+                            + r.values_in(Space::Lookups, Side::Writer)
+                            + r.values_in(Space::Lookups, Side::Refresh)
+                            + new.len(),
+                    )));
         (
             escalate,
             !r.holds(&Held::Intent { relid, space, side }),
@@ -233,11 +247,63 @@ fn pending(
     })
 }
 
-/// Whether this transaction holds the key lock of `key`, a row of `tview` it
-/// may create ([`lock_new_keys`]), itself or through the key space's escalated
-/// lock.
+/// Lock lookup values of `tview` (ADR 0207), in one call sorted by lock id:
+/// `exclusive`, the `(attnum, value)` pairs its fan-out patches write rows of,
+/// and `shared`, those its recomputes read rows of (a pair in both is locked
+/// exclusively). A fan-out patch of a value and a recompute of a row holding it
+/// wait for each other; two recomputes don't.
+pub fn lock_lookups(tview: pg_sys::Oid, exclusive: &[(i16, String)], shared: &[(i16, String)]) {
+    let mut wanted: std::collections::BTreeMap<u32, (i16, &str, Side)> =
+        std::collections::BTreeMap::new();
+    for (pairs, side) in [(shared, Side::Refresh), (exclusive, Side::Writer)] {
+        for (attnum, value) in pairs {
+            let hash = value_hash(&[*attnum], value);
+            let entry = wanted
+                .entry(hash)
+                .or_insert((*attnum, value.as_str(), side));
+            if side == Side::Writer {
+                *entry = (*attnum, value.as_str(), side);
+            }
+        }
+    }
+    for (attnum, value, side) in wanted.into_values() {
+        let target = LockTarget {
+            relid: tview.to_u32(),
+            attnums: vec![attnum],
+        };
+        lock_in(Space::Lookups, &target, side, &[value.to_string()]);
+    }
+}
+
+/// Whether this transaction holds `tview`'s lookup lock on `value` of column
+/// `attnum`, exclusively, or shared too when `shared` allows it; an escalated
+/// lookup space holds every value.
 #[must_use]
-pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
+pub fn holds_lookup(tview: pg_sys::Oid, attnum: i16, value: &str, shared: bool) -> bool {
+    let relid = tview.to_u32();
+    let hash = value_hash(&[attnum], value);
+    let sides: &[Side] = if shared {
+        &[Side::Writer, Side::Refresh]
+    } else {
+        &[Side::Writer]
+    };
+    REGISTRY.with_borrow(|r| {
+        sides.iter().any(|&side| {
+            r.escalated(relid, Space::Lookups, side)
+                || r.holds(&Held::Value {
+                    relid,
+                    space: Space::Lookups,
+                    side,
+                    hash,
+                })
+        })
+    })
+}
+
+/// Whether this transaction holds the key lock of `key`, a row of `tview` it
+/// may write ([`lock_keys`]), itself or through the key space's escalated lock.
+#[must_use]
+pub fn holds_key(tview: pg_sys::Oid, key: &str) -> bool {
     let relid = tview.to_u32();
     let held = Held::Value {
         relid,
@@ -246,6 +312,12 @@ pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
         hash: value_hash(&[-1], key),
     };
     REGISTRY.with_borrow(|r| r.escalated(relid, Space::Keys, Side::Writer) || r.holds(&held))
+}
+
+/// Whether holding `keys` key locks over all TVIEWs exceeds
+/// `pg_tviews.key_lock_budget`.
+fn over_budget(keys: usize) -> bool {
+    usize::try_from(crate::config::key_lock_budget()).is_ok_and(|budget| keys > budget)
 }
 
 fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {

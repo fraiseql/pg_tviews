@@ -71,6 +71,7 @@ that matter in operations:
 | `pg_tviews.max_propagation_depth` | `100` | superuser | raise for very deep embed chains (else `54001`) |
 | `pg_tviews.max_dependency_depth` | `10` | superuser | raise for deeper view-on-view hierarchies |
 | `pg_tviews.lock_escalation_threshold` | `64` | superuser | value locks per relation before a transaction locks the relation instead |
+| `pg_tviews.key_lock_budget` | `256` | superuser | key locks a transaction holds over all TVIEWs before it locks a TVIEW's key space instead |
 | `pg_tviews.audit_enabled` | `off` | superuser | record creates, drops and refreshes in `tviews.pg_tview_audit_log` |
 | `pg_tviews.batch_size` | `1000` | user | keys per bulk-refresh statement |
 | `pg_tviews.cache_size` | `10000` | user | entries per in-memory metadata cache, per backend |

@@ -1,12 +1,10 @@
 # A REPEATABLE READ refresh of a TVIEW row that a concurrent transaction deleted
-# after the snapshot (a doc whose last revision was deleted). The refresh still
-# sees the row, so it takes no key lock (ADR 0207's lock of rows being created),
-# and its upsert, finding the row gone, creates it anew. A READ COMMITTED writer
-# creating the same row meanwhile found it missing, took the free key lock, and
-# then waited inside its own upsert for the new row and wrote what it computed
-# before the wait: the REPEATABLE READ write was lost. A REPEATABLE READ refresh
-# that would create a row its snapshot sees fails with 40001 instead, as an
-# UPDATE of a concurrently deleted row does. So does SERIALIZABLE. A row its
+# after the snapshot (a doc whose last revision was deleted). When only missing
+# rows took a key lock, the refresh, still seeing the row, took none, and its
+# upsert created the row anew; a READ COMMITTED writer creating the same row then
+# waited inside its own upsert and wrote what it computed before the wait (#273).
+# A REPEATABLE READ refresh of a row written since its snapshot fails with 40001
+# (ADR 0207), as an UPDATE of a concurrently deleted row does. So does SERIALIZABLE. A row its
 # snapshot does not see at all (a new doc) is created under the key lock, and the
 # READ COMMITTED writer waits for it.
 

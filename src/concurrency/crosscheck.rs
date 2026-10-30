@@ -43,6 +43,43 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
     same_under_latest(&sql, &[lookup.arg], lookup.plan)
 }
 
+/// Write side, once the key locks of `keys` are held: each key's row of `meta`'s
+/// TVIEW is the same under the latest snapshot as under the transaction's (the
+/// same `pk_<entity>` and `xmin`, or absent from both). Otherwise a concurrent
+/// transaction wrote, created or deleted it after the snapshot, and a write
+/// computed from the snapshot would undo that write. The transaction's own
+/// earlier writes are visible to both snapshots.
+///
+/// # Errors
+/// Returns an error if a query fails; a difference raises 40001.
+pub fn locked_rows_unchanged(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
+    if keys.is_empty() || !enabled() {
+        return Ok(());
+    }
+    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
+        return Ok(());
+    };
+    let key = ident::quoted(&meta.identity.column);
+    let pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let tview = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let sql = format!(
+        "SELECT t.{key}::pg_catalog.text, t.{pk}::pg_catalog.text, t.xmin::pg_catalog.text \
+         FROM {tview} t WHERE t.{key} OPERATOR(pg_catalog.=) {}",
+        lookup.rhs
+    );
+    let args = [lookup.arg];
+    let seen = sorted(crate::utils::spi::kept_rows(&sql, &args, lookup.plan)?);
+    let latest = sorted(Spi::connect(|_| {
+        crate::utils::spi::latest_rows_connected(&sql, &args, Some(lookup.plan))
+    })?);
+    if seen != latest {
+        super::serialization_failure(
+            "a concurrent transaction wrote a TVIEW row this refresh writes",
+        );
+    }
+    Ok(())
+}
+
 /// Refresh side, for a TVIEW brought to its view as a whole (a reconcile): the
 /// whole view is the same under the latest snapshot as under the transaction's.
 /// A row a concurrent transaction committed since the snapshot (a post

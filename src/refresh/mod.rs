@@ -362,185 +362,276 @@ pub(crate) fn run_counted_upsert(
     } else {
         (String::new(), "", "NULL::pg_catalog.text")
     };
+    // The lookup values of the rows written (ADR 0207), checked after the write.
+    let lookups = lookup_columns(meta);
+    let lookup_values = if lookups.is_empty() {
+        "NULL::pg_catalog.jsonb".to_string()
+    } else {
+        format!(
+            "pg_catalog.jsonb_build_array({})",
+            lookups
+                .iter()
+                .map(|(name, _)| format!("{}::pg_catalog.text", ident::quoted(name)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let sql = format!(
         "WITH src AS ({source_sql}), {duplicate}\
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src {unless_duplicate} \
                      {conflict} RETURNING {qi_pk}::pg_catalog.int8 AS k, {} AS i, {} AS r, \
                                           xmax = 0 AS inserted, \
-                                          {qi_key}::pg_catalog.text AS key) \
+                                          {qi_key}::pg_catalog.text AS key, {lookup_values} AS l) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
-                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r, key)) \
+                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r, key, l)) \
                  FROM written), {duplicate_key}",
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows, duplicate) = Spi::connect_mut(|client| {
-        let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
-        Ok::<_, spi::Error>((
-            row.get::<Vec<String>>(1)?,
-            row.get::<pgrx::JsonB>(2)?,
-            row.get::<String>(3)?,
-        ))
-    })?;
-    if let Some(key) = duplicate {
-        return Err(crate::TViewError::DuplicateKey {
-            tview: qi_tv.to_string(),
-            key_column: meta.identity.column.clone(),
-            key,
-        });
-    }
-    let keys = keys.unwrap_or_default();
-    let rows = match rows {
-        Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
-        _ => Vec::new(),
-    };
-    crate::metrics::metrics_api::record_noop_skipped(
-        entity,
-        keys.len().saturating_sub(rows.len()) as u64,
-    );
     let mut written = Written::default();
-    let mut created = Vec::new();
-    for row in rows {
-        let (Some(pk), id, Some(inserted)) = (
-            row[0].as_i64(),
-            row[1].as_str().map(str::to_string),
-            row[2].as_bool(),
-        ) else {
-            continue;
-        };
-        if inserted {
-            written.inserted.push(pk);
-            created.extend(row[4].as_str().map(str::to_string));
-        } else {
-            written.updated.push(pk);
+    // A row holding a lookup value this transaction had not locked (a new row,
+    // a row re-pointed) was computed without that lock: the value is locked now,
+    // and the rows are computed again by a new statement, which sees whatever a
+    // fan-out patch of that value committed meanwhile (ADR 0207). Bounded: each
+    // pass locks at least one more value.
+    loop {
+        let (keys, rows, duplicate) = Spi::connect_mut(|client| {
+            let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
+            Ok::<_, spi::Error>((
+                row.get::<Vec<String>>(1)?,
+                row.get::<pgrx::JsonB>(2)?,
+                row.get::<String>(3)?,
+            ))
+        })?;
+        if let Some(key) = duplicate {
+            return Err(crate::TViewError::DuplicateKey {
+                tview: qi_tv.to_string(),
+                key_column: meta.identity.column.clone(),
+                key,
+            });
         }
-        let change = if inserted {
-            Change::Inserted
-        } else {
-            Change::Updated
+        let keys = keys.unwrap_or_default();
+        let rows = match rows {
+            Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
+            _ => Vec::new(),
         };
-        let references: Vec<Option<String>> = row[3]
-            .as_array()
-            .map(|values| {
-                values
-                    .iter()
-                    .map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let held = old.and_then(|o| o.get(&pk)).map(Vec::as_slice);
-        record(Recorded::of(meta, pk, id, change, &references, held));
+        crate::metrics::metrics_api::record_noop_skipped(
+            entity,
+            keys.len().saturating_sub(rows.len()) as u64,
+        );
+        let mut written_keys = Vec::new();
+        let mut unlocked: Vec<(i16, String)> = Vec::new();
+        for row in rows {
+            let (Some(pk), id, Some(inserted)) = (
+                row[0].as_i64(),
+                row[1].as_str().map(str::to_string),
+                row[2].as_bool(),
+            ) else {
+                continue;
+            };
+            written_keys.extend(row[4].as_str().map(str::to_string));
+            for ((_, attnum), value) in lookups.iter().zip(row[5].as_array().into_iter().flatten())
+            {
+                if let Some(value) = value.as_str()
+                    && !crate::concurrency::holds_lookup(meta.tview_oid, *attnum, value, true)
+                {
+                    unlocked.push((*attnum, value.to_string()));
+                }
+            }
+            if inserted {
+                written.inserted.push(pk);
+            } else {
+                written.updated.push(pk);
+            }
+            let change = if inserted {
+                Change::Inserted
+            } else {
+                Change::Updated
+            };
+            let references: Vec<Option<String>> = row[3]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let held = old.and_then(|o| o.get(&pk)).map(Vec::as_slice);
+            record(Recorded::of(meta, pk, id, change, &references, held));
+        }
+        refuse_unlocked_writes(meta, qi_tv, &written_keys)?;
+        if unlocked.is_empty() {
+            return Ok(Produced { keys, written });
+        }
+        crate::concurrency::lock_lookups(meta.tview_oid, &[], &unlocked);
     }
-    refuse_unlocked_creations(meta, qi_tv, &created)?;
-    Ok(Produced { keys, written })
 }
 
-/// A refresh creates a TVIEW row only under its key lock (ADR 0207): every other
-/// transaction creating the same row waits for it, and one that finds the row
-/// then locks it before computing ([`lock_rows`]). A row created without the
-/// lock is a key whose row the refresh found, gone since: under REPEATABLE READ
-/// and SERIALIZABLE, a row a concurrent transaction deleted after the snapshot,
-/// which fails with 40001 as an UPDATE of that row would. Under READ COMMITTED
-/// the found rows are locked, so it can't happen.
+/// Every write of a TVIEW row holds that row's key lock (ADR 0207): `written`
+/// are the keys of the rows a statement inserted or updated. A row written
+/// without it is a key whose row was found and gone since, or changed by another
+/// transaction: under REPEATABLE READ and SERIALIZABLE one a concurrent
+/// transaction wrote after the snapshot, which fails with 40001 as an UPDATE of
+/// it would. Under READ COMMITTED it can't happen.
 ///
 /// # Errors
-/// An internal error for a row created without its key lock under READ
+/// An internal error for a row written without its key lock under READ
 /// COMMITTED.
-fn refuse_unlocked_creations(
+pub(crate) fn refuse_unlocked_writes(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
-    created: &[String],
+    written: &[String],
 ) -> crate::TViewResult<()> {
-    if created
+    if written
         .iter()
-        .all(|key| crate::concurrency::holds_new_key(meta.tview_oid, key))
+        .all(|key| crate::concurrency::holds_key(meta.tview_oid, key))
     {
         return Ok(());
     }
     if crate::concurrency::crosscheck::enabled() {
         crate::concurrency::serialization_failure(
-            "a concurrent transaction deleted a TVIEW row this refresh read",
+            "a concurrent transaction wrote a TVIEW row this refresh writes",
         );
     }
     Err(crate::TViewError::CatalogError {
-        operation: format!("Create a row of {qi_tv}"),
-        pg_error: "the row was created without its key lock".to_string(),
+        operation: format!("Write a row of {qi_tv}"),
+        pg_error: "the row was written without its key lock".to_string(),
     })
 }
 
-/// Lock the existing rows of `keys` in the TVIEW (in key order) before
-/// recomputing them, then the keys of those it doesn't hold yet, then the rows
-/// of those keys created in between, and return the rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
-/// recomputing one of these rows, or creating it, is then waited for here, and
-/// the recompute that follows, a new statement, sees what it committed; without
-/// the lock it waited inside its own upsert and wrote a document computed before
-/// that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already fails
-/// on an existing row (SQLSTATE 40001): those rows are only read; a key another
-/// transaction is creating fails at once (ADR 0207).
+/// Lock the keys of `keys` in the TVIEW before recomputing their rows (ADR 0207:
+/// one key lock per row, whether it exists or not), then read the rows that
+/// exist: their `pk_<entity>` and reference keys. Under READ COMMITTED the read
+/// and the recompute that follows are statements of their own, after every lock
+/// is granted: they see what any transaction this one waited for committed.
+/// Under REPEATABLE READ and SERIALIZABLE a key another transaction holds fails
+/// at once, and a row another transaction wrote after the snapshot fails with
+/// 40001 ([`crate::concurrency::crosscheck::locked_rows_unchanged`]).
 pub(crate) fn lock_rows(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
 ) -> crate::TViewResult<Locked> {
-    // SAFETY: reads the backend's isolation level.
-    let transaction_snapshot =
-        unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
     if keys.is_empty() {
         return Ok(Locked::default());
     }
+    lock_keys_of(meta, keys)?;
     let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
-    let lock = if transaction_snapshot {
-        ""
-    } else {
-        " FOR UPDATE"
-    };
     // The reference keys the rows hold before the recompute: what the change
     // feed names as the collections a row leaves.
     let references = meta.publishes_collections();
     let sql = format!(
         "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
-         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
+         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({})",
         meta.reference_keys("t"),
         key_cast(key_type, "$1", true)
     );
-    let args = [key_array(key_type, keys)?];
-    let (mut pks, held, mut old) = locked_rows(&sql, &args, references)?;
-    // As the identity's type writes them, as the rows found are compared:
-    // the same uuid can be queued in another spelling.
-    let keys: Vec<String> = match &key_type {
-        KeyType::Int => keys.iter().map(ToString::to_string).collect(),
-        KeyType::Text(_) => crate::utils::spi::strings(
-            &format!(
-                "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
-                key_cast(key_type, "$1", true)
-            ),
-            &args,
-        )?,
-    };
-    let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
-    crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
-    // A missing row another transaction created and committed since the first
-    // statement, and a third one may hold now, is locked too, in a new
-    // statement: the key lock only stops new creations of it. Without this the
-    // upsert waits for that row's lock inside ON CONFLICT DO UPDATE and writes
-    // what it computed before the wait.
-    if !transaction_snapshot && !missing.is_empty() {
-        let created: Vec<KeyValue> = missing.into_iter().map(KeyValue::Text).collect();
-        let args = [key_array(key_type, &created)?];
-        let (more, _, more_old) = locked_rows(&sql, &args, references)?;
-        pks.extend(more);
-        old.extend(more_old);
-    }
+    let (pks, _, old) = locked_rows(&sql, &[key_array(key_type, keys)?], references)?;
     Ok(Locked {
         pks,
         old: Some(old),
     })
 }
 
+/// The columns `meta`'s TVIEW's fan-out patches look rows up by, each with the
+/// number its lookup locks are hashed with (ADR 0207): its place among them, by
+/// name, below the key space's -1. Both ends of a lock read it from the same
+/// plan, so no catalog read is needed.
+pub(crate) fn lookup_columns(meta: &crate::catalog::TviewMeta) -> Vec<(String, i16)> {
+    let mut names: Vec<String> = meta
+        .plan
+        .tables
+        .iter()
+        .filter_map(|t| t.fanout.as_ref().map(|f| f.lookup_col.clone()))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.into_iter().zip((2_i16..).map(|i| -i)).collect()
+}
+
+/// The lookup values the rows of `keys` hold now (a plain read): what a recompute
+/// of them locks shared before their key locks (ADR 0207).
+///
+/// # Errors
+/// Returns an error if the rows cannot be read.
+pub(crate) fn stored_lookups(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+    columns: &[(String, i16)],
+) -> crate::TViewResult<Vec<(i16, String)>> {
+    if columns.is_empty() || keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let read = columns
+        .iter()
+        .map(|(name, _)| format!("t.{}::pg_catalog.text", ident::quoted(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {read} FROM {} t WHERE t.{} OPERATOR(pg_catalog.=) ANY({})",
+        crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
+        ident::quoted(&meta.identity.column),
+        key_cast(&meta.key_type, "$1", true)
+    );
+    let rows = crate::utils::spi::kept_rows(
+        &sql,
+        &[key_array(&meta.key_type, keys)?],
+        crate::utils::spi::Plan::PerExecution,
+    )?;
+    Ok(rows
+        .into_iter()
+        .flat_map(|row| {
+            columns
+                .iter()
+                .zip(row)
+                .filter_map(|((_, attnum), value)| Some((*attnum, value?)))
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+/// Lock the keys of `keys` in `meta`'s TVIEW (ADR 0207), in one sorted call, and
+/// under REPEATABLE READ and SERIALIZABLE check that no other transaction wrote
+/// their rows since the snapshot. Keys already held are not locked again.
+///
+/// # Errors
+/// Returns an error if a key is no value of the identity's type or a query
+/// fails; a row written since the snapshot raises 40001.
+pub(crate) fn lock_keys_of(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+) -> crate::TViewResult<()> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    crate::concurrency::lock_keys(meta.tview_oid, &key_texts(&meta.key_type, keys)?);
+    crate::concurrency::crosscheck::locked_rows_unchanged(meta, keys)
+}
+
+/// `keys` as the identity's type writes them, as the rows' keys read back are
+/// compared: the same uuid can be queued in another spelling.
+///
+/// # Errors
+/// Returns an error if a key is no value of the identity's type.
+pub(crate) fn key_texts(key_type: &KeyType, keys: &[KeyValue]) -> crate::TViewResult<Vec<String>> {
+    Ok(match key_type {
+        KeyType::Int => keys.iter().map(ToString::to_string).collect(),
+        KeyType::Text(_) => crate::utils::spi::strings(
+            &format!(
+                "SELECT k::pg_catalog.text FROM pg_catalog.unnest({}) k",
+                key_cast(key_type, "$1", true)
+            ),
+            &[key_array(key_type, keys)?],
+        )?,
+    })
+}
+
 /// The rows `sql` (from [`lock_rows`]) returns: their `pk_<entity>`, their keys
-/// as text, and, for `references`, the reference keys they hold.
+/// as text, and, for `references`, the reference keys they hold. A read-write
+/// statement: under READ COMMITTED it takes a snapshot of its own.
 fn locked_rows(
     sql: &str,
     args: &[pgrx::datum::DatumWithOid<'_>],
@@ -550,7 +641,6 @@ fn locked_rows(
     std::collections::HashSet<String>,
     crate::catalog::collections::OldKeys,
 )> {
-    // Read-write: a read-only SPI call refuses FOR UPDATE.
     Ok(Spi::connect_mut(|client| {
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
@@ -568,18 +658,19 @@ fn locked_rows(
     })?)
 }
 
-/// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, and read
-/// `columns` (integer lookup columns) off the version locked, the latest
-/// committed one, by `pk_<entity>`. A refresh that writes rows in several
-/// statements (direct patches, grouped by shape, then recomputes) then takes
-/// their row locks in the order every concurrent refresh does, so two of them
-/// never wait for each other in a cycle (#263); and a patch written into a parent
-/// can be checked against what the parent embeds now. Under REPEATABLE READ and
-/// SERIALIZABLE a row updated since the snapshot fails the write here (40001), as
-/// it would in the refresh; one being updated is waited for in key order too.
+/// Lock the keys of `keys` in `meta`'s TVIEW in one sorted call (ADR 0207), and
+/// read `columns` (integer lookup columns) of their rows, by `pk_<entity>`, in a
+/// statement after the locks: the latest committed version, since every writer
+/// of those rows holds their key locks. A refresh that writes rows in several
+/// statements (direct patches, grouped by shape, then recomputes) takes every
+/// key lock first, as every concurrent refresh does, so two of them never wait
+/// for each other in a cycle (#263); and a patch written into a parent can be
+/// checked against what the parent embeds now. Under REPEATABLE READ and
+/// SERIALIZABLE a key held elsewhere, or a row written since the snapshot, fails
+/// the write here (40001).
 ///
 /// # Errors
-/// Returns an error if the rows cannot be locked.
+/// Returns an error if the rows cannot be read.
 pub(crate) fn lock_in_key_order(
     meta: &crate::catalog::TviewMeta,
     keys: &[KeyValue],
@@ -593,13 +684,14 @@ pub(crate) fn lock_in_key_order(
     for column in columns {
         let _ = write!(read, ", t.{}::pg_catalog.int8", ident::quoted(column));
     }
+    lock_keys_of(meta, keys)?;
     let sql = format!(
         "SELECT t.{qi_pk}::pg_catalog.int8{read} FROM {qi_tv} t \
-         WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key} FOR UPDATE",
+         WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({})",
         key_cast(key_type, "$1", true)
     );
     let args = [key_array(key_type, keys)?];
-    // Read-write: a read-only SPI call refuses FOR UPDATE.
+    // Read-write: under READ COMMITTED a snapshot taken after the locks.
     let rows = Spi::connect_mut(|client| {
         let mut rows = std::collections::HashMap::new();
         for row in crate::utils::spi::kept_update(client, &sql, &args)? {

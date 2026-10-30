@@ -24,9 +24,9 @@ pub(super) fn flush_pending() -> TViewResult<()> {
     let timer = crate::metrics::metrics_api::record_refresh_start();
 
     let mut flush = Flush::new(crate::cache::graph()?, queue, patches);
-    // Write each parent change into all its children at once; the
-    // parents of every changed child join the queue.
-    flush.apply_fanouts(fanout)?;
+    // Each parent change is written into all its children at once, in their
+    // TVIEW's turn; the parents of every changed child join the queue.
+    flush.stage_fanouts(fanout);
 
     while let Some((entity, keys)) = flush.next_entity() {
         let started = std::time::Instant::now();
@@ -36,7 +36,7 @@ pub(super) fn flush_pending() -> TViewResult<()> {
             crate::stats::Counter::RefreshMicros,
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         );
-        flush.take_late()?;
+        flush.take_late();
         flush.iteration += 1;
         let max_depth = crate::config::max_propagation_depth();
         if flush.iteration > max_depth {
@@ -72,10 +72,10 @@ impl Flush {
     /// concurrent flushes must (#263). A key refreshed earlier in this flush is
     /// refreshed again: its source changed after that refresh read it. The
     /// propagation depth bounds a trigger that keeps writing.
-    fn take_late(&mut self) -> TViewResult<()> {
+    fn take_late(&mut self) {
         let late = state::drain();
         if late.queue.is_empty() && late.fanout.is_empty() {
-            return Ok(());
+            return;
         }
         let mut late_patches = late.patches;
         for key in late.queue {
@@ -102,23 +102,31 @@ impl Flush {
             }
             self.pending.insert(key);
         }
-        self.apply_fanouts(late.fanout)
+        self.stage_fanouts(late.fanout);
     }
 
     /// The keys of the first pending entity in dependency order not refreshed in
     /// this flush yet; the other entities' keys stay pending.
     fn next_entity(&mut self) -> Option<(String, Vec<RefreshKey>)> {
-        if self.pending.is_empty() {
-            return None;
-        }
         // The parents a refresh discovers come later in this order, so every key
-        // is refreshed after everything it reads, and only once.
-        let sorted = self
+        // is refreshed after everything it reads, and only once; it is also the
+        // one order every flush takes TVIEWs' key locks in (ADR 0207). An entity
+        // with fan-out patches and no key is visited too.
+        let mut entities: Vec<String> = self
+            .pending
+            .iter()
+            .map(|k| k.entity.clone())
+            .chain(self.fanouts.keys().cloned())
+            .collect();
+        entities.sort_unstable();
+        entities.dedup();
+        let entity = self
             .graph
-            .in_order(self.pending.drain().collect(), |k| &k.entity);
-        let entity = sorted[0].entity.clone();
+            .in_order(entities, String::as_str)
+            .into_iter()
+            .next()?;
         let mut keys = Vec::new();
-        for key in sorted {
+        for key in std::mem::take(&mut self.pending) {
             if key.entity != entity {
                 self.pending.insert(key);
             } else if self.processed.insert(key.clone()) {

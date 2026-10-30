@@ -35,7 +35,7 @@ step e_check:
 (4 rows)
 
 
-starting permutation: c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_begin e_edit4 c3_commit e_commit r_commit e_check
+starting permutation: c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_begin e_edit4 c3_commit r_commit e_commit e_check
 pg_tviews_create           
 ---------------------------
 TVIEW public.tv_doc created
@@ -51,11 +51,12 @@ step r_insert: INSERT INTO tb_doc VALUES (29, '00000000-0000-0000-0000-000000000
                                           (49, '00000000-0000-0000-0000-000000000005', 0, 'r'); <waiting ...>
 step c4_commit: COMMIT;
 step e_begin: BEGIN;
-step e_edit4: UPDATE tb_doc SET body = 'c40!' WHERE pk_doc = 40;
+step e_edit4: UPDATE tb_doc SET body = 'c40!' WHERE pk_doc = 40; <waiting ...>
 step c3_commit: COMMIT;
-step e_commit: COMMIT;
 step r_insert: <... completed>
 step r_commit: COMMIT;
+step e_edit4: <... completed>
+step e_commit: COMMIT;
 step e_check: 
   SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
          t.data = v.data AND t.pk_doc = v.pk_doc AS fresh

@@ -8,7 +8,8 @@ pg_advisory_lock|pg_advisory_lock
 (1 row)
 
 step o_bio: UPDATE tb_user SET bio = 'ada!' WHERE pk_user = 1; <waiting ...>
-step t_bio: UPDATE tb_user SET bio = 'bob!' WHERE pk_user = 2; <waiting ...>
+step t_bio: UPDATE tb_user SET bio = 'bob!' WHERE pk_user = 2;
+ERROR:  could not serialize access: a concurrent transaction refreshes TVIEW rows from rows this write changes
 step g_open1: SELECT pg_advisory_unlock(264, 1);
 pg_advisory_unlock
 ------------------
@@ -16,8 +17,6 @@ t
 (1 row)
 
 step o_bio: <... completed>
-step t_bio: <... completed>
-ERROR:  could not serialize access due to concurrent update
 step g_open2: SELECT pg_advisory_unlock(264, 2);
 pg_advisory_unlock
 ------------------

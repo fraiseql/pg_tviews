@@ -8,6 +8,11 @@ use crate::queue::patch::{FanoutMap, PatchEntry, PatchState};
 use crate::queue::{RefreshKey, patch};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// One entity's pending fan-out patches: by lookup column, each lookup key with
+/// the `data` fields its rows get.
+pub(super) type Fanouts =
+    BTreeMap<String, BTreeMap<i64, serde_json::Map<String, serde_json::Value>>>;
+
 /// The state of one flush.
 pub(super) struct Flush {
     pub(super) graph: EntityDepGraph,
@@ -19,6 +24,9 @@ pub(super) struct Flush {
     /// entity, child pk)` it was found embedding. The patch holds only while the
     /// parent still embeds every one.
     guards: HashMap<RefreshKey, Vec<(String, i64)>>,
+    /// Fan-out patches waiting for their entity's turn: by entity, then lookup
+    /// column, each lookup key with the fields its rows get.
+    pub(super) fanouts: BTreeMap<String, Fanouts>,
     /// Keys refreshed in this flush.
     pub(super) processed: HashSet<RefreshKey>,
     /// Passes of the flush loop so far, starting at 1.
@@ -43,6 +51,7 @@ impl Flush {
             pending,
             patches,
             guards: HashMap::new(),
+            fanouts: BTreeMap::new(),
             processed,
             iteration: 1,
             metas: HashMap::new(),
@@ -85,6 +94,8 @@ impl Flush {
         // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
         crate::lifecycle::validity::ensure(entity)?;
         if keys.iter().any(RefreshKey::is_all) {
+            // Every row is recomputed: the fan-out patches have nothing to add.
+            self.fanouts.remove(entity);
             self.refresh_all(entity)?;
             crate::lifecycle::validity::refreshed_whole(entity);
         } else {
@@ -103,7 +114,43 @@ impl Flush {
         // Writers of what these rows read meet them on its values (ADR 0207):
         // locked before the rows are locked and computed.
         let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
-        crate::concurrency::reads::lock_read_set(&*self.meta(entity)?, &values)?;
+        if !values.is_empty() {
+            crate::concurrency::reads::lock_read_set(&meta, &values)?;
+        }
+        // This visit's locks, in one order (ADR 0207): the lookup values first, in
+        // one sorted call (each fan-out patch's value exclusively, those the rows
+        // being recomputed hold now shared), then the keys of the rows recomputed
+        // or patched directly, in one sorted call.
+        let columns = crate::refresh::lookup_columns(&meta);
+        let fanouts: Vec<_> = self
+            .fanouts
+            .remove(entity)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut exclusive = Vec::new();
+        for (lookup_col, rows) in &fanouts {
+            if self.max_rows.is_some() {
+                let lookups = rows.keys().copied().collect();
+                let children = crate::refresh::direct::count_fanout(&meta, lookup_col, lookups)?;
+                self.charge(&meta, &format!("via {lookup_col}"), children)?;
+            }
+            let attnum = lookup_attnum(&columns, lookup_col)?;
+            exclusive.extend(rows.keys().map(|key| (attnum, key.to_string())));
+        }
+        let shared = crate::refresh::stored_lookups(&meta, &values, &columns)?;
+        crate::concurrency::lock_lookups(meta.tview_oid, &exclusive, &shared);
+        crate::refresh::lock_keys_of(&meta, &values)?;
+        for (lookup_col, rows) in fanouts {
+            let rows: Vec<_> = rows.into_iter().collect();
+            let attnum = lookup_attnum(&columns, &lookup_col)?;
+            let changed =
+                crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, attnum, &rows)?;
+            self.queue_parents_to_recompute(entity, &changed, &[])?;
+        }
+        if keys.is_empty() {
+            return Ok(());
+        }
 
         // Keys carrying a usable direct patch are written straight into
         // tv_<entity>; the others recompute. The setting is read again
@@ -144,13 +191,12 @@ impl Flush {
         Ok(())
     }
 
-    /// Before `entity`'s rows are patched: lock every row of the pass in key order
-    /// (patches, one statement per shape, and recomputes would lock them in
-    /// several statements, in a different order in each transaction), and move to
-    /// `recompute` a parent patched for a child it no longer embeds. The parent was
-    /// found holding the child under this statement's snapshot; a concurrent
-    /// transaction may have re-pointed it since, and committed while this one
-    /// waited for its row lock: the row locked is that latest version.
+    /// Before `entity`'s rows are patched: read what the parents patched embed now,
+    /// and move to `recompute` a parent patched for a child it no longer embeds.
+    /// The parent was found holding the child under this statement's snapshot; a
+    /// concurrent transaction may have re-pointed it since, and committed while
+    /// this one waited for its key lock: the version read, after every key lock of
+    /// the pass ([`crate::refresh::lock_in_key_order`]), is the latest one.
     fn check_patches(
         &mut self,
         entity: &str,
@@ -293,27 +339,20 @@ impl Flush {
     /// column, writing each parent's changed fields into all its children. Every
     /// child row that changed is journaled, and its own parents are queued (to
     /// recompute: they embed the child's document).
-    pub(super) fn apply_fanouts(&mut self, fanouts: FanoutMap) -> TViewResult<()> {
-        let mut groups: BTreeMap<(String, String), Vec<_>> = BTreeMap::new();
+    /// Stage fan-out patches until their entity's turn in the flush, where their
+    /// rows' key locks are taken with the entity's other keys (ADR 0207). A lookup
+    /// key staged twice gets the later fields over the earlier ones.
+    pub(super) fn stage_fanouts(&mut self, fanouts: FanoutMap) {
         for ((entity, lookup_col, key), fields) in fanouts {
-            groups
-                .entry((entity, lookup_col))
+            self.fanouts
+                .entry(entity)
                 .or_default()
-                .push((key, fields));
+                .entry(lookup_col)
+                .or_default()
+                .entry(key)
+                .or_default()
+                .extend(fields);
         }
-        for ((entity, lookup_col), rows) in groups {
-            let meta = self.meta(&entity)?;
-            let owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-            if self.max_rows.is_some() {
-                let keys = rows.iter().map(|(key, _)| *key).collect();
-                let children = crate::refresh::direct::count_fanout(&meta, &lookup_col, keys)?;
-                self.charge(&meta, &format!("via {lookup_col}"), children)?;
-            }
-            let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
-            drop(owner);
-            self.queue_parents_to_recompute(&entity, &changed, &[])?;
-        }
-        Ok(())
     }
 
     /// Queue `key` unless this flush refreshed it already.
@@ -340,4 +379,16 @@ impl Flush {
         self.metas.insert(entity.to_string(), meta.clone());
         Ok(meta)
     }
+}
+
+/// The number `lookup_col`'s lookup locks are hashed with ([`crate::refresh::lookup_columns`]).
+fn lookup_attnum(columns: &[(String, i16)], lookup_col: &str) -> TViewResult<i16> {
+    columns
+        .iter()
+        .find(|(name, _)| name == lookup_col)
+        .map(|(_, attnum)| *attnum)
+        .ok_or_else(|| crate::TViewError::CatalogError {
+            operation: "Lock the rows of a fan-out patch".to_string(),
+            pg_error: format!("lookup column {lookup_col} is gone"),
+        })
 }

@@ -74,9 +74,9 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // (`NOT EXISTS (SELECT 1 FROM view v WHERE v.key = t.key)`) evaluated it a
     // second time, and the correlation does not reach below a GROUP BY: an
     // aggregate TVIEW computed every group (#237). Nothing changes these keys'
-    // rows in between: `lock_rows` locked the existing ones (FOR UPDATE under READ
-    // COMMITTED) and the missing keys, so another refresh of them waits for this
-    // transaction; under REPEATABLE READ both statements share its snapshot.
+    // rows in between: `lock_rows` took their key locks, so another write of them
+    // waits for this transaction; under REPEATABLE READ both statements share its
+    // snapshot.
     let delete_sql = format!(
         "DELETE FROM {qi_tv} t \
          WHERE t.{qi_key} = {any_key} AND t.{qi_key} <> ALL({}) \

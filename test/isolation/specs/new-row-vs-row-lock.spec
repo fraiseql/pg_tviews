@@ -1,13 +1,12 @@
-# A refresh that meets keys with no TVIEW row yet takes the key lock of the rows
-# being created (ADR 0207); a row another transaction created and committed
-# meanwhile, and a third one then locked and changed, must still be row-locked
-# before the refresh computes it. Without that, the refresh's upsert waits for
-# the third transaction's row lock inside ON CONFLICT DO UPDATE and then writes
-# what it computed before the wait: the third transaction's change is lost
-# (stale until the next refresh of the row).
+# A refresh of keys with no TVIEW row yet, while another transaction creates the
+# row, commits, and a third one changes it. Every write of a row holds its key
+# lock (ADR 0207), so the third transaction waits for the refresh or the refresh
+# for it, and the refresh computes after what it waited for. With a key lock for
+# missing rows only, the refresh's upsert waited for the third transaction inside
+# ON CONFLICT DO UPDATE and wrote what it computed before the wait (#272).
 #
-# Keys are the uuid `id` of a DISTINCT ON TVIEW; a refresh takes the key locks
-# of its missing keys in hash order, ...04 before ...03.
+# Keys are the uuid `id` of a DISTINCT ON TVIEW; a refresh takes its key locks in
+# hash order, ...04 before ...03.
 
 setup
 {
@@ -82,8 +81,8 @@ step e_check
 # changed: it holds no lock on ...03 when its upsert reaches it.
 permutation c3_begin c3_create h_begin h_lock5 r_begin r_insert c3_commit e_begin e_edit3 h_commit e_commit r_commit e_check
 # The refresh waits for the key lock of ...04, then of ...03, while ...04 is
-# created and then changed: a row lock taken before the key locks finds nothing.
-permutation c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_begin e_edit4 c3_commit e_commit r_commit e_check
+# created: holding ...04's key lock, it makes the change of ...04 wait for it.
+permutation c3_begin c3_create c4_begin c4_create r_begin r_insert c4_commit e_begin e_edit4 c3_commit r_commit e_commit e_check
 # The same, ...03 deleted instead of changed: the row is gone when the refresh
 # locks it, and the refresh writes ...03 from its own row alone.
 permutation c3_begin c3_create h_begin h_lock5 r_begin r_insert c3_commit e_begin e_delete3 h_commit e_commit r_commit e_check
