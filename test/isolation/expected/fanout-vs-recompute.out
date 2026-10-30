@@ -1,0 +1,49 @@
+Parsed test spec with 2 sessions
+
+starting permutation: n_begin n_rename t_begin t_title n_commit t_commit n_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_user SET name = 'amy' WHERE pk_user = 1;
+step t_begin: BEGIN;
+step t_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1; <waiting ...>
+step n_commit: COMMIT;
+step t_title: <... completed>
+step t_commit: COMMIT;
+step n_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data->'author'->>'name' AS author,
+         t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|author|fresh
+-------+-----+------+-----
+      1|P1!  |amy   |t    
+(1 row)
+
+
+starting permutation: t_begin t_title n_begin n_rename t_commit n_commit n_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step t_begin: BEGIN;
+step t_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
+step n_begin: BEGIN;
+step n_rename: UPDATE tb_user SET name = 'amy' WHERE pk_user = 1; <waiting ...>
+step t_commit: COMMIT;
+step n_rename: <... completed>
+step n_commit: COMMIT;
+step n_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data->'author'->>'name' AS author,
+         t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|author|fresh
+-------+-----+------+-----
+      1|P1!  |amy   |t    
+(1 row)
+

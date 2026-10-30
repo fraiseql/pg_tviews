@@ -34,3 +34,9 @@ test: two-hop-hidden-repoint
 test: rr-full-refresh-vs-insert
 test: new-row-vs-row-lock
 test: rr-recreated-row
+test: patch-vs-recompute
+test: fanout-vs-repoint
+test: fanout-vs-recompute
+test: rr-row-written-since-snapshot
+test: child-insert-vs-parent-rename
+test: two-parents-renamed
