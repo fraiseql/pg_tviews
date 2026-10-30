@@ -1,0 +1,85 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s_begin d_delete s_insert c_insert s_commit c_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step s_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS docs FROM tb_doc;
+docs
+----
+   1
+(1 row)
+
+step d_delete: DELETE FROM tb_doc WHERE pk_doc = 41;
+step s_insert: INSERT INTO tb_doc VALUES (47, '00000000-0000-0000-0000-000000000002', 8, 'b47');
+ERROR:  could not serialize access: a concurrent transaction deleted a TVIEW row this refresh read
+step c_insert: INSERT INTO tb_doc VALUES (48, '00000000-0000-0000-0000-000000000002', 1, 'b48');
+step s_commit: COMMIT;
+step c_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|b48   |b48     |t    
+(1 row)
+
+
+starting permutation: s_begin_ser d_delete s_insert c_insert s_commit c_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step s_begin_ser: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS docs FROM tb_doc;
+docs
+----
+   1
+(1 row)
+
+step d_delete: DELETE FROM tb_doc WHERE pk_doc = 41;
+step s_insert: INSERT INTO tb_doc VALUES (47, '00000000-0000-0000-0000-000000000002', 8, 'b47');
+ERROR:  could not serialize access: a concurrent transaction deleted a TVIEW row this refresh read
+step c_insert: INSERT INTO tb_doc VALUES (48, '00000000-0000-0000-0000-000000000002', 1, 'b48');
+step s_commit: COMMIT;
+step c_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|b48   |b48     |t    
+(1 row)
+
+
+starting permutation: s_begin s_new c_new s_commit c_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_doc created
+(1 row)
+
+step s_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS docs FROM tb_doc;
+docs
+----
+   1
+(1 row)
+
+step s_new: INSERT INTO tb_doc VALUES (90, '00000000-0000-0000-0000-000000000009', 1, 'b90');
+step c_new: INSERT INTO tb_doc VALUES (91, '00000000-0000-0000-0000-000000000009', 0, 'b91'); <waiting ...>
+step s_commit: COMMIT;
+step c_new: <... completed>
+step c_check: 
+  SELECT coalesce(t.id, v.id) AS id, t.data->>'body' AS stored, v.data->>'body' AS computed,
+         t.data = v.data AND t.pk_doc = v.pk_doc AS fresh
+  FROM tv_doc t FULL JOIN tviews.public__tv_doc v USING (id) ORDER BY 1;
+
+                                  id|stored|computed|fresh
+------------------------------------+------+--------+-----
+00000000-0000-0000-0000-000000000002|b41   |b41     |t    
+00000000-0000-0000-0000-000000000009|b90   |b90     |t    
+(2 rows)
+

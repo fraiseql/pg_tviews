@@ -366,9 +366,10 @@ pub(crate) fn run_counted_upsert(
         "WITH src AS ({source_sql}), {duplicate}\
          written AS (INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM src {unless_duplicate} \
                      {conflict} RETURNING {qi_pk}::pg_catalog.int8 AS k, {} AS i, {} AS r, \
-                                          xmax = 0 AS inserted) \
+                                          xmax = 0 AS inserted, \
+                                          {qi_key}::pg_catalog.text AS key) \
          SELECT (SELECT array_agg({qi_key}::pg_catalog.text) FROM src), \
-                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r)) \
+                (SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array(k, i, inserted, r, key)) \
                  FROM written), {duplicate_key}",
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
@@ -398,6 +399,7 @@ pub(crate) fn run_counted_upsert(
         keys.len().saturating_sub(rows.len()) as u64,
     );
     let mut written = Written::default();
+    let mut created = Vec::new();
     for row in rows {
         let (Some(pk), id, Some(inserted)) = (
             row[0].as_i64(),
@@ -408,6 +410,7 @@ pub(crate) fn run_counted_upsert(
         };
         if inserted {
             written.inserted.push(pk);
+            created.extend(row[4].as_str().map(str::to_string));
         } else {
             written.updated.push(pk);
         }
@@ -428,7 +431,41 @@ pub(crate) fn run_counted_upsert(
         let held = old.and_then(|o| o.get(&pk)).map(Vec::as_slice);
         record(Recorded::of(meta, pk, id, change, &references, held));
     }
+    refuse_unlocked_creations(meta, qi_tv, &created)?;
     Ok(Produced { keys, written })
+}
+
+/// A refresh creates a TVIEW row only under its key lock (ADR 0207): every other
+/// transaction creating the same row waits for it, and one that finds the row
+/// then locks it before computing ([`lock_rows`]). A row created without the
+/// lock is a key whose row the refresh found, gone since: under REPEATABLE READ
+/// and SERIALIZABLE, a row a concurrent transaction deleted after the snapshot,
+/// which fails with 40001 as an UPDATE of that row would. Under READ COMMITTED
+/// the found rows are locked, so it can't happen.
+///
+/// # Errors
+/// An internal error for a row created without its key lock under READ
+/// COMMITTED.
+fn refuse_unlocked_creations(
+    meta: &crate::catalog::TviewMeta,
+    qi_tv: &str,
+    created: &[String],
+) -> crate::TViewResult<()> {
+    if created
+        .iter()
+        .all(|key| crate::concurrency::holds_new_key(meta.tview_oid, key))
+    {
+        return Ok(());
+    }
+    if crate::concurrency::crosscheck::enabled() {
+        crate::concurrency::serialization_failure(
+            "a concurrent transaction deleted a TVIEW row this refresh read",
+        );
+    }
+    Err(crate::TViewError::CatalogError {
+        operation: format!("Create a row of {qi_tv}"),
+        pg_error: "the row was created without its key lock".to_string(),
+    })
 }
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before

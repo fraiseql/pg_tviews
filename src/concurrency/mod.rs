@@ -233,6 +233,21 @@ fn pending(
     })
 }
 
+/// Whether this transaction holds the key lock of `key`, a row of `tview` it
+/// may create ([`lock_new_keys`]), itself or through the key space's escalated
+/// lock.
+#[must_use]
+pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
+    let relid = tview.to_u32();
+    let held = Held::Value {
+        relid,
+        space: Space::Keys,
+        side: Side::Writer,
+        hash: value_hash(&[-1], key),
+    };
+    REGISTRY.with_borrow(|r| r.escalated(relid, Space::Keys, Side::Writer) || r.holds(&held))
+}
+
 fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
     let policy = Policy::current();
     if values.is_empty() {
