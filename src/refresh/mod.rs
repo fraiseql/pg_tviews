@@ -432,8 +432,8 @@ pub(crate) fn run_counted_upsert(
 }
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before
-/// recomputing them, and the keys of those it doesn't hold yet, and return the
-/// existing rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
+/// recomputing them, then the keys of those it doesn't hold yet, then the rows
+/// of those keys created in between, and return the rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
 /// recomputing one of these rows, or creating it, is then waited for here, and
 /// the recompute that follows, a new statement, sees what it committed; without
 /// the lock it waited inside its own upsert and wrote a document computed before
@@ -469,22 +469,7 @@ pub(crate) fn lock_rows(
         key_cast(key_type, "$1", true)
     );
     let args = [key_array(key_type, keys)?];
-    // Read-write: a read-only SPI call refuses FOR UPDATE.
-    let (pks, held, old) = Spi::connect_mut(|client| {
-        let mut pks = Vec::new();
-        let mut held = std::collections::HashSet::new();
-        let mut old = crate::catalog::collections::OldKeys::new();
-        for row in crate::utils::spi::kept_update(client, &sql, &args)? {
-            if let Some(pk) = row.get::<i64>(1)? {
-                if references {
-                    old.insert(pk, row.get::<Vec<Option<String>>>(3)?.unwrap_or_default());
-                }
-                pks.push(pk);
-            }
-            held.extend(row.get::<String>(2)?);
-        }
-        Ok::<_, spi::Error>((pks, held, old))
-    })?;
+    let (mut pks, held, mut old) = locked_rows(&sql, &args, references)?;
     // As the identity's type writes them, as the rows found are compared:
     // the same uuid can be queued in another spelling.
     let keys: Vec<String> = match &key_type {
@@ -499,10 +484,51 @@ pub(crate) fn lock_rows(
     };
     let missing: Vec<String> = keys.into_iter().filter(|k| !held.contains(k)).collect();
     crate::concurrency::lock_new_keys(meta.tview_oid, &missing);
+    // A missing row another transaction created and committed since the first
+    // statement, and a third one may hold now, is locked too, in a new
+    // statement: the key lock only stops new creations of it. Without this the
+    // upsert waits for that row's lock inside ON CONFLICT DO UPDATE and writes
+    // what it computed before the wait.
+    if !transaction_snapshot && !missing.is_empty() {
+        let created: Vec<KeyValue> = missing.into_iter().map(KeyValue::Text).collect();
+        let args = [key_array(key_type, &created)?];
+        let (more, _, more_old) = locked_rows(&sql, &args, references)?;
+        pks.extend(more);
+        old.extend(more_old);
+    }
     Ok(Locked {
         pks,
         old: Some(old),
     })
+}
+
+/// The rows `sql` (from [`lock_rows`]) returns: their `pk_<entity>`, their keys
+/// as text, and, for `references`, the reference keys they hold.
+fn locked_rows(
+    sql: &str,
+    args: &[pgrx::datum::DatumWithOid<'_>],
+    references: bool,
+) -> crate::TViewResult<(
+    Vec<i64>,
+    std::collections::HashSet<String>,
+    crate::catalog::collections::OldKeys,
+)> {
+    // Read-write: a read-only SPI call refuses FOR UPDATE.
+    Ok(Spi::connect_mut(|client| {
+        let mut pks = Vec::new();
+        let mut held = std::collections::HashSet::new();
+        let mut old = crate::catalog::collections::OldKeys::new();
+        for row in crate::utils::spi::kept_update(client, sql, args)? {
+            if let Some(pk) = row.get::<i64>(1)? {
+                if references {
+                    old.insert(pk, row.get::<Vec<Option<String>>>(3)?.unwrap_or_default());
+                }
+                pks.push(pk);
+            }
+            held.extend(row.get::<String>(2)?);
+        }
+        Ok::<_, spi::Error>((pks, held, old))
+    })?)
 }
 
 /// Lock the existing rows of `keys` in `meta`'s TVIEW in key order, and read

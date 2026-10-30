@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A TVIEW row created by one transaction could lose a concurrent change under `READ
+  COMMITTED`** (0.1.0-beta.33 and earlier): a refresh that found no row for a
+  key took only the lock that stops other transactions creating it. When another
+  transaction created and committed the row meanwhile, and a third one then changed it, the
+  refresh's upsert waited for that third transaction inside `ON CONFLICT DO UPDATE` and
+  wrote what it had computed before the wait. The row stayed stale until its next refresh,
+  and so did the rows embedding it. A refresh now locks such a row too, in a statement
+  after the key lock, before it computes. Found by the concurrent fuzzer
+  (`new-row-vs-row-lock`).
 - **`DROP TABLE IF EXISTS`, `ALTER TABLE IF EXISTS … DETACH PARTITION` and `TRUNCATE`
   of a missing relation failed with `cache lookup failed for relation 0`** (or `relation
   with OID 0 does not exist`) in a database with pg_tviews, for every role but a
