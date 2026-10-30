@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and so did the rows embedding it. A refresh now locks such a row too, in a statement
   after the key lock, before it computes. Found by the concurrent fuzzer
   (`new-row-vs-row-lock`).
+- **A `REPEATABLE READ` or `SERIALIZABLE` refresh could re-create a TVIEW row a concurrent
+  transaction had deleted, outside the lock that orders transactions creating it** (#273):
+  its snapshot still showed the row, so it took no key lock, and a `READ COMMITTED` writer
+  creating the same row then overwrote it with a document computed before the wait. A
+  refresh now creates a row only while it holds that row's key lock. Under `REPEATABLE
+  READ` and `SERIALIZABLE` such a refresh fails with `40001` (retryable), as an `UPDATE`
+  of a concurrently deleted row does; this can be new for those writers
+  (`rr-recreated-row`).
 - **`DROP TABLE IF EXISTS`, `ALTER TABLE IF EXISTS … DETACH PARTITION` and `TRUNCATE`
   of a missing relation failed with `cache lookup failed for relation 0`** (or `relation
   with OID 0 does not exist`) in a database with pg_tviews, for every role but a

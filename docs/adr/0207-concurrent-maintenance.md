@@ -118,6 +118,14 @@ then key locks, then row locks of the rows created in between (amended in
 that row inside `ON CONFLICT DO UPDATE` and wrote what it computed before the
 wait.
 
+A row is only ever created by a refresh that holds its key lock: the refresh
+checks the rows its upsert inserted against the key locks it holds. Under
+REPEATABLE READ and SERIALIZABLE a row the snapshot still shows may have been
+deleted since by a committed transaction; the refresh took no key lock for it, and
+its upsert would create it anew. It fails with 40001 instead (`rr-recreated-row`,
+#273). Under READ COMMITTED the rows found are locked, so a row created without
+its key lock is an internal error.
+
 ### Lock tags and modes
 
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:
