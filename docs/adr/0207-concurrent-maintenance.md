@@ -360,7 +360,7 @@ reading places through groups. Each transaction would hold its own place from th
 first pass and wait in the second. The first delta trigger of a statement
 therefore takes step 1 and step 2 for every pg_tviews delta trigger that fires
 for the same table and event, in the order PostgreSQL fires them. The later
-triggers find their locks held and run only steps 3 and 4. A statement is named
+triggers find their locks held and run only step 3. A statement is named
 by its executor frame and its transition tables. A trigger that finds no pass
 recorded for it (a `COPY`, which runs no executor) takes its own pass.
 
@@ -379,8 +379,8 @@ recorded for it (a `COPY`, which runs no executor) takes its own pass.
 
 **Costs.** After a link change the capture runs the lookup twice and the read-set
 query once more, per TVIEW: about 1.4 ms per such statement on the benchmark's
-schema (`test/concurrency/run.sh embed`). A write that changes no link takes the same locks as
-before, in one pass instead of one per read-set column.
+schema (`test/concurrency/run.sh embed`). A write that changes no link takes the
+same locks as before, in one pass instead of one per read-set column.
 
 The partitioned-table paths (a row trigger per changed row, rows entering with a
 partition) take the same pass, one TVIEW at a time.
