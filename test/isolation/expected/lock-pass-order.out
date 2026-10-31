@@ -1,0 +1,87 @@
+Parsed test spec with 3 sessions
+
+starting permutation: h_begin h_rename3 o_delete t_delete h_commit t_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step h_begin: BEGIN;
+step h_rename3: UPDATE tb_item SET name = 'i3!' WHERE pk_item = 3;
+step o_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step t_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; <waiting ...>
+step h_commit: COMMIT;
+step o_delete: <... completed>
+step t_delete: <... completed>
+step t_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      2|t    
+      3|t    
+      4|t    
+      6|t    
+      9|t    
+(6 rows)
+
+
+starting permutation: o_two t_two h_begin h_rename9 o_delete t_delete h_commit t_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step o_two: SET pg_tviews.lock_escalation_threshold = 2;
+step t_two: SET pg_tviews.lock_escalation_threshold = 2;
+step h_begin: BEGIN;
+step h_rename9: UPDATE tb_item SET name = 'i9!' WHERE pk_item = 9;
+step o_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step t_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; <waiting ...>
+step h_commit: COMMIT;
+step o_delete: <... completed>
+step t_delete: <... completed>
+step t_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      2|t    
+      3|t    
+      4|t    
+      6|t    
+      9|t    
+(6 rows)
+
+
+starting permutation: h_zero h_begin h_delete9 o_delete h_group h_commit t_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step h_zero: SET pg_tviews.lock_escalation_threshold = 0;
+step h_begin: BEGIN;
+step h_delete9: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 9;
+step o_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step h_group: UPDATE tb_group SET name = 'g1!' WHERE pk_group = 1;
+step h_commit: COMMIT;
+step o_delete: <... completed>
+step t_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      2|t    
+      3|t    
+      4|t    
+      6|t    
+      9|t    
+(6 rows)
+

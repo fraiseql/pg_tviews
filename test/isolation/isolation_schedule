@@ -44,3 +44,4 @@ test: embed-count-soft-deletes
 test: two-tviews-one-table
 test: created-row-vs-lock-pass
 test: rr-created-row-vs-lock-pass
+test: lock-pass-order
