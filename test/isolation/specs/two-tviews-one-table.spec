@@ -1,12 +1,13 @@
 # Two TVIEWs read one table, each through its own delta trigger (#277): items
 # show their place's count of current items, and zones list their items with
 # the same counts. Two transactions each soft-delete an item of one zone, in two
-# places. Each delta trigger would lock its own TVIEW's values: the item
-# trigger the writer's place, then the zone trigger the zone and the other
-# writer's place, held by the other's item trigger. The first delta trigger of
-# the statement locks for both TVIEWs in one sorted pass instead. A statement
-# trigger between the delta triggers and the flush waits on a gate, one per
-# session; the gates open in both orders. Both commit, and the TVIEWs are fresh.
+# places. A statement trigger between the two delta triggers (the item TVIEW's
+# fires first) waits on a gate, one per session. Each delta trigger locking only
+# its own TVIEW's values would let each writer hold its own place from the item
+# trigger, then wait in the zone trigger for the other's place: a deadlock. The
+# first delta trigger of the statement locks for both TVIEWs in one sorted pass
+# instead: the second writer waits for the first in its pass. The gates open in
+# both orders. Both commit, and the TVIEWs are fresh.
 
 setup
 {
@@ -39,14 +40,15 @@ setup
     JOIN (SELECT fk_place, count(*) AS n FROM tb_item WHERE deleted_at IS NULL
           GROUP BY fk_place) pc ON pc.fk_place = i.fk_place
     GROUP BY z.pk_zone, z.id, z.name $$);
-  -- Fires after pg_tviews' delta triggers ("trg_tview_delta_…") and before its
-  -- flush ("trg_tview_flush_…"): statement triggers fire in name order.
+  -- Fires between the item TVIEW's delta trigger ("trg_tview_delta_u_item_…")
+  -- and the zone TVIEW's ("trg_tview_delta_u_zone_…"): statement triggers fire
+  -- in name order.
   CREATE FUNCTION gate() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
       PERFORM pg_advisory_xact_lock_shared(277, current_setting('test.gate')::int);
       RETURN NULL;
     END $$;
-  CREATE TRIGGER trg_tview_e_gate AFTER UPDATE ON tb_item
+  CREATE TRIGGER trg_tview_delta_u_j_gate AFTER UPDATE ON tb_item
     FOR EACH STATEMENT EXECUTE FUNCTION gate();
 }
 
