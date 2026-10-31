@@ -1,0 +1,73 @@
+Parsed test spec with 3 sessions
+
+starting permutation: g_close o_delete t_delete g_open1 g_open2 t_check
+step g_close: SELECT pg_advisory_lock(277, 1), pg_advisory_lock(277, 2);
+pg_advisory_lock|pg_advisory_lock
+----------------+----------------
+                |                
+(1 row)
+
+step o_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step t_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; <waiting ...>
+step g_open1: SELECT pg_advisory_unlock(277, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step o_delete: <... completed>
+step g_open2: SELECT pg_advisory_unlock(277, 2);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step t_delete: <... completed>
+step t_check: 
+  SELECT t.pk_item, (t.data->>'place')::int AS place, (t.data->>'group')::int AS "group", t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|place|group|fresh
+-------+-----+-----+-----
+      1|    1|    2|t    
+      2|    1|    2|t    
+      3|    1|    2|t    
+      4|    1|    2|t    
+(4 rows)
+
+
+starting permutation: g_close o_delete t_delete g_open2 g_open1 t_check
+step g_close: SELECT pg_advisory_lock(277, 1), pg_advisory_lock(277, 2);
+pg_advisory_lock|pg_advisory_lock
+----------------+----------------
+                |                
+(1 row)
+
+step o_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step t_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; <waiting ...>
+step g_open2: SELECT pg_advisory_unlock(277, 2);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step t_delete: <... completed>
+step g_open1: SELECT pg_advisory_unlock(277, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step o_delete: <... completed>
+step t_check: 
+  SELECT t.pk_item, (t.data->>'place')::int AS place, (t.data->>'group')::int AS "group", t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|place|group|fresh
+-------+-----+-----+-----
+      1|    1|    2|t    
+      2|    1|    2|t    
+      3|    1|    2|t    
+      4|    1|    2|t    
+(4 rows)
+
