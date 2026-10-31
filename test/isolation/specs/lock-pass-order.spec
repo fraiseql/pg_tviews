@@ -11,12 +11,14 @@
 #   Writer locks taken before shared ones would let the second writer hold place
 #   5 and group 1 while the first holds place 1: a deadlock.
 # - One relation lock for a writer's intent and a refresh's escalation: past a
-#   threshold of two values, both writers lock tb_item's values whole while the
-#   holder writes it. Taken as an intent and then a shared lock, each writer
-#   would hold its intent and wait for the other's.
+#   threshold of two values, both writers lock tb_item's values whole. The second
+#   writer holds tb_item's intent from an earlier statement (a rename), so the
+#   first waits for it. Taken as an intent and then a shared lock, the first
+#   writer would hold its intent and the second's shared lock would wait for it.
 # - Relation locks first: the holder locks tb_item whole (a threshold of 0), then
-#   renames group 1. The first writer waits for tb_item's intent lock before it
-#   takes any value, so the rename isn't waiting for it.
+#   renames group 1 (a threshold of 64 again, so value by value). The first writer
+#   waits for tb_item's intent lock before it takes any value, group 1's among
+#   them, so the rename doesn't wait for it.
 #
 # Every write commits, and the TVIEW is fresh.
 
@@ -58,9 +60,9 @@ teardown
 session holder
 setup          { SET deadlock_timeout = '10s'; }
 step h_zero    { SET pg_tviews.lock_escalation_threshold = 0; }
+step h_values  { SET pg_tviews.lock_escalation_threshold = 64; }
 step h_begin   { BEGIN; }
 step h_rename3 { UPDATE tb_item SET name = 'i3!' WHERE pk_item = 3; }
-step h_rename9 { UPDATE tb_item SET name = 'i9!' WHERE pk_item = 9; }
 step h_delete9 { UPDATE tb_item SET deleted_at = now() WHERE pk_item = 9; }
 step h_group   { UPDATE tb_group SET name = 'g1!' WHERE pk_group = 1; }
 step h_commit  { COMMIT; }
@@ -73,7 +75,10 @@ step o_delete  { UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; }
 session two
 setup          { SET deadlock_timeout = '10s'; }
 step t_two     { SET pg_tviews.lock_escalation_threshold = 2; }
+step t_begin   { BEGIN; }
+step t_rename9 { UPDATE tb_item SET name = 'i9!' WHERE pk_item = 9; }
 step t_delete  { UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; }
+step t_commit  { COMMIT; }
 step t_check
 {
   SELECT t.pk_item, t.data = v.data AS fresh
@@ -81,5 +86,5 @@ step t_check
 }
 
 permutation h_begin h_rename3 o_delete t_delete h_commit t_check
-permutation o_two t_two h_begin h_rename9 o_delete t_delete h_commit t_check
-permutation h_zero h_begin h_delete9 o_delete h_group h_commit t_check
+permutation o_two t_two t_begin t_rename9 o_delete t_delete t_commit t_check
+permutation h_zero h_begin h_delete9 o_delete h_values h_group h_commit t_check
