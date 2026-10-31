@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two writes that change links no longer deadlock on value locks in one statement each**
+  (#277). A writer took its exclusive value locks in the delta trigger, one read-set column
+  after another, and its refresh took shared ones at flush. Two soft-deletes of items under an
+  embedded count (one group, two places) each held their own place and waited for the
+  other's: about half of such writes failed with 40P01 at 16 clients, since 0.1.0-beta.27.
+  The capture now takes both sides' locks in one sorted pass, for every TVIEW the table feeds:
+  - it first looks up the rows the write reaches without locks;
+  - it then looks them up again in a new snapshot, after the writer's locks; the flush
+    locks the read set of every row it computes, as before.
+
+  A writer's intent lock and a refresh's escalated lock on one relation are taken as one
+  `ShareRowExclusiveLock`, so two writers past the escalation threshold no longer deadlock on
+  the relation lock either. ADR 0207 lists what can still deadlock (40P01, retryable).
+
 ## [0.1.0-beta.34] - 2026-10-30
 
 ### Breaking

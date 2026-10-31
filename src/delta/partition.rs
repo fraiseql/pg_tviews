@@ -209,22 +209,33 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
          SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
         key_sql_type(key_type)
     );
-    if entering {
-        crate::concurrency::lock_changed_rows(mapping, |column| {
-            Spi::connect_mut(|client| texts(client, None, &changed_values(&delta, column), &[]))
-                .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
-        })?;
-    }
     // Read-write: a fresh snapshot, which sees every row committed before the locks.
-    let keys = Spi::connect_mut(|client| {
-        let mut keys = Vec::new();
-        for row in crate::utils::spi::kept_update(client, &sql, &[])? {
-            keys.extend(key_of(&row, key_type)?);
-        }
-        crosscheck_keys(&sql, &[], &keys)?;
-        Ok::<_, TViewError>(keys)
-    })
-    .map_err(|e| crate::utils::spi::error(&sql, &e))?;
+    let lookup = |crosscheck: bool| {
+        Spi::connect_mut(|client| {
+            let mut keys = Vec::new();
+            for row in crate::utils::spi::kept_update(client, &sql, &[])? {
+                keys.extend(key_of(&row, key_type)?);
+            }
+            if crosscheck {
+                crosscheck_keys(&sql, &[], &keys)?;
+            }
+            Ok::<_, TViewError>(keys)
+        })
+        .map_err(|e| crate::utils::spi::error(&sql, &e))
+    };
+    let keys = if entering {
+        super::capture::locked_keys(
+            &meta,
+            mapping,
+            |column| {
+                Spi::connect_mut(|client| texts(client, None, &changed_values(&delta, column), &[]))
+                    .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
+            },
+            lookup,
+        )?
+    } else {
+        lookup(true)?
+    };
     if !keys.is_empty() {
         crate::queue::enqueue_refresh_bulk(entity, keys);
     }
@@ -289,23 +300,32 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 key_sql_type(key_type)
             );
             let _owner = crate::owner::AsOwner::of_entity(entity)?;
-            // As for a statement's rows (map_statement), on the partition tree's root.
-            crate::concurrency::lock_changed_rows(mapping, |column| {
-                Spi::connect_mut(|client| {
-                    texts(client, None, &changed_values(&delta, column), &images)
-                })
-                .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
-            })?;
-            // Read-write: a fresh snapshot, which sees what the locks waited for.
-            let keys = Spi::connect_mut(|client| {
-                let mut keys = Vec::new();
-                for row in crate::utils::spi::kept_update(client, &sql, &images)? {
-                    keys.extend(key_of(&row, key_type)?);
-                }
-                crosscheck_keys(&sql, &images, &keys)?;
-                Ok::<_, TViewError>(keys)
-            })
-            .map_err(|e| crate::utils::spi::error(&sql, &e))?;
+            // As for a statement's rows (map_statement), on the partition tree's
+            // root. Read-write: a fresh snapshot, which sees what the locks
+            // waited for.
+            let keys = super::capture::locked_keys(
+                &meta,
+                mapping,
+                |column| {
+                    Spi::connect_mut(|client| {
+                        texts(client, None, &changed_values(&delta, column), &images)
+                    })
+                    .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
+                },
+                |crosscheck| {
+                    Spi::connect_mut(|client| {
+                        let mut keys = Vec::new();
+                        for row in crate::utils::spi::kept_update(client, &sql, &images)? {
+                            keys.extend(key_of(&row, key_type)?);
+                        }
+                        if crosscheck {
+                            crosscheck_keys(&sql, &images, &keys)?;
+                        }
+                        Ok::<_, TViewError>(keys)
+                    })
+                    .map_err(|e| crate::utils::spi::error(&sql, &e))
+                },
+            )?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }

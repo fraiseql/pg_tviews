@@ -52,6 +52,7 @@ pub fn abort() {
         state::rollback(savepoint.pending);
         crate::queue::published::rollback(savepoint.published);
         crate::concurrency::rollback(savepoint.locks);
+        crate::delta::capture::clear();
         crate::executor::truncate_to(savepoint.frames);
         crate::suspend::restore(savepoint.suspension);
     }

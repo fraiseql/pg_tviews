@@ -15,6 +15,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
     super::savepoint::clear,
     crate::concurrency::clear,
+    crate::delta::capture::clear,
     crate::executor::reset,
     super::Flushing::reset,
     crate::audit::clear_audit_buffer,

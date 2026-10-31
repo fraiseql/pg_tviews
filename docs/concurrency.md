@@ -77,16 +77,28 @@ those rows would. Under `REPEATABLE READ` and `SERIALIZABLE` the second of them 
 with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does.
 Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
 
-Like any workload that locks, two transactions that change links and take these locks
-in opposite orders can deadlock: PostgreSQL detects it and fails one of them with
-`deadlock detected` (SQLSTATE `40P01`). **Retry transactions that fail with `40001` or
-`40P01`**.
+A statement takes its locks in one pass, in a fixed order: its exclusive locks on the
+values it changed and, after a link change, the shared locks of the rows it reaches.
+The pass covers every TVIEW over the table it writes. Two single-statement writes
+therefore don't wait for each other in a cycle, even when each one's rows read the
+other's values (two items soft-deleted in one group, each row showing its place's
+count). Like any workload that locks, transactions that change links can still
+deadlock:
+- **Several statements:** the locks of a transaction's earlier statements are already
+  held when a later statement takes its pass.
+- **Rows linked meanwhile:** another transaction linked rows to the written values and
+  committed while the pass waited. Those rows' read sets are locked at the flush, after
+  the pass.
+- **Rows the refresh reaches itself:** the parents of an embedded TVIEW.
+
+PostgreSQL detects a deadlock and fails one of the transactions with `deadlock detected`
+(SQLSTATE `40P01`). **Retry transactions that fail with `40001` or `40P01`**.
 
 ## Locks
 
 | What | Lock | Held until |
 |---|---|---|
-| A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new, before it looks up the TVIEW rows they feed | end of transaction |
+| A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new; in a transaction that changed a link, also the shared value locks of the TVIEW rows those values reach (found without locks first). Both are taken in one pass in a fixed order, for every TVIEW over the table, before the TVIEW rows are looked up again | end of transaction |
 | A write to a TVIEW's rows that other TVIEWs embed | exclusive value locks on those rows' keys, before it looks up the parents | end of transaction |
 | A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`; under `REPEATABLE READ` and `SERIALIZABLE`, when the refresh writes them in several statements) | end of transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |

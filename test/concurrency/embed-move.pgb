@@ -1,0 +1,5 @@
+-- An item's start moved past the fixed day, or back: whether it is current
+-- changes, a link change that rewrites every item of its place and its group.
+\set i random(1, :items)
+UPDATE tb_item SET start_date = CASE WHEN start_date <= DATE '2026-06-01'
+  THEN DATE '2026-07-01' ELSE DATE '2026-01-01' END WHERE pk_item = :i;

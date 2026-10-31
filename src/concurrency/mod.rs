@@ -9,9 +9,11 @@
 //! READ and SERIALIZABLE fail instead of waiting.
 
 pub mod crosscheck;
+mod pass;
 pub mod reads;
 mod registry;
 
+pub use pass::Pass;
 use pgrx::pg_sys;
 use pgrx::prelude::*;
 pub use registry::Mark;
@@ -23,7 +25,7 @@ pub const VALUE_TAG: u16 = 0x5476;
 pub const RELATION_TAG: u16 = 0x5477;
 
 /// Which end of the protocol takes a lock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Side {
     /// A refresh, about to compute rows from the values it reads.
     Refresh,
@@ -34,7 +36,7 @@ pub enum Side {
 /// Where in a relation a lock lives: the values of its columns, or (a TVIEW's
 /// table) the keys of rows being created. Each has its own intent and
 /// escalated locks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Space {
     Values,
     Keys,
@@ -98,20 +100,6 @@ const fn value_mode(side: Side) -> pg_sys::LOCKMODE {
     }
 }
 
-const fn intent_mode(side: Side) -> pg_sys::LOCKMODE {
-    match side {
-        Side::Refresh => pg_sys::RowShareLock.cast_signed(),
-        Side::Writer => pg_sys::RowExclusiveLock.cast_signed(),
-    }
-}
-
-const fn escalated_mode(side: Side) -> pg_sys::LOCKMODE {
-    match side {
-        Side::Refresh => pg_sys::ShareLock.cast_signed(),
-        Side::Writer => pg_sys::ExclusiveLock.cast_signed(),
-    }
-}
-
 /// FNV-1a (32 bits) of the columns' attnums, a zero byte and the value's text:
 /// computable without a server, stable across releases. A collision only makes
 /// two values share a lock.
@@ -156,12 +144,69 @@ fn database() -> u32 {
     unsafe { pg_sys::MyDatabaseId }.to_u32()
 }
 
-/// Lock `values` of `target` for `side`, to the end of the transaction: values
-/// already held are skipped, the relation's intent lock is taken with the first
-/// one, and past `pg_tviews.lock_escalation_threshold` values the relation is
-/// locked instead.
+/// Take the locks of `pass` this transaction doesn't hold, to the end of the
+/// transaction, in one fixed order (see [`Pass`]): values already held are
+/// skipped, a relation's intent lock is taken with its first value, and past
+/// `pg_tviews.lock_escalation_threshold` values of one relation, space and side
+/// the relation is locked instead.
+pub fn take(pass: &Pass) {
+    if pass.is_empty() {
+        return;
+    }
+    let policy = Policy::current();
+    let threshold = crate::config::lock_escalation_threshold();
+    let (ops, escalations) = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold));
+    for _ in 0..escalations {
+        crate::metrics::metrics_api::record_value_lock_escalation();
+    }
+    let database = database();
+    for op in ops {
+        match op {
+            pass::Op::Relation { relid, space, mode } => {
+                acquire(
+                    &relation_tag(database, relid, space),
+                    mode.lockmode(),
+                    mode.side(),
+                    policy,
+                );
+                REGISTRY.with_borrow_mut(|r| {
+                    for held in mode.held(relid, space) {
+                        r.record(held);
+                    }
+                });
+            }
+            pass::Op::Value {
+                relid,
+                space,
+                hash,
+                side,
+            } => {
+                acquire(
+                    &value_tag(database, relid, hash),
+                    value_mode(side),
+                    side,
+                    policy,
+                );
+                REGISTRY.with_borrow_mut(|r| {
+                    r.record(Held::Value {
+                        relid,
+                        space,
+                        side,
+                        hash,
+                    })
+                });
+                crate::metrics::metrics_api::record_value_lock();
+            }
+        }
+    }
+}
+
+/// Lock `values` of `target` for `side`, to the end of the transaction, as one
+/// [`take`].
 pub fn lock_values(target: &LockTarget, side: Side, values: &[String]) {
-    lock_in(Space::Values, target, side, values);
+    let mut pass = Pass::default();
+    pass.values(target, side, values);
+    take(&pass);
 }
 
 /// A refresh about to create TVIEW rows (`keys`, rows of `tview` it found
@@ -174,7 +219,9 @@ pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
         relid: tview.to_u32(),
         attnums: vec![-1],
     };
-    lock_in(Space::Keys, &target, Side::Writer, keys);
+    let mut pass = Pass::default();
+    pass.values_in(Space::Keys, &target, Side::Writer, keys);
+    take(&pass);
 }
 
 /// Lock `values` of `target` for `side`, as [`lock_values`] does, unless that
@@ -184,53 +231,14 @@ pub fn lock_new_keys(tview: pg_sys::Oid, keys: &[String]) {
 /// only the writers of these values. A relation already locked as a whole holds
 /// the values.
 pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String]) -> bool {
-    if pending(Space::Values, target, side, values).0 {
+    let mut pass = Pass::default();
+    pass.values(target, side, values);
+    let threshold = crate::config::lock_escalation_threshold();
+    if REGISTRY.with_borrow(|r| pass::plan(&pass, r, threshold).1) > 0 {
         return false;
     }
-    lock_values(target, side, values);
+    take(&pass);
     true
-}
-
-/// What locking `values` of `target` in `space` for `side` takes: whether the
-/// relation is locked as a whole instead, whether its intent lock is still to
-/// take, and the hashes of the values not held yet.
-fn pending(
-    space: Space,
-    target: &LockTarget,
-    side: Side,
-    values: &[String],
-) -> (bool, bool, Vec<u32>) {
-    let relid = target.relid;
-    let mut hashes: Vec<u32> = values
-        .iter()
-        .map(|v| value_hash(&target.attnums, v))
-        .collect();
-    hashes.sort_unstable();
-    hashes.dedup();
-    REGISTRY.with_borrow(|r| {
-        if r.escalated(relid, space, side) {
-            return (false, false, Vec::new());
-        }
-        let new: Vec<u32> = hashes
-            .into_iter()
-            .filter(|&hash| {
-                !r.holds(&Held::Value {
-                    relid,
-                    space,
-                    side,
-                    hash,
-                })
-            })
-            .collect();
-        let threshold = crate::config::lock_escalation_threshold();
-        let escalate =
-            !new.is_empty() && r.should_escalate(relid, space, side, new.len(), threshold);
-        (
-            escalate,
-            !r.holds(&Held::Intent { relid, space, side }),
-            new,
-        )
-    })
 }
 
 /// Whether this transaction holds the key lock of `key`, a row of `tview` it
@@ -248,85 +256,28 @@ pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
     REGISTRY.with_borrow(|r| r.escalated(relid, Space::Keys, Side::Writer) || r.holds(&held))
 }
 
-fn lock_in(space: Space, target: &LockTarget, side: Side, values: &[String]) {
-    let policy = Policy::current();
-    if values.is_empty() {
-        return;
-    }
-    let relid = target.relid;
-    let held = |hash| Held::Value {
-        relid,
-        space,
-        side,
-        hash,
-    };
-    let (escalate, intent, new) = pending(space, target, side, values);
-    if escalate {
-        relation_lock(relid, space, side, escalated_mode(side));
-        crate::metrics::metrics_api::record_value_lock_escalation();
-        return;
-    }
-    if new.is_empty() {
-        return;
-    }
-    if intent {
-        relation_lock(relid, space, side, intent_mode(side));
-    }
-    let database = database();
-    for hash in new {
-        acquire(
-            &value_tag(database, relid, hash),
-            value_mode(side),
-            side,
-            policy,
-        );
-        REGISTRY.with_borrow_mut(|r| r.record(held(hash)));
-        crate::metrics::metrics_api::record_value_lock();
-    }
-}
-
 /// Lock relation `relid` as a whole for `side`, to the end of the transaction:
 /// a writer that changes every value (a full refresh), or a transaction past the
 /// escalation threshold.
 pub fn lock_relation(relid: u32, side: Side) {
-    relation_lock(relid, Space::Values, side, escalated_mode(side));
+    let mut pass = Pass::default();
+    pass.relation(relid, side);
+    take(&pass);
 }
 
-/// Take the intent lock of relation `relid` for `side` alone: a refresh of a
-/// TVIEW's rows conflicts with a writer that locked the whole TVIEW.
-pub fn lock_intent(relid: u32, side: Side) {
-    relation_lock(relid, Space::Values, side, intent_mode(side));
-}
-
-/// Take `relid`'s relation lock in `space` in `mode`, the intent or the
-/// escalated mode of `side`, unless held (an escalated lock covers the intent).
-fn relation_lock(relid: u32, space: Space, side: Side, mode: pg_sys::LOCKMODE) {
-    let policy = Policy::current();
-    let escalated = mode == escalated_mode(side);
-    let lock = if escalated {
-        Held::Escalated { relid, space, side }
-    } else {
-        Held::Intent { relid, space, side }
-    };
-    let held = REGISTRY.with_borrow(|r| r.holds(&lock) || r.escalated(relid, space, side));
-    if held {
-        return;
-    }
-    acquire(&relation_tag(database(), relid, space), mode, side, policy);
-    REGISTRY.with_borrow_mut(|r| r.record(lock));
-}
-
-/// Writer side: before a query finds TVIEW rows by the values a statement wrote
-/// to `mapping`'s table, lock those values in each read-set column. `values`
-/// runs, over the changed rows (both images of an update), the lock value of a
-/// column ([`lock_value`]: an expression of its quoted name) and returns the
-/// distinct results. A read set with no column (the table is locked as a whole
-/// by refreshes), or whose column is gone, takes the intent lock alone.
+/// Writer side: the locks on the values a statement wrote to `mapping`'s table,
+/// added to `pass`, which takes them before any query finds TVIEW rows by those
+/// values. `values` runs, over the changed rows (both images of an update), the
+/// lock value of a read-set column ([`lock_value`]: an expression of its quoted
+/// name) and returns the distinct results. A read set with no column (the table
+/// is locked as a whole by refreshes), or whose column is gone, takes the intent
+/// lock alone.
 ///
 /// # Errors
 /// What `values` returns.
-pub fn lock_changed_rows(
+pub fn changed_rows(
     mapping: &crate::lineage::KeyMapping,
+    pass: &mut Pass,
     mut values: impl FnMut(&str) -> crate::TViewResult<Vec<String>>,
 ) -> crate::TViewResult<()> {
     for set in &mapping.reads {
@@ -336,14 +287,14 @@ pub fn lock_changed_rows(
             lock_value(mapping.relid, set.attnum)?
         };
         let Some(column) = column else {
-            lock_intent(mapping.relid, Side::Writer);
+            pass.intent(mapping.relid, Side::Writer);
             continue;
         };
         let target = LockTarget {
             relid: mapping.relid,
             attnums: vec![set.attnum],
         };
-        lock_values(&target, Side::Writer, &values(&column.of(&column.name))?);
+        pass.values(&target, Side::Writer, &values(&column.of(&column.name))?);
     }
     Ok(())
 }
@@ -596,19 +547,22 @@ mod tests {
 
     #[test]
     fn modes_conflict_as_the_protocol_needs() {
-        // PostgreSQL's conflict table (lock.c), restricted to the four modes used.
-        const TABLE: [[bool; 4]; 4] = [
-            [false, false, false, true],
-            [false, false, true, true],
-            [false, true, false, true],
-            [true, true, true, true],
+        use pass::RelationMode as M;
+        // PostgreSQL's conflict table (lock.c), restricted to the five modes used.
+        const TABLE: [[bool; 5]; 5] = [
+            [false, false, false, false, true],
+            [false, false, true, true, true],
+            [false, true, false, true, true],
+            [false, true, true, true, true],
+            [true, true, true, true, true],
         ];
         let conflicts = |a: pg_sys::LOCKMODE, b: pg_sys::LOCKMODE| {
             let rank = |m| match m {
                 2 => 0, // RowShare
                 3 => 1, // RowExclusive
                 5 => 2, // Share
-                7 => 3, // Exclusive
+                6 => 3, // ShareRowExclusive
+                7 => 4, // Exclusive
                 _ => unreachable!(),
             };
             TABLE[rank(a)][rank(b)]
@@ -616,10 +570,21 @@ mod tests {
         let (r, w) = (Side::Refresh, Side::Writer);
         assert!(conflicts(value_mode(r), value_mode(w)));
         assert!(!conflicts(value_mode(r), value_mode(r)));
-        assert!(!conflicts(intent_mode(r), intent_mode(w)));
-        assert!(conflicts(escalated_mode(r), intent_mode(w)));
-        assert!(conflicts(escalated_mode(w), intent_mode(r)));
-        assert!(!conflicts(escalated_mode(r), intent_mode(r)));
+        let mode = M::lockmode;
+        assert!(!conflicts(mode(M::RefreshIntent), mode(M::WriterIntent)));
+        assert!(conflicts(mode(M::RefreshEscalated), mode(M::WriterIntent)));
+        assert!(conflicts(mode(M::WriterEscalated), mode(M::RefreshIntent)));
+        assert!(!conflicts(
+            mode(M::RefreshEscalated),
+            mode(M::RefreshIntent)
+        ));
+        // Writing values while reading the whole relation: waits for writers
+        // and for whole-relation reads, not for refreshes of values.
+        let both = mode(M::WriterIntentRefreshEscalated);
+        assert!(conflicts(both, mode(M::WriterIntent)));
+        assert!(conflicts(both, mode(M::RefreshEscalated)));
+        assert!(conflicts(both, both));
+        assert!(!conflicts(both, mode(M::RefreshIntent)));
     }
 
     #[test]
