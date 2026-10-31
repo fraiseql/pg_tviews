@@ -6,7 +6,8 @@
 # flush waits on a gate, one per session, so the writes capture their changes
 # one after the other before either refreshes; the gates open one after the
 # other. Each refresh reads the other's place. Both commit, and the TVIEW is
-# fresh.
+# fresh, also when the writers lock the table whole past the escalation
+# threshold.
 
 setup
 {
@@ -58,10 +59,12 @@ step g_open2   { SELECT pg_advisory_unlock(277, 2); }
 
 session one
 setup          { SET deadlock_timeout = '100ms'; SET test.gate = '1'; }
+step o_escalate { SET pg_tviews.lock_escalation_threshold = 1; }
 step o_delete  { UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; }
 
 session two
 setup          { SET deadlock_timeout = '10s'; SET test.gate = '2'; }
+step t_escalate { SET pg_tviews.lock_escalation_threshold = 1; }
 step t_delete  { UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2; }
 step t_check
 {
@@ -71,3 +74,7 @@ step t_check
 
 permutation g_close o_delete t_delete g_open1 g_open2 t_check
 permutation g_close o_delete t_delete g_open2 g_open1 t_check
+# Past a threshold of one value, each writer locks tb_item's values as a whole:
+# its intent lock and its refresh's escalated lock are one lock, or the two
+# writers would each hold the intent and wait for the other's.
+permutation o_escalate t_escalate g_close o_delete t_delete g_open1 g_open2 t_check
