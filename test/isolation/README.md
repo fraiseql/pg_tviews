@@ -11,12 +11,7 @@ PGHOST=localhost PGPORT=28818 PGUSER=postgres PG_CONFIG=/path/to/pg_config ./tes
 
 `isolation_schedule` lists the specs that run by default. A spec reproducing an
 open defect is kept with the output the fixed behaviour gives and left out of the
-schedule, listed here, and run by name:
-
-- `embed-count-soft-deletes` (#277): two soft-deletes of items of one group, in
-  two places, where every item shows its place's and its group's counts. Each
-  writer holds its exclusive value locks from the delta trigger when its flush
-  waits for a shared one on the other's place: one fails with 40P01.
+schedule, listed here, and run by name. None is open.
 
 Writers wait on each other's value locks (see `docs/concurrency.md`), so a spec
 under `READ COMMITTED` runs only the orders where the session that writes first

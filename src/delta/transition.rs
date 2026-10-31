@@ -83,19 +83,23 @@ pub(super) unsafe fn reads_unchanged(td: &pg_sys::TriggerData, attnums: &[i16]) 
 }
 
 /// Run `sql`, which reads the statement's transition tables, as `entity`'s owner
-/// and return the key in each row's first column.
+/// and return the key in each row's first column; under REPEATABLE READ checked
+/// against the latest snapshot when `crosscheck` says so.
 pub(super) fn run_with_transition_tables(
     trigger: &PgTrigger<'_>,
     entity: &str,
     key_type: &KeyType,
     sql: &str,
+    crosscheck: bool,
 ) -> TViewResult<Vec<KeyValue>> {
     with_transition_tables(trigger, entity, |client, table| {
         let mut keys = Vec::new();
         for row in crate::utils::spi::kept_update_over(client, table, sql, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
-        crosscheck_keys(sql, &[], &keys)?;
+        if crosscheck {
+            crosscheck_keys(sql, &[], &keys)?;
+        }
         Ok(keys)
     })
 }

@@ -1,9 +1,10 @@
 # A rename of a customer, written into the lines two joins away as a fan-out
 # patch (line -> order -> customer), while an order of another customer moves to
-# it (#268). The move has locked the order it moved and waits on a gate between
-# pg_tviews' delta triggers and its flush; the rename then locks its customer,
-# looks up that customer's orders and locks the ones it reached, which the move
-# holds none of. Its lookup never locks before it reads: a lock on the orders
+# it (#268). The move has locked the order it moved and, since it changed a link,
+# what its line now reads, the new customer among them (#277); it waits on a gate
+# between pg_tviews' delta triggers and its flush. The rename waits for the move
+# to commit, then looks up that customer's orders and locks the ones it reached.
+# Its lookup never locks before it reads: a lock on the orders
 # taken before the lookup would wait for the move, which waits for the rename's
 # customer to recompute its line, a deadlock. So would a lock on all the orders
 # past the escalation threshold: the rename then maps and recomputes the lines

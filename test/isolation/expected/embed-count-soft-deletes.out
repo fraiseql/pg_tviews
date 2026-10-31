@@ -51,7 +51,6 @@ pg_advisory_unlock
 t                 
 (1 row)
 
-step t_delete: <... completed>
 step g_open1: SELECT pg_advisory_unlock(277, 1);
 pg_advisory_unlock
 ------------------
@@ -59,6 +58,7 @@ t
 (1 row)
 
 step o_delete: <... completed>
+step t_delete: <... completed>
 step t_check: 
   SELECT t.pk_item, (t.data->>'place')::int AS place, (t.data->>'group')::int AS "group", t.data = v.data AS fresh
   FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
