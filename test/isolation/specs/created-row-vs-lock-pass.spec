@@ -6,9 +6,9 @@
 # creator), and the writer soft-deletes item 1 of place 1 (waiting for the
 # creator too); its first lookup found items 1, 3 and 4. Once the creator commits,
 # the renamer holds group 5 and the writer's pass completes. The writer's second
-# lookup finds item 5 as well, whose group the renamer holds: it waits for the
-# renamer. The renamer's next write, item 3 of place 1, waits for the writer:
-# PostgreSQL fails the writer with 40P01. Without the creation (second
+# lookup finds item 5 as well; its flush locks item 5's read set, whose group
+# the renamer holds: it waits for the renamer. The renamer's next write, item 3
+# of place 1, waits for the writer: PostgreSQL fails the writer with 40P01. Without the creation (second
 # permutation) the second lookup finds nothing new, and the renamer waits for the
 # writer to commit. The TVIEW is fresh either way.
 
@@ -65,5 +65,5 @@ step w_check
   FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
 }
 
-permutation c_begin c_insert r_begin r_rename w_delete c_commit r_delete r_commit w_check
+permutation c_begin c_insert r_begin r_rename w_delete c_commit r_delete(w_delete) r_commit w_check
 permutation r_begin r_rename w_delete r_delete r_commit w_check

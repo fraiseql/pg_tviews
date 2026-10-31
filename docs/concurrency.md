@@ -87,7 +87,8 @@ deadlock:
 - **Several statements:** the locks of a transaction's earlier statements are already
   held when a later statement takes its pass.
 - **Rows linked meanwhile:** another transaction linked rows to the written values and
-  committed while the pass waited. Those rows are locked after the pass.
+  committed while the pass waited. Those rows' read sets are locked at the flush, after
+  the pass.
 - **Rows the refresh reaches itself:** the parents of an embedded TVIEW.
 
 PostgreSQL detects a deadlock and fails one of the transactions with `deadlock detected`
@@ -97,7 +98,7 @@ PostgreSQL detects a deadlock and fails one of the transactions with `deadlock d
 
 | What | Lock | Held until |
 |---|---|---|
-| A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new; in a transaction that changed a link, also the shared value locks of the TVIEW rows those values reach (found without locks first). Both are taken in one pass in a fixed order, for every TVIEW over the table, before the TVIEW rows are looked up again; rows found only then are locked too (under `REPEATABLE READ` and `SERIALIZABLE`: `40001`) | end of transaction |
+| A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new; in a transaction that changed a link, also the shared value locks of the TVIEW rows those values reach (found without locks first). Both are taken in one pass in a fixed order, for every TVIEW over the table, before the TVIEW rows are looked up again | end of transaction |
 | A write to a TVIEW's rows that other TVIEWs embed | exclusive value locks on those rows' keys, before it looks up the parents | end of transaction |
 | A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`; under `REPEATABLE READ` and `SERIALIZABLE`, when the refresh writes them in several statements) | end of transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |

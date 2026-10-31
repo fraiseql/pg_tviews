@@ -2,7 +2,7 @@
 //! query, or written into every row they reach as a fan-out patch.
 
 use super::Event;
-use super::capture::{Found, Statement};
+use super::capture::Statement;
 use super::render::{computed_columns, delta_sql, key_sql_type, row_pairing};
 use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
@@ -16,7 +16,6 @@ use crate::lineage::{DELTA, KeyMapping, MappingKind};
 use crate::queue::key::KeyValue;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
-use std::collections::HashMap;
 
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of `meta`'s TVIEW (ADR 0157), with the current names
@@ -173,7 +172,7 @@ pub(super) fn map_statement(
         Route::Mapped { delta } => {
             // Refreshes of the TVIEW rows these rows feed meet this write on the
             // values (ADR 0207): locked before any query finds rows by them.
-            let found = statement_locks(trigger, entity, table_oid, event)?;
+            statement_locks(trigger, entity, table_oid, event)?;
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
@@ -184,9 +183,11 @@ pub(super) fn map_statement(
                 refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(());
             };
-            let keys = super::capture::settle(&meta, found, || {
-                lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, true)
-            })?;
+            // After the writer's locks, in a new snapshot: a row a concurrent
+            // transaction linked to these values is found. Rows the first
+            // lookup missed have their read set locked by the flush, as every
+            // row it computes.
+            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, true)?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
@@ -221,16 +222,16 @@ fn lookup(
 
 /// The value locks of `entity`'s capture of the statement: taken by the
 /// statement's first delta trigger on the table, for every TVIEW whose trigger
-/// fires for it, or now. Returns what `entity`'s lookup found before the pass.
+/// fires for it, or now.
 fn statement_locks(
     trigger: &PgTrigger<'_>,
     entity: &str,
     table_oid: Oid,
     event: Event,
-) -> TViewResult<Found> {
+) -> TViewResult<()> {
     let statement = Statement::of(trigger, table_oid);
-    if let Some(found) = statement.and_then(|s| s.recorded(entity)) {
-        return Ok(found);
+    if statement.is_some_and(|s| s.recorded(entity)) {
+        return Ok(());
     }
     // The first trigger of the statement takes the pass for itself and for the
     // triggers after it; one no pass covered (a COPY) takes its own.
@@ -244,31 +245,25 @@ fn statement_locks(
                 all[at..].to_vec()
             },
         );
-    let mut found = capture_pass(trigger, &entities, table_oid, event)?;
-    let own = found.remove(entity).flatten();
-    if let Some(statement) = statement
-        && entities.len() > 1
-    {
-        statement.record(found);
+    capture_pass(trigger, &entities, table_oid, event)?;
+    if let Some(statement) = statement {
+        statement.record(entities.into_iter().filter(|e| e != entity).collect());
     }
-    Ok(own)
+    Ok(())
 }
 
 /// One pass of the value locks of the TVIEWs `entities` for the statement's
 /// changed rows: each one's writer locks and, once the transaction changed a
-/// link, the read set of the rows its lookup finds now, unlocked. Returns what
-/// each lookup found (an entry per entity).
+/// link, the read set of the rows its lookup finds now, unlocked.
 fn capture_pass(
     trigger: &PgTrigger<'_>,
     entities: &[String],
     table_oid: Oid,
     event: Event,
-) -> TViewResult<HashMap<String, Found>> {
+) -> TViewResult<()> {
     // Every write's links first: they decide whether the read sets are locked.
     let mut mapped = Vec::new();
-    let mut found = HashMap::new();
     for entity in entities {
-        found.insert(entity.clone(), None);
         let Some(meta) = TviewMeta::load_reaching(entity, table_oid)? else {
             continue;
         };
@@ -298,10 +293,9 @@ fn capture_pass(
         };
         let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, false)?;
         super::capture::add_read_set(&meta, &keys, &mut pass)?;
-        found.insert(entity.clone(), Some(keys));
     }
     crate::concurrency::take(&pass);
-    Ok(found)
+    Ok(())
 }
 
 /// Write an UPDATE into every TVIEW row it reaches instead of recomputing them,

@@ -344,19 +344,14 @@ The capture now takes the locks of both sides together:
    deadlock, on the relation lock. Transactions that each take one such pass
    can't wait for each other in a cycle.
 3. **Look up again.** In a new snapshot, after the pass: this is the lookup the
-   refresh uses, and it runs after the writer's locks, as before.
-4. **Lock the difference.** The rows found now but not in step 1 (`K1 \ K0`) were
-   created or re-pointed by a transaction that committed in between. Under READ
-   COMMITTED their read set is locked in a second sorted pass, and the lookup runs
-   again until it finds no new row. Under REPEATABLE READ and SERIALIZABLE a
-   non-empty difference raises 40001: the snapshot can't follow it.
-
-   The flush locks the read set of every row it computes anyway, so this step
-   only takes those locks earlier. Removing it changes no spec's outcome.
-   Under REPEATABLE READ both lookups read the transaction's snapshot, so the
-   difference is always empty. A row committed after the snapshot fails the
-   lookup's check against the latest snapshot instead
-   (`rr-created-row-vs-lock-pass`).
+   refresh uses, and it runs after the writer's locks, as before. A row found
+   now but not in step 1 was created or re-pointed by a transaction that
+   committed in between, or written by this transaction's own triggers. The
+   flush locks its read set, as it does for every row it computes, before
+   computing it. Locking it here as well would only take those locks earlier:
+   no spec's outcome depends on it. Under REPEATABLE READ both lookups read the
+   transaction's snapshot. A row committed after it fails the lookup's check
+   against the latest snapshot with 40001 (`rr-created-row-vs-lock-pass`).
 
 **Several TVIEWs on one table.** Each TVIEW has its own delta trigger. They fire one
 after the other, so separate passes, even in a fixed order, could wait for each
@@ -370,10 +365,10 @@ by its executor frame and its transition tables. A trigger that finds no pass
 recorded for it (a `COPY`, which runs no executor) takes its own pass.
 
 **What can still deadlock.**
-- **Step 4.** Its locks come after the pass, so a row created and committed
-  between the two lookups can bring in a value another transaction holds
-  exclusively. That transaction, in a later statement, waits for this one
-  (`created-row-vs-lock-pass`).
+- **Rows found by the second lookup only.** Their read set is locked at the
+  flush, after the pass, so a row created and committed between the two lookups
+  can bring in a value another transaction holds exclusively. That transaction,
+  in a later statement, waits for this one (`created-row-vs-lock-pass`).
 - **Multi-statement transactions.** A transaction's earlier statements' locks are
   held when a later one takes its pass, as with row locks.
 - **The flush.** It locks the read set of the rows it computes again: values that
@@ -383,7 +378,8 @@ recorded for it (a `COPY`, which runs no executor) takes its own pass.
 40P01 stays retryable.
 
 **Costs.** After a link change the capture runs the lookup twice and the read-set
-query once more, per TVIEW. A write that changes no link takes the same locks as
+query once more, per TVIEW: about 1.4 ms per such statement on the benchmark's
+schema (`test/concurrency/run.sh embed`). A write that changes no link takes the same locks as
 before, in one pass instead of one per read-set column.
 
 The partitioned-table paths (a row trigger per changed row, rows entering with a

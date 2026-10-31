@@ -14,9 +14,9 @@ step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting
 step c_commit: COMMIT;
 step r_rename: <... completed>
 step r_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 3; <waiting ...>
-step r_delete: <... completed>
 step w_delete: <... completed>
 ERROR:  deadlock detected
+step r_delete: <... completed>
 step r_commit: COMMIT;
 step w_check: 
   SELECT t.pk_item, t.data = v.data AS fresh

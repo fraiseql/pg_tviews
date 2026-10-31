@@ -2,22 +2,18 @@
 //! #277): the writer's exclusive locks on the values it changed and, after a
 //! link change, the refresh's shared locks on what the rows it reaches read,
 //! for every TVIEW whose delta trigger fires for the statement. The rows are
-//! then looked up again in a new snapshot, and rows found only then are locked
-//! (READ COMMITTED) or fail the transaction (REPEATABLE READ, SERIALIZABLE).
+//! then looked up again in a new snapshot, after the writer's locks; the flush
+//! locks the read set of every row it computes, those found only now among them.
 
 use crate::catalog::TviewMeta;
-use crate::concurrency::{Pass, Policy};
+use crate::concurrency::Pass;
 use crate::error::TViewResult;
 use crate::queue::key::KeyValue;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::CStr;
-
-/// The rows a TVIEW's lookup found before its pass, when the transaction had
-/// changed a link (`None` otherwise: no read set was locked).
-pub(super) type Found = Option<Vec<KeyValue>>;
 
 /// One statement's delta triggers on one table for one event: its executor
 /// frame, the table, the triggers' type and the transition tables they share.
@@ -31,10 +27,10 @@ pub(super) struct Statement {
 }
 
 thread_local! {
-    /// The passes taken by a statement's first delta trigger, with what each
-    /// TVIEW whose trigger is still to fire found. A trigger takes its entry;
-    /// a statement's record goes once its last trigger fired.
-    static RECORDED: RefCell<Vec<(Statement, HashMap<String, Found>)>> =
+    /// The passes taken by a statement's first delta trigger, with the TVIEWs
+    /// whose triggers are still to fire. A trigger takes its entity out; a
+    /// statement's record goes once its last trigger fired.
+    static RECORDED: RefCell<Vec<(Statement, HashSet<String>)>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -54,11 +50,13 @@ impl Statement {
         })
     }
 
-    /// What the pass of this statement recorded for `entity`, taken out of
-    /// the record; `None` when no pass recorded it.
-    pub(super) fn recorded(self, entity: &str) -> Option<Found> {
+    /// Whether a pass of this statement took `entity`'s locks, taking it out
+    /// of the record.
+    pub(super) fn recorded(self, entity: &str) -> bool {
         RECORDED.with_borrow_mut(|recorded| {
-            let i = recorded.iter().position(|(s, _)| *s == self)?;
+            let Some(i) = recorded.iter().position(|(s, _)| *s == self) else {
+                return false;
+            };
             let found = recorded[i].1.remove(entity);
             if recorded[i].1.is_empty() {
                 recorded.swap_remove(i);
@@ -72,10 +70,10 @@ impl Statement {
         RECORDED.with_borrow(|recorded| recorded.iter().any(|(s, _)| *s == self))
     }
 
-    /// Record the pass of this statement: what each TVIEW in `found` found.
-    pub(super) fn record(self, found: HashMap<String, Found>) {
-        if !found.is_empty() {
-            RECORDED.with_borrow_mut(|recorded| recorded.push((self, found)));
+    /// Record the pass of this statement: it took the locks of `entities`.
+    pub(super) fn record(self, entities: HashSet<String>) {
+        if !entities.is_empty() {
+            RECORDED.with_borrow_mut(|recorded| recorded.push((self, entities)));
         }
     }
 }
@@ -120,55 +118,13 @@ pub(super) fn firing_entities(trigger: &PgTrigger<'_>) -> Option<Vec<String>> {
     }
 }
 
-/// The rows a write reaches, from `lookup` run after the pass that took the
-/// writer's locks: `found`, what it found before the pass, had its read set
-/// locked. Rows found only now were created or re-pointed by a transaction that
-/// committed in between: under READ COMMITTED their read set is locked and the
-/// lookup runs again, until it finds no new row; under REPEATABLE READ and
-/// SERIALIZABLE the snapshot can't follow them, and the transaction fails with
-/// 40001.
-///
-/// # Errors
-/// What `lookup` or a read-set query returns.
-pub(super) fn settle(
-    meta: &TviewMeta,
-    found: Found,
-    mut lookup: impl FnMut() -> TViewResult<Vec<KeyValue>>,
-) -> TViewResult<Vec<KeyValue>> {
-    let mut keys = lookup()?;
-    let Some(found) = found else {
-        return Ok(keys);
-    };
-    let mut known: HashSet<KeyValue> = found.into_iter().collect();
-    loop {
-        let new: Vec<KeyValue> = keys
-            .iter()
-            .filter(|key| !known.contains(*key))
-            .cloned()
-            .collect();
-        if new.is_empty() {
-            return Ok(keys);
-        }
-        if Policy::current() == Policy::FailFast {
-            crate::concurrency::serialization_failure(
-                "a concurrent transaction linked rows to the rows this write changed",
-            );
-        }
-        let mut pass = Pass::default();
-        add_read_set(meta, &new, &mut pass)?;
-        crate::concurrency::take(&pass);
-        known.extend(new);
-        keys = lookup()?;
-    }
-}
-
 /// The rows of `meta`'s TVIEW that changed rows reach through `mapping`, for a
 /// path that maps them one TVIEW at a time (a partitioned table's row trigger,
 /// rows entering with a partition): one pass of the writer's locks (`values`, as
 /// [`crate::concurrency::changed_rows`] runs it) and, after a link change, of the
-/// read set of what `lookup` finds now, then [`settle`]. `lookup` runs in a new
-/// snapshot, checked against the latest one under REPEATABLE READ when its
-/// argument says so.
+/// read set of what `lookup` finds now, then `lookup` again, after the writer's
+/// locks. `lookup` runs in a new snapshot, checked against the latest one under
+/// REPEATABLE READ when its argument says so.
 ///
 /// # Errors
 /// What `values`, `lookup` or a read-set query returns.
@@ -180,15 +136,11 @@ pub(super) fn locked_keys(
 ) -> TViewResult<Vec<KeyValue>> {
     let mut pass = Pass::default();
     crate::concurrency::changed_rows(mapping, &mut pass, values)?;
-    let found = if crate::concurrency::links_changed() {
-        let keys = lookup(false)?;
-        add_read_set(meta, &keys, &mut pass)?;
-        Some(keys)
-    } else {
-        None
-    };
+    if crate::concurrency::links_changed() {
+        add_read_set(meta, &lookup(false)?, &mut pass)?;
+    }
     crate::concurrency::take(&pass);
-    settle(meta, found, || lookup(true))
+    lookup(true)
 }
 
 /// Add the read set of `meta`'s rows `keys` to `pass`, read as the TVIEW's
