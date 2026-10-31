@@ -337,7 +337,11 @@ The capture now takes the locks of both sides together:
    locks (intent, escalated) before value locks, then by hash. An exclusive lock
    covers a shared request on the same value. Escalation is decided per
    relation, space and side over the whole pass, so an escalated lock takes its
-   relation's place in the order. Transactions that each take one such pass
+   relation's place in the order. A writer's intent and a refresh's escalated
+   lock on one relation are one `ShareRowExclusiveLock`. Taken as
+   `RowExclusiveLock` and then `ShareLock`, two writers past the threshold would
+   each hold the first and wait for the other's: the report's second form of the
+   deadlock, on the relation lock. Transactions that each take one such pass
    can't wait for each other in a cycle.
 3. **Look up again.** In a new snapshot, after the pass: this is the lookup the
    refresh uses, and it runs after the writer's locks, as before.
@@ -346,6 +350,13 @@ The capture now takes the locks of both sides together:
    COMMITTED their read set is locked in a second sorted pass, and the lookup runs
    again until it finds no new row. Under REPEATABLE READ and SERIALIZABLE a
    non-empty difference raises 40001: the snapshot can't follow it.
+
+   The flush locks the read set of every row it computes anyway, so this step
+   only takes those locks earlier. Removing it changes no spec's outcome.
+   Under REPEATABLE READ both lookups read the transaction's snapshot, so the
+   difference is always empty. A row committed after the snapshot fails the
+   lookup's check against the latest snapshot instead
+   (`rr-created-row-vs-lock-pass`).
 
 **Several TVIEWs on one table.** Each TVIEW has its own delta trigger. They fire one
 after the other, so separate passes, even in a fixed order, could wait for each
@@ -378,6 +389,14 @@ before, in one pass instead of one per read-set column.
 The partitioned-table paths (a row trigger per changed row, rows entering with a
 partition) take the same pass, one TVIEW at a time.
 
-Specs: `embed-count-soft-deletes`, `two-tviews-one-table`,
-`created-row-vs-lock-pass` and its REPEATABLE READ twin. The four specs above
-stay fresh.
+Specs: `embed-count-soft-deletes` (also past the escalation threshold),
+`two-tviews-one-table` (a gate between the two delta triggers),
+`created-row-vs-lock-pass` and its REPEATABLE READ twin, and `lock-pass-order`.
+In `lock-pass-order`, a third transaction makes a pass wait part-way, which shows
+the order (shared and exclusive locks by hash, relation locks first) and the single
+relation lock. The four specs above stay fresh.
+
+**Relation to #275.** #275 orders key locks across a flush; this orders value
+locks at the boundary between writer and refresh. Neither depends on the other.
+This change lands first, on its own, for 0.1.0-beta.35, because it fixes the
+reported deadlock and #275 does not.
