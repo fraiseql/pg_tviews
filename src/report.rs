@@ -120,7 +120,7 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
         "SELECT t.{qi_pk}, t.data FROM {table} t WHERE {}",
         lookup.predicate(&format!("t.{qi_pk}"), 1)
     );
-    let rows = crate::utils::spi::kept_rows_as(&sql, &[lookup.arg()], lookup.plan(), |row| {
+    let rows = crate::utils::spi::kept_rows_as(&sql, &lookup.args(), lookup.plan(), |row| {
         Ok((row.get::<i64>(1)?, row.get::<pgrx::JsonB>(2)?))
     })?;
     Ok(rows

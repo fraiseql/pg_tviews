@@ -220,8 +220,18 @@ planned depends on what it looks rows up by:
   the statement compares the column with `=`. Its generic plan estimates the rows of
   one value, which is what a plan made for that key would estimate, so it is not
   planned again either. A write to one parent runs this shape.
-- **Several keys**: the statement takes them as an array and is planned at each
-  execution, for their count (about 30 µs).
+- **Up to 256 keys**: the statement takes as many parameters as the next width of 2,
+  4, 8, … or 256 (`= ANY (ARRAY[$1, …, $n])`), the keys padded by repeating the last
+  one. The planner counts the elements of an `ARRAY[…]` of parameters, and estimates
+  each as the rows of one value, the assumption `= $1` makes for one key: the estimate
+  is within twice the keys' own. Each width has one generic plan, made once per
+  backend: a statement has at most nine.
+- **More keys**: the statement takes them as an array and is planned at each
+  execution, for their count (about 30 µs; `per_execution_plans` in
+  `pg_tviews_queue_stats()` counts them). Wider shapes would cost at execution: the
+  planner hashes an array of constants it compares rows with outside an index, not an
+  array of parameters. Such a write is a bulk write, whose planning is small next to
+  its work.
 
 The statements that read a backing view or lock rows by identity (the recompute, the
 row locks, the delete of rows gone from the view, and the parent lookup outside
@@ -230,7 +240,7 @@ REPEATABLE READ) are kept too, but planned by PostgreSQL's own rule
 from the generic plan when it costs no more than those did. A recompute of one row
 settles on the generic plan (six plans over 2,000 writes on stock 18.4).
 
-A generic plan of an array can't count its keys: PostgreSQL assumes ten, each matching
+A generic plan of an array parameter can't count its keys: PostgreSQL assumes ten, each matching
 the column's average number of rows. On a TVIEW whose lookup column has few distinct
 values (categories, statuses, tenants) that estimate is a large share of the table,
 and the plan scans it all to find a few rows. Before this rule, a write to one category

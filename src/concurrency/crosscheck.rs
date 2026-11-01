@@ -40,7 +40,7 @@ pub fn refreshed_rows(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
         view_rows(meta)?,
         lookup.rhs
     );
-    same_under_latest(&sql, &[lookup.arg], lookup.plan)
+    same_under_latest(&sql, &lookup.args, lookup.plan)
 }
 
 /// Refresh side, for a TVIEW brought to its view as a whole (a reconcile): the

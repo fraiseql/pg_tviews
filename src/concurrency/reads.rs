@@ -127,7 +127,7 @@ pub fn read_set(
         .collect::<Vec<_>>()
         .join(" UNION ALL ");
     let mut values: Vec<Vec<String>> = vec![Vec::new(); sets.len()];
-    for row in crate::utils::spi::kept_rows(&sql, &[lookup.arg], lookup.plan)? {
+    for row in crate::utils::spi::kept_rows(&sql, &lookup.args, lookup.plan)? {
         if let [Some(i), Some(value)] = row.as_slice()
             && let Ok(i) = i.parse::<usize>()
             && let Some(set) = values.get_mut(i)

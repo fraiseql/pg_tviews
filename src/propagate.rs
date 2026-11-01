@@ -133,12 +133,15 @@ fn find_affected_keys_batch(
         )
     };
     let mut query = select(&qi_parent, &children, 1);
-    let mut args = vec![children.arg()];
+    let mut args = children.args();
     let mut plan = children.plan();
     if let Some(appeared) = LookupKeys::of(in_view.to_vec()) {
         let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-        query = format!("{query} UNION {}", select(&qi_view, &appeared, 2));
-        args.push(appeared.arg());
+        query = format!(
+            "{query} UNION {}",
+            select(&qi_view, &appeared, 1 + children.width())
+        );
+        args.extend(appeared.args());
         plan = plan.and(appeared.plan());
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;

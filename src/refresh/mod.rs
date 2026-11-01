@@ -94,7 +94,7 @@ pub(crate) fn key_scalar(
     })
 }
 
-/// Identity keys bound as `$1` for a lookup, shaped by their count as
+/// Identity keys bound from `$1` for a lookup, shaped by their count as
 /// [`crate::utils::spi::LookupKeys`] shapes keys of `fk_<entity>`: a backing view
 /// read by identity may join many rows of a table for each key (an aggregate of
 /// children), which a generic plan for an array estimates as ten keys' worth.
@@ -102,7 +102,7 @@ pub(crate) struct KeyLookup {
     /// What the identity is compared with by `OPERATOR(pg_catalog.=)`.
     pub rhs: String,
     /// The keys, as `rhs` reads them.
-    pub arg: DatumWithOid<'static>,
+    pub args: Vec<DatumWithOid<'static>>,
     /// How a statement looking them up is planned.
     pub plan: crate::utils::spi::Plan,
 }
@@ -115,19 +115,25 @@ pub(crate) fn key_lookup(
     key_type: &KeyType,
     keys: &[KeyValue],
 ) -> crate::TViewResult<Option<KeyLookup>> {
-    Ok(match keys {
-        [] => None,
-        [key] => Some(KeyLookup {
-            rhs: key_cast(key_type, "$1", false),
-            arg: key_scalar(key_type, key)?,
-            plan: crate::utils::spi::Plan::Generic,
-        }),
-        _ => Some(KeyLookup {
+    use crate::utils::spi::{Plan, padded, shape, shaped_rhs};
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(match shape(keys.len()) {
+        Some(width) => KeyLookup {
+            rhs: shaped_rhs(width, 1, |p| key_cast(key_type, p, false)),
+            args: padded(keys.to_vec(), width)
+                .iter()
+                .map(|key| key_scalar(key_type, key))
+                .collect::<crate::TViewResult<_>>()?,
+            plan: Plan::Generic,
+        },
+        None => KeyLookup {
             rhs: format!("ANY ({})", key_cast(key_type, "$1", true)),
-            arg: key_array(key_type, keys)?,
-            plan: crate::utils::spi::Plan::PerExecution,
-        }),
-    })
+            args: vec![key_array(key_type, keys)?],
+            plan: Plan::PerExecution,
+        },
+    }))
 }
 
 /// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look

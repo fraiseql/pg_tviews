@@ -418,10 +418,21 @@ fn reached_through(
     let Some((target, value)) = via_lock(entity, template.unwrap_or_default())? else {
         return Ok(None);
     };
-    let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
     let keys: Vec<i64> = patches.iter().map(|(key, _)| *key).collect();
-    let args = [crate::utils::spi::int8_array(keys)];
-    let plan = crate::utils::spi::Plan::PerExecution;
+    let Some(lookup) = crate::utils::spi::LookupKeys::of(keys) else {
+        return Ok(Some(Vec::new()));
+    };
+    // The template looks its keys up as an array; up to 256 take their shape.
+    let sql = match &lookup {
+        crate::utils::spi::LookupKeys::Shaped(keys) => sql.replace(
+            "ANY ($1::pg_catalog.int8[])",
+            &crate::utils::spi::shaped_rhs(keys.len(), 1, |p| format!("{p}::pg_catalog.int8")),
+        ),
+        crate::utils::spi::LookupKeys::Many(_) => sql,
+    };
+    let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
+    let args = lookup.args();
+    let plan = lookup.plan();
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
     let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
         return Ok(None);

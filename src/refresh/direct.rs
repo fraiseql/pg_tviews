@@ -170,7 +170,7 @@ pub fn apply_fanout_patch(
             "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t WHERE {}",
             keys.predicate(&format!("t.{qi_lookup}"), 1)
         );
-        let args = [keys.arg()];
+        let args = keys.args();
         // Read-write, as the patch: its snapshot sees this flush's own writes.
         let found = crate::utils::spi::kept_rows(&lookup, &args, keys.plan())?;
         crate::concurrency::crosscheck::discovered_by(&lookup, &args, keys.plan(), &found)?;
@@ -210,7 +210,7 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
         crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
         lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
     );
-    let rows = crate::utils::spi::kept_rows(&sql, &[lookup.arg()], lookup.plan())?;
+    let rows = crate::utils::spi::kept_rows(&sql, &lookup.args(), lookup.plan())?;
     Ok(rows
         .first()
         .and_then(|row| row.first()?.as_deref()?.parse().ok())
@@ -225,10 +225,11 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
 /// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
 /// a generic plan of a join with an array assumes ten keys, each matching
 /// `lookup_col`'s average number of rows, and on a TVIEW whose lookup column
-/// has few distinct values it scans the whole table for a few rows. One key,
-/// a write to one parent, is compared with `=` from a generic plan, whose
-/// estimate is the rows of one value; several are joined from the arrays,
-/// planned at each execution for their count.
+/// has few distinct values it scans the whole table for a few rows. Up to 256
+/// keys are compared with `=` or `= ANY (ARRAY[…])` from a generic plan, whose
+/// estimate is the rows of that many values, and a row takes the values of
+/// the first key it equals; more are joined from the arrays, planned at each
+/// execution for their count.
 fn write_fanout(
     meta: &TviewMeta,
     lookup_col: &str,
@@ -242,24 +243,40 @@ fn write_fanout(
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
-    // The rows written, and where each one's values come from.
-    let (from, filter, value) = match lookup {
-        LookupKeys::One(_) => (
-            "",
+    // The rows written, and where each one's values come from: the keys take
+    // parameters 1 to `width`, the values the next one, the paths the rest.
+    let width = lookup.width();
+    let (from, filter, value) = match &lookup {
+        LookupKeys::Shaped(keys) if keys.len() == 1 => (
+            String::new(),
             lookup.predicate(&format!("t.{qi_lookup}"), 1),
-            "($2::pg_catalog.jsonb[])[1]",
+            "($2::pg_catalog.jsonb[])[1]".to_string(),
         ),
+        LookupKeys::Shaped(keys) => {
+            let array = crate::utils::spi::shaped_array(keys.len(), 1, |p| {
+                format!("{p}::pg_catalog.int8")
+            });
+            (
+                String::new(),
+                lookup.predicate(&format!("t.{qi_lookup}"), 1),
+                format!(
+                    "(${}::pg_catalog.jsonb[])[pg_catalog.array_position({array}, t.{qi_lookup})]",
+                    width + 1
+                ),
+            )
+        }
         LookupKeys::Many(_) => (
             " FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.int8[]), \
-                              pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v)",
+                              pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(k, v)"
+                .to_string(),
             format!("t.{qi_lookup} = f.k"),
-            "f.v",
+            "f.v".to_string(),
         ),
     };
     let patched = (0..paths.len()).fold("t.data".to_string(), |data, i| {
         format!(
             "pg_catalog.jsonb_set({data}, ${}::pg_catalog.text[], {value} -> {i})",
-            i + 3
+            i + width + 2
         )
     });
     let sql = format!(
@@ -268,7 +285,8 @@ fn write_fanout(
          RETURNING t.{qi_pk}::pg_catalog.int8, {}",
         meta.returned_keys("t")
     );
-    let mut args = vec![lookup.arg(), DatumWithOid::from(values)];
+    let mut args = lookup.args();
+    args.push(DatumWithOid::from(values));
     for key in paths {
         let path = crate::queue::patch::fanout_path(key).ok_or_else(|| {
             crate::error::TViewError::SerializationError {
