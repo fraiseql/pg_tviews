@@ -70,7 +70,7 @@ pub fn int8_array<'a>(values: Vec<i64>) -> DatumWithOid<'a> {
 /// The widths a statement looking keys up takes: as many parameters as the
 /// smallest width holding the keys. Each width is one statement with a plan
 /// of its own, made once per backend.
-pub const SHAPES: [usize; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+pub const SHAPES: [usize; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 
 /// The width of a lookup of `count` keys ([`SHAPES`]); `None` without any, or
 /// past the widest.
@@ -122,14 +122,15 @@ pub fn shaped_rhs(width: usize, first: usize, param: impl Fn(&str) -> String) ->
 /// through a column with few distinct values it scans the whole table for a few
 /// rows (#235). An `ARRAY[$1, …, $n]` of parameters is estimated as `n` keys of
 /// the average, the assumption a generic plan of `= $1` makes for one key. Up
-/// to 256 keys, the statement takes the next width of [`SHAPES`] (the keys
+/// to 128 keys, the statement takes the next width of [`SHAPES`] (the keys
 /// padded by repeating the last), its estimate within twice the keys', and is
-/// planned once per backend for that width. Wider, a comparison the plan makes
-/// outside an index would compare each row with every parameter: only an
-/// array of constants is hashed.
+/// planned once per backend for that width. Wider, the kept plans grow with
+/// the width (a 9-table read set's plan of 256 keys keeps about 1.7 MB per
+/// backend), and a comparison made outside an index compares each row with
+/// every parameter: only an array of constants is hashed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LookupKeys {
-    /// Up to 256 keys, padded to their width: one parameter each, from a
+    /// Up to 128 keys, padded to their width: one parameter each, from a
     /// generic plan.
     Shaped(Vec<i64>),
     /// More: an array, planned at each execution for its count.
@@ -147,6 +148,22 @@ impl LookupKeys {
             Some(width) => Self::Shaped(padded(keys, width)),
             None => Self::Many(keys),
         })
+    }
+
+    /// The lookup of `keys` in a statement that also looks up `other` keys:
+    /// padded to the width of the longer list, so that the statement has one
+    /// plan per width, not one per pair of widths.
+    #[must_use]
+    pub fn of_with(keys: Vec<i64>, other: usize) -> Option<Self> {
+        if keys.is_empty() {
+            return None;
+        }
+        Some(
+            match shape(keys.len().max(other)).or_else(|| shape(keys.len())) {
+                Some(width) => Self::Shaped(padded(keys, width)),
+                None => Self::Many(keys),
+            },
+        )
     }
 
     /// The parameters the keys take.
@@ -789,8 +806,8 @@ mod tests {
         assert_eq!(shape(33), Some(64));
         assert_eq!(shape(64), Some(64));
         assert_eq!(shape(65), Some(128));
-        assert_eq!(shape(256), Some(256));
-        assert_eq!(shape(257), None);
+        assert_eq!(shape(128), Some(128));
+        assert_eq!(shape(129), None);
     }
 
     #[test]
@@ -823,8 +840,25 @@ mod tests {
     }
 
     #[test]
+    fn two_lists_of_one_statement_take_one_width() {
+        assert_eq!(
+            LookupKeys::of_with(vec![1], 3),
+            Some(LookupKeys::Shaped(vec![1, 1, 1, 1]))
+        );
+        assert_eq!(
+            LookupKeys::of_with(vec![1, 2, 3], 1),
+            Some(LookupKeys::Shaped(vec![1, 2, 3, 3]))
+        );
+        assert_eq!(
+            LookupKeys::of_with(vec![1], 200),
+            Some(LookupKeys::Shaped(vec![1]))
+        );
+        assert_eq!(LookupKeys::of_with(Vec::new(), 3), None);
+    }
+
+    #[test]
     fn many_keys_are_an_array_planned_per_execution() {
-        let keys = LookupKeys::of((0..257).collect()).expect("keys");
+        let keys = LookupKeys::of((0..129).collect()).expect("keys");
         assert_eq!(
             keys.predicate("\"fk_cat\"", 2),
             "\"fk_cat\" = ANY ($2::pg_catalog.int8[])"

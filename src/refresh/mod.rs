@@ -753,6 +753,27 @@ mod tests {
     }
 
     #[test]
+    fn shaped_identity_keys_cast_each_element() {
+        use crate::catalog::KeyType;
+        // A cast of the whole array (`ARRAY[…]::text[]::uuid[]`) is an
+        // ArrayCoerceExpr, which a generic plan estimates as ten keys (#235).
+        let uuid = KeyType::Text("pg_catalog.uuid".into());
+        let rhs = crate::utils::spi::shaped_rhs(2, 1, |p| super::key_cast(&uuid, p, false));
+        assert_eq!(
+            rhs,
+            "ANY (ARRAY[$1::pg_catalog.text::pg_catalog.uuid, $2::pg_catalog.text::pg_catalog.uuid])"
+        );
+        for width in crate::utils::spi::SHAPES {
+            for key_type in [KeyType::Int, uuid.clone()] {
+                let rhs = crate::utils::spi::shaped_rhs(width, 1, |p| {
+                    super::key_cast(&key_type, p, false)
+                });
+                assert!(!rhs.contains("]::"), "{rhs}");
+            }
+        }
+    }
+
+    #[test]
     fn conflict_action_key_only_does_nothing() {
         assert_eq!(
             super::upsert_conflict_action(r#""tv_x""#, &cols(&["pk_x"]), "pk_x"),

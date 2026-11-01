@@ -220,18 +220,20 @@ planned depends on what it looks rows up by:
   the statement compares the column with `=`. Its generic plan estimates the rows of
   one value, which is what a plan made for that key would estimate, so it is not
   planned again either. A write to one parent runs this shape.
-- **Up to 256 keys**: the statement takes as many parameters as the next width of 2,
-  4, 8, … or 256 (`= ANY (ARRAY[$1, …, $n])`), the keys padded by repeating the last
+- **Up to 128 keys**: the statement takes as many parameters as the next width of 2,
+  4, 8, … or 128 (`= ANY (ARRAY[$1, …, $n])`), the keys padded by repeating the last
   one. The planner counts the elements of an `ARRAY[…]` of parameters, and estimates
   each as the rows of one value, the assumption `= $1` makes for one key: the estimate
   is within twice the keys' own. Each width has one generic plan, made once per
-  backend: a statement has at most nine.
+  backend: a statement has at most eight. A session's `plan_cache_mode` doesn't apply:
+  writes run under `auto`, so each statement is planned as it was kept.
 - **More keys**: the statement takes them as an array and is planned at each
-  execution, for their count (about 30 µs; `per_execution_plans` in
-  `pg_tviews_queue_stats()` counts them). Wider shapes would cost at execution: the
-  planner hashes an array of constants it compares rows with outside an index, not an
-  array of parameters. Such a write is a bulk write, whose planning is small next to
-  its work.
+  execution, for their count (about 30 µs to a few ms; `per_execution_plans` in
+  `pg_tviews_queue_stats()` counts them). Wider shapes would cost memory and time: a
+  kept plan grows with its parameters (a nine-table read set's plan of 256 keys keeps
+  about 1.7 MB per backend), and the planner hashes an array of constants it compares
+  rows with outside an index, not an array of parameters. Such a write recomputes over
+  128 rows, which costs far more than planning it.
 
 The statements that read a backing view or lock rows by identity (the recompute, the
 row locks, the delete of rows gone from the view, and the parent lookup outside

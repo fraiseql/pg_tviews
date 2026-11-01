@@ -49,7 +49,7 @@ struct DirectPatchMetrics {
     /// Statements prepared and kept for the backend (each once, until an
     /// invalidation).
     plans_prepared: u64,
-    /// Lookups planned at their execution (more than 256 keys).
+    /// Lookups planned at their execution (more than 128 keys).
     per_execution_plans: u64,
     /// Parent lookups skipped because the child's row did not change.
     propagation_pruned: u64,

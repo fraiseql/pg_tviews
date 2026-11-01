@@ -225,7 +225,7 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
 /// The statement is kept, and shaped by the number of keys ([`LookupKeys`]):
 /// a generic plan of a join with an array assumes ten keys, each matching
 /// `lookup_col`'s average number of rows, and on a TVIEW whose lookup column
-/// has few distinct values it scans the whole table for a few rows. Up to 256
+/// has few distinct values it scans the whole table for a few rows. Up to 128
 /// keys are compared with `=` or `= ANY (ARRAY[…])` from a generic plan, whose
 /// estimate is the rows of that many values, and a row takes the values of
 /// the first key it equals; more are joined from the arrays, planned at each
@@ -253,9 +253,8 @@ fn write_fanout(
             "($2::pg_catalog.jsonb[])[1]".to_string(),
         ),
         LookupKeys::Shaped(keys) => {
-            let array = crate::utils::spi::shaped_array(keys.len(), 1, |p| {
-                format!("{p}::pg_catalog.int8")
-            });
+            let array =
+                crate::utils::spi::shaped_array(keys.len(), 1, |p| format!("{p}::pg_catalog.int8"));
             (
                 String::new(),
                 lookup.predicate(&format!("t.{qi_lookup}"), 1),
