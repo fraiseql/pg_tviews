@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.35] - 2026-11-01
+
 ### Fixed
 
 - **Two writes that change links no longer deadlock on value locks in one statement each**
@@ -22,6 +24,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A writer's intent lock and a refresh's escalated lock on one relation are taken as one
   `ShareRowExclusiveLock`, so two writers past the escalation threshold no longer deadlock on
   the relation lock either. ADR 0207 lists what can still deadlock (40P01, retryable).
+- **A recompute of several rows no longer reads its backing view for ten keys of average
+  size** (#281, also in 0.1.0-beta.34). The recompute upsert took its keys as an array, and once
+  PostgreSQL settled on its generic plan, a view joining a column with few distinct values
+  (posts aggregating their tags) scanned the whole table on every write. Its keys now take a
+  shape the plan counts (below).
+- **A session's `plan_cache_mode` no longer changes how writes plan** (#281): refreshes run under
+  `auto`. `force_generic_plan` planned every lookup by an array for ten keys (#235's whole-table
+  scans), and `force_custom_plan` planned every kept statement again at each call.
+
+### Changed
+
+- **Lookups by up to 128 keys are planned once per backend** (#281). A read set, a fan-out
+  patch and its checks, parent discovery, a report or a recompute by several keys took them as
+  an array and was planned at every execution, because a generic plan of an array parameter
+  assumes ten keys (#235). The keys now take the next of eight widths (1, 2, 4, … 128
+  parameters, `= ANY (ARRAY[$1, …])`, padded with the last key), each with one generic plan whose
+  estimate is that many keys. A lone write that changes a link plans one or two statements
+  instead of three to five, which removes 40–80 % of what the one-pass capture above added to
+  it on the bench schemas (`test/bench/lone_write/`; a nine-table read set: a start-date move
+  takes 5.8 ms of statements, against 7.3 ms with the capture alone and 5.5 ms in
+  0.1.0-beta.34). Each width is a kept plan: on that schema, a backend that ran every width
+  keeps 4.1 MB of cached plans instead of 2.8 MB. `per_execution_plans` in
+  `pg_tviews_queue_stats()` counts the lookups still planned at execution (over 128 keys).
+- **A statement routes each TVIEW once** (#281): the first delta trigger's pass keeps what the
+  later triggers of the statement need.
+
+### Documentation
+
+- **Embed or compose: a parent's aggregate on its children** (#281). Showing each child its
+  parent's count rewrites every child on each write that changes the count, and locks what they
+  all read; composing it at read time from the parent's TVIEW refreshed 3 rows instead of 69 per
+  soft-delete, and ran about 15 times more transactions per second at 16 clients, on #277's
+  workload.
+
+### Upgrade notes
+
+- `ALTER EXTENSION pg_tviews UPDATE` changes no catalog object (catalog revision 10). The
+  new library is loaded at the next server start (`shared_preload_libraries`).
 
 ## [0.1.0-beta.34] - 2026-10-30
 
