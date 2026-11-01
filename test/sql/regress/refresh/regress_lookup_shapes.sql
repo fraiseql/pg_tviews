@@ -165,7 +165,9 @@ SELECT tviews.pg_tviews_create('tv_mode', $$
     SELECT pk_mode, id, jsonb_build_object('v', v, 'mode', current_setting('plan_cache_mode')) AS data
     FROM tb_mode $$);
 SET plan_cache_mode = force_generic_plan;
+SET pg_tviews.direct_patch_enabled = off;  -- recompute the row from its view
 UPDATE tb_mode SET v = 1;
+RESET pg_tviews.direct_patch_enabled;
 SELECT must(data ->> 'mode' = 'auto', format('a write planned under %s', data ->> 'mode')) FROM tv_mode;
 SELECT must(current_setting('plan_cache_mode') = 'force_generic_plan',
             'the write changed the session''s plan_cache_mode');
