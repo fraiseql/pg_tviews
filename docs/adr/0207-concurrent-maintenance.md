@@ -380,7 +380,19 @@ recorded for it (a `COPY`, which runs no executor) takes its own pass.
 **Costs.** After a link change the capture runs the lookup twice and the read-set
 query once more, per TVIEW: about 1.4 ms per such statement on the benchmark's
 schema (`test/concurrency/run.sh embed`). A write that changes no link takes the
-same locks as before, in one pass instead of one per read-set column.
+same locks as before, in one pass instead of one per read-set column. Lookups by
+up to 128 keys, read sets among them, are planned once per backend (#281), which
+removes most of that extra on a nine-table read set; and a schema can avoid the fan-out
+itself by composing a parent's aggregate at read time
+([embed or compose](../user-guides/embed-or-compose.md#a-parents-aggregate-on-its-children)).
+
+The flush still reads the read set of the rows it computes, after the capture read it:
+checking instead what the compute itself read, against the locks taken before it, was
+considered and rejected (#281). It is sound against stale rows, but a row re-linked by
+a transaction that committed while the capture's pass waited is then found only after
+the refresh holds the row's lock, and a writer holding the new value needs that row:
+a deadlock where today's flush waits. After plans are kept, what it would save is under
+a tenth of such a write.
 
 The partitioned-table paths (a row trigger per changed row, rows entering with a
 partition) take the same pass, one TVIEW at a time.

@@ -130,3 +130,73 @@ WHERE p.pk_post = 1;
 Correlate on the reference column itself (`c.fk_post = p.pk_post`), never on a key inside
 `data` (`(c.data->>'fk_post')::bigint`): no managed index covers that expression, and a
 page of 20 posts then reads the whole child table for each post.
+
+## A parent's aggregate on its children
+
+The rule holds for an aggregate too: its home is the row it aggregates over. A schema
+often shows each child its parent's aggregate instead, for example each item with the count
+of current items in its place:
+
+```sql fragment
+'place', jsonb_build_object('name', p.name, 'current', pc.n)   -- in tv_item's definition
+```
+
+Then every write that changes whether an item counts (a soft-delete, a restore, a start
+date moved past the cut-off, a move to another place) changes `pc.n` for every item of the
+place, so it rewrites all of them. In the `embed` workload (200 items in 4 places and 8
+groups, each item showing both counts), one soft-delete refreshes 69 TVIEW rows. It also
+changes a link, so under concurrency it locks what all 69 rows read
+([Concurrency](../concurrency.md)).
+
+Compose it instead: the place's own TVIEW holds the count, the item holds `fk_place`, and the
+reader joins the two in the statement that reads them:
+
+```sql
+CREATE TABLE tb_place (pk_place bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                       id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+                       name text NOT NULL);
+CREATE TABLE tb_item (pk_item bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                      id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+                      fk_place bigint NOT NULL REFERENCES tb_place,
+                      name text NOT NULL,
+                      deleted_at timestamptz);
+INSERT INTO tb_place (name) VALUES ('north'), ('south');
+INSERT INTO tb_item (fk_place, name) VALUES (1, 'a'), (1, 'b'), (2, 'c');
+
+-- The count lives with the place: one row to rewrite per write.
+CREATE TABLE tv_place AS
+SELECT p.pk_place, p.id,
+       jsonb_build_object('id', p.id, 'name', p.name,
+                          'current', (SELECT count(*) FROM tb_item i
+                                      WHERE i.fk_place = p.pk_place
+                                        AND i.deleted_at IS NULL)) AS data
+FROM tb_place p;
+
+-- The item references its place.
+CREATE TABLE tv_item AS
+SELECT i.pk_item, i.id, i.fk_place,
+       jsonb_build_object('id', i.id, 'name', i.name) AS data
+FROM tb_item i;
+
+UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+
+-- An item with its place, composed in one statement, one snapshot.
+SELECT left(i.data::text, -1) || ', "place": ' || p.data::text || '}' AS item
+FROM tv_item i JOIN tv_place p ON p.pk_place = i.fk_place
+WHERE i.pk_item = 2;
+```
+
+The same `embed` workload, composed (`test/bench/lone_write/`, `embedded.sql` against
+`composed.sql`, one client, then 16 clients of 40 % moves, 20 % soft-deletes and 40 %
+renames):
+
+| | embedded | composed |
+|---|---:|---:|
+| TVIEW rows refreshed by a soft-delete | 69 | 3 |
+| a soft-delete, statements' time | 4.2–6.0 ms | ~1.0 ms |
+| a move, statements' time | 3.6–5.4 ms | 0.6–0.9 ms |
+| 16 clients, transactions per second | 260–320 | 3,900–5,100 |
+
+Embedding the parent's aggregate is still right when it rarely changes and every read of
+the child needs it, or when the parents are many and small, so that a write rewrites few
+children.
