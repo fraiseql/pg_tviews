@@ -4,12 +4,12 @@
 -- A lookup by several keys (a read set, a fan-out patch and its cross-check,
 -- parent discovery, a report) took the keys as an array and was planned at
 -- every execution: a generic plan of an array parameter assumes ten keys (#235).
--- Up to 256 keys now take the next width of 1, 2, 4, … or 256
+-- Up to 128 keys now take the next width of 1, 2, 4, … or 128
 -- parameters, padded by repeating the last key, from a generic plan that
 -- estimates that many keys. More keys are still an array, planned at each
 -- execution.
 --
--- Checked: no lookup is planned at execution up to 256 keys
+-- Checked: no lookup is planned at execution up to 128 keys
 -- (`per_execution_plans`), every TVIEW holds what its view computes for every
 -- key count (padding writes nothing twice and misses nothing), and the plans
 -- kept stay bounded.
@@ -92,12 +92,12 @@ END $$;
 -- Warm every statement once.
 SELECT writes(1, 0), writes(3, 0);
 
--- 1. Up to 256 keys, nothing is planned at execution (n categories reach 2n
+-- 1. Up to 128 keys, nothing is planned at execution (n categories reach 2n
 --    items).
 DO $$
 DECLARE n int; before bigint;
 BEGIN
-    FOREACH n IN ARRAY ARRAY[1, 2, 3, 4, 5, 8, 9, 31, 33, 64, 65, 127, 128] LOOP
+    FOREACH n IN ARRAY ARRAY[1, 2, 3, 4, 5, 8, 9, 31, 33, 63, 64] LOOP
         before := stat('per_execution_plans');
         PERFORM writes(n, 1);
         PERFORM must(stat('per_execution_plans') = before,
@@ -107,11 +107,11 @@ BEGIN
     END LOOP;
 END $$;
 
--- 2. More keys (258 items and up) are an array planned at each execution, and still right.
+-- 2. More keys (130 items and up) are an array planned at each execution, and still right.
 DO $$
 DECLARE n int; before bigint;
 BEGIN
-    FOREACH n IN ARRAY ARRAY[129, 200] LOOP
+    FOREACH n IN ARRAY ARRAY[65, 129, 200] LOOP
         before := stat('per_execution_plans');
         PERFORM writes(n, 2);
         PERFORM must(stat('per_execution_plans') > before,
@@ -139,7 +139,7 @@ SELECT stat('plans_prepared') AS warm \gset
 DO $$
 DECLARE n int;
 BEGIN
-    FOREACH n IN ARRAY ARRAY[1, 2, 3, 5, 9, 17, 33, 65, 129, 200] LOOP
+    FOREACH n IN ARRAY ARRAY[1, 2, 3, 5, 9, 17, 33, 65, 200] LOOP
         PERFORM writes(n, 3);
     END LOOP;
 END $$;
@@ -147,13 +147,33 @@ SELECT stat('plans_prepared') AS after_all \gset
 DO $$
 DECLARE n int;
 BEGIN
-    FOREACH n IN ARRAY ARRAY[1, 2, 3, 5, 9, 17, 33, 65, 129, 200] LOOP
+    FOREACH n IN ARRAY ARRAY[1, 2, 3, 5, 9, 17, 33, 65, 200] LOOP
         PERFORM writes(n, 4);
     END LOOP;
 END $$;
 SELECT must(stat('plans_prepared') = :after_all,
             format('a second round prepared %s statements', stat('plans_prepared') - :after_all));
 SELECT all_fresh('every key count');
+
+-- 5. A session's plan_cache_mode doesn't decide how a write plans: a refresh
+--    runs under `auto`, so each statement is planned as it was kept (a
+--    session's force_generic_plan would plan an array parameter for ten keys,
+--    #235). Seen from the backing view, which renders the setting.
+CREATE TABLE tb_mode (pk_mode int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), v int);
+INSERT INTO tb_mode VALUES (1, default, 0);
+SELECT tviews.pg_tviews_create('tv_mode', $$
+    SELECT pk_mode, id, jsonb_build_object('v', v, 'mode', current_setting('plan_cache_mode')) AS data
+    FROM tb_mode $$);
+SET plan_cache_mode = force_generic_plan;
+UPDATE tb_mode SET v = 1;
+SELECT must(data ->> 'mode' = 'auto', format('a write planned under %s', data ->> 'mode')) FROM tv_mode;
+SELECT must(current_setting('plan_cache_mode') = 'force_generic_plan',
+            'the write changed the session''s plan_cache_mode');
+SELECT writes(9, 5), writes(65, 5);
+SET plan_cache_mode = force_custom_plan;
+SELECT writes(9, 6), writes(65, 6);
+RESET plan_cache_mode;
+SELECT all_fresh('writes under forced plan cache modes');
 
 SELECT 'lookup shapes: PASS' AS result;
 -- expect-output: lookup shapes: PASS

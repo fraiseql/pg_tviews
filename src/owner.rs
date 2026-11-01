@@ -137,7 +137,13 @@ pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
     (c"bytea_output", c"hex"),
 ];
 
-/// While alive, the [`RENDER_SETTINGS`] are in force; dropping it restores the
+/// How the statements of a refresh are planned: as each says when it is kept
+/// (`crate::utils::spi::Plan`). A session's `force_generic_plan` would plan a
+/// lookup by an array parameter for ten keys (#235), and `force_custom_plan`
+/// would plan every lookup again at each call.
+pub const PLAN_SETTINGS: [(&CStr, &CStr); 1] = [(c"plan_cache_mode", c"auto")];
+
+/// While alive, the [`RENDER_SETTINGS`] (and [`PLAN_SETTINGS`]) are in force; dropping it restores the
 /// session's values (an error's (sub)transaction abort restores them instead).
 /// For the work that computes TVIEW rows as the caller rather than as the
 /// owner ([`AsOwner`] pins them too).
@@ -298,7 +304,7 @@ unsafe fn set_local(name: &CStr, value: &CStr) {
 
 /// SAFETY: a GUC nest level must be open.
 unsafe fn pin_settings() {
-    for (name, value) in RENDER_SETTINGS {
+    for (name, value) in RENDER_SETTINGS.into_iter().chain(PLAN_SETTINGS) {
         // SAFETY: the caller opened the nest level.
         unsafe { set_local(name, value) };
     }

@@ -63,7 +63,6 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let qi_key = crate::utils::ident::quoted(key_col);
     let qi_pk = crate::utils::ident::quoted(&format!("pk_{entity}"));
     let any_key = format!("ANY({})", super::key_cast(key_type, "$1", true));
-    let source_sql = format!("SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {any_key}");
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",
         super::upsert_conflict_action(&qi_tv, col_names, key_col)
@@ -93,13 +92,23 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     for chunk in keys.chunks(crate::config::batch_size()) {
         // Wait for concurrent writers of these rows before reading the view.
         let locked = super::lock_rows(&meta, &qi_tv, chunk)?;
+        // The keys take their shape (`key_lookup`): the upsert is planned by
+        // PostgreSQL's own rule, which settles on its generic plan, and a
+        // generic plan of an array parameter reads the view for ten keys.
+        let Some(lookup) = super::key_lookup(key_type, chunk)? else {
+            continue;
+        };
+        let source_sql = format!(
+            "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
+            lookup.rhs
+        );
         let produced = super::run_counted_upsert(
             &meta,
             &qi_tv,
             &col_list,
             &source_sql,
             &conflict,
-            &[super::key_array(key_type, chunk)?],
+            &lookup.args,
             locked.old.as_ref(),
         )?;
         // A key produces at most one row (the upsert refuses duplicates): as many
