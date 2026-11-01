@@ -8,9 +8,10 @@
 #   With a package root (from `cargo pgrx package --out-dir`), that build is
 #   installed first (swap.sh). Without one, the installed build is measured.
 #
-# Environment: SCHEMA (setup | wide, default setup), KINDS (default: every kind of
-# the schema), WRITES (50), OUT (output directory, default ./out), PG_BIN (the
-# server's bin directory), PGHOST/PGPORT/PGUSER.
+# Environment: SCHEMA (setup | wide | partitioned | embedded | composed, default
+# setup), KINDS (default: every kind of the schema), WRITES (50), OUT (output
+# directory, default ./out), PG_BIN (the server's bin directory),
+# PGHOST/PGPORT/PGUSER.
 #
 # Needs pg_stat_statements loaded with track = all and track_planning = on (README).
 #
@@ -41,7 +42,9 @@ declare -A W=(
 case "$SCHEMA" in
   setup) default_kinds="group_rename soft_delete move item_rename owner_rename" ;;
   wide) default_kinds="soft_delete move item_rename group_rename agreement_rename asset_edit" ;;
-  *) echo "SCHEMA is setup or wide" >&2; exit 2 ;;
+  partitioned) default_kinds="soft_delete move item_rename group_rename" ;;
+  composed | embedded) default_kinds="soft_delete move item_rename group_rename" ;;
+  *) echo "SCHEMA is setup, wide, partitioned, embedded or composed" >&2; exit 2 ;;
 esac
 
 psql() { "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 "$@"; }

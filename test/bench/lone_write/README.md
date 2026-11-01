@@ -9,6 +9,9 @@ complements `test/concurrency/run.sh` (throughput and deadlocks under concurrenc
   start-date move changes a link and rewrites a place's and a group's items. It adds
   `tv_group`, `tv_card`, and `tv_owner`, which `tv_lot`, `tv_tag` and `tv_ledger` embed.
 - `wide.sql`: one `tv_item` whose read set joins nine tables, at 2,000 items.
+- `partitioned.sql`: the embed workload with `tb_item` in 200 hash partitions, 2,000 items.
+- `embedded.sql`: the embed workload alone. `composed.sql`: its data with the counts held
+  by `tv_place` and `tv_group` and composed at read time, not embedded in every item.
 - `pss.sh <label> [package root]`: per write kind, the SPI statements pg_tviews runs, how
   many were planned, and their times, from `pg_stat_statements`. One summary line per kind
   goes to `out/summary.txt` and one statement table to `out/<label>-<schema>-<kind>.txt`.
