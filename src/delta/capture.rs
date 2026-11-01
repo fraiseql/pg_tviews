@@ -12,8 +12,9 @@ use crate::queue::key::KeyValue;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::CStr;
+use std::rc::Rc;
 
 /// One statement's delta triggers on one table for one event: its executor
 /// frame, the table, the triggers' type and the transition tables they share.
@@ -26,12 +27,23 @@ pub(super) struct Statement {
     new: usize,
 }
 
+/// A TVIEW whose trigger is still to fire, as a statement's pass read it: its
+/// catalog row and how the statement's rows reach it.
+pub(super) type Routed = (Rc<TviewMeta>, super::mapping::Route);
+
+/// The TVIEWs a statement's pass covered, by entity, and the cache generation
+/// they were read under ([`crate::cache::generation`]).
+struct Record {
+    statement: Statement,
+    generation: u64,
+    covered: HashMap<String, Routed>,
+}
+
 thread_local! {
     /// The passes taken by a statement's first delta trigger, with the TVIEWs
     /// whose triggers are still to fire. A trigger takes its entity out; a
     /// statement's record goes once its last trigger fired.
-    static RECORDED: RefCell<Vec<(Statement, HashSet<String>)>> =
-        const { RefCell::new(Vec::new()) };
+    static RECORDED: RefCell<Vec<Record>> = const { RefCell::new(Vec::new()) };
 }
 
 impl Statement {
@@ -50,30 +62,37 @@ impl Statement {
         })
     }
 
-    /// Whether a pass of this statement took `entity`'s locks, taking it out
-    /// of the record.
-    pub(super) fn recorded(self, entity: &str) -> bool {
+    /// `entity`'s route, when a pass of this statement took its locks, taking
+    /// it out of the record. `None` when no pass covered it, or the caches
+    /// changed since: the trigger then routes, and locks, on its own.
+    pub(super) fn recorded(self, entity: &str) -> Option<Routed> {
         RECORDED.with_borrow_mut(|recorded| {
-            let Some(i) = recorded.iter().position(|(s, _)| *s == self) else {
-                return false;
-            };
-            let found = recorded[i].1.remove(entity);
-            if recorded[i].1.is_empty() {
+            let i = recorded.iter().position(|r| r.statement == self)?;
+            let routed = recorded[i].covered.remove(entity);
+            let current = recorded[i].generation == crate::cache::generation();
+            if recorded[i].covered.is_empty() {
                 recorded.swap_remove(i);
             }
-            found
+            routed.filter(|_| current)
         })
     }
 
     /// Whether a pass of this statement is recorded.
     pub(super) fn has_record(self) -> bool {
-        RECORDED.with_borrow(|recorded| recorded.iter().any(|(s, _)| *s == self))
+        RECORDED.with_borrow(|recorded| recorded.iter().any(|r| r.statement == self))
     }
 
-    /// Record the pass of this statement: it took the locks of `entities`.
-    pub(super) fn record(self, entities: HashSet<String>) {
-        if !entities.is_empty() {
-            RECORDED.with_borrow_mut(|recorded| recorded.push((self, entities)));
+    /// Record the pass of this statement: it took the locks of the TVIEWs
+    /// `covered`, routed as they say.
+    pub(super) fn record(self, covered: HashMap<String, Routed>) {
+        if !covered.is_empty() {
+            RECORDED.with_borrow_mut(|recorded| {
+                recorded.push(Record {
+                    statement: self,
+                    generation: crate::cache::generation(),
+                    covered,
+                });
+            });
         }
     }
 }
