@@ -1,0 +1,3 @@
+tb_note | trg_tview_flush_note_on_public_tb_note | pg_tview_flush_trigger | 28 | O
+tb_note | trg_tview_row_note_on_public_tb_note | pg_tview_trigger_handler | 29 | O
+tb_note | trg_tview_truncate_note_on_public_tb_note | pg_tview_truncate_trigger | 32 | O

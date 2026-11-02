@@ -1,0 +1,8 @@
+tb_badge | trg_tview_delta_d_nbadge_on_public_tb_badge | pg_tview_delta_trigger | 8 | O
+tb_badge | trg_tview_delta_i_nbadge_on_public_tb_badge | pg_tview_delta_trigger | 4 | O
+tb_badge | trg_tview_delta_u_nbadge_on_public_tb_badge | pg_tview_delta_trigger | 16 | O
+tb_badge | trg_tview_flush_nbadge_on_public_tb_badge | pg_tview_flush_trigger | 28 | O
+tb_badge | trg_tview_truncate_nbadge_on_public_tb_badge | pg_tview_truncate_trigger | 32 | O
+tb_node | trg_tview_flush_nbadge_on_public_tb_node | pg_tview_flush_trigger | 28 | O
+tb_node | trg_tview_row_nbadge_on_public_tb_node | pg_tview_trigger_handler | 29 | O
+tb_node | trg_tview_truncate_nbadge_on_public_tb_node | pg_tview_truncate_trigger | 32 | O

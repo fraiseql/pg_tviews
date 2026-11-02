@@ -1,0 +1,75 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "task",
+      "initial_attnum": "public.tb_task.pk_task",
+      "initial_col": "pk_task",
+      "root": true,
+      "source_columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "source_oid": "public.tb_task",
+      "source_table": "tb_task"
+    },
+    {
+      "entity_name": "task",
+      "initial_attnum": "public.tb_task_archive.pk_task",
+      "initial_col": "pk_task",
+      "root": true,
+      "source_columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "source_oid": "public.tb_task_archive",
+      "source_table": "tb_task_archive"
+    }
+  ],
+  "references": [],
+  "set_operation": true,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_task.pk_task",
+        "public.tb_task.id",
+        "public.tb_task.title"
+      ],
+      "column": "pk_task",
+      "columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_task.pk_task"
+      ],
+      "relid": "public.tb_task",
+      "table": "public.tb_task"
+    },
+    {
+      "attnums": [
+        "public.tb_task_archive.pk_task",
+        "public.tb_task_archive.id",
+        "public.tb_task_archive.title"
+      ],
+      "column": "pk_task",
+      "columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_task_archive.pk_task"
+      ],
+      "relid": "public.tb_task_archive",
+      "table": "public.tb_task_archive"
+    }
+  ],
+  "version": 3
+}

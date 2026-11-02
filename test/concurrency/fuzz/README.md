@@ -28,3 +28,8 @@ then write the race as an isolation spec (`test/isolation/specs/`). A statement 
 named `trg_tview_e_*` fires between pg_tviews' delta triggers and its flush, and can
 wait on an advisory lock another session holds, to interleave two statements at that
 point (see `crossed-value-writes.spec`).
+
+`MODES` (`test/lib/modes.sh`) runs every seed once per refresh mode: e.g.
+`MODES="patch:off,cache:on"` recomputes every row from its view instead of patching
+it, `cache:off` reads the catalog at every flush. `MODES="$MODES_ALL"` (after sourcing
+`test/lib/modes.sh`) runs the three modes; CI's pg18 job and the nightly run do.

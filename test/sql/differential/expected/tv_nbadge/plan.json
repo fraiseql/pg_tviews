@@ -1,0 +1,66 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "nbadge",
+      "initial_attnum": "public.tb_node.pk_node",
+      "initial_col": "pk_node",
+      "root": true,
+      "source_columns": [
+        "pk_node",
+        "id",
+        "name"
+      ],
+      "source_oid": "public.tb_node",
+      "source_table": "tb_node"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_node.pk_node",
+        "public.tb_node.id",
+        "public.tb_node.name"
+      ],
+      "column": "pk_node",
+      "columns": [
+        "pk_node",
+        "id",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_node.pk_node",
+        "public.tb_node.name"
+      ],
+      "relid": "public.tb_node",
+      "table": "public.tb_node"
+    },
+    {
+      "attnums": [
+        "public.tb_badge.pk_badge",
+        "public.tb_badge.code"
+      ],
+      "columns": [
+        "pk_badge",
+        "code"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_badge.code"
+      ],
+      "reads": [
+        {
+          "attnum": "<whole row>"
+        }
+      ],
+      "relid": "public.tb_badge",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_node.pk_node} FROM pg_tviews_delta d, {r:public.tb_node} o1 WHERE (d.{c:public.tb_badge.code} OPERATOR(pg_catalog.=) (pg_catalog.upper(o1.{c:public.tb_node.name})))",
+      "table": "public.tb_badge"
+    }
+  ],
+  "version": 3
+}

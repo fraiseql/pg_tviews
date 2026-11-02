@@ -1,0 +1,8 @@
+tb_customer | trg_tview_delta_d_ordcount_on_public_tb_customer | pg_tview_delta_trigger | 8 | O
+tb_customer | trg_tview_delta_i_ordcount_on_public_tb_customer | pg_tview_delta_trigger | 4 | O
+tb_customer | trg_tview_delta_u_ordcount_on_public_tb_customer | pg_tview_delta_trigger | 16 | O
+tb_customer | trg_tview_flush_ordcount_on_public_tb_customer | pg_tview_flush_trigger | 28 | O
+tb_customer | trg_tview_truncate_ordcount_on_public_tb_customer | pg_tview_truncate_trigger | 32 | O
+tb_order | trg_tview_flush_ordcount_on_public_tb_order | pg_tview_flush_trigger | 28 | O
+tb_order | trg_tview_row_ordcount_on_public_tb_order | pg_tview_trigger_handler | 29 | O
+tb_order | trg_tview_truncate_ordcount_on_public_tb_order | pg_tview_truncate_trigger | 32 | O

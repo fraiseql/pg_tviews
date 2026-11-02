@@ -1,0 +1,76 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "lastline",
+      "initial_attnum": "public.tb_line.fk_order",
+      "initial_col": "fk_order",
+      "root": true,
+      "source_columns": [
+        "pk_line",
+        "fk_order",
+        "sku"
+      ],
+      "source_oid": "public.tb_line",
+      "source_table": "tb_line"
+    },
+    {
+      "entity_name": "lastline",
+      "initial_attnum": "public.tb_order.pk_order",
+      "initial_col": "pk_order",
+      "root": false,
+      "source_columns": [
+        "pk_order",
+        "id",
+        "ref"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_line.pk_line",
+        "public.tb_line.fk_order",
+        "public.tb_line.sku"
+      ],
+      "column": "fk_order",
+      "columns": [
+        "pk_line",
+        "fk_order",
+        "sku"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_line.pk_line",
+        "public.tb_line.fk_order"
+      ],
+      "relid": "public.tb_line",
+      "table": "public.tb_line"
+    },
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.id",
+        "public.tb_order.ref"
+      ],
+      "column": "pk_order",
+      "columns": [
+        "pk_order",
+        "id",
+        "ref"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.pk_order"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    }
+  ],
+  "version": 3
+}

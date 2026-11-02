@@ -1,0 +1,51 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "contract",
+      "initial_attnum": "public.tb_contract.id_contract",
+      "initial_col": "id_contract",
+      "root": true,
+      "source_columns": [
+        "pk_contract",
+        "id",
+        "id_contract",
+        "version_no",
+        "status"
+      ],
+      "source_oid": "public.tb_contract",
+      "source_table": "tb_contract"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_contract.pk_contract",
+        "public.tb_contract.id",
+        "public.tb_contract.id_contract",
+        "public.tb_contract.version_no",
+        "public.tb_contract.status"
+      ],
+      "column": "id_contract",
+      "columns": [
+        "pk_contract",
+        "id",
+        "id_contract",
+        "version_no",
+        "status"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_contract.pk_contract",
+        "public.tb_contract.id_contract",
+        "public.tb_contract.version_no"
+      ],
+      "relid": "public.tb_contract",
+      "table": "public.tb_contract"
+    }
+  ],
+  "version": 3
+}

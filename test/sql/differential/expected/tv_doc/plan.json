@@ -1,0 +1,48 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "doc",
+      "initial_attnum": "public.tb_doc.id",
+      "initial_col": "id",
+      "root": true,
+      "source_columns": [
+        "pk_doc",
+        "id",
+        "rev",
+        "body"
+      ],
+      "source_oid": "public.tb_doc",
+      "source_table": "tb_doc"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_doc.pk_doc",
+        "public.tb_doc.id",
+        "public.tb_doc.rev",
+        "public.tb_doc.body"
+      ],
+      "column": "id",
+      "columns": [
+        "pk_doc",
+        "id",
+        "rev",
+        "body"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_doc.pk_doc",
+        "public.tb_doc.id",
+        "public.tb_doc.rev"
+      ],
+      "relid": "public.tb_doc",
+      "table": "public.tb_doc"
+    }
+  ],
+  "version": 3
+}

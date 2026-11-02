@@ -1,0 +1,127 @@
+{
+  "direct": [
+    [
+      "sku",
+      "sku"
+    ],
+    [
+      "qty",
+      "qty"
+    ]
+  ],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "line",
+      "initial_attnum": "public.tb_line.pk_line",
+      "initial_col": "pk_line",
+      "root": true,
+      "source_columns": [
+        "pk_line",
+        "id",
+        "fk_order",
+        "sku",
+        "qty"
+      ],
+      "source_oid": "public.tb_line",
+      "source_table": "tb_line"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_line.pk_line",
+        "public.tb_line.id",
+        "public.tb_line.fk_order",
+        "public.tb_line.sku",
+        "public.tb_line.qty"
+      ],
+      "column": "pk_line",
+      "columns": [
+        "pk_line",
+        "id",
+        "fk_order",
+        "sku",
+        "qty"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_line.pk_line",
+        "public.tb_line.fk_order"
+      ],
+      "relid": "public.tb_line",
+      "table": "public.tb_line"
+    },
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.fk_customer"
+      ],
+      "columns": [
+        "pk_order",
+        "fk_customer"
+      ],
+      "hop": [
+        "pk_order",
+        "fk_order"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_order.pk_order",
+        "public.tb_order.fk_customer"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_order.pk_order",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_line.fk_order} FROM {r:public.tb_line} o1 WHERE o1.{c:public.tb_line.pk_line} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_order",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_line.pk_line} FROM pg_tviews_delta d, {r:public.tb_line} o1 WHERE (d.{c:public.tb_order.pk_order} OPERATOR(pg_catalog.=) o1.{c:public.tb_line.fk_order})",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.name"
+      ],
+      "columns": [
+        "pk_customer",
+        "name"
+      ],
+      "fanout": {
+        "fields": [
+          [
+            "name",
+            [
+              "customer"
+            ]
+          ]
+        ],
+        "lookup_col": "fk_order",
+        "via": "SELECT o.{c:public.tb_order.fk_customer}::pg_catalog.text, o.{c:public.tb_order.pk_order}::pg_catalog.text FROM {r:public.tb_order} o WHERE o.{c:public.tb_order.fk_customer} = ANY ($1::pg_catalog.int8[])"
+      },
+      "hop": [
+        "pk_customer",
+        "fk_order"
+      ],
+      "key_col": "pk_customer",
+      "kind": "mapped",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_customer.pk_customer",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_order.fk_customer} FROM {r:public.tb_line} o2, {r:public.tb_order} o1 WHERE o2.{c:public.tb_line.pk_line} OPERATOR(pg_catalog.=) ANY ($1) AND (o1.{c:public.tb_order.pk_order} OPERATOR(pg_catalog.=) o2.{c:public.tb_line.fk_order})"
+        }
+      ],
+      "relid": "public.tb_customer",
+      "sql": "SELECT DISTINCT o2.{c:public.tb_line.pk_line} FROM pg_tviews_delta d, {r:public.tb_order} o1, {r:public.tb_line} o2 WHERE (d.{c:public.tb_customer.pk_customer} OPERATOR(pg_catalog.=) o1.{c:public.tb_order.fk_customer}) AND (o1.{c:public.tb_order.pk_order} OPERATOR(pg_catalog.=) o2.{c:public.tb_line.fk_order})",
+      "table": "public.tb_customer"
+    }
+  ],
+  "version": 3
+}

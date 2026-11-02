@@ -1,0 +1,107 @@
+{
+  "direct": [],
+  "embeds": [
+    {
+      "entity": "customer",
+      "kind": "nested_object",
+      "lookups": [
+        "fk_customer"
+      ],
+      "path": [
+        "customer"
+      ]
+    }
+  ],
+  "paths": [
+    {
+      "entity_name": "order",
+      "initial_attnum": "public.tb_order.id",
+      "initial_col": "id",
+      "root": true,
+      "source_columns": [
+        "pk_order",
+        "id",
+        "fk_customer",
+        "ref",
+        "status"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.id",
+        "public.tb_order.fk_customer",
+        "public.tb_order.ref",
+        "public.tb_order.status"
+      ],
+      "column": "id",
+      "columns": [
+        "pk_order",
+        "id",
+        "fk_customer",
+        "ref",
+        "status"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.pk_order",
+        "public.tb_order.id",
+        "public.tb_order.fk_customer"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tb_line.fk_order",
+        "public.tb_line.qty"
+      ],
+      "columns": [
+        "fk_order",
+        "qty"
+      ],
+      "hop": [
+        "fk_order",
+        "pk_order"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_line.fk_order"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_line.fk_order",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_order.pk_order} FROM {r:public.tb_order} o1 WHERE o1.{c:public.tb_order.id} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_line",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_order.id} FROM pg_tviews_delta d, {r:public.tb_order} o1 WHERE (d.{c:public.tb_line.fk_order} OPERATOR(pg_catalog.=) o1.{c:public.tb_order.pk_order})",
+      "table": "public.tb_line"
+    },
+    {
+      "attnums": [
+        "public.tv_customer.pk_customer",
+        "public.tv_customer.data"
+      ],
+      "columns": [
+        "pk_customer",
+        "data"
+      ],
+      "entity": "customer",
+      "kind": "propagated",
+      "links": [
+        "public.tv_customer.pk_customer"
+      ],
+      "relid": "public.tv_customer",
+      "table": "public.tv_customer",
+      "tview": "customer"
+    }
+  ],
+  "version": 3
+}

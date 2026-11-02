@@ -1,0 +1,48 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "customer",
+      "initial_attnum": "public.tb_customer.pk_customer",
+      "initial_col": "pk_customer",
+      "root": true,
+      "source_columns": [
+        "pk_customer",
+        "id",
+        "name"
+      ],
+      "source_oid": "public.tb_customer",
+      "source_table": "tb_customer"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.id",
+        "public.tb_customer.name"
+      ],
+      "column": "pk_customer",
+      "columns": [
+        "pk_customer",
+        "id",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "relid": "public.tb_customer",
+      "table": "public.tb_customer"
+    }
+  ],
+  "version": 3
+}

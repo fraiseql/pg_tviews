@@ -1,0 +1,79 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [
+    {
+      "entity": "contract",
+      "kind": "scalar",
+      "lookups": [
+        "fk_contract"
+      ],
+      "path": []
+    }
+  ],
+  "paths": [
+    {
+      "entity_name": "deal",
+      "initial_attnum": "public.tb_deal.pk_deal",
+      "initial_col": "pk_deal",
+      "root": true,
+      "source_columns": [
+        "pk_deal",
+        "id",
+        "fk_contract",
+        "name"
+      ],
+      "source_oid": "public.tb_deal",
+      "source_table": "tb_deal"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_deal.pk_deal",
+        "public.tb_deal.id",
+        "public.tb_deal.fk_contract",
+        "public.tb_deal.name"
+      ],
+      "column": "pk_deal",
+      "columns": [
+        "pk_deal",
+        "id",
+        "fk_contract",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_deal.pk_deal",
+        "public.tb_deal.fk_contract"
+      ],
+      "relid": "public.tb_deal",
+      "table": "public.tb_deal"
+    },
+    {
+      "attnums": [
+        "public.tv_contract.pk_contract",
+        "public.tv_contract.data"
+      ],
+      "columns": [
+        "pk_contract",
+        "data"
+      ],
+      "entity": "contract",
+      "kind": "propagated",
+      "links": [
+        "public.tv_contract.pk_contract"
+      ],
+      "relid": "public.tv_contract",
+      "table": "public.tv_contract",
+      "tview": "contract"
+    }
+  ],
+  "version": 3
+}

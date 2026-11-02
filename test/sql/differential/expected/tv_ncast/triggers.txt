@@ -1,0 +1,5 @@
+tb_node | trg_tview_delta_d_ncast_on_public_tb_node | pg_tview_delta_trigger | 8 | O
+tb_node | trg_tview_delta_i_ncast_on_public_tb_node | pg_tview_delta_trigger | 4 | O
+tb_node | trg_tview_delta_u_ncast_on_public_tb_node | pg_tview_delta_trigger | 16 | O
+tb_node | trg_tview_flush_ncast_on_public_tb_node | pg_tview_flush_trigger | 28 | O
+tb_node | trg_tview_truncate_ncast_on_public_tb_node | pg_tview_truncate_trigger | 32 | O

@@ -1,0 +1,3 @@
+tb_deal | trg_tview_flush_deal_on_public_tb_deal | pg_tview_flush_trigger | 28 | O
+tb_deal | trg_tview_row_deal_on_public_tb_deal | pg_tview_trigger_handler | 29 | O
+tb_deal | trg_tview_truncate_deal_on_public_tb_deal | pg_tview_truncate_trigger | 32 | O

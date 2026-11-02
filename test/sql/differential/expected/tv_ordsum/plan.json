@@ -1,0 +1,64 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "ordsum",
+      "initial_attnum": "public.tb_order.pk_order",
+      "initial_col": "pk_order",
+      "root": true,
+      "source_columns": [
+        "pk_order",
+        "id"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.id"
+      ],
+      "column": "pk_order",
+      "columns": [
+        "pk_order",
+        "id"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.pk_order"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tv_line.data",
+        "public.tv_line.fk_order"
+      ],
+      "columns": [
+        "data",
+        "fk_order"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tv_line.fk_order"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tv_line.fk_order",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_order.pk_order} FROM {r:public.tb_order} o1 WHERE o1.{c:public.tb_order.pk_order} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tv_line",
+      "sql": "SELECT DISTINCT d.{c:public.tv_line.fk_order} FROM pg_tviews_delta d",
+      "table": "public.tv_line",
+      "tview": "line"
+    }
+  ],
+  "version": 3
+}

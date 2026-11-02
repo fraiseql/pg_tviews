@@ -1,0 +1,2 @@
+pg_tview_meta | pg_tview_meta_changed | pg_tviews_meta_changed | 60 | O
+pg_tview_meta | pg_tview_meta_rebind | pg_tviews_meta_rebind | 7 | O

@@ -1,0 +1,67 @@
+{
+  "direct": [],
+  "embeds": [],
+  "paths": [
+    {
+      "entity_name": "custstat",
+      "initial_col": "pk_customer",
+      "root": false,
+      "source_columns": [
+        "pk_customer",
+        "id",
+        "name"
+      ],
+      "source_oid": "public.tb_customer",
+      "source_table": "tb_customer"
+    },
+    {
+      "entity_name": "custstat",
+      "initial_col": "fk_customer",
+      "root": false,
+      "source_columns": [
+        "fk_customer"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_order.fk_customer"
+      ],
+      "column": "fk_customer",
+      "columns": [
+        "fk_customer"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.fk_customer"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.id",
+        "public.tb_customer.name"
+      ],
+      "column": "pk_customer",
+      "columns": [
+        "pk_customer",
+        "id",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "relid": "public.tb_customer",
+      "table": "public.tb_customer"
+    }
+  ],
+  "version": 3
+}

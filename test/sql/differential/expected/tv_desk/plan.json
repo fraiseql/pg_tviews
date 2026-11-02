@@ -1,0 +1,103 @@
+{
+  "direct": [
+    [
+      "label",
+      "label"
+    ]
+  ],
+  "embeds": [
+    {
+      "entity": "deal",
+      "kind": "nested_object",
+      "lookups": [
+        "fk_deal"
+      ],
+      "path": [
+        "deal"
+      ]
+    }
+  ],
+  "paths": [
+    {
+      "entity_name": "desk",
+      "initial_attnum": "public.tb_desk.pk_desk",
+      "initial_col": "pk_desk",
+      "root": true,
+      "source_columns": [
+        "pk_desk",
+        "id",
+        "fk_deal",
+        "label"
+      ],
+      "source_oid": "public.tb_desk",
+      "source_table": "tb_desk"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_desk.pk_desk",
+        "public.tb_desk.id",
+        "public.tb_desk.fk_deal",
+        "public.tb_desk.label"
+      ],
+      "column": "pk_desk",
+      "columns": [
+        "pk_desk",
+        "id",
+        "fk_deal",
+        "label"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_desk.pk_desk",
+        "public.tb_desk.fk_deal"
+      ],
+      "relid": "public.tb_desk",
+      "table": "public.tb_desk"
+    },
+    {
+      "attnums": [
+        "public.tb_deal.pk_deal",
+        "public.tb_deal.id",
+        "public.tb_deal.fk_contract",
+        "public.tb_deal.name"
+      ],
+      "columns": [
+        "pk_deal",
+        "id",
+        "fk_contract",
+        "name"
+      ],
+      "entity": "deal",
+      "kind": "propagated",
+      "links": [
+        "public.tb_deal.pk_deal",
+        "public.tb_deal.fk_contract"
+      ],
+      "relid": "public.tb_deal",
+      "table": "public.tb_deal"
+    },
+    {
+      "attnums": [
+        "public.tv_contract.pk_contract",
+        "public.tv_contract.data"
+      ],
+      "columns": [
+        "pk_contract",
+        "data"
+      ],
+      "entity": "deal",
+      "kind": "propagated",
+      "links": [
+        "public.tv_contract.pk_contract"
+      ],
+      "relid": "public.tv_contract",
+      "table": "public.tv_contract",
+      "tview": "contract"
+    }
+  ],
+  "version": 3
+}
