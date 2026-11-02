@@ -6,9 +6,15 @@ on:
   # Every pull request, stacked ones included (their base is not main).
   pull_request:
 
-# Line and function coverage of the pure-Rust unit tests, built for PostgreSQL 18
-# (the release target). The SQL suites (ci.yml) exercise the installed extension
-# and are not counted here.
+# Line and function coverage, built for PostgreSQL 18 (the release target): of the
+# pure-Rust unit tests (`coverage`), and of the regression and isolation suites run
+# against an instrumented build, merged with the unit tests (`sql-coverage`, held at
+# a floor: the measured value less a point).
+env:
+  JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
+  JSONB_DELTA_REF: "v0.3.0"
+  SQL_COVERAGE_FLOOR: "91"
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
@@ -57,3 +63,57 @@ jobs:
             lcov.info
             coverage-summary.txt
           retention-days: 30
+
+  sql-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain and llvm-tools
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add llvm-tools-preview
+
+      - name: Install PostgreSQL 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 mold
+
+      - name: Install pgrx and cargo-llvm-cov
+        run: |
+          cargo install --locked cargo-pgrx --version 0.17.0
+          cargo install --locked cargo-llvm-cov
+          cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+
+      - name: Fetch jsonb_delta
+        run: git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+
+      # A throwaway cluster of its own: the regression and isolation suites against
+      # an instrumented build, then the unit tests, one report.
+      - name: Measure SQL-suite coverage
+        run: |
+          set -o pipefail
+          PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config JSONB_DELTA_DIR=/tmp/jsonb_delta \
+            UNIT_LINK_FLAGS="-C link-arg=-fuse-ld=mold" FAIL_UNDER_LINES="${SQL_COVERAGE_FLOOR}" \
+            ./scripts/sql-coverage.sh 28950 target/sql-coverage
+          {
+            echo "## Unit + SQL-suite coverage (PostgreSQL 18; floor ${SQL_COVERAGE_FLOOR} % of lines)"
+            echo
+            echo '```'
+            grep -E '^(Filename|TOTAL)' target/sql-coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SQL-suite coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sql-coverage
+          path: |
+            target/sql-coverage/lcov.info
+            target/sql-coverage/summary.txt
+            target/sql-coverage/work/*.log
+          retention-days: 30
+
