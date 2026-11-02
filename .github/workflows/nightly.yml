@@ -80,6 +80,13 @@ jobs:
       - name: Isolation suite
         run: ./test/isolation/run.sh
 
+      # TVIEWs over tables a logical replication subscription writes are refused,
+      # and reported when subscribed later (the apply worker fires no statement
+      # trigger).
+      - name: Logical replication subscriber
+        if: ${{ !cancelled() }}
+        run: PGBIN="$(dirname "$PG_CONFIG")" ./test/replication/logical_subscriber.sh
+
       # 30 minutes of mixed transactions (four seeds in every mode), then 10 of
       # value-only writes. KEEP=1 keeps a failed seed's database for the dump below.
       - name: Concurrent fuzzer (30 min mixed, 10 min values)

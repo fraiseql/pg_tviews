@@ -217,8 +217,10 @@ pub struct TriggerProblems {
     /// `pg_tviews` triggers without an entity argument (installed by an older
     /// release): `pg_tviews_reregister_all()` replaces them.
     pub untagged: Vec<String>,
-    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`, or
-    /// switched to `ENABLE REPLICA TRIGGER` (they then fire only on a replica).
+    /// `pg_tviews` triggers disabled with `ALTER TABLE … DISABLE TRIGGER`,
+    /// switched to `ENABLE REPLICA TRIGGER` (they then fire only on a replica),
+    /// or on a table a logical replication subscription writes (its apply worker
+    /// fires no statement trigger).
     pub disabled: Vec<String>,
 }
 
@@ -295,8 +297,14 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
                                               CASE o.tgenabled WHEN 'R' THEN \
                                                 ' (ENABLE REPLICA: fires only when \
                                                  session_replication_role is replica)' \
-                                              ELSE '' END) \
+                                              WHEN 'D' THEN '' \
+                                              ELSE ' (a logical replication subscription \
+                                                 writes the table: the apply worker fires \
+                                                 no statement trigger, its writes are not \
+                                                 maintained)' END) \
          FROM ours o WHERE o.tgenabled IN ('D', 'R') \
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
+                       WHERE s.srrelid = o.tgrelid) \
          ORDER BY 1, 2",
         schema = crate::utils::ext_schema(),
         reads = crate::catalog::registered::reads_with_kind_sql(),
@@ -340,6 +348,9 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
     for &(table_oid, set) in plan {
         let (schema, relname, partitioned) = get_table_name(table_oid)?;
         let qi_table = format!("{}.{}", ident::quoted(&schema), ident::quoted(&relname));
+        if set != TriggerSet::None {
+            refuse_subscribed(tview_entity, table_oid, &qi_table)?;
+        }
         let installed = entity_triggers(tview_entity, Some(table_oid))?;
 
         for spec in set.specs(partitioned) {
@@ -366,6 +377,34 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
         }
     }
 
+    Ok(())
+}
+
+/// Refuse to maintain a TVIEW over a table a logical replication subscription
+/// writes: the apply worker fires row triggers only, and only those enabled for
+/// replicas, so its writes would never be flushed (or never seen).
+///
+/// # Errors
+/// [`TViewError::DefinitionRefused`] (0A000) naming the table, or a catalog error.
+fn refuse_subscribed(entity: &str, table_oid: pg_sys::Oid, qi_table: &str) -> TViewResult<()> {
+    let subscribed = Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s WHERE s.srrelid = $1)",
+        &[crate::utils::spi::oid(table_oid)],
+    )
+    .map_err(|e| TViewError::CatalogError {
+        operation: "Find the subscriptions writing a base table".to_string(),
+        pg_error: e.to_string(),
+    })?
+    .unwrap_or(false);
+    if subscribed {
+        return Err(TViewError::DefinitionRefused {
+            reason: format!(
+                "tv_{entity} reads {qi_table}, which a logical replication subscription writes: \
+                 its apply worker fires no statement trigger, so pg_tviews cannot maintain the \
+                 TVIEW there. Create the TVIEW on the publisher and publish its table instead"
+            ),
+        });
+    }
     Ok(())
 }
 
